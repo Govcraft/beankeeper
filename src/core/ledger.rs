@@ -1,0 +1,357 @@
+use crate::reporting::{AccountBalance, TrialBalance};
+use crate::types::{Account, Amount, DebitOrCredit, Entry, MoneyError};
+
+use super::transaction::Transaction;
+
+/// A general ledger holding posted transactions and providing balance queries.
+///
+/// The ledger is append-only: once a transaction is posted, it cannot be
+/// removed. This follows standard accounting practice where corrections
+/// are made via reversing entries.
+///
+/// # Examples
+///
+/// ```
+/// use beankeeper::prelude::*;
+///
+/// let mut ledger = Ledger::new();
+///
+/// let cash = Account::new(
+///     AccountCode::new("1000").unwrap(),
+///     "Cash",
+///     AccountType::Asset,
+/// );
+/// let revenue = Account::new(
+///     AccountCode::new("4000").unwrap(),
+///     "Revenue",
+///     AccountType::Revenue,
+/// );
+///
+/// let txn = JournalEntry::new("Sale")
+///     .debit(&cash, Money::usd(500_00))
+///     .unwrap()
+///     .credit(&revenue, Money::usd(500_00))
+///     .unwrap()
+///     .post()
+///     .unwrap();
+///
+/// ledger.post(txn);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct Ledger {
+    transactions: Vec<Transaction>,
+}
+
+impl Ledger {
+    /// Creates a new empty ledger.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Posts a validated transaction to the ledger.
+    pub fn post(&mut self, transaction: Transaction) {
+        self.transactions.push(transaction);
+    }
+
+    /// Returns all posted transactions.
+    #[must_use]
+    pub fn transactions(&self) -> &[Transaction] {
+        &self.transactions
+    }
+
+    /// Returns the number of posted transactions.
+    #[must_use]
+    pub fn transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    /// Computes the net balance for a specific account across all transactions.
+    ///
+    /// The balance is signed according to the account's normal balance:
+    /// positive means the account has its expected balance, negative means
+    /// contra-balance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
+    pub fn balance_for(&self, account: &Account) -> Result<Amount, MoneyError> {
+        let mut balance = Amount::ZERO;
+
+        for entry in self.entries_for(account) {
+            balance = balance
+                .checked_add(entry.signed_amount())
+                .ok_or(MoneyError::Overflow)?;
+        }
+
+        Ok(balance)
+    }
+
+    /// Computes the total of all debit entries for an account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
+    pub fn debit_total_for(&self, account: &Account) -> Result<Amount, MoneyError> {
+        let mut total = Amount::ZERO;
+
+        for entry in self.entries_for(account) {
+            if entry.direction() == DebitOrCredit::Debit {
+                total = total
+                    .checked_add(entry.amount().amount())
+                    .ok_or(MoneyError::Overflow)?;
+            }
+        }
+
+        Ok(total)
+    }
+
+    /// Computes the total of all credit entries for an account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
+    pub fn credit_total_for(&self, account: &Account) -> Result<Amount, MoneyError> {
+        let mut total = Amount::ZERO;
+
+        for entry in self.entries_for(account) {
+            if entry.direction() == DebitOrCredit::Credit {
+                total = total
+                    .checked_add(entry.amount().amount())
+                    .ok_or(MoneyError::Overflow)?;
+            }
+        }
+
+        Ok(total)
+    }
+
+    /// Returns all entries involving the given account across all transactions.
+    #[must_use]
+    pub fn entries_for<'a>(&'a self, account: &'a Account) -> Vec<&'a Entry> {
+        self.transactions
+            .iter()
+            .flat_map(Transaction::entries)
+            .filter(|e| e.account() == account)
+            .collect()
+    }
+
+    /// Generates a trial balance report from all posted transactions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
+    pub fn trial_balance(&self) -> Result<TrialBalance, MoneyError> {
+        // Collect all unique accounts
+        let mut accounts: Vec<Account> = Vec::new();
+
+        for txn in &self.transactions {
+            for entry in txn.entries() {
+                if !accounts.contains(entry.account()) {
+                    accounts.push(entry.account().clone());
+                }
+            }
+        }
+
+        // Sort by account code for consistent ordering
+        accounts.sort_by(|a, b| a.code().cmp(b.code()));
+
+        let mut balances = Vec::with_capacity(accounts.len());
+
+        for account in &accounts {
+            let debit_total = self.debit_total_for(account)?;
+            let credit_total = self.credit_total_for(account)?;
+            balances.push(AccountBalance::new(account.clone(), debit_total, credit_total));
+        }
+
+        Ok(TrialBalance::new(balances))
+    }
+
+    /// Returns whether the ledger is balanced (total debits == total credits).
+    ///
+    /// A properly functioning ledger should always be balanced since
+    /// every posted transaction is individually balanced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
+    pub fn is_balanced(&self) -> Result<bool, MoneyError> {
+        let tb = self.trial_balance()?;
+        Ok(tb.is_balanced())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::JournalEntry;
+    use crate::types::{AccountCode, AccountType, Money};
+
+    fn make_account(code: &str, name: &str, acct_type: AccountType) -> Account {
+        Account::new(
+            AccountCode::new(code).unwrap_or_else(|e| panic!("test setup: {e}")),
+            name,
+            acct_type,
+        )
+    }
+
+    fn cash() -> Account {
+        make_account("1000", "Cash", AccountType::Asset)
+    }
+
+    fn revenue() -> Account {
+        make_account("4000", "Revenue", AccountType::Revenue)
+    }
+
+    fn expense() -> Account {
+        make_account("5000", "Rent", AccountType::Expense)
+    }
+
+    fn post_sale(ledger: &mut Ledger, amount: i128) {
+        let txn = JournalEntry::new("Sale")
+            .debit(&cash(), Money::usd(amount))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .credit(&revenue(), Money::usd(amount))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .post()
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        ledger.post(txn);
+    }
+
+    #[test]
+    fn empty_ledger_has_zero_balance() {
+        let ledger = Ledger::new();
+        let balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(balance, Amount::ZERO);
+    }
+
+    #[test]
+    fn post_transaction_increases_count() {
+        let mut ledger = Ledger::new();
+        assert_eq!(ledger.transaction_count(), 0);
+        post_sale(&mut ledger, 500);
+        assert_eq!(ledger.transaction_count(), 1);
+    }
+
+    #[test]
+    fn balance_for_asset_after_debit() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+
+        // Cash is asset (debit normal) - debit increases it
+        let balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(balance, Amount::new(500));
+    }
+
+    #[test]
+    fn balance_for_revenue_after_credit() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+
+        // Revenue is credit normal - credit increases it
+        let balance = ledger.balance_for(&revenue()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(balance, Amount::new(500));
+    }
+
+    #[test]
+    fn trial_balance_is_balanced() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+        post_sale(&mut ledger, 300);
+
+        let tb = ledger.trial_balance().unwrap_or_else(|e| panic!("test: {e}"));
+        assert!(tb.is_balanced());
+    }
+
+    #[test]
+    fn multiple_transactions_accumulate() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+        post_sale(&mut ledger, 300);
+
+        let balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(balance, Amount::new(800));
+    }
+
+    #[test]
+    fn entries_for_account_returns_correct_entries() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+
+        let cash_acct = cash();
+        let entries = ledger.entries_for(&cash_acct);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_debit());
+    }
+
+    #[test]
+    fn debit_total_for_account() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+        post_sale(&mut ledger, 300);
+
+        let total = ledger.debit_total_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(total, Amount::new(800));
+    }
+
+    #[test]
+    fn credit_total_for_account() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+
+        let total = ledger.credit_total_for(&revenue()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(total, Amount::new(500));
+    }
+
+    #[test]
+    fn is_balanced_returns_true() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 500);
+        assert!(ledger.is_balanced().unwrap_or(false));
+    }
+
+    #[test]
+    fn empty_ledger_is_balanced() {
+        let ledger = Ledger::new();
+        assert!(ledger.is_balanced().unwrap_or(false));
+    }
+
+    #[test]
+    fn complex_scenario() {
+        let mut ledger = Ledger::new();
+
+        // Record a sale
+        post_sale(&mut ledger, 1000);
+
+        // Pay rent
+        let txn = JournalEntry::new("Rent")
+            .debit(&expense(), Money::usd(500))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .credit(&cash(), Money::usd(500))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .post()
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        ledger.post(txn);
+
+        // Cash should be 1000 - 500 = 500
+        let cash_balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(cash_balance, Amount::new(500));
+
+        // Revenue should be 1000
+        let rev_balance = ledger.balance_for(&revenue()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(rev_balance, Amount::new(1000));
+
+        // Expense should be 500
+        let exp_balance = ledger.balance_for(&expense()).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(exp_balance, Amount::new(500));
+
+        // Ledger should be balanced
+        assert!(ledger.is_balanced().unwrap_or(false));
+    }
+
+    #[test]
+    fn transactions_accessor() {
+        let mut ledger = Ledger::new();
+        post_sale(&mut ledger, 100);
+        assert_eq!(ledger.transactions().len(), 1);
+    }
+}
