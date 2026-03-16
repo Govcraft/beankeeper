@@ -112,6 +112,28 @@ let txn = JournalEntry::new("Sale with sales tax")
 assert_eq!(txn.entries().len(), 3);
 ```
 
+Individual entries can carry optional memos for per-line descriptions:
+
+```rust
+use beankeeper::prelude::*;
+
+let salary = Account::new(AccountCode::new("5000").unwrap(), "Salary", AccountType::Expense);
+let cash = Account::new(AccountCode::new("1000").unwrap(), "Cash", AccountType::Asset);
+let tax = Account::new(AccountCode::new("2200").unwrap(), "Tax Withheld", AccountType::Liability);
+
+let txn = JournalEntry::new("March Paycheck")
+    .debit_with_memo(&salary, Money::usd(5000_00), "Gross salary")
+    .unwrap()
+    .credit_with_memo(&cash, Money::usd(3800_00), "Net pay")
+    .unwrap()
+    .credit_with_memo(&tax, Money::usd(1200_00), "Federal withholding")
+    .unwrap()
+    .post()
+    .unwrap();
+
+assert_eq!(txn.entries()[0].memo(), Some("Gross salary"));
+```
+
 Transactions can carry optional metadata for reference numbers, invoice IDs, or other tracking information:
 
 ```rust
@@ -222,7 +244,7 @@ The `Ledger` does not support deleting or modifying posted transactions. In prof
 
 ## Multi-Currency Support
 
-Beankeeper includes nine ISO 4217 currencies with correct minor-unit precision:
+Beankeeper includes ten ISO 4217 currencies with correct minor-unit precision:
 
 | Currency | Code | Minor Units |
 |----------|------|-------------|
@@ -233,6 +255,7 @@ Beankeeper includes nine ISO 4217 currencies with correct minor-unit precision:
 | Swiss Franc | `CHF` | 2 |
 | Canadian Dollar | `CAD` | 2 |
 | Australian Dollar | `AUD` | 2 |
+| Mexican Peso | `MXN` | 2 (centavos) |
 | Bahraini Dinar | `BHD` | 3 |
 | Kuwaiti Dinar | `KWD` | 3 |
 
@@ -287,7 +310,7 @@ Beankeeper applies strict quality standards:
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- fallible operations always use proper error handling
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
 - Zero external dependencies
-- 204 tests covering unit, integration, and real-world accounting scenarios
+- 350+ tests covering unit, integration, and real-world accounting scenarios
 
 ## License
 
