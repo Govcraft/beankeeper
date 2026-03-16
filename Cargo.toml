@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Idiomatic, ergonomic library of primitives for professional double-entry accounting"
+authors = ["Roland <roland@govcraft.ai>"]
 license = "MIT OR Apache-2.0"
 keywords = ["accounting", "double-entry", "bookkeeping", "finance", "ledger"]
+repository = "https://github.com/Govcraft/beankeeper"
 categories = ["finance"]
 
 [dependencies]
