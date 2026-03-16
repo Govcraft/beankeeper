@@ -235,6 +235,10 @@ pub enum TxnCommand {
         /// Transaction date (YYYY-MM-DD). Defaults to today.
         #[arg(long)]
         date: Option<String>,
+
+        /// Correlate with an existing transaction in another company (intercompany linking).
+        #[arg(long)]
+        correlate: Option<i64>,
     },
 
     /// List transactions.
@@ -280,6 +284,9 @@ pub enum TxnCommand {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Find orphaned intercompany correlations.
+    Reconcile,
 }
 
 /// Report subcommands.

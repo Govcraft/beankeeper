@@ -14,8 +14,9 @@ pub use companies::{company_exists, create_company, delete_company, get_company,
 pub use connection::Db;
 pub use schema::{ensure_schema, get_schema_version};
 pub use transactions::{
-    ListTransactionParams, PostTransactionParams, get_entries_for_transaction, get_transaction,
-    list_transactions, post_transaction,
+    ListTransactionParams, OrphanedCorrelation, PostTransactionParams,
+    find_orphaned_correlations, get_entries_for_transaction, get_transaction, list_transactions,
+    post_transaction,
 };
 
 use std::fmt::Write;
@@ -224,6 +225,7 @@ mod tests {
             currency: "USD",
             date,
             entries: &entries,
+            correlate: None,
         };
         post_transaction(db.conn(), &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"));

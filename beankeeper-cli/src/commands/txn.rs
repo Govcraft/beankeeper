@@ -33,6 +33,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             metadata,
             currency,
             date,
+            correlate,
         } => run_post(
             cli,
             &db_handle,
@@ -43,6 +44,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             metadata.as_deref(),
             currency,
             date.as_deref(),
+            *correlate,
         ),
         TxnCommand::List { account, from, to, limit, offset } => {
             let lp = transactions::ListTransactionParams {
@@ -63,6 +65,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
         } => Err(CliError::General(
             "import command not yet implemented".into(),
         )),
+        TxnCommand::Reconcile => run_reconcile(cli, &db_handle, format, use_color),
     }
 }
 
@@ -153,6 +156,7 @@ fn run_post(
     metadata: Option<&str>,
     currency_code: &str,
     date: Option<&str>,
+    correlate: Option<i64>,
 ) -> Result<(), CliError> {
     // 1. Parse currency
     let currency = Currency::from_code(currency_code).map_err(|e| {
@@ -215,6 +219,7 @@ fn run_post(
         currency: currency_code,
         date: &effective_date,
         entries: &db_entries,
+        correlate,
     };
 
     let txn_id = transactions::post_transaction(db_handle.conn(), &params)?;
@@ -313,6 +318,46 @@ fn run_show(
     }
 
     Ok(())
+}
+
+fn run_reconcile(
+    _cli: &Cli,
+    db_handle: &Db,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let orphans = transactions::find_orphaned_correlations(db_handle.conn())?;
+
+    if orphans.is_empty() {
+        match format {
+            OutputFormat::Json => println!("[]"),
+            OutputFormat::Csv => println!("transaction_id,company,description,date,partner_id"),
+            OutputFormat::Table => eprintln!("[ok] no orphaned correlations found"),
+        }
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Table => {
+            let rendered = output::table::render_orphaned_correlations(&orphans, use_color);
+            println!("{rendered}");
+            eprintln!("[!!] {} orphaned correlation(s) found", orphans.len());
+        }
+        OutputFormat::Json => {
+            let rendered = output::json::render_orphaned_correlations(&orphans)?;
+            println!("{rendered}");
+        }
+        OutputFormat::Csv => {
+            let rendered = output::csv::render_orphaned_correlations(&orphans)?;
+            print!("{rendered}");
+        }
+    }
+
+    // Exit code 3 (validation error) when orphans found — useful in pipelines.
+    Err(CliError::Validation(format!(
+        "{} orphaned correlation(s) found",
+        orphans.len()
+    )))
 }
 
 #[cfg(test)]

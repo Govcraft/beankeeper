@@ -448,6 +448,35 @@ fn new_table() -> Table {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+// Orphaned correlations
+// ---------------------------------------------------------------------------
+
+/// Render orphaned intercompany correlations as a table.
+#[must_use]
+pub fn render_orphaned_correlations(
+    orphans: &[crate::db::OrphanedCorrelation],
+    _use_color: bool,
+) -> String {
+    use comfy_table::{Table, ContentArrangement};
+
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["Txn ID", "Company", "Date", "Description", "Partner ID"]);
+
+    for o in orphans {
+        table.add_row(vec![
+            o.transaction_id.to_string(),
+            o.company_slug.clone(),
+            o.date.clone(),
+            o.description.clone(),
+            o.partner_id.to_string(),
+        ]);
+    }
+
+    format!("{table}\n\n{} orphaned correlation(s)", orphans.len())
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

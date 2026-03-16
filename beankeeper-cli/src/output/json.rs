@@ -277,6 +277,43 @@ pub fn render_error(err: &CliError) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Orphaned correlations
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct OrphanedCorrelationJson {
+    transaction_id: i64,
+    company: String,
+    description: String,
+    date: String,
+    partner_id: i64,
+}
+
+/// Render orphaned intercompany correlations as JSON.
+///
+/// # Errors
+///
+/// Returns [`CliError`] if serialization fails.
+pub fn render_orphaned_correlations(
+    orphans: &[crate::db::OrphanedCorrelation],
+) -> Result<String, CliError> {
+    let json_orphans: Vec<OrphanedCorrelationJson> = orphans
+        .iter()
+        .map(|o| OrphanedCorrelationJson {
+            transaction_id: o.transaction_id,
+            company: o.company_slug.clone(),
+            description: o.description.clone(),
+            date: o.date.clone(),
+            partner_id: o.partner_id,
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&json_orphans).map_err(|e| {
+        CliError::General(format!("JSON serialization failed: {e}"))
+    })
+}
+
 // Tests
 // ---------------------------------------------------------------------------
 

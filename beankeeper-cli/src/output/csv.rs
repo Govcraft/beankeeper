@@ -170,6 +170,39 @@ pub fn render_account_balance(balance: &BalanceRow, currency: &str) -> Result<St
 }
 
 // ---------------------------------------------------------------------------
+// Orphaned correlations
+// ---------------------------------------------------------------------------
+
+/// Render orphaned intercompany correlations as CSV.
+///
+/// # Errors
+///
+/// Returns [`CliError`] if CSV writing fails.
+pub fn render_orphaned_correlations(
+    orphans: &[crate::db::OrphanedCorrelation],
+) -> Result<String, CliError> {
+    let mut wtr = csv::Writer::from_writer(vec![]);
+    wtr.write_record(["transaction_id", "company", "description", "date", "partner_id"])
+        .map_err(|e| CliError::General(format!("CSV write error: {e}")))?;
+
+    for o in orphans {
+        wtr.write_record([
+            &o.transaction_id.to_string(),
+            &o.company_slug,
+            &o.description,
+            &o.date,
+            &o.partner_id.to_string(),
+        ])
+        .map_err(|e| CliError::General(format!("CSV write error: {e}")))?;
+    }
+
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush error: {e}")))?;
+    String::from_utf8(bytes).map_err(|e| CliError::General(format!("CSV encoding error: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

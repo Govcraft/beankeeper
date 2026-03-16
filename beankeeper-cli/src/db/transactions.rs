@@ -1,6 +1,7 @@
 use std::fmt::Write;
 
 use rusqlite::{Connection, params};
+use serde_json;
 
 use super::{EntryRow, TransactionRow};
 use crate::error::CliError;
@@ -13,6 +14,23 @@ pub struct PostTransactionParams<'a> {
     pub currency: &'a str,
     pub date: &'a str,
     pub entries: &'a [(String, String, i64)],
+    /// If set, correlate with this existing transaction ID (intercompany linking).
+    pub correlate: Option<i64>,
+}
+
+/// An orphaned intercompany correlation found by reconcile.
+#[derive(Debug, Clone)]
+pub struct OrphanedCorrelation {
+    /// The transaction that has a correlate reference.
+    pub transaction_id: i64,
+    /// The company this transaction belongs to.
+    pub company_slug: String,
+    /// Transaction description.
+    pub description: String,
+    /// Transaction date.
+    pub date: String,
+    /// The partner transaction ID referenced in metadata.
+    pub partner_id: i64,
 }
 
 /// Posts a new transaction with its entries inside a savepoint.
@@ -54,10 +72,13 @@ fn post_transaction_inner(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
 ) -> Result<i64, CliError> {
+    // Build the metadata string, merging --correlate and --metadata if both present.
+    let effective_metadata = build_metadata(p.metadata, p.correlate);
+
     conn.execute(
         "INSERT INTO transactions (company_slug, description, metadata, currency, date) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![p.company_slug, p.description, p.metadata, p.currency, p.date],
+        params![p.company_slug, p.description, effective_metadata, p.currency, p.date],
     )?;
 
     let txn_id = conn.last_insert_rowid();
@@ -78,7 +99,103 @@ fn post_transaction_inner(
         )?;
     }
 
+    // If correlating, update the partner transaction bidirectionally.
+    if let Some(partner_id) = p.correlate {
+        link_partner(conn, p.company_slug, txn_id, partner_id)?;
+    }
+
     Ok(txn_id)
+}
+
+/// Build effective metadata JSON from optional user metadata and correlate ID.
+fn build_metadata(user_metadata: Option<&str>, correlate: Option<i64>) -> Option<String> {
+    match (user_metadata, correlate) {
+        (None, None) => None,
+        (Some(m), None) => Some(m.to_string()),
+        (None, Some(cid)) => Some(format!(r#"{{"correlate":{cid}}}"#)),
+        (Some(m), Some(cid)) => {
+            Some(format!(r#"{{"correlate":{cid},"ref":{}}}"#, serde_json::json!(m)))
+        }
+    }
+}
+
+/// Validate and link a partner transaction bidirectionally.
+///
+/// - Verifies the partner exists and belongs to a different company.
+/// - Verifies the partner is not already correlated.
+/// - Updates the partner's metadata to include `{"correlate": new_txn_id}`.
+fn link_partner(
+    conn: &Connection,
+    new_company: &str,
+    new_txn_id: i64,
+    partner_id: i64,
+) -> Result<(), CliError> {
+    // Look up the partner transaction (any company).
+    let partner: (String, Option<String>) = conn
+        .query_row(
+            "SELECT company_slug, metadata FROM transactions WHERE id = ?1",
+            params![partner_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| {
+            CliError::NotFound(format!("transaction #{partner_id} not found"))
+        })?;
+
+    let (partner_company, partner_metadata) = partner;
+
+    // Must belong to a different company.
+    if partner_company == new_company {
+        return Err(CliError::Validation(format!(
+            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'"
+        )));
+    }
+
+    // Must not already be correlated.
+    if let Some(ref meta) = partner_metadata {
+        if meta.contains("\"correlate\"") {
+            return Err(CliError::Validation(format!(
+                "transaction #{partner_id} is already correlated"
+            )));
+        }
+    }
+
+    // Build the updated metadata for the partner.
+    let updated_partner_meta = merge_correlate_into_metadata(partner_metadata.as_deref(), new_txn_id);
+
+    conn.execute(
+        "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
+        params![updated_partner_meta, partner_id],
+    )?;
+
+    Ok(())
+}
+
+/// Merge a `correlate` key into existing metadata.
+///
+/// - No existing metadata → `{"correlate": id}`
+/// - Existing JSON object → insert `correlate` key
+/// - Existing plain string → `{"correlate": id, "ref": "old_string"}`
+fn merge_correlate_into_metadata(existing: Option<&str>, correlate_id: i64) -> String {
+    match existing {
+        None => format!(r#"{{"correlate":{correlate_id}}}"#),
+        Some(s) if s.starts_with('{') => {
+            // Insert "correlate":N at the beginning of the JSON object.
+            let rest = &s[1..]; // skip opening brace
+            if rest.trim_start().starts_with('}') {
+                // Empty object
+                format!(r#"{{"correlate":{correlate_id}}}"#)
+            } else {
+                format!(r#"{{"correlate":{correlate_id},{rest}"#)
+            }
+        }
+        Some(s) => {
+            // Plain string — wrap into JSON object with ref key.
+            format!(
+                r#"{{"correlate":{correlate_id},"ref":{}}}"#,
+                serde_json::json!(s)
+            )
+        }
+    }
 }
 
 /// Lists transactions for a company with optional filters.
@@ -269,6 +386,47 @@ pub fn get_entries_for_transaction(
     Ok(entries)
 }
 
+/// Find orphaned intercompany correlations.
+///
+/// Returns transactions that reference a partner via `json_extract(metadata, '$.correlate')`
+/// where the partner either doesn't exist or doesn't reference back.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on database query failure.
+pub fn find_orphaned_correlations(
+    conn: &Connection,
+) -> Result<Vec<OrphanedCorrelation>, CliError> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.company_slug, t.description, t.date, \
+                CAST(json_extract(t.metadata, '$.correlate') AS INTEGER) AS partner_id \
+         FROM transactions t \
+         WHERE json_extract(t.metadata, '$.correlate') IS NOT NULL \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM transactions t2 \
+               WHERE t2.id = CAST(json_extract(t.metadata, '$.correlate') AS INTEGER) \
+                 AND CAST(json_extract(t2.metadata, '$.correlate') AS INTEGER) = t.id \
+           ) \
+         ORDER BY t.id",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(OrphanedCorrelation {
+            transaction_id: row.get(0)?,
+            company_slug: row.get(1)?,
+            description: row.get(2)?,
+            date: row.get(3)?,
+            partner_id: row.get(4)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +465,7 @@ mod tests {
             currency: "USD",
             date,
             entries,
+            correlate: None,
         }
     }
 
