@@ -19,6 +19,7 @@ use crate::error::CliError;
 pub struct CompanyJson {
     slug: String,
     name: String,
+    description: Option<String>,
     created_at: String,
 }
 
@@ -45,6 +46,7 @@ pub struct EntryJson {
     account_code: String,
     direction: String,
     amount: i64,
+    memo: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +129,7 @@ pub fn render_companies(companies: &[CompanyRow]) -> Result<String, CliError> {
         .map(|c| CompanyJson {
             slug: c.slug.clone(),
             name: c.name.clone(),
+            description: c.description.clone(),
             created_at: c.created_at.clone(),
         })
         .collect();
@@ -180,6 +183,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                             account_code: e.account_code.clone(),
                             direction: e.direction.clone(),
                             amount: e.amount,
+                            memo: e.memo.clone(),
                         })
                         .collect()
                 })
@@ -334,6 +338,7 @@ mod tests {
         let rows = vec![CompanyRow {
             slug: "acme".into(),
             name: "Acme Corp".into(),
+            description: None,
             created_at: "2025-01-01T00:00:00".into(),
         }];
         let json = render_companies(&rows).unwrap_or_default();
@@ -390,6 +395,7 @@ mod tests {
                     company_slug: "acme".into(),
                     direction: "debit".into(),
                     amount: 5000,
+                    memo: None,
                 },
                 EntryRow {
                     id: 2,
@@ -398,6 +404,7 @@ mod tests {
                     company_slug: "acme".into(),
                     direction: "credit".into(),
                     amount: 5000,
+                    memo: None,
                 },
             ],
         );

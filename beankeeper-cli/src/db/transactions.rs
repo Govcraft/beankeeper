@@ -13,7 +13,7 @@ pub struct PostTransactionParams<'a> {
     pub metadata: Option<&'a str>,
     pub currency: &'a str,
     pub date: &'a str,
-    pub entries: &'a [(String, String, i64)],
+    pub entries: &'a [(String, String, i64, Option<String>)],
     /// If set, correlate with this existing transaction ID (intercompany linking).
     pub correlate: Option<i64>,
 }
@@ -83,7 +83,7 @@ fn post_transaction_inner(
 
     let txn_id = conn.last_insert_rowid();
 
-    for (account_code, direction, amount) in p.entries {
+    for (account_code, direction, amount, memo) in p.entries {
         let dir_lower = direction.to_lowercase();
         if dir_lower != "debit" && dir_lower != "credit" {
             return Err(CliError::Validation(format!(
@@ -93,9 +93,9 @@ fn post_transaction_inner(
 
         conn.execute(
             "INSERT INTO entries \
-             (transaction_id, account_code, company_slug, direction, amount) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![txn_id, account_code, p.company_slug, dir_lower, amount],
+             (transaction_id, account_code, company_slug, direction, amount, memo) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![txn_id, account_code, p.company_slug, dir_lower, amount, memo],
         )?;
     }
 
@@ -362,7 +362,7 @@ pub fn get_entries_for_transaction(
     txn_id: i64,
 ) -> Result<Vec<EntryRow>, CliError> {
     let mut stmt = conn.prepare(
-        "SELECT id, transaction_id, account_code, company_slug, direction, amount \
+        "SELECT id, transaction_id, account_code, company_slug, direction, amount, memo \
          FROM entries \
          WHERE transaction_id = ?1 \
          ORDER BY id",
@@ -376,6 +376,7 @@ pub fn get_entries_for_transaction(
             company_slug: row.get(3)?,
             direction: row.get(4)?,
             amount: row.get(5)?,
+            memo: row.get(6)?,
         })
     })?;
 
@@ -436,7 +437,7 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(db.conn(), "acme", "Acme Corp")
+        create_company(db.conn(), "acme", "Acme Corp", None)
             .unwrap_or_else(|e| panic!("company setup failed: {e}"));
         create_account(db.conn(), "acme", "1000", "Cash", "asset")
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
@@ -445,15 +446,15 @@ mod tests {
         db
     }
 
-    fn sample_entries() -> Vec<(String, String, i64)> {
+    fn sample_entries() -> Vec<(String, String, i64, Option<String>)> {
         vec![
-            ("1000".to_string(), "debit".to_string(), 5000),
-            ("4000".to_string(), "credit".to_string(), 5000),
+            ("1000".to_string(), "debit".to_string(), 5000, None),
+            ("4000".to_string(), "credit".to_string(), 5000, None),
         ]
     }
 
     fn make_params<'a>(
-        entries: &'a [(String, String, i64)],
+        entries: &'a [(String, String, i64, Option<String>)],
         description: &'a str,
         metadata: Option<&'a str>,
         date: &'a str,
@@ -509,7 +510,7 @@ mod tests {
     #[test]
     fn post_invalid_direction_is_validation_error() {
         let db = setup();
-        let entries = vec![("1000".to_string(), "INVALID".to_string(), 5000)];
+        let entries = vec![("1000".to_string(), "INVALID".to_string(), 5000, None)];
         let p = make_params(&entries, "Bad", None, "2024-01-15");
         let result = post_transaction(db.conn(), &p);
         assert!(matches!(result, Err(CliError::Validation(_))));
@@ -550,8 +551,8 @@ mod tests {
         assert!(post_transaction(db.conn(), &p1).is_ok());
 
         let entries2 = vec![
-            ("5000".to_string(), "debit".to_string(), 1000),
-            ("1000".to_string(), "credit".to_string(), 1000),
+            ("5000".to_string(), "debit".to_string(), 1000, None),
+            ("1000".to_string(), "credit".to_string(), 1000, None),
         ];
         let p2 = make_params(&entries2, "Expense", None, "2024-01-02");
         assert!(post_transaction(db.conn(), &p2).is_ok());
@@ -605,8 +606,8 @@ mod tests {
         let db = setup();
         // This should fail because account "9999" doesn't exist (FK constraint)
         let entries = vec![
-            ("1000".to_string(), "debit".to_string(), 5000),
-            ("9999".to_string(), "credit".to_string(), 5000),
+            ("1000".to_string(), "debit".to_string(), 5000, None),
+            ("9999".to_string(), "credit".to_string(), 5000, None),
         ];
         let p = make_params(&entries, "Bad", None, "2024-01-15");
         let result = post_transaction(db.conn(), &p);

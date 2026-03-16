@@ -30,11 +30,12 @@ fn normal_balance_for(account_type: &str) -> &'static str {
 /// Returns `CliError::General` if CSV serialisation fails.
 pub fn render_companies(companies: &[CompanyRow]) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
-    wtr.write_record(["slug", "name", "created_at"])
+    wtr.write_record(["slug", "name", "description", "created_at"])
         .map_err(|e| csv_err(&e))?;
 
     for c in companies {
-        wtr.write_record([&c.slug, &c.name, &c.created_at])
+        let desc = c.description.as_deref().unwrap_or("");
+        wtr.write_record([c.slug.as_str(), c.name.as_str(), desc, c.created_at.as_str()])
             .map_err(|e| csv_err(&e))?;
     }
 
@@ -216,7 +217,7 @@ mod tests {
         assert!(result.is_ok());
         let csv_str = result.unwrap_or_default();
         // Should have header row only
-        assert_eq!(csv_str.trim(), "slug,name,created_at");
+        assert_eq!(csv_str.trim(), "slug,name,description,created_at");
     }
 
     #[test]
@@ -224,11 +225,12 @@ mod tests {
         let rows = vec![CompanyRow {
             slug: "acme".into(),
             name: "Acme Corp".into(),
+            description: None,
             created_at: "2025-01-01".into(),
         }];
         let csv_str = render_companies(&rows).unwrap_or_default();
-        assert!(csv_str.contains("slug,name,created_at"));
-        assert!(csv_str.contains("acme,Acme Corp,2025-01-01"));
+        assert!(csv_str.contains("slug,name,description,created_at"));
+        assert!(csv_str.contains("acme,Acme Corp,,2025-01-01"));
     }
 
     #[test]
@@ -236,6 +238,7 @@ mod tests {
         let rows = vec![CompanyRow {
             slug: "acme".into(),
             name: "Acme, Corp".into(), // comma in name
+            description: Some("A company".into()),
             created_at: "2025-01-01".into(),
         }];
         let csv_str = render_companies(&rows).unwrap_or_default();

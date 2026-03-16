@@ -85,6 +85,38 @@ impl JournalEntry {
         Ok(self)
     }
 
+    /// Adds a debit entry with a memo for the given account and amount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError`] if the amount is zero or negative.
+    pub fn debit_with_memo(
+        mut self,
+        account: &Account,
+        amount: Money,
+        memo: impl Into<String>,
+    ) -> Result<Self, EntryError> {
+        let entry = Entry::debit_with_memo(account.clone(), amount, memo)?;
+        self.entries.push(entry);
+        Ok(self)
+    }
+
+    /// Adds a credit entry with a memo for the given account and amount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError`] if the amount is zero or negative.
+    pub fn credit_with_memo(
+        mut self,
+        account: &Account,
+        amount: Money,
+        memo: impl Into<String>,
+    ) -> Result<Self, EntryError> {
+        let entry = Entry::credit_with_memo(account.clone(), amount, memo)?;
+        self.entries.push(entry);
+        Ok(self)
+    }
+
     /// Returns the accumulated entries.
     #[must_use]
     pub fn entries(&self) -> &[Entry] {

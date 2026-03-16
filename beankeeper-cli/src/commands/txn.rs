@@ -69,17 +69,23 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
     }
 }
 
-/// Parse an `account_code:amount` string into `(code, minor_units)`.
+/// Parse an `account_code:amount[:memo]` string into `(code, minor_units, optional_memo)`.
 ///
 /// Undecorated integers are treated as major units (e.g. `50` = 50 dollars).
 /// Decimal amounts are also major units (e.g. `50.00` = 50 dollars).
 /// The amount is converted to minor units based on the currency's decimal places.
-fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64), CliError> {
-    let (code, amount_str) = s.split_once(':').ok_or_else(|| {
-        CliError::Usage(format!(
-            "invalid entry format '{s}': expected 'account_code:amount'"
-        ))
-    })?;
+/// An optional third segment after a second colon is treated as a memo.
+fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64, Option<String>), CliError> {
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+
+    if parts.len() < 2 {
+        return Err(CliError::Usage(format!(
+            "invalid entry format '{s}': expected 'account_code:amount' or 'account_code:amount:memo'"
+        )));
+    }
+
+    let code = parts[0];
+    let amount_str = parts[1];
 
     if code.is_empty() {
         return Err(CliError::Usage(format!(
@@ -89,7 +95,13 @@ fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64), CliErro
 
     let minor = parse_amount_to_minor(amount_str.trim(), currency)?;
 
-    Ok((code.to_string(), minor))
+    let memo = if parts.len() == 3 && !parts[2].is_empty() {
+        Some(parts[2].to_string())
+    } else {
+        None
+    };
+
+    Ok((code.to_string(), minor, memo))
 }
 
 /// Parse an amount string to minor currency units.
@@ -163,7 +175,7 @@ fn run_post(
         CliError::Validation(format!("invalid currency: {e}"))
     })?;
 
-    // 2. Parse debit/credit args into (code, minor_units) pairs
+    // 2. Parse debit/credit args into (code, minor_units, memo) tuples
     let mut parsed_debits = Vec::new();
     for arg in debit_args {
         parsed_debits.push(parse_entry_arg(arg, currency)?);
@@ -180,18 +192,26 @@ fn run_post(
         journal = journal.with_metadata(meta);
     }
 
-    for (code, minor) in &parsed_debits {
+    for (code, minor, memo) in &parsed_debits {
         let row = accounts::get_account(db_handle.conn(), company, code)?;
         let account = db::row_to_account(&row)?;
         let money = Money::from_minor(i128::from(*minor), currency);
-        journal = journal.debit(&account, money)?;
+        if let Some(m) = memo {
+            journal = journal.debit_with_memo(&account, money, m)?;
+        } else {
+            journal = journal.debit(&account, money)?;
+        }
     }
 
-    for (code, minor) in &parsed_credits {
+    for (code, minor, memo) in &parsed_credits {
         let row = accounts::get_account(db_handle.conn(), company, code)?;
         let account = db::row_to_account(&row)?;
         let money = Money::from_minor(i128::from(*minor), currency);
-        journal = journal.credit(&account, money)?;
+        if let Some(m) = memo {
+            journal = journal.credit_with_memo(&account, money, m)?;
+        } else {
+            journal = journal.credit(&account, money)?;
+        }
     }
 
     // 4. Validate via post() - enforces balance invariant
@@ -204,12 +224,12 @@ fn run_post(
     };
 
     // 6. Build entries for DB persistence
-    let mut db_entries: Vec<(String, String, i64)> = Vec::new();
-    for (code, minor) in &parsed_debits {
-        db_entries.push((code.clone(), "debit".to_string(), *minor));
+    let mut db_entries: Vec<(String, String, i64, Option<String>)> = Vec::new();
+    for (code, minor, memo) in &parsed_debits {
+        db_entries.push((code.clone(), "debit".to_string(), *minor, memo.clone()));
     }
-    for (code, minor) in &parsed_credits {
-        db_entries.push((code.clone(), "credit".to_string(), *minor));
+    for (code, minor, memo) in &parsed_credits {
+        db_entries.push((code.clone(), "credit".to_string(), *minor, memo.clone()));
     }
 
     let params = transactions::PostTransactionParams {
@@ -415,18 +435,38 @@ mod tests {
 
     #[test]
     fn parse_entry_arg_valid() {
-        let (code, amount) = parse_entry_arg("1000:50", Currency::USD)
+        let (code, amount, memo) = parse_entry_arg("1000:50", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
         assert_eq!(code, "1000");
         assert_eq!(amount, 5000);
+        assert_eq!(memo, None);
     }
 
     #[test]
     fn parse_entry_arg_decimal() {
-        let (code, amount) = parse_entry_arg("1000:50.00", Currency::USD)
+        let (code, amount, memo) = parse_entry_arg("1000:50.00", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
         assert_eq!(code, "1000");
         assert_eq!(amount, 5000);
+        assert_eq!(memo, None);
+    }
+
+    #[test]
+    fn parse_entry_arg_with_memo() {
+        let (code, amount, memo) = parse_entry_arg("1000:50:Net pay", Currency::USD)
+            .unwrap_or_else(|e| panic!("parse failed: {e}"));
+        assert_eq!(code, "1000");
+        assert_eq!(amount, 5000);
+        assert_eq!(memo.as_deref(), Some("Net pay"));
+    }
+
+    #[test]
+    fn parse_entry_arg_with_empty_memo() {
+        let (code, amount, memo) = parse_entry_arg("1000:50:", Currency::USD)
+            .unwrap_or_else(|e| panic!("parse failed: {e}"));
+        assert_eq!(code, "1000");
+        assert_eq!(amount, 5000);
+        assert_eq!(memo, None);
     }
 
     #[test]

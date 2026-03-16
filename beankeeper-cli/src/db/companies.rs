@@ -47,6 +47,7 @@ pub fn create_company(
     conn: &Connection,
     slug: &str,
     name: &str,
+    description: Option<&str>,
 ) -> Result<CompanyRow, CliError> {
     validate_slug(slug)?;
 
@@ -57,8 +58,8 @@ pub fn create_company(
     }
 
     conn.execute(
-        "INSERT INTO companies (slug, name) VALUES (?1, ?2)",
-        params![slug, name],
+        "INSERT INTO companies (slug, name, description) VALUES (?1, ?2, ?3)",
+        params![slug, name, description],
     )?;
 
     get_company(conn, slug)
@@ -70,13 +71,15 @@ pub fn create_company(
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_companies(conn: &Connection) -> Result<Vec<CompanyRow>, CliError> {
-    let mut stmt = conn.prepare("SELECT slug, name, created_at FROM companies ORDER BY slug")?;
+    let mut stmt =
+        conn.prepare("SELECT slug, name, description, created_at FROM companies ORDER BY slug")?;
 
     let rows = stmt.query_map([], |row| {
         Ok(CompanyRow {
             slug: row.get(0)?,
             name: row.get(1)?,
-            created_at: row.get(2)?,
+            description: row.get(2)?,
+            created_at: row.get(3)?,
         })
     })?;
 
@@ -95,13 +98,14 @@ pub fn list_companies(conn: &Connection) -> Result<Vec<CompanyRow>, CliError> {
 /// Returns `CliError::Sqlite` on database errors.
 pub fn get_company(conn: &Connection, slug: &str) -> Result<CompanyRow, CliError> {
     let mut stmt =
-        conn.prepare("SELECT slug, name, created_at FROM companies WHERE slug = ?1")?;
+        conn.prepare("SELECT slug, name, description, created_at FROM companies WHERE slug = ?1")?;
 
     let mut rows = stmt.query_map(params![slug], |row| {
         Ok(CompanyRow {
             slug: row.get(0)?,
             name: row.get(1)?,
-            created_at: row.get(2)?,
+            description: row.get(2)?,
+            created_at: row.get(3)?,
         })
     })?;
 
@@ -153,7 +157,7 @@ mod tests {
     #[test]
     fn create_and_get_company() {
         let db = setup();
-        let row = create_company(db.conn(), "acme", "Acme Corp");
+        let row = create_company(db.conn(), "acme", "Acme Corp", None);
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.slug, "acme");
@@ -166,8 +170,8 @@ mod tests {
     #[test]
     fn duplicate_slug_is_validation_error() {
         let db = setup();
-        assert!(create_company(db.conn(), "acme", "Acme Corp").is_ok());
-        let result = create_company(db.conn(), "acme", "Acme 2");
+        assert!(create_company(db.conn(), "acme", "Acme Corp", None).is_ok());
+        let result = create_company(db.conn(), "acme", "Acme 2", None);
         assert!(result.is_err());
         if let Err(CliError::Validation(msg)) = result {
             assert!(msg.contains("already exists"));
@@ -192,8 +196,8 @@ mod tests {
     #[test]
     fn list_companies_ordered() {
         let db = setup();
-        assert!(create_company(db.conn(), "beta", "Beta").is_ok());
-        assert!(create_company(db.conn(), "alpha", "Alpha").is_ok());
+        assert!(create_company(db.conn(), "beta", "Beta", None).is_ok());
+        assert!(create_company(db.conn(), "alpha", "Alpha", None).is_ok());
         let list = list_companies(db.conn()).unwrap_or_default();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].slug, "alpha");
@@ -203,7 +207,7 @@ mod tests {
     #[test]
     fn delete_company_removes_row() {
         let db = setup();
-        assert!(create_company(db.conn(), "acme", "Acme").is_ok());
+        assert!(create_company(db.conn(), "acme", "Acme", None).is_ok());
         assert!(delete_company(db.conn(), "acme").is_ok());
         assert!(!company_exists(db.conn(), "acme").unwrap_or(true));
     }

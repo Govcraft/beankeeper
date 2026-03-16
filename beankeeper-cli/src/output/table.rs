@@ -121,6 +121,7 @@ pub fn render_companies(companies: &[CompanyRow], use_color: bool) -> String {
     table.set_header(vec![
         Cell::new(styled("Slug", bold_style(), use_color)),
         Cell::new(styled("Name", bold_style(), use_color)),
+        Cell::new(styled("Description", bold_style(), use_color)),
         Cell::new(styled("Created", bold_style(), use_color)),
     ]);
 
@@ -128,6 +129,7 @@ pub fn render_companies(companies: &[CompanyRow], use_color: bool) -> String {
         table.add_row(vec![
             Cell::new(styled(&c.slug, cyan_style(), use_color)),
             Cell::new(&c.name),
+            Cell::new(c.description.as_deref().unwrap_or("")),
             Cell::new(styled(&c.created_at, dim_style(), use_color)),
         ]);
     }
@@ -251,8 +253,13 @@ pub fn render_transaction_detail(
             ("CR", dim_style())
         };
 
+        let memo_suffix = entry
+            .memo
+            .as_deref()
+            .map(|m| format!("  ({m})"))
+            .unwrap_or_default();
         lines.push(format!(
-            "    {prefix} {code}  {amount_str}",
+            "    {prefix} {code}  {amount_str}{memo_suffix}",
             prefix = styled(prefix, direction_style, use_color),
             code = styled(&entry.account_code, cyan_style(), use_color),
         ));
@@ -570,6 +577,7 @@ mod tests {
         let rows = vec![CompanyRow {
             slug: "acme".into(),
             name: "Acme Corp".into(),
+            description: None,
             created_at: "2025-01-01 00:00:00".into(),
         }];
         let out = render_companies(&rows, false);
@@ -584,11 +592,13 @@ mod tests {
             CompanyRow {
                 slug: "acme".into(),
                 name: "Acme Corp".into(),
+                description: None,
                 created_at: "2025-01-01".into(),
             },
             CompanyRow {
                 slug: "globex".into(),
                 name: "Globex Inc".into(),
+                description: Some("Global exports".into()),
                 created_at: "2025-02-01".into(),
             },
         ];
@@ -669,6 +679,7 @@ mod tests {
                 company_slug: "acme".into(),
                 direction: "debit".into(),
                 amount: 5000,
+                memo: None,
             },
             EntryRow {
                 id: 2,
@@ -677,6 +688,7 @@ mod tests {
                 company_slug: "acme".into(),
                 direction: "credit".into(),
                 amount: 5000,
+                memo: None,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);
@@ -708,6 +720,7 @@ mod tests {
                 company_slug: "acme".into(),
                 direction: "debit".into(),
                 amount: 5000,
+                memo: None,
             },
             EntryRow {
                 id: 2,
@@ -716,6 +729,7 @@ mod tests {
                 company_slug: "acme".into(),
                 direction: "credit".into(),
                 amount: 3000,
+                memo: None,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);

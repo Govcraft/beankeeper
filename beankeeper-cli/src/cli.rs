@@ -149,6 +149,9 @@ pub enum CompanyCommand {
         slug: String,
         /// Company display name.
         name: String,
+        /// Optional company description.
+        #[arg(long)]
+        description: Option<String>,
     },
 
     /// List all companies.

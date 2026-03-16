@@ -60,9 +60,10 @@ fn apply_v1(conn: &Connection) -> Result<(), CliError> {
         );
 
         CREATE TABLE IF NOT EXISTS companies (
-            slug       TEXT PRIMARY KEY,
-            name       TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            slug        TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            description TEXT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS accounts (
@@ -91,6 +92,7 @@ fn apply_v1(conn: &Connection) -> Result<(), CliError> {
             company_slug   TEXT    NOT NULL,
             direction      TEXT    NOT NULL CHECK(direction IN ('debit','credit')),
             amount         INTEGER NOT NULL CHECK(amount > 0),
+            memo           TEXT,
             FOREIGN KEY (company_slug, account_code) REFERENCES accounts(company_slug, code)
         );
 

@@ -34,6 +34,7 @@ use crate::error::CliError;
 pub struct CompanyRow {
     pub slug: String,
     pub name: String,
+    pub description: Option<String>,
     pub created_at: String,
 }
 
@@ -68,6 +69,7 @@ pub struct EntryRow {
     pub company_slug: String,
     pub direction: String,
     pub amount: i64,
+    pub memo: Option<String>,
 }
 
 /// Aggregated balance data for an account, used in trial balance and balance reports.
@@ -202,7 +204,7 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(db.conn(), "acme", "Acme Corp")
+        create_company(db.conn(), "acme", "Acme Corp", None)
             .unwrap_or_else(|e| panic!("company setup failed: {e}"));
         create_account(db.conn(), "acme", "1000", "Cash", "asset")
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
@@ -215,8 +217,8 @@ mod tests {
 
     fn post_sample(db: &Db, date: &str, amount: i64) {
         let entries = vec![
-            ("1000".to_string(), "debit".to_string(), amount),
-            ("4000".to_string(), "credit".to_string(), amount),
+            ("1000".to_string(), "debit".to_string(), amount, None),
+            ("4000".to_string(), "credit".to_string(), amount, None),
         ];
         let params = transactions::PostTransactionParams {
             company_slug: "acme",

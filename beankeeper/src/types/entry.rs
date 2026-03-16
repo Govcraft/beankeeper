@@ -55,6 +55,7 @@ pub struct Entry {
     account: Account,
     amount: Money,
     direction: DebitOrCredit,
+    memo: Option<String>,
 }
 
 impl Entry {
@@ -78,7 +79,25 @@ impl Entry {
             account,
             amount,
             direction,
+            memo: None,
         })
+    }
+
+    /// Creates a new entry with explicit direction and a memo.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::ZeroAmount`] if the amount is zero, or
+    /// [`EntryError::NegativeAmount`] if the amount is negative.
+    pub fn with_memo(
+        account: Account,
+        amount: Money,
+        direction: DebitOrCredit,
+        memo: impl Into<String>,
+    ) -> Result<Self, EntryError> {
+        let mut entry = Self::new(account, amount, direction)?;
+        entry.memo = Some(memo.into());
+        Ok(entry)
     }
 
     /// Creates a debit entry.
@@ -97,6 +116,32 @@ impl Entry {
     /// Returns an error if the amount is zero or negative.
     pub fn credit(account: Account, amount: Money) -> Result<Self, EntryError> {
         Self::new(account, amount, DebitOrCredit::Credit)
+    }
+
+    /// Creates a debit entry with a memo.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the amount is zero or negative.
+    pub fn debit_with_memo(
+        account: Account,
+        amount: Money,
+        memo: impl Into<String>,
+    ) -> Result<Self, EntryError> {
+        Self::with_memo(account, amount, DebitOrCredit::Debit, memo)
+    }
+
+    /// Creates a credit entry with a memo.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the amount is zero or negative.
+    pub fn credit_with_memo(
+        account: Account,
+        amount: Money,
+        memo: impl Into<String>,
+    ) -> Result<Self, EntryError> {
+        Self::with_memo(account, amount, DebitOrCredit::Credit, memo)
     }
 
     /// Returns the account this entry applies to.
@@ -129,6 +174,12 @@ impl Entry {
         self.direction.is_credit()
     }
 
+    /// Returns the optional memo for this entry.
+    #[must_use]
+    pub fn memo(&self) -> Option<&str> {
+        self.memo.as_deref()
+    }
+
     /// Returns the amount with a sign relative to the account's normal balance.
     ///
     /// If the entry direction matches the account's normal balance, the
@@ -147,7 +198,11 @@ impl Entry {
 impl fmt::Display for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let dir = if self.direction.is_debit() { "DR" } else { "CR" };
-        write!(f, "{dir} {} {}", self.account.name(), self.amount)
+        write!(f, "{dir} {} {}", self.account.name(), self.amount)?;
+        if let Some(ref memo) = self.memo {
+            write!(f, " ({memo})")?;
+        }
+        Ok(())
     }
 }
 
@@ -294,5 +349,50 @@ mod tests {
             amount: Amount::new(-100),
         };
         assert!(format!("{err}").contains("positive"));
+    }
+
+    #[test]
+    fn with_memo_sets_memo() {
+        let entry =
+            Entry::with_memo(cash_account(), Money::usd(500), DebitOrCredit::Debit, "Net pay")
+                .unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(entry.memo(), Some("Net pay"));
+    }
+
+    #[test]
+    fn debit_with_memo() {
+        let entry = Entry::debit_with_memo(cash_account(), Money::usd(500), "Net pay")
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        assert!(entry.is_debit());
+        assert_eq!(entry.memo(), Some("Net pay"));
+    }
+
+    #[test]
+    fn credit_with_memo() {
+        let entry = Entry::credit_with_memo(revenue_account(), Money::usd(500), "Sales income")
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        assert!(entry.is_credit());
+        assert_eq!(entry.memo(), Some("Sales income"));
+    }
+
+    #[test]
+    fn memo_is_none_by_default() {
+        let entry = Entry::debit(cash_account(), Money::usd(500))
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(entry.memo(), None);
+    }
+
+    #[test]
+    fn display_with_memo() {
+        let entry = Entry::debit_with_memo(cash_account(), Money::usd(500), "Net pay")
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(format!("{entry}"), "DR Cash USD 5.00 (Net pay)");
+    }
+
+    #[test]
+    fn with_memo_zero_rejected() {
+        let result =
+            Entry::with_memo(cash_account(), Money::usd(0), DebitOrCredit::Debit, "memo");
+        assert!(matches!(result, Err(EntryError::ZeroAmount)));
     }
 }
