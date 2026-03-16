@@ -1,21 +1,11 @@
-[package]
-name = "beankeeper"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-description = "Idiomatic, ergonomic library of primitives for professional double-entry accounting"
-authors = ["Roland <roland@govcraft.ai>"]
-license = "MIT OR Apache-2.0"
-keywords = ["accounting", "double-entry", "bookkeeping", "finance", "ledger"]
-repository = "https://github.com/Govcraft/beankeeper"
-categories = ["finance"]
+[workspace]
+members = ["beankeeper", "beankeeper-cli"]
+resolver = "3"
 
-[dependencies]
-
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 pedantic = { level = "warn", priority = -1 }

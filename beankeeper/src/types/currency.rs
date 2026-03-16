@@ -65,6 +65,8 @@ impl Currency {
     pub const BHD: Self = Self::new(*b"BHD", 3);
     /// Kuwaiti Dinar (3 decimal places)
     pub const KWD: Self = Self::new(*b"KWD", 3);
+    /// Mexican Peso
+    pub const MXN: Self = Self::new(*b"MXN", 2);
 
     /// Creates a new `Currency` from a 3-byte ASCII code and minor unit count.
     ///
@@ -104,6 +106,7 @@ impl Currency {
             b"AUD" => Ok(Self::AUD),
             b"BHD" => Ok(Self::BHD),
             b"KWD" => Ok(Self::KWD),
+            b"MXN" => Ok(Self::MXN),
             _ => Err(CurrencyError::UnknownCode {
                 code: code.to_owned(),
             }),
@@ -233,6 +236,19 @@ mod tests {
     #[test]
     fn kwd_has_three_minor_units() {
         assert_eq!(Currency::KWD.minor_units(), 3);
+    }
+
+    #[test]
+    fn mxn_has_two_minor_units() {
+        assert_eq!(Currency::MXN.minor_units(), 2);
+        assert_eq!(Currency::MXN.code(), "MXN");
+    }
+
+    #[test]
+    fn mxn_from_code() {
+        let mxn = Currency::from_code("MXN");
+        assert!(mxn.is_ok());
+        assert_eq!(mxn.ok(), Some(Currency::MXN));
     }
 
     #[test]

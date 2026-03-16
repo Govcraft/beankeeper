@@ -1,0 +1,36 @@
+[package]
+name = "beankeeper-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Command-line interface for beankeeper double-entry accounting"
+authors = ["Roland <roland@govcraft.ai>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Govcraft/beankeeper"
+
+[[bin]]
+name = "bk"
+path = "src/main.rs"
+
+[dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.14"
+beankeeper = { path = "../beankeeper" }
+chrono = { version = "0.4.44", features = ["serde"] }
+clap = { version = "4.6.0", features = ["derive", "env"] }
+comfy-table = "7.2.2"
+csv = "1.4.0"
+rpassword = "7.4.0"
+rusqlite = { version = "0.39.0", features = ["bundled-sqlcipher"] }
+secrecy = { version = "0.10.3", features = ["serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+strsim = "0.11.1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+assert_cmd = "2.2.0"
+predicates = "3.1.4"
+tempfile = "3.27.0"

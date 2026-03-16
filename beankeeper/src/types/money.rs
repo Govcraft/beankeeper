@@ -101,6 +101,12 @@ impl Money {
         Self::from_minor(yen, Currency::JPY)
     }
 
+    /// Creates a MXN amount from centavos.
+    #[must_use]
+    pub const fn mxn(centavos: i128) -> Self {
+        Self::from_minor(centavos, Currency::MXN)
+    }
+
     /// Returns the [`Amount`] component.
     #[must_use]
     pub const fn amount(&self) -> Amount {
