@@ -248,7 +248,7 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(db.conn(), "acme", "Acme Corp")
+        create_company(db.conn(), "acme", "Acme Corp", None)
             .unwrap_or_else(|e| panic!("company setup failed: {e}"));
         db
     }
