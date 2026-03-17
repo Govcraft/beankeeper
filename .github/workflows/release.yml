@@ -122,3 +122,95 @@ jobs:
           files: |
             release/*.tar.gz
             release/checksums-sha256.txt
+
+  aur:
+    name: Update AUR package
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine version from tag
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "version=${REF_NAME#beankeeper-cli-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download checksums
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          curl -sL "https://github.com/Govcraft/beankeeper/releases/download/beankeeper-cli-v${VERSION}/checksums-sha256.txt" -o checksums.txt
+          SHA_X86=$(grep x86_64-unknown-linux-gnu checksums.txt | awk '{print $1}')
+          SHA_ARM=$(grep aarch64-unknown-linux-gnu checksums.txt | awk '{print $1}')
+          echo "SHA256_X86_64=${SHA_X86}" >> "$GITHUB_ENV"
+          echo "SHA256_AARCH64=${SHA_ARM}" >> "$GITHUB_ENV"
+
+      - name: Configure SSH for AUR
+        env:
+          AUR_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$AUR_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+          EOF
+
+      - name: Clone and update AUR package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git clone ssh://aur@aur.archlinux.org/bk-bin.git aur-pkg
+          cd aur-pkg
+
+          T=$(printf '\t')
+
+          cat > PKGBUILD <<PKGBUILD_EOF
+          # Maintainer: Roland Rodriguez <roland@govcraft.ai>
+          pkgname=bk-bin
+          pkgver=${VERSION}
+          pkgrel=1
+          pkgdesc="Double-entry accounting on the command line — SQLCipher-encrypted, multi-tenant"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/Govcraft/beankeeper"
+          license=('MIT' 'Apache-2.0')
+          provides=('bk')
+          conflicts=('bk')
+
+          source_x86_64=("\${url}/releases/download/beankeeper-cli-v\${pkgver}/bk-\${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+          source_aarch64=("\${url}/releases/download/beankeeper-cli-v\${pkgver}/bk-\${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
+          sha256sums_x86_64=('${SHA256_X86_64}')
+          sha256sums_aarch64=('${SHA256_AARCH64}')
+
+          package() {
+              install -Dm755 "bk-\${pkgver}-\${CARCH}-unknown-linux-gnu/bk" "\${pkgdir}/usr/bin/bk"
+          }
+          PKGBUILD_EOF
+
+          cat > .SRCINFO <<SRCINFO_EOF
+          pkgbase = bk-bin
+          ${T}pkgdesc = Double-entry accounting on the command line — SQLCipher-encrypted, multi-tenant
+          ${T}pkgver = ${VERSION}
+          ${T}pkgrel = 1
+          ${T}url = https://github.com/Govcraft/beankeeper
+          ${T}arch = x86_64
+          ${T}arch = aarch64
+          ${T}license = MIT
+          ${T}license = Apache-2.0
+          ${T}provides = bk
+          ${T}conflicts = bk
+          ${T}source_x86_64 = https://github.com/Govcraft/beankeeper/releases/download/beankeeper-cli-v${VERSION}/bk-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+          ${T}sha256sums_x86_64 = ${SHA256_X86_64}
+          ${T}source_aarch64 = https://github.com/Govcraft/beankeeper/releases/download/beankeeper-cli-v${VERSION}/bk-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+          ${T}sha256sums_aarch64 = ${SHA256_AARCH64}
+
+          pkgname = bk-bin
+          SRCINFO_EOF
+
+          git config user.name "Roland Rodriguez"
+          git config user.email "roland@govcraft.ai"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${VERSION}"
+          git push origin master
