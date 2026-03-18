@@ -1,5 +1,7 @@
 use core::fmt;
 
+use chrono::NaiveDate;
+
 use crate::types::{Account, Amount, Currency, DebitOrCredit, Entry, Money, MoneyError};
 
 /// Error type for transaction validation.
@@ -79,12 +81,19 @@ impl From<MoneyError> for TransactionError {
 /// [`JournalEntry::post`]: super::JournalEntry::post
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
+    pub(crate) date: NaiveDate,
     pub(crate) description: String,
     pub(crate) entries: Vec<Entry>,
     pub(crate) metadata: Option<String>,
 }
 
 impl Transaction {
+    /// Returns the transaction date.
+    #[must_use]
+    pub fn date(&self) -> NaiveDate {
+        self.date
+    }
+
     /// Returns the transaction description.
     #[must_use]
     pub fn description(&self) -> &str {
@@ -138,7 +147,11 @@ impl Transaction {
     ///
     /// Returns a [`MoneyError`] if arithmetic overflows.
     pub fn amount_for_account(&self, account: &Account) -> Result<Option<Money>, MoneyError> {
-        let relevant: Vec<_> = self.entries.iter().filter(|e| e.account() == account).collect();
+        let relevant: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| e.account() == account)
+            .collect();
 
         if relevant.is_empty() {
             return Ok(None);
@@ -149,9 +162,7 @@ impl Transaction {
 
         for entry in &relevant {
             let signed = entry.signed_amount();
-            total = total
-                .checked_add(signed)
-                .ok_or(MoneyError::Overflow)?;
+            total = total.checked_add(signed).ok_or(MoneyError::Overflow)?;
         }
 
         Ok(Some(Money::new(total, currency)))
@@ -160,7 +171,7 @@ impl Transaction {
 
 impl fmt::Display for Transaction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Transaction: {}", self.description)?;
+        writeln!(f, "Transaction [{}]: {}", self.date, self.description)?;
         for entry in &self.entries {
             writeln!(f, "  {entry}")?;
         }
@@ -173,7 +184,10 @@ pub(crate) fn sum_entries_by_direction(
     entries: &[Entry],
     direction: DebitOrCredit,
 ) -> Result<Money, MoneyError> {
-    let matching: Vec<_> = entries.iter().filter(|e| e.direction() == direction).collect();
+    let matching: Vec<_> = entries
+        .iter()
+        .filter(|e| e.direction() == direction)
+        .collect();
 
     if matching.is_empty() {
         // Return zero in whatever currency the first entry uses
@@ -198,6 +212,10 @@ mod tests {
     use super::*;
     use crate::types::{AccountCode, AccountType};
 
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
     fn make_account(code: &str, name: &str, acct_type: AccountType) -> Account {
         Account::new(
             AccountCode::new(code).unwrap_or_else(|e| panic!("test setup: {e}")),
@@ -211,6 +229,7 @@ mod tests {
         let revenue = make_account("4000", "Revenue", AccountType::Revenue);
 
         Transaction {
+            date: date(2024, 1, 15),
             description: "Test sale".to_owned(),
             entries: vec![
                 Entry::debit(cash, Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}")),

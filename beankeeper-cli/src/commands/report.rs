@@ -396,6 +396,7 @@ fn build_period_title(
 }
 
 /// Whether the report checks for balanced debits/credits or shows net income.
+#[derive(Clone, Copy)]
 enum ReportKind {
     /// Balance sheet / trial balance: debits must equal credits.
     BalanceCheck,
@@ -505,7 +506,7 @@ fn render_report_table(
 
     append_totals_and_status(
         &mut lines, &table, grand_debits, grand_credits,
-        currency_minor_units, bold, green, red_bold, use_color, &kind,
+        currency_minor_units, bold, green, red_bold, use_color, kind,
     );
 
     lines.join("\n")
@@ -557,7 +558,7 @@ fn append_totals_and_status(
     green: anstyle::Style,
     red_bold: anstyle::Style,
     use_color: bool,
-    kind: &ReportKind,
+    kind: ReportKind,
 ) {
     lines.push(table.to_string());
     lines.push(String::new());

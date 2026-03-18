@@ -1,6 +1,8 @@
+use chrono::NaiveDate;
+
 use crate::types::{Account, DebitOrCredit, Entry, EntryError, Money};
 
-use super::transaction::{sum_entries_by_direction, Transaction, TransactionError};
+use super::transaction::{Transaction, TransactionError, sum_entries_by_direction};
 
 /// A builder for constructing balanced transactions.
 ///
@@ -24,7 +26,10 @@ use super::transaction::{sum_entries_by_direction, Transaction, TransactionError
 ///     AccountType::Revenue,
 /// );
 ///
-/// let txn = JournalEntry::new("Sale of goods")
+/// let txn = JournalEntry::new(
+///         NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+///         "Sale of goods",
+///     )
 ///     .debit(&cash, Money::usd(500_00)).unwrap()
 ///     .credit(&revenue, Money::usd(500_00)).unwrap()
 ///     .post()
@@ -33,16 +38,18 @@ use super::transaction::{sum_entries_by_direction, Transaction, TransactionError
 /// assert_eq!(txn.description(), "Sale of goods");
 /// ```
 pub struct JournalEntry {
+    date: NaiveDate,
     description: String,
     entries: Vec<Entry>,
     metadata: Option<String>,
 }
 
 impl JournalEntry {
-    /// Creates a new journal entry with the given description.
+    /// Creates a new journal entry with the given date and description.
     #[must_use]
-    pub fn new(description: impl Into<String>) -> Self {
+    pub fn new(date: NaiveDate, description: impl Into<String>) -> Self {
         Self {
+            date,
             description: description.into(),
             entries: Vec::new(),
             metadata: None,
@@ -129,7 +136,10 @@ impl JournalEntry {
     ///
     /// Returns an error on arithmetic overflow or currency mismatch.
     pub fn total_debits(&self) -> Result<Money, TransactionError> {
-        Ok(sum_entries_by_direction(&self.entries, DebitOrCredit::Debit)?)
+        Ok(sum_entries_by_direction(
+            &self.entries,
+            DebitOrCredit::Debit,
+        )?)
     }
 
     /// Computes the total of all credit entries.
@@ -203,6 +213,7 @@ impl JournalEntry {
         }
 
         Ok(Transaction {
+            date: self.date,
             description: self.description,
             entries: self.entries,
             metadata: self.metadata,
@@ -214,6 +225,10 @@ impl JournalEntry {
 mod tests {
     use super::*;
     use crate::types::{AccountCode, AccountType, Amount};
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
 
     fn make_account(code: &str, name: &str, acct_type: AccountType) -> Account {
         Account::new(
@@ -237,7 +252,7 @@ mod tests {
 
     #[test]
     fn simple_two_entry_transaction_posts() {
-        let txn = JournalEntry::new("Sale")
+        let txn = JournalEntry::new(date(2024, 1, 15), "Sale")
             .debit(&cash(), Money::usd(500))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(500))
@@ -251,7 +266,7 @@ mod tests {
     fn multi_entry_transaction_posts() {
         let payable = make_account("2000", "Tax Payable", AccountType::Liability);
 
-        let txn = JournalEntry::new("Sale with tax")
+        let txn = JournalEntry::new(date(2024, 1, 15), "Sale with tax")
             .debit(&cash(), Money::usd(550))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(500))
@@ -265,7 +280,7 @@ mod tests {
 
     #[test]
     fn unbalanced_transaction_rejected() {
-        let result = JournalEntry::new("Bad")
+        let result = JournalEntry::new(date(2024, 1, 15), "Bad")
             .debit(&cash(), Money::usd(500))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(300))
@@ -277,13 +292,13 @@ mod tests {
 
     #[test]
     fn no_entries_rejected() {
-        let result = JournalEntry::new("Empty").post();
+        let result = JournalEntry::new(date(2024, 1, 15), "Empty").post();
         assert!(matches!(result, Err(TransactionError::NoEntries)));
     }
 
     #[test]
     fn single_entry_rejected() {
-        let result = JournalEntry::new("Single")
+        let result = JournalEntry::new(date(2024, 1, 15), "Single")
             .debit(&cash(), Money::usd(100))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .post();
@@ -293,7 +308,7 @@ mod tests {
 
     #[test]
     fn mixed_currencies_rejected() {
-        let result = JournalEntry::new("Mixed")
+        let result = JournalEntry::new(date(2024, 1, 15), "Mixed")
             .debit(&cash(), Money::usd(100))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::eur(100))
@@ -308,20 +323,24 @@ mod tests {
 
     #[test]
     fn total_debits_equals_total_credits_after_post() {
-        let journal = JournalEntry::new("Test")
+        let journal = JournalEntry::new(date(2024, 1, 15), "Test")
             .debit(&cash(), Money::usd(1000))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(1000))
             .unwrap_or_else(|e| panic!("test: {e}"));
 
-        let debits = journal.total_debits().unwrap_or_else(|e| panic!("test: {e}"));
-        let credits = journal.total_credits().unwrap_or_else(|e| panic!("test: {e}"));
+        let debits = journal
+            .total_debits()
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        let credits = journal
+            .total_credits()
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(debits, credits);
     }
 
     #[test]
     fn is_balanced_returns_true_for_balanced() {
-        let journal = JournalEntry::new("Test")
+        let journal = JournalEntry::new(date(2024, 1, 15), "Test")
             .debit(&cash(), Money::usd(100))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(100))
@@ -332,7 +351,7 @@ mod tests {
 
     #[test]
     fn is_balanced_returns_false_for_unbalanced() {
-        let journal = JournalEntry::new("Test")
+        let journal = JournalEntry::new(date(2024, 1, 15), "Test")
             .debit(&cash(), Money::usd(100))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(50))
@@ -343,7 +362,7 @@ mod tests {
 
     #[test]
     fn with_metadata() {
-        let txn = JournalEntry::new("Sale")
+        let txn = JournalEntry::new(date(2024, 1, 15), "Sale")
             .with_metadata("INV-001")
             .debit(&cash(), Money::usd(100))
             .unwrap_or_else(|e| panic!("test: {e}"))
@@ -357,7 +376,7 @@ mod tests {
 
     #[test]
     fn entries_accessor() {
-        let journal = JournalEntry::new("Test")
+        let journal = JournalEntry::new(date(2024, 1, 15), "Test")
             .debit(&cash(), Money::usd(100))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(100))
@@ -369,13 +388,13 @@ mod tests {
     #[test]
     fn entry_method_adds_prebuilt() {
         let entry = Entry::debit(cash(), Money::usd(100)).unwrap_or_else(|e| panic!("test: {e}"));
-        let journal = JournalEntry::new("Test").entry(entry);
+        let journal = JournalEntry::new(date(2024, 1, 15), "Test").entry(entry);
         assert_eq!(journal.entries().len(), 1);
     }
 
     #[test]
     fn posted_transaction_has_correct_debits_and_credits() {
-        let txn = JournalEntry::new("Rent payment")
+        let txn = JournalEntry::new(date(2024, 1, 15), "Rent payment")
             .debit(&expense(), Money::usd(1200))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&cash(), Money::usd(1200))
@@ -393,7 +412,7 @@ mod tests {
 
     #[test]
     fn unbalanced_error_contains_amounts() {
-        let result = JournalEntry::new("Bad")
+        let result = JournalEntry::new(date(2024, 1, 15), "Bad")
             .debit(&cash(), Money::usd(500))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(300))
@@ -410,5 +429,18 @@ mod tests {
             }
             other => panic!("expected Unbalanced, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn posted_transaction_preserves_date() {
+        let txn = JournalEntry::new(date(2024, 3, 15), "Sale")
+            .debit(&cash(), Money::usd(100))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .credit(&revenue(), Money::usd(100))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .post()
+            .unwrap_or_else(|e| panic!("test: {e}"));
+
+        assert_eq!(txn.date(), date(2024, 3, 15));
     }
 }

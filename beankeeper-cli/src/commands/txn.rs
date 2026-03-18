@@ -186,8 +186,16 @@ fn run_post(
         parsed_credits.push(parse_entry_arg(arg, currency)?);
     }
 
-    // 3. Look up accounts and build library Account objects for validation
-    let mut journal = JournalEntry::new(description);
+    // 3. Determine the transaction date
+    let effective_date = match date {
+        Some(d) => d.to_string(),
+        None => chrono::Local::now().format("%Y-%m-%d").to_string(),
+    };
+    let txn_date = chrono::NaiveDate::parse_from_str(&effective_date, "%Y-%m-%d")
+        .map_err(|e| CliError::Validation(format!("invalid date '{effective_date}': {e}")))?;
+
+    // 4. Look up accounts and build library Account objects for validation
+    let mut journal = JournalEntry::new(txn_date, description);
     if let Some(meta) = metadata {
         journal = journal.with_metadata(meta);
     }
@@ -214,14 +222,8 @@ fn run_post(
         }
     }
 
-    // 4. Validate via post() - enforces balance invariant
+    // 5. Validate via post() - enforces balance invariant
     let _transaction = journal.post()?;
-
-    // 5. Determine the date
-    let effective_date = match date {
-        Some(d) => d.to_string(),
-        None => chrono::Local::now().format("%Y-%m-%d").to_string(),
-    };
 
     // 6. Build entries for DB persistence
     let mut db_entries: Vec<(String, String, i64, Option<String>)> = Vec::new();

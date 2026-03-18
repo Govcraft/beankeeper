@@ -25,7 +25,10 @@
 //! );
 //!
 //! // Build a balanced transaction
-//! let txn = JournalEntry::new("Sale of goods")
+//! let txn = JournalEntry::new(
+//!         NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+//!         "Sale of goods",
+//!     )
 //!     .debit(&cash, Money::usd(500_00))
 //!     .unwrap()
 //!     .credit(&revenue, Money::usd(500_00))
@@ -50,6 +53,8 @@ pub mod types;
 
 /// Convenience re-exports for common usage.
 pub mod prelude {
+    pub use chrono::NaiveDate;
+
     pub use crate::core::{JournalEntry, Ledger, Transaction, TransactionError};
     pub use crate::error::BeanError;
     pub use crate::reporting::{AccountBalance, TrialBalance};

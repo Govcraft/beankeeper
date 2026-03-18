@@ -76,10 +76,12 @@ mod tests {
     use super::*;
 
     fn make_code(s: &str) -> AccountCode {
-        AccountCode::new(s).unwrap_or_else(|_| AccountCode::new("0000").unwrap_or_else(|_| {
-            // This path should never be reached in tests
-            panic!("test setup failed: could not create account code");
-        }))
+        AccountCode::new(s).unwrap_or_else(|_| {
+            AccountCode::new("0000").unwrap_or_else(|_| {
+                // This path should never be reached in tests
+                panic!("test setup failed: could not create account code");
+            })
+        })
     }
 
     #[test]

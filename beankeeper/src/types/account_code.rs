@@ -117,7 +117,11 @@ impl AccountCode {
         }
 
         // The character immediately after the parent code must be a separator
-        other.0.as_bytes().get(self.0.len()).is_some_and(|&b| b == b'.' || b == b'-')
+        other
+            .0
+            .as_bytes()
+            .get(self.0.len())
+            .is_some_and(|&b| b == b'.' || b == b'-')
     }
 }
 
@@ -149,7 +153,10 @@ mod tests {
     fn valid_numeric_code() {
         let code = AccountCode::new("1000");
         assert!(code.is_ok());
-        assert_eq!(code.unwrap_or_else(|_| AccountCode("".into())).as_str(), "1000");
+        assert_eq!(
+            code.unwrap_or_else(|_| AccountCode("".into())).as_str(),
+            "1000"
+        );
     }
 
     #[test]
@@ -177,7 +184,10 @@ mod tests {
         let result = AccountCode::new("100A");
         assert!(matches!(
             result,
-            Err(AccountCodeError::InvalidCharacter { char: 'A', position: 3 })
+            Err(AccountCodeError::InvalidCharacter {
+                char: 'A',
+                position: 3
+            })
         ));
     }
 
@@ -248,7 +258,10 @@ mod tests {
 
     #[test]
     fn error_display_empty() {
-        assert_eq!(format!("{}", AccountCodeError::Empty), "account code cannot be empty");
+        assert_eq!(
+            format!("{}", AccountCodeError::Empty),
+            "account code cannot be empty"
+        );
     }
 
     #[test]

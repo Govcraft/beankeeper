@@ -144,7 +144,10 @@ mod tests {
 
     #[test]
     fn liability_normal_balance_is_credit() {
-        assert_eq!(AccountType::Liability.normal_balance(), DebitOrCredit::Credit);
+        assert_eq!(
+            AccountType::Liability.normal_balance(),
+            DebitOrCredit::Credit
+        );
     }
 
     #[test]
@@ -177,7 +180,10 @@ mod tests {
     #[test]
     fn increases_with_matches_normal_balance() {
         assert_eq!(AccountType::Asset.increases_with(), DebitOrCredit::Debit);
-        assert_eq!(AccountType::Liability.increases_with(), DebitOrCredit::Credit);
+        assert_eq!(
+            AccountType::Liability.increases_with(),
+            DebitOrCredit::Credit
+        );
     }
 
     #[test]
@@ -216,8 +222,14 @@ mod tests {
 
     #[test]
     fn from_str_lowercase() {
-        assert_eq!("asset".parse::<AccountType>().ok(), Some(AccountType::Asset));
-        assert_eq!("expense".parse::<AccountType>().ok(), Some(AccountType::Expense));
+        assert_eq!(
+            "asset".parse::<AccountType>().ok(),
+            Some(AccountType::Asset)
+        );
+        assert_eq!(
+            "expense".parse::<AccountType>().ok(),
+            Some(AccountType::Expense)
+        );
     }
 
     #[test]

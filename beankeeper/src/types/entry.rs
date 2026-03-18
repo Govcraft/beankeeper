@@ -65,7 +65,11 @@ impl Entry {
     ///
     /// Returns [`EntryError::ZeroAmount`] if the amount is zero, or
     /// [`EntryError::NegativeAmount`] if the amount is negative.
-    pub fn new(account: Account, amount: Money, direction: DebitOrCredit) -> Result<Self, EntryError> {
+    pub fn new(
+        account: Account,
+        amount: Money,
+        direction: DebitOrCredit,
+    ) -> Result<Self, EntryError> {
         if amount.is_zero() {
             return Err(EntryError::ZeroAmount);
         }
@@ -197,7 +201,11 @@ impl Entry {
 
 impl fmt::Display for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let dir = if self.direction.is_debit() { "DR" } else { "CR" };
+        let dir = if self.direction.is_debit() {
+            "DR"
+        } else {
+            "CR"
+        };
         write!(f, "{dir} {} {}", self.account.name(), self.amount)?;
         if let Some(ref memo) = self.memo {
             write!(f, " ({memo})")?;
@@ -255,8 +263,8 @@ mod tests {
 
     #[test]
     fn is_debit_flag() {
-        let entry = Entry::debit(cash_account(), Money::usd(100))
-            .unwrap_or_else(|e| panic!("test: {e}"));
+        let entry =
+            Entry::debit(cash_account(), Money::usd(100)).unwrap_or_else(|e| panic!("test: {e}"));
         assert!(entry.is_debit());
         assert!(!entry.is_credit());
     }
@@ -272,16 +280,16 @@ mod tests {
     #[test]
     fn signed_amount_debit_on_debit_normal_account() {
         // Debit on an asset (debit-normal) -> positive
-        let entry = Entry::debit(cash_account(), Money::usd(500))
-            .unwrap_or_else(|e| panic!("test: {e}"));
+        let entry =
+            Entry::debit(cash_account(), Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(entry.signed_amount(), Amount::new(500));
     }
 
     #[test]
     fn signed_amount_credit_on_debit_normal_account() {
         // Credit on an asset (debit-normal) -> negative
-        let entry = Entry::credit(cash_account(), Money::usd(500))
-            .unwrap_or_else(|e| panic!("test: {e}"));
+        let entry =
+            Entry::credit(cash_account(), Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(entry.signed_amount(), Amount::new(-500));
     }
 
@@ -303,8 +311,8 @@ mod tests {
 
     #[test]
     fn accessors() {
-        let entry = Entry::debit(cash_account(), Money::usd(100))
-            .unwrap_or_else(|e| panic!("test: {e}"));
+        let entry =
+            Entry::debit(cash_account(), Money::usd(100)).unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(entry.account(), &cash_account());
         assert_eq!(entry.amount(), Money::usd(100));
         assert_eq!(entry.direction(), DebitOrCredit::Debit);
@@ -312,8 +320,8 @@ mod tests {
 
     #[test]
     fn display_debit() {
-        let entry = Entry::debit(cash_account(), Money::usd(500))
-            .unwrap_or_else(|e| panic!("test: {e}"));
+        let entry =
+            Entry::debit(cash_account(), Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(format!("{entry}"), "DR Cash USD 5.00");
     }
 
@@ -353,9 +361,13 @@ mod tests {
 
     #[test]
     fn with_memo_sets_memo() {
-        let entry =
-            Entry::with_memo(cash_account(), Money::usd(500), DebitOrCredit::Debit, "Net pay")
-                .unwrap_or_else(|e| panic!("test: {e}"));
+        let entry = Entry::with_memo(
+            cash_account(),
+            Money::usd(500),
+            DebitOrCredit::Debit,
+            "Net pay",
+        )
+        .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(entry.memo(), Some("Net pay"));
     }
 
@@ -377,8 +389,8 @@ mod tests {
 
     #[test]
     fn memo_is_none_by_default() {
-        let entry = Entry::debit(cash_account(), Money::usd(500))
-            .unwrap_or_else(|e| panic!("test: {e}"));
+        let entry =
+            Entry::debit(cash_account(), Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(entry.memo(), None);
     }
 
@@ -391,8 +403,7 @@ mod tests {
 
     #[test]
     fn with_memo_zero_rejected() {
-        let result =
-            Entry::with_memo(cash_account(), Money::usd(0), DebitOrCredit::Debit, "memo");
+        let result = Entry::with_memo(cash_account(), Money::usd(0), DebitOrCredit::Debit, "memo");
         assert!(matches!(result, Err(EntryError::ZeroAmount)));
     }
 }

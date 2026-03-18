@@ -11,6 +11,7 @@ repository = "https://github.com/Govcraft/beankeeper"
 categories = ["finance"]
 
 [dependencies]
+chrono = { version = "0.4.44", default-features = false }
 
 [lints]
 workspace = true

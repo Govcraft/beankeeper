@@ -1,3 +1,5 @@
+use chrono::NaiveDate;
+
 use crate::reporting::{AccountBalance, TrialBalance};
 use crate::types::{Account, Amount, DebitOrCredit, Entry, MoneyError};
 
@@ -27,7 +29,10 @@ use super::transaction::Transaction;
 ///     AccountType::Revenue,
 /// );
 ///
-/// let txn = JournalEntry::new("Sale")
+/// let txn = JournalEntry::new(
+///         NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+///         "Sale",
+///     )
 ///     .debit(&cash, Money::usd(500_00))
 ///     .unwrap()
 ///     .credit(&revenue, Money::usd(500_00))
@@ -160,7 +165,11 @@ impl Ledger {
         for account in &accounts {
             let debit_total = self.debit_total_for(account)?;
             let credit_total = self.credit_total_for(account)?;
-            balances.push(AccountBalance::new(account.clone(), debit_total, credit_total));
+            balances.push(AccountBalance::new(
+                account.clone(),
+                debit_total,
+                credit_total,
+            ));
         }
 
         Ok(TrialBalance::new(balances))
@@ -178,6 +187,89 @@ impl Ledger {
         let tb = self.trial_balance()?;
         Ok(tb.is_balanced())
     }
+
+    /// Returns transactions on or before the given date.
+    #[must_use]
+    pub fn transactions_as_of(&self, date: NaiveDate) -> Vec<&Transaction> {
+        self.transactions
+            .iter()
+            .filter(|txn| txn.date() <= date)
+            .collect()
+    }
+
+    /// Computes the net balance for an account using only transactions on or before the given date.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
+    pub fn balance_for_as_of(
+        &self,
+        account: &Account,
+        date: NaiveDate,
+    ) -> Result<Amount, MoneyError> {
+        let mut balance = Amount::ZERO;
+
+        for txn in self.transactions_as_of(date) {
+            for entry in txn.entries() {
+                if entry.account() == account {
+                    balance = balance
+                        .checked_add(entry.signed_amount())
+                        .ok_or(MoneyError::Overflow)?;
+                }
+            }
+        }
+
+        Ok(balance)
+    }
+
+    /// Generates a trial balance using only transactions on or before the given date.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
+    pub fn trial_balance_as_of(&self, date: NaiveDate) -> Result<TrialBalance, MoneyError> {
+        let filtered: Vec<_> = self.transactions_as_of(date);
+
+        let mut accounts: Vec<Account> = Vec::new();
+        for txn in &filtered {
+            for entry in txn.entries() {
+                if !accounts.contains(entry.account()) {
+                    accounts.push(entry.account().clone());
+                }
+            }
+        }
+
+        accounts.sort_by(|a, b| a.code().cmp(b.code()));
+
+        let mut balances = Vec::with_capacity(accounts.len());
+        for account in &accounts {
+            let mut debit_total = Amount::ZERO;
+            let mut credit_total = Amount::ZERO;
+
+            for txn in &filtered {
+                for entry in txn.entries() {
+                    if entry.account() == account {
+                        match entry.direction() {
+                            DebitOrCredit::Debit => {
+                                debit_total = debit_total
+                                    .checked_add(entry.amount().amount())
+                                    .ok_or(MoneyError::Overflow)?;
+                            }
+                            DebitOrCredit::Credit => {
+                                credit_total = credit_total
+                                    .checked_add(entry.amount().amount())
+                                    .ok_or(MoneyError::Overflow)?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            balances.push(AccountBalance::new(account.clone(), debit_total, credit_total));
+        }
+
+        Ok(TrialBalance::new(balances))
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +277,10 @@ mod tests {
     use super::*;
     use crate::core::JournalEntry;
     use crate::types::{AccountCode, AccountType, Money};
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
 
     fn make_account(code: &str, name: &str, acct_type: AccountType) -> Account {
         Account::new(
@@ -207,7 +303,11 @@ mod tests {
     }
 
     fn post_sale(ledger: &mut Ledger, amount: i128) {
-        let txn = JournalEntry::new("Sale")
+        post_sale_on(ledger, amount, date(2024, 1, 15));
+    }
+
+    fn post_sale_on(ledger: &mut Ledger, amount: i128, on: NaiveDate) {
+        let txn = JournalEntry::new(on, "Sale")
             .debit(&cash(), Money::usd(amount))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&revenue(), Money::usd(amount))
@@ -220,7 +320,9 @@ mod tests {
     #[test]
     fn empty_ledger_has_zero_balance() {
         let ledger = Ledger::new();
-        let balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        let balance = ledger
+            .balance_for(&cash())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(balance, Amount::ZERO);
     }
 
@@ -238,7 +340,9 @@ mod tests {
         post_sale(&mut ledger, 500);
 
         // Cash is asset (debit normal) - debit increases it
-        let balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        let balance = ledger
+            .balance_for(&cash())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(balance, Amount::new(500));
     }
 
@@ -248,7 +352,9 @@ mod tests {
         post_sale(&mut ledger, 500);
 
         // Revenue is credit normal - credit increases it
-        let balance = ledger.balance_for(&revenue()).unwrap_or_else(|e| panic!("test: {e}"));
+        let balance = ledger
+            .balance_for(&revenue())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(balance, Amount::new(500));
     }
 
@@ -258,7 +364,9 @@ mod tests {
         post_sale(&mut ledger, 500);
         post_sale(&mut ledger, 300);
 
-        let tb = ledger.trial_balance().unwrap_or_else(|e| panic!("test: {e}"));
+        let tb = ledger
+            .trial_balance()
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert!(tb.is_balanced());
     }
 
@@ -268,7 +376,9 @@ mod tests {
         post_sale(&mut ledger, 500);
         post_sale(&mut ledger, 300);
 
-        let balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        let balance = ledger
+            .balance_for(&cash())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(balance, Amount::new(800));
     }
 
@@ -289,7 +399,9 @@ mod tests {
         post_sale(&mut ledger, 500);
         post_sale(&mut ledger, 300);
 
-        let total = ledger.debit_total_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        let total = ledger
+            .debit_total_for(&cash())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(total, Amount::new(800));
     }
 
@@ -298,7 +410,9 @@ mod tests {
         let mut ledger = Ledger::new();
         post_sale(&mut ledger, 500);
 
-        let total = ledger.credit_total_for(&revenue()).unwrap_or_else(|e| panic!("test: {e}"));
+        let total = ledger
+            .credit_total_for(&revenue())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(total, Amount::new(500));
     }
 
@@ -323,7 +437,7 @@ mod tests {
         post_sale(&mut ledger, 1000);
 
         // Pay rent
-        let txn = JournalEntry::new("Rent")
+        let txn = JournalEntry::new(date(2024, 1, 20), "Rent")
             .debit(&expense(), Money::usd(500))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .credit(&cash(), Money::usd(500))
@@ -333,15 +447,21 @@ mod tests {
         ledger.post(txn);
 
         // Cash should be 1000 - 500 = 500
-        let cash_balance = ledger.balance_for(&cash()).unwrap_or_else(|e| panic!("test: {e}"));
+        let cash_balance = ledger
+            .balance_for(&cash())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(cash_balance, Amount::new(500));
 
         // Revenue should be 1000
-        let rev_balance = ledger.balance_for(&revenue()).unwrap_or_else(|e| panic!("test: {e}"));
+        let rev_balance = ledger
+            .balance_for(&revenue())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(rev_balance, Amount::new(1000));
 
         // Expense should be 500
-        let exp_balance = ledger.balance_for(&expense()).unwrap_or_else(|e| panic!("test: {e}"));
+        let exp_balance = ledger
+            .balance_for(&expense())
+            .unwrap_or_else(|e| panic!("test: {e}"));
         assert_eq!(exp_balance, Amount::new(500));
 
         // Ledger should be balanced
@@ -353,5 +473,47 @@ mod tests {
         let mut ledger = Ledger::new();
         post_sale(&mut ledger, 100);
         assert_eq!(ledger.transactions().len(), 1);
+    }
+
+    #[test]
+    fn transactions_as_of_filters_by_date() {
+        let mut ledger = Ledger::new();
+        post_sale_on(&mut ledger, 500, date(2024, 1, 10));
+        post_sale_on(&mut ledger, 300, date(2024, 1, 20));
+        post_sale_on(&mut ledger, 200, date(2024, 2, 1));
+
+        assert_eq!(ledger.transactions_as_of(date(2024, 1, 15)).len(), 1);
+        assert_eq!(ledger.transactions_as_of(date(2024, 1, 20)).len(), 2);
+        assert_eq!(ledger.transactions_as_of(date(2024, 2, 1)).len(), 3);
+    }
+
+    #[test]
+    fn balance_for_as_of_filters_by_date() {
+        let mut ledger = Ledger::new();
+        post_sale_on(&mut ledger, 500, date(2024, 1, 10));
+        post_sale_on(&mut ledger, 300, date(2024, 1, 20));
+
+        let balance = ledger
+            .balance_for_as_of(&cash(), date(2024, 1, 15))
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(balance, Amount::new(500));
+
+        let balance = ledger
+            .balance_for_as_of(&cash(), date(2024, 1, 20))
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(balance, Amount::new(800));
+    }
+
+    #[test]
+    fn trial_balance_as_of_filters_by_date() {
+        let mut ledger = Ledger::new();
+        post_sale_on(&mut ledger, 500, date(2024, 1, 10));
+        post_sale_on(&mut ledger, 300, date(2024, 1, 20));
+
+        let tb = ledger
+            .trial_balance_as_of(date(2024, 1, 15))
+            .unwrap_or_else(|e| panic!("test: {e}"));
+        assert!(tb.is_balanced());
+        assert_eq!(tb.balances().len(), 2);
     }
 }

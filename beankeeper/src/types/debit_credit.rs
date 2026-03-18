@@ -14,7 +14,10 @@ impl fmt::Display for DebitCreditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidValue { value } => {
-                write!(f, "invalid debit/credit value: {value:?} (expected \"Debit\" or \"Credit\")")
+                write!(
+                    f,
+                    "invalid debit/credit value: {value:?} (expected \"Debit\" or \"Credit\")"
+                )
             }
         }
     }
@@ -128,12 +131,30 @@ mod tests {
 
     #[test]
     fn from_str_variants() {
-        assert_eq!("Debit".parse::<DebitOrCredit>().ok(), Some(DebitOrCredit::Debit));
-        assert_eq!("debit".parse::<DebitOrCredit>().ok(), Some(DebitOrCredit::Debit));
-        assert_eq!("DR".parse::<DebitOrCredit>().ok(), Some(DebitOrCredit::Debit));
-        assert_eq!("Credit".parse::<DebitOrCredit>().ok(), Some(DebitOrCredit::Credit));
-        assert_eq!("credit".parse::<DebitOrCredit>().ok(), Some(DebitOrCredit::Credit));
-        assert_eq!("CR".parse::<DebitOrCredit>().ok(), Some(DebitOrCredit::Credit));
+        assert_eq!(
+            "Debit".parse::<DebitOrCredit>().ok(),
+            Some(DebitOrCredit::Debit)
+        );
+        assert_eq!(
+            "debit".parse::<DebitOrCredit>().ok(),
+            Some(DebitOrCredit::Debit)
+        );
+        assert_eq!(
+            "DR".parse::<DebitOrCredit>().ok(),
+            Some(DebitOrCredit::Debit)
+        );
+        assert_eq!(
+            "Credit".parse::<DebitOrCredit>().ok(),
+            Some(DebitOrCredit::Credit)
+        );
+        assert_eq!(
+            "credit".parse::<DebitOrCredit>().ok(),
+            Some(DebitOrCredit::Credit)
+        );
+        assert_eq!(
+            "CR".parse::<DebitOrCredit>().ok(),
+            Some(DebitOrCredit::Credit)
+        );
     }
 
     #[test]

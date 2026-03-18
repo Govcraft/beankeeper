@@ -15,7 +15,10 @@ impl fmt::Display for CurrencyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCode { value } => {
-                write!(f, "invalid currency code: {value:?} (expected 3 uppercase ASCII letters)")
+                write!(
+                    f,
+                    "invalid currency code: {value:?} (expected 3 uppercase ASCII letters)"
+                )
             }
             Self::UnknownCode { code } => {
                 write!(f, "unknown currency code: {code}")
