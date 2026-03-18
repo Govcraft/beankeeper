@@ -3,6 +3,7 @@ use core::fmt;
 use super::account::Account;
 use super::amount::Amount;
 use super::debit_credit::DebitOrCredit;
+use super::document::SourceDocument;
 use super::money::Money;
 
 /// Error type for [`Entry`] construction.
@@ -56,6 +57,7 @@ pub struct Entry {
     amount: Money,
     direction: DebitOrCredit,
     memo: Option<String>,
+    attachments: Vec<SourceDocument>,
 }
 
 impl Entry {
@@ -84,6 +86,7 @@ impl Entry {
             amount,
             direction,
             memo: None,
+            attachments: Vec::new(),
         })
     }
 
@@ -182,6 +185,19 @@ impl Entry {
     #[must_use]
     pub fn memo(&self) -> Option<&str> {
         self.memo.as_deref()
+    }
+
+    /// Returns source documents attached to this entry.
+    #[must_use]
+    pub fn attachments(&self) -> &[SourceDocument] {
+        &self.attachments
+    }
+
+    /// Attaches a source document to this entry, returning the updated entry.
+    #[must_use]
+    pub fn attach(mut self, document: SourceDocument) -> Self {
+        self.attachments.push(document);
+        self
     }
 
     /// Returns the amount with a sign relative to the account's normal balance.

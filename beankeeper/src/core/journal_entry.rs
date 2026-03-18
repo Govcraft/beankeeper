@@ -1,6 +1,6 @@
 use chrono::NaiveDate;
 
-use crate::types::{Account, DebitOrCredit, Entry, EntryError, Money};
+use crate::types::{Account, DebitOrCredit, Entry, EntryError, Money, SourceDocument};
 
 use super::transaction::{Transaction, TransactionError, sum_entries_by_direction};
 
@@ -42,6 +42,7 @@ pub struct JournalEntry {
     description: String,
     entries: Vec<Entry>,
     metadata: Option<String>,
+    attachments: Vec<SourceDocument>,
 }
 
 impl JournalEntry {
@@ -53,6 +54,7 @@ impl JournalEntry {
             description: description.into(),
             entries: Vec::new(),
             metadata: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -60,6 +62,13 @@ impl JournalEntry {
     #[must_use]
     pub fn with_metadata(mut self, metadata: impl Into<String>) -> Self {
         self.metadata = Some(metadata.into());
+        self
+    }
+
+    /// Attaches a source document to this journal entry.
+    #[must_use]
+    pub fn attach(mut self, document: SourceDocument) -> Self {
+        self.attachments.push(document);
         self
     }
 
@@ -225,6 +234,7 @@ impl JournalEntry {
             description: self.description,
             entries: self.entries,
             metadata: self.metadata,
+            attachments: self.attachments,
         })
     }
 }

@@ -2,7 +2,9 @@ use core::fmt;
 
 use chrono::NaiveDate;
 
-use crate::types::{Account, Amount, Currency, DebitOrCredit, Entry, Money, MoneyError};
+use crate::types::{
+    Account, Amount, Currency, DebitOrCredit, Entry, Money, MoneyError, SourceDocument,
+};
 
 /// Error type for transaction validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +87,7 @@ pub struct Transaction {
     pub(crate) description: String,
     pub(crate) entries: Vec<Entry>,
     pub(crate) metadata: Option<String>,
+    pub(crate) attachments: Vec<SourceDocument>,
 }
 
 impl Transaction {
@@ -110,6 +113,12 @@ impl Transaction {
     #[must_use]
     pub fn metadata(&self) -> Option<&str> {
         self.metadata.as_deref()
+    }
+
+    /// Returns source documents attached to this transaction.
+    #[must_use]
+    pub fn attachments(&self) -> &[SourceDocument] {
+        &self.attachments
     }
 
     /// Returns an iterator over debit entries.
@@ -232,6 +241,7 @@ mod tests {
                 Entry::credit(revenue, Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}")),
             ],
             metadata: Some("ref-001".to_owned()),
+            attachments: Vec::new(),
         }
     }
 

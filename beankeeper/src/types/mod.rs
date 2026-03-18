@@ -9,6 +9,7 @@ pub mod account_type;
 pub mod amount;
 pub mod currency;
 pub mod debit_credit;
+pub mod document;
 pub mod entry;
 pub mod money;
 
@@ -18,5 +19,6 @@ pub use account_type::{AccountType, AccountTypeError};
 pub use amount::{Amount, AmountError};
 pub use currency::{Currency, CurrencyError};
 pub use debit_credit::{DebitCreditError, DebitOrCredit};
+pub use document::{DocumentType, DocumentTypeError, SourceDocument, SourceDocumentError};
 pub use entry::{Entry, EntryError};
 pub use money::{Money, MoneyError};

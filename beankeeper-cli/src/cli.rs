@@ -288,6 +288,23 @@ pub enum TxnCommand {
         dry_run: bool,
     },
 
+    /// Attach a document to a transaction.
+    Attach {
+        /// Transaction ID.
+        transaction_id: i64,
+
+        /// Path to the file to attach.
+        file_path: String,
+
+        /// Document type (receipt, invoice, statement, contract, other).
+        #[arg(long = "type")]
+        document_type: String,
+
+        /// Optional entry ID for entry-level attachments.
+        #[arg(long)]
+        entry: Option<i64>,
+    },
+
     /// Find orphaned intercompany correlations.
     Reconcile,
 }

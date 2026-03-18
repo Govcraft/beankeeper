@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::db::{AccountRow, BalanceRow, CompanyRow, EntryRow, TransactionRow};
+use crate::db::{AccountRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, TransactionRow};
 use crate::error::CliError;
 
 // ---------------------------------------------------------------------------
@@ -47,6 +47,27 @@ pub struct EntryJson {
     direction: String,
     amount: i64,
     memo: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct AttachmentJson {
+    id: i64,
+    document_type: String,
+    uri: String,
+    hash: Option<String>,
+    original_filename: Option<String>,
+    attached_at: String,
+}
+
+#[derive(Serialize)]
+struct TransactionWithAttachmentsJson {
+    id: i64,
+    description: String,
+    metadata: Option<String>,
+    currency: String,
+    date: String,
+    entries: Vec<EntryJson>,
+    attachments: Vec<AttachmentJson>,
 }
 
 #[derive(Serialize)]
@@ -196,6 +217,65 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                 currency: txn.currency.clone(),
                 date: txn.date.clone(),
                 entries,
+            }
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&rows)
+        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+}
+
+/// Render transactions with entries and attachments as a JSON array.
+///
+/// # Errors
+///
+/// Returns `CliError::General` if JSON serialisation fails.
+pub fn render_transactions_with_attachments<S: ::std::hash::BuildHasher, T: ::std::hash::BuildHasher>(
+    transactions: &[TransactionRow],
+    entries_map: &HashMap<i64, Vec<EntryRow>, S>,
+    attachments_map: &HashMap<i64, Vec<AttachmentRow>, T>,
+) -> Result<String, CliError> {
+    let rows: Vec<TransactionWithAttachmentsJson> = transactions
+        .iter()
+        .map(|txn| {
+            let entries = entries_map
+                .get(&txn.id)
+                .map(|rows| {
+                    rows.iter()
+                        .map(|e| EntryJson {
+                            account_code: e.account_code.clone(),
+                            direction: e.direction.clone(),
+                            amount: e.amount,
+                            memo: e.memo.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let att = attachments_map
+                .get(&txn.id)
+                .map(|rows| {
+                    rows.iter()
+                        .map(|a| AttachmentJson {
+                            id: a.id,
+                            document_type: a.document_type.clone(),
+                            uri: a.uri.clone(),
+                            hash: a.hash.clone(),
+                            original_filename: a.original_filename.clone(),
+                            attached_at: a.attached_at.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            TransactionWithAttachmentsJson {
+                id: txn.id,
+                description: txn.description.clone(),
+                metadata: txn.metadata.clone(),
+                currency: txn.currency.clone(),
+                date: txn.date.clone(),
+                entries,
+                attachments: att,
             }
         })
         .collect();

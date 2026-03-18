@@ -4,8 +4,8 @@ use core::fmt;
 
 use crate::core::TransactionError;
 use crate::types::{
-    AccountCodeError, AccountTypeError, AmountError, CurrencyError, DebitCreditError, EntryError,
-    MoneyError,
+    AccountCodeError, AccountTypeError, AmountError, CurrencyError, DebitCreditError,
+    DocumentTypeError, EntryError, MoneyError, SourceDocumentError,
 };
 
 /// Top-level error type aggregating all domain errors in the crate.
@@ -27,6 +27,10 @@ pub enum BeanError {
     AccountType(AccountTypeError),
     /// An error from debit/credit parsing.
     DebitCredit(DebitCreditError),
+    /// An error from document type parsing.
+    DocumentType(DocumentTypeError),
+    /// An error from source document construction.
+    SourceDocument(SourceDocumentError),
     /// An error from entry construction.
     Entry(EntryError),
     /// An error from transaction validation.
@@ -42,6 +46,8 @@ impl fmt::Display for BeanError {
             Self::AccountCode(e) => write!(f, "{e}"),
             Self::AccountType(e) => write!(f, "{e}"),
             Self::DebitCredit(e) => write!(f, "{e}"),
+            Self::DocumentType(e) => write!(f, "{e}"),
+            Self::SourceDocument(e) => write!(f, "{e}"),
             Self::Entry(e) => write!(f, "{e}"),
             Self::Transaction(e) => write!(f, "{e}"),
         }
@@ -57,6 +63,8 @@ impl std::error::Error for BeanError {
             Self::AccountCode(e) => Some(e),
             Self::AccountType(e) => Some(e),
             Self::DebitCredit(e) => Some(e),
+            Self::DocumentType(e) => Some(e),
+            Self::SourceDocument(e) => Some(e),
             Self::Entry(e) => Some(e),
             Self::Transaction(e) => Some(e),
         }
@@ -96,6 +104,18 @@ impl From<AccountTypeError> for BeanError {
 impl From<DebitCreditError> for BeanError {
     fn from(err: DebitCreditError) -> Self {
         Self::DebitCredit(err)
+    }
+}
+
+impl From<DocumentTypeError> for BeanError {
+    fn from(err: DocumentTypeError) -> Self {
+        Self::DocumentType(err)
+    }
+}
+
+impl From<SourceDocumentError> for BeanError {
+    fn from(err: SourceDocumentError) -> Self {
+        Self::SourceDocument(err)
     }
 }
 

@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use beankeeper::core::JournalEntry;
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{Currency, DocumentType, Money};
 
 use crate::cli::{Cli, OutputFormat, TxnCommand, resolve_format};
 use crate::db::connection::Db;
-use crate::db::{self, accounts, transactions};
+use crate::db::{self, accounts, attachments, transactions};
 use crate::error::CliError;
 use crate::output;
 use crate::passphrase;
@@ -65,6 +66,20 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
         } => Err(CliError::General(
             "import command not yet implemented".into(),
         )),
+        TxnCommand::Attach {
+            transaction_id,
+            file_path,
+            document_type,
+            entry,
+        } => run_attach(
+            cli,
+            &db_handle,
+            company,
+            *transaction_id,
+            file_path,
+            document_type,
+            *entry,
+        ),
         TxnCommand::Reconcile => run_reconcile(cli, &db_handle, format, use_color),
     }
 }
@@ -311,6 +326,7 @@ fn run_show(
     use_color: bool,
 ) -> Result<(), CliError> {
     let (txn, entries) = transactions::get_transaction(db_handle.conn(), company, id)?;
+    let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
 
     // Determine currency minor units for formatting
     let currency_minor_units = Currency::from_code(&txn.currency)
@@ -326,17 +342,86 @@ fn run_show(
                 use_color,
             );
             println!("{rendered}");
+            if !att_rows.is_empty() {
+                let att_rendered = output::table::render_attachments(&att_rows, use_color);
+                println!("{att_rendered}");
+            }
         }
         OutputFormat::Json => {
             let mut entries_map: HashMap<i64, Vec<db::EntryRow>> = HashMap::new();
             entries_map.insert(txn.id, entries);
-            let rendered = output::json::render_transactions(&[txn], &entries_map)?;
+            let mut att_map: HashMap<i64, Vec<db::AttachmentRow>> = HashMap::new();
+            att_map.insert(txn.id, att_rows);
+            let rendered =
+                output::json::render_transactions_with_attachments(&[txn], &entries_map, &att_map)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_transactions(&[txn])?;
             print!("{rendered}");
         }
+    }
+
+    Ok(())
+}
+
+/// Execute the `txn attach` subcommand.
+#[allow(clippy::too_many_arguments)]
+fn run_attach(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    transaction_id: i64,
+    file_path: &str,
+    document_type_str: &str,
+    entry_id: Option<i64>,
+) -> Result<(), CliError> {
+    // 1. Validate document type
+    let doc_type: DocumentType = document_type_str.parse().map_err(|e| {
+        CliError::Validation(format!("{e}"))
+    })?;
+
+    // 2. Validate the transaction exists for this company
+    let _txn = transactions::get_transaction(db_handle.conn(), company, transaction_id)?;
+
+    // 3. Validate source file exists
+    let source = Path::new(file_path);
+    if !source.exists() {
+        return Err(CliError::NotFound(format!(
+            "file not found: {file_path}"
+        )));
+    }
+
+    // 4. Hash and store the file in content-addressed storage
+    let (hash, stored_path) = attachments::hash_and_store_file(source, &cli.db)?;
+
+    // 5. Derive the URI (relative to db parent) and original filename
+    let uri = stored_path.file_name().map_or_else(
+        || stored_path.to_string_lossy().to_string(),
+        |n| format!("attachments/{}", n.to_string_lossy()),
+    );
+
+    let original_filename = source
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string());
+
+    // 6. Insert attachment record
+    let params = attachments::StoreAttachmentParams {
+        transaction_id,
+        entry_id,
+        company_slug: company,
+        uri: &uri,
+        document_type: &doc_type.to_string(),
+        hash: Some(hash.as_str()),
+        original_filename: original_filename.as_deref(),
+    };
+    let att_id = attachments::store_attachment(db_handle.conn(), &params)?;
+
+    if !cli.verbosity.quiet {
+        eprintln!(
+            "[ok] attachment #{att_id} added to transaction #{transaction_id} ({doc_type}, {hash_short})",
+            hash_short = &hash[..hash.len().min(12)]
+        );
     }
 
     Ok(())

@@ -1,6 +1,7 @@
 //! Database layer: connection management, schema, and CRUD operations.
 
 pub mod accounts;
+pub mod attachments;
 pub mod companies;
 pub mod connection;
 pub mod schema;
@@ -9,6 +10,10 @@ pub mod transactions;
 pub use accounts::{
     account_exists, create_account, delete_account, get_account, list_account_codes,
     list_accounts, row_to_account,
+};
+pub use attachments::{
+    AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
+    store_attachment,
 };
 pub use companies::{company_exists, create_company, delete_company, get_company, list_companies};
 pub use connection::Db;

@@ -4,7 +4,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 
-use crate::db::{AccountRow, BalanceRow, CompanyRow, EntryRow, TransactionRow};
+use crate::db::{AccountRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, TransactionRow};
 
 // ---------------------------------------------------------------------------
 // Amount formatting
@@ -453,7 +453,39 @@ fn new_table() -> Table {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Attachments
+// ---------------------------------------------------------------------------
+
+/// Render a list of attachments as a section below transaction details.
+#[must_use]
+pub fn render_attachments(attachments: &[AttachmentRow], use_color: bool) -> String {
+    let mut lines = Vec::new();
+    lines.push(styled("  Attachments:", bold_style(), use_color));
+
+    for att in attachments {
+        let hash_suffix = att
+            .hash
+            .as_deref()
+            .map(|h| {
+                let short = &h[..h.len().min(12)];
+                format!("  ({short})")
+            })
+            .unwrap_or_default();
+
+        let filename = att
+            .original_filename
+            .as_deref()
+            .unwrap_or("(no filename)");
+
+        lines.push(format!(
+            "    [{doc_type}] {filename}{hash_suffix}",
+            doc_type = styled(&att.document_type, cyan_style(), use_color),
+        ));
+    }
+
+    lines.join("\n")
+}
+
 // ---------------------------------------------------------------------------
 // Orphaned correlations
 // ---------------------------------------------------------------------------
@@ -508,7 +540,7 @@ mod tests {
 
     #[test]
     fn format_amount_three_decimals() {
-        assert_eq!(format_amount(1234567, 3), "1,234.567");
+        assert_eq!(format_amount(1_234_567, 3), "1,234.567");
     }
 
     #[test]

@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 1;
+const CURRENT_VERSION: i64 = 2;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -45,8 +45,15 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         apply_v1(conn)?;
     }
 
-    // Future migrations would go here:
-    // if version < 2 { apply_v2(conn)?; }
+    if version < 2 {
+        apply_v2(conn)?;
+    }
+
+    debug_assert_eq!(
+        get_schema_version(conn).unwrap_or(0),
+        CURRENT_VERSION,
+        "schema version mismatch after migrations"
+    );
 
     Ok(())
 }
@@ -112,7 +119,37 @@ fn apply_v1(conn: &Connection) -> Result<(), CliError> {
 
     conn.execute(
         "INSERT INTO schema_version (version) VALUES (?1)",
-        params![CURRENT_VERSION],
+        params![1],
+    )?;
+
+    Ok(())
+}
+
+/// Applies the v2 migration: adds the `attachments` table.
+fn apply_v2(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS attachments (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id  INTEGER NOT NULL REFERENCES transactions(id),
+            entry_id        INTEGER REFERENCES entries(id),
+            company_slug    TEXT NOT NULL,
+            uri             TEXT NOT NULL,
+            document_type   TEXT NOT NULL CHECK(document_type IN ('receipt','invoice','statement','contract','other')),
+            hash            TEXT,
+            original_filename TEXT,
+            attached_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (company_slug) REFERENCES companies(slug)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_attachments_transaction
+            ON attachments(transaction_id);
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        params![2],
     )?;
 
     Ok(())
@@ -141,7 +178,7 @@ mod tests {
         let conn = open_conn();
         let result = ensure_schema(&conn);
         assert!(result.is_ok());
-        assert_eq!(get_schema_version(&conn).ok(), Some(1));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
     }
 
     #[test]
@@ -149,7 +186,7 @@ mod tests {
         let conn = open_conn();
         assert!(ensure_schema(&conn).is_ok());
         assert!(ensure_schema(&conn).is_ok());
-        assert_eq!(get_schema_version(&conn).ok(), Some(1));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
     }
 
     #[test]
@@ -201,6 +238,42 @@ mod tests {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'entries'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn attachments_table_exists() {
+        let conn = open_conn();
+        assert!(ensure_schema(&conn).is_ok());
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'attachments'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn v2_migration_from_v1() {
+        let conn = open_conn();
+        // Apply only v1
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(1));
+
+        // Now run ensure_schema which should apply v2
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        // Verify attachments table exists
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'attachments'",
                 [],
                 |row| row.get(0),
             )

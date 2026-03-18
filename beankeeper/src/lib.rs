@@ -60,7 +60,7 @@ pub mod prelude {
     pub use crate::reporting::{AccountBalance, TrialBalance};
     pub use crate::types::{
         Account, AccountCode, AccountCodeError, AccountType, AccountTypeError, Amount, AmountError,
-        Currency, CurrencyError, DebitCreditError, DebitOrCredit, Entry, EntryError, Money,
-        MoneyError,
+        Currency, CurrencyError, DebitCreditError, DebitOrCredit, DocumentType, DocumentTypeError,
+        Entry, EntryError, Money, MoneyError, SourceDocument, SourceDocumentError,
     };
 }
