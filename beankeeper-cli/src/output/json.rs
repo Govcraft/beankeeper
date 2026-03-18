@@ -8,7 +8,10 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::db::{AccountRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, TransactionRow};
+use crate::db::{
+    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow,
+    TransactionRow,
+};
 use crate::error::CliError;
 
 // ---------------------------------------------------------------------------
@@ -236,7 +239,10 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
 /// # Errors
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
-pub fn render_transactions_with_attachments<S: ::std::hash::BuildHasher, T: ::std::hash::BuildHasher>(
+pub fn render_transactions_with_attachments<
+    S: ::std::hash::BuildHasher,
+    T: ::std::hash::BuildHasher,
+>(
     transactions: &[TransactionRow],
     entries_map: &HashMap<i64, Vec<EntryRow>, S>,
     attachments_map: &HashMap<i64, Vec<AttachmentRow>, T>,
@@ -401,9 +407,8 @@ pub fn render_orphaned_correlations(
         })
         .collect();
 
-    serde_json::to_string_pretty(&json_orphans).map_err(|e| {
-        CliError::General(format!("JSON serialization failed: {e}"))
-    })
+    serde_json::to_string_pretty(&json_orphans)
+        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -429,6 +434,46 @@ pub fn render_tax_summary(rows: &[crate::db::TaxSummaryRow]) -> Result<String, C
             tax_category: r.tax_category.clone(),
             debit_total: r.debit_total,
             credit_total: r.credit_total,
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&json_rows)
+        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// Account with balances
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct AccountWithBalanceJson {
+    code: String,
+    name: String,
+    r#type: String,
+    normal_balance: String,
+    default_tax_category: Option<String>,
+    debit_total: i64,
+    credit_total: i64,
+}
+
+/// Render accounts with balance totals as a JSON array.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_accounts_with_balances(
+    rows: &[AccountWithBalanceRow],
+) -> Result<String, CliError> {
+    let json_rows: Vec<AccountWithBalanceJson> = rows
+        .iter()
+        .map(|row| AccountWithBalanceJson {
+            code: row.code.clone(),
+            name: row.name.clone(),
+            r#type: row.account_type.clone(),
+            normal_balance: normal_balance_for(&row.account_type).to_string(),
+            default_tax_category: row.default_tax_category.clone(),
+            debit_total: row.debit_total,
+            credit_total: row.credit_total,
         })
         .collect();
 
@@ -637,10 +682,7 @@ mod tests {
 
     #[test]
     fn render_error_io() {
-        let err = CliError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "gone",
-        ));
+        let err = CliError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
         let json = render_error(&err);
         assert!(json.contains(r#""code": "IO_ERROR""#));
     }

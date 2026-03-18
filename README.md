@@ -132,6 +132,40 @@ bk --company personal report tax-summary --from 2026-01-01 --to 2026-12-31
 
 Resolution order: explicit `--tax` flag > account `--default-tax-category` > none. Categories are free-form strings -- no tax-year specifics are baked into the schema.
 
+### Querying the Ledger
+
+`bk txn list` (aliased as `bk txn search`) supports rich filtering so agents and scripts get back precisely the data they need without dumping the entire ledger:
+
+```sh
+# Search transactions by description
+bk --company personal txn list --description "AWS" --from 2026-01-01 --json
+
+# Find large expenses (amounts are in dollars, not cents)
+bk --company personal txn list --account 5000 --amount-gt 500 --json
+
+# Count matching transactions without fetching them
+bk --company personal txn search --description "payroll" --count --json
+# → {"count":12}
+
+# Filter by tax category, direction, currency, reference, or metadata
+bk --company personal txn list --tax-category "sched-c:24b" --direction debit --json
+bk --company personal txn list --currency MXN --json
+bk --company personal txn list --reference "chase-2026-03-15-001" --json
+bk --company personal txn list --metadata "vendor" --json
+```
+
+All filters can be combined. Amount filters use the `--currency` value (or `BEANKEEPER_CURRENCY` env, defaulting to USD) for major-to-minor unit conversion.
+
+`bk account list` can include balances in a single query:
+
+```sh
+# List expense accounts with their debit/credit totals
+bk --company personal account list --type expense --with-balances --json
+
+# Search accounts by name, with balances as of a date
+bk --company personal account list --name "Cash" --with-balances --as-of 2026-06-30 --json
+```
+
 ### Output Formats
 
 Every command supports `--format table` (default), `--format json`, and `--format csv`. Use `--json` as shorthand.
@@ -153,6 +187,7 @@ bk txn reconcile --json || echo "Orphaned correlations found"
 |----------|---------|
 | `BEANKEEPER_DB` | Database file path (default: `./beankeeper.db`) |
 | `BEANKEEPER_COMPANY` | Default company slug (avoids `--company` on every command) |
+| `BEANKEEPER_CURRENCY` | Default currency code for amount filters (default: `USD`) |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase |
 | `NO_COLOR` | Disable colored output |
 
@@ -280,7 +315,7 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- proper error handling everywhere
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
 - Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
-- 385+ tests covering unit, integration, and real-world accounting scenarios
+- 395+ tests covering unit, integration, and real-world accounting scenarios
 
 ## License
 

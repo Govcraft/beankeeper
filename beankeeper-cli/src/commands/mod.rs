@@ -35,7 +35,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), CliError> {
 
         Command::Txn(sub) => {
             // Reconcile scans all companies, so --company is not required.
-            if matches!(sub, crate::cli::TxnCommand::Reconcile) {
+            if matches!(sub.as_ref(), crate::cli::TxnCommand::Reconcile) {
                 txn::run(cli, "", sub)
             } else {
                 let company = require_company(cli)?;

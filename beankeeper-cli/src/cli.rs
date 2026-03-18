@@ -20,7 +20,12 @@ use crate::error::CliError;
 )]
 pub struct Cli {
     /// Database file path.
-    #[arg(long, global = true, env = "BEANKEEPER_DB", default_value = "beankeeper.db")]
+    #[arg(
+        long,
+        global = true,
+        env = "BEANKEEPER_DB",
+        default_value = "beankeeper.db"
+    )]
     pub db: PathBuf,
 
     /// Company slug.
@@ -133,7 +138,7 @@ pub enum Command {
 
     /// Record and query transactions.
     #[command(subcommand)]
-    Txn(TxnCommand),
+    Txn(Box<TxnCommand>),
 
     /// Generate financial reports.
     #[command(subcommand)]
@@ -195,6 +200,18 @@ pub enum AccountCommand {
         /// Filter by account type.
         #[arg(long = "type", value_enum)]
         account_type: Option<AccountTypeArg>,
+
+        /// Search by account name (substring, case-insensitive).
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Include debit/credit balance totals for each account.
+        #[arg(long)]
+        with_balances: bool,
+
+        /// As-of date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
+        #[arg(long)]
+        as_of: Option<String>,
     },
 
     /// Show account details.
@@ -256,7 +273,8 @@ pub enum TxnCommand {
         tax: Vec<String>,
     },
 
-    /// List transactions.
+    /// List and search transactions.
+    #[command(alias = "search")]
     List {
         /// Filter by account code.
         #[arg(long)]
@@ -277,6 +295,46 @@ pub enum TxnCommand {
         /// Number of transactions to skip.
         #[arg(long, default_value = "0")]
         offset: i64,
+
+        /// Search by description (substring, case-insensitive).
+        #[arg(short = 'd', long)]
+        description: Option<String>,
+
+        /// Minimum entry amount (exclusive, in major units e.g. dollars).
+        #[arg(long)]
+        amount_gt: Option<String>,
+
+        /// Maximum entry amount (exclusive, in major units e.g. dollars).
+        #[arg(long)]
+        amount_lt: Option<String>,
+
+        /// Exact entry amount (in major units e.g. dollars).
+        #[arg(long)]
+        amount_eq: Option<String>,
+
+        /// Filter by currency code (e.g. USD, MXN).
+        #[arg(long)]
+        currency: Option<String>,
+
+        /// Filter by idempotency reference key.
+        #[arg(long)]
+        reference: Option<String>,
+
+        /// Search in metadata field (substring, case-insensitive).
+        #[arg(long)]
+        metadata: Option<String>,
+
+        /// Filter by tax category on entries.
+        #[arg(long)]
+        tax_category: Option<String>,
+
+        /// Filter entries by direction.
+        #[arg(long, value_enum)]
+        direction: Option<DirectionArg>,
+
+        /// Return only the count of matching transactions.
+        #[arg(long)]
+        count: bool,
     },
 
     /// Show transaction details.
@@ -404,6 +462,24 @@ pub enum ImportFormat {
     Json,
 }
 
+/// Entry direction argument for CLI.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectionArg {
+    Debit,
+    Credit,
+}
+
+impl DirectionArg {
+    /// Returns the lowercase string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Debit => "debit",
+            Self::Credit => "credit",
+        }
+    }
+}
+
 /// Account type argument for CLI.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountTypeArg {
@@ -432,10 +508,7 @@ impl AccountTypeArg {
 ///
 /// Priority: command-level format > `--json` flag > global `--format` > default (`Table`).
 #[must_use]
-pub fn resolve_format(
-    command_format: Option<OutputFormat>,
-    cli: &Cli,
-) -> OutputFormat {
+pub fn resolve_format(command_format: Option<OutputFormat>, cli: &Cli) -> OutputFormat {
     if let Some(fmt) = command_format {
         return fmt;
     }
@@ -456,9 +529,7 @@ pub fn resolve_format(
 /// `BEANKEEPER_COMPANY` env var is set.
 pub fn require_company(cli: &Cli) -> Result<String, CliError> {
     cli.company.clone().ok_or_else(|| {
-        CliError::Usage(
-            "missing required --company flag or BEANKEEPER_COMPANY env var".into(),
-        )
+        CliError::Usage("missing required --company flag or BEANKEEPER_COMPANY env var".into())
     })
 }
 

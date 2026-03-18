@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 4;
+const CURRENT_VERSION: i64 = 5;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -55,6 +55,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 4 {
         apply_v4(conn)?;
+    }
+
+    if version < 5 {
+        apply_v5(conn)?;
     }
 
     debug_assert_eq!(
@@ -200,13 +204,33 @@ fn apply_v4(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Applies the v5 migration: adds indexes for query filtering.
+fn apply_v5(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_entries_amount
+            ON entries(amount);
+
+        CREATE INDEX IF NOT EXISTS idx_entries_tax_category
+            ON entries(company_slug, tax_category) WHERE tax_category IS NOT NULL;
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        params![5],
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn open_conn() -> Connection {
-        let conn =
-            Connection::open_in_memory().unwrap_or_else(|e| panic!("cannot open in-memory db: {e}"));
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|e| panic!("cannot open in-memory db: {e}"));
         conn.pragma_update(None, "foreign_keys", "ON").ok();
         conn
     }
@@ -328,7 +352,10 @@ mod tests {
                 names.contains(&"reference".to_string())
             })
             .unwrap_or(false);
-        assert!(has_reference, "reference column should exist after v3 migration");
+        assert!(
+            has_reference,
+            "reference column should exist after v3 migration"
+        );
     }
 
     #[test]
@@ -356,7 +383,10 @@ mod tests {
                 names.contains(&"tax_category".to_string())
             })
             .unwrap_or(false);
-        assert!(has_tax_category, "tax_category column should exist on entries after v4");
+        assert!(
+            has_tax_category,
+            "tax_category column should exist on entries after v4"
+        );
 
         // Verify default_tax_category column on accounts
         let has_default_tax: bool = conn
@@ -370,7 +400,10 @@ mod tests {
                 names.contains(&"default_tax_category".to_string())
             })
             .unwrap_or(false);
-        assert!(has_default_tax, "default_tax_category column should exist on accounts after v4");
+        assert!(
+            has_default_tax,
+            "default_tax_category column should exist on accounts after v4"
+        );
     }
 
     #[test]

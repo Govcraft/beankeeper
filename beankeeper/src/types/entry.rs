@@ -472,9 +472,6 @@ mod tests {
         let entry = Entry::debit_with_memo(cash_account(), Money::usd(500), "Lunch")
             .unwrap_or_else(|e| panic!("test: {e}"))
             .with_tax_category("sched-c:24b");
-        assert_eq!(
-            format!("{entry}"),
-            "DR Cash USD 5.00 (Lunch) [sched-c:24b]"
-        );
+        assert_eq!(format!("{entry}"), "DR Cash USD 5.00 (Lunch) [sched-c:24b]");
     }
 }

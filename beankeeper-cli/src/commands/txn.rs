@@ -52,17 +52,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             reference.as_deref(),
             tax,
         ),
-        TxnCommand::List { account, from, to, limit, offset } => {
-            let lp = transactions::ListTransactionParams {
-                company_slug: company,
-                account_filter: account.as_deref(),
-                from_date: from.as_deref(),
-                to_date: to.as_deref(),
-                limit: *limit,
-                offset: *offset,
-            };
-            run_list(cli, &db_handle, &lp, format, use_color)
-        }
+        TxnCommand::List { .. } => run_list_or_count(cli, &db_handle, company, sub, format, use_color),
         TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
         TxnCommand::Import {
             file: _,
@@ -86,6 +76,74 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             *entry,
         ),
         TxnCommand::Reconcile => run_reconcile(cli, &db_handle, format, use_color),
+    }
+}
+
+/// Build `ListTransactionParams` from CLI args and dispatch to list or count.
+#[allow(clippy::too_many_arguments)]
+fn run_list_or_count(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let TxnCommand::List {
+        account,
+        from,
+        to,
+        limit,
+        offset,
+        description,
+        amount_gt,
+        amount_lt,
+        amount_eq,
+        currency,
+        reference,
+        metadata,
+        tax_category,
+        direction,
+        count,
+    } = sub
+    else {
+        unreachable!("run_list_or_count called with non-List variant");
+    };
+
+    // Determine currency for amount conversion (filter amounts are in major units).
+    let env_currency = std::env::var("BEANKEEPER_CURRENCY").ok();
+    let currency_code = currency
+        .as_deref()
+        .or(env_currency.as_deref())
+        .unwrap_or("USD");
+    let amount_currency = Currency::from_code(currency_code).map_err(|e| {
+        CliError::Validation(format!("invalid currency for amount filter: {e}"))
+    })?;
+
+    let to_minor = |s: &str| parse_amount_to_minor(s, amount_currency);
+
+    let dir_str = direction.map(crate::cli::DirectionArg::as_str);
+
+    let mut lp = transactions::ListTransactionParams::for_company(company);
+    lp.account_filter = account.as_deref();
+    lp.from_date = from.as_deref();
+    lp.to_date = to.as_deref();
+    lp.limit = *limit;
+    lp.offset = *offset;
+    lp.description_like = description.as_deref();
+    lp.amount_gt = amount_gt.as_deref().map(to_minor).transpose()?;
+    lp.amount_lt = amount_lt.as_deref().map(to_minor).transpose()?;
+    lp.amount_eq = amount_eq.as_deref().map(to_minor).transpose()?;
+    lp.currency_filter = currency.as_deref();
+    lp.reference_filter = reference.as_deref();
+    lp.metadata_like = metadata.as_deref();
+    lp.tax_category_filter = tax_category.as_deref();
+    lp.direction_filter = dir_str;
+
+    if *count {
+        run_count(cli, db_handle, &lp, format)
+    } else {
+        run_list(cli, db_handle, &lp, format, use_color)
     }
 }
 
@@ -182,20 +240,18 @@ fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, CliError> {
         let total = whole
             .checked_mul(multiplier)
             .and_then(|w| w.checked_add(frac))
-            .ok_or_else(|| {
-                CliError::Validation(format!("amount '{s}' is too large"))
-            })?;
+            .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))?;
 
         Ok(total)
     } else {
         // No decimal point: treat as whole major units
-        let whole: i64 = s.parse().map_err(|_| {
-            CliError::Usage(format!("invalid amount '{s}': not a valid number"))
-        })?;
+        let whole: i64 = s
+            .parse()
+            .map_err(|_| CliError::Usage(format!("invalid amount '{s}': not a valid number")))?;
 
-        whole.checked_mul(multiplier).ok_or_else(|| {
-            CliError::Validation(format!("amount '{s}' is too large"))
-        })
+        whole
+            .checked_mul(multiplier)
+            .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))
     }
 }
 
@@ -216,9 +272,8 @@ fn run_post(
     tax_args: &[String],
 ) -> Result<(), CliError> {
     // 1. Parse currency
-    let currency = Currency::from_code(currency_code).map_err(|e| {
-        CliError::Validation(format!("invalid currency: {e}"))
-    })?;
+    let currency = Currency::from_code(currency_code)
+        .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
 
     // 2. Parse debit/credit args into (code, minor_units, memo) tuples
     let mut parsed_debits = Vec::new();
@@ -358,8 +413,7 @@ fn run_list(
             // For JSON, include entries for each transaction
             let mut entries_map: HashMap<i64, Vec<db::EntryRow>> = HashMap::new();
             for txn in &rows {
-                let entries =
-                    transactions::get_entries_for_transaction(db_handle.conn(), txn.id)?;
+                let entries = transactions::get_entries_for_transaction(db_handle.conn(), txn.id)?;
                 entries_map.insert(txn.id, entries);
             }
             let rendered = output::json::render_transactions(&rows, &entries_map)?;
@@ -373,6 +427,38 @@ fn run_list(
 
     if !cli.verbosity.quiet {
         let count = rows.len();
+        eprintln!(
+            "{count} {noun}",
+            noun = if count == 1 {
+                "transaction"
+            } else {
+                "transactions"
+            }
+        );
+    }
+
+    Ok(())
+}
+
+/// Execute the `txn list --count` subcommand.
+fn run_count(
+    cli: &Cli,
+    db_handle: &Db,
+    params: &transactions::ListTransactionParams<'_>,
+    format: OutputFormat,
+) -> Result<(), CliError> {
+    let count = transactions::count_transactions(db_handle.conn(), params)?;
+
+    match format {
+        OutputFormat::Json => {
+            println!("{{\"count\":{count}}}");
+        }
+        OutputFormat::Table | OutputFormat::Csv => {
+            println!("{count}");
+        }
+    }
+
+    if !cli.verbosity.quiet {
         eprintln!(
             "{count} {noun}",
             noun = if count == 1 {
@@ -447,9 +533,9 @@ fn run_attach(
     entry_id: Option<i64>,
 ) -> Result<(), CliError> {
     // 1. Validate document type
-    let doc_type: DocumentType = document_type_str.parse().map_err(|e| {
-        CliError::Validation(format!("{e}"))
-    })?;
+    let doc_type: DocumentType = document_type_str
+        .parse()
+        .map_err(|e| CliError::Validation(format!("{e}")))?;
 
     // 2. Validate the transaction exists for this company
     let _txn = transactions::get_transaction(db_handle.conn(), company, transaction_id)?;
@@ -457,9 +543,7 @@ fn run_attach(
     // 3. Validate source file exists
     let source = Path::new(file_path);
     if !source.exists() {
-        return Err(CliError::NotFound(format!(
-            "file not found: {file_path}"
-        )));
+        return Err(CliError::NotFound(format!("file not found: {file_path}")));
     }
 
     // 4. Hash and store the file in content-addressed storage
@@ -471,9 +555,7 @@ fn run_attach(
         |n| format!("attachments/{}", n.to_string_lossy()),
     );
 
-    let original_filename = source
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string());
+    let original_filename = source.file_name().map(|n| n.to_string_lossy().to_string());
 
     // 6. Insert attachment record
     let params = attachments::StoreAttachmentParams {

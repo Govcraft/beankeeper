@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::str::FromStr;
 
 use rusqlite::{Connection, params};
@@ -73,71 +74,80 @@ pub fn create_account(
     conn.execute(
         "INSERT INTO accounts (company_slug, code, name, type, default_tax_category) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![company_slug, code, name, account_type_lower, default_tax_category],
+        params![
+            company_slug,
+            code,
+            name,
+            account_type_lower,
+            default_tax_category
+        ],
     )?;
 
     get_account(conn, company_slug, code)
 }
 
-/// Lists accounts for a company, optionally filtered by type.
+/// Parameters for listing accounts.
+pub struct ListAccountParams<'a> {
+    /// Company slug to scope the query.
+    pub company_slug: &'a str,
+    /// Optional account type filter (lowercase).
+    pub type_filter: Option<&'a str>,
+    /// Optional account name substring filter (case-insensitive).
+    pub name_filter: Option<&'a str>,
+}
+
+/// Lists accounts for a company with optional filters.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::Sqlite`] on any database error.
 pub fn list_accounts(
     conn: &Connection,
-    company_slug: &str,
-    type_filter: Option<&str>,
+    params: &ListAccountParams<'_>,
 ) -> Result<Vec<AccountRow>, CliError> {
-    let mut accounts = Vec::new();
+    let mut sql = String::from(
+        "SELECT company_slug, code, name, type, created_at, default_tax_category \
+         FROM accounts \
+         WHERE company_slug = ?1",
+    );
 
-    if let Some(filter) = type_filter {
-        let filter_lower = filter.to_lowercase();
-        let mut stmt = conn.prepare(
-            "SELECT company_slug, code, name, type, created_at, default_tax_category \
-             FROM accounts \
-             WHERE company_slug = ?1 AND type = ?2 \
-             ORDER BY code",
-        )?;
+    let mut param_idx = 2u32;
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    param_values.push(Box::new(params.company_slug.to_string()));
 
-        let rows = stmt.query_map(params![company_slug, filter_lower], |row| {
-            Ok(AccountRow {
-                company_slug: row.get(0)?,
-                code: row.get(1)?,
-                name: row.get(2)?,
-                account_type: row.get(3)?,
-                created_at: row.get(4)?,
-                default_tax_category: row.get(5)?,
-            })
-        })?;
-
-        for row in rows {
-            accounts.push(row?);
-        }
-    } else {
-        let mut stmt = conn.prepare(
-            "SELECT company_slug, code, name, type, created_at, default_tax_category \
-             FROM accounts \
-             WHERE company_slug = ?1 \
-             ORDER BY code",
-        )?;
-
-        let rows = stmt.query_map(params![company_slug], |row| {
-            Ok(AccountRow {
-                company_slug: row.get(0)?,
-                code: row.get(1)?,
-                name: row.get(2)?,
-                account_type: row.get(3)?,
-                created_at: row.get(4)?,
-                default_tax_category: row.get(5)?,
-            })
-        })?;
-
-        for row in rows {
-            accounts.push(row?);
-        }
+    if let Some(filter) = params.type_filter {
+        let _ = write!(sql, " AND type = ?{param_idx}");
+        param_values.push(Box::new(filter.to_lowercase()));
+        param_idx += 1;
     }
 
+    if let Some(name) = params.name_filter {
+        let _ = write!(sql, " AND name LIKE '%' || ?{param_idx} || '%'");
+        param_values.push(Box::new(name.to_string()));
+        let _ = param_idx;
+    }
+
+    sql.push_str(" ORDER BY code");
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(AsRef::as_ref).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        Ok(AccountRow {
+            company_slug: row.get(0)?,
+            code: row.get(1)?,
+            name: row.get(2)?,
+            account_type: row.get(3)?,
+            created_at: row.get(4)?,
+            default_tax_category: row.get(5)?,
+        })
+    })?;
+
+    let mut accounts = Vec::new();
+    for row in rows {
+        accounts.push(row?);
+    }
     Ok(accounts)
 }
 
@@ -292,7 +302,8 @@ mod tests {
         let db = setup();
         assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
         assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
-        let list = list_accounts(db.conn(), "acme", None).unwrap_or_default();
+        let params = ListAccountParams { company_slug: "acme", type_filter: None, name_filter: None };
+        let list = list_accounts(db.conn(), &params).unwrap_or_default();
         assert_eq!(list.len(), 2);
     }
 
@@ -301,7 +312,8 @@ mod tests {
         let db = setup();
         assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
         assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
-        let list = list_accounts(db.conn(), "acme", Some("asset")).unwrap_or_default();
+        let params = ListAccountParams { company_slug: "acme", type_filter: Some("asset"), name_filter: None };
+        let list = list_accounts(db.conn(), &params).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].code, "1000");
     }
@@ -356,5 +368,22 @@ mod tests {
             account.account_type(),
             beankeeper::types::AccountType::Asset
         );
+    }
+
+    #[test]
+    fn list_accounts_with_name_filter() {
+        let db = setup();
+        assert!(create_account(db.conn(), "acme", "1000", "Cash on Hand", "asset", None).is_ok());
+        assert!(create_account(db.conn(), "acme", "1100", "Petty Cash", "asset", None).is_ok());
+        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
+
+        let params = ListAccountParams { company_slug: "acme", type_filter: None, name_filter: Some("Cash") };
+        let list = list_accounts(db.conn(), &params).unwrap_or_default();
+        assert_eq!(list.len(), 2);
+
+        let params2 = ListAccountParams { company_slug: "acme", type_filter: Some("asset"), name_filter: Some("Petty") };
+        let list2 = list_accounts(db.conn(), &params2).unwrap_or_default();
+        assert_eq!(list2.len(), 1);
+        assert_eq!(list2[0].code, "1100");
     }
 }

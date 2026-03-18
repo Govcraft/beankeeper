@@ -4,7 +4,7 @@
 //! buffer and returns the resulting string.  The `csv` crate handles quoting
 //! and escaping.
 
-use crate::db::{AccountRow, BalanceRow, CompanyRow, TransactionRow};
+use crate::db::{AccountRow, AccountWithBalanceRow, BalanceRow, CompanyRow, TransactionRow};
 use crate::error::CliError;
 
 /// Convert a `csv::Error` to `CliError::General`.
@@ -80,6 +80,39 @@ pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
 }
 
+/// Render a list of accounts with balance totals as CSV.
+///
+/// Columns: `code`, `name`, `type`, `normal_balance`, `debit_total`, `credit_total`
+///
+/// # Errors
+///
+/// Returns `CliError::General` if CSV serialisation fails.
+pub fn render_accounts_with_balances(
+    accounts: &[AccountWithBalanceRow],
+) -> Result<String, CliError> {
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    wtr.write_record(["code", "name", "type", "normal_balance", "debit_total", "credit_total"])
+        .map_err(|e| csv_err(&e))?;
+
+    for a in accounts {
+        wtr.write_record([
+            &a.code,
+            &a.name,
+            &a.account_type,
+            normal_balance_for(&a.account_type),
+            &a.debit_total.to_string(),
+            &a.credit_total.to_string(),
+        ])
+        .map_err(|e| csv_err(&e))?;
+    }
+
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
+}
+
 /// Render a list of transactions as CSV.
 ///
 /// Columns: `id`, `date`, `description`, `metadata`, `currency`
@@ -89,8 +122,15 @@ pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
 /// Returns `CliError::General` if CSV serialisation fails.
 pub fn render_transactions(transactions: &[TransactionRow]) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
-    wtr.write_record(["id", "date", "description", "metadata", "currency", "reference"])
-        .map_err(|e| csv_err(&e))?;
+    wtr.write_record([
+        "id",
+        "date",
+        "description",
+        "metadata",
+        "currency",
+        "reference",
+    ])
+    .map_err(|e| csv_err(&e))?;
 
     for txn in transactions {
         let id_str = txn.id.to_string();

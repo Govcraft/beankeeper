@@ -8,8 +8,8 @@ pub mod schema;
 pub mod transactions;
 
 pub use accounts::{
-    account_exists, create_account, delete_account, get_account, list_account_codes,
-    list_accounts, row_to_account,
+    ListAccountParams, account_exists, create_account, delete_account, get_account,
+    list_account_codes, list_accounts, row_to_account,
 };
 pub use attachments::{
     AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
@@ -20,8 +20,8 @@ pub use connection::Db;
 pub use schema::{ensure_schema, get_schema_version};
 pub use transactions::{
     ListTransactionParams, OrphanedCorrelation, PostEntryParams, PostTransactionParams,
-    find_orphaned_correlations, get_entries_for_transaction, get_transaction, list_transactions,
-    post_transaction,
+    count_transactions, find_orphaned_correlations, get_entries_for_transaction, get_transaction,
+    list_transactions, post_transaction,
 };
 
 use std::fmt::Write;
@@ -96,6 +96,95 @@ pub struct BalanceRow {
     pub account_type: String,
     pub debit_total: i64,
     pub credit_total: i64,
+}
+
+/// Account with aggregated debit/credit balance totals.
+#[derive(Debug, Clone)]
+pub struct AccountWithBalanceRow {
+    pub code: String,
+    pub name: String,
+    pub account_type: String,
+    pub default_tax_category: Option<String>,
+    pub debit_total: i64,
+    pub credit_total: i64,
+}
+
+/// Lists accounts with their debit/credit balance totals in a single query.
+///
+/// Optionally filters by account type, name substring, and as-of date.
+///
+/// # Errors
+///
+/// Returns `CliError::Sqlite` on any database error.
+pub fn list_accounts_with_balances(
+    conn: &Connection,
+    company_slug: &str,
+    type_filter: Option<&str>,
+    name_filter: Option<&str>,
+    as_of: Option<&str>,
+) -> Result<Vec<AccountWithBalanceRow>, CliError> {
+    let base = if as_of.is_some() {
+        "SELECT a.code, a.name, a.type, a.default_tax_category, \
+         COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
+         FROM accounts a \
+         LEFT JOIN (entries e JOIN transactions t ON t.id = e.transaction_id) \
+           ON e.company_slug = a.company_slug AND e.account_code = a.code"
+    } else {
+        "SELECT a.code, a.name, a.type, a.default_tax_category, \
+         COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
+         FROM accounts a \
+         LEFT JOIN entries e ON e.company_slug = a.company_slug AND e.account_code = a.code"
+    };
+
+    let mut sql = String::from(base);
+    sql.push_str(" WHERE a.company_slug = ?1");
+
+    let mut param_idx = 2u32;
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    param_values.push(Box::new(company_slug.to_string()));
+
+    if let Some(filter) = type_filter {
+        let _ = write!(sql, " AND a.type = ?{param_idx}");
+        param_values.push(Box::new(filter.to_lowercase()));
+        param_idx += 1;
+    }
+
+    if let Some(name) = name_filter {
+        let _ = write!(sql, " AND a.name LIKE '%' || ?{param_idx} || '%'");
+        param_values.push(Box::new(name.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(date) = as_of {
+        let _ = write!(sql, " AND (t.date IS NULL OR t.date <= ?{param_idx})");
+        param_values.push(Box::new(date.to_string()));
+        let _ = param_idx;
+    }
+
+    sql.push_str(" GROUP BY a.code, a.name, a.type, a.default_tax_category ORDER BY a.code");
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(AsRef::as_ref).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        Ok(AccountWithBalanceRow {
+            code: row.get(0)?,
+            name: row.get(1)?,
+            account_type: row.get(2)?,
+            default_tax_category: row.get(3)?,
+            debit_total: row.get(4)?,
+            credit_total: row.get(5)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
 }
 
 /// Computes a trial balance for a company.
@@ -318,15 +407,13 @@ mod tests {
             correlate: None,
             reference: None,
         };
-        post_transaction(db.conn(), &params)
-            .unwrap_or_else(|e| panic!("post failed: {e}"));
+        post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
     }
 
     #[test]
     fn trial_balance_empty() {
         let db = setup();
-        let balances =
-            compute_trial_balance(db.conn(), "acme", None, None).unwrap_or_default();
+        let balances = compute_trial_balance(db.conn(), "acme", None, None).unwrap_or_default();
         // All 3 accounts with zero balances
         assert_eq!(balances.len(), 3);
         for b in &balances {
@@ -340,8 +427,7 @@ mod tests {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
 
-        let balances =
-            compute_trial_balance(db.conn(), "acme", None, None).unwrap_or_default();
+        let balances = compute_trial_balance(db.conn(), "acme", None, None).unwrap_or_default();
         assert_eq!(balances.len(), 3);
 
         let cash = balances.iter().find(|b| b.code == "1000");
@@ -374,8 +460,8 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let balances = compute_trial_balance(db.conn(), "acme", None, Some("2024-01-31"))
-            .unwrap_or_default();
+        let balances =
+            compute_trial_balance(db.conn(), "acme", None, Some("2024-01-31")).unwrap_or_default();
 
         let cash = balances.iter().find(|b| b.code == "1000");
         assert!(cash.is_some());
@@ -386,8 +472,7 @@ mod tests {
     #[test]
     fn account_balance_empty() {
         let db = setup();
-        let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None).unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None).unwrap_or((0, 0));
         assert_eq!(dr, 0);
         assert_eq!(cr, 0);
     }
@@ -398,8 +483,7 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None).unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None).unwrap_or((0, 0));
         assert_eq!(dr, 8000);
         assert_eq!(cr, 0);
     }
@@ -410,9 +494,8 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", Some("2024-01-31"))
-                .unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", Some("2024-01-31"))
+            .unwrap_or((0, 0));
         assert_eq!(dr, 5000);
         assert_eq!(cr, 0);
     }

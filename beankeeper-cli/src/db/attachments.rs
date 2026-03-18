@@ -136,10 +136,7 @@ fn row_to_attachment(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentRow>
 /// # Errors
 ///
 /// Returns `CliError::Io` on file system errors.
-pub fn hash_and_store_file(
-    source: &Path,
-    db_path: &Path,
-) -> Result<(String, PathBuf), CliError> {
+pub fn hash_and_store_file(source: &Path, db_path: &Path) -> Result<(String, PathBuf), CliError> {
     let store_dir = attachment_store_dir(db_path);
     fs::create_dir_all(&store_dir)?;
 
@@ -253,8 +250,8 @@ mod tests {
             hash: Some("abc123"),
             original_filename: Some("receipt.pdf"),
         };
-        let att_id = store_attachment(db.conn(), &params)
-            .unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id =
+            store_attachment(db.conn(), &params).unwrap_or_else(|e| panic!("store failed: {e}"));
         assert!(att_id > 0);
 
         let attachments = list_attachments(db.conn(), "acme", txn_id)
@@ -262,7 +259,10 @@ mod tests {
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].uri, "attachments/abc123");
         assert_eq!(attachments[0].document_type, "receipt");
-        assert_eq!(attachments[0].original_filename.as_deref(), Some("receipt.pdf"));
+        assert_eq!(
+            attachments[0].original_filename.as_deref(),
+            Some("receipt.pdf")
+        );
     }
 
     #[test]
@@ -279,11 +279,11 @@ mod tests {
             hash: Some("def456"),
             original_filename: None,
         };
-        let att_id = store_attachment(db.conn(), &params)
-            .unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id =
+            store_attachment(db.conn(), &params).unwrap_or_else(|e| panic!("store failed: {e}"));
 
-        let att = get_attachment(db.conn(), "acme", att_id)
-            .unwrap_or_else(|e| panic!("get failed: {e}"));
+        let att =
+            get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.id, att_id);
         assert_eq!(att.document_type, "invoice");
     }
@@ -321,10 +321,10 @@ mod tests {
         fs::write(&source, b"duplicate content").unwrap_or_else(|e| panic!("write: {e}"));
 
         let db_path = dir.path().join("test.db");
-        let (hash1, _) = hash_and_store_file(&source, &db_path)
-            .unwrap_or_else(|e| panic!("first store: {e}"));
-        let (hash2, _) = hash_and_store_file(&source, &db_path)
-            .unwrap_or_else(|e| panic!("second store: {e}"));
+        let (hash1, _) =
+            hash_and_store_file(&source, &db_path).unwrap_or_else(|e| panic!("first store: {e}"));
+        let (hash2, _) =
+            hash_and_store_file(&source, &db_path).unwrap_or_else(|e| panic!("second store: {e}"));
 
         assert_eq!(hash1, hash2);
     }
@@ -354,11 +354,11 @@ mod tests {
             hash: Some("ghi789"),
             original_filename: Some("statement.pdf"),
         };
-        let att_id = store_attachment(db.conn(), &params)
-            .unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id =
+            store_attachment(db.conn(), &params).unwrap_or_else(|e| panic!("store failed: {e}"));
 
-        let att = get_attachment(db.conn(), "acme", att_id)
-            .unwrap_or_else(|e| panic!("get failed: {e}"));
+        let att =
+            get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.entry_id, Some(entry_id));
     }
 }

@@ -243,21 +243,11 @@ fn merge_correlate_into_metadata(existing: Option<&str>, correlate_id: i64) -> S
     }
 }
 
-/// Lists transactions for a company with optional filters.
-///
-/// - `account_filter`: if set, only returns transactions that have an entry
-///   for this account code.
-/// - `from_date` / `to_date`: inclusive date range filter on
-///   `transactions.date`.
-///
-/// # Errors
-///
-/// Returns `CliError::Sqlite` on database errors.
-/// Parameters for listing transactions.
+/// Parameters for listing/searching transactions.
 pub struct ListTransactionParams<'a> {
     /// Company slug to scope the query.
     pub company_slug: &'a str,
-    /// Optional account code filter.
+    /// Optional account code filter (matches entries).
     pub account_filter: Option<&'a str>,
     /// Optional start date (inclusive).
     pub from_date: Option<&'a str>,
@@ -267,6 +257,153 @@ pub struct ListTransactionParams<'a> {
     pub limit: i64,
     /// Number of rows to skip.
     pub offset: i64,
+    /// Substring search on transaction description (case-insensitive).
+    pub description_like: Option<&'a str>,
+    /// Minimum entry amount in minor units (exclusive).
+    pub amount_gt: Option<i64>,
+    /// Maximum entry amount in minor units (exclusive).
+    pub amount_lt: Option<i64>,
+    /// Exact entry amount in minor units.
+    pub amount_eq: Option<i64>,
+    /// Exact match on transaction currency code.
+    pub currency_filter: Option<&'a str>,
+    /// Exact match on transaction reference (idempotency key).
+    pub reference_filter: Option<&'a str>,
+    /// Substring search on transaction metadata (case-insensitive).
+    pub metadata_like: Option<&'a str>,
+    /// Exact match on entry tax category.
+    pub tax_category_filter: Option<&'a str>,
+    /// Filter entries by direction ("debit" or "credit").
+    pub direction_filter: Option<&'a str>,
+}
+
+impl<'a> ListTransactionParams<'a> {
+    /// Creates params with only the required company slug and sensible defaults.
+    #[must_use]
+    pub fn for_company(company_slug: &'a str) -> Self {
+        Self {
+            company_slug,
+            account_filter: None,
+            from_date: None,
+            to_date: None,
+            limit: 50,
+            offset: 0,
+            description_like: None,
+            amount_gt: None,
+            amount_lt: None,
+            amount_eq: None,
+            currency_filter: None,
+            reference_filter: None,
+            metadata_like: None,
+            tax_category_filter: None,
+            direction_filter: None,
+        }
+    }
+
+    /// Returns `true` if any filter requires joining the entries table.
+    fn needs_entries_join(&self) -> bool {
+        self.account_filter.is_some()
+            || self.amount_gt.is_some()
+            || self.amount_lt.is_some()
+            || self.amount_eq.is_some()
+            || self.tax_category_filter.is_some()
+            || self.direction_filter.is_some()
+    }
+}
+
+/// Builds the shared FROM/JOIN/WHERE clause for transaction queries.
+///
+/// Returns `(sql, param_values, next_param_idx)` without ORDER BY, LIMIT, or OFFSET.
+fn build_list_query(
+    params: &ListTransactionParams<'_>,
+) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>, u32) {
+    let mut sql = String::from("FROM transactions t");
+
+    if params.needs_entries_join() {
+        sql.push_str(" JOIN entries e ON e.transaction_id = t.id");
+    }
+
+    sql.push_str(" WHERE t.company_slug = ?1");
+
+    let mut param_idx = 2u32;
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    param_values.push(Box::new(params.company_slug.to_string()));
+
+    // Entry-level filters
+    if let Some(account) = params.account_filter {
+        let _ = write!(sql, " AND e.account_code = ?{param_idx}");
+        param_values.push(Box::new(account.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(amount) = params.amount_gt {
+        let _ = write!(sql, " AND e.amount > ?{param_idx}");
+        param_values.push(Box::new(amount));
+        param_idx += 1;
+    }
+
+    if let Some(amount) = params.amount_lt {
+        let _ = write!(sql, " AND e.amount < ?{param_idx}");
+        param_values.push(Box::new(amount));
+        param_idx += 1;
+    }
+
+    if let Some(amount) = params.amount_eq {
+        let _ = write!(sql, " AND e.amount = ?{param_idx}");
+        param_values.push(Box::new(amount));
+        param_idx += 1;
+    }
+
+    if let Some(tax_cat) = params.tax_category_filter {
+        let _ = write!(sql, " AND e.tax_category = ?{param_idx}");
+        param_values.push(Box::new(tax_cat.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(direction) = params.direction_filter {
+        let _ = write!(sql, " AND e.direction = ?{param_idx}");
+        param_values.push(Box::new(direction.to_string()));
+        param_idx += 1;
+    }
+
+    // Transaction-level filters
+    if let Some(from) = params.from_date {
+        let _ = write!(sql, " AND t.date >= ?{param_idx}");
+        param_values.push(Box::new(from.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(to) = params.to_date {
+        let _ = write!(sql, " AND t.date <= ?{param_idx}");
+        param_values.push(Box::new(to.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(desc) = params.description_like {
+        let _ = write!(sql, " AND t.description LIKE '%' || ?{param_idx} || '%'");
+        param_values.push(Box::new(desc.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(currency) = params.currency_filter {
+        let _ = write!(sql, " AND t.currency = ?{param_idx}");
+        param_values.push(Box::new(currency.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(reference) = params.reference_filter {
+        let _ = write!(sql, " AND t.reference = ?{param_idx}");
+        param_values.push(Box::new(reference.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(meta) = params.metadata_like {
+        let _ = write!(sql, " AND t.metadata LIKE '%' || ?{param_idx} || '%'");
+        param_values.push(Box::new(meta.to_string()));
+        param_idx += 1;
+    }
+
+    (sql, param_values, param_idx)
 }
 
 /// List transactions matching the given filters.
@@ -278,57 +415,22 @@ pub fn list_transactions(
     conn: &Connection,
     params: &ListTransactionParams<'_>,
 ) -> Result<Vec<TransactionRow>, CliError> {
-    let ListTransactionParams {
-        company_slug,
-        account_filter,
-        from_date,
-        to_date,
-        limit,
-        offset,
-    } = params;
-    let mut sql = String::from(
+    let (where_clause, mut param_values, mut param_idx) = build_list_query(params);
+
+    let mut sql = format!(
         "SELECT DISTINCT t.id, t.company_slug, t.description, \
          t.metadata, t.currency, t.date, t.posted_at, t.reference \
-         FROM transactions t",
+         {where_clause}"
     );
-
-    if account_filter.is_some() {
-        sql.push_str(" JOIN entries e ON e.transaction_id = t.id");
-    }
-
-    sql.push_str(" WHERE t.company_slug = ?1");
-
-    let mut param_idx = 2u32;
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new((*company_slug).to_string()));
-
-    if let Some(account) = account_filter {
-        let _ = write!(sql, " AND e.account_code = ?{param_idx}");
-        param_values.push(Box::new((*account).to_string()));
-        param_idx += 1;
-    }
-
-    if let Some(from) = from_date {
-        let _ = write!(sql, " AND t.date >= ?{param_idx}");
-        param_values.push(Box::new((*from).to_string()));
-        param_idx += 1;
-    }
-
-    if let Some(to) = to_date {
-        let _ = write!(sql, " AND t.date <= ?{param_idx}");
-        param_values.push(Box::new((*to).to_string()));
-        param_idx += 1;
-    }
 
     sql.push_str(" ORDER BY t.date, t.id");
 
     let _ = write!(sql, " LIMIT ?{param_idx}");
-    param_values.push(Box::new(*limit));
+    param_values.push(Box::new(params.limit));
     param_idx += 1;
 
     let _ = write!(sql, " OFFSET ?{param_idx}");
-    param_values.push(Box::new(*offset));
-    let _ = param_idx;
+    param_values.push(Box::new(params.offset));
 
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(AsRef::as_ref).collect();
@@ -352,6 +454,26 @@ pub fn list_transactions(
         transactions.push(row?);
     }
     Ok(transactions)
+}
+
+/// Count transactions matching the given filters (ignores limit/offset).
+///
+/// # Errors
+///
+/// Returns [`CliError`] on database query failure.
+pub fn count_transactions(
+    conn: &Connection,
+    params: &ListTransactionParams<'_>,
+) -> Result<i64, CliError> {
+    let (where_clause, param_values, _) = build_list_query(params);
+
+    let sql = format!("SELECT COUNT(DISTINCT t.id) {where_clause}");
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(AsRef::as_ref).collect();
+
+    let count: i64 = conn.query_row(&sql, params_refs.as_slice(), |row| row.get(0))?;
+    Ok(count)
 }
 
 /// Fetches a single transaction and all its entries.
@@ -598,14 +720,8 @@ mod tests {
         let p2 = make_params(&entries, "Second", None, "2024-01-02");
         assert!(post_transaction(db.conn(), &p2).is_ok());
 
-        let lp = ListTransactionParams {
-            company_slug: "acme",
-            account_filter: None,
-            from_date: None,
-            to_date: None,
-            limit: 100,
-            offset: 0,
-        };
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 2);
     }
@@ -639,14 +755,9 @@ mod tests {
         let p2 = make_params(&entries2, "Expense", None, "2024-01-02");
         assert!(post_transaction(db.conn(), &p2).is_ok());
 
-        let lp = ListTransactionParams {
-            company_slug: "acme",
-            account_filter: Some("5000"),
-            from_date: None,
-            to_date: None,
-            limit: 100,
-            offset: 0,
-        };
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.account_filter = Some("5000");
+        lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Expense");
@@ -663,14 +774,10 @@ mod tests {
         let p3 = make_params(&entries, "Mar", None, "2024-03-15");
         assert!(post_transaction(db.conn(), &p3).is_ok());
 
-        let lp = ListTransactionParams {
-            company_slug: "acme",
-            account_filter: None,
-            from_date: Some("2024-02-01"),
-            to_date: Some("2024-02-28"),
-            limit: 100,
-            offset: 0,
-        };
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.from_date = Some("2024-02-01");
+        lp.to_date = Some("2024-02-28");
+        lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Feb");
@@ -715,15 +822,196 @@ mod tests {
         assert!(result.is_err());
 
         // Verify no transaction was partially committed
-        let lp = ListTransactionParams {
-            company_slug: "acme",
-            account_filter: None,
-            from_date: None,
-            to_date: None,
-            limit: 100,
-            offset: 0,
-        };
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 0);
+    }
+
+    #[test]
+    fn list_transactions_with_description_filter() {
+        let db = setup();
+        let entries = sample_entries();
+        let p1 = make_params(&entries, "AWS monthly bill", None, "2024-01-01");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+        let p2 = make_params(&entries, "Office supplies", None, "2024-01-02");
+        assert!(post_transaction(db.conn(), &p2).is_ok());
+
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.description_like = Some("AWS");
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].description, "AWS monthly bill");
+    }
+
+    #[test]
+    fn list_transactions_with_amount_gt() {
+        let db = setup();
+        let small_entries = vec![
+            PostEntryParams { account_code: "1000".into(), direction: "debit".into(), amount: 1000, memo: None, tax_category: None },
+            PostEntryParams { account_code: "4000".into(), direction: "credit".into(), amount: 1000, memo: None, tax_category: None },
+        ];
+        let big_entries = vec![
+            PostEntryParams { account_code: "1000".into(), direction: "debit".into(), amount: 50000, memo: None, tax_category: None },
+            PostEntryParams { account_code: "4000".into(), direction: "credit".into(), amount: 50000, memo: None, tax_category: None },
+        ];
+        let p1 = make_params(&small_entries, "Small", None, "2024-01-01");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+        let p2 = make_params(&big_entries, "Big", None, "2024-01-02");
+        assert!(post_transaction(db.conn(), &p2).is_ok());
+
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.amount_gt = Some(10000);
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].description, "Big");
+    }
+
+    #[test]
+    fn list_transactions_with_amount_eq() {
+        let db = setup();
+        let entries = sample_entries(); // amount 5000
+        let p1 = make_params(&entries, "Exact", None, "2024-01-01");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.amount_eq = Some(5000);
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+
+        let mut lp2 = ListTransactionParams::for_company("acme");
+        lp2.amount_eq = Some(9999);
+        lp2.limit = 100;
+        let list2 = list_transactions(db.conn(), &lp2).unwrap_or_default();
+        assert_eq!(list2.len(), 0);
+    }
+
+    #[test]
+    fn list_transactions_with_reference_filter() {
+        let db = setup();
+        let entries = sample_entries();
+        let mut p1 = make_params(&entries, "With ref", None, "2024-01-01");
+        p1.reference = Some("INV-001");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+        let p2 = make_params(&entries, "No ref", None, "2024-01-02");
+        assert!(post_transaction(db.conn(), &p2).is_ok());
+
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.reference_filter = Some("INV-001");
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].description, "With ref");
+    }
+
+    #[test]
+    fn list_transactions_with_metadata_filter() {
+        let db = setup();
+        let entries = sample_entries();
+        let p1 = make_params(&entries, "Tagged", Some(r#"{"vendor":"AWS"}"#), "2024-01-01");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+        let p2 = make_params(&entries, "Untagged", None, "2024-01-02");
+        assert!(post_transaction(db.conn(), &p2).is_ok());
+
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.metadata_like = Some("AWS");
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].description, "Tagged");
+    }
+
+    #[test]
+    fn list_transactions_with_direction_filter() {
+        let db = setup();
+        create_account(db.conn(), "acme", "5000", "Expenses", "expense", None)
+            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+
+        let entries = sample_entries();
+        let p1 = make_params(&entries, "Sale", None, "2024-01-01");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+
+        // Filter for transactions where account 1000 has a debit entry
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.account_filter = Some("1000");
+        lp.direction_filter = Some("debit");
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+
+        // Filter for transactions where account 1000 has a credit entry (none)
+        let mut lp2 = ListTransactionParams::for_company("acme");
+        lp2.account_filter = Some("1000");
+        lp2.direction_filter = Some("credit");
+        lp2.limit = 100;
+        let list2 = list_transactions(db.conn(), &lp2).unwrap_or_default();
+        assert_eq!(list2.len(), 0);
+    }
+
+    #[test]
+    fn count_transactions_returns_count() {
+        let db = setup();
+        let entries = sample_entries();
+        let p1 = make_params(&entries, "First", None, "2024-01-01");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+        let p2 = make_params(&entries, "Second", None, "2024-01-02");
+        assert!(post_transaction(db.conn(), &p2).is_ok());
+        let p3 = make_params(&entries, "Third", None, "2024-01-03");
+        assert!(post_transaction(db.conn(), &p3).is_ok());
+
+        let lp = ListTransactionParams::for_company("acme");
+        let count = count_transactions(db.conn(), &lp).unwrap_or(0);
+        assert_eq!(count, 3);
+
+        let mut lp2 = ListTransactionParams::for_company("acme");
+        lp2.from_date = Some("2024-01-02");
+        let count2 = count_transactions(db.conn(), &lp2).unwrap_or(0);
+        assert_eq!(count2, 2);
+    }
+
+    #[test]
+    fn list_transactions_combined_filters() {
+        let db = setup();
+        let entries = sample_entries();
+        let p1 = make_params(&entries, "AWS January", None, "2024-01-15");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+        let p2 = make_params(&entries, "AWS February", None, "2024-02-15");
+        assert!(post_transaction(db.conn(), &p2).is_ok());
+        let p3 = make_params(&entries, "Office supplies", None, "2024-01-20");
+        assert!(post_transaction(db.conn(), &p3).is_ok());
+
+        // Combine description + date range
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.description_like = Some("AWS");
+        lp.from_date = Some("2024-02-01");
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].description, "AWS February");
+    }
+
+    #[test]
+    fn list_transactions_with_tax_category_filter() {
+        let db = setup();
+        let entries_with_tax = vec![
+            PostEntryParams { account_code: "1000".into(), direction: "debit".into(), amount: 5000, memo: None, tax_category: Some("sched-c:24b".into()) },
+            PostEntryParams { account_code: "4000".into(), direction: "credit".into(), amount: 5000, memo: None, tax_category: None },
+        ];
+        let entries_no_tax = sample_entries();
+
+        let p1 = make_params(&entries_with_tax, "Taxed", None, "2024-01-01");
+        assert!(post_transaction(db.conn(), &p1).is_ok());
+        let p2 = make_params(&entries_no_tax, "Untaxed", None, "2024-01-02");
+        assert!(post_transaction(db.conn(), &p2).is_ok());
+
+        let mut lp = ListTransactionParams::for_company("acme");
+        lp.tax_category_filter = Some("sched-c:24b");
+        lp.limit = 100;
+        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].description, "Taxed");
     }
 }

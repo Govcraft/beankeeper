@@ -4,7 +4,10 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 
-use crate::db::{AccountRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, TransactionRow};
+use crate::db::{
+    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow,
+    TransactionRow,
+};
 
 // ---------------------------------------------------------------------------
 // Amount formatting
@@ -172,6 +175,42 @@ pub fn render_accounts(accounts: &[AccountRow], use_color: bool) -> String {
     )
 }
 
+/// Render a list of accounts with balance totals as a table.
+#[must_use]
+pub fn render_accounts_with_balances(
+    accounts: &[AccountWithBalanceRow],
+    use_color: bool,
+) -> String {
+    if accounts.is_empty() {
+        return "No accounts found.".to_string();
+    }
+
+    let mut table = new_table();
+    table.set_header(vec![
+        Cell::new(styled("Code", bold_style(), use_color)),
+        Cell::new(styled("Name", bold_style(), use_color)),
+        Cell::new(styled("Type", bold_style(), use_color)),
+        Cell::new(styled("Debit Total", bold_style(), use_color)),
+        Cell::new(styled("Credit Total", bold_style(), use_color)),
+    ]);
+
+    for a in accounts {
+        table.add_row(vec![
+            Cell::new(styled(&a.code, cyan_style(), use_color)),
+            Cell::new(&a.name),
+            Cell::new(capitalize_first(&a.account_type)),
+            Cell::new(a.debit_total).set_alignment(CellAlignment::Right),
+            Cell::new(a.credit_total).set_alignment(CellAlignment::Right),
+        ]);
+    }
+
+    let count = accounts.len();
+    format!(
+        "{table}\n\n{count} {noun}",
+        noun = if count == 1 { "account" } else { "accounts" }
+    )
+}
+
 /// Render a list of transactions as a summary table.
 #[must_use]
 pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool) -> String {
@@ -199,7 +238,11 @@ pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool)
     let count = transactions.len();
     format!(
         "{table}\n\n{count} {noun}",
-        noun = if count == 1 { "transaction" } else { "transactions" }
+        noun = if count == 1 {
+            "transaction"
+        } else {
+            "transactions"
+        }
     )
 }
 
@@ -410,14 +453,8 @@ pub fn render_account_balance(p: &AccountBalanceParams<'_>) -> String {
         styled(code, cyan_style(), use_color)
     ));
     lines.push(format!("  Name:    {name}"));
-    lines.push(format!(
-        "  Type:    {}",
-        capitalize_first(account_type)
-    ));
-    lines.push(format!(
-        "  Normal:  {}",
-        normal_balance_label(account_type)
-    ));
+    lines.push(format!("  Type:    {}", capitalize_first(account_type)));
+    lines.push(format!("  Normal:  {}", normal_balance_label(account_type)));
     lines.push(String::new());
 
     let debit_str = format_amount(debit_total, currency_minor_units);
@@ -484,10 +521,7 @@ pub fn render_attachments(attachments: &[AttachmentRow], use_color: bool) -> Str
             })
             .unwrap_or_default();
 
-        let filename = att
-            .original_filename
-            .as_deref()
-            .unwrap_or("(no filename)");
+        let filename = att.original_filename.as_deref().unwrap_or("(no filename)");
 
         lines.push(format!(
             "    [{doc_type}] {filename}{hash_suffix}",
@@ -508,11 +542,17 @@ pub fn render_orphaned_correlations(
     orphans: &[crate::db::OrphanedCorrelation],
     _use_color: bool,
 ) -> String {
-    use comfy_table::{Table, ContentArrangement};
+    use comfy_table::{ContentArrangement, Table};
 
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Txn ID", "Company", "Date", "Description", "Partner ID"]);
+    table.set_header(vec![
+        "Txn ID",
+        "Company",
+        "Date",
+        "Description",
+        "Partner ID",
+    ]);
 
     for o in orphans {
         table.add_row(vec![
@@ -567,8 +607,7 @@ pub fn render_tax_summary(
                 .set_alignment(CellAlignment::Right),
             Cell::new(format_amount(row.credit_total, currency_minor_units))
                 .set_alignment(CellAlignment::Right),
-            Cell::new(format_amount(net, currency_minor_units))
-                .set_alignment(CellAlignment::Right),
+            Cell::new(format_amount(net, currency_minor_units)).set_alignment(CellAlignment::Right),
         ]);
     }
 

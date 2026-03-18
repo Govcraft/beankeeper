@@ -58,18 +58,14 @@ fn export_json(db: &Db) -> Result<String, CliError> {
     let mut company_exports = Vec::new();
 
     for company in &companies {
-        let accounts = db::list_accounts(db.conn(), &company.slug, None)?;
-        let transactions = db::list_transactions(
-            db.conn(),
-            &db::ListTransactionParams {
-                company_slug: &company.slug,
-                account_filter: None,
-                from_date: None,
-                to_date: None,
-                limit: i64::MAX,
-                offset: 0,
-            },
-        )?;
+        let accounts = db::list_accounts(db.conn(), &db::accounts::ListAccountParams {
+                    company_slug: &company.slug,
+                    type_filter: None,
+                    name_filter: None,
+                })?;
+        let mut txn_params = db::ListTransactionParams::for_company(&company.slug);
+        txn_params.limit = i64::MAX;
+        let transactions = db::list_transactions(db.conn(), &txn_params)?;
 
         let mut txn_exports = Vec::new();
         for txn in &transactions {
@@ -145,7 +141,11 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
     // Section 2: Accounts (all companies)
     let mut all_accounts = Vec::new();
     for company in &companies {
-        let accounts = db::list_accounts(db.conn(), &company.slug, None)?;
+        let accounts = db::list_accounts(db.conn(), &db::accounts::ListAccountParams {
+                    company_slug: &company.slug,
+                    type_filter: None,
+                    name_filter: None,
+                })?;
         all_accounts.extend(accounts);
     }
 
@@ -182,17 +182,9 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
 
     for company in &companies {
-        let transactions = db::list_transactions(
-            db.conn(),
-            &db::ListTransactionParams {
-                company_slug: &company.slug,
-                account_filter: None,
-                from_date: None,
-                to_date: None,
-                limit: i64::MAX,
-                offset: 0,
-            },
-        )?;
+        let mut txn_params = db::ListTransactionParams::for_company(&company.slug);
+        txn_params.limit = i64::MAX;
+        let transactions = db::list_transactions(db.conn(), &txn_params)?;
         for txn in &transactions {
             let entries = db::get_entries_for_transaction(db.conn(), txn.id)?;
             for entry in &entries {

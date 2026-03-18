@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 
 use crate::cli::{AccountCommand, Cli, OutputFormat, resolve_format};
-use crate::db::accounts;
+use crate::db::{self, accounts};
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output;
@@ -43,16 +43,45 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
             }
             render_accounts(&[row], format, use_color)?;
         }
-        AccountCommand::List { account_type } => {
+        AccountCommand::List {
+            account_type,
+            name,
+            with_balances,
+            as_of,
+        } => {
             let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-            let rows = accounts::list_accounts(db.conn(), company, type_filter.as_deref())?;
-            render_accounts(&rows, format, use_color)?;
-            if !cli.verbosity.quiet {
-                let count = rows.len();
-                eprintln!(
-                    "{count} {noun}",
-                    noun = if count == 1 { "account" } else { "accounts" }
-                );
+
+            if *with_balances {
+                let rows = db::list_accounts_with_balances(
+                    db.conn(),
+                    company,
+                    type_filter.as_deref(),
+                    name.as_deref(),
+                    as_of.as_deref(),
+                )?;
+                render_accounts_with_balances(&rows, format, use_color)?;
+                if !cli.verbosity.quiet {
+                    let count = rows.len();
+                    eprintln!(
+                        "{count} {noun}",
+                        noun = if count == 1 { "account" } else { "accounts" }
+                    );
+                }
+            } else {
+                let params = accounts::ListAccountParams {
+                    company_slug: company,
+                    type_filter: type_filter.as_deref(),
+                    name_filter: name.as_deref(),
+                };
+                let rows = accounts::list_accounts(db.conn(), &params)?;
+                render_accounts(&rows, format, use_color)?;
+                if !cli.verbosity.quiet {
+                    let count = rows.len();
+                    eprintln!(
+                        "{count} {noun}",
+                        noun = if count == 1 { "account" } else { "accounts" }
+                    );
+                }
             }
         }
         AccountCommand::Show { code } => {
@@ -101,6 +130,29 @@ fn render_accounts(
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_accounts(rows)?;
+            print!("{rendered}");
+        }
+    }
+    Ok(())
+}
+
+/// Render account-with-balance rows in the requested format.
+fn render_accounts_with_balances(
+    rows: &[db::AccountWithBalanceRow],
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    match format {
+        OutputFormat::Table => {
+            let rendered = output::table::render_accounts_with_balances(rows, use_color);
+            println!("{rendered}");
+        }
+        OutputFormat::Json => {
+            let rendered = output::json::render_accounts_with_balances(rows)?;
+            println!("{rendered}");
+        }
+        OutputFormat::Csv => {
+            let rendered = output::csv::render_accounts_with_balances(rows)?;
             print!("{rendered}");
         }
     }
