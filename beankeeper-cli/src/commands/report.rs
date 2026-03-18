@@ -97,7 +97,8 @@ fn run_trial_balance(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_trial_balance(&balances)?;
+            let meta = output::json::meta("report.trial-balance", Some(company));
+            let rendered = output::json::render_trial_balance(&balances, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
@@ -157,7 +158,9 @@ fn run_balance(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_account_balance(&balance_row, currency.code())?;
+            let meta = output::json::meta("report.balance", Some(company));
+            let rendered =
+                output::json::render_account_balance(&balance_row, currency.code(), meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
@@ -217,7 +220,8 @@ fn run_income_statement(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_trial_balance(&all_balances)?;
+            let meta = output::json::meta("report.income-statement", Some(company));
+            let rendered = output::json::render_trial_balance(&all_balances, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
@@ -279,7 +283,8 @@ fn run_balance_sheet(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_trial_balance(&all_balances)?;
+            let meta = output::json::meta("report.balance-sheet", Some(company));
+            let rendered = output::json::render_trial_balance(&all_balances, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
@@ -629,7 +634,8 @@ fn run_tax_summary(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_tax_summary(&rows)?;
+            let meta = output::json::meta("report.tax-summary", Some(company));
+            let rendered = output::json::render_tax_summary(&rows, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {

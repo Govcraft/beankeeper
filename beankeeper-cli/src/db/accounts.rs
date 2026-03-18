@@ -302,7 +302,11 @@ mod tests {
         let db = setup();
         assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
         assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
-        let params = ListAccountParams { company_slug: "acme", type_filter: None, name_filter: None };
+        let params = ListAccountParams {
+            company_slug: "acme",
+            type_filter: None,
+            name_filter: None,
+        };
         let list = list_accounts(db.conn(), &params).unwrap_or_default();
         assert_eq!(list.len(), 2);
     }
@@ -312,7 +316,11 @@ mod tests {
         let db = setup();
         assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
         assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
-        let params = ListAccountParams { company_slug: "acme", type_filter: Some("asset"), name_filter: None };
+        let params = ListAccountParams {
+            company_slug: "acme",
+            type_filter: Some("asset"),
+            name_filter: None,
+        };
         let list = list_accounts(db.conn(), &params).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].code, "1000");
@@ -377,11 +385,19 @@ mod tests {
         assert!(create_account(db.conn(), "acme", "1100", "Petty Cash", "asset", None).is_ok());
         assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
 
-        let params = ListAccountParams { company_slug: "acme", type_filter: None, name_filter: Some("Cash") };
+        let params = ListAccountParams {
+            company_slug: "acme",
+            type_filter: None,
+            name_filter: Some("Cash"),
+        };
         let list = list_accounts(db.conn(), &params).unwrap_or_default();
         assert_eq!(list.len(), 2);
 
-        let params2 = ListAccountParams { company_slug: "acme", type_filter: Some("asset"), name_filter: Some("Petty") };
+        let params2 = ListAccountParams {
+            company_slug: "acme",
+            type_filter: Some("asset"),
+            name_filter: Some("Petty"),
+        };
         let list2 = list_accounts(db.conn(), &params2).unwrap_or_default();
         assert_eq!(list2.len(), 1);
         assert_eq!(list2[0].code, "1100");

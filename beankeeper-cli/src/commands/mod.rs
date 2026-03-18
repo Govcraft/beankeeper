@@ -6,8 +6,47 @@ pub mod report;
 pub mod txn;
 pub mod verify;
 
-use crate::cli::{Cli, Command, require_company};
+use crate::cli::{
+    AccountCommand, Cli, Command, CompanyCommand, ReportCommand, TxnCommand, require_company,
+};
 use crate::error::CliError;
+
+/// Map a parsed `Command` to its dot-notation command name.
+#[must_use]
+pub fn command_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Init { .. } => "init",
+        Command::Verify => "verify",
+        Command::Export { .. } => "export",
+        Command::Company(sub) => match sub {
+            CompanyCommand::Create { .. } => "company.create",
+            CompanyCommand::List => "company.list",
+            CompanyCommand::Show { .. } => "company.show",
+            CompanyCommand::Delete { .. } => "company.delete",
+        },
+        Command::Account(sub) => match sub {
+            AccountCommand::Create { .. } => "account.create",
+            AccountCommand::List { .. } => "account.list",
+            AccountCommand::Show { .. } => "account.show",
+            AccountCommand::Delete { .. } => "account.delete",
+        },
+        Command::Txn(sub) => match sub.as_ref() {
+            TxnCommand::Post { .. } => "txn.post",
+            TxnCommand::List { .. } => "txn.list",
+            TxnCommand::Show { .. } => "txn.show",
+            TxnCommand::Import { .. } => "txn.import",
+            TxnCommand::Attach { .. } => "txn.attach",
+            TxnCommand::Reconcile => "txn.reconcile",
+        },
+        Command::Report(sub) => match sub {
+            ReportCommand::TrialBalance { .. } => "report.trial-balance",
+            ReportCommand::Balance { .. } => "report.balance",
+            ReportCommand::IncomeStatement { .. } => "report.income-statement",
+            ReportCommand::BalanceSheet { .. } => "report.balance-sheet",
+            ReportCommand::TaxSummary { .. } => "report.tax-summary",
+        },
+    }
+}
 
 /// Dispatch a parsed CLI command.
 ///

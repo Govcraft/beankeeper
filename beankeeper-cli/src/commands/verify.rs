@@ -58,6 +58,12 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
         )));
     }
 
+    if cli.is_json() {
+        let meta = crate::output::json::meta("verify", None);
+        let rendered = crate::output::json::render_verify(version, meta)?;
+        println!("{rendered}");
+    }
+
     if !cli.verbosity.quiet {
         eprintln!("[ok] Ledger is healthy");
     }

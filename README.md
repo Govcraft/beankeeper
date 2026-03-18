@@ -145,7 +145,7 @@ bk --company personal txn list --account 5000 --amount-gt 500 --json
 
 # Count matching transactions without fetching them
 bk --company personal txn search --description "payroll" --count --json
-# → {"count":12}
+# → {"ok": true, "meta": {...}, "data": {"count": 12}}
 
 # Filter by tax category, direction, currency, reference, or metadata
 bk --company personal txn list --tax-category "sched-c:24b" --direction debit --json
@@ -171,8 +171,8 @@ bk --company personal account list --name "Cash" --with-balances --as-of 2026-06
 Every command supports `--format table` (default), `--format json`, and `--format csv`. Use `--json` as shorthand.
 
 ```sh
-# Pipe JSON to jq
-bk --company personal report trial-balance --json | jq '.accounts[] | select(.type == "asset")'
+# Pipe JSON to jq (data is inside the envelope's "data" field)
+bk --company personal report trial-balance --json | jq '.data.accounts[] | select(.type == "asset")'
 
 # CSV for spreadsheets
 bk --company personal txn list --format csv > transactions.csv
@@ -180,6 +180,40 @@ bk --company personal txn list --format csv > transactions.csv
 # Machine-readable for scripts (exit codes: 0=ok, 3=validation error)
 bk txn reconcile --json || echo "Orphaned correlations found"
 ```
+
+### JSON Envelope
+
+All JSON output follows a uniform envelope contract for reliable programmatic consumption:
+
+**Success:**
+```json
+{
+  "ok": true,
+  "meta": {
+    "command": "company.list",
+    "timestamp": "2026-03-18T15:30:00Z"
+  },
+  "data": [{"slug": "acme", "name": "Acme Corp"}]
+}
+```
+
+**Error:**
+```json
+{
+  "ok": false,
+  "meta": {
+    "command": "account.show",
+    "company": "acme",
+    "timestamp": "2026-03-18T15:30:00Z"
+  },
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "account '9999' not found"
+  }
+}
+```
+
+The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
 
 ### Environment Variables
 

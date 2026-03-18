@@ -1,8 +1,8 @@
 use std::io::IsTerminal;
 
 use crate::cli::{AccountCommand, Cli, OutputFormat, resolve_format};
-use crate::db::{self, accounts};
 use crate::db::connection::Db;
+use crate::db::{self, accounts};
 use crate::error::CliError;
 use crate::output;
 use crate::passphrase;
@@ -41,7 +41,7 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created account: {} ({})", row.code, row.name);
             }
-            render_accounts(&[row], format, use_color)?;
+            render_accounts(&[row], "account.create", company, format, use_color)?;
         }
         AccountCommand::List {
             account_type,
@@ -59,7 +59,7 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
                     name.as_deref(),
                     as_of.as_deref(),
                 )?;
-                render_accounts_with_balances(&rows, format, use_color)?;
+                render_accounts_with_balances(&rows, company, format, use_color)?;
                 if !cli.verbosity.quiet {
                     let count = rows.len();
                     eprintln!(
@@ -74,7 +74,7 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
                     name_filter: name.as_deref(),
                 };
                 let rows = accounts::list_accounts(db.conn(), &params)?;
-                render_accounts(&rows, format, use_color)?;
+                render_accounts(&rows, "account.list", company, format, use_color)?;
                 if !cli.verbosity.quiet {
                     let count = rows.len();
                     eprintln!(
@@ -86,7 +86,7 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
         }
         AccountCommand::Show { code } => {
             let row = accounts::get_account(db.conn(), company, code)?;
-            render_accounts(&[row], format, use_color)?;
+            render_accounts(&[row], "account.show", company, format, use_color)?;
         }
         AccountCommand::Delete { code, force } => {
             if !force {
@@ -104,6 +104,11 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
                 }
             }
             accounts::delete_account(db.conn(), company, code)?;
+            if format == OutputFormat::Json {
+                let meta = output::json::meta("account.delete", Some(company));
+                let rendered = output::json::render_deleted(code, meta)?;
+                println!("{rendered}");
+            }
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Deleted account: {code}");
             }
@@ -116,6 +121,8 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
 /// Render account rows in the requested format.
 fn render_accounts(
     rows: &[crate::db::AccountRow],
+    command: &str,
+    company: &str,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
@@ -125,7 +132,8 @@ fn render_accounts(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_accounts(rows)?;
+            let meta = output::json::meta(command, Some(company));
+            let rendered = output::json::render_accounts(rows, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
@@ -139,6 +147,7 @@ fn render_accounts(
 /// Render account-with-balance rows in the requested format.
 fn render_accounts_with_balances(
     rows: &[db::AccountWithBalanceRow],
+    company: &str,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
@@ -148,7 +157,8 @@ fn render_accounts_with_balances(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_accounts_with_balances(rows)?;
+            let meta = output::json::meta("account.list", Some(company));
+            let rendered = output::json::render_accounts_with_balances(rows, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {

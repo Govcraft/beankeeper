@@ -1,11 +1,18 @@
 //! JSON output rendering with `serde_json`.
 //!
 //! Each function converts database row types into serialisable wrappers and
-//! produces pretty-printed JSON.  Amounts are always raw integers (minor
-//! units) and enum values are always lowercase.
+//! produces pretty-printed JSON wrapped in a uniform envelope:
+//!
+//! ```json
+//! { "ok": true, "meta": { "command": "...", "timestamp": "..." }, "data": ... }
+//! ```
+//!
+//! Amounts are always raw integers (minor units) and enum values are always
+//! lowercase.
 
 use std::collections::HashMap;
 
+use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::db::{
@@ -13,6 +20,69 @@ use crate::db::{
     TransactionRow,
 };
 use crate::error::CliError;
+
+// ---------------------------------------------------------------------------
+// Envelope types
+// ---------------------------------------------------------------------------
+
+/// Response metadata included in every JSON envelope.
+#[derive(Serialize)]
+pub struct Meta {
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company: Option<String>,
+    pub timestamp: String,
+}
+
+/// Uniform JSON response envelope.
+#[derive(Serialize)]
+pub struct Envelope<T: Serialize> {
+    pub ok: bool,
+    pub meta: Meta,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<EnvelopeError>,
+}
+
+/// Error payload within the envelope.
+#[derive(Serialize)]
+pub struct EnvelopeError {
+    pub code: String,
+    pub message: String,
+}
+
+/// Construct a `Meta` with the current UTC timestamp.
+#[must_use]
+pub fn meta(command: &str, company: Option<&str>) -> Meta {
+    Meta {
+        command: command.to_string(),
+        company: company.map(str::to_string),
+        timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+    }
+}
+
+/// Construct a `Meta` with an explicit timestamp (for deterministic tests).
+#[must_use]
+pub fn meta_with_timestamp(command: &str, company: Option<&str>, timestamp: String) -> Meta {
+    Meta {
+        command: command.to_string(),
+        company: company.map(str::to_string),
+        timestamp,
+    }
+}
+
+/// Serialise a success envelope.
+fn envelope_ok<T: Serialize>(meta: Meta, data: T) -> Result<String, CliError> {
+    let env = Envelope {
+        ok: true,
+        meta,
+        data: Some(data),
+        error: None::<EnvelopeError>,
+    };
+    serde_json::to_string_pretty(&env)
+        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+}
 
 // ---------------------------------------------------------------------------
 // Serialisable wrapper types
@@ -104,18 +174,6 @@ pub struct BalanceJson {
     currency: String,
 }
 
-#[derive(Serialize)]
-pub struct ErrorJson {
-    error: ErrorDetailJson,
-}
-
-#[derive(Serialize)]
-pub struct ErrorDetailJson {
-    code: String,
-    message: String,
-    hint: Option<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -129,29 +187,16 @@ fn normal_balance_for(account_type: &str) -> &'static str {
     }
 }
 
-/// Map a `CliError` variant to a machine-readable error code string.
-fn error_code_string(err: &CliError) -> String {
-    match err {
-        CliError::Usage(_) => "USAGE_ERROR",
-        CliError::Validation(_) | CliError::Bean(_) => "VALIDATION_ERROR",
-        CliError::Database(_) | CliError::Sqlite(_) => "DATABASE_ERROR",
-        CliError::NotFound(_) => "NOT_FOUND",
-        CliError::General(_) => "GENERAL_ERROR",
-        CliError::Io(_) => "IO_ERROR",
-    }
-    .to_string()
-}
-
 // ---------------------------------------------------------------------------
 // Render functions
 // ---------------------------------------------------------------------------
 
-/// Render a list of companies as a JSON array.
+/// Render a list of companies as an enveloped JSON response.
 ///
 /// # Errors
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
-pub fn render_companies(companies: &[CompanyRow]) -> Result<String, CliError> {
+pub fn render_companies(companies: &[CompanyRow], meta: Meta) -> Result<String, CliError> {
     let rows: Vec<CompanyJson> = companies
         .iter()
         .map(|c| CompanyJson {
@@ -162,18 +207,17 @@ pub fn render_companies(companies: &[CompanyRow]) -> Result<String, CliError> {
         })
         .collect();
 
-    serde_json::to_string_pretty(&rows)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, rows)
 }
 
-/// Render a list of accounts as a JSON array.
+/// Render a list of accounts as an enveloped JSON response.
 ///
 /// Account types and normal-balance directions are always lowercase.
 ///
 /// # Errors
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
-pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
+pub fn render_accounts(accounts: &[AccountRow], meta: Meta) -> Result<String, CliError> {
     let rows: Vec<AccountJson> = accounts
         .iter()
         .map(|a| AccountJson {
@@ -184,11 +228,10 @@ pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
         })
         .collect();
 
-    serde_json::to_string_pretty(&rows)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, rows)
 }
 
-/// Render transactions with their entries as a JSON array.
+/// Render transactions with their entries as an enveloped JSON response.
 ///
 /// `entries_map` maps transaction IDs to their entry rows.  Transactions
 /// without entries in the map are rendered with an empty `entries` array.
@@ -199,6 +242,7 @@ pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
 pub fn render_transactions<S: ::std::hash::BuildHasher>(
     transactions: &[TransactionRow],
     entries_map: &HashMap<i64, Vec<EntryRow>, S>,
+    meta: Meta,
 ) -> Result<String, CliError> {
     let rows: Vec<TransactionJson> = transactions
         .iter()
@@ -230,11 +274,10 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
         })
         .collect();
 
-    serde_json::to_string_pretty(&rows)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, rows)
 }
 
-/// Render transactions with entries and attachments as a JSON array.
+/// Render transactions with entries and attachments as an enveloped JSON response.
 ///
 /// # Errors
 ///
@@ -246,6 +289,7 @@ pub fn render_transactions_with_attachments<
     transactions: &[TransactionRow],
     entries_map: &HashMap<i64, Vec<EntryRow>, S>,
     attachments_map: &HashMap<i64, Vec<AttachmentRow>, T>,
+    meta: Meta,
 ) -> Result<String, CliError> {
     let rows: Vec<TransactionWithAttachmentsJson> = transactions
         .iter()
@@ -294,17 +338,16 @@ pub fn render_transactions_with_attachments<
         })
         .collect();
 
-    serde_json::to_string_pretty(&rows)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, rows)
 }
 
-/// Render a trial balance as a JSON object with accounts, totals, and a
-/// `balanced` boolean.
+/// Render a trial balance as an enveloped JSON response with accounts, totals,
+/// and a `balanced` boolean.
 ///
 /// # Errors
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
-pub fn render_trial_balance(balances: &[BalanceRow]) -> Result<String, CliError> {
+pub fn render_trial_balance(balances: &[BalanceRow], meta: Meta) -> Result<String, CliError> {
     let mut total_debits: i64 = 0;
     let mut total_credits: i64 = 0;
 
@@ -330,16 +373,19 @@ pub fn render_trial_balance(balances: &[BalanceRow]) -> Result<String, CliError>
         balanced: total_debits == total_credits,
     };
 
-    serde_json::to_string_pretty(&result)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, result)
 }
 
-/// Render a single account balance as a JSON object.
+/// Render a single account balance as an enveloped JSON response.
 ///
 /// # Errors
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
-pub fn render_account_balance(balance: &BalanceRow, currency: &str) -> Result<String, CliError> {
+pub fn render_account_balance(
+    balance: &BalanceRow,
+    currency: &str,
+    meta: Meta,
+) -> Result<String, CliError> {
     let json = BalanceJson {
         code: balance.code.clone(),
         name: balance.name.clone(),
@@ -349,32 +395,9 @@ pub fn render_account_balance(balance: &BalanceRow, currency: &str) -> Result<St
         currency: currency.to_string(),
     };
 
-    serde_json::to_string_pretty(&json)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, json)
 }
 
-/// Render a `CliError` as a JSON string suitable for writing to stderr.
-///
-/// This always succeeds -- if serde serialisation fails internally, a
-/// hand-crafted JSON string is returned as a fallback.
-#[must_use]
-pub fn render_error(err: &CliError) -> String {
-    let json = ErrorJson {
-        error: ErrorDetailJson {
-            code: error_code_string(err),
-            message: err.to_string(),
-            hint: None,
-        },
-    };
-
-    serde_json::to_string_pretty(&json).unwrap_or_else(|_| {
-        // Fallback: hand-craft minimal JSON.
-        let msg = err.to_string().replace('\"', "\\\"");
-        format!(r#"{{"error":{{"code":"INTERNAL","message":"{msg}"}}}}"#)
-    })
-}
-
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Orphaned correlations
 // ---------------------------------------------------------------------------
@@ -388,13 +411,14 @@ struct OrphanedCorrelationJson {
     partner_id: i64,
 }
 
-/// Render orphaned intercompany correlations as JSON.
+/// Render orphaned intercompany correlations as an enveloped JSON response.
 ///
 /// # Errors
 ///
 /// Returns [`CliError`] if serialization fails.
 pub fn render_orphaned_correlations(
     orphans: &[crate::db::OrphanedCorrelation],
+    meta: Meta,
 ) -> Result<String, CliError> {
     let json_orphans: Vec<OrphanedCorrelationJson> = orphans
         .iter()
@@ -407,8 +431,7 @@ pub fn render_orphaned_correlations(
         })
         .collect();
 
-    serde_json::to_string_pretty(&json_orphans)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, json_orphans)
 }
 
 // ---------------------------------------------------------------------------
@@ -422,12 +445,15 @@ struct TaxSummaryEntryJson {
     credit_total: i64,
 }
 
-/// Render a tax summary as a JSON array.
+/// Render a tax summary as an enveloped JSON response.
 ///
 /// # Errors
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
-pub fn render_tax_summary(rows: &[crate::db::TaxSummaryRow]) -> Result<String, CliError> {
+pub fn render_tax_summary(
+    rows: &[crate::db::TaxSummaryRow],
+    meta: Meta,
+) -> Result<String, CliError> {
     let json_rows: Vec<TaxSummaryEntryJson> = rows
         .iter()
         .map(|r| TaxSummaryEntryJson {
@@ -437,8 +463,7 @@ pub fn render_tax_summary(rows: &[crate::db::TaxSummaryRow]) -> Result<String, C
         })
         .collect();
 
-    serde_json::to_string_pretty(&json_rows)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, json_rows)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,13 +481,14 @@ struct AccountWithBalanceJson {
     credit_total: i64,
 }
 
-/// Render accounts with balance totals as a JSON array.
+/// Render accounts with balance totals as an enveloped JSON response.
 ///
 /// # Errors
 ///
 /// Returns [`CliError`] on serialisation failure.
 pub fn render_accounts_with_balances(
     rows: &[AccountWithBalanceRow],
+    meta: Meta,
 ) -> Result<String, CliError> {
     let json_rows: Vec<AccountWithBalanceJson> = rows
         .iter()
@@ -477,8 +503,107 @@ pub fn render_accounts_with_balances(
         })
         .collect();
 
-    serde_json::to_string_pretty(&json_rows)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    envelope_ok(meta, json_rows)
+}
+
+// ---------------------------------------------------------------------------
+// Simple data helpers for mutation commands
+// ---------------------------------------------------------------------------
+
+/// Render a count as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_count(count: i64, meta: Meta) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct CountJson {
+        count: i64,
+    }
+    envelope_ok(meta, CountJson { count })
+}
+
+/// Render a deletion confirmation as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_deleted(slug: &str, meta: Meta) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct DeletedJson<'a> {
+        deleted: &'a str,
+    }
+    envelope_ok(meta, DeletedJson { deleted: slug })
+}
+
+/// Render a `txn post` confirmation as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_posted(id: i64, meta: Meta) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct PostedJson {
+        id: i64,
+    }
+    envelope_ok(meta, PostedJson { id })
+}
+
+/// Render a `txn attach` confirmation as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_attached(
+    attachment_id: i64,
+    transaction_id: i64,
+    meta: Meta,
+) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct AttachedJson {
+        id: i64,
+        transaction_id: i64,
+    }
+    envelope_ok(
+        meta,
+        AttachedJson {
+            id: attachment_id,
+            transaction_id,
+        },
+    )
+}
+
+/// Render an `init` confirmation as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_init(path: &str, meta: Meta) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct InitJson<'a> {
+        path: &'a str,
+    }
+    envelope_ok(meta, InitJson { path })
+}
+
+/// Render a `verify` confirmation as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_verify(schema_version: i64, meta: Meta) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct VerifyJson {
+        schema_version: i64,
+        status: &'static str,
+    }
+    envelope_ok(
+        meta,
+        VerifyJson {
+            schema_version,
+            status: "healthy",
+        },
+    )
 }
 
 // Tests
@@ -488,12 +613,18 @@ pub fn render_accounts_with_balances(
 mod tests {
     use super::*;
 
+    fn test_meta(command: &str, company: Option<&str>) -> Meta {
+        meta_with_timestamp(command, company, "2025-01-01T00:00:00Z".to_string())
+    }
+
     #[test]
     fn render_companies_empty() {
-        let result = render_companies(&[]);
+        let result = render_companies(&[], test_meta("company.list", None));
         assert!(result.is_ok());
         let json = result.unwrap_or_default();
-        assert_eq!(json.trim(), "[]");
+        assert!(json.contains(r#""ok": true"#));
+        assert!(json.contains(r#""command": "company.list""#));
+        assert!(json.contains(r#""data": []"#));
     }
 
     #[test]
@@ -504,7 +635,8 @@ mod tests {
             description: None,
             created_at: "2025-01-01T00:00:00".into(),
         }];
-        let json = render_companies(&rows).unwrap_or_default();
+        let json = render_companies(&rows, test_meta("company.show", None)).unwrap_or_default();
+        assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""slug": "acme""#));
         assert!(json.contains(r#""name": "Acme Corp""#));
     }
@@ -519,7 +651,10 @@ mod tests {
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];
-        let json = render_accounts(&rows).unwrap_or_default();
+        let json =
+            render_accounts(&rows, test_meta("account.list", Some("acme"))).unwrap_or_default();
+        assert!(json.contains(r#""ok": true"#));
+        assert!(json.contains(r#""company": "acme""#));
         assert!(json.contains(r#""type": "asset""#));
         assert!(json.contains(r#""normal_balance": "debit""#));
     }
@@ -534,7 +669,8 @@ mod tests {
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];
-        let json = render_accounts(&rows).unwrap_or_default();
+        let json =
+            render_accounts(&rows, test_meta("account.list", Some("acme"))).unwrap_or_default();
         assert!(json.contains(r#""normal_balance": "credit""#));
     }
 
@@ -576,7 +712,9 @@ mod tests {
                 },
             ],
         );
-        let json = render_transactions(&txns, &map).unwrap_or_default();
+        let json = render_transactions(&txns, &map, test_meta("txn.list", Some("acme")))
+            .unwrap_or_default();
+        assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""description": "Sale""#));
         assert!(json.contains(r#""account_code": "1000""#));
         assert!(json.contains(r#""direction": "debit""#));
@@ -595,7 +733,8 @@ mod tests {
             posted_at: "2025-03-15T10:00:00".into(),
             reference: None,
         }];
-        let json = render_transactions(&txns, &HashMap::new()).unwrap_or_default();
+        let json = render_transactions(&txns, &HashMap::new(), test_meta("txn.list", Some("acme")))
+            .unwrap_or_default();
         assert!(json.contains(r#""entries": []"#));
     }
 
@@ -617,7 +756,9 @@ mod tests {
                 credit_total: 10000,
             },
         ];
-        let json = render_trial_balance(&rows).unwrap_or_default();
+        let json = render_trial_balance(&rows, test_meta("report.trial-balance", Some("acme")))
+            .unwrap_or_default();
+        assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""balanced": true"#));
         assert!(json.contains(r#""total_debits": 10000"#));
         assert!(json.contains(r#""total_credits": 10000"#));
@@ -632,7 +773,8 @@ mod tests {
             debit_total: 10000,
             credit_total: 5000,
         }];
-        let json = render_trial_balance(&rows).unwrap_or_default();
+        let json = render_trial_balance(&rows, test_meta("report.trial-balance", Some("acme")))
+            .unwrap_or_default();
         assert!(json.contains(r#""balanced": false"#));
     }
 
@@ -645,46 +787,13 @@ mod tests {
             debit_total: 15000,
             credit_total: 5000,
         };
-        let json = render_account_balance(&row, "USD").unwrap_or_default();
+        let json =
+            render_account_balance(&row, "USD", test_meta("report.balance", Some("acme")))
+                .unwrap_or_default();
+        assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""code": "1000""#));
         assert!(json.contains(r#""currency": "USD""#));
         assert!(json.contains(r#""debit_total": 15000"#));
-    }
-
-    #[test]
-    fn render_error_usage() {
-        let err = CliError::Usage("missing --company flag".into());
-        let json = render_error(&err);
-        assert!(json.contains(r#""code": "USAGE_ERROR""#));
-        assert!(json.contains("missing --company flag"));
-    }
-
-    #[test]
-    fn render_error_not_found() {
-        let err = CliError::NotFound("account 9999 not found".into());
-        let json = render_error(&err);
-        assert!(json.contains(r#""code": "NOT_FOUND""#));
-    }
-
-    #[test]
-    fn render_error_database() {
-        let err = CliError::Database("corruption detected".into());
-        let json = render_error(&err);
-        assert!(json.contains(r#""code": "DATABASE_ERROR""#));
-    }
-
-    #[test]
-    fn render_error_validation() {
-        let err = CliError::Validation("unbalanced".into());
-        let json = render_error(&err);
-        assert!(json.contains(r#""code": "VALIDATION_ERROR""#));
-    }
-
-    #[test]
-    fn render_error_io() {
-        let err = CliError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
-        let json = render_error(&err);
-        assert!(json.contains(r#""code": "IO_ERROR""#));
     }
 
     #[test]
@@ -695,5 +804,46 @@ mod tests {
         assert_eq!(normal_balance_for("equity"), "credit");
         assert_eq!(normal_balance_for("revenue"), "credit");
         assert_eq!(normal_balance_for("unknown_type"), "unknown");
+    }
+
+    #[test]
+    fn envelope_structure_success() {
+        let json = render_companies(&[], test_meta("company.list", None)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["meta"]["command"], "company.list");
+        assert_eq!(v["meta"]["timestamp"], "2025-01-01T00:00:00Z");
+        assert!(v["meta"]["company"].is_null());
+        assert!(v["data"].is_array());
+        assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn envelope_structure_company_field() {
+        let json =
+            render_accounts(&[], test_meta("account.list", Some("acme"))).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["meta"]["company"], "acme");
+    }
+
+    #[test]
+    fn meta_with_timestamp_is_deterministic() {
+        let m = meta_with_timestamp("test", None, "2025-06-15T12:00:00Z".to_string());
+        assert_eq!(m.timestamp, "2025-06-15T12:00:00Z");
+        assert_eq!(m.command, "test");
+        assert!(m.company.is_none());
+    }
+
+    #[test]
+    fn error_code_returns_correct_strings() {
+        assert_eq!(CliError::Usage("x".into()).error_code(), "USAGE");
+        assert_eq!(CliError::Validation("x".into()).error_code(), "VALIDATION");
+        assert_eq!(CliError::Database("x".into()).error_code(), "DATABASE");
+        assert_eq!(CliError::NotFound("x".into()).error_code(), "NOT_FOUND");
+        assert_eq!(CliError::General("x".into()).error_code(), "GENERAL");
+        assert_eq!(
+            CliError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "x")).error_code(),
+            "IO"
+        );
     }
 }

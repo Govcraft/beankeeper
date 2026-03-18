@@ -91,8 +91,15 @@ pub fn render_accounts_with_balances(
     accounts: &[AccountWithBalanceRow],
 ) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
-    wtr.write_record(["code", "name", "type", "normal_balance", "debit_total", "credit_total"])
-        .map_err(|e| csv_err(&e))?;
+    wtr.write_record([
+        "code",
+        "name",
+        "type",
+        "normal_balance",
+        "debit_total",
+        "credit_total",
+    ])
+    .map_err(|e| csv_err(&e))?;
 
     for a in accounts {
         wtr.write_record([

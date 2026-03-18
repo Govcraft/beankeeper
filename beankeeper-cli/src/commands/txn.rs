@@ -52,7 +52,9 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             reference.as_deref(),
             tax,
         ),
-        TxnCommand::List { .. } => run_list_or_count(cli, &db_handle, company, sub, format, use_color),
+        TxnCommand::List { .. } => {
+            run_list_or_count(cli, &db_handle, company, sub, format, use_color)
+        }
         TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
         TxnCommand::Import {
             file: _,
@@ -116,9 +118,8 @@ fn run_list_or_count(
         .as_deref()
         .or(env_currency.as_deref())
         .unwrap_or("USD");
-    let amount_currency = Currency::from_code(currency_code).map_err(|e| {
-        CliError::Validation(format!("invalid currency for amount filter: {e}"))
-    })?;
+    let amount_currency = Currency::from_code(currency_code)
+        .map_err(|e| CliError::Validation(format!("invalid currency for amount filter: {e}")))?;
 
     let to_minor = |s: &str| parse_amount_to_minor(s, amount_currency);
 
@@ -345,27 +346,9 @@ fn run_post(
     let _transaction = journal.post()?;
 
     // 6. Build entries for DB persistence
-    let mut db_entries: Vec<transactions::PostEntryParams> = Vec::new();
-    for (code, minor, memo) in &parsed_debits {
-        let row = accounts::get_account(db_handle.conn(), company, code)?;
-        db_entries.push(transactions::PostEntryParams {
-            account_code: code.clone(),
-            direction: "debit".to_string(),
-            amount: *minor,
-            memo: memo.clone(),
-            tax_category: resolve_tax(code, &row),
-        });
-    }
-    for (code, minor, memo) in &parsed_credits {
-        let row = accounts::get_account(db_handle.conn(), company, code)?;
-        db_entries.push(transactions::PostEntryParams {
-            account_code: code.clone(),
-            direction: "credit".to_string(),
-            amount: *minor,
-            memo: memo.clone(),
-            tax_category: resolve_tax(code, &row),
-        });
-    }
+    let db_entries = build_db_entries(
+        db_handle, company, &parsed_debits, &parsed_credits, &resolve_tax,
+    )?;
 
     // Resolve idempotency key from the reference, if provided.
     let idempotency_key = reference
@@ -386,11 +369,50 @@ fn run_post(
 
     let txn_id = transactions::post_transaction(db_handle.conn(), &params)?;
 
+    let format = crate::cli::resolve_format(None, cli);
+    if format == crate::cli::OutputFormat::Json {
+        let meta = crate::output::json::meta("txn.post", Some(company));
+        let rendered = crate::output::json::render_posted(txn_id, meta)?;
+        println!("{rendered}");
+    }
+
     if !cli.verbosity.quiet {
         eprintln!("[ok] transaction #{txn_id} posted");
     }
 
     Ok(())
+}
+
+/// Build DB entry params from parsed debit/credit args.
+fn build_db_entries(
+    db_handle: &Db,
+    company: &str,
+    parsed_debits: &[(String, i64, Option<String>)],
+    parsed_credits: &[(String, i64, Option<String>)],
+    resolve_tax: &dyn Fn(&str, &db::AccountRow) -> Option<String>,
+) -> Result<Vec<transactions::PostEntryParams>, CliError> {
+    let mut db_entries = Vec::new();
+    for (code, minor, memo) in parsed_debits {
+        let row = accounts::get_account(db_handle.conn(), company, code)?;
+        db_entries.push(transactions::PostEntryParams {
+            account_code: code.clone(),
+            direction: "debit".to_string(),
+            amount: *minor,
+            memo: memo.clone(),
+            tax_category: resolve_tax(code, &row),
+        });
+    }
+    for (code, minor, memo) in parsed_credits {
+        let row = accounts::get_account(db_handle.conn(), company, code)?;
+        db_entries.push(transactions::PostEntryParams {
+            account_code: code.clone(),
+            direction: "credit".to_string(),
+            amount: *minor,
+            memo: memo.clone(),
+            tax_category: resolve_tax(code, &row),
+        });
+    }
+    Ok(db_entries)
 }
 
 /// Execute the `txn list` subcommand.
@@ -416,7 +438,8 @@ fn run_list(
                 let entries = transactions::get_entries_for_transaction(db_handle.conn(), txn.id)?;
                 entries_map.insert(txn.id, entries);
             }
-            let rendered = output::json::render_transactions(&rows, &entries_map)?;
+            let meta = output::json::meta("txn.list", Some(params.company_slug));
+            let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
@@ -451,7 +474,9 @@ fn run_count(
 
     match format {
         OutputFormat::Json => {
-            println!("{{\"count\":{count}}}");
+            let meta = output::json::meta("txn.list", Some(params.company_slug));
+            let rendered = output::json::render_count(count, meta)?;
+            println!("{rendered}");
         }
         OutputFormat::Table | OutputFormat::Csv => {
             println!("{count}");
@@ -508,8 +533,13 @@ fn run_show(
             entries_map.insert(txn.id, entries);
             let mut att_map: HashMap<i64, Vec<db::AttachmentRow>> = HashMap::new();
             att_map.insert(txn.id, att_rows);
-            let rendered =
-                output::json::render_transactions_with_attachments(&[txn], &entries_map, &att_map)?;
+            let meta = output::json::meta("txn.show", Some(company));
+            let rendered = output::json::render_transactions_with_attachments(
+                &[txn],
+                &entries_map,
+                &att_map,
+                meta,
+            )?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
@@ -569,6 +599,13 @@ fn run_attach(
     };
     let att_id = attachments::store_attachment(db_handle.conn(), &params)?;
 
+    let format = crate::cli::resolve_format(None, cli);
+    if format == crate::cli::OutputFormat::Json {
+        let meta = crate::output::json::meta("txn.attach", Some(company));
+        let rendered = crate::output::json::render_attached(att_id, transaction_id, meta)?;
+        println!("{rendered}");
+    }
+
     if !cli.verbosity.quiet {
         eprintln!(
             "[ok] attachment #{att_id} added to transaction #{transaction_id} ({doc_type}, {hash_short})",
@@ -589,7 +626,11 @@ fn run_reconcile(
 
     if orphans.is_empty() {
         match format {
-            OutputFormat::Json => println!("[]"),
+            OutputFormat::Json => {
+                let meta = output::json::meta("txn.reconcile", None);
+                let rendered = output::json::render_orphaned_correlations(&[], meta)?;
+                println!("{rendered}");
+            }
             OutputFormat::Csv => println!("transaction_id,company,description,date,partner_id"),
             OutputFormat::Table => eprintln!("[ok] no orphaned correlations found"),
         }
@@ -603,7 +644,8 @@ fn run_reconcile(
             eprintln!("[!!] {} orphaned correlation(s) found", orphans.len());
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_orphaned_correlations(&orphans)?;
+            let meta = output::json::meta("txn.reconcile", None);
+            let rendered = output::json::render_orphaned_correlations(&orphans, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {

@@ -32,11 +32,11 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
             }
-            render_companies(&[row], format, use_color)?;
+            render_companies(&[row], "company.create", format, use_color)?;
         }
         CompanyCommand::List => {
             let rows = companies::list_companies(db.conn())?;
-            render_companies(&rows, format, use_color)?;
+            render_companies(&rows, "company.list", format, use_color)?;
             if !cli.verbosity.quiet {
                 let count = rows.len();
                 eprintln!(
@@ -47,7 +47,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
         }
         CompanyCommand::Show { slug } => {
             let row = companies::get_company(db.conn(), slug)?;
-            render_companies(&[row], format, use_color)?;
+            render_companies(&[row], "company.show", format, use_color)?;
         }
         CompanyCommand::Delete { slug, force } => {
             if !force {
@@ -65,6 +65,11 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
                 }
             }
             companies::delete_company(db.conn(), slug)?;
+            if format == OutputFormat::Json {
+                let meta = output::json::meta("company.delete", None);
+                let rendered = output::json::render_deleted(slug, meta)?;
+                println!("{rendered}");
+            }
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Deleted company: {slug}");
             }
@@ -77,6 +82,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
 /// Render company rows in the requested format.
 fn render_companies(
     rows: &[crate::db::CompanyRow],
+    command: &str,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
@@ -86,7 +92,8 @@ fn render_companies(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let rendered = output::json::render_companies(rows)?;
+            let meta = output::json::meta(command, None);
+            let rendered = output::json::render_companies(rows, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {

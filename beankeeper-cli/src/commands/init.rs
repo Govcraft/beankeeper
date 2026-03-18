@@ -47,6 +47,13 @@ pub fn run(cli: &Cli, encrypt: bool, path: Option<&Path>, force: bool) -> Result
 
     let _db = Db::open(db_path, passphrase.as_ref())?;
 
+    if cli.is_json() {
+        let meta = crate::output::json::meta("init", None);
+        let rendered =
+            crate::output::json::render_init(&db_path.display().to_string(), meta)?;
+        println!("{rendered}");
+    }
+
     if !cli.verbosity.quiet {
         eprintln!("[ok] Created database: {}", db_path.display());
     }

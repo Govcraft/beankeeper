@@ -35,17 +35,48 @@ impl CliError {
         }
     }
 
+    /// Returns a machine-readable error code string for the envelope.
+    #[must_use]
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            Self::Usage(_) => "USAGE",
+            Self::Validation(_) | Self::Bean(_) => "VALIDATION",
+            Self::Database(_) | Self::Sqlite(_) => "DATABASE",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::Io(_) => "IO",
+            Self::General(_) => "GENERAL",
+        }
+    }
+
     /// Report the error to stderr.
     ///
-    /// In JSON mode, outputs a JSON object. Otherwise, writes a human-readable
-    /// `error: <message>` line.
-    pub fn report(&self, json_mode: bool) {
+    /// In JSON mode with a `Meta`, outputs an enveloped JSON error object.
+    /// In JSON mode without `Meta`, falls back to a minimal JSON object.
+    /// Otherwise, writes a human-readable `error: <message>` line.
+    pub fn report(&self, json_mode: bool, meta: Option<crate::output::json::Meta>) {
         if json_mode {
             let message = self.to_string();
-            let code = self.exit_code();
-            // Write JSON error to stderr. If serialization or write fails,
-            // fall back to a plain text message.
+            let code = self.error_code();
+
+            if let Some(m) = meta {
+                let env = crate::output::json::Envelope {
+                    ok: false,
+                    meta: m,
+                    data: None::<()>,
+                    error: Some(crate::output::json::EnvelopeError {
+                        code: code.to_string(),
+                        message: message.clone(),
+                    }),
+                };
+                if let Ok(json) = serde_json::to_string_pretty(&env) {
+                    eprintln!("{json}");
+                    return;
+                }
+            }
+
+            // Fallback: minimal JSON without envelope
             let json = serde_json::json!({
+                "ok": false,
                 "error": {
                     "code": code,
                     "message": message,

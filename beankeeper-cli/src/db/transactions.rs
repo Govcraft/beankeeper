@@ -849,12 +849,36 @@ mod tests {
     fn list_transactions_with_amount_gt() {
         let db = setup();
         let small_entries = vec![
-            PostEntryParams { account_code: "1000".into(), direction: "debit".into(), amount: 1000, memo: None, tax_category: None },
-            PostEntryParams { account_code: "4000".into(), direction: "credit".into(), amount: 1000, memo: None, tax_category: None },
+            PostEntryParams {
+                account_code: "1000".into(),
+                direction: "debit".into(),
+                amount: 1000,
+                memo: None,
+                tax_category: None,
+            },
+            PostEntryParams {
+                account_code: "4000".into(),
+                direction: "credit".into(),
+                amount: 1000,
+                memo: None,
+                tax_category: None,
+            },
         ];
         let big_entries = vec![
-            PostEntryParams { account_code: "1000".into(), direction: "debit".into(), amount: 50000, memo: None, tax_category: None },
-            PostEntryParams { account_code: "4000".into(), direction: "credit".into(), amount: 50000, memo: None, tax_category: None },
+            PostEntryParams {
+                account_code: "1000".into(),
+                direction: "debit".into(),
+                amount: 50000,
+                memo: None,
+                tax_category: None,
+            },
+            PostEntryParams {
+                account_code: "4000".into(),
+                direction: "credit".into(),
+                amount: 50000,
+                memo: None,
+                tax_category: None,
+            },
         ];
         let p1 = make_params(&small_entries, "Small", None, "2024-01-01");
         assert!(post_transaction(db.conn(), &p1).is_ok());
@@ -911,7 +935,12 @@ mod tests {
     fn list_transactions_with_metadata_filter() {
         let db = setup();
         let entries = sample_entries();
-        let p1 = make_params(&entries, "Tagged", Some(r#"{"vendor":"AWS"}"#), "2024-01-01");
+        let p1 = make_params(
+            &entries,
+            "Tagged",
+            Some(r#"{"vendor":"AWS"}"#),
+            "2024-01-01",
+        );
         assert!(post_transaction(db.conn(), &p1).is_ok());
         let p2 = make_params(&entries, "Untagged", None, "2024-01-02");
         assert!(post_transaction(db.conn(), &p2).is_ok());
@@ -997,8 +1026,20 @@ mod tests {
     fn list_transactions_with_tax_category_filter() {
         let db = setup();
         let entries_with_tax = vec![
-            PostEntryParams { account_code: "1000".into(), direction: "debit".into(), amount: 5000, memo: None, tax_category: Some("sched-c:24b".into()) },
-            PostEntryParams { account_code: "4000".into(), direction: "credit".into(), amount: 5000, memo: None, tax_category: None },
+            PostEntryParams {
+                account_code: "1000".into(),
+                direction: "debit".into(),
+                amount: 5000,
+                memo: None,
+                tax_category: Some("sched-c:24b".into()),
+            },
+            PostEntryParams {
+                account_code: "4000".into(),
+                direction: "credit".into(),
+                amount: 5000,
+                memo: None,
+                tax_category: None,
+            },
         ];
         let entries_no_tax = sample_entries();
 

@@ -58,11 +58,14 @@ fn export_json(db: &Db) -> Result<String, CliError> {
     let mut company_exports = Vec::new();
 
     for company in &companies {
-        let accounts = db::list_accounts(db.conn(), &db::accounts::ListAccountParams {
-                    company_slug: &company.slug,
-                    type_filter: None,
-                    name_filter: None,
-                })?;
+        let accounts = db::list_accounts(
+            db.conn(),
+            &db::accounts::ListAccountParams {
+                company_slug: &company.slug,
+                type_filter: None,
+                name_filter: None,
+            },
+        )?;
         let mut txn_params = db::ListTransactionParams::for_company(&company.slug);
         txn_params.limit = i64::MAX;
         let transactions = db::list_transactions(db.conn(), &txn_params)?;
@@ -141,11 +144,14 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
     // Section 2: Accounts (all companies)
     let mut all_accounts = Vec::new();
     for company in &companies {
-        let accounts = db::list_accounts(db.conn(), &db::accounts::ListAccountParams {
-                    company_slug: &company.slug,
-                    type_filter: None,
-                    name_filter: None,
-                })?;
+        let accounts = db::list_accounts(
+            db.conn(),
+            &db::accounts::ListAccountParams {
+                company_slug: &company.slug,
+                type_filter: None,
+                name_filter: None,
+            },
+        )?;
         all_accounts.extend(accounts);
     }
 
