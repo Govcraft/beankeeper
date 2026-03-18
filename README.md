@@ -8,8 +8,8 @@ This repository contains two crates:
 
 | Crate | Description |
 |-------|-------------|
-| [`beankeeper`](https://crates.io/crates/beankeeper) | Zero-dependency library of accounting primitives: amounts, currencies, accounts, entries, transactions, ledger, and reporting |
-| `beankeeper-cli` | CLI binary (`bk`) providing SQLite-backed multi-tenant accounting with encryption, three output formats, and scriptable stdin/stdout |
+| [`beankeeper`](https://crates.io/crates/beankeeper) | Library of accounting primitives: amounts, currencies, accounts, entries, dated transactions, document attachments, idempotency keys, ledger, and reporting |
+| `beankeeper-cli` | CLI binary (`bk`) providing SQLite-backed multi-tenant accounting with encryption, content-addressed document storage, idempotency, three output formats, and scriptable stdin/stdout |
 
 ## Install the CLI
 
@@ -46,7 +46,7 @@ bk --company personal account create 4000 "Revenue" --type revenue
 bk --company personal account create 5000 "Rent" --type expense
 
 # Post a transaction (amounts are in dollars, not cents)
-bk --company personal txn post -d "March rent" \
+bk --company personal txn post -d "March rent" --date 2026-03-01 \
   --debit 5000:1200 --credit 1000:1200
 
 # Split entries with per-line memos
@@ -75,6 +75,39 @@ bk --company personal txn post -d "Capital from GovCraft" \
 # Verify no orphaned links
 bk txn reconcile
 ```
+
+### Idempotency Keys
+
+When `bk` is driven by AI agents or import scripts, retries can cause duplicate transactions. The `--reference` flag provides a deterministic idempotency key -- same reference, same company, always maps to the same transaction:
+
+```sh
+# First post succeeds
+bk --company personal txn post -d "AWS March" \
+  --reference "chase-2026-03-15-001" \
+  --debit 5200:49.95 --credit 1000:49.95
+
+# Retry is rejected with the existing transaction ID
+bk --company personal txn post -d "AWS March" \
+  --reference "chase-2026-03-15-001" \
+  --debit 5200:49.95 --credit 1000:49.95
+# → error: transaction with reference 'chase-2026-03-15-001' already exists (id: 1)
+```
+
+References are hashed into deterministic `txnref_`-prefixed keys. Transactions without `--reference` are unrestricted.
+
+### Document Attachments
+
+Link source documents (receipts, invoices, statements) to transactions. Files are stored in a content-addressed directory alongside the database, with SHA-256 integrity verification:
+
+```sh
+# Attach a receipt to an existing transaction
+bk --company personal txn attach 1 receipt.pdf --type receipt
+
+# View transaction with attachments
+bk --company personal txn show 1
+```
+
+Supported document types: `receipt`, `invoice`, `statement`, `contract`, `other`.
 
 ### Output Formats
 
@@ -127,7 +160,10 @@ use beankeeper::prelude::*;
 let cash = Account::new(AccountCode::new("1000").unwrap(), "Cash", AccountType::Asset);
 let revenue = Account::new(AccountCode::new("4000").unwrap(), "Revenue", AccountType::Revenue);
 
-let txn = JournalEntry::new("Cash sale")
+let txn = JournalEntry::new(
+        NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+        "Cash sale",
+    )
     .debit(&cash, Money::usd(50_00))
     .unwrap()
     .credit(&revenue, Money::usd(50_00))
@@ -136,6 +172,7 @@ let txn = JournalEntry::new("Cash sale")
     .unwrap();
 
 assert_eq!(txn.description(), "Cash sale");
+assert_eq!(txn.date(), NaiveDate::from_ymd_opt(2026, 3, 15).unwrap());
 ```
 
 ### Core Concepts
@@ -159,7 +196,10 @@ let salary = Account::new(AccountCode::new("5000").unwrap(), "Salary", AccountTy
 let cash = Account::new(AccountCode::new("1000").unwrap(), "Cash", AccountType::Asset);
 let tax = Account::new(AccountCode::new("2200").unwrap(), "Tax Withheld", AccountType::Liability);
 
-let txn = JournalEntry::new("March Paycheck")
+let txn = JournalEntry::new(
+        NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+        "March Paycheck",
+    )
     .debit_with_memo(&salary, Money::usd(5000_00), "Gross salary")
     .unwrap()
     .credit_with_memo(&cash, Money::usd(3800_00), "Net pay")
@@ -201,7 +241,8 @@ use beankeeper::prelude::*;
 fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
     let cash = Account::new(AccountCode::new("1000")?, "Cash", AccountType::Asset);
     let revenue = Account::new(AccountCode::new("4000")?, "Revenue", AccountType::Revenue);
-    let txn = JournalEntry::new("Sale")
+    let today = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+    let txn = JournalEntry::new(today, "Sale")
         .debit(&cash, Money::usd(50_00))?
         .credit(&revenue, Money::usd(50_00))?
         .post()?;
@@ -215,8 +256,8 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - `#[deny(unsafe_code)]` -- no unsafe Rust in either crate
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- proper error handling everywhere
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
-- Library has zero external dependencies
-- 350+ tests covering unit, integration, and real-world accounting scenarios
+- Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
+- 380+ tests covering unit, integration, and real-world accounting scenarios
 
 ## License
 
