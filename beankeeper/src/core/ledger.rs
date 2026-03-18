@@ -249,10 +249,7 @@ impl Ledger {
     }
 
     /// Iterates `(transaction, entry)` pairs for a given account code via the index.
-    fn indexed_entries(
-        &self,
-        code: &AccountCode,
-    ) -> impl Iterator<Item = (&Transaction, &Entry)> {
+    fn indexed_entries(&self, code: &AccountCode) -> impl Iterator<Item = (&Transaction, &Entry)> {
         self.entry_index
             .get(code)
             .into_iter()

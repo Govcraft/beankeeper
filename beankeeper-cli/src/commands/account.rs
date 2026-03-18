@@ -37,8 +37,7 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
         }
         AccountCommand::List { account_type } => {
             let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-            let rows =
-                accounts::list_accounts(db.conn(), company, type_filter.as_deref())?;
+            let rows = accounts::list_accounts(db.conn(), company, type_filter.as_deref())?;
             render_accounts(&rows, format, use_color)?;
             if !cli.verbosity.quiet {
                 let count = rows.len();

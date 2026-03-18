@@ -240,10 +240,7 @@ mod tests {
 
     #[test]
     fn slug_validation_rejects_spaces() {
-        assert!(matches!(
-            validate_slug("a b"),
-            Err(CliError::Validation(_))
-        ));
+        assert!(matches!(validate_slug("a b"), Err(CliError::Validation(_))));
     }
 
     #[test]
@@ -264,9 +261,6 @@ mod tests {
     #[test]
     fn slug_validation_rejects_too_long() {
         let long = "a".repeat(65);
-        assert!(matches!(
-            validate_slug(&long),
-            Err(CliError::Validation(_))
-        ));
+        assert!(matches!(validate_slug(&long), Err(CliError::Validation(_))));
     }
 }

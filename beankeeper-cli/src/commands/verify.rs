@@ -48,11 +48,9 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
     }
 
     // SQLite integrity check
-    let integrity: String = db.conn().query_row(
-        "PRAGMA integrity_check",
-        [],
-        |row| row.get(0),
-    )?;
+    let integrity: String = db
+        .conn()
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
 
     if integrity != "ok" {
         return Err(CliError::Database(format!(

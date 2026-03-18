@@ -98,9 +98,7 @@ fn read_from_fd(fd: i32) -> Result<SecretString, CliError> {
 
     let trimmed = buf.trim_end_matches('\n').to_owned();
     if trimmed.is_empty() {
-        return Err(CliError::Usage(format!(
-            "passphrase from fd {fd} is empty"
-        )));
+        return Err(CliError::Usage(format!("passphrase from fd {fd} is empty")));
     }
     Ok(SecretString::from(trimmed))
 }
@@ -114,8 +112,12 @@ fn read_from_fd(fd: i32) -> Result<SecretString, CliError> {
 
 /// Read a passphrase from a file, trimming the trailing newline.
 fn read_from_file(path: &Path) -> Result<SecretString, CliError> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|e| CliError::General(format!("failed to read passphrase file {}: {e}", path.display())))?;
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        CliError::General(format!(
+            "failed to read passphrase file {}: {e}",
+            path.display()
+        ))
+    })?;
 
     let trimmed = contents.trim_end_matches('\n').to_owned();
     if trimmed.is_empty() {
@@ -136,9 +138,7 @@ fn run_passphrase_command(cmd: &str) -> Result<SecretString, CliError> {
         .stdout(process::Stdio::piped())
         .stderr(process::Stdio::inherit())
         .output()
-        .map_err(|e| {
-            CliError::General(format!("failed to execute passphrase command: {e}"))
-        })?;
+        .map_err(|e| CliError::General(format!("failed to execute passphrase command: {e}")))?;
 
     if !output.status.success() {
         return Err(CliError::General(format!(
@@ -161,8 +161,7 @@ fn run_passphrase_command(cmd: &str) -> Result<SecretString, CliError> {
 
 /// Prompt for a passphrase on the TTY.
 fn prompt_passphrase(prompt: &str) -> Result<SecretString, CliError> {
-    let pass = rpassword::prompt_password(prompt)
-        .map_err(CliError::Io)?;
+    let pass = rpassword::prompt_password(prompt).map_err(CliError::Io)?;
 
     if pass.is_empty() {
         return Err(CliError::Usage("passphrase cannot be empty".into()));

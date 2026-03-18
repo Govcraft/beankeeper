@@ -23,7 +23,11 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
     let format = resolve_format(None, cli);
 
     match sub {
-        CompanyCommand::Create { slug, name, description } => {
+        CompanyCommand::Create {
+            slug,
+            name,
+            description,
+        } => {
             let row = companies::create_company(db.conn(), slug, name, description.as_deref())?;
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created company: {} ({})", row.slug, row.name);

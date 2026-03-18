@@ -14,12 +14,7 @@ use crate::passphrase;
 /// # Errors
 ///
 /// Returns [`CliError`] if database creation fails.
-pub fn run(
-    cli: &Cli,
-    encrypt: bool,
-    path: Option<&Path>,
-    force: bool,
-) -> Result<(), CliError> {
+pub fn run(cli: &Cli, encrypt: bool, path: Option<&Path>, force: bool) -> Result<(), CliError> {
     let db_path = path.unwrap_or(&cli.db);
 
     if db_path.exists() && !force {

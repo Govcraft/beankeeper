@@ -16,16 +16,12 @@ const VALID_TYPES: &[&str] = &["asset", "liability", "equity", "revenue", "expen
 ///
 /// Returns [`CliError::Validation`] if the code or type is invalid.
 pub fn row_to_account(row: &AccountRow) -> Result<beankeeper::types::Account, CliError> {
-    let code = beankeeper::types::AccountCode::new(&row.code).map_err(|e| {
-        CliError::Validation(format!("invalid account code '{}': {e}", row.code))
-    })?;
+    let code = beankeeper::types::AccountCode::new(&row.code)
+        .map_err(|e| CliError::Validation(format!("invalid account code '{}': {e}", row.code)))?;
 
     let account_type =
         beankeeper::types::AccountType::from_str(&row.account_type).map_err(|e| {
-            CliError::Validation(format!(
-                "invalid account type '{}': {e}",
-                row.account_type
-            ))
+            CliError::Validation(format!("invalid account type '{}': {e}", row.account_type))
         })?;
 
     Ok(beankeeper::types::Account::new(
@@ -182,11 +178,7 @@ pub fn get_account(
 /// # Errors
 ///
 /// Returns `CliError::NotFound` if the account does not exist.
-pub fn delete_account(
-    conn: &Connection,
-    company_slug: &str,
-    code: &str,
-) -> Result<(), CliError> {
+pub fn delete_account(conn: &Connection, company_slug: &str, code: &str) -> Result<(), CliError> {
     let affected = conn.execute(
         "DELETE FROM accounts WHERE company_slug = ?1 AND code = ?2",
         params![company_slug, code],
@@ -206,11 +198,7 @@ pub fn delete_account(
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn account_exists(
-    conn: &Connection,
-    company_slug: &str,
-    code: &str,
-) -> Result<bool, CliError> {
+pub fn account_exists(conn: &Connection, company_slug: &str, code: &str) -> Result<bool, CliError> {
     let exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM accounts WHERE company_slug = ?1 AND code = ?2",
         params![company_slug, code],
@@ -224,10 +212,7 @@ pub fn account_exists(
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn list_account_codes(
-    conn: &Connection,
-    company_slug: &str,
-) -> Result<Vec<String>, CliError> {
+pub fn list_account_codes(conn: &Connection, company_slug: &str) -> Result<Vec<String>, CliError> {
     let mut stmt =
         conn.prepare("SELECT code FROM accounts WHERE company_slug = ?1 ORDER BY code")?;
 

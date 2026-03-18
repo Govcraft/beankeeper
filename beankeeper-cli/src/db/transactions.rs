@@ -78,7 +78,13 @@ fn post_transaction_inner(
     conn.execute(
         "INSERT INTO transactions (company_slug, description, metadata, currency, date) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![p.company_slug, p.description, effective_metadata, p.currency, p.date],
+        params![
+            p.company_slug,
+            p.description,
+            effective_metadata,
+            p.currency,
+            p.date
+        ],
     )?;
 
     let txn_id = conn.last_insert_rowid();
@@ -95,7 +101,14 @@ fn post_transaction_inner(
             "INSERT INTO entries \
              (transaction_id, account_code, company_slug, direction, amount, memo) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![txn_id, account_code, p.company_slug, dir_lower, amount, memo],
+            params![
+                txn_id,
+                account_code,
+                p.company_slug,
+                dir_lower,
+                amount,
+                memo
+            ],
         )?;
     }
 
@@ -113,9 +126,10 @@ fn build_metadata(user_metadata: Option<&str>, correlate: Option<i64>) -> Option
         (None, None) => None,
         (Some(m), None) => Some(m.to_string()),
         (None, Some(cid)) => Some(format!(r#"{{"correlate":{cid}}}"#)),
-        (Some(m), Some(cid)) => {
-            Some(format!(r#"{{"correlate":{cid},"ref":{}}}"#, serde_json::json!(m)))
-        }
+        (Some(m), Some(cid)) => Some(format!(
+            r#"{{"correlate":{cid},"ref":{}}}"#,
+            serde_json::json!(m)
+        )),
     }
 }
 
@@ -137,9 +151,7 @@ fn link_partner(
             params![partner_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|_| {
-            CliError::NotFound(format!("transaction #{partner_id} not found"))
-        })?;
+        .map_err(|_| CliError::NotFound(format!("transaction #{partner_id} not found")))?;
 
     let (partner_company, partner_metadata) = partner;
 
@@ -160,7 +172,8 @@ fn link_partner(
     }
 
     // Build the updated metadata for the partner.
-    let updated_partner_meta = merge_correlate_into_metadata(partner_metadata.as_deref(), new_txn_id);
+    let updated_partner_meta =
+        merge_correlate_into_metadata(partner_metadata.as_deref(), new_txn_id);
 
     conn.execute(
         "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
@@ -395,9 +408,7 @@ pub fn get_entries_for_transaction(
 /// # Errors
 ///
 /// Returns [`CliError`] on database query failure.
-pub fn find_orphaned_correlations(
-    conn: &Connection,
-) -> Result<Vec<OrphanedCorrelation>, CliError> {
+pub fn find_orphaned_correlations(conn: &Connection) -> Result<Vec<OrphanedCorrelation>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.company_slug, t.description, t.date, \
                 CAST(json_extract(t.metadata, '$.correlate') AS INTEGER) AS partner_id \
@@ -533,8 +544,12 @@ mod tests {
         assert!(post_transaction(db.conn(), &p2).is_ok());
 
         let lp = ListTransactionParams {
-            company_slug: "acme", account_filter: None,
-            from_date: None, to_date: None, limit: 100, offset: 0,
+            company_slug: "acme",
+            account_filter: None,
+            from_date: None,
+            to_date: None,
+            limit: 100,
+            offset: 0,
         };
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 2);
@@ -558,8 +573,12 @@ mod tests {
         assert!(post_transaction(db.conn(), &p2).is_ok());
 
         let lp = ListTransactionParams {
-            company_slug: "acme", account_filter: Some("5000"),
-            from_date: None, to_date: None, limit: 100, offset: 0,
+            company_slug: "acme",
+            account_filter: Some("5000"),
+            from_date: None,
+            to_date: None,
+            limit: 100,
+            offset: 0,
         };
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
@@ -578,9 +597,12 @@ mod tests {
         assert!(post_transaction(db.conn(), &p3).is_ok());
 
         let lp = ListTransactionParams {
-            company_slug: "acme", account_filter: None,
-            from_date: Some("2024-02-01"), to_date: Some("2024-02-28"),
-            limit: 100, offset: 0,
+            company_slug: "acme",
+            account_filter: None,
+            from_date: Some("2024-02-01"),
+            to_date: Some("2024-02-28"),
+            limit: 100,
+            offset: 0,
         };
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
@@ -592,8 +614,7 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p = make_params(&entries, "Test", None, "2024-01-15");
-        let id = post_transaction(db.conn(), &p)
-            .unwrap_or_else(|e| panic!("post failed: {e}"));
+        let id = post_transaction(db.conn(), &p).unwrap_or_else(|e| panic!("post failed: {e}"));
 
         let entry_rows = get_entries_for_transaction(db.conn(), id).unwrap_or_default();
         assert_eq!(entry_rows.len(), 2);
@@ -616,8 +637,12 @@ mod tests {
 
         // Verify no transaction was partially committed
         let lp = ListTransactionParams {
-            company_slug: "acme", account_filter: None,
-            from_date: None, to_date: None, limit: 100, offset: 0,
+            company_slug: "acme",
+            account_filter: None,
+            from_date: None,
+            to_date: None,
+            limit: 100,
+            offset: 0,
         };
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 0);

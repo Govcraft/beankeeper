@@ -59,15 +59,17 @@ fn export_json(db: &Db) -> Result<String, CliError> {
 
     for company in &companies {
         let accounts = db::list_accounts(db.conn(), &company.slug, None)?;
-        let transactions =
-            db::list_transactions(db.conn(), &db::ListTransactionParams {
+        let transactions = db::list_transactions(
+            db.conn(),
+            &db::ListTransactionParams {
                 company_slug: &company.slug,
                 account_filter: None,
                 from_date: None,
                 to_date: None,
                 limit: i64::MAX,
                 offset: 0,
-            })?;
+            },
+        )?;
 
         let mut txn_exports = Vec::new();
         for txn in &transactions {
@@ -180,15 +182,17 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
 
     for company in &companies {
-        let transactions =
-            db::list_transactions(db.conn(), &db::ListTransactionParams {
+        let transactions = db::list_transactions(
+            db.conn(),
+            &db::ListTransactionParams {
                 company_slug: &company.slug,
                 account_filter: None,
                 from_date: None,
                 to_date: None,
                 limit: i64::MAX,
                 offset: 0,
-            })?;
+            },
+        )?;
         for txn in &transactions {
             let entries = db::get_entries_for_transaction(db.conn(), txn.id)?;
             for entry in &entries {

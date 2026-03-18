@@ -3,7 +3,8 @@
 use beankeeper::prelude::*;
 
 fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    NaiveDate::from_ymd_opt(y, m, d)
+        .unwrap_or_else(|| panic!("invalid date: {y}-{m}-{d}"))
 }
 
 fn make_account(code: &str, name: &str, acct_type: AccountType) -> Account {
@@ -58,9 +59,9 @@ fn supplies_expense() -> Account {
 fn simple_cash_sale() {
     // Customer pays $50.00 cash for goods
     let txn = JournalEntry::new(date(2024, 1, 15), "Cash sale")
-        .debit(&cash(), Money::usd(50_00))
+        .debit(&cash(), Money::usd(5_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(50_00))
+        .credit(&sales_revenue(), Money::usd(5_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -73,9 +74,9 @@ fn simple_cash_sale() {
 fn purchase_inventory_on_credit() {
     // Buy $1,000 of inventory on account
     let txn = JournalEntry::new(date(2024, 1, 15), "Purchase inventory on credit")
-        .debit(&inventory(), Money::usd(1000_00))
+        .debit(&inventory(), Money::usd(100_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&accounts_payable(), Money::usd(1000_00))
+        .credit(&accounts_payable(), Money::usd(100_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -88,9 +89,9 @@ fn purchase_inventory_on_credit() {
 fn owner_investment() {
     // Owner invests $10,000 cash into the business
     let txn = JournalEntry::new(date(2024, 1, 1), "Owner investment")
-        .debit(&cash(), Money::usd(10_000_00))
+        .debit(&cash(), Money::usd(1_000_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&owners_equity(), Money::usd(10_000_00))
+        .credit(&owners_equity(), Money::usd(1_000_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -103,16 +104,16 @@ fn owner_investment() {
 fn pay_rent_expense() {
     // Pay $1,200 rent
     let txn = JournalEntry::new(date(2024, 1, 15), "Monthly rent payment")
-        .debit(&rent_expense(), Money::usd(1200_00))
+        .debit(&rent_expense(), Money::usd(120_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&cash(), Money::usd(1200_00))
+        .credit(&cash(), Money::usd(120_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
 
     assert_eq!(
         txn.total().unwrap_or_else(|e| panic!("{e}")),
-        Money::usd(1200_00)
+        Money::usd(120_000)
     );
 }
 
@@ -120,11 +121,11 @@ fn pay_rent_expense() {
 fn multi_leg_sale_with_tax() {
     // Sale of $100 with 8% sales tax: customer pays $108 total
     let txn = JournalEntry::new(date(2024, 1, 15), "Sale with sales tax")
-        .debit(&cash(), Money::usd(108_00))
+        .debit(&cash(), Money::usd(10_800))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(100_00))
+        .credit(&sales_revenue(), Money::usd(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_tax_payable(), Money::usd(8_00))
+        .credit(&sales_tax_payable(), Money::usd(800))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -138,9 +139,9 @@ fn multi_leg_sale_with_tax() {
 fn sale_on_account() {
     // Sell goods on credit: $500
     let txn = JournalEntry::new(date(2024, 1, 15), "Sale on account")
-        .debit(&accounts_receivable(), Money::usd(500_00))
+        .debit(&accounts_receivable(), Money::usd(50_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(500_00))
+        .credit(&sales_revenue(), Money::usd(50_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -153,9 +154,9 @@ fn sale_on_account() {
 fn collect_receivable() {
     // Customer pays their $500 invoice
     let txn = JournalEntry::new(date(2024, 1, 20), "Collect accounts receivable")
-        .debit(&cash(), Money::usd(500_00))
+        .debit(&cash(), Money::usd(50_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&accounts_receivable(), Money::usd(500_00))
+        .credit(&accounts_receivable(), Money::usd(50_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -166,7 +167,7 @@ fn collect_receivable() {
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         cash_impact,
-        Some(Money::new(Amount::new(500_00), Currency::USD))
+        Some(Money::new(Amount::new(50_000), Currency::USD))
     );
 
     let ar_impact = txn
@@ -175,16 +176,16 @@ fn collect_receivable() {
     // Credit on debit-normal account = decrease = negative
     assert_eq!(
         ar_impact,
-        Some(Money::new(Amount::new(-500_00), Currency::USD))
+        Some(Money::new(Amount::new(-50_000), Currency::USD))
     );
 }
 
 #[test]
 fn unbalanced_transaction_is_rejected() {
     let result = JournalEntry::new(date(2024, 1, 15), "Bad transaction")
-        .debit(&cash(), Money::usd(100_00))
+        .debit(&cash(), Money::usd(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(50_00))
+        .credit(&sales_revenue(), Money::usd(5_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post();
 
@@ -195,9 +196,9 @@ fn unbalanced_transaction_is_rejected() {
 #[test]
 fn mixed_currency_transaction_is_rejected() {
     let result = JournalEntry::new(date(2024, 1, 15), "Mixed currencies")
-        .debit(&cash(), Money::usd(100_00))
+        .debit(&cash(), Money::usd(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::eur(100_00))
+        .credit(&sales_revenue(), Money::eur(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post();
 
@@ -213,9 +214,9 @@ fn full_accounting_cycle() {
 
     // 1. Owner invests $10,000
     let txn1 = JournalEntry::new(date(2024, 1, 1), "Owner investment")
-        .debit(&cash(), Money::usd(10_000_00))
+        .debit(&cash(), Money::usd(1_000_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&owners_equity(), Money::usd(10_000_00))
+        .credit(&owners_equity(), Money::usd(1_000_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -223,9 +224,9 @@ fn full_accounting_cycle() {
 
     // 2. Purchase inventory on credit: $3,000
     let txn2 = JournalEntry::new(date(2024, 1, 5), "Buy inventory")
-        .debit(&inventory(), Money::usd(3_000_00))
+        .debit(&inventory(), Money::usd(300_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&accounts_payable(), Money::usd(3_000_00))
+        .credit(&accounts_payable(), Money::usd(300_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -233,9 +234,9 @@ fn full_accounting_cycle() {
 
     // 3. Cash sale: $2,000
     let txn3 = JournalEntry::new(date(2024, 1, 15), "Cash sale")
-        .debit(&cash(), Money::usd(2_000_00))
+        .debit(&cash(), Money::usd(200_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(2_000_00))
+        .credit(&sales_revenue(), Money::usd(200_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -243,9 +244,9 @@ fn full_accounting_cycle() {
 
     // 4. Pay rent: $1,500
     let txn4 = JournalEntry::new(date(2024, 1, 15), "Pay rent")
-        .debit(&rent_expense(), Money::usd(1_500_00))
+        .debit(&rent_expense(), Money::usd(150_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&cash(), Money::usd(1_500_00))
+        .credit(&cash(), Money::usd(150_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -253,9 +254,9 @@ fn full_accounting_cycle() {
 
     // 5. Buy supplies with cash: $200
     let txn5 = JournalEntry::new(date(2024, 1, 20), "Buy supplies")
-        .debit(&supplies_expense(), Money::usd(200_00))
+        .debit(&supplies_expense(), Money::usd(20_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&cash(), Money::usd(200_00))
+        .credit(&cash(), Money::usd(20_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -263,9 +264,9 @@ fn full_accounting_cycle() {
 
     // 6. Pay part of accounts payable: $1,000
     let txn6 = JournalEntry::new(date(2024, 1, 25), "Pay supplier")
-        .debit(&accounts_payable(), Money::usd(1_000_00))
+        .debit(&accounts_payable(), Money::usd(100_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&cash(), Money::usd(1_000_00))
+        .credit(&cash(), Money::usd(100_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -280,43 +281,43 @@ fn full_accounting_cycle() {
     let cash_balance = ledger
         .balance_for(&cash())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(cash_balance, Amount::new(9_300_00));
+    assert_eq!(cash_balance, Amount::new(930_000));
 
     // Inventory: +3,000
     let inv_balance = ledger
         .balance_for(&inventory())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(inv_balance, Amount::new(3_000_00));
+    assert_eq!(inv_balance, Amount::new(300_000));
 
     // A/P: +3,000 credit - 1,000 debit = 2,000 (credit-normal, so positive means credit > debit)
     let ap_balance = ledger
         .balance_for(&accounts_payable())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(ap_balance, Amount::new(2_000_00));
+    assert_eq!(ap_balance, Amount::new(200_000));
 
     // Owner's equity: 10,000
     let eq_balance = ledger
         .balance_for(&owners_equity())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(eq_balance, Amount::new(10_000_00));
+    assert_eq!(eq_balance, Amount::new(1_000_000));
 
     // Revenue: 2,000
     let rev_balance = ledger
         .balance_for(&sales_revenue())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(rev_balance, Amount::new(2_000_00));
+    assert_eq!(rev_balance, Amount::new(200_000));
 
     // Rent expense: 1,500
     let rent_balance = ledger
         .balance_for(&rent_expense())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(rent_balance, Amount::new(1_500_00));
+    assert_eq!(rent_balance, Amount::new(150_000));
 
     // Supplies expense: 200
     let sup_balance = ledger
         .balance_for(&supplies_expense())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(sup_balance, Amount::new(200_00));
+    assert_eq!(sup_balance, Amount::new(20_000));
 
     // Generate and verify trial balance
     let tb = ledger.trial_balance().unwrap_or_else(|e| panic!("{e}"));
@@ -348,9 +349,9 @@ fn full_accounting_cycle() {
 fn transaction_with_metadata() {
     let txn = JournalEntry::new(date(2024, 1, 15), "Sale")
         .with_metadata("Invoice #INV-2024-001")
-        .debit(&cash(), Money::usd(250_00))
+        .debit(&cash(), Money::usd(25_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(250_00))
+        .credit(&sales_revenue(), Money::usd(25_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -376,16 +377,16 @@ fn account_code_hierarchy() {
 fn eur_transaction() {
     // Euro-denominated transaction
     let txn = JournalEntry::new(date(2024, 1, 15), "European sale")
-        .debit(&cash(), Money::eur(500_00))
+        .debit(&cash(), Money::eur(50_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::eur(500_00))
+        .credit(&sales_revenue(), Money::eur(50_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
 
     let total = txn.total().unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(total.currency(), Currency::EUR);
-    assert_eq!(total.amount(), Amount::new(500_00));
+    assert_eq!(total.amount(), Amount::new(50_000));
 }
 
 #[test]
@@ -418,9 +419,9 @@ fn error_propagation_with_bean_error() {
 #[test]
 fn display_formatting() {
     let txn = JournalEntry::new(date(2024, 1, 15), "Display test")
-        .debit(&cash(), Money::usd(100_00))
+        .debit(&cash(), Money::usd(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(100_00))
+        .credit(&sales_revenue(), Money::usd(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));
@@ -437,9 +438,9 @@ fn trial_balance_display() {
     let mut ledger = Ledger::new();
 
     let txn = JournalEntry::new(date(2024, 1, 15), "Sale")
-        .debit(&cash(), Money::usd(100_00))
+        .debit(&cash(), Money::usd(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
-        .credit(&sales_revenue(), Money::usd(100_00))
+        .credit(&sales_revenue(), Money::usd(10_000))
         .unwrap_or_else(|e| panic!("{e}"))
         .post()
         .unwrap_or_else(|e| panic!("{e}"));

@@ -35,9 +35,15 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
-        ReportCommand::Balance { account, as_of } => {
-            run_balance(cli, &db, company, account, as_of.as_deref(), format, use_color)
-        }
+        ReportCommand::Balance { account, as_of } => run_balance(
+            cli,
+            &db,
+            company,
+            account,
+            as_of.as_deref(),
+            format,
+            use_color,
+        ),
         ReportCommand::IncomeStatement { from, to } => run_income_statement(
             cli,
             &db,
@@ -65,12 +71,7 @@ fn run_trial_balance(
     use_color: bool,
 ) -> Result<(), CliError> {
     let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-    let balances = db::compute_trial_balance(
-        db.conn(),
-        company,
-        type_filter.as_deref(),
-        as_of,
-    )?;
+    let balances = db::compute_trial_balance(db.conn(), company, type_filter.as_deref(), as_of)?;
 
     // Determine currency info (default to USD for display)
     let currency = resolve_company_currency(db, company);
@@ -78,8 +79,12 @@ fn run_trial_balance(
 
     match format {
         OutputFormat::Table => {
-            let rendered =
-                output::table::render_trial_balance(&balances, currency.code(), minor_units, use_color);
+            let rendered = output::table::render_trial_balance(
+                &balances,
+                currency.code(),
+                minor_units,
+                use_color,
+            );
             println!("{rendered}");
         }
         OutputFormat::Json => {
@@ -180,10 +185,8 @@ fn run_income_statement(
     // we also need to handle the `from` date for period-based filtering.
     //
     // We'll compute revenue and expense balances separately and combine them.
-    let revenue_balances =
-        compute_period_balances(db, company, "revenue", from, to)?;
-    let expense_balances =
-        compute_period_balances(db, company, "expense", from, to)?;
+    let revenue_balances = compute_period_balances(db, company, "revenue", from, to)?;
+    let expense_balances = compute_period_balances(db, company, "expense", from, to)?;
 
     let mut all_balances = Vec::new();
     all_balances.extend(revenue_balances);
@@ -232,12 +235,10 @@ fn run_balance_sheet(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
-    let asset_balances =
-        db::compute_trial_balance(db.conn(), company, Some("asset"), as_of)?;
+    let asset_balances = db::compute_trial_balance(db.conn(), company, Some("asset"), as_of)?;
     let liability_balances =
         db::compute_trial_balance(db.conn(), company, Some("liability"), as_of)?;
-    let equity_balances =
-        db::compute_trial_balance(db.conn(), company, Some("equity"), as_of)?;
+    let equity_balances = db::compute_trial_balance(db.conn(), company, Some("equity"), as_of)?;
 
     let mut all_balances = Vec::new();
     all_balances.extend(asset_balances);
@@ -250,8 +251,14 @@ fn run_balance_sheet(
     match format {
         OutputFormat::Table => {
             let title = match as_of {
-                Some(date) => format!("Balance Sheet as of {date} ({currency_code})", currency_code = currency.code()),
-                None => format!("Balance Sheet ({currency_code})", currency_code = currency.code()),
+                Some(date) => format!(
+                    "Balance Sheet as of {date} ({currency_code})",
+                    currency_code = currency.code()
+                ),
+                None => format!(
+                    "Balance Sheet ({currency_code})",
+                    currency_code = currency.code()
+                ),
             };
             let rendered = render_report_table(
                 &title,
@@ -294,39 +301,23 @@ fn compute_period_balances(
 ) -> Result<Vec<db::BalanceRow>, CliError> {
     if from.is_none() {
         // No from date: just compute cumulative as of `to`
-        return db::compute_trial_balance(
-            db.conn(),
-            company,
-            Some(type_filter),
-            to,
-        );
+        return db::compute_trial_balance(db.conn(), company, Some(type_filter), to);
     }
 
     // With a from date, compute balances at the end-of-period (to date)
-    let end_balances = db::compute_trial_balance(
-        db.conn(),
-        company,
-        Some(type_filter),
-        to,
-    )?;
+    let end_balances = db::compute_trial_balance(db.conn(), company, Some(type_filter), to)?;
 
     // Compute balances just before the from date by getting the day before
     let from_str = from.unwrap_or_default();
     let before_from = day_before(from_str);
 
-    let start_balances = db::compute_trial_balance(
-        db.conn(),
-        company,
-        Some(type_filter),
-        Some(&before_from),
-    )?;
+    let start_balances =
+        db::compute_trial_balance(db.conn(), company, Some(type_filter), Some(&before_from))?;
 
     // Compute the period activity as the difference
     let mut result = Vec::new();
     for end_row in &end_balances {
-        let prior = start_balances
-            .iter()
-            .find(|s| s.code == end_row.code);
+        let prior = start_balances.iter().find(|s| s.code == end_row.code);
         let start_debit = prior.map_or(0, |s| s.debit_total);
         let start_credit = prior.map_or(0, |s| s.credit_total);
 
@@ -477,7 +468,8 @@ fn render_report_table(
 
     let bold = anstyle::Style::new().bold();
     let cyan = anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
-    let green = anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)));
+    let green =
+        anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)));
     let red_bold = anstyle::Style::new()
         .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red)))
         .bold();
@@ -500,13 +492,20 @@ fn render_report_table(
         Cell::new(styled("Credit", bold, use_color)),
     ]);
 
-    let (grand_debits, grand_credits) = populate_balance_rows(
-        &mut table, balances, currency_minor_units, cyan, use_color,
-    );
+    let (grand_debits, grand_credits) =
+        populate_balance_rows(&mut table, balances, currency_minor_units, cyan, use_color);
 
     append_totals_and_status(
-        &mut lines, &table, grand_debits, grand_credits,
-        currency_minor_units, bold, green, red_bold, use_color, kind,
+        &mut lines,
+        &table,
+        grand_debits,
+        grand_credits,
+        currency_minor_units,
+        bold,
+        green,
+        red_bold,
+        use_color,
+        kind,
     );
 
     lines.join("\n")
@@ -591,17 +590,9 @@ fn append_totals_and_status(
             let net = grand_credits.saturating_sub(grand_debits);
             let net_str = format_amount(net.abs(), currency_minor_units);
             if net >= 0 {
-                lines.push(styled(
-                    &format!("Net Income: {net_str}"),
-                    green,
-                    use_color,
-                ));
+                lines.push(styled(&format!("Net Income: {net_str}"), green, use_color));
             } else {
-                lines.push(styled(
-                    &format!("Net Loss: {net_str}"),
-                    red_bold,
-                    use_color,
-                ));
+                lines.push(styled(&format!("Net Loss: {net_str}"), red_bold, use_color));
             }
         }
     }

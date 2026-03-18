@@ -35,13 +35,18 @@ pub fn render_companies(companies: &[CompanyRow]) -> Result<String, CliError> {
 
     for c in companies {
         let desc = c.description.as_deref().unwrap_or("");
-        wtr.write_record([c.slug.as_str(), c.name.as_str(), desc, c.created_at.as_str()])
-            .map_err(|e| csv_err(&e))?;
+        wtr.write_record([
+            c.slug.as_str(),
+            c.name.as_str(),
+            desc,
+            c.created_at.as_str(),
+        ])
+        .map_err(|e| csv_err(&e))?;
     }
 
-    let bytes = wtr.into_inner().map_err(|e| {
-        CliError::General(format!("CSV flush failed: {e}"))
-    })?;
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
     String::from_utf8(bytes)
         .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
 }
@@ -68,9 +73,9 @@ pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
         .map_err(|e| csv_err(&e))?;
     }
 
-    let bytes = wtr.into_inner().map_err(|e| {
-        CliError::General(format!("CSV flush failed: {e}"))
-    })?;
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
     String::from_utf8(bytes)
         .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
 }
@@ -100,9 +105,9 @@ pub fn render_transactions(transactions: &[TransactionRow]) -> Result<String, Cl
         .map_err(|e| csv_err(&e))?;
     }
 
-    let bytes = wtr.into_inner().map_err(|e| {
-        CliError::General(format!("CSV flush failed: {e}"))
-    })?;
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
     String::from_utf8(bytes)
         .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
 }
@@ -132,9 +137,9 @@ pub fn render_trial_balance(balances: &[BalanceRow]) -> Result<String, CliError>
         .map_err(|e| csv_err(&e))?;
     }
 
-    let bytes = wtr.into_inner().map_err(|e| {
-        CliError::General(format!("CSV flush failed: {e}"))
-    })?;
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
     String::from_utf8(bytes)
         .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
 }
@@ -148,8 +153,15 @@ pub fn render_trial_balance(balances: &[BalanceRow]) -> Result<String, CliError>
 /// Returns `CliError::General` if CSV serialisation fails.
 pub fn render_account_balance(balance: &BalanceRow, currency: &str) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
-    wtr.write_record(["code", "name", "type", "debit_total", "credit_total", "currency"])
-        .map_err(|e| csv_err(&e))?;
+    wtr.write_record([
+        "code",
+        "name",
+        "type",
+        "debit_total",
+        "credit_total",
+        "currency",
+    ])
+    .map_err(|e| csv_err(&e))?;
 
     let debit = balance.debit_total.to_string();
     let credit = balance.credit_total.to_string();
@@ -163,9 +175,9 @@ pub fn render_account_balance(balance: &BalanceRow, currency: &str) -> Result<St
     ])
     .map_err(|e| csv_err(&e))?;
 
-    let bytes = wtr.into_inner().map_err(|e| {
-        CliError::General(format!("CSV flush failed: {e}"))
-    })?;
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
     String::from_utf8(bytes)
         .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
 }
@@ -183,8 +195,14 @@ pub fn render_orphaned_correlations(
     orphans: &[crate::db::OrphanedCorrelation],
 ) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(vec![]);
-    wtr.write_record(["transaction_id", "company", "description", "date", "partner_id"])
-        .map_err(|e| CliError::General(format!("CSV write error: {e}")))?;
+    wtr.write_record([
+        "transaction_id",
+        "company",
+        "description",
+        "date",
+        "partner_id",
+    ])
+    .map_err(|e| CliError::General(format!("CSV write error: {e}")))?;
 
     for o in orphans {
         wtr.write_record([
@@ -276,10 +294,7 @@ mod tests {
     #[test]
     fn render_transactions_empty() {
         let csv_str = render_transactions(&[]).unwrap_or_default();
-        assert_eq!(
-            csv_str.trim(),
-            "id,date,description,metadata,currency"
-        );
+        assert_eq!(csv_str.trim(), "id,date,description,metadata,currency");
     }
 
     #[test]
@@ -339,10 +354,7 @@ mod tests {
     #[test]
     fn render_trial_balance_empty() {
         let csv_str = render_trial_balance(&[]).unwrap_or_default();
-        assert_eq!(
-            csv_str.trim(),
-            "code,name,type,debit_total,credit_total"
-        );
+        assert_eq!(csv_str.trim(), "code,name,type,debit_total,credit_total");
     }
 
     #[test]

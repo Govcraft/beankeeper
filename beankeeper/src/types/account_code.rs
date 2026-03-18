@@ -154,7 +154,7 @@ mod tests {
         let code = AccountCode::new("1000");
         assert!(code.is_ok());
         assert_eq!(
-            code.unwrap_or_else(|_| AccountCode("".into())).as_str(),
+            code.unwrap_or_else(|_| AccountCode(String::new())).as_str(),
             "1000"
         );
     }
@@ -198,47 +198,47 @@ mod tests {
 
     #[test]
     fn parent_of_with_dot_separator() {
-        let parent = AccountCode::new("1000").unwrap_or_else(|_| AccountCode("".into()));
-        let child = AccountCode::new("1000.10").unwrap_or_else(|_| AccountCode("".into()));
+        let parent = AccountCode::new("1000").unwrap_or_else(|_| AccountCode(String::new()));
+        let child = AccountCode::new("1000.10").unwrap_or_else(|_| AccountCode(String::new()));
         assert!(parent.is_parent_of(&child));
     }
 
     #[test]
     fn parent_of_with_hyphen_separator() {
-        let parent = AccountCode::new("1000").unwrap_or_else(|_| AccountCode("".into()));
-        let child = AccountCode::new("1000-10").unwrap_or_else(|_| AccountCode("".into()));
+        let parent = AccountCode::new("1000").unwrap_or_else(|_| AccountCode(String::new()));
+        let child = AccountCode::new("1000-10").unwrap_or_else(|_| AccountCode(String::new()));
         assert!(parent.is_parent_of(&child));
     }
 
     #[test]
     fn not_parent_of_self() {
-        let code = AccountCode::new("1000").unwrap_or_else(|_| AccountCode("".into()));
+        let code = AccountCode::new("1000").unwrap_or_else(|_| AccountCode(String::new()));
         assert!(!code.is_parent_of(&code));
     }
 
     #[test]
     fn not_parent_of_sibling() {
-        let a = AccountCode::new("1000").unwrap_or_else(|_| AccountCode("".into()));
-        let b = AccountCode::new("1001").unwrap_or_else(|_| AccountCode("".into()));
+        let a = AccountCode::new("1000").unwrap_or_else(|_| AccountCode(String::new()));
+        let b = AccountCode::new("1001").unwrap_or_else(|_| AccountCode(String::new()));
         assert!(!a.is_parent_of(&b));
     }
 
     #[test]
     fn not_parent_without_separator() {
-        let a = AccountCode::new("100").unwrap_or_else(|_| AccountCode("".into()));
-        let b = AccountCode::new("10000").unwrap_or_else(|_| AccountCode("".into()));
+        let a = AccountCode::new("100").unwrap_or_else(|_| AccountCode(String::new()));
+        let b = AccountCode::new("10000").unwrap_or_else(|_| AccountCode(String::new()));
         assert!(!a.is_parent_of(&b));
     }
 
     #[test]
     fn display() {
-        let code = AccountCode::new("1000.10").unwrap_or_else(|_| AccountCode("".into()));
+        let code = AccountCode::new("1000.10").unwrap_or_else(|_| AccountCode(String::new()));
         assert_eq!(format!("{code}"), "1000.10");
     }
 
     #[test]
     fn as_ref_str() {
-        let code = AccountCode::new("1000").unwrap_or_else(|_| AccountCode("".into()));
+        let code = AccountCode::new("1000").unwrap_or_else(|_| AccountCode(String::new()));
         let s: &str = code.as_ref();
         assert_eq!(s, "1000");
     }
@@ -251,8 +251,8 @@ mod tests {
 
     #[test]
     fn ordering_is_lexicographic() {
-        let a = AccountCode::new("1000").unwrap_or_else(|_| AccountCode("".into()));
-        let b = AccountCode::new("2000").unwrap_or_else(|_| AccountCode("".into()));
+        let a = AccountCode::new("1000").unwrap_or_else(|_| AccountCode(String::new()));
+        let b = AccountCode::new("2000").unwrap_or_else(|_| AccountCode(String::new()));
         assert!(a < b);
     }
 
