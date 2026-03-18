@@ -16,6 +16,8 @@ pub struct PostTransactionParams<'a> {
     pub entries: &'a [(String, String, i64, Option<String>)],
     /// If set, correlate with this existing transaction ID (intercompany linking).
     pub correlate: Option<i64>,
+    /// Idempotency reference -- rejects duplicate posts with the same reference per company.
+    pub reference: Option<&'a str>,
 }
 
 /// An orphaned intercompany correlation found by reconcile.
@@ -72,18 +74,36 @@ fn post_transaction_inner(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
 ) -> Result<i64, CliError> {
+    // Check for duplicate reference before inserting.
+    if let Some(ref_str) = p.reference {
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
+                params![p.company_slug, ref_str],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(existing_id) = existing {
+            return Err(CliError::Validation(format!(
+                "transaction with reference '{ref_str}' already exists (id: {existing_id})"
+            )));
+        }
+    }
+
     // Build the metadata string, merging --correlate and --metadata if both present.
     let effective_metadata = build_metadata(p.metadata, p.correlate);
 
     conn.execute(
-        "INSERT INTO transactions (company_slug, description, metadata, currency, date) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             p.company_slug,
             p.description,
             effective_metadata,
             p.currency,
-            p.date
+            p.date,
+            p.reference
         ],
     )?;
 
@@ -256,7 +276,7 @@ pub fn list_transactions(
     } = params;
     let mut sql = String::from(
         "SELECT DISTINCT t.id, t.company_slug, t.description, \
-         t.metadata, t.currency, t.date, t.posted_at \
+         t.metadata, t.currency, t.date, t.posted_at, t.reference \
          FROM transactions t",
     );
 
@@ -311,6 +331,7 @@ pub fn list_transactions(
             currency: row.get(4)?,
             date: row.get(5)?,
             posted_at: row.get(6)?,
+            reference: row.get(7)?,
         })
     })?;
 
@@ -334,7 +355,7 @@ pub fn get_transaction(
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
     let mut stmt = conn.prepare(
-        "SELECT id, company_slug, description, metadata, currency, date, posted_at \
+        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference \
          FROM transactions \
          WHERE company_slug = ?1 AND id = ?2",
     )?;
@@ -348,6 +369,7 @@ pub fn get_transaction(
             currency: row.get(4)?,
             date: row.get(5)?,
             posted_at: row.get(6)?,
+            reference: row.get(7)?,
         })
     })?;
 
@@ -478,6 +500,7 @@ mod tests {
             date,
             entries,
             correlate: None,
+            reference: None,
         }
     }
 

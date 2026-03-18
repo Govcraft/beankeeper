@@ -61,6 +61,7 @@ pub mod prelude {
     pub use crate::types::{
         Account, AccountCode, AccountCodeError, AccountType, AccountTypeError, Amount, AmountError,
         Currency, CurrencyError, DebitCreditError, DebitOrCredit, DocumentType, DocumentTypeError,
-        Entry, EntryError, Money, MoneyError, SourceDocument, SourceDocumentError,
+        Entry, EntryError, IdempotencyKey, IdempotencyKeyError, Money, MoneyError, SourceDocument,
+        SourceDocumentError,
     };
 }

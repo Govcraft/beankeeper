@@ -245,7 +245,7 @@ mod tests {
     use crate::types::{AccountCode, AccountType, Amount};
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+        NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| panic!("invalid date: {y}-{m}-{d}"))
     }
 
     fn make_account(code: &str, name: &str, acct_type: AccountType) -> Account {

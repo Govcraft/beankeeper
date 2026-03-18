@@ -11,6 +11,7 @@ pub mod currency;
 pub mod debit_credit;
 pub mod document;
 pub mod entry;
+pub mod idempotency;
 pub mod money;
 
 pub use account::Account;
@@ -21,4 +22,5 @@ pub use currency::{Currency, CurrencyError};
 pub use debit_credit::{DebitCreditError, DebitOrCredit};
 pub use document::{DocumentType, DocumentTypeError, SourceDocument, SourceDocumentError};
 pub use entry::{Entry, EntryError};
+pub use idempotency::{IdempotencyKey, IdempotencyKeyError};
 pub use money::{Money, MoneyError};

@@ -230,6 +230,13 @@ pub fn render_transaction_detail(
         ));
     }
 
+    if let Some(ref reference) = txn.reference {
+        lines.push(format!(
+            "  Reference:   {}",
+            styled(reference, dim_style(), use_color)
+        ));
+    }
+
     lines.push(format!(
         "  Posted at:   {}",
         styled(&txn.posted_at, dim_style(), use_color)
@@ -682,6 +689,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
+            reference: None,
         }];
         let out = render_transaction_list(&rows, false);
         assert!(out.contains('1'));
@@ -702,6 +710,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
+            reference: None,
         };
         let entries = vec![
             EntryRow {
@@ -743,6 +752,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
+            reference: None,
         };
         let entries = vec![
             EntryRow {

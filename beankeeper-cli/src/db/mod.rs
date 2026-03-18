@@ -63,6 +63,7 @@ pub struct TransactionRow {
     pub currency: String,
     pub date: String,
     pub posted_at: String,
+    pub reference: Option<String>,
 }
 
 /// A row from the `entries` table.
@@ -233,6 +234,7 @@ mod tests {
             date,
             entries: &entries,
             correlate: None,
+            reference: None,
         };
         post_transaction(db.conn(), &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"));

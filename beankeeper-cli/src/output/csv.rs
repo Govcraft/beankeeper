@@ -89,18 +89,20 @@ pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
 /// Returns `CliError::General` if CSV serialisation fails.
 pub fn render_transactions(transactions: &[TransactionRow]) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
-    wtr.write_record(["id", "date", "description", "metadata", "currency"])
+    wtr.write_record(["id", "date", "description", "metadata", "currency", "reference"])
         .map_err(|e| csv_err(&e))?;
 
     for txn in transactions {
         let id_str = txn.id.to_string();
         let meta = txn.metadata.as_deref().unwrap_or("");
+        let reference = txn.reference.as_deref().unwrap_or("");
         wtr.write_record([
             id_str.as_str(),
             &txn.date,
             &txn.description,
             meta,
             &txn.currency,
+            reference,
         ])
         .map_err(|e| csv_err(&e))?;
     }
@@ -294,7 +296,10 @@ mod tests {
     #[test]
     fn render_transactions_empty() {
         let csv_str = render_transactions(&[]).unwrap_or_default();
-        assert_eq!(csv_str.trim(), "id,date,description,metadata,currency");
+        assert_eq!(
+            csv_str.trim(),
+            "id,date,description,metadata,currency,reference"
+        );
     }
 
     #[test]
@@ -307,6 +312,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            reference: None,
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();
         assert!(csv_str.contains("1,2025-03-15,Sale,INV-001,USD"));
@@ -322,6 +328,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            reference: None,
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();
         assert!(csv_str.contains("1,2025-03-15,Sale,,USD"));

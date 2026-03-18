@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 2;
+const CURRENT_VERSION: i64 = 3;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -47,6 +47,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 2 {
         apply_v2(conn)?;
+    }
+
+    if version < 3 {
+        apply_v3(conn)?;
     }
 
     debug_assert_eq!(
@@ -155,6 +159,25 @@ fn apply_v2(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Applies the v3 migration: adds `reference` column and unique index to `transactions`.
+fn apply_v3(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        ALTER TABLE transactions ADD COLUMN reference TEXT;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_company_reference
+            ON transactions(company_slug, reference) WHERE reference IS NOT NULL;
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        params![3],
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +280,33 @@ mod tests {
             )
             .unwrap_or(0);
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn v3_migration_adds_reference_column() {
+        let conn = open_conn();
+        // Apply v1 and v2 first
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(2));
+
+        // Now run ensure_schema which should apply v3
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        // Verify the reference column exists by querying pragma
+        let has_reference: bool = conn
+            .prepare("PRAGMA table_info(transactions)")
+            .map(|mut stmt| {
+                let names: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .unwrap_or_else(|e| panic!("query failed: {e}"))
+                    .filter_map(Result::ok)
+                    .collect();
+                names.contains(&"reference".to_string())
+            })
+            .unwrap_or(false);
+        assert!(has_reference, "reference column should exist after v3 migration");
     }
 
     #[test]

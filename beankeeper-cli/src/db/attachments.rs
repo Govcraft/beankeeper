@@ -221,6 +221,7 @@ mod tests {
             date: "2024-01-15",
             entries: &entries,
             correlate: None,
+            reference: None,
         };
         transactions::post_transaction(db.conn(), &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"))

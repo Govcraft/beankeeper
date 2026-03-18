@@ -5,7 +5,7 @@ use core::fmt;
 use crate::core::TransactionError;
 use crate::types::{
     AccountCodeError, AccountTypeError, AmountError, CurrencyError, DebitCreditError,
-    DocumentTypeError, EntryError, MoneyError, SourceDocumentError,
+    DocumentTypeError, EntryError, IdempotencyKeyError, MoneyError, SourceDocumentError,
 };
 
 /// Top-level error type aggregating all domain errors in the crate.
@@ -35,6 +35,8 @@ pub enum BeanError {
     Entry(EntryError),
     /// An error from transaction validation.
     Transaction(TransactionError),
+    /// An error from idempotency key creation.
+    IdempotencyKey(IdempotencyKeyError),
 }
 
 impl fmt::Display for BeanError {
@@ -50,6 +52,7 @@ impl fmt::Display for BeanError {
             Self::SourceDocument(e) => write!(f, "{e}"),
             Self::Entry(e) => write!(f, "{e}"),
             Self::Transaction(e) => write!(f, "{e}"),
+            Self::IdempotencyKey(e) => write!(f, "{e}"),
         }
     }
 }
@@ -67,6 +70,7 @@ impl std::error::Error for BeanError {
             Self::SourceDocument(e) => Some(e),
             Self::Entry(e) => Some(e),
             Self::Transaction(e) => Some(e),
+            Self::IdempotencyKey(e) => Some(e),
         }
     }
 }
@@ -128,6 +132,12 @@ impl From<EntryError> for BeanError {
 impl From<TransactionError> for BeanError {
     fn from(err: TransactionError) -> Self {
         Self::Transaction(err)
+    }
+}
+
+impl From<IdempotencyKeyError> for BeanError {
+    fn from(err: IdempotencyKeyError) -> Self {
+        Self::IdempotencyKey(err)
     }
 }
 

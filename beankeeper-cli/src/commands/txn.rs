@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use beankeeper::core::JournalEntry;
+use beankeeper::prelude::IdempotencyKey;
 use beankeeper::types::{Currency, DocumentType, Money};
 
 use crate::cli::{Cli, OutputFormat, TxnCommand, resolve_format};
@@ -35,6 +36,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             currency,
             date,
             correlate,
+            reference,
         } => run_post(
             cli,
             &db_handle,
@@ -46,6 +48,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             currency,
             date.as_deref(),
             *correlate,
+            reference.as_deref(),
         ),
         TxnCommand::List { account, from, to, limit, offset } => {
             let lp = transactions::ListTransactionParams {
@@ -184,6 +187,7 @@ fn run_post(
     currency_code: &str,
     date: Option<&str>,
     correlate: Option<i64>,
+    reference: Option<&str>,
 ) -> Result<(), CliError> {
     // 1. Parse currency
     let currency = Currency::from_code(currency_code).map_err(|e| {
@@ -249,6 +253,12 @@ fn run_post(
         db_entries.push((code.clone(), "credit".to_string(), *minor, memo.clone()));
     }
 
+    // Resolve idempotency key from the reference, if provided.
+    let idempotency_key = reference
+        .map(IdempotencyKey::from_reference)
+        .transpose()
+        .map_err(|e| CliError::Validation(format!("invalid reference: {e}")))?;
+
     let params = transactions::PostTransactionParams {
         company_slug: company,
         description,
@@ -257,6 +267,7 @@ fn run_post(
         date: &effective_date,
         entries: &db_entries,
         correlate,
+        reference: idempotency_key.as_ref().map(IdempotencyKey::as_str),
     };
 
     let txn_id = transactions::post_transaction(db_handle.conn(), &params)?;

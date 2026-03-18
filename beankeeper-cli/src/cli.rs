@@ -242,6 +242,10 @@ pub enum TxnCommand {
         /// Correlate with an existing transaction in another company (intercompany linking).
         #[arg(long)]
         correlate: Option<i64>,
+
+        /// Idempotency key -- rejects duplicate posts with the same reference per company.
+        #[arg(short = 'r', long)]
+        reference: Option<String>,
     },
 
     /// List transactions.

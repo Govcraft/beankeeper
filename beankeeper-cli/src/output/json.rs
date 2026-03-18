@@ -36,6 +36,7 @@ pub struct TransactionJson {
     id: i64,
     description: String,
     metadata: Option<String>,
+    reference: Option<String>,
     currency: String,
     date: String,
     entries: Vec<EntryJson>,
@@ -64,6 +65,7 @@ struct TransactionWithAttachmentsJson {
     id: i64,
     description: String,
     metadata: Option<String>,
+    reference: Option<String>,
     currency: String,
     date: String,
     entries: Vec<EntryJson>,
@@ -214,6 +216,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                 id: txn.id,
                 description: txn.description.clone(),
                 metadata: txn.metadata.clone(),
+                reference: txn.reference.clone(),
                 currency: txn.currency.clone(),
                 date: txn.date.clone(),
                 entries,
@@ -272,6 +275,7 @@ pub fn render_transactions_with_attachments<S: ::std::hash::BuildHasher, T: ::st
                 id: txn.id,
                 description: txn.description.clone(),
                 metadata: txn.metadata.clone(),
+                reference: txn.reference.clone(),
                 currency: txn.currency.clone(),
                 date: txn.date.clone(),
                 entries,
@@ -463,6 +467,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            reference: None,
         }];
         let mut map = HashMap::new();
         map.insert(
@@ -505,6 +510,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            reference: None,
         }];
         let json = render_transactions(&txns, &HashMap::new()).unwrap_or_default();
         assert!(json.contains(r#""entries": []"#));
