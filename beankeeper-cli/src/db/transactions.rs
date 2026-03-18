@@ -6,6 +6,16 @@ use serde_json;
 use super::{EntryRow, TransactionRow};
 use crate::error::CliError;
 
+/// A single entry to be posted as part of a transaction.
+#[derive(Debug, Clone)]
+pub struct PostEntryParams {
+    pub account_code: String,
+    pub direction: String,
+    pub amount: i64,
+    pub memo: Option<String>,
+    pub tax_category: Option<String>,
+}
+
 /// Parameters for posting a new transaction.
 pub struct PostTransactionParams<'a> {
     pub company_slug: &'a str,
@@ -13,7 +23,7 @@ pub struct PostTransactionParams<'a> {
     pub metadata: Option<&'a str>,
     pub currency: &'a str,
     pub date: &'a str,
-    pub entries: &'a [(String, String, i64, Option<String>)],
+    pub entries: &'a [PostEntryParams],
     /// If set, correlate with this existing transaction ID (intercompany linking).
     pub correlate: Option<i64>,
     /// Idempotency reference -- rejects duplicate posts with the same reference per company.
@@ -109,25 +119,27 @@ fn post_transaction_inner(
 
     let txn_id = conn.last_insert_rowid();
 
-    for (account_code, direction, amount, memo) in p.entries {
-        let dir_lower = direction.to_lowercase();
+    for entry in p.entries {
+        let dir_lower = entry.direction.to_lowercase();
         if dir_lower != "debit" && dir_lower != "credit" {
             return Err(CliError::Validation(format!(
-                "invalid direction '{direction}'; expected 'debit' or 'credit'"
+                "invalid direction '{}'; expected 'debit' or 'credit'",
+                entry.direction
             )));
         }
 
         conn.execute(
             "INSERT INTO entries \
-             (transaction_id, account_code, company_slug, direction, amount, memo) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (transaction_id, account_code, company_slug, direction, amount, memo, tax_category) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 txn_id,
-                account_code,
+                entry.account_code,
                 p.company_slug,
                 dir_lower,
-                amount,
-                memo
+                entry.amount,
+                entry.memo,
+                entry.tax_category
             ],
         )?;
     }
@@ -397,7 +409,8 @@ pub fn get_entries_for_transaction(
     txn_id: i64,
 ) -> Result<Vec<EntryRow>, CliError> {
     let mut stmt = conn.prepare(
-        "SELECT id, transaction_id, account_code, company_slug, direction, amount, memo \
+        "SELECT id, transaction_id, account_code, company_slug, direction, amount, memo, \
+         tax_category \
          FROM entries \
          WHERE transaction_id = ?1 \
          ORDER BY id",
@@ -412,6 +425,7 @@ pub fn get_entries_for_transaction(
             direction: row.get(4)?,
             amount: row.get(5)?,
             memo: row.get(6)?,
+            tax_category: row.get(7)?,
         })
     })?;
 
@@ -472,22 +486,34 @@ mod tests {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
         create_company(db.conn(), "acme", "Acme Corp", None)
             .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        create_account(db.conn(), "acme", "1000", "Cash", "asset")
+        create_account(db.conn(), "acme", "1000", "Cash", "asset", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(db.conn(), "acme", "4000", "Revenue", "revenue")
+        create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
 
-    fn sample_entries() -> Vec<(String, String, i64, Option<String>)> {
+    fn sample_entries() -> Vec<PostEntryParams> {
         vec![
-            ("1000".to_string(), "debit".to_string(), 5000, None),
-            ("4000".to_string(), "credit".to_string(), 5000, None),
+            PostEntryParams {
+                account_code: "1000".to_string(),
+                direction: "debit".to_string(),
+                amount: 5000,
+                memo: None,
+                tax_category: None,
+            },
+            PostEntryParams {
+                account_code: "4000".to_string(),
+                direction: "credit".to_string(),
+                amount: 5000,
+                memo: None,
+                tax_category: None,
+            },
         ]
     }
 
     fn make_params<'a>(
-        entries: &'a [(String, String, i64, Option<String>)],
+        entries: &'a [PostEntryParams],
         description: &'a str,
         metadata: Option<&'a str>,
         date: &'a str,
@@ -544,7 +570,13 @@ mod tests {
     #[test]
     fn post_invalid_direction_is_validation_error() {
         let db = setup();
-        let entries = vec![("1000".to_string(), "INVALID".to_string(), 5000, None)];
+        let entries = vec![PostEntryParams {
+            account_code: "1000".to_string(),
+            direction: "INVALID".to_string(),
+            amount: 5000,
+            memo: None,
+            tax_category: None,
+        }];
         let p = make_params(&entries, "Bad", None, "2024-01-15");
         let result = post_transaction(db.conn(), &p);
         assert!(matches!(result, Err(CliError::Validation(_))));
@@ -581,7 +613,7 @@ mod tests {
     #[test]
     fn list_transactions_with_account_filter() {
         let db = setup();
-        create_account(db.conn(), "acme", "5000", "Expenses", "expense")
+        create_account(db.conn(), "acme", "5000", "Expenses", "expense", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
 
         let entries1 = sample_entries();
@@ -589,8 +621,20 @@ mod tests {
         assert!(post_transaction(db.conn(), &p1).is_ok());
 
         let entries2 = vec![
-            ("5000".to_string(), "debit".to_string(), 1000, None),
-            ("1000".to_string(), "credit".to_string(), 1000, None),
+            PostEntryParams {
+                account_code: "5000".to_string(),
+                direction: "debit".to_string(),
+                amount: 1000,
+                memo: None,
+                tax_category: None,
+            },
+            PostEntryParams {
+                account_code: "1000".to_string(),
+                direction: "credit".to_string(),
+                amount: 1000,
+                memo: None,
+                tax_category: None,
+            },
         ];
         let p2 = make_params(&entries2, "Expense", None, "2024-01-02");
         assert!(post_transaction(db.conn(), &p2).is_ok());
@@ -650,8 +694,20 @@ mod tests {
         let db = setup();
         // This should fail because account "9999" doesn't exist (FK constraint)
         let entries = vec![
-            ("1000".to_string(), "debit".to_string(), 5000, None),
-            ("9999".to_string(), "credit".to_string(), 5000, None),
+            PostEntryParams {
+                account_code: "1000".to_string(),
+                direction: "debit".to_string(),
+                amount: 5000,
+                memo: None,
+                tax_category: None,
+            },
+            PostEntryParams {
+                account_code: "9999".to_string(),
+                direction: "credit".to_string(),
+                amount: 5000,
+                memo: None,
+                tax_category: None,
+            },
         ];
         let p = make_params(&entries, "Bad", None, "2024-01-15");
         let result = post_transaction(db.conn(), &p);

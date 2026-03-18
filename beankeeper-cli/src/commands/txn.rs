@@ -37,6 +37,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             date,
             correlate,
             reference,
+            tax,
         } => run_post(
             cli,
             &db_handle,
@@ -49,6 +50,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             date.as_deref(),
             *correlate,
             reference.as_deref(),
+            tax,
         ),
         TxnCommand::List { account, from, to, limit, offset } => {
             let lp = transactions::ListTransactionParams {
@@ -85,6 +87,29 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
         ),
         TxnCommand::Reconcile => run_reconcile(cli, &db_handle, format, use_color),
     }
+}
+
+/// Parse `--tax` flag arguments into a map of `account_code` -> `tax_category`.
+///
+/// Each argument should be `account_code=category`.
+fn parse_tax_args(args: &[String]) -> Result<HashMap<String, String>, CliError> {
+    let mut map = HashMap::new();
+    for arg in args {
+        let (code, category) = arg.split_once('=').ok_or_else(|| {
+            CliError::Usage(format!(
+                "invalid --tax format '{arg}': expected 'account_code=category'"
+            ))
+        })?;
+
+        if code.is_empty() || category.is_empty() {
+            return Err(CliError::Usage(format!(
+                "invalid --tax format '{arg}': account code and category must be non-empty"
+            )));
+        }
+
+        map.insert(code.to_string(), category.to_string());
+    }
+    Ok(map)
 }
 
 /// Parse an `account_code:amount[:memo]` string into `(code, minor_units, optional_memo)`.
@@ -188,6 +213,7 @@ fn run_post(
     date: Option<&str>,
     correlate: Option<i64>,
     reference: Option<&str>,
+    tax_args: &[String],
 ) -> Result<(), CliError> {
     // 1. Parse currency
     let currency = Currency::from_code(currency_code).map_err(|e| {
@@ -205,6 +231,9 @@ fn run_post(
         parsed_credits.push(parse_entry_arg(arg, currency)?);
     }
 
+    // 2b. Parse --tax flags into account_code -> category map
+    let tax_map = parse_tax_args(tax_args)?;
+
     // 3. Determine the transaction date
     let effective_date = match date {
         Some(d) => d.to_string(),
@@ -213,44 +242,74 @@ fn run_post(
     let txn_date = chrono::NaiveDate::parse_from_str(&effective_date, "%Y-%m-%d")
         .map_err(|e| CliError::Validation(format!("invalid date '{effective_date}': {e}")))?;
 
-    // 4. Look up accounts and build library Account objects for validation
+    // 4. Look up accounts, resolve tax categories, and build library Entry objects
     let mut journal = JournalEntry::new(txn_date, description);
     if let Some(meta) = metadata {
         journal = journal.with_metadata(meta);
     }
 
+    // Helper: resolve tax_category for an entry (explicit --tax > account default > None)
+    let resolve_tax = |code: &str, account_row: &db::AccountRow| -> Option<String> {
+        tax_map
+            .get(code)
+            .cloned()
+            .or_else(|| account_row.default_tax_category.clone())
+    };
+
     for (code, minor, memo) in &parsed_debits {
         let row = accounts::get_account(db_handle.conn(), company, code)?;
         let account = db::row_to_account(&row)?;
         let money = Money::from_minor(i128::from(*minor), currency);
-        if let Some(m) = memo {
-            journal = journal.debit_with_memo(&account, money, m)?;
+        let mut entry = if let Some(m) = memo {
+            beankeeper::types::Entry::debit_with_memo(account, money, m)?
         } else {
-            journal = journal.debit(&account, money)?;
+            beankeeper::types::Entry::debit(account, money)?
+        };
+        if let Some(cat) = resolve_tax(code, &row) {
+            entry = entry.with_tax_category(cat);
         }
+        journal = journal.entry(entry);
     }
 
     for (code, minor, memo) in &parsed_credits {
         let row = accounts::get_account(db_handle.conn(), company, code)?;
         let account = db::row_to_account(&row)?;
         let money = Money::from_minor(i128::from(*minor), currency);
-        if let Some(m) = memo {
-            journal = journal.credit_with_memo(&account, money, m)?;
+        let mut entry = if let Some(m) = memo {
+            beankeeper::types::Entry::credit_with_memo(account, money, m)?
         } else {
-            journal = journal.credit(&account, money)?;
+            beankeeper::types::Entry::credit(account, money)?
+        };
+        if let Some(cat) = resolve_tax(code, &row) {
+            entry = entry.with_tax_category(cat);
         }
+        journal = journal.entry(entry);
     }
 
     // 5. Validate via post() - enforces balance invariant
     let _transaction = journal.post()?;
 
     // 6. Build entries for DB persistence
-    let mut db_entries: Vec<(String, String, i64, Option<String>)> = Vec::new();
+    let mut db_entries: Vec<transactions::PostEntryParams> = Vec::new();
     for (code, minor, memo) in &parsed_debits {
-        db_entries.push((code.clone(), "debit".to_string(), *minor, memo.clone()));
+        let row = accounts::get_account(db_handle.conn(), company, code)?;
+        db_entries.push(transactions::PostEntryParams {
+            account_code: code.clone(),
+            direction: "debit".to_string(),
+            amount: *minor,
+            memo: memo.clone(),
+            tax_category: resolve_tax(code, &row),
+        });
     }
     for (code, minor, memo) in &parsed_credits {
-        db_entries.push((code.clone(), "credit".to_string(), *minor, memo.clone()));
+        let row = accounts::get_account(db_handle.conn(), company, code)?;
+        db_entries.push(transactions::PostEntryParams {
+            account_code: code.clone(),
+            direction: "credit".to_string(),
+            amount: *minor,
+            memo: memo.clone(),
+            tax_category: resolve_tax(code, &row),
+        });
     }
 
     // Resolve idempotency key from the reference, if provided.

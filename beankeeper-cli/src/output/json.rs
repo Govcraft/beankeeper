@@ -48,6 +48,8 @@ pub struct EntryJson {
     direction: String,
     amount: i64,
     memo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tax_category: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -207,6 +209,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                             direction: e.direction.clone(),
                             amount: e.amount,
                             memo: e.memo.clone(),
+                            tax_category: e.tax_category.clone(),
                         })
                         .collect()
                 })
@@ -250,6 +253,7 @@ pub fn render_transactions_with_attachments<S: ::std::hash::BuildHasher, T: ::st
                             direction: e.direction.clone(),
                             amount: e.amount,
                             memo: e.memo.clone(),
+                            tax_category: e.tax_category.clone(),
                         })
                         .collect()
                 })
@@ -402,6 +406,36 @@ pub fn render_orphaned_correlations(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Tax summary
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct TaxSummaryEntryJson {
+    tax_category: String,
+    debit_total: i64,
+    credit_total: i64,
+}
+
+/// Render a tax summary as a JSON array.
+///
+/// # Errors
+///
+/// Returns `CliError::General` if JSON serialisation fails.
+pub fn render_tax_summary(rows: &[crate::db::TaxSummaryRow]) -> Result<String, CliError> {
+    let json_rows: Vec<TaxSummaryEntryJson> = rows
+        .iter()
+        .map(|r| TaxSummaryEntryJson {
+            tax_category: r.tax_category.clone(),
+            debit_total: r.debit_total,
+            credit_total: r.credit_total,
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&json_rows)
+        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+}
+
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -438,6 +472,7 @@ mod tests {
             name: "Cash".into(),
             account_type: "asset".into(),
             created_at: "2025-01-01".into(),
+            default_tax_category: None,
         }];
         let json = render_accounts(&rows).unwrap_or_default();
         assert!(json.contains(r#""type": "asset""#));
@@ -452,6 +487,7 @@ mod tests {
             name: "Revenue".into(),
             account_type: "revenue".into(),
             created_at: "2025-01-01".into(),
+            default_tax_category: None,
         }];
         let json = render_accounts(&rows).unwrap_or_default();
         assert!(json.contains(r#""normal_balance": "credit""#));
@@ -481,6 +517,7 @@ mod tests {
                     direction: "debit".into(),
                     amount: 5000,
                     memo: None,
+                    tax_category: None,
                 },
                 EntryRow {
                     id: 2,
@@ -490,6 +527,7 @@ mod tests {
                     direction: "credit".into(),
                     amount: 5000,
                     memo: None,
+                    tax_category: None,
                 },
             ],
         );

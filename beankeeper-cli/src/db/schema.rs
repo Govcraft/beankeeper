@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 3;
+const CURRENT_VERSION: i64 = 4;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -51,6 +51,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 3 {
         apply_v3(conn)?;
+    }
+
+    if version < 4 {
+        apply_v4(conn)?;
     }
 
     debug_assert_eq!(
@@ -173,6 +177,24 @@ fn apply_v3(conn: &Connection) -> Result<(), CliError> {
     conn.execute(
         "INSERT INTO schema_version (version) VALUES (?1)",
         params![3],
+    )?;
+
+    Ok(())
+}
+
+/// Applies the v4 migration: adds `tax_category` to entries and
+/// `default_tax_category` to accounts.
+fn apply_v4(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        ALTER TABLE entries ADD COLUMN tax_category TEXT;
+        ALTER TABLE accounts ADD COLUMN default_tax_category TEXT;
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        params![4],
     )?;
 
     Ok(())
@@ -307,6 +329,48 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(has_reference, "reference column should exist after v3 migration");
+    }
+
+    #[test]
+    fn v4_migration_adds_tax_category_columns() {
+        let conn = open_conn();
+        // Apply v1 through v3
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(3));
+
+        // Now run ensure_schema which should apply v4
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        // Verify tax_category column on entries
+        let has_tax_category: bool = conn
+            .prepare("PRAGMA table_info(entries)")
+            .map(|mut stmt| {
+                let names: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .unwrap_or_else(|e| panic!("query failed: {e}"))
+                    .filter_map(Result::ok)
+                    .collect();
+                names.contains(&"tax_category".to_string())
+            })
+            .unwrap_or(false);
+        assert!(has_tax_category, "tax_category column should exist on entries after v4");
+
+        // Verify default_tax_category column on accounts
+        let has_default_tax: bool = conn
+            .prepare("PRAGMA table_info(accounts)")
+            .map(|mut stmt| {
+                let names: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .unwrap_or_else(|e| panic!("query failed: {e}"))
+                    .filter_map(Result::ok)
+                    .collect();
+                names.contains(&"default_tax_category".to_string())
+            })
+            .unwrap_or(false);
+        assert!(has_default_tax, "default_tax_category column should exist on accounts after v4");
     }
 
     #[test]

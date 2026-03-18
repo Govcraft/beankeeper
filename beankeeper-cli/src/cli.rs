@@ -185,6 +185,9 @@ pub enum AccountCommand {
         /// Account type.
         #[arg(long = "type", value_enum)]
         account_type: AccountTypeArg,
+        /// Default tax category for entries posted to this account.
+        #[arg(long)]
+        default_tax_category: Option<String>,
     },
 
     /// List accounts.
@@ -246,6 +249,11 @@ pub enum TxnCommand {
         /// Idempotency key -- rejects duplicate posts with the same reference per company.
         #[arg(short = 'r', long)]
         reference: Option<String>,
+
+        /// Tax category for specific entries. Format: `account_code=category` (repeatable).
+        /// Entries without a --tax flag inherit the account's `default_tax_category`.
+        #[arg(long = "tax", num_args = 1)]
+        tax: Vec<String>,
     },
 
     /// List transactions.
@@ -354,6 +362,16 @@ pub enum ReportCommand {
         /// As-of date (YYYY-MM-DD).
         #[arg(long)]
         as_of: Option<String>,
+    },
+
+    /// Summarise entries grouped by tax category.
+    TaxSummary {
+        /// Start date (inclusive).
+        #[arg(long)]
+        from: Option<String>,
+        /// End date (inclusive).
+        #[arg(long)]
+        to: Option<String>,
     },
 }
 

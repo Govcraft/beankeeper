@@ -57,6 +57,7 @@ pub struct Entry {
     amount: Money,
     direction: DebitOrCredit,
     memo: Option<String>,
+    tax_category: Option<String>,
     attachments: Vec<SourceDocument>,
 }
 
@@ -86,6 +87,7 @@ impl Entry {
             amount,
             direction,
             memo: None,
+            tax_category: None,
             attachments: Vec::new(),
         })
     }
@@ -187,6 +189,22 @@ impl Entry {
         self.memo.as_deref()
     }
 
+    /// Returns the optional tax category for this entry.
+    #[must_use]
+    pub fn tax_category(&self) -> Option<&str> {
+        self.tax_category.as_deref()
+    }
+
+    /// Sets the tax category, returning the updated entry.
+    ///
+    /// Tax categories are free-form strings that map to tax form lines
+    /// (e.g. `"sched-c:24b"` for meals on Schedule C).
+    #[must_use]
+    pub fn with_tax_category(mut self, category: impl Into<String>) -> Self {
+        self.tax_category = Some(category.into());
+        self
+    }
+
     /// Returns source documents attached to this entry.
     #[must_use]
     pub fn attachments(&self) -> &[SourceDocument] {
@@ -225,6 +243,9 @@ impl fmt::Display for Entry {
         write!(f, "{dir} {} {}", self.account.name(), self.amount)?;
         if let Some(ref memo) = self.memo {
             write!(f, " ({memo})")?;
+        }
+        if let Some(ref cat) = self.tax_category {
+            write!(f, " [{cat}]")?;
         }
         Ok(())
     }
@@ -421,5 +442,39 @@ mod tests {
     fn with_memo_zero_rejected() {
         let result = Entry::with_memo(cash_account(), Money::usd(0), DebitOrCredit::Debit, "memo");
         assert!(matches!(result, Err(EntryError::ZeroAmount)));
+    }
+
+    #[test]
+    fn tax_category_is_none_by_default() {
+        let entry =
+            Entry::debit(cash_account(), Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}"));
+        assert_eq!(entry.tax_category(), None);
+    }
+
+    #[test]
+    fn with_tax_category_sets_value() {
+        let entry = Entry::debit(cash_account(), Money::usd(500))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .with_tax_category("sched-c:24b");
+        assert_eq!(entry.tax_category(), Some("sched-c:24b"));
+    }
+
+    #[test]
+    fn display_with_tax_category() {
+        let entry = Entry::debit(cash_account(), Money::usd(500))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .with_tax_category("sched-c:24b");
+        assert_eq!(format!("{entry}"), "DR Cash USD 5.00 [sched-c:24b]");
+    }
+
+    #[test]
+    fn display_with_memo_and_tax_category() {
+        let entry = Entry::debit_with_memo(cash_account(), Money::usd(500), "Lunch")
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .with_tax_category("sched-c:24b");
+        assert_eq!(
+            format!("{entry}"),
+            "DR Cash USD 5.00 (Lunch) [sched-c:24b]"
+        );
     }
 }

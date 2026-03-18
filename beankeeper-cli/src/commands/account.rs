@@ -27,9 +27,17 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
             code,
             name,
             account_type,
+            default_tax_category,
         } => {
             let type_str = format!("{account_type:?}").to_lowercase();
-            let row = accounts::create_account(db.conn(), company, code, name, &type_str)?;
+            let row = accounts::create_account(
+                db.conn(),
+                company,
+                code,
+                name,
+                &type_str,
+                default_tax_category.as_deref(),
+            )?;
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created account: {} ({})", row.code, row.name);
             }

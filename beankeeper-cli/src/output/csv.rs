@@ -224,6 +224,36 @@ pub fn render_orphaned_correlations(
 }
 
 // ---------------------------------------------------------------------------
+// Tax summary
+// ---------------------------------------------------------------------------
+
+/// Render a tax summary as CSV.
+///
+/// Columns: `tax_category`, `debit_total`, `credit_total`
+///
+/// # Errors
+///
+/// Returns `CliError::General` if CSV serialisation fails.
+pub fn render_tax_summary(rows: &[crate::db::TaxSummaryRow]) -> Result<String, CliError> {
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    wtr.write_record(["tax_category", "debit_total", "credit_total"])
+        .map_err(|e| csv_err(&e))?;
+
+    for r in rows {
+        let debit = r.debit_total.to_string();
+        let credit = r.credit_total.to_string();
+        wtr.write_record([r.tax_category.as_str(), debit.as_str(), credit.as_str()])
+            .map_err(|e| csv_err(&e))?;
+    }
+
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -274,6 +304,7 @@ mod tests {
             name: "Cash".into(),
             account_type: "asset".into(),
             created_at: "2025-01-01".into(),
+            default_tax_category: None,
         }];
         let csv_str = render_accounts(&rows).unwrap_or_default();
         assert!(csv_str.contains("code,name,type,normal_balance"));
@@ -288,6 +319,7 @@ mod tests {
             name: "Revenue".into(),
             account_type: "revenue".into(),
             created_at: "2025-01-01".into(),
+            default_tax_category: None,
         }];
         let csv_str = render_accounts(&rows).unwrap_or_default();
         assert!(csv_str.contains("4000,Revenue,revenue,credit"));

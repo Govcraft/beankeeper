@@ -19,7 +19,7 @@ pub use companies::{company_exists, create_company, delete_company, get_company,
 pub use connection::Db;
 pub use schema::{ensure_schema, get_schema_version};
 pub use transactions::{
-    ListTransactionParams, OrphanedCorrelation, PostTransactionParams,
+    ListTransactionParams, OrphanedCorrelation, PostEntryParams, PostTransactionParams,
     find_orphaned_correlations, get_entries_for_transaction, get_transaction, list_transactions,
     post_transaction,
 };
@@ -51,6 +51,7 @@ pub struct AccountRow {
     pub name: String,
     pub account_type: String,
     pub created_at: String,
+    pub default_tax_category: Option<String>,
 }
 
 /// A row from the `transactions` table.
@@ -76,6 +77,15 @@ pub struct EntryRow {
     pub direction: String,
     pub amount: i64,
     pub memo: Option<String>,
+    pub tax_category: Option<String>,
+}
+
+/// Aggregated totals per tax category, used in the tax summary report.
+#[derive(Debug, Clone)]
+pub struct TaxSummaryRow {
+    pub tax_category: String,
+    pub debit_total: i64,
+    pub credit_total: i64,
 }
 
 /// Aggregated balance data for an account, used in trial balance and balance reports.
@@ -204,6 +214,66 @@ pub fn compute_account_balance(
     }
 }
 
+/// Computes a tax summary for a company, grouping entries by `tax_category`.
+///
+/// Returns one [`TaxSummaryRow`] per distinct tax category (excluding entries
+/// with no tax category). Optionally filters by date range.
+///
+/// # Errors
+///
+/// Returns `CliError::Sqlite` on any database error.
+pub fn compute_tax_summary(
+    conn: &Connection,
+    company_slug: &str,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
+) -> Result<Vec<TaxSummaryRow>, CliError> {
+    let mut sql = String::from(
+        "SELECT e.tax_category, \
+         SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), \
+         SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END) \
+         FROM entries e \
+         JOIN transactions t ON t.id = e.transaction_id \
+         WHERE e.company_slug = ?1 AND e.tax_category IS NOT NULL",
+    );
+
+    let mut param_idx = 2u32;
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    param_values.push(Box::new(company_slug.to_string()));
+
+    if let Some(from) = from_date {
+        let _ = write!(sql, " AND t.date >= ?{param_idx}");
+        param_values.push(Box::new(from.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(to) = to_date {
+        let _ = write!(sql, " AND t.date <= ?{param_idx}");
+        param_values.push(Box::new(to.to_string()));
+        let _ = param_idx;
+    }
+
+    sql.push_str(" GROUP BY e.tax_category ORDER BY e.tax_category");
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(AsRef::as_ref).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        Ok(TaxSummaryRow {
+            tax_category: row.get(0)?,
+            debit_total: row.get(1)?,
+            credit_total: row.get(2)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,19 +282,31 @@ mod tests {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
         create_company(db.conn(), "acme", "Acme Corp", None)
             .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        create_account(db.conn(), "acme", "1000", "Cash", "asset")
+        create_account(db.conn(), "acme", "1000", "Cash", "asset", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(db.conn(), "acme", "4000", "Revenue", "revenue")
+        create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(db.conn(), "acme", "2000", "Payables", "liability")
+        create_account(db.conn(), "acme", "2000", "Payables", "liability", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
 
     fn post_sample(db: &Db, date: &str, amount: i64) {
         let entries = vec![
-            ("1000".to_string(), "debit".to_string(), amount, None),
-            ("4000".to_string(), "credit".to_string(), amount, None),
+            transactions::PostEntryParams {
+                account_code: "1000".to_string(),
+                direction: "debit".to_string(),
+                amount,
+                memo: None,
+                tax_category: None,
+            },
+            transactions::PostEntryParams {
+                account_code: "4000".to_string(),
+                direction: "credit".to_string(),
+                amount,
+                memo: None,
+                tax_category: None,
+            },
         ];
         let params = transactions::PostTransactionParams {
             company_slug: "acme",

@@ -201,17 +201,29 @@ mod tests {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
         companies::create_company(db.conn(), "acme", "Acme Corp", None)
             .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        crate::db::create_account(db.conn(), "acme", "1000", "Cash", "asset")
+        crate::db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        crate::db::create_account(db.conn(), "acme", "4000", "Revenue", "revenue")
+        crate::db::create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)
             .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
 
     fn post_sample(db: &Db) -> i64 {
         let entries = vec![
-            ("1000".to_string(), "debit".to_string(), 5000i64, None),
-            ("4000".to_string(), "credit".to_string(), 5000i64, None),
+            transactions::PostEntryParams {
+                account_code: "1000".to_string(),
+                direction: "debit".to_string(),
+                amount: 5000,
+                memo: None,
+                tax_category: None,
+            },
+            transactions::PostEntryParams {
+                account_code: "4000".to_string(),
+                direction: "credit".to_string(),
+                amount: 5000,
+                memo: None,
+                tax_category: None,
+            },
         ];
         let params = transactions::PostTransactionParams {
             company_slug: "acme",

@@ -265,8 +265,13 @@ pub fn render_transaction_detail(
             .as_deref()
             .map(|m| format!("  ({m})"))
             .unwrap_or_default();
+        let tax_suffix = entry
+            .tax_category
+            .as_deref()
+            .map(|c| format!("  [{c}]"))
+            .unwrap_or_default();
         lines.push(format!(
-            "    {prefix} {code}  {amount_str}{memo_suffix}",
+            "    {prefix} {code}  {amount_str}{memo_suffix}{tax_suffix}",
             prefix = styled(prefix, direction_style, use_color),
             code = styled(&entry.account_code, cyan_style(), use_color),
         ));
@@ -523,6 +528,62 @@ pub fn render_orphaned_correlations(
 }
 
 // ---------------------------------------------------------------------------
+// Tax summary
+// ---------------------------------------------------------------------------
+
+/// Render a tax summary report as a table.
+#[must_use]
+pub fn render_tax_summary(
+    rows: &[crate::db::TaxSummaryRow],
+    currency_code: &str,
+    currency_minor_units: u8,
+    use_color: bool,
+) -> String {
+    if rows.is_empty() {
+        return "No categorised entries found.".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push(styled(
+        &format!("Tax Summary ({currency_code})"),
+        bold_style(),
+        use_color,
+    ));
+    lines.push(String::new());
+
+    let mut table = new_table();
+    table.set_header(vec![
+        Cell::new(styled("Tax Category", bold_style(), use_color)),
+        Cell::new(styled("Debit Total", bold_style(), use_color)),
+        Cell::new(styled("Credit Total", bold_style(), use_color)),
+        Cell::new(styled("Net", bold_style(), use_color)),
+    ]);
+
+    for row in rows {
+        let net = row.debit_total.saturating_sub(row.credit_total);
+        table.add_row(vec![
+            Cell::new(styled(&row.tax_category, cyan_style(), use_color)),
+            Cell::new(format_amount(row.debit_total, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(format_amount(row.credit_total, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(format_amount(net, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
+        ]);
+    }
+
+    lines.push(table.to_string());
+
+    let count = rows.len();
+    lines.push(format!(
+        "\n{count} tax {noun}",
+        noun = if count == 1 { "category" } else { "categories" }
+    ));
+
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -660,6 +721,7 @@ mod tests {
             name: "Cash".into(),
             account_type: "asset".into(),
             created_at: "2025-01-01".into(),
+            default_tax_category: None,
         }];
         let out = render_accounts(&rows, false);
         assert!(out.contains("1000"));
@@ -721,6 +783,7 @@ mod tests {
                 direction: "debit".into(),
                 amount: 5000,
                 memo: None,
+                tax_category: None,
             },
             EntryRow {
                 id: 2,
@@ -730,6 +793,7 @@ mod tests {
                 direction: "credit".into(),
                 amount: 5000,
                 memo: None,
+                tax_category: None,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);
@@ -763,6 +827,7 @@ mod tests {
                 direction: "debit".into(),
                 amount: 5000,
                 memo: None,
+                tax_category: None,
             },
             EntryRow {
                 id: 2,
@@ -772,6 +837,7 @@ mod tests {
                 direction: "credit".into(),
                 amount: 3000,
                 memo: None,
+                tax_category: None,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);

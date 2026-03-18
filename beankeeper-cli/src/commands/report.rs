@@ -56,6 +56,15 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
         ReportCommand::BalanceSheet { as_of } => {
             run_balance_sheet(cli, &db, company, as_of.as_deref(), format, use_color)
         }
+        ReportCommand::TaxSummary { from, to } => run_tax_summary(
+            cli,
+            &db,
+            company,
+            from.as_deref(),
+            to.as_deref(),
+            format,
+            use_color,
+        ),
     }
 }
 
@@ -596,4 +605,42 @@ fn append_totals_and_status(
             }
         }
     }
+}
+
+/// Execute the `report tax-summary` subcommand.
+#[allow(clippy::too_many_arguments)]
+fn run_tax_summary(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let rows = db::compute_tax_summary(db.conn(), company, from, to)?;
+    let currency = resolve_company_currency(db, company);
+    let minor_units = currency.minor_units();
+
+    match format {
+        OutputFormat::Table => {
+            let rendered =
+                output::table::render_tax_summary(&rows, currency.code(), minor_units, use_color);
+            println!("{rendered}");
+        }
+        OutputFormat::Json => {
+            let rendered = output::json::render_tax_summary(&rows)?;
+            println!("{rendered}");
+        }
+        OutputFormat::Csv => {
+            let rendered = output::csv::render_tax_summary(&rows)?;
+            print!("{rendered}");
+        }
+    }
+
+    if !cli.verbosity.quiet {
+        eprintln!("[ok] tax summary generated ({} categories)", rows.len());
+    }
+
+    Ok(())
 }

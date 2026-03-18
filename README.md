@@ -8,8 +8,8 @@ This repository contains two crates:
 
 | Crate | Description |
 |-------|-------------|
-| [`beankeeper`](https://crates.io/crates/beankeeper) | Library of accounting primitives: amounts, currencies, accounts, entries, dated transactions, document attachments, idempotency keys, ledger, and reporting |
-| `beankeeper-cli` | CLI binary (`bk`) providing SQLite-backed multi-tenant accounting with encryption, content-addressed document storage, idempotency, three output formats, and scriptable stdin/stdout |
+| [`beankeeper`](https://crates.io/crates/beankeeper) | Library of accounting primitives: amounts, currencies, accounts, entries, dated transactions, document attachments, idempotency keys, tax categories, ledger, and reporting |
+| `beankeeper-cli` | CLI binary (`bk`) providing SQLite-backed multi-tenant accounting with encryption, content-addressed document storage, idempotency, tax categorisation, three output formats, and scriptable stdin/stdout |
 
 ## Install the CLI
 
@@ -108,6 +108,29 @@ bk --company personal txn show 1
 ```
 
 Supported document types: `receipt`, `invoice`, `statement`, `contract`, `other`.
+
+### Tax Categories
+
+Tag entries with free-form tax categories that map to Schedule C lines (or any tax form). Categories can be set per-entry or inherited from an account default:
+
+```sh
+# Set a default tax category on an account
+bk --company personal account create 5100 "Meals" --type expense \
+  --default-tax-category "sched-c:24b"
+
+# Override per-entry at posting time
+bk --company personal txn post -d "Client lunch" \
+  --debit 5100:25 --credit 1000:25 \
+  --tax 5100=sched-c:24b
+
+# View categorised entries
+bk --company personal txn show 1
+
+# Summarise by tax category for a tax year
+bk --company personal report tax-summary --from 2026-01-01 --to 2026-12-31
+```
+
+Resolution order: explicit `--tax` flag > account `--default-tax-category` > none. Categories are free-form strings -- no tax-year specifics are baked into the schema.
 
 ### Output Formats
 
@@ -257,7 +280,7 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- proper error handling everywhere
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
 - Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
-- 380+ tests covering unit, integration, and real-world accounting scenarios
+- 385+ tests covering unit, integration, and real-world accounting scenarios
 
 ## License
 

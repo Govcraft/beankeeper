@@ -46,6 +46,7 @@ pub fn create_account(
     code: &str,
     name: &str,
     account_type: &str,
+    default_tax_category: Option<&str>,
 ) -> Result<AccountRow, CliError> {
     let account_type_lower = account_type.to_lowercase();
 
@@ -70,8 +71,9 @@ pub fn create_account(
     }
 
     conn.execute(
-        "INSERT INTO accounts (company_slug, code, name, type) VALUES (?1, ?2, ?3, ?4)",
-        params![company_slug, code, name, account_type_lower],
+        "INSERT INTO accounts (company_slug, code, name, type, default_tax_category) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![company_slug, code, name, account_type_lower, default_tax_category],
     )?;
 
     get_account(conn, company_slug, code)
@@ -92,7 +94,7 @@ pub fn list_accounts(
     if let Some(filter) = type_filter {
         let filter_lower = filter.to_lowercase();
         let mut stmt = conn.prepare(
-            "SELECT company_slug, code, name, type, created_at \
+            "SELECT company_slug, code, name, type, created_at, default_tax_category \
              FROM accounts \
              WHERE company_slug = ?1 AND type = ?2 \
              ORDER BY code",
@@ -105,6 +107,7 @@ pub fn list_accounts(
                 name: row.get(2)?,
                 account_type: row.get(3)?,
                 created_at: row.get(4)?,
+                default_tax_category: row.get(5)?,
             })
         })?;
 
@@ -113,7 +116,7 @@ pub fn list_accounts(
         }
     } else {
         let mut stmt = conn.prepare(
-            "SELECT company_slug, code, name, type, created_at \
+            "SELECT company_slug, code, name, type, created_at, default_tax_category \
              FROM accounts \
              WHERE company_slug = ?1 \
              ORDER BY code",
@@ -126,6 +129,7 @@ pub fn list_accounts(
                 name: row.get(2)?,
                 account_type: row.get(3)?,
                 created_at: row.get(4)?,
+                default_tax_category: row.get(5)?,
             })
         })?;
 
@@ -148,7 +152,7 @@ pub fn get_account(
     code: &str,
 ) -> Result<AccountRow, CliError> {
     let mut stmt = conn.prepare(
-        "SELECT company_slug, code, name, type, created_at \
+        "SELECT company_slug, code, name, type, created_at, default_tax_category \
          FROM accounts \
          WHERE company_slug = ?1 AND code = ?2",
     )?;
@@ -160,6 +164,7 @@ pub fn get_account(
             name: row.get(2)?,
             account_type: row.get(3)?,
             created_at: row.get(4)?,
+            default_tax_category: row.get(5)?,
         })
     })?;
 
@@ -241,7 +246,7 @@ mod tests {
     #[test]
     fn create_and_get_account() {
         let db = setup();
-        let row = create_account(db.conn(), "acme", "1000", "Cash", "asset");
+        let row = create_account(db.conn(), "acme", "1000", "Cash", "asset", None);
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.code, "1000");
@@ -254,7 +259,7 @@ mod tests {
     #[test]
     fn create_account_normalises_type_case() {
         let db = setup();
-        let row = create_account(db.conn(), "acme", "1000", "Cash", "Asset");
+        let row = create_account(db.conn(), "acme", "1000", "Cash", "Asset", None);
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.account_type, "asset");
@@ -263,30 +268,30 @@ mod tests {
     #[test]
     fn create_account_rejects_invalid_type() {
         let db = setup();
-        let result = create_account(db.conn(), "acme", "1000", "Cash", "bank");
+        let result = create_account(db.conn(), "acme", "1000", "Cash", "bank", None);
         assert!(matches!(result, Err(CliError::Validation(_))));
     }
 
     #[test]
     fn create_account_rejects_missing_company() {
         let db = setup();
-        let result = create_account(db.conn(), "nope", "1000", "Cash", "asset");
+        let result = create_account(db.conn(), "nope", "1000", "Cash", "asset", None);
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
     #[test]
     fn duplicate_account_is_validation_error() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset").is_ok());
-        let result = create_account(db.conn(), "acme", "1000", "Cash 2", "asset");
+        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
+        let result = create_account(db.conn(), "acme", "1000", "Cash 2", "asset", None);
         assert!(matches!(result, Err(CliError::Validation(_))));
     }
 
     #[test]
     fn list_accounts_returns_all() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset").is_ok());
-        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability").is_ok());
+        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
+        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
         let list = list_accounts(db.conn(), "acme", None).unwrap_or_default();
         assert_eq!(list.len(), 2);
     }
@@ -294,8 +299,8 @@ mod tests {
     #[test]
     fn list_accounts_with_type_filter() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset").is_ok());
-        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability").is_ok());
+        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
+        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
         let list = list_accounts(db.conn(), "acme", Some("asset")).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].code, "1000");
@@ -311,7 +316,7 @@ mod tests {
     #[test]
     fn delete_account_removes_row() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset").is_ok());
+        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
         assert!(delete_account(db.conn(), "acme", "1000").is_ok());
         assert!(!account_exists(db.conn(), "acme", "1000").unwrap_or(true));
     }
@@ -326,8 +331,8 @@ mod tests {
     #[test]
     fn list_account_codes_returns_codes() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset").is_ok());
-        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability").is_ok());
+        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
+        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
         let codes = list_account_codes(db.conn(), "acme").unwrap_or_default();
         assert_eq!(codes, vec!["1000", "2000"]);
     }
@@ -340,6 +345,7 @@ mod tests {
             name: "Cash".to_string(),
             account_type: "asset".to_string(),
             created_at: "2024-01-01 00:00:00".to_string(),
+            default_tax_category: None,
         };
         let account = row_to_account(&row);
         assert!(account.is_ok());
