@@ -134,8 +134,12 @@ impl JournalEntry {
     ///
     /// # Errors
     ///
-    /// Returns an error on arithmetic overflow or currency mismatch.
+    /// Returns [`TransactionError::NoEntries`] if no entries have been added,
+    /// or an error on arithmetic overflow.
     pub fn total_debits(&self) -> Result<Money, TransactionError> {
+        if self.entries.is_empty() {
+            return Err(TransactionError::NoEntries);
+        }
         Ok(sum_entries_by_direction(
             &self.entries,
             DebitOrCredit::Debit,
@@ -146,8 +150,12 @@ impl JournalEntry {
     ///
     /// # Errors
     ///
-    /// Returns an error on arithmetic overflow or currency mismatch.
+    /// Returns [`TransactionError::NoEntries`] if no entries have been added,
+    /// or an error on arithmetic overflow.
     pub fn total_credits(&self) -> Result<Money, TransactionError> {
+        if self.entries.is_empty() {
+            return Err(TransactionError::NoEntries);
+        }
         Ok(sum_entries_by_direction(
             &self.entries,
             DebitOrCredit::Credit,

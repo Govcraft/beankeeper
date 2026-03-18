@@ -180,27 +180,23 @@ impl fmt::Display for Transaction {
 }
 
 /// Sums the amounts of entries matching the given direction.
+///
+/// # Panics
+///
+/// Panics if `entries` is empty. All internal callers guarantee at least
+/// two entries (validated by [`JournalEntry::post`] or guarded before calling).
 pub(crate) fn sum_entries_by_direction(
     entries: &[Entry],
     direction: DebitOrCredit,
 ) -> Result<Money, MoneyError> {
-    let matching: Vec<_> = entries
-        .iter()
-        .filter(|e| e.direction() == direction)
-        .collect();
+    // Safety: all callers guarantee non-empty entries — Transaction always
+    // has ≥2 entries, JournalEntry::total_debits/total_credits guard on
+    // is_empty(), and post() checks len ≥ 2 before calling.
+    let currency = entries[0].amount().currency();
 
-    if matching.is_empty() {
-        // Return zero in whatever currency the first entry uses
-        let currency = entries
-            .first()
-            .map_or(Currency::USD, |e| e.amount().currency());
-        return Ok(Money::from_minor(0, currency));
-    }
-
-    let currency = matching[0].amount().currency();
     let mut total = Money::from_minor(0, currency);
 
-    for entry in &matching {
+    for entry in entries.iter().filter(|e| e.direction() == direction) {
         total = total.checked_add(entry.amount())?;
     }
 
