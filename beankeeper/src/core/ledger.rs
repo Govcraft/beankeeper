@@ -1,7 +1,9 @@
+use std::collections::{BTreeMap, HashMap};
+
 use chrono::NaiveDate;
 
 use crate::reporting::{AccountBalance, TrialBalance};
-use crate::types::{Account, Amount, DebitOrCredit, Entry, MoneyError};
+use crate::types::{Account, AccountCode, Amount, DebitOrCredit, Entry, MoneyError};
 
 use super::transaction::Transaction;
 
@@ -45,6 +47,10 @@ use super::transaction::Transaction;
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
     transactions: Vec<Transaction>,
+    /// Maps account code to `(transaction_index, entry_index)` pairs for O(1) lookup.
+    entry_index: HashMap<AccountCode, Vec<(usize, usize)>>,
+    /// Unique accounts seen, sorted by code for `trial_balance()`.
+    accounts: BTreeMap<AccountCode, Account>,
 }
 
 impl Ledger {
@@ -55,7 +61,21 @@ impl Ledger {
     }
 
     /// Posts a validated transaction to the ledger.
+    ///
+    /// Incrementally updates the internal account index so that subsequent
+    /// balance queries remain O(1) lookup + O(k) summation.
     pub fn post(&mut self, transaction: Transaction) {
+        let txn_idx = self.transactions.len();
+        for (entry_idx, entry) in transaction.entries().iter().enumerate() {
+            let code = entry.account().code().clone();
+            self.accounts
+                .entry(code.clone())
+                .or_insert_with(|| entry.account().clone());
+            self.entry_index
+                .entry(code)
+                .or_default()
+                .push((txn_idx, entry_idx));
+        }
         self.transactions.push(transaction);
     }
 
@@ -83,7 +103,7 @@ impl Ledger {
     pub fn balance_for(&self, account: &Account) -> Result<Amount, MoneyError> {
         let mut balance = Amount::ZERO;
 
-        for entry in self.entries_for(account) {
+        for (_, entry) in self.indexed_entries(account.code()) {
             balance = balance
                 .checked_add(entry.signed_amount())
                 .ok_or(MoneyError::Overflow)?;
@@ -100,7 +120,7 @@ impl Ledger {
     pub fn debit_total_for(&self, account: &Account) -> Result<Amount, MoneyError> {
         let mut total = Amount::ZERO;
 
-        for entry in self.entries_for(account) {
+        for (_, entry) in self.indexed_entries(account.code()) {
             if entry.direction() == DebitOrCredit::Debit {
                 total = total
                     .checked_add(entry.amount().amount())
@@ -119,7 +139,7 @@ impl Ledger {
     pub fn credit_total_for(&self, account: &Account) -> Result<Amount, MoneyError> {
         let mut total = Amount::ZERO;
 
-        for entry in self.entries_for(account) {
+        for (_, entry) in self.indexed_entries(account.code()) {
             if entry.direction() == DebitOrCredit::Credit {
                 total = total
                     .checked_add(entry.amount().amount())
@@ -132,11 +152,9 @@ impl Ledger {
 
     /// Returns all entries involving the given account across all transactions.
     #[must_use]
-    pub fn entries_for<'a>(&'a self, account: &'a Account) -> Vec<&'a Entry> {
-        self.transactions
-            .iter()
-            .flat_map(Transaction::entries)
-            .filter(|e| e.account() == account)
+    pub fn entries_for(&self, account: &Account) -> Vec<&Entry> {
+        self.indexed_entries(account.code())
+            .map(|(_, entry)| entry)
             .collect()
     }
 
@@ -146,25 +164,11 @@ impl Ledger {
     ///
     /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
     pub fn trial_balance(&self) -> Result<TrialBalance, MoneyError> {
-        // Collect all unique accounts
-        let mut accounts: Vec<Account> = Vec::new();
+        let mut balances = Vec::with_capacity(self.accounts.len());
 
-        for txn in &self.transactions {
-            for entry in txn.entries() {
-                if !accounts.contains(entry.account()) {
-                    accounts.push(entry.account().clone());
-                }
-            }
-        }
-
-        // Sort by account code for consistent ordering
-        accounts.sort_by(|a, b| a.code().cmp(b.code()));
-
-        let mut balances = Vec::with_capacity(accounts.len());
-
-        for account in &accounts {
-            let debit_total = self.debit_total_for(account)?;
-            let credit_total = self.credit_total_for(account)?;
+        // BTreeMap iteration is sorted by AccountCode
+        for (code, account) in &self.accounts {
+            let (debit_total, credit_total) = self.debit_credit_totals(code)?;
             balances.push(AccountBalance::new(
                 account.clone(),
                 debit_total,
@@ -209,13 +213,11 @@ impl Ledger {
     ) -> Result<Amount, MoneyError> {
         let mut balance = Amount::ZERO;
 
-        for txn in self.transactions_as_of(date) {
-            for entry in txn.entries() {
-                if entry.account() == account {
-                    balance = balance
-                        .checked_add(entry.signed_amount())
-                        .ok_or(MoneyError::Overflow)?;
-                }
+        for (txn, entry) in self.indexed_entries(account.code()) {
+            if txn.date() <= date {
+                balance = balance
+                    .checked_add(entry.signed_amount())
+                    .ok_or(MoneyError::Overflow)?;
             }
         }
 
@@ -228,47 +230,89 @@ impl Ledger {
     ///
     /// Returns [`MoneyError::Overflow`] if arithmetic overflows.
     pub fn trial_balance_as_of(&self, date: NaiveDate) -> Result<TrialBalance, MoneyError> {
-        let filtered: Vec<_> = self.transactions_as_of(date);
+        let mut balances = Vec::with_capacity(self.accounts.len());
 
-        let mut accounts: Vec<Account> = Vec::new();
-        for txn in &filtered {
-            for entry in txn.entries() {
-                if !accounts.contains(entry.account()) {
-                    accounts.push(entry.account().clone());
-                }
+        for (code, account) in &self.accounts {
+            let (debit_total, credit_total) = self.debit_credit_totals_as_of(code, date)?;
+
+            // Only include accounts that had activity on or before the date
+            if debit_total != Amount::ZERO || credit_total != Amount::ZERO {
+                balances.push(AccountBalance::new(
+                    account.clone(),
+                    debit_total,
+                    credit_total,
+                ));
             }
-        }
-
-        accounts.sort_by(|a, b| a.code().cmp(b.code()));
-
-        let mut balances = Vec::with_capacity(accounts.len());
-        for account in &accounts {
-            let mut debit_total = Amount::ZERO;
-            let mut credit_total = Amount::ZERO;
-
-            for txn in &filtered {
-                for entry in txn.entries() {
-                    if entry.account() == account {
-                        match entry.direction() {
-                            DebitOrCredit::Debit => {
-                                debit_total = debit_total
-                                    .checked_add(entry.amount().amount())
-                                    .ok_or(MoneyError::Overflow)?;
-                            }
-                            DebitOrCredit::Credit => {
-                                credit_total = credit_total
-                                    .checked_add(entry.amount().amount())
-                                    .ok_or(MoneyError::Overflow)?;
-                            }
-                        }
-                    }
-                }
-            }
-
-            balances.push(AccountBalance::new(account.clone(), debit_total, credit_total));
         }
 
         Ok(TrialBalance::new(balances))
+    }
+
+    /// Iterates `(transaction, entry)` pairs for a given account code via the index.
+    fn indexed_entries(
+        &self,
+        code: &AccountCode,
+    ) -> impl Iterator<Item = (&Transaction, &Entry)> {
+        self.entry_index
+            .get(code)
+            .into_iter()
+            .flatten()
+            .map(|&(txn_idx, entry_idx)| {
+                let txn = &self.transactions[txn_idx];
+                (txn, &txn.entries()[entry_idx])
+            })
+    }
+
+    /// Computes debit and credit totals for an account code across all transactions.
+    fn debit_credit_totals(&self, code: &AccountCode) -> Result<(Amount, Amount), MoneyError> {
+        let mut debit_total = Amount::ZERO;
+        let mut credit_total = Amount::ZERO;
+
+        for (_, entry) in self.indexed_entries(code) {
+            match entry.direction() {
+                DebitOrCredit::Debit => {
+                    debit_total = debit_total
+                        .checked_add(entry.amount().amount())
+                        .ok_or(MoneyError::Overflow)?;
+                }
+                DebitOrCredit::Credit => {
+                    credit_total = credit_total
+                        .checked_add(entry.amount().amount())
+                        .ok_or(MoneyError::Overflow)?;
+                }
+            }
+        }
+
+        Ok((debit_total, credit_total))
+    }
+
+    /// Computes debit and credit totals for an account code, filtered to transactions on or before a date.
+    fn debit_credit_totals_as_of(
+        &self,
+        code: &AccountCode,
+        date: NaiveDate,
+    ) -> Result<(Amount, Amount), MoneyError> {
+        let mut debit_total = Amount::ZERO;
+        let mut credit_total = Amount::ZERO;
+
+        for (txn, entry) in self.indexed_entries(code) {
+            if txn.date() <= date {
+                match entry.direction() {
+                    DebitOrCredit::Debit => {
+                        debit_total = debit_total
+                            .checked_add(entry.amount().amount())
+                            .ok_or(MoneyError::Overflow)?;
+                    }
+                    DebitOrCredit::Credit => {
+                        credit_total = credit_total
+                            .checked_add(entry.amount().amount())
+                            .ok_or(MoneyError::Overflow)?;
+                    }
+                }
+            }
+        }
+
+        Ok((debit_total, credit_total))
     }
 }
 
