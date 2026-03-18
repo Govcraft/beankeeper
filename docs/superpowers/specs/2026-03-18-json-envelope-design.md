@@ -65,8 +65,6 @@ pub struct Envelope<T: Serialize> {
 pub struct EnvelopeError {
     pub code: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hint: Option<String>,
 }
 ```
 
@@ -82,6 +80,18 @@ pub fn meta(command: &str, company: Option<&str>) -> Meta {
 }
 ```
 
+For testability, an alternate constructor accepts an explicit timestamp:
+
+```rust
+pub fn meta_with_timestamp(command: &str, company: Option<&str>, timestamp: String) -> Meta {
+    Meta {
+        command: command.to_string(),
+        company: company.map(|s| s.to_string()),
+        timestamp,
+    }
+}
+```
+
 ### Command Naming Convention
 
 The `meta.command` field uses `resource.action` dot notation derived from the CLI hierarchy:
@@ -90,7 +100,6 @@ The `meta.command` field uses `resource.action` dot notation derived from the CL
 |---|---|
 | `bk init` | `init` |
 | `bk verify` | `verify` |
-| `bk export` | `export` |
 | `bk company create` | `company.create` |
 | `bk company list` | `company.list` |
 | `bk company show` | `company.show` |
@@ -113,6 +122,25 @@ The `meta.command` field uses `resource.action` dot notation derived from the CL
 
 Each command handler passes its command string as a `&str` literal.
 
+A `command_name(&Command) -> &'static str` utility function is added to `commands/mod.rs` to derive the command string from the parsed CLI, enabling `main()` to construct `Meta` for error reporting without duplicating the mapping:
+
+```rust
+pub fn command_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Init { .. } => "init",
+        Command::Verify => "verify",
+        Command::Export { .. } => "export",
+        Command::Company(sub) => match sub.as_ref() {
+            CompanyCommand::Create { .. } => "company.create",
+            CompanyCommand::List => "company.list",
+            CompanyCommand::Show { .. } => "company.show",
+            CompanyCommand::Delete { .. } => "company.delete",
+        },
+        // ... etc for Account, Txn, Report
+    }
+}
+```
+
 ### Meta Fields
 
 - `command` (string, always present): dot-notation command name
@@ -129,7 +157,8 @@ String codes derived from `CliError` variant names:
 | `Validation`, `Bean` | `"VALIDATION"` |
 | `Database`, `Sqlite` | `"DATABASE"` |
 | `NotFound` | `"NOT_FOUND"` |
-| `General`, `Io` | `"GENERAL"` |
+| `Io` | `"IO"` |
+| `General` | `"GENERAL"` |
 
 Implemented as a method on `CliError`:
 
@@ -140,7 +169,8 @@ pub fn error_code(&self) -> &str {
         CliError::Validation(_) | CliError::Bean(_) => "VALIDATION",
         CliError::Database(_) | CliError::Sqlite(_) => "DATABASE",
         CliError::NotFound(_) => "NOT_FOUND",
-        CliError::General(_) | CliError::Io(_) => "GENERAL",
+        CliError::Io(_) => "IO",
+        CliError::General(_) => "GENERAL",
     }
 }
 ```
@@ -156,19 +186,29 @@ pub fn error_code(&self) -> &str {
    println!("{rendered}");
    ```
 
-3. **`CliError::report()`** gains a `meta: Option<Meta>` parameter. In JSON mode with meta available, it wraps the error in the envelope using `error_code()` for the code string.
+3. **Error reporting in `main()`** — When `dispatch()` returns an error, `main()` uses `command_name(&cli.command)` and `cli.company.as_deref()` to construct a `Meta`, then wraps the error in the envelope. The existing `CliError::report()` method is updated to accept `meta: Option<Meta>` and, when in JSON mode with meta available, output the enveloped error. The `error_code()` method provides the code string.
 
-4. **Table and CSV output are unchanged.** The envelope only applies when `OutputFormat::Json` is active.
+4. **`render_error()` in `output/json.rs` is removed.** Its responsibility is superseded by the enveloped error path in `CliError::report()`.
+
+5. **Table and CSV output are unchanged.** The envelope only applies when `OutputFormat::Json` is active.
+
+6. **`bk export` is excluded from envelope wrapping.** It has its own `ExportFormat` enum and can produce very large output. It continues to emit raw data.
 
 ### Data Field
 
 The `data` field contains whatever the command naturally returns — arrays for list commands, objects for single-item commands. No normalization (e.g., no forced `{"items": [], "count": N}` wrapping).
 
+For mutation commands:
+- **Create** commands return the created resource as `data` (e.g., the new company object).
+- **Delete** commands return a confirmation object as `data`: `{"deleted": "<slug>"}`.
+
 ## Scope
 
 ### In scope
 - `Envelope<T>`, `Meta`, `EnvelopeError` structs in `output/json.rs`
+- `command_name()` utility in `commands/mod.rs`
 - All `render_*` functions updated to accept `Meta` and return enveloped JSON
+- `render_error()` removed from `output/json.rs`
 - `CliError::report()` updated to produce enveloped errors in JSON mode
 - `error_code()` method on `CliError`
 - `chrono` dependency for UTC timestamps (if not already present)
@@ -176,6 +216,7 @@ The `data` field contains whatever the command naturally returns — arrays for 
 
 ### Not in scope
 - Changes to table or CSV output
+- `bk export` (excluded — uses its own format enum)
 - Schema versioning
 - Auto-generated skill definitions (future work)
 - New commands or features
