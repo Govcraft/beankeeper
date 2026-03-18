@@ -200,6 +200,7 @@ fn run_income_statement(
                 &all_balances,
                 minor_units,
                 use_color,
+                ReportKind::IncomeStatement,
             );
             println!("{rendered}");
         }
@@ -257,6 +258,7 @@ fn run_balance_sheet(
                 &all_balances,
                 minor_units,
                 use_color,
+                ReportKind::BalanceCheck,
             );
             println!("{rendered}");
         }
@@ -393,6 +395,14 @@ fn build_period_title(
     }
 }
 
+/// Whether the report checks for balanced debits/credits or shows net income.
+enum ReportKind {
+    /// Balance sheet / trial balance: debits must equal credits.
+    BalanceCheck,
+    /// Income statement: the difference is net income (or net loss).
+    IncomeStatement,
+}
+
 /// Apply ANSI styling to text if colours are enabled.
 fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     if use_color {
@@ -458,6 +468,7 @@ fn render_report_table(
     balances: &[db::BalanceRow],
     currency_minor_units: u8,
     use_color: bool,
+    kind: ReportKind,
 ) -> String {
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
@@ -494,7 +505,7 @@ fn render_report_table(
 
     append_totals_and_status(
         &mut lines, &table, grand_debits, grand_credits,
-        currency_minor_units, bold, green, red_bold, use_color,
+        currency_minor_units, bold, green, red_bold, use_color, &kind,
     );
 
     lines.join("\n")
@@ -531,7 +542,10 @@ fn populate_balance_rows(
     (grand_debits, grand_credits)
 }
 
-/// Append the totals row and balanced/unbalanced status to the output lines.
+/// Append the totals row and status to the output lines.
+///
+/// For `BalanceCheck` reports (balance sheet), debits must equal credits.
+/// For `IncomeStatement` reports, the difference is net income or net loss.
 #[allow(clippy::too_many_arguments)]
 fn append_totals_and_status(
     lines: &mut Vec<String>,
@@ -543,11 +557,8 @@ fn append_totals_and_status(
     green: anstyle::Style,
     red_bold: anstyle::Style,
     use_color: bool,
+    kind: &ReportKind,
 ) {
-    // Clone the table to add the totals row (we receive an immutable ref from
-    // populate_balance_rows returning the table).
-    // Actually we receive a mutable table, but we already returned totals.
-    // Let's just format the totals line manually below the table.
     lines.push(table.to_string());
     lines.push(String::new());
 
@@ -559,15 +570,38 @@ fn append_totals_and_status(
         cr = styled(&credit_str, bold, use_color),
     ));
 
-    if grand_debits == grand_credits {
-        lines.push(styled("[ok] BALANCED", green, use_color));
-    } else {
-        let diff = grand_debits.saturating_sub(grand_credits).abs();
-        let diff_str = format_amount(diff, currency_minor_units);
-        lines.push(styled(
-            &format!("[!!] UNBALANCED (difference: {diff_str})"),
-            red_bold,
-            use_color,
-        ));
+    match kind {
+        ReportKind::BalanceCheck => {
+            if grand_debits == grand_credits {
+                lines.push(styled("[ok] BALANCED", green, use_color));
+            } else {
+                let diff = grand_debits.saturating_sub(grand_credits).abs();
+                let diff_str = format_amount(diff, currency_minor_units);
+                lines.push(styled(
+                    &format!("[!!] UNBALANCED (difference: {diff_str})"),
+                    red_bold,
+                    use_color,
+                ));
+            }
+        }
+        ReportKind::IncomeStatement => {
+            // Revenue is credit-normal, expenses are debit-normal.
+            // Net income = credits (revenue) - debits (expenses).
+            let net = grand_credits.saturating_sub(grand_debits);
+            let net_str = format_amount(net.abs(), currency_minor_units);
+            if net >= 0 {
+                lines.push(styled(
+                    &format!("Net Income: {net_str}"),
+                    green,
+                    use_color,
+                ));
+            } else {
+                lines.push(styled(
+                    &format!("Net Loss: {net_str}"),
+                    red_bold,
+                    use_color,
+                ));
+            }
+        }
     }
 }
