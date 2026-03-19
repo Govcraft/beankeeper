@@ -59,7 +59,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), CliError> {
             encrypt,
             path,
             force,
-        } => init::run(cli, *encrypt, path.as_deref(), *force),
+            demo,
+        } => init::run(cli, *encrypt, path.as_deref(), *force, *demo),
 
         Command::Verify => verify::run(cli),
 

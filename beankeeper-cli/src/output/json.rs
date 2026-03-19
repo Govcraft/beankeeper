@@ -787,9 +787,8 @@ mod tests {
             debit_total: 15000,
             credit_total: 5000,
         };
-        let json =
-            render_account_balance(&row, "USD", test_meta("report.balance", Some("acme")))
-                .unwrap_or_default();
+        let json = render_account_balance(&row, "USD", test_meta("report.balance", Some("acme")))
+            .unwrap_or_default();
         assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""code": "1000""#));
         assert!(json.contains(r#""currency": "USD""#));
@@ -820,8 +819,7 @@ mod tests {
 
     #[test]
     fn envelope_structure_company_field() {
-        let json =
-            render_accounts(&[], test_meta("account.list", Some("acme"))).unwrap();
+        let json = render_accounts(&[], test_meta("account.list", Some("acme"))).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["meta"]["company"], "acme");
     }

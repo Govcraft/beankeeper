@@ -1,28 +1,63 @@
 # Beankeeper
 
-Professional double-entry accounting in Rust -- a library of accounting primitives and a CLI backed by SQLCipher-encrypted SQLite.
+The accounting runtime for AI agents. Your assistant manages your books -- `bk` makes sure it can't mess them up.
 
-## Workspace
+A CLI backed by SQLCipher-encrypted SQLite, with an embeddable Rust library underneath.
 
-This repository contains two crates:
+## Why Beankeeper?
 
-| Crate | Description |
-|-------|-------------|
-| [`beankeeper`](https://crates.io/crates/beankeeper) | Library of accounting primitives: amounts, currencies, accounts, entries, dated transactions, document attachments, idempotency keys, tax categories, ledger, and reporting |
-| `beankeeper-cli` | CLI binary (`bk`) providing SQLite-backed multi-tenant accounting with encryption, content-addressed document storage, idempotency, tax categorisation, three output formats, and scriptable stdin/stdout |
+AI assistants can already categorise expenses, reconcile bank feeds, and generate financial reports. The missing piece is a backend that makes those operations *safe* -- one where the agent physically cannot produce an unbalanced ledger, silently duplicate a transaction, or corrupt the audit trail.
 
-## Install the CLI
+hledger, ledger-cli, and beancount are built around plain-text files a human edits by hand. That's the right design for manual bookkeeping. `bk` is built for when an agent is doing it.
+
+### The backing store is a database, not a file
+
+SQLite (optionally encrypted with SQLCipher) is the source of truth, not a `.journal` file. That means the agent can post transactions, query balances, and generate reports through a stable CLI contract without worrying about file locking, merge conflicts, or parse errors.
+
+### The agent cannot create an unbalanced transaction
+
+The double-entry invariant is enforced at the type level. There's no error to catch at runtime because there's no way to construct a transaction with unequal debits and credits -- the accounting equation is a compile-time guarantee, not a runtime check. A confused or hallucinating agent simply cannot post bad data.
+
+### Retries are safe
+
+Agents retry. Import scripts fail mid-batch. `--reference` takes any string (a bank reference number, a statement row hash, whatever) and produces a deterministic idempotency key via SHA-256. Same reference, same company, always maps to the same transaction -- subsequent posts with the same key are rejected with the existing transaction ID. The agent can retry as many times as it wants without creating duplicates.
+
+### The agent gets structured feedback, not text to parse
+
+Every command in JSON mode returns the same envelope:
+
+```json
+{ "ok": true,  "meta": { "command": "txn.post", "company": "acme", "timestamp": "..." }, "data": { ... } }
+{ "ok": false, "meta": { "command": "txn.post", "company": "acme", "timestamp": "..." }, "error": { "code": "NOT_FOUND", "message": "..." } }
+```
+
+Named error codes (`NOT_FOUND`, `VALIDATION`, `DATABASE`, etc.), `meta.command` in dot notation, consistent field presence. The agent can handle `bk` output reliably without parsing human-readable text or guessing at shapes.
+
+### The audit trail is tamper-proof
+
+Posted transactions cannot be edited or deleted. The entries, amounts, accounts, and dates are immutable. The only thing that can change after posting is a transaction's metadata field. The audit trail is intact by design, not by convention -- if the agent makes a mistake, you can see exactly what happened and when.
+
+### Everything else
+
+- **Multi-company tenancy** -- multiple entities in one database, isolated by slug; the agent manages your LLC and personal books in the same place
+- **Document attachments** -- receipts and invoices linked to transactions via SHA-256 content addressing
+- **Tax category tagging** -- per-entry or account-level defaults, free-form strings mapping to any tax form lines you need
+- **Encryption at rest** -- SQLCipher baked in from the start, not bolted on
+- **Intercompany linking** -- mirror transactions across entities stay paired through bidirectional correlation IDs; `bk txn reconcile` catches orphans
+
+If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Govcraft/beankeeper/main/install.sh | sh
+```
+
+Detects your OS and architecture, downloads the right binary, verifies the SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory with `BK_INSTALL=~/.local/bin` or pin a version with `BK_VERSION=0.2.0`.
 
 **Arch Linux (AUR)**:
 ```sh
 yay -S bk-bin
-```
-
-**From GitHub Releases** (Linux x86_64, Linux aarch64, macOS Intel, macOS Apple Silicon):
-```sh
-# Download the latest release for your platform
-curl -sL https://github.com/Govcraft/beankeeper/releases/latest/download/bk-0.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
-sudo install -m755 bk-*/bk /usr/local/bin/
 ```
 
 **From source**:
@@ -30,7 +65,7 @@ sudo install -m755 bk-*/bk /usr/local/bin/
 cargo install --git https://github.com/Govcraft/beankeeper beankeeper-cli
 ```
 
-## CLI Quick Start
+## Quick Start
 
 ```sh
 # Create a database
@@ -61,7 +96,55 @@ bk --company personal report balance --account 1000
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
 ```
 
+## Demo Mode
+
+Spin up a fully populated database to explore every feature without manual setup:
+
+```sh
+bk init --demo
+```
+
+This creates three companies with charts of accounts, regular transactions, and intercompany-linked mirror pairs:
+
+| Company | Slug | Description |
+|---------|------|-------------|
+| Acme Consulting LLC | `acme-consulting` | Service revenue, rent, office expenses, payroll |
+| Acme Products Inc | `acme-products` | Inventory, product sales, COGS, shipping |
+| Personal | `personal` | Checking/savings, salary income, personal expenses |
+
+Intercompany transactions demonstrate bidirectional correlation:
+
+- Owner loans personal savings to acme-consulting (`--correlate`)
+- acme-consulting purchases software licences from acme-products
+- acme-consulting settles the intercompany payable to acme-products
+- **Payroll with withholdings** -- a split transaction showing a $5,000 gross salary broken into federal tax, state tax, FICA, and net pay on both the employer and employee books
+
+Try it out:
+
+```sh
+# Trial balance for the consulting company
+bk --company acme-consulting report trial-balance
+
+# View the payroll split transaction
+bk --company acme-consulting txn list --description "payroll" --json
+
+# Balance sheet across all three companies
+bk --company personal report balance-sheet
+
+# Verify all intercompany links are paired
+bk txn reconcile
+
+# Tax summary for the personal entity
+bk --company personal report tax-summary --from 2025-01-01 --to 2025-12-31
+```
+
+## Features
+
+Beyond the core guarantees above, `bk` provides the following capabilities for multi-entity accounting, automation, and reporting.
+
 ### Intercompany Transactions
+
+Mirror entries across companies stay linked through bidirectional correlation IDs:
 
 ```sh
 # Post one side
@@ -90,7 +173,7 @@ bk --company personal txn post -d "AWS March" \
 bk --company personal txn post -d "AWS March" \
   --reference "chase-2026-03-15-001" \
   --debit 5200:49.95 --credit 1000:49.95
-# → error: transaction with reference 'chase-2026-03-15-001' already exists (id: 1)
+# -> error: transaction with reference 'chase-2026-03-15-001' already exists (id: 1)
 ```
 
 References are hashed into deterministic `txnref_`-prefixed keys. Transactions without `--reference` are unrestricted.
@@ -145,7 +228,7 @@ bk --company personal txn list --account 5000 --amount-gt 500 --json
 
 # Count matching transactions without fetching them
 bk --company personal txn search --description "payroll" --count --json
-# → {"ok": true, "meta": {...}, "data": {"count": 12}}
+# -> {"ok": true, "meta": {...}, "data": {"count": 12}}
 
 # Filter by tax category, direction, currency, reference, or metadata
 bk --company personal txn list --tax-category "sched-c:24b" --direction debit --json
@@ -168,7 +251,7 @@ bk --company personal account list --name "Cash" --with-balances --as-of 2026-06
 
 ### Output Formats
 
-Every command supports `--format table` (default), `--format json`, and `--format csv`. Use `--json` as shorthand.
+Every command supports `--format table` (default), `--format json`, and `--format csv`. Use `--json` as shorthand:
 
 ```sh
 # Pipe JSON to jq (data is inside the envelope's "data" field)
@@ -238,7 +321,7 @@ bk --company personal report trial-balance
 
 ## Library
 
-Add the library to your Rust project:
+The CLI is built on the [`beankeeper`](https://crates.io/crates/beankeeper) library crate, which you can embed directly in Rust projects that need accounting primitives without the CLI layer.
 
 ```sh
 cargo add beankeeper

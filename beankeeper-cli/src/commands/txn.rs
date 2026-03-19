@@ -347,7 +347,11 @@ fn run_post(
 
     // 6. Build entries for DB persistence
     let db_entries = build_db_entries(
-        db_handle, company, &parsed_debits, &parsed_credits, &resolve_tax,
+        db_handle,
+        company,
+        &parsed_debits,
+        &parsed_credits,
+        &resolve_tax,
     )?;
 
     // Resolve idempotency key from the reference, if provided.

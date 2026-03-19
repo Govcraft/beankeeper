@@ -112,6 +112,10 @@ pub enum Command {
         /// Overwrite existing database.
         #[arg(long)]
         force: bool,
+
+        /// Populate the database with a sample company, chart of accounts, and transactions.
+        #[arg(long)]
+        demo: bool,
     },
 
     /// Check ledger integrity.
