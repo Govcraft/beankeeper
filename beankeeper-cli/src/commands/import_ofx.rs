@@ -7,9 +7,9 @@ use std::fmt;
 use std::io::Read;
 
 use beankeeper::types::Currency;
+use rusqlite::params;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
-use rusqlite::params;
 
 use crate::cli::{Cli, ImportFormat};
 use crate::db::connection::Db;
@@ -58,7 +58,8 @@ impl fmt::Display for OfxImportError {
             ),
             Self::UnsupportedCurrency { code } => write!(
                 f,
-                "OFX statement currency '{code}' is not supported by beankeeper"
+                "OFX statement currency '{code}' is not supported by beankeeper; \
+                 supported currencies: USD, EUR, GBP, JPY, CHF, CAD, AUD, BHD, KWD, MXN"
             ),
             Self::AmountConversion { fit_id, detail } => write!(
                 f,
@@ -165,12 +166,13 @@ fn ofx_amount_to_minor(
         });
     }
 
-    scaled.trunc().to_i64().ok_or_else(|| {
-        OfxImportError::AmountConversion {
+    scaled
+        .trunc()
+        .to_i64()
+        .ok_or_else(|| OfxImportError::AmountConversion {
             fit_id: fit_id.to_string(),
             detail: format!("amount {decimal} exceeds i64 range"),
-        }
-    })
+        })
 }
 
 /// Format an `OfxDateTime` as a `YYYY-MM-DD` string.
@@ -186,9 +188,12 @@ fn format_ofx_date(dt: &ofx_rs::types::OfxDateTime) -> String {
 }
 
 /// Build the deduplication reference string for an OFX transaction.
+///
+/// Includes currency to prevent collisions when different banks/statements
+/// share the same account ID and fit ID across currencies.
 #[must_use]
-fn build_ofx_reference(account_id: &str, fit_id: &str) -> String {
-    format!("ofx:{account_id}:{fit_id}")
+fn build_ofx_reference(currency: &str, account_id: &str, fit_id: &str) -> String {
+    format!("ofx:{currency}:{account_id}:{fit_id}")
 }
 
 /// Detect import format from file extension.
@@ -273,7 +278,7 @@ fn prepare_transaction(
     let is_inflow = !amount.is_sign_negative();
     let date = format_ofx_date(txn.date_posted());
     let description = build_description(txn.name(), txn.memo(), fit_id);
-    let reference = build_ofx_reference(account_id, fit_id);
+    let reference = build_ofx_reference(currency_code, account_id, fit_id);
     let metadata = build_metadata_json(&txn.transaction_type().to_string());
 
     Ok(Some(PreparedTransaction {
@@ -430,11 +435,7 @@ fn process_transactions(
             Err(e) => {
                 result.errors.push(FailedTransaction {
                     date: format_ofx_date(txn.date_posted()),
-                    description: build_description(
-                        txn.name(),
-                        txn.memo(),
-                        txn.fit_id().as_str(),
-                    ),
+                    description: build_description(txn.name(), txn.memo(), txn.fit_id().as_str()),
                     amount_minor: 0,
                     error: e.to_string(),
                 });
@@ -576,6 +577,30 @@ pub fn run_import_ofx(
         }
     }
 
+    // Process investment statement responses (INVBANKTRAN/STMTTRN inside INVSTMTRS).
+    if let Some(inv) = doc.investment() {
+        for wrapper in inv.statement_responses() {
+            if let Some(stmt) = wrapper.response() {
+                let (currency_code, minor_units) =
+                    validate_currency(stmt.currency_default().as_str())?;
+                let ctx = StatementContext {
+                    conn,
+                    company,
+                    account_code,
+                    suspense_code,
+                    ofx_account_id: stmt.investment_account().account_id().as_str(),
+                    currency_code: &currency_code,
+                    minor_units,
+                    dry_run,
+                    verbose,
+                };
+                if let Some(txn_list) = stmt.transaction_list() {
+                    process_transactions(&ctx, txn_list, &mut result);
+                }
+            }
+        }
+    }
+
     // Render output.
     render_result(&result, cli, company, dry_run, format)?;
     Ok(())
@@ -617,10 +642,7 @@ fn render_result(
                 );
             }
             for t in &result.errors {
-                eprintln!(
-                    "  [error]    {}  {:<50} {}",
-                    t.date, t.description, t.error
-                );
+                eprintln!("  [error]    {}  {:<50} {}", t.date, t.description, t.error);
             }
         }
 
@@ -749,8 +771,8 @@ mod tests {
     #[test]
     fn reference_format() {
         assert_eq!(
-            build_ofx_reference("9876543210", "1001"),
-            "ofx:9876543210:1001"
+            build_ofx_reference("USD", "9876543210", "1001"),
+            "ofx:USD:9876543210:1001"
         );
     }
 
@@ -785,17 +807,11 @@ mod tests {
 
     #[test]
     fn metadata_json_check() {
-        assert_eq!(
-            build_metadata_json("CHECK"),
-            r#"{"ofx_type":"CHECK"}"#
-        );
+        assert_eq!(build_metadata_json("CHECK"), r#"{"ofx_type":"CHECK"}"#);
     }
 
     #[test]
     fn metadata_json_debit() {
-        assert_eq!(
-            build_metadata_json("DEBIT"),
-            r#"{"ofx_type":"DEBIT"}"#
-        );
+        assert_eq!(build_metadata_json("DEBIT"), r#"{"ofx_type":"DEBIT"}"#);
     }
 }

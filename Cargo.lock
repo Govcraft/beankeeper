@@ -789,9 +789,9 @@ dependencies = [
 
 [[package]]
 name = "ofx-rs"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57549435899db40dc886fcf710d261cb06dc77398f103d9bd670fa584320db42"
+checksum = "e2a8200cbd088af447f7e812d6394bfca752e55c91ec5132a01e41304bbe03a9"
 dependencies = [
  "quick-xml",
  "rust_decimal",

@@ -178,6 +178,39 @@ bk --company personal txn post -d "AWS March" \
 
 References are hashed into deterministic `txnref_`-prefixed keys. Transactions without `--reference` are unrestricted.
 
+### OFX / QFX Bank Statement Import
+
+Import transactions from bank and credit card statements exported in OFX format. Each OFX transaction becomes a balanced double-entry against a user-specified bank account and suspense/clearing account:
+
+```sh
+# Import an OFX statement -- format is auto-detected from the file extension
+bk --company personal txn import --file checking.ofx --account 1000 --suspense 9000
+
+# Preview what would be imported without posting
+bk --company personal txn import --file checking.ofx --account 1000 --suspense 9000 --dry-run
+
+# Import from stdin with explicit format
+cat statement.qfx | bk --company personal txn import --file - --format ofx --account 1000 --suspense 9000
+```
+
+**Deduplication is automatic.** Each OFX transaction's unique `FITID` is stored as an idempotency reference, so re-importing the same file skips already-posted transactions:
+
+```
+Imported 47 transactions, skipped 3 duplicates.
+```
+
+Supports banking (`BANKMSGSRSV1`), credit card (`CREDITCARDMSGSRSV1`), and investment account (`INVSTMTMSGSRSV1`) OFX message sets. Investment statements extract the banking transactions (`INVBANKTRAN/STMTTRN`) from brokerage cash activity.
+
+| OFX Field | Beankeeper Field | Notes |
+|-----------|-----------------|-------|
+| `DTPOSTED` | Transaction date | Formatted as YYYY-MM-DD |
+| `NAME` + `MEMO` | Description | Joined with ` - ` if both present |
+| `TRNAMT` (positive) | Debit bank, credit suspense | Inflows |
+| `TRNAMT` (negative) | Debit suspense, credit bank | Outflows |
+| `FITID` | Reference (idempotency key) | Namespaced as `ofx:<currency>:<account_id>:<fit_id>` |
+| `TRNTYPE` | Metadata | Stored as `{"ofx_type": "CHECK"}` |
+| `CURDEF` | Currency | Must be a supported currency |
+
 ### Document Attachments
 
 Link source documents (receipts, invoices, statements) to transactions. Files are stored in a content-addressed directory alongside the database, with SHA-256 integrity verification:
@@ -432,7 +465,7 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- proper error handling everywhere
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
 - Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
-- 395+ tests covering unit, integration, and real-world accounting scenarios
+- 415+ tests covering unit, integration, and real-world accounting scenarios
 
 ## License
 

@@ -166,7 +166,9 @@ EXAMPLES:\n  \
     },
 
     /// Manage companies.
-    #[command(subcommand, after_help = "\
+    #[command(
+        subcommand,
+        after_help = "\
 EXAMPLES:\n  \
     Create a company and list all companies:\n    \
     $ bk company create acme \"Acme Corp\"\n    \
@@ -174,11 +176,14 @@ EXAMPLES:\n  \
     \n  \
     Show details for a specific company:\n    \
     $ bk company show acme\
-")]
+"
+    )]
     Company(CompanyCommand),
 
     /// Manage chart of accounts.
-    #[command(subcommand, after_help = "\
+    #[command(
+        subcommand,
+        after_help = "\
 EXAMPLES:\n  \
     Set up a basic chart of accounts:\n    \
     $ bk --company acme account create 1000 \"Cash\" --type asset\n    \
@@ -186,11 +191,14 @@ EXAMPLES:\n  \
     \n  \
     List all expense accounts with balances:\n    \
     $ bk --company acme account list --type expense --with-balances\
-")]
+"
+    )]
     Account(AccountCommand),
 
     /// Record and query transactions.
-    #[command(subcommand, after_help = "\
+    #[command(
+        subcommand,
+        after_help = "\
 EXAMPLES:\n  \
     Post a simple transaction:\n    \
     $ bk --company acme txn post -d \"Office rent\" --debit 5000:2500 --credit 1000:2500\n\
@@ -200,11 +208,14 @@ EXAMPLES:\n  \
     \n  \
     View a transaction with its entries:\n    \
     $ bk --company acme txn show 42\
-")]
+"
+    )]
     Txn(Box<TxnCommand>),
 
     /// Generate financial reports.
-    #[command(subcommand, after_help = "\
+    #[command(
+        subcommand,
+        after_help = "\
 EXAMPLES:\n  \
     Generate a trial balance as of today:\n    \
     $ bk --company acme report trial-balance\n\
@@ -214,7 +225,8 @@ EXAMPLES:\n  \
     \n  \
     Export a balance sheet as JSON:\n    \
     $ bk --company acme report balance-sheet --json\
-")]
+"
+    )]
     Report(ReportCommand),
 }
 
@@ -469,7 +481,9 @@ EXAMPLES:\n  \
     },
 
     /// List and search transactions.
-    #[command(alias = "search", after_help = "\
+    #[command(
+        alias = "search",
+        after_help = "\
 EXAMPLES:\n  \
     List recent transactions (default limit 50):\n    \
     $ bk --company acme txn list\n\
@@ -488,7 +502,8 @@ EXAMPLES:\n  \
     \n  \
     Search using the alias:\n    \
     $ bk --company acme txn search -d \"invoice\"\
-")]
+"
+    )]
     List {
         /// Filter by account code.
         #[arg(long)]

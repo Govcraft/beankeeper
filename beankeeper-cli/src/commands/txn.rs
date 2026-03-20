@@ -66,9 +66,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             let effective_format = match import_format {
                 Some(f) => *f,
                 None => match file.as_deref() {
-                    Some(path) if path != "-" => {
-                        crate::commands::import_ofx::detect_format(path)?
-                    }
+                    Some(path) if path != "-" => crate::commands::import_ofx::detect_format(path)?,
                     _ => {
                         return Err(CliError::Usage(
                             "cannot detect format from stdin; specify --format".into(),
@@ -79,12 +77,12 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
 
             match effective_format {
                 crate::cli::ImportFormat::Ofx => {
-                    let acct = account.as_deref().ok_or(
-                        crate::commands::import_ofx::OfxImportError::MissingAccountFlag,
-                    )?;
-                    let susp = suspense.as_deref().ok_or(
-                        crate::commands::import_ofx::OfxImportError::MissingSuspenseFlag,
-                    )?;
+                    let acct = account
+                        .as_deref()
+                        .ok_or(crate::commands::import_ofx::OfxImportError::MissingAccountFlag)?;
+                    let susp = suspense
+                        .as_deref()
+                        .ok_or(crate::commands::import_ofx::OfxImportError::MissingSuspenseFlag)?;
                     crate::commands::import_ofx::run_import_ofx(
                         cli,
                         &db_handle,
@@ -95,11 +93,9 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
                         *dry_run,
                     )
                 }
-                crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => {
-                    Err(CliError::General(format!(
-                        "{effective_format:?} import not yet implemented"
-                    )))
-                }
+                crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => Err(
+                    CliError::General(format!("{effective_format:?} import not yet implemented")),
+                ),
             }
         }
         TxnCommand::Attach {
