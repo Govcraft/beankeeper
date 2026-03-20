@@ -100,6 +100,20 @@ impl Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Create a new accounting database.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Create a new database in the current directory:\n    \
+    $ bk init\n\
+    \n  \
+    Create an encrypted database:\n    \
+    $ bk init --encrypt\n\
+    \n  \
+    Create at a specific path, overwriting if it exists:\n    \
+    $ bk init --path /data/books.db --force\n\
+    \n  \
+    Initialize with sample multi-company demo data:\n    \
+    $ bk init --demo\
+")]
     Init {
         /// Encrypt the database with a passphrase.
         #[arg(long)]
@@ -119,9 +133,28 @@ pub enum Command {
     },
 
     /// Check ledger integrity.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Verify the default database:\n    \
+    $ bk verify\n\
+    \n  \
+    Verify a specific database file:\n    \
+    $ bk --db /data/books.db verify\
+")]
     Verify,
 
     /// Export all data.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Export all data as JSON to stdout:\n    \
+    $ bk export --format json\n\
+    \n  \
+    Export to a CSV file:\n    \
+    $ bk export --format csv --output backup.csv\n\
+    \n  \
+    Pipe JSON export to another tool:\n    \
+    $ bk export --format json | jq '.data'\
+")]
     Export {
         /// Output format for export.
         #[arg(long, value_enum)]
@@ -133,26 +166,79 @@ pub enum Command {
     },
 
     /// Manage companies.
-    #[command(subcommand)]
+    #[command(subcommand, after_help = "\
+EXAMPLES:\n  \
+    Create a company and list all companies:\n    \
+    $ bk company create acme \"Acme Corp\"\n    \
+    $ bk company list\n\
+    \n  \
+    Show details for a specific company:\n    \
+    $ bk company show acme\
+")]
     Company(CompanyCommand),
 
     /// Manage chart of accounts.
-    #[command(subcommand)]
+    #[command(subcommand, after_help = "\
+EXAMPLES:\n  \
+    Set up a basic chart of accounts:\n    \
+    $ bk --company acme account create 1000 \"Cash\" --type asset\n    \
+    $ bk --company acme account create 4000 \"Revenue\" --type revenue\n\
+    \n  \
+    List all expense accounts with balances:\n    \
+    $ bk --company acme account list --type expense --with-balances\
+")]
     Account(AccountCommand),
 
     /// Record and query transactions.
-    #[command(subcommand)]
+    #[command(subcommand, after_help = "\
+EXAMPLES:\n  \
+    Post a simple transaction:\n    \
+    $ bk --company acme txn post -d \"Office rent\" --debit 5000:2500 --credit 1000:2500\n\
+    \n  \
+    Search recent transactions:\n    \
+    $ bk --company acme txn list --from 2025-01-01 --to 2025-01-31\n\
+    \n  \
+    View a transaction with its entries:\n    \
+    $ bk --company acme txn show 42\
+")]
     Txn(Box<TxnCommand>),
 
     /// Generate financial reports.
-    #[command(subcommand)]
+    #[command(subcommand, after_help = "\
+EXAMPLES:\n  \
+    Generate a trial balance as of today:\n    \
+    $ bk --company acme report trial-balance\n\
+    \n  \
+    View the income statement for Q1:\n    \
+    $ bk --company acme report income-statement --from 2025-01-01 --to 2025-03-31\n\
+    \n  \
+    Export a balance sheet as JSON:\n    \
+    $ bk --company acme report balance-sheet --json\
+")]
     Report(ReportCommand),
 }
 
 /// Company subcommands.
 #[derive(Subcommand, Debug)]
+#[command(after_help = "\
+EXAMPLES:\n  \
+    Create a company and view it:\n    \
+    $ bk company create acme \"Acme Corp\" --description \"Main business entity\"\n    \
+    $ bk company show acme\n\
+    \n  \
+    List all companies as JSON:\n    \
+    $ bk --json company list\
+")]
 pub enum CompanyCommand {
     /// Create a new company.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Create a company with just a slug and name:\n    \
+    $ bk company create acme \"Acme Corp\"\n\
+    \n  \
+    Create with a description:\n    \
+    $ bk company create personal \"Personal Finances\" --description \"My personal books\"\
+")]
     Create {
         /// Company slug (lowercase alphanumeric and hyphens).
         slug: String,
@@ -164,15 +250,36 @@ pub enum CompanyCommand {
     },
 
     /// List all companies.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    List all companies:\n    \
+    $ bk company list\n\
+    \n  \
+    List companies as JSON:\n    \
+    $ bk --json company list\
+")]
     List,
 
     /// Show company details.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Show details for a company:\n    \
+    $ bk company show acme\
+")]
     Show {
         /// Company slug.
         slug: String,
     },
 
     /// Delete a company.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Delete a company (will prompt for confirmation):\n    \
+    $ bk company delete old-company\n\
+    \n  \
+    Delete without confirmation:\n    \
+    $ bk company delete old-company --force\
+")]
     Delete {
         /// Company slug.
         slug: String,
@@ -184,8 +291,30 @@ pub enum CompanyCommand {
 
 /// Account subcommands.
 #[derive(Subcommand, Debug)]
+#[command(after_help = "\
+EXAMPLES:\n  \
+    Create standard accounts and list them:\n    \
+    $ bk --company acme account create 1000 \"Cash\" --type asset\n    \
+    $ bk --company acme account create 2000 \"Accounts Payable\" --type liability\n    \
+    $ bk --company acme account list\n\
+    \n  \
+    View all accounts with balances:\n    \
+    $ bk --company acme account list --with-balances\
+")]
 pub enum AccountCommand {
     /// Create a new account.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Create an asset account:\n    \
+    $ bk --company acme account create 1000 \"Cash\" --type asset\n\
+    \n  \
+    Create a revenue account with a default tax category:\n    \
+    $ bk --company acme account create 4000 \"Consulting Revenue\" --type revenue \\\n      \
+    --default-tax-category income\n\
+    \n  \
+    Create an expense account:\n    \
+    $ bk --company acme account create 5000 \"Rent Expense\" --type expense\
+")]
     Create {
         /// Account code (digits, hyphens, dots).
         code: String,
@@ -200,6 +329,17 @@ pub enum AccountCommand {
     },
 
     /// List accounts.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    List all accounts:\n    \
+    $ bk --company acme account list\n\
+    \n  \
+    List only asset accounts:\n    \
+    $ bk --company acme account list --type asset\n\
+    \n  \
+    Search by name and include balances as of a date:\n    \
+    $ bk --company acme account list --name cash --with-balances --as-of 2025-03-31\
+")]
     List {
         /// Filter by account type.
         #[arg(long = "type", value_enum)]
@@ -219,12 +359,25 @@ pub enum AccountCommand {
     },
 
     /// Show account details.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Show details for an account:\n    \
+    $ bk --company acme account show 1000\
+")]
     Show {
         /// Account code.
         code: String,
     },
 
     /// Delete an account.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Delete an account (will prompt for confirmation):\n    \
+    $ bk --company acme account delete 9999\n\
+    \n  \
+    Delete without confirmation:\n    \
+    $ bk --company acme account delete 9999 --force\
+")]
     Delete {
         /// Account code.
         code: String,
@@ -236,8 +389,46 @@ pub enum AccountCommand {
 
 /// Transaction subcommands.
 #[derive(Subcommand, Debug)]
+#[command(after_help = "\
+EXAMPLES:\n  \
+    Post a transaction, then view it:\n    \
+    $ bk --company acme txn post -d \"Office rent\" --debit 5000:2500 --credit 1000:2500\n    \
+    $ bk --company acme txn show 1\n\
+    \n  \
+    Search transactions by date range:\n    \
+    $ bk --company acme txn list --from 2025-01-01 --to 2025-03-31\n\
+    \n  \
+    Check for orphaned intercompany links:\n    \
+    $ bk txn reconcile\
+")]
 pub enum TxnCommand {
     /// Record a new balanced journal entry.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Simple expense (pay rent from cash):\n    \
+    $ bk --company acme txn post -d \"Office rent\" --debit 5000:2500 --credit 1000:2500\n\
+    \n  \
+    Record revenue with a specific date:\n    \
+    $ bk --company acme txn post -d \"Invoice #101\" \\\n      \
+    --debit 1100:12000 --credit 4000:12000 --date 2025-01-15\n\
+    \n  \
+    Multi-line entry with tax categories:\n    \
+    $ bk --company acme txn post -d \"Payroll\" \\\n      \
+    --debit 5300:5000 --credit 2600:600 --credit 2800:382.50 --credit 1000:4017.50 \\\n      \
+    --tax 5300=payroll --tax 2600=payroll-tax --tax 2800=payroll-tax\n\
+    \n  \
+    Transaction in a foreign currency:\n    \
+    $ bk --company acme txn post -d \"MXN vendor payment\" \\\n      \
+    --debit 5200:8500 --credit 1000:8500 --currency MXN\n\
+    \n  \
+    Intercompany linked transaction (correlate with txn #7 in another company):\n    \
+    $ bk --company acme-products txn post -d \"Payment from Acme Consulting\" \\\n      \
+    --debit 1000:3600 --credit 1500:3600 --correlate 7\n\
+    \n  \
+    Idempotent post with a reference key:\n    \
+    $ bk --company acme txn post -d \"Monthly rent\" \\\n      \
+    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\"\
+")]
     Post {
         /// Transaction description.
         #[arg(short = 'd', long = "description")]
@@ -278,7 +469,26 @@ pub enum TxnCommand {
     },
 
     /// List and search transactions.
-    #[command(alias = "search")]
+    #[command(alias = "search", after_help = "\
+EXAMPLES:\n  \
+    List recent transactions (default limit 50):\n    \
+    $ bk --company acme txn list\n\
+    \n  \
+    Search by date range:\n    \
+    $ bk --company acme txn list --from 2025-01-01 --to 2025-01-31\n\
+    \n  \
+    Filter by account and description:\n    \
+    $ bk --company acme txn list --account 1000 -d \"rent\"\n\
+    \n  \
+    Find large transactions:\n    \
+    $ bk --company acme txn list --amount-gt 10000\n\
+    \n  \
+    Count matching transactions without listing them:\n    \
+    $ bk --company acme txn list --from 2025-01-01 --count\n\
+    \n  \
+    Search using the alias:\n    \
+    $ bk --company acme txn search -d \"invoice\"\
+")]
     List {
         /// Filter by account code.
         #[arg(long)]
@@ -342,12 +552,31 @@ pub enum TxnCommand {
     },
 
     /// Show transaction details.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Show a transaction with its entries:\n    \
+    $ bk --company acme txn show 42\n\
+    \n  \
+    Show as JSON:\n    \
+    $ bk --company acme --json txn show 42\
+")]
     Show {
         /// Transaction ID.
         id: i64,
     },
 
     /// Import transactions from file or stdin.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Import from a CSV file:\n    \
+    $ bk --company acme txn import --file transactions.csv --format csv\n\
+    \n  \
+    Dry run to validate without persisting:\n    \
+    $ bk --company acme txn import --file data.json --format json --dry-run\n\
+    \n  \
+    Import from stdin:\n    \
+    $ cat transactions.csv | bk --company acme txn import --file - --format csv\
+")]
     Import {
         /// Input file path. Use `-` for stdin.
         #[arg(long)]
@@ -363,6 +592,14 @@ pub enum TxnCommand {
     },
 
     /// Attach a document to a transaction.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Attach a receipt to a transaction:\n    \
+    $ bk --company acme txn attach 42 receipt.pdf --type receipt\n\
+    \n  \
+    Attach an invoice to a specific entry within a transaction:\n    \
+    $ bk --company acme txn attach 42 invoice.pdf --type invoice --entry 5\
+")]
     Attach {
         /// Transaction ID.
         transaction_id: i64,
@@ -380,13 +617,39 @@ pub enum TxnCommand {
     },
 
     /// Find orphaned intercompany correlations.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Check for orphaned intercompany links:\n    \
+    $ bk txn reconcile\n\
+    \n  \
+    Output as JSON for automation:\n    \
+    $ bk --json txn reconcile\
+")]
     Reconcile,
 }
 
 /// Report subcommands.
 #[derive(Subcommand, Debug)]
+#[command(after_help = "\
+EXAMPLES:\n  \
+    Quick financial overview:\n    \
+    $ bk --company acme report trial-balance\n    \
+    $ bk --company acme report balance-sheet\n    \
+    $ bk --company acme report income-statement --from 2025-01-01 --to 2025-12-31\
+")]
 pub enum ReportCommand {
     /// Generate a trial balance.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Trial balance as of today:\n    \
+    $ bk --company acme report trial-balance\n\
+    \n  \
+    Trial balance as of a specific date:\n    \
+    $ bk --company acme report trial-balance --as-of 2025-03-31\n\
+    \n  \
+    Trial balance filtered to expense accounts only:\n    \
+    $ bk --company acme report trial-balance --type expense\
+")]
     TrialBalance {
         /// As-of date (YYYY-MM-DD).
         #[arg(long)]
@@ -398,6 +661,14 @@ pub enum ReportCommand {
     },
 
     /// Show balance for a single account.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Check the current cash balance:\n    \
+    $ bk --company acme report balance --account 1000\n\
+    \n  \
+    Check a balance as of a past date:\n    \
+    $ bk --company acme report balance --account 1000 --as-of 2025-01-31\
+")]
     Balance {
         /// Account code.
         #[arg(long)]
@@ -409,6 +680,14 @@ pub enum ReportCommand {
     },
 
     /// Generate an income statement.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Income statement for the current year:\n    \
+    $ bk --company acme report income-statement --from 2025-01-01 --to 2025-12-31\n\
+    \n  \
+    Monthly income statement:\n    \
+    $ bk --company acme report income-statement --from 2025-03-01 --to 2025-03-31\
+")]
     IncomeStatement {
         /// Start date (inclusive).
         #[arg(long)]
@@ -420,6 +699,14 @@ pub enum ReportCommand {
     },
 
     /// Generate a balance sheet.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Balance sheet as of today:\n    \
+    $ bk --company acme report balance-sheet\n\
+    \n  \
+    Balance sheet as of quarter end:\n    \
+    $ bk --company acme report balance-sheet --as-of 2025-03-31\
+")]
     BalanceSheet {
         /// As-of date (YYYY-MM-DD).
         #[arg(long)]
@@ -427,6 +714,14 @@ pub enum ReportCommand {
     },
 
     /// Summarise entries grouped by tax category.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Tax summary for the full year:\n    \
+    $ bk --company acme report tax-summary --from 2025-01-01 --to 2025-12-31\n\
+    \n  \
+    Tax summary for Q1:\n    \
+    $ bk --company acme report tax-summary --from 2025-01-01 --to 2025-03-31\
+")]
     TaxSummary {
         /// Start date (inclusive).
         #[arg(long)]
