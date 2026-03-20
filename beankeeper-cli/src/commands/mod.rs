@@ -1,6 +1,7 @@
 pub mod account;
 pub mod company;
 pub mod export;
+pub mod import_ofx;
 pub mod init;
 pub mod report;
 pub mod txn;

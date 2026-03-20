@@ -568,27 +568,35 @@ EXAMPLES:\n  \
     /// Import transactions from file or stdin.
     #[command(after_help = "\
 EXAMPLES:\n  \
-    Import from a CSV file:\n    \
-    $ bk --company acme txn import --file transactions.csv --format csv\n\
+    Import an OFX bank statement:\n    \
+    $ bk --company acme txn import --file statement.ofx --account 1000 --suspense 9000\n\
     \n  \
-    Dry run to validate without persisting:\n    \
-    $ bk --company acme txn import --file data.json --format json --dry-run\n\
+    Dry run to preview what would be imported:\n    \
+    $ bk --company acme txn import --file statement.ofx --account 1000 --suspense 9000 --dry-run\n\
     \n  \
-    Import from stdin:\n    \
-    $ cat transactions.csv | bk --company acme txn import --file - --format csv\
+    Import OFX from stdin with explicit format:\n    \
+    $ cat statement.ofx | bk --company acme txn import --file - --format ofx --account 1000 --suspense 9000\
 ")]
     Import {
         /// Input file path. Use `-` for stdin.
         #[arg(long)]
         file: Option<String>,
 
-        /// Input format.
+        /// Input format. Auto-detected from file extension when omitted.
         #[arg(long, value_enum)]
         format: Option<ImportFormat>,
 
         /// Validate without persisting.
         #[arg(long)]
         dry_run: bool,
+
+        /// Bank/asset account code (required for OFX import).
+        #[arg(long)]
+        account: Option<String>,
+
+        /// Suspense/clearing contra account code (required for OFX import).
+        #[arg(long)]
+        suspense: Option<String>,
     },
 
     /// Attach a document to a transaction.
@@ -759,6 +767,8 @@ pub enum ImportFormat {
     Csv,
     /// JSON input.
     Json,
+    /// OFX / QFX bank statement.
+    Ofx,
 }
 
 /// Entry direction argument for CLI.

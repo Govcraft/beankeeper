@@ -57,12 +57,51 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
         }
         TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
         TxnCommand::Import {
-            file: _,
-            format: _,
-            dry_run: _,
-        } => Err(CliError::General(
-            "import command not yet implemented".into(),
-        )),
+            file,
+            format: import_format,
+            dry_run,
+            account,
+            suspense,
+        } => {
+            let effective_format = match import_format {
+                Some(f) => *f,
+                None => match file.as_deref() {
+                    Some(path) if path != "-" => {
+                        crate::commands::import_ofx::detect_format(path)?
+                    }
+                    _ => {
+                        return Err(CliError::Usage(
+                            "cannot detect format from stdin; specify --format".into(),
+                        ));
+                    }
+                },
+            };
+
+            match effective_format {
+                crate::cli::ImportFormat::Ofx => {
+                    let acct = account.as_deref().ok_or(
+                        crate::commands::import_ofx::OfxImportError::MissingAccountFlag,
+                    )?;
+                    let susp = suspense.as_deref().ok_or(
+                        crate::commands::import_ofx::OfxImportError::MissingSuspenseFlag,
+                    )?;
+                    crate::commands::import_ofx::run_import_ofx(
+                        cli,
+                        &db_handle,
+                        company,
+                        file.as_deref(),
+                        acct,
+                        susp,
+                        *dry_run,
+                    )
+                }
+                crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => {
+                    Err(CliError::General(format!(
+                        "{effective_format:?} import not yet implemented"
+                    )))
+                }
+            }
+        }
         TxnCommand::Attach {
             transaction_id,
             file_path,

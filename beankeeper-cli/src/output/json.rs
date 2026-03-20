@@ -606,6 +606,82 @@ pub fn render_verify(schema_version: i64, meta: Meta) -> Result<String, CliError
     )
 }
 
+/// Render an import result as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_import_result(
+    result: &crate::commands::import_ofx::ImportResult,
+    dry_run: bool,
+    meta: Meta,
+) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct ImportResultJson {
+        dry_run: bool,
+        imported: usize,
+        skipped: usize,
+        errors: usize,
+        transactions: Vec<ImportTransactionJson>,
+    }
+
+    #[derive(Serialize)]
+    struct ImportTransactionJson {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<i64>,
+        date: String,
+        description: String,
+        amount: i64,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    }
+
+    let mut transactions = Vec::new();
+
+    for t in &result.imported {
+        transactions.push(ImportTransactionJson {
+            id: if dry_run { None } else { Some(t.id) },
+            date: t.date.clone(),
+            description: t.description.clone(),
+            amount: t.amount_minor,
+            status: "imported".to_string(),
+            reason: None,
+        });
+    }
+    for t in &result.skipped {
+        transactions.push(ImportTransactionJson {
+            id: None,
+            date: t.date.clone(),
+            description: t.description.clone(),
+            amount: t.amount_minor,
+            status: "skipped".to_string(),
+            reason: Some("duplicate".to_string()),
+        });
+    }
+    for t in &result.errors {
+        transactions.push(ImportTransactionJson {
+            id: None,
+            date: t.date.clone(),
+            description: t.description.clone(),
+            amount: t.amount_minor,
+            status: "error".to_string(),
+            reason: Some(t.error.clone()),
+        });
+    }
+
+    envelope_ok(
+        meta,
+        ImportResultJson {
+            dry_run,
+            imported: result.imported.len(),
+            skipped: result.skipped.len(),
+            errors: result.errors.len(),
+            transactions,
+        },
+    )
+}
+
 // Tests
 // ---------------------------------------------------------------------------
 
