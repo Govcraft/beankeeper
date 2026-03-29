@@ -26,7 +26,7 @@ use crate::error::CliError;
 // ---------------------------------------------------------------------------
 
 /// Response metadata included in every JSON envelope.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Meta {
     pub command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,6 +123,7 @@ pub struct EntryJson {
     memo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tax_category: Option<String>,
+    status: String,
 }
 
 #[derive(Serialize)]
@@ -257,6 +258,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                             amount: e.amount,
                             memo: e.memo.clone(),
                             tax_category: e.tax_category.clone(),
+                            status: e.status.clone(),
                         })
                         .collect()
                 })
@@ -304,6 +306,7 @@ pub fn render_transactions_with_attachments<
                             amount: e.amount,
                             memo: e.memo.clone(),
                             tax_category: e.tax_category.clone(),
+                            status: e.status.clone(),
                         })
                         .collect()
                 })
@@ -796,6 +799,7 @@ mod tests {
                     amount: 5000,
                     memo: None,
                     tax_category: None,
+                    status: "uncleared".into(),
                 },
                 EntryRow {
                     id: 2,
@@ -806,6 +810,7 @@ mod tests {
                     amount: 5000,
                     memo: None,
                     tax_category: None,
+                    status: "uncleared".into(),
                 },
             ],
         );

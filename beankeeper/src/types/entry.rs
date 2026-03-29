@@ -2,6 +2,7 @@ use core::fmt;
 
 use super::account::Account;
 use super::amount::Amount;
+use super::clearance::ClearanceStatus;
 use super::debit_credit::DebitOrCredit;
 use super::document::SourceDocument;
 use super::money::Money;
@@ -56,6 +57,7 @@ pub struct Entry {
     account: Account,
     amount: Money,
     direction: DebitOrCredit,
+    status: ClearanceStatus,
     memo: Option<String>,
     tax_category: Option<String>,
     attachments: Vec<SourceDocument>,
@@ -86,6 +88,7 @@ impl Entry {
             account,
             amount,
             direction,
+            status: ClearanceStatus::Uncleared,
             memo: None,
             tax_category: None,
             attachments: Vec::new(),
@@ -189,6 +192,19 @@ impl Entry {
         self.memo.as_deref()
     }
 
+    /// Returns the clearance status of this entry.
+    #[must_use]
+    pub fn status(&self) -> ClearanceStatus {
+        self.status
+    }
+
+    /// Sets the clearance status, returning the updated entry.
+    #[must_use]
+    pub fn with_status(mut self, status: ClearanceStatus) -> Self {
+        self.status = status;
+        self
+    }
+
     /// Returns the optional tax category for this entry.
     #[must_use]
     pub fn tax_category(&self) -> Option<&str> {
@@ -246,6 +262,11 @@ impl fmt::Display for Entry {
         }
         if let Some(ref cat) = self.tax_category {
             write!(f, " [{cat}]")?;
+        }
+        match self.status {
+            ClearanceStatus::Cleared => write!(f, " *C*")?,
+            ClearanceStatus::Reconciled => write!(f, " *R*")?,
+            ClearanceStatus::Uncleared => {}
         }
         Ok(())
     }

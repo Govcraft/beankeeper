@@ -95,6 +95,6 @@ mod tests {
         };
         let version = super::super::schema::get_schema_version(db.conn());
         assert!(version.is_ok());
-        assert_eq!(version.ok(), Some(5));
+        assert_eq!(version.ok(), Some(6));
     }
 }

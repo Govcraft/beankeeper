@@ -347,9 +347,23 @@ bk txn reconcile --json || echo "Orphaned correlations found"
 
 > **Note:** Global flags like `--company` are ignored by commands that always operate database-wide, such as `export`, `reconcile`, `verify`, and `init`.
 
+### Bank Reconciliation
+
+Mark individual entries as `cleared` or `reconciled` to support bank statement verification workflows:
+
+```sh
+# Mark the bank-leg of a transaction as cleared
+bk --company personal txn clear 42 --entry 5 --status cleared
+
+# Mark as reconciled (finalized)
+bk --company personal txn clear 42 --entry 5 --status reconciled
+```
+
+Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
+
 ### JSON Envelope
 
-All JSON output follows a uniform envelope contract for reliable programmatic consumption:
+All JSON output follows a uniform envelope contract for reliable programmatic consumption by agents and scripts:
 
 **Success:**
 ```json
@@ -379,7 +393,7 @@ All JSON output follows a uniform envelope contract for reliable programmatic co
 }
 ```
 
-The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
+The `meta` block is guaranteed to be present for both success and error responses. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
 
 ### Environment Variables
 

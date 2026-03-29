@@ -313,8 +313,14 @@ pub fn render_transaction_detail(
             .as_deref()
             .map(|c| format!("  [{c}]"))
             .unwrap_or_default();
+        let status_suffix = match entry.status.as_str() {
+            "cleared" => format!("  {}", styled("*C*", green_style(), use_color)),
+            "reconciled" => format!("  {}", styled("*R*", green_style(), use_color)),
+            _ => String::new(),
+        };
+
         lines.push(format!(
-            "    {prefix} {code}  {amount_str}{memo_suffix}{tax_suffix}",
+            "    {prefix} {code}  {amount_str}{memo_suffix}{tax_suffix}{status_suffix}",
             prefix = styled(prefix, direction_style, use_color),
             code = styled(&entry.account_code, cyan_style(), use_color),
         ));
@@ -822,6 +828,7 @@ mod tests {
                 amount: 5000,
                 memo: None,
                 tax_category: None,
+                status: "uncleared".into(),
             },
             EntryRow {
                 id: 2,
@@ -832,6 +839,7 @@ mod tests {
                 amount: 5000,
                 memo: None,
                 tax_category: None,
+                status: "uncleared".into(),
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);
@@ -866,6 +874,7 @@ mod tests {
                 amount: 5000,
                 memo: None,
                 tax_category: None,
+                status: "uncleared".into(),
             },
             EntryRow {
                 id: 2,
@@ -876,6 +885,7 @@ mod tests {
                 amount: 3000,
                 memo: None,
                 tax_category: None,
+                status: "uncleared".into(),
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);

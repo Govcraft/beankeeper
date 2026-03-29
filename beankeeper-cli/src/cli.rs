@@ -704,6 +704,28 @@ EXAMPLES:\n  \
     $ bk --json txn reconcile\
 ")]
     Reconcile,
+
+    /// Update the clearance status of an entry for bank reconciliation.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Mark an entry as cleared:\n    \
+    $ bk --company acme txn clear 42 --entry 5\n\
+    \n  \
+    Mark an entry as reconciled:\n    \
+    $ bk --company acme txn clear 42 --entry 5 --status reconciled\
+")]
+    Clear {
+        /// Transaction ID.
+        transaction_id: i64,
+
+        /// Entry ID to update.
+        #[arg(long)]
+        entry: i64,
+
+        /// Status to apply.
+        #[arg(long, value_enum, default_value_t = ClearanceArg::Cleared)]
+        status: ClearanceArg,
+    },
 }
 
 /// Report subcommands.
@@ -869,6 +891,27 @@ impl DirectionArg {
         match self {
             Self::Debit => "debit",
             Self::Credit => "credit",
+        }
+    }
+}
+
+/// Clearance status argument for CLI.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClearanceArg {
+    Uncleared,
+    #[default]
+    Cleared,
+    Reconciled,
+}
+
+impl ClearanceArg {
+    /// Returns the lowercase string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Uncleared => "uncleared",
+            Self::Cleared => "cleared",
+            Self::Reconciled => "reconciled",
         }
     }
 }

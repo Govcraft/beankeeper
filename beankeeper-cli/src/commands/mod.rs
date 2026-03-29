@@ -11,6 +11,7 @@ use crate::cli::{
     AccountCommand, Cli, Command, CompanyCommand, ReportCommand, TxnCommand, require_company,
 };
 use crate::error::CliError;
+use crate::output::json::Meta;
 
 /// Map a parsed `Command` to its dot-notation command name.
 #[must_use]
@@ -37,6 +38,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             TxnCommand::Show { .. } => "txn.show",
             TxnCommand::Import { .. } => "txn.import",
             TxnCommand::Attach { .. } => "txn.attach",
+            TxnCommand::Clear { .. } => "txn.clear",
             TxnCommand::Reconcile => "txn.reconcile",
         },
         Command::Report(args) => match &args.command {
@@ -54,7 +56,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
 /// # Errors
 ///
 /// Returns [`CliError`] for any command-level failure.
-pub fn dispatch(cli: &Cli) -> Result<(), CliError> {
+pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     match &cli.command {
         Command::Init {
             encrypt,
@@ -77,10 +79,10 @@ pub fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Txn(args) => {
             // Reconcile scans all companies, so --company is not required.
             if matches!(args.command.as_ref(), crate::cli::TxnCommand::Reconcile) {
-                txn::run(cli, "", args.command.as_ref())
+                txn::run(cli, "", args.command.as_ref(), meta)
             } else {
                 let company = require_company(cli)?;
-                txn::run(cli, &company, args.command.as_ref())
+                txn::run(cli, &company, args.command.as_ref(), meta)
             }
         }
 

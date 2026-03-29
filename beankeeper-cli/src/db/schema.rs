@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 5;
+const CURRENT_VERSION: i64 = 6;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -59,6 +59,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 5 {
         apply_v5(conn)?;
+    }
+
+    if version < 6 {
+        apply_v6(conn)?;
     }
 
     debug_assert_eq!(
@@ -219,6 +223,25 @@ fn apply_v5(conn: &Connection) -> Result<(), CliError> {
     conn.execute(
         "INSERT INTO schema_version (version) VALUES (?1)",
         params![5],
+    )?;
+
+    Ok(())
+}
+
+/// Applies the v6 migration: adds `status` column to `entries` for reconciliation.
+fn apply_v6(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        ALTER TABLE entries ADD COLUMN status TEXT NOT NULL DEFAULT 'uncleared' CHECK(status IN ('uncleared', 'cleared', 'reconciled'));
+
+        CREATE INDEX IF NOT EXISTS idx_entries_status
+            ON entries(company_slug, account_code, status);
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        params![6],
     )?;
 
     Ok(())
@@ -426,5 +449,38 @@ mod tests {
             )
             .unwrap_or(0);
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn v6_migration_adds_status_column() {
+        let conn = open_conn();
+        // Apply v1 through v5
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
+        apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(5));
+
+        // Now run ensure_schema which should apply v6
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        // Verify status column on entries
+        let has_status: bool = conn
+            .prepare("PRAGMA table_info(entries)")
+            .map(|mut stmt| {
+                let names: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .unwrap_or_else(|e| panic!("query failed: {e}"))
+                    .filter_map(Result::ok)
+                    .collect();
+                names.contains(&"status".to_string())
+            })
+            .unwrap_or(false);
+        assert!(
+            has_status,
+            "status column should exist on entries after v6"
+        );
     }
 }

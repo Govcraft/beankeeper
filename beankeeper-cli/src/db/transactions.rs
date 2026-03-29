@@ -166,8 +166,8 @@ fn post_transaction_inner(
 
         conn.execute(
             "INSERT INTO entries \
-             (transaction_id, account_code, company_slug, direction, amount, memo, tax_category) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (transaction_id, account_code, company_slug, direction, amount, memo, tax_category, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'uncleared')",
             params![
                 txn_id,
                 entry.account_code,
@@ -568,7 +568,7 @@ pub fn get_entries_for_transaction(
 ) -> Result<Vec<EntryRow>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT id, transaction_id, account_code, company_slug, direction, amount, memo, \
-         tax_category \
+         tax_category, status \
          FROM entries \
          WHERE transaction_id = ?1 \
          ORDER BY id",
@@ -584,6 +584,7 @@ pub fn get_entries_for_transaction(
             amount: row.get(5)?,
             memo: row.get(6)?,
             tax_category: row.get(7)?,
+            status: row.get(8)?,
         })
     })?;
 
@@ -592,6 +593,35 @@ pub fn get_entries_for_transaction(
         entries.push(row?);
     }
     Ok(entries)
+}
+
+/// Updates the clearance status of a specific entry.
+///
+/// # Errors
+///
+/// Returns `CliError::NotFound` if the entry does not exist or doesn't belong to the given transaction/company.
+/// Returns `CliError::Sqlite` on database errors.
+pub fn update_entry_status(
+    conn: &Connection,
+    company_slug: &str,
+    txn_id: i64,
+    entry_id: i64,
+    status: &str,
+) -> Result<(), CliError> {
+    let rows_affected = conn.execute(
+        "UPDATE entries \
+         SET status = ?1 \
+         WHERE id = ?2 AND transaction_id = ?3 AND company_slug = ?4",
+        params![status, entry_id, txn_id, company_slug],
+    )?;
+
+    if rows_affected == 0 {
+        return Err(CliError::NotFound(format!(
+            "entry {entry_id} not found in transaction {txn_id} for company '{company_slug}'"
+        )));
+    }
+
+    Ok(())
 }
 
 /// Find orphaned intercompany correlations.

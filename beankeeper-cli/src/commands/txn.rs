@@ -17,7 +17,12 @@ use crate::passphrase;
 /// # Errors
 ///
 /// Returns [`CliError`] if the subcommand fails.
-pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
+pub fn run(
+    cli: &Cli,
+    company: &str,
+    sub: &TxnCommand,
+    meta: Option<output::json::Meta>,
+) -> Result<(), CliError> {
     let pp = passphrase::resolve_passphrase(
         cli.passphrase.passphrase_fd,
         cli.passphrase.passphrase_file.as_deref(),
@@ -58,6 +63,11 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             run_list_or_count(cli, &db_handle, company, sub, format, use_color)
         }
         TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
+        TxnCommand::Clear {
+            transaction_id,
+            entry,
+            status,
+        } => run_clear(cli, &db_handle, company, *transaction_id, *entry, status, meta),
         TxnCommand::Import {
             file,
             format: import_format,
@@ -664,6 +674,53 @@ fn run_attach(
         eprintln!(
             "[ok] attachment #{att_id} added to transaction #{transaction_id} ({doc_type}, {hash_short})",
             hash_short = &hash[..hash.len().min(12)]
+        );
+    }
+
+    Ok(())
+}
+
+/// Execute the `txn clear` subcommand.
+fn run_clear(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    transaction_id: i64,
+    entry_id: i64,
+    status: &crate::cli::ClearanceArg,
+    meta: Option<output::json::Meta>,
+) -> Result<(), CliError> {
+    // 1. Verify transaction and entry exist.
+    let (_txn, entries) = transactions::get_transaction(db_handle.conn(), company, transaction_id)?;
+
+    if !entries.iter().any(|e| e.id == entry_id) {
+        return Err(CliError::NotFound(format!(
+            "entry {entry_id} not found in transaction {transaction_id}"
+        )));
+    }
+
+    // 2. Update the status in the database.
+    let status_str = status.as_str();
+    transactions::update_entry_status(db_handle.conn(), company, transaction_id, entry_id, status_str)?;
+
+    let format = crate::cli::resolve_format(None, cli);
+    if format == crate::cli::OutputFormat::Json {
+        let meta = meta.unwrap_or_else(|| crate::output::json::meta("txn.clear", Some(company)));
+        let rendered = serde_json::json!({
+            "ok": true,
+            "meta": meta,
+            "data": {
+                "transaction_id": transaction_id,
+                "entry_id": entry_id,
+                "status": status_str
+            }
+        });
+        println!("{}", serde_json::to_string(&rendered).unwrap());
+    }
+
+    if !cli.verbosity.quiet {
+        eprintln!(
+            "[ok] entry #{entry_id} of transaction #{transaction_id} marked as {status_str}"
         );
     }
 

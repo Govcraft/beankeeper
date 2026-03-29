@@ -78,6 +78,7 @@ pub struct EntryRow {
     pub amount: i64,
     pub memo: Option<String>,
     pub tax_category: Option<String>,
+    pub status: String,
 }
 
 /// Aggregated totals per tax category, used in the tax summary report.
