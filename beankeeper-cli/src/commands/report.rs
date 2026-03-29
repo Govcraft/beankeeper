@@ -24,23 +24,30 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
 
     match sub {
         ReportCommand::TrialBalance {
-            as_of,
+            from,
+            to,
             account_type,
         } => run_trial_balance(
             cli,
             &db,
             company,
-            as_of.as_deref(),
+            from.as_deref(),
+            to.as_deref(),
             account_type.as_ref(),
             format,
             use_color,
         ),
-        ReportCommand::Balance { account, as_of } => run_balance(
+        ReportCommand::Balance {
+            account,
+            from,
+            to,
+        } => run_balance(
             cli,
             &db,
             company,
             account,
-            as_of.as_deref(),
+            from.as_deref(),
+            to.as_deref(),
             format,
             use_color,
         ),
@@ -53,8 +60,8 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
-        ReportCommand::BalanceSheet { as_of } => {
-            run_balance_sheet(cli, &db, company, as_of.as_deref(), format, use_color)
+        ReportCommand::BalanceSheet { to } => {
+            run_balance_sheet(cli, &db, company, to.as_deref(), format, use_color)
         }
         ReportCommand::TaxSummary { from, to } => run_tax_summary(
             cli,
@@ -74,13 +81,15 @@ fn run_trial_balance(
     cli: &Cli,
     db: &Db,
     company: &str,
-    as_of: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
     account_type: Option<&AccountTypeArg>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
     let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-    let balances = db::compute_trial_balance(db.conn(), company, type_filter.as_deref(), as_of)?;
+    let balances =
+        db::compute_trial_balance(db.conn(), company, type_filter.as_deref(), from, to)?;
 
     // Determine currency info (default to USD for display)
     let currency = resolve_company_currency(db, company);
@@ -88,11 +97,13 @@ fn run_trial_balance(
 
     match format {
         OutputFormat::Table => {
+            let title = build_period_title("Trial Balance", currency.code(), from, to);
             let rendered = output::table::render_trial_balance(
                 &balances,
                 currency.code(),
                 minor_units,
                 use_color,
+                Some(&title),
             );
             println!("{rendered}");
         }
@@ -121,16 +132,15 @@ fn run_balance(
     db: &Db,
     company: &str,
     account_code: &str,
-    as_of: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
     // Look up the account to get name and type
     let account_row = db::get_account(db.conn(), company, account_code)?;
-
-    // Compute balance
     let (debit_total, credit_total) =
-        db::compute_account_balance(db.conn(), company, account_code, as_of)?;
+        db::compute_account_balance(db.conn(), company, account_code, from, to)?;
 
     let currency = resolve_company_currency(db, company);
 
@@ -244,14 +254,14 @@ fn run_balance_sheet(
     cli: &Cli,
     db: &Db,
     company: &str,
-    as_of: Option<&str>,
+    to: Option<&str>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
-    let asset_balances = db::compute_trial_balance(db.conn(), company, Some("asset"), as_of)?;
+    let asset_balances = db::compute_trial_balance(db.conn(), company, Some("asset"), None, to)?;
     let liability_balances =
-        db::compute_trial_balance(db.conn(), company, Some("liability"), as_of)?;
-    let equity_balances = db::compute_trial_balance(db.conn(), company, Some("equity"), as_of)?;
+        db::compute_trial_balance(db.conn(), company, Some("liability"), None, to)?;
+    let equity_balances = db::compute_trial_balance(db.conn(), company, Some("equity"), None, to)?;
 
     let mut all_balances = Vec::new();
     all_balances.extend(asset_balances);
@@ -263,16 +273,7 @@ fn run_balance_sheet(
 
     match format {
         OutputFormat::Table => {
-            let title = match as_of {
-                Some(date) => format!(
-                    "Balance Sheet as of {date} ({currency_code})",
-                    currency_code = currency.code()
-                ),
-                None => format!(
-                    "Balance Sheet ({currency_code})",
-                    currency_code = currency.code()
-                ),
-            };
+            let title = build_period_title("Balance Sheet", currency.code(), None, to);
             let rendered = render_report_table(
                 &title,
                 &all_balances,
@@ -313,58 +314,7 @@ fn compute_period_balances(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<db::BalanceRow>, CliError> {
-    if from.is_none() {
-        // No from date: just compute cumulative as of `to`
-        return db::compute_trial_balance(db.conn(), company, Some(type_filter), to);
-    }
-
-    // With a from date, compute balances at the end-of-period (to date)
-    let end_balances = db::compute_trial_balance(db.conn(), company, Some(type_filter), to)?;
-
-    // Compute balances just before the from date by getting the day before
-    let from_str = from.unwrap_or_default();
-    let before_from = day_before(from_str);
-
-    let start_balances =
-        db::compute_trial_balance(db.conn(), company, Some(type_filter), Some(&before_from))?;
-
-    // Compute the period activity as the difference
-    let mut result = Vec::new();
-    for end_row in &end_balances {
-        let prior = start_balances.iter().find(|s| s.code == end_row.code);
-        let start_debit = prior.map_or(0, |s| s.debit_total);
-        let start_credit = prior.map_or(0, |s| s.credit_total);
-
-        result.push(db::BalanceRow {
-            code: end_row.code.clone(),
-            name: end_row.name.clone(),
-            account_type: end_row.account_type.clone(),
-            debit_total: end_row.debit_total.saturating_sub(start_debit),
-            credit_total: end_row.credit_total.saturating_sub(start_credit),
-        });
-    }
-
-    Ok(result)
-}
-
-/// Compute the day before a given YYYY-MM-DD date string.
-///
-/// Uses chrono for correct calendar arithmetic.
-fn day_before(date_str: &str) -> String {
-    use chrono::NaiveDate;
-
-    let parsed = NaiveDate::parse_from_str(date_str, "%Y-%m-%d");
-    match parsed {
-        Ok(date) => {
-            let prev = date.pred_opt().unwrap_or(date);
-            prev.format("%Y-%m-%d").to_string()
-        }
-        Err(_) => {
-            // If we can't parse the date, return the same string as a fallback.
-            // The SQL comparison will still work, just not perfectly for period filtering.
-            date_str.to_string()
-        }
-    }
+    db::compute_trial_balance(db.conn(), company, Some(type_filter), from, to)
 }
 
 /// Resolve the currency for a company by checking transactions.

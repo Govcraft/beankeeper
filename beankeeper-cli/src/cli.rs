@@ -439,7 +439,11 @@ EXAMPLES:\n  \
     \n  \
     Idempotent post with a reference key:\n    \
     $ bk --company acme txn post -d \"Monthly rent\" \\\n      \
-    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\"\
+    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\"\n\
+    \n  \
+    Post only if reference doesn't exist, otherwise skip silently:\n    \
+    $ bk --company acme txn post -d \"Monthly rent\" \\\n      \
+    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\" --on-conflict skip\
 ")]
     Post {
         /// Transaction description.
@@ -473,6 +477,10 @@ EXAMPLES:\n  \
         /// Idempotency key -- rejects duplicate posts with the same reference per company.
         #[arg(short = 'r', long)]
         reference: Option<String>,
+
+        /// Conflict resolution strategy for duplicate references.
+        #[arg(long, value_enum, default_value_t = OnConflictArg::Error)]
+        on_conflict: OnConflictArg,
 
         /// Tax category for specific entries. Format: `account_code=category` (repeatable).
         /// Entries without a --tax flag inherit the account's `default_tax_category`.
@@ -589,6 +597,9 @@ EXAMPLES:\n  \
     Dry run to preview what would be imported:\n    \
     $ bk --company acme txn import --file statement.ofx --account 1000 --suspense 9000 --dry-run\n\
     \n  \
+    Import from bank statement, failing on any duplicates:\n    \
+    $ bk --company acme txn import --file statement.ofx --account 1000 --suspense 9000 --on-conflict error\n\
+    \n  \
     Import OFX from stdin with explicit format:\n    \
     $ cat statement.ofx | bk --company acme txn import --file - --format ofx --account 1000 --suspense 9000\
 ")]
@@ -612,6 +623,10 @@ EXAMPLES:\n  \
         /// Suspense/clearing contra account code (required for OFX import).
         #[arg(long)]
         suspense: Option<String>,
+
+        /// Conflict resolution strategy for duplicate references.
+        #[arg(long, value_enum, default_value_t = OnConflictArg::Skip)]
+        on_conflict: OnConflictArg,
     },
 
     /// Attach a document to a transaction.
@@ -668,15 +683,22 @@ EXAMPLES:\n  \
     $ bk --company acme report trial-balance\n\
     \n  \
     Trial balance as of a specific date:\n    \
-    $ bk --company acme report trial-balance --as-of 2025-03-31\n\
+    $ bk --company acme report trial-balance --to 2025-03-31\n\
+    \n  \
+    Trial balance for a date range:\n    \
+    $ bk --company acme report trial-balance --from 2025-01-01 --to 2025-03-31\n\
     \n  \
     Trial balance filtered to expense accounts only:\n    \
     $ bk --company acme report trial-balance --type expense\
 ")]
     TrialBalance {
-        /// As-of date (YYYY-MM-DD).
+        /// Start date (inclusive).
         #[arg(long)]
-        as_of: Option<String>,
+        from: Option<String>,
+
+        /// End date (inclusive).
+        #[arg(long)]
+        to: Option<String>,
 
         /// Filter by account type.
         #[arg(long = "type", value_enum)]
@@ -690,16 +712,23 @@ EXAMPLES:\n  \
     $ bk --company acme report balance --account 1000\n\
     \n  \
     Check a balance as of a past date:\n    \
-    $ bk --company acme report balance --account 1000 --as-of 2025-01-31\
+    $ bk --company acme report balance --account 1000 --to 2025-01-31\n\
+    \n  \
+    Check activity for a date range:\n    \
+    $ bk --company acme report balance --account 1000 --from 2025-01-01 --to 2025-01-31\
 ")]
     Balance {
         /// Account code.
         #[arg(long)]
         account: String,
 
-        /// As-of date (YYYY-MM-DD).
+        /// Start date (inclusive).
         #[arg(long)]
-        as_of: Option<String>,
+        from: Option<String>,
+
+        /// End date (inclusive).
+        #[arg(long)]
+        to: Option<String>,
     },
 
     /// Generate an income statement.
@@ -728,12 +757,12 @@ EXAMPLES:\n  \
     $ bk --company acme report balance-sheet\n\
     \n  \
     Balance sheet as of quarter end:\n    \
-    $ bk --company acme report balance-sheet --as-of 2025-03-31\
+    $ bk --company acme report balance-sheet --to 2025-03-31\
 ")]
     BalanceSheet {
-        /// As-of date (YYYY-MM-DD).
+        /// End date (inclusive).
         #[arg(long)]
-        as_of: Option<String>,
+        to: Option<String>,
     },
 
     /// Summarise entries grouped by tax category.
@@ -826,6 +855,18 @@ impl AccountTypeArg {
             Self::Expense => beankeeper::types::AccountType::Expense,
         }
     }
+}
+
+/// Conflict resolution strategy for duplicate references.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnConflictArg {
+    /// Return an error on duplicate reference (default).
+    #[default]
+    Error,
+    /// Skip the transaction silently on duplicate reference.
+    Skip,
+    /// Update the existing transaction (not yet implemented).
+    Upsert,
 }
 
 /// Resolve the effective output format.

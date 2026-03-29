@@ -37,6 +37,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             date,
             correlate,
             reference,
+            on_conflict,
             tax,
         } => run_post(
             cli,
@@ -50,6 +51,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             date.as_deref(),
             *correlate,
             reference.as_deref(),
+            *on_conflict,
             tax,
         ),
         TxnCommand::List { .. } => {
@@ -62,6 +64,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
             dry_run,
             account,
             suspense,
+            on_conflict,
         } => {
             let effective_format = match import_format {
                 Some(f) => *f,
@@ -91,6 +94,7 @@ pub fn run(cli: &Cli, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
                         acct,
                         susp,
                         *dry_run,
+                        *on_conflict,
                     )
                 }
                 crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => Err(
@@ -305,6 +309,7 @@ fn run_post(
     date: Option<&str>,
     correlate: Option<i64>,
     reference: Option<&str>,
+    on_conflict: crate::cli::OnConflictArg,
     tax_args: &[String],
 ) -> Result<(), CliError> {
     // 1. Parse currency
@@ -404,19 +409,29 @@ fn run_post(
         entries: &db_entries,
         correlate,
         reference: idempotency_key.as_ref().map(IdempotencyKey::as_str),
+        on_conflict: match on_conflict {
+            crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
+            crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
+            crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
+        },
     };
 
-    let txn_id = transactions::post_transaction(db_handle.conn(), &params)?;
+    let post_result = transactions::post_transaction(db_handle.conn(), &params)?;
 
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {
         let meta = crate::output::json::meta("txn.post", Some(company));
-        let rendered = crate::output::json::render_posted(txn_id, meta)?;
+        let rendered = crate::output::json::render_post_result(post_result, meta)?;
         println!("{rendered}");
     }
 
     if !cli.verbosity.quiet {
-        eprintln!("[ok] transaction #{txn_id} posted");
+        match post_result {
+            transactions::PostResult::Created(id) => eprintln!("[ok] transaction #{id} posted"),
+            transactions::PostResult::Skipped(id) => {
+                eprintln!("[skipped] duplicate reference; transaction already exists (id: {id})")
+            }
+        }
     }
 
     Ok(())

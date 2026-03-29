@@ -103,8 +103,11 @@ fn post(
             entries,
             correlate,
             reference: Some(reference),
+            on_conflict: crate::db::ConflictStrategy::Error,
         },
-    )
+    ).map(|res| match res {
+        crate::db::PostResult::Created(id) | crate::db::PostResult::Skipped(id) => id,
+    })
 }
 
 use crate::db::transactions::PostEntryParams;
@@ -901,7 +904,7 @@ mod tests {
             );
 
             // Verify trial balance is balanced
-            let balances = crate::db::compute_trial_balance(db.conn(), slug, None, None)
+            let balances = crate::db::compute_trial_balance(db.conn(), slug, None, None, None)
                 .expect("trial balance");
             let total_debits: i64 = balances.iter().map(|b| b.debit_total).sum();
             let total_credits: i64 = balances.iter().map(|b| b.credit_total).sum();

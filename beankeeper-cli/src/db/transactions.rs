@@ -16,6 +16,18 @@ pub struct PostEntryParams {
     pub tax_category: Option<String>,
 }
 
+/// Conflict resolution strategy for duplicate references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConflictStrategy {
+    /// Return an error on duplicate reference (default).
+    #[default]
+    Error,
+    /// Skip the transaction silently on duplicate reference.
+    Skip,
+    /// Update the existing transaction (not yet implemented).
+    Upsert,
+}
+
 /// Parameters for posting a new transaction.
 pub struct PostTransactionParams<'a> {
     pub company_slug: &'a str,
@@ -28,6 +40,8 @@ pub struct PostTransactionParams<'a> {
     pub correlate: Option<i64>,
     /// Idempotency reference -- rejects duplicate posts with the same reference per company.
     pub reference: Option<&'a str>,
+    /// How to handle duplicate references.
+    pub on_conflict: ConflictStrategy,
 }
 
 /// An orphaned intercompany correlation found by reconcile.
@@ -45,12 +59,22 @@ pub struct OrphanedCorrelation {
     pub partner_id: i64,
 }
 
+/// Outcome of a transaction post operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostResult {
+    /// A new transaction was successfully created.
+    Created(i64),
+    /// A duplicate reference was found and the transaction was skipped.
+    /// Contains the ID of the existing transaction.
+    Skipped(i64),
+}
+
 /// Posts a new transaction with its entries inside a savepoint.
 ///
 /// Each entry is a tuple of `(account_code, direction, amount)` where
 /// direction is `"debit"` or `"credit"` and amount is in minor units.
 ///
-/// Returns the new transaction ID.
+/// Returns the [`PostResult`].
 ///
 /// # Errors
 ///
@@ -59,7 +83,7 @@ pub struct OrphanedCorrelation {
 pub fn post_transaction(
     conn: &Connection,
     params: &PostTransactionParams<'_>,
-) -> Result<i64, CliError> {
+) -> Result<PostResult, CliError> {
     if params.entries.is_empty() {
         return Err(CliError::Validation(
             "transaction must have at least one entry".to_string(),
@@ -83,7 +107,7 @@ pub fn post_transaction(
 fn post_transaction_inner(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
-) -> Result<i64, CliError> {
+) -> Result<PostResult, CliError> {
     // Check for duplicate reference before inserting.
     if let Some(ref_str) = p.reference {
         let existing: Option<i64> = conn
@@ -95,9 +119,21 @@ fn post_transaction_inner(
             .ok();
 
         if let Some(existing_id) = existing {
-            return Err(CliError::Validation(format!(
-                "transaction with reference '{ref_str}' already exists (id: {existing_id})"
-            )));
+            match p.on_conflict {
+                ConflictStrategy::Error => {
+                    return Err(CliError::Validation(format!(
+                        "transaction with reference '{ref_str}' already exists (id: {existing_id})"
+                    )));
+                }
+                ConflictStrategy::Skip => {
+                    return Ok(PostResult::Skipped(existing_id));
+                }
+                ConflictStrategy::Upsert => {
+                    return Err(CliError::General(
+                        "on-conflict=upsert not yet implemented".to_string(),
+                    ));
+                }
+            }
         }
     }
 
@@ -149,7 +185,7 @@ fn post_transaction_inner(
         link_partner(conn, p.company_slug, txn_id, partner_id)?;
     }
 
-    Ok(txn_id)
+    Ok(PostResult::Created(txn_id))
 }
 
 /// Build effective metadata JSON from optional user metadata and correlate ID.
@@ -649,6 +685,7 @@ mod tests {
             entries,
             correlate: None,
             reference: None,
+            on_conflict: ConflictStrategy::Error,
         }
     }
 
@@ -659,7 +696,9 @@ mod tests {
         let p = make_params(&entries, "Test sale", None, "2024-01-15");
         let id = post_transaction(db.conn(), &p);
         assert!(id.is_ok());
-        let id = id.unwrap_or_else(|e| panic!("post failed: {e}"));
+        let PostResult::Created(id) = id.unwrap_or_else(|e| panic!("post failed: {e}")) else {
+            panic!("expected Created");
+        };
 
         let result = get_transaction(db.conn(), "acme", id);
         assert!(result.is_ok());
@@ -675,7 +714,9 @@ mod tests {
         let p = make_params(&entries, "Test", Some(r#"{"ref":"INV-001"}"#), "2024-01-15");
         let id = post_transaction(db.conn(), &p);
         assert!(id.is_ok());
-        let id = id.unwrap_or_else(|e| panic!("post failed: {e}"));
+        let PostResult::Created(id) = id.unwrap_or_else(|e| panic!("post failed: {e}")) else {
+            panic!("expected Created");
+        };
         let (txn, _) =
             get_transaction(db.conn(), "acme", id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(txn.metadata.as_deref(), Some(r#"{"ref":"INV-001"}"#));
@@ -789,6 +830,9 @@ mod tests {
         let entries = sample_entries();
         let p = make_params(&entries, "Test", None, "2024-01-15");
         let id = post_transaction(db.conn(), &p).unwrap_or_else(|e| panic!("post failed: {e}"));
+        let PostResult::Created(id) = id else {
+            panic!("expected Created");
+        };
 
         let entry_rows = get_entries_for_transaction(db.conn(), id).unwrap_or_default();
         assert_eq!(entry_rows.len(), 2);
@@ -1054,5 +1098,28 @@ mod tests {
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Taxed");
+    }
+
+    #[test]
+    fn post_transaction_skip_conflict() {
+        let db = setup();
+        let entries = sample_entries();
+        let mut p1 = make_params(&entries, "First", None, "2024-01-01");
+        p1.reference = Some("REF-1");
+        let res1 = post_transaction(db.conn(), &p1).unwrap();
+        let PostResult::Created(id1) = res1 else {
+            panic!("expected Created");
+        };
+
+        let mut p2 = make_params(&entries, "Duplicate", None, "2024-01-01");
+        p2.reference = Some("REF-1");
+        p2.on_conflict = ConflictStrategy::Skip;
+        let res2 = post_transaction(db.conn(), &p2).unwrap();
+        assert_eq!(res2, PostResult::Skipped(id1));
+
+        // Verify only one transaction exists
+        let lp = ListTransactionParams::for_company("acme");
+        let count = count_transactions(db.conn(), &lp).unwrap();
+        assert_eq!(count, 1);
     }
 }

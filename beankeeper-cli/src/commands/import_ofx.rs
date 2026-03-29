@@ -300,16 +300,37 @@ fn post_one(
     suspense_code: &str,
     prepared: &PreparedTransaction,
     dry_run: bool,
+    conflict_strategy: transactions::ConflictStrategy,
 ) -> TransactionOutcome {
     // Pre-check for duplicates.
     match reference_exists(conn, company, &prepared.reference) {
         Ok(true) => {
-            return TransactionOutcome::Skipped(SkippedTransaction {
-                date: prepared.date.clone(),
-                description: prepared.description.clone(),
-                amount_minor: prepared.amount_minor,
-                reference: prepared.reference.clone(),
-            });
+            match conflict_strategy {
+                transactions::ConflictStrategy::Error => {
+                    return TransactionOutcome::Failed(FailedTransaction {
+                        date: prepared.date.clone(),
+                        description: prepared.description.clone(),
+                        amount_minor: prepared.amount_minor,
+                        error: format!("duplicate reference: {}", prepared.reference),
+                    });
+                }
+                transactions::ConflictStrategy::Skip => {
+                    return TransactionOutcome::Skipped(SkippedTransaction {
+                        date: prepared.date.clone(),
+                        description: prepared.description.clone(),
+                        amount_minor: prepared.amount_minor,
+                        reference: prepared.reference.clone(),
+                    });
+                }
+                transactions::ConflictStrategy::Upsert => {
+                    return TransactionOutcome::Failed(FailedTransaction {
+                        date: prepared.date.clone(),
+                        description: prepared.description.clone(),
+                        amount_minor: prepared.amount_minor,
+                        error: "on-conflict=upsert not yet implemented".to_string(),
+                    });
+                }
+            }
         }
         Ok(false) => {}
         Err(e) => {
@@ -366,16 +387,28 @@ fn post_one(
         entries: &entries,
         correlate: None,
         reference: Some(&prepared.reference),
+        on_conflict: conflict_strategy,
     };
 
     match transactions::post_transaction(conn, &params) {
-        Ok(id) => TransactionOutcome::Imported(ImportedTransaction {
-            id,
-            date: prepared.date.clone(),
-            description: prepared.description.clone(),
-            amount_minor: prepared.amount_minor,
-            is_inflow: prepared.is_inflow,
-        }),
+        Ok(transactions::PostResult::Created(id)) => {
+            TransactionOutcome::Imported(ImportedTransaction {
+                id,
+                date: prepared.date.clone(),
+                description: prepared.description.clone(),
+                amount_minor: prepared.amount_minor,
+                is_inflow: prepared.is_inflow,
+            })
+        }
+        Ok(transactions::PostResult::Skipped(_)) => {
+            // This should already be caught by our pre-check above, but for completeness:
+            TransactionOutcome::Skipped(SkippedTransaction {
+                date: prepared.date.clone(),
+                description: prepared.description.clone(),
+                amount_minor: prepared.amount_minor,
+                reference: prepared.reference.clone(),
+            })
+        }
         Err(e) => TransactionOutcome::Failed(FailedTransaction {
             date: prepared.date.clone(),
             description: prepared.description.clone(),
@@ -405,6 +438,7 @@ struct StatementContext<'a> {
     currency_code: &'a str,
     minor_units: u8,
     dry_run: bool,
+    conflict_strategy: transactions::ConflictStrategy,
     verbose: bool,
 }
 
@@ -450,6 +484,7 @@ fn process_transactions(
             ctx.suspense_code,
             &prepared,
             ctx.dry_run,
+            ctx.conflict_strategy,
         ) {
             TransactionOutcome::Imported(t) => result.imported.push(t),
             TransactionOutcome::Skipped(t) => result.skipped.push(t),
@@ -498,10 +533,17 @@ pub fn run_import_ofx(
     account_code: &str,
     suspense_code: &str,
     dry_run: bool,
+    on_conflict: crate::cli::OnConflictArg,
 ) -> Result<(), CliError> {
     let conn = db_handle.conn();
     let verbose = cli.verbosity.verbose;
     let format = crate::cli::resolve_format(None, cli);
+
+    let conflict_strategy = match on_conflict {
+        crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
+        crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
+        crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
+    };
 
     // Validate accounts exist.
     if !accounts::account_exists(conn, company, account_code)? {
@@ -544,6 +586,7 @@ pub fn run_import_ofx(
                     currency_code: &currency_code,
                     minor_units,
                     dry_run,
+                    conflict_strategy,
                     verbose,
                 };
                 if let Some(txn_list) = stmt.transaction_list() {
@@ -568,6 +611,7 @@ pub fn run_import_ofx(
                     currency_code: &currency_code,
                     minor_units,
                     dry_run,
+                    conflict_strategy,
                     verbose,
                 };
                 if let Some(txn_list) = stmt.transaction_list() {
@@ -592,6 +636,7 @@ pub fn run_import_ofx(
                     currency_code: &currency_code,
                     minor_units,
                     dry_run,
+                    conflict_strategy,
                     verbose,
                 };
                 if let Some(txn_list) = stmt.transaction_list() {

@@ -231,9 +231,13 @@ mod tests {
             entries: &entries,
             correlate: None,
             reference: None,
+            on_conflict: transactions::ConflictStrategy::Error,
         };
-        transactions::post_transaction(db.conn(), &params)
+        match transactions::post_transaction(db.conn(), &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"))
+        {
+            transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => id,
+        }
     }
 
     #[test]

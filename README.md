@@ -91,8 +91,9 @@ bk --company personal txn post -d "Paycheck" \
   --debit "5100:1200:Federal tax"
 
 # Reports
-bk --company personal report trial-balance
-bk --company personal report balance --account 1000
+bk --company personal report trial-balance --from 2026-01-01 --to 2026-03-31
+bk --company personal report balance --account 1000 --to 2026-03-31
+bk --company personal report balance-sheet --to 2026-03-31
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
 ```
 
@@ -128,17 +129,18 @@ bk --company acme-consulting report trial-balance
 # View the payroll split transaction
 bk --company acme-consulting txn list --description "payroll" --json
 
-# Balance sheet across all three companies
-bk --company personal report balance-sheet
+# Balance sheet as of quarter end
+bk --company personal report balance-sheet --to 2024-03-31
 
-# Verify all intercompany links are paired
-bk txn reconcile
+# Trial balance for a date range
+bk --company personal report trial-balance --from 2024-01-01 --to 2024-03-31
 
-# Tax summary for the personal entity
-bk --company personal report tax-summary --from 2025-01-01 --to 2025-12-31
+# Balance as of a specific date
+bk --company personal report balance --account 1000 --to 2024-03-16
 ```
 
-## Features
+## Demo Mode
+
 
 Beyond the core guarantees above, `bk` provides the following capabilities for multi-entity accounting, automation, and reporting.
 
@@ -161,7 +163,9 @@ bk txn reconcile
 
 ### Idempotency Keys
 
-When `bk` is driven by AI agents or import scripts, retries can cause duplicate transactions. The `--reference` flag provides a deterministic idempotency key -- same reference, same company, always maps to the same transaction:
+When `bk` is driven by AI agents or import scripts, retries can cause duplicate transactions. The `--reference` flag provides a deterministic idempotency key -- same reference, same company, always maps to the same transaction.
+
+The `--on-conflict` flag controls how duplicates are handled:
 
 ```sh
 # First post succeeds
@@ -169,11 +173,45 @@ bk --company personal txn post -d "AWS March" \
   --reference "chase-2026-03-15-001" \
   --debit 5200:49.95 --credit 1000:49.95
 
-# Retry is rejected with the existing transaction ID
+# Default is --on-conflict error: retry is rejected
 bk --company personal txn post -d "AWS March" \
   --reference "chase-2026-03-15-001" \
   --debit 5200:49.95 --credit 1000:49.95
 # -> error: transaction with reference 'chase-2026-03-15-001' already exists (id: 1)
+
+# Use --on-conflict skip to succeed silently
+bk --company personal txn post -d "AWS March" \
+  --reference "chase-2026-03-15-001" \
+  --debit 5200:49.95 --credit 1000:49.95 --on-conflict skip
+# -> [skipped] duplicate reference; transaction already exists (id: 1)
+```
+
+In JSON mode, `txn post` returns a `data` object indicating the result:
+
+```json
+{
+  "ok": true,
+  "meta": { ... },
+  "data": {
+    "id": 1,
+    "created": true,
+    "skipped": false
+  }
+}
+```
+
+If skipped, `id` is null and `existing_id` is provided:
+
+```json
+{
+  "ok": true,
+  "meta": { ... },
+  "data": {
+    "existing_id": 1,
+    "created": false,
+    "skipped": true
+  }
+}
 ```
 
 References are hashed into deterministic `txnref_`-prefixed keys. Transactions without `--reference` are unrestricted.
@@ -193,9 +231,10 @@ bk --company personal txn import --file checking.ofx --account 1000 --suspense 9
 cat statement.qfx | bk --company personal txn import --file - --format ofx --account 1000 --suspense 9000
 ```
 
-**Deduplication is automatic.** Each OFX transaction's unique `FITID` is stored as an idempotency reference, so re-importing the same file skips already-posted transactions:
+**Deduplication is automatic.** Each OFX transaction's unique `FITID` is stored as an idempotency reference, so re-importing the same file skips already-posted transactions. Use `--on-conflict error` to fail the whole import if any transaction already exists:
 
-```
+```sh
+# Default is --on-conflict skip
 Imported 47 transactions, skipped 3 duplicates.
 ```
 
@@ -278,8 +317,8 @@ All filters can be combined. Amount filters use the `--currency` value (or `BEAN
 # List expense accounts with their debit/credit totals
 bk --company personal account list --type expense --with-balances --json
 
-# Search accounts by name, with balances as of a date
-bk --company personal account list --name "Cash" --with-balances --as-of 2026-06-30 --json
+# Search accounts by name, with balances for a period
+bk --company personal account list --name "Cash" --with-balances --to 2026-06-30 --json
 ```
 
 ### Output Formats

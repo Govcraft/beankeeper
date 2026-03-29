@@ -344,13 +344,12 @@ pub fn render_trial_balance(
     currency_code: &str,
     currency_minor_units: u8,
     use_color: bool,
+    title_override: Option<&str>,
 ) -> String {
     let mut lines = Vec::new();
-    lines.push(styled(
-        &format!("Trial Balance ({currency_code})"),
-        bold_style(),
-        use_color,
-    ));
+    let default_title = format!("Trial Balance ({currency_code})");
+    let title = title_override.unwrap_or(&default_title);
+    lines.push(styled(title, bold_style(), use_color));
     lines.push(String::new());
 
     let mut table = new_table();
@@ -903,7 +902,7 @@ mod tests {
                 credit_total: 10000,
             },
         ];
-        let out = render_trial_balance(&rows, "USD", 2, false);
+        let out = render_trial_balance(&rows, "USD", 2, false, None);
         assert!(out.contains("Trial Balance (USD)"));
         assert!(out.contains("1000"));
         assert!(out.contains("Cash"));
@@ -920,7 +919,7 @@ mod tests {
             debit_total: 10000,
             credit_total: 5000,
         }];
-        let out = render_trial_balance(&rows, "USD", 2, false);
+        let out = render_trial_balance(&rows, "USD", 2, false, None);
         assert!(out.contains("[!!] UNBALANCED"));
     }
 
@@ -933,7 +932,7 @@ mod tests {
             debit_total: 5000,
             credit_total: 5000,
         }];
-        let out = render_trial_balance(&rows, "JPY", 0, false);
+        let out = render_trial_balance(&rows, "JPY", 0, false, None);
         assert!(out.contains("Trial Balance (JPY)"));
         assert!(out.contains("5,000"));
         assert!(out.contains("[ok] BALANCED"));

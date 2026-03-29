@@ -16,7 +16,7 @@ use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::db::{
-    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow,
+    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, PostResult,
     TransactionRow,
 };
 use crate::error::CliError;
@@ -536,17 +536,38 @@ pub fn render_deleted(slug: &str, meta: Meta) -> Result<String, CliError> {
     envelope_ok(meta, DeletedJson { deleted: slug })
 }
 
-/// Render a `txn post` confirmation as an enveloped JSON response.
+/// Render a transaction post result as an enveloped JSON response.
 ///
 /// # Errors
 ///
 /// Returns [`CliError`] on serialisation failure.
-pub fn render_posted(id: i64, meta: Meta) -> Result<String, CliError> {
+pub fn render_post_result(result: PostResult, meta: Meta) -> Result<String, CliError> {
     #[derive(Serialize)]
-    struct PostedJson {
-        id: i64,
+    struct PostResultJson {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        existing_id: Option<i64>,
+        created: bool,
+        skipped: bool,
     }
-    envelope_ok(meta, PostedJson { id })
+
+    let json = match result {
+        PostResult::Created(id) => PostResultJson {
+            id: Some(id),
+            existing_id: None,
+            created: true,
+            skipped: false,
+        },
+        PostResult::Skipped(id) => PostResultJson {
+            id: None,
+            existing_id: Some(id),
+            created: false,
+            skipped: true,
+        },
+    };
+
+    envelope_ok(meta, json)
 }
 
 /// Render a `txn attach` confirmation as an enveloped JSON response.

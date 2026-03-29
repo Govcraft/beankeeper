@@ -57,6 +57,7 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
                     company,
                     type_filter.as_deref(),
                     name.as_deref(),
+                    None,
                     as_of.as_deref(),
                 )?;
                 render_accounts_with_balances(&rows, company, format, use_color)?;

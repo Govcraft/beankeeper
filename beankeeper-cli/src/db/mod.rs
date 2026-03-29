@@ -19,9 +19,9 @@ pub use companies::{company_exists, create_company, delete_company, get_company,
 pub use connection::Db;
 pub use schema::{ensure_schema, get_schema_version};
 pub use transactions::{
-    ListTransactionParams, OrphanedCorrelation, PostEntryParams, PostTransactionParams,
-    count_transactions, find_orphaned_correlations, get_entries_for_transaction, get_transaction,
-    list_transactions, post_transaction,
+    ConflictStrategy, ListTransactionParams, OrphanedCorrelation, PostEntryParams, PostResult,
+    PostTransactionParams, count_transactions, find_orphaned_correlations,
+    get_entries_for_transaction, get_transaction, list_transactions, post_transaction,
 };
 
 use std::fmt::Write;
@@ -111,7 +111,7 @@ pub struct AccountWithBalanceRow {
 
 /// Lists accounts with their debit/credit balance totals in a single query.
 ///
-/// Optionally filters by account type, name substring, and as-of date.
+/// Optionally filters by account type, name substring, and date range.
 ///
 /// # Errors
 ///
@@ -121,9 +121,11 @@ pub fn list_accounts_with_balances(
     company_slug: &str,
     type_filter: Option<&str>,
     name_filter: Option<&str>,
-    as_of: Option<&str>,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
 ) -> Result<Vec<AccountWithBalanceRow>, CliError> {
-    let base = if as_of.is_some() {
+    let has_date_filter = from_date.is_some() || to_date.is_some();
+    let base = if has_date_filter {
         "SELECT a.code, a.name, a.type, a.default_tax_category, \
          COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
@@ -157,9 +159,15 @@ pub fn list_accounts_with_balances(
         param_idx += 1;
     }
 
-    if let Some(date) = as_of {
+    if let Some(from) = from_date {
+        let _ = write!(sql, " AND (t.date IS NULL OR t.date >= ?{param_idx})");
+        param_values.push(Box::new(from.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(to) = to_date {
         let _ = write!(sql, " AND (t.date IS NULL OR t.date <= ?{param_idx})");
-        param_values.push(Box::new(date.to_string()));
+        param_values.push(Box::new(to.to_string()));
         let _ = param_idx;
     }
 
@@ -190,7 +198,7 @@ pub fn list_accounts_with_balances(
 /// Computes a trial balance for a company.
 ///
 /// Returns one [`BalanceRow`] per account (including those with zero totals).
-/// Optionally filters by account type and/or an as-of date (inclusive).
+/// Optionally filters by account type and/or a date range (inclusive).
 ///
 /// # Errors
 ///
@@ -199,13 +207,15 @@ pub fn compute_trial_balance(
     conn: &Connection,
     company_slug: &str,
     type_filter: Option<&str>,
-    as_of: Option<&str>,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
 ) -> Result<Vec<BalanceRow>, CliError> {
     // Build the query dynamically based on whether we need date filtering.
-    // When as_of is provided we must join through transactions to access the
+    // When date filtering is provided we must join through transactions to access the
     // date column. We use a parenthesised join so the LEFT JOIN still includes
     // accounts with no matching entries (zero balances).
-    let base = if as_of.is_some() {
+    let has_date_filter = from_date.is_some() || to_date.is_some();
+    let base = if has_date_filter {
         "SELECT a.code, a.name, a.type, \
          COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
@@ -233,9 +243,15 @@ pub fn compute_trial_balance(
         param_idx += 1;
     }
 
-    if let Some(date) = as_of {
+    if let Some(from) = from_date {
+        let _ = write!(sql, " AND (t.date IS NULL OR t.date >= ?{param_idx})");
+        param_values.push(Box::new(from.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(to) = to_date {
         let _ = write!(sql, " AND (t.date IS NULL OR t.date <= ?{param_idx})");
-        param_values.push(Box::new(date.to_string()));
+        param_values.push(Box::new(to.to_string()));
         let _ = param_idx;
     }
 
@@ -264,9 +280,9 @@ pub fn compute_trial_balance(
 
 /// Computes the debit and credit totals for a single account.
 ///
-/// Returns `(debit_total, credit_total)` in minor units. If an `as_of` date
-/// is provided, only entries from transactions on or before that date are
-/// included.
+/// Returns `(debit_total, credit_total)` in minor units. If a date range
+/// is provided, only entries from transactions within that range (inclusive)
+/// are included.
 ///
 /// # Errors
 ///
@@ -275,19 +291,44 @@ pub fn compute_account_balance(
     conn: &Connection,
     company_slug: &str,
     code: &str,
-    as_of: Option<&str>,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
 ) -> Result<(i64, i64), CliError> {
-    if let Some(date) = as_of {
-        let row = conn.query_row(
+    let has_date_filter = from_date.is_some() || to_date.is_some();
+
+    if has_date_filter {
+        let mut sql = String::from(
             "SELECT \
                 COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
                 COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
              FROM entries e \
              JOIN transactions t ON t.id = e.transaction_id \
-             WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.date <= ?3",
-            params![company_slug, code, date],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+             WHERE e.company_slug = ?1 AND e.account_code = ?2",
+        );
+
+        let mut param_idx = 3u32;
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        param_values.push(Box::new(company_slug.to_string()));
+        param_values.push(Box::new(code.to_string()));
+
+        if let Some(from) = from_date {
+            let _ = write!(sql, " AND t.date >= ?{param_idx}");
+            param_values.push(Box::new(from.to_string()));
+            param_idx += 1;
+        }
+
+        if let Some(to) = to_date {
+            let _ = write!(sql, " AND t.date <= ?{param_idx}");
+            param_values.push(Box::new(to.to_string()));
+            let _ = param_idx;
+        }
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(AsRef::as_ref).collect();
+
+        let row = conn.query_row(&sql, params_refs.as_slice(), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
         Ok(row)
     } else {
         let row = conn.query_row(
@@ -406,6 +447,7 @@ mod tests {
             entries: &entries,
             correlate: None,
             reference: None,
+            on_conflict: transactions::ConflictStrategy::Error,
         };
         post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
     }
@@ -413,7 +455,7 @@ mod tests {
     #[test]
     fn trial_balance_empty() {
         let db = setup();
-        let balances = compute_trial_balance(db.conn(), "acme", None, None).unwrap_or_default();
+        let balances = compute_trial_balance(db.conn(), "acme", None, None, None).unwrap_or_default();
         // All 3 accounts with zero balances
         assert_eq!(balances.len(), 3);
         for b in &balances {
@@ -427,7 +469,7 @@ mod tests {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
 
-        let balances = compute_trial_balance(db.conn(), "acme", None, None).unwrap_or_default();
+        let balances = compute_trial_balance(db.conn(), "acme", None, None, None).unwrap_or_default();
         assert_eq!(balances.len(), 3);
 
         let cash = balances.iter().find(|b| b.code == "1000");
@@ -449,7 +491,7 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
 
         let balances =
-            compute_trial_balance(db.conn(), "acme", Some("asset"), None).unwrap_or_default();
+            compute_trial_balance(db.conn(), "acme", Some("asset"), None, None).unwrap_or_default();
         assert_eq!(balances.len(), 1);
         assert_eq!(balances[0].code, "1000");
     }
@@ -461,7 +503,7 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
 
         let balances =
-            compute_trial_balance(db.conn(), "acme", None, Some("2024-01-31")).unwrap_or_default();
+            compute_trial_balance(db.conn(), "acme", None, None, Some("2024-01-31")).unwrap_or_default();
 
         let cash = balances.iter().find(|b| b.code == "1000");
         assert!(cash.is_some());
@@ -472,7 +514,7 @@ mod tests {
     #[test]
     fn account_balance_empty() {
         let db = setup();
-        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None).unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None, None).unwrap_or((0, 0));
         assert_eq!(dr, 0);
         assert_eq!(cr, 0);
     }
@@ -483,7 +525,7 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None).unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None, None).unwrap_or((0, 0));
         assert_eq!(dr, 8000);
         assert_eq!(cr, 0);
     }
@@ -494,9 +536,35 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", Some("2024-01-31"))
+        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None, Some("2024-01-31"))
             .unwrap_or((0, 0));
         assert_eq!(dr, 5000);
         assert_eq!(cr, 0);
+    }
+
+    #[test]
+    fn account_balance_with_date_range() {
+        let db = setup();
+        post_sample(&db, "2024-01-15", 5000);
+        post_sample(&db, "2024-02-15", 3000);
+        post_sample(&db, "2024-03-15", 2000);
+
+        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", Some("2024-02-01"), Some("2024-02-29"))
+            .unwrap_or((0, 0));
+        assert_eq!(dr, 3000);
+        assert_eq!(cr, 0);
+    }
+
+    #[test]
+    fn trial_balance_with_date_range() {
+        let db = setup();
+        post_sample(&db, "2024-01-15", 5000);
+        post_sample(&db, "2024-02-15", 3000);
+        post_sample(&db, "2024-03-15", 2000);
+
+        let balances = compute_trial_balance(db.conn(), "acme", None, Some("2024-02-01"), Some("2024-02-29"))
+            .unwrap_or_default();
+        let cash = balances.iter().find(|b| b.code == "1000").unwrap();
+        assert_eq!(cash.debit_total, 3000);
     }
 }
