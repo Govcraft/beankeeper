@@ -44,6 +44,7 @@ Posted transactions cannot be edited or deleted. The entries, amounts, accounts,
 - **Tax category tagging** -- per-entry or account-level defaults, free-form strings mapping to any tax form lines you need
 - **Encryption at rest** -- SQLCipher baked in from the start, not bolted on
 - **Intercompany linking** -- mirror transactions across entities stay paired through bidirectional correlation IDs; `bk txn reconcile` catches orphans
+- **Budgeting and variance analysis** -- set monthly or annual spending/revenue targets per account, then run `bk report budget-variance` to see where actuals land relative to the plan
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
 
@@ -101,6 +102,10 @@ bk --company personal report trial-balance --from 2026-01-01 --to 2026-03-31
 bk --company personal report balance --account 1000 --to 2026-03-31
 bk --company personal report balance-sheet --to 2026-03-31
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
+
+# Set a budget and compare against actuals
+bk --company personal budget set 5000 --year 2026 --annual 14400
+bk --company personal report budget-variance --year 2026
 ```
 
 ## Demo Mode
@@ -144,9 +149,6 @@ bk --company personal report trial-balance --from 2024-01-01 --to 2024-03-31
 # Balance as of a specific date
 bk --company personal report balance --account 1000 --to 2024-03-16
 ```
-
-## Demo Mode
-
 
 Beyond the core guarantees above, `bk` provides the following capabilities for multi-entity accounting, automation, and reporting.
 
@@ -361,6 +363,37 @@ bk --company personal txn clear 42 --entry 5 --status reconciled
 
 Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
 
+### Budgeting and Variance Analysis
+
+Set spending targets per account, then compare budgeted amounts to actual activity:
+
+```sh
+# Set an annual budget (evenly distributed across 12 months)
+bk --company personal budget set 5000 --year 2026 --annual 14400 --notes "Monthly rent"
+
+# Set a single month's budget
+bk --company personal budget set 4000 --year 2026 --month 12 --amount 8000
+
+# List all budgets for a year
+bk --company personal budget list --year 2026
+
+# Budget vs. actual for the full year
+bk --company personal report budget-variance --year 2026
+
+# Q1 expenses only
+bk --company personal report budget-variance --year 2026 --from 1 --to 3 --type expense
+
+# Include accounts that have actual spending but no budget set
+bk --company personal report budget-variance --year 2026 --include-unbudgeted
+```
+
+Variance logic:
+- **Expense accounts**: variance = budget - actual (positive = favorable, underspent)
+- **Revenue accounts**: variance = actual - budget (positive = favorable, exceeded target)
+- Status labels: `FAV`, `UNFAV`, `ON BUDGET`
+
+Annual budgets are split exactly across 12 months -- any remainder cents are distributed to the earliest months so the total is precise.
+
 ### JSON Envelope
 
 All JSON output follows a uniform envelope contract for reliable programmatic consumption by agents and scripts:
@@ -415,6 +448,18 @@ bk init --encrypt
 export BEANKEEPER_PASSPHRASE_CMD="op read op://Vault/beankeeper/passphrase"
 bk --company personal report trial-balance
 ```
+
+## Agent Skill
+
+The [`docs/beankeeper/`](docs/beankeeper/) directory contains a portable agent skill that teaches any LLM agent how to operate `bk`. It includes:
+
+- **`SKILL.md`** -- core concepts, command overview, essential workflows
+- **`references/commands.md`** -- full CLI reference with all flags and examples
+- **`references/json-api.md`** -- JSON envelope format and response schemas
+- **`references/accounting.md`** -- double-entry accounting fundamentals
+- **`references/workflows.md`** -- multi-step recipes for common bookkeeping tasks
+
+Point your agent framework's skill loader at the `docs/beankeeper/` directory, or copy it into your plugin/agent configuration.
 
 ## Library
 
@@ -529,7 +574,7 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- proper error handling everywhere
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
 - Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
-- 415+ tests covering unit, integration, and real-world accounting scenarios
+- 440+ tests covering unit, integration, and real-world accounting scenarios
 
 ## License
 
