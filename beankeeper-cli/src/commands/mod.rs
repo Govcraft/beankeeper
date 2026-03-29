@@ -1,4 +1,5 @@
 pub mod account;
+pub mod budget;
 pub mod company;
 pub mod export;
 pub mod import_ofx;
@@ -8,7 +9,8 @@ pub mod txn;
 pub mod verify;
 
 use crate::cli::{
-    AccountCommand, Cli, Command, CompanyCommand, ReportCommand, TxnCommand, require_company,
+    AccountCommand, BudgetCommand, Cli, Command, CompanyCommand, ReportCommand, TxnCommand,
+    require_company,
 };
 use crate::error::CliError;
 use crate::output::json::Meta;
@@ -32,6 +34,11 @@ pub fn command_name(cmd: &Command) -> &'static str {
             AccountCommand::Show { .. } => "account.show",
             AccountCommand::Delete { .. } => "account.delete",
         },
+        Command::Budget(args) => match &args.command {
+            BudgetCommand::Set { .. } => "budget.set",
+            BudgetCommand::List { .. } => "budget.list",
+            BudgetCommand::Delete { .. } => "budget.delete",
+        },
         Command::Txn(args) => match args.command.as_ref() {
             TxnCommand::Post { .. } => "txn.post",
             TxnCommand::List { .. } => "txn.list",
@@ -47,6 +54,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             ReportCommand::IncomeStatement { .. } => "report.income-statement",
             ReportCommand::BalanceSheet { .. } => "report.balance-sheet",
             ReportCommand::TaxSummary { .. } => "report.tax-summary",
+            ReportCommand::BudgetVariance { .. } => "report.budget-variance",
         },
     }
 }
@@ -84,6 +92,11 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
                 let company = require_company(cli)?;
                 txn::run(cli, &company, args.command.as_ref(), meta)
             }
+        }
+
+        Command::Budget(args) => {
+            let company = require_company(cli)?;
+            budget::run(cli, &company, &args.command)
         }
 
         Command::Report(args) => {

@@ -706,6 +706,140 @@ pub fn render_import_result(
     )
 }
 
+// ---------------------------------------------------------------------------
+// Budgets
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct BudgetJson {
+    id: i64,
+    account_code: String,
+    currency: String,
+    year: i32,
+    month: i32,
+    amount: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+    created_at: String,
+}
+
+/// Render budget rows as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_budgets(
+    rows: &[crate::db::BudgetRow],
+    meta: Meta,
+) -> Result<String, CliError> {
+    let json_rows: Vec<BudgetJson> = rows
+        .iter()
+        .map(|r| BudgetJson {
+            id: r.id,
+            account_code: r.account_code.clone(),
+            currency: r.currency.clone(),
+            year: r.year,
+            month: r.month,
+            amount: r.amount,
+            notes: r.notes.clone(),
+            created_at: r.created_at.clone(),
+        })
+        .collect();
+
+    envelope_ok(meta, json_rows)
+}
+
+#[derive(Serialize)]
+struct BudgetVarianceJson {
+    code: String,
+    name: String,
+    account_type: String,
+    budget: i64,
+    actual: i64,
+    variance: i64,
+    variance_percent: Option<f64>,
+    favorable: bool,
+}
+
+#[derive(Serialize)]
+struct BudgetVarianceTotals {
+    budget: i64,
+    actual: i64,
+}
+
+#[derive(Serialize)]
+struct BudgetVarianceData {
+    year: i32,
+    from_month: i32,
+    to_month: i32,
+    currency: String,
+    lines: Vec<BudgetVarianceJson>,
+    totals: BudgetVarianceTotals,
+}
+
+/// Render a budget-variance report as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_budget_variance(
+    rows: &[crate::db::BudgetVarianceRow],
+    year: i32,
+    from_month: i32,
+    to_month: i32,
+    currency: &str,
+    meta: Meta,
+) -> Result<String, CliError> {
+    let mut total_budget: i64 = 0;
+    let mut total_actual: i64 = 0;
+
+    let lines: Vec<BudgetVarianceJson> = rows
+        .iter()
+        .map(|r| {
+            total_budget = total_budget.saturating_add(r.budget_amount);
+            total_actual = total_actual.saturating_add(r.actual_amount);
+            BudgetVarianceJson {
+                code: r.code.clone(),
+                name: r.name.clone(),
+                account_type: r.account_type.clone(),
+                budget: r.budget_amount,
+                actual: r.actual_amount,
+                variance: r.variance_amount,
+                variance_percent: r.variance_percent,
+                favorable: r.favorable,
+            }
+        })
+        .collect();
+
+    envelope_ok(
+        meta,
+        BudgetVarianceData {
+            year,
+            from_month,
+            to_month,
+            currency: currency.to_string(),
+            lines,
+            totals: BudgetVarianceTotals {
+                budget: total_budget,
+                actual: total_actual,
+            },
+        },
+    )
+}
+
+/// Render a budget deletion confirmation as an enveloped JSON response.
+///
+/// # Errors
+///
+/// Returns [`CliError`] on serialisation failure.
+pub fn render_budget_deleted(count: usize, meta: Meta) -> Result<String, CliError> {
+    #[derive(Serialize)]
+    struct BudgetDeletedJson {
+        deleted: usize,
+    }
+    envelope_ok(meta, BudgetDeletedJson { deleted: count })
+}
+
 // Tests
 // ---------------------------------------------------------------------------
 

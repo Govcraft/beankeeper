@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 6;
+const CURRENT_VERSION: i64 = 7;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -63,6 +63,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 6 {
         apply_v6(conn)?;
+    }
+
+    if version < 7 {
+        apply_v7(conn)?;
     }
 
     debug_assert_eq!(
@@ -242,6 +246,40 @@ fn apply_v6(conn: &Connection) -> Result<(), CliError> {
     conn.execute(
         "INSERT INTO schema_version (version) VALUES (?1)",
         params![6],
+    )?;
+
+    Ok(())
+}
+
+/// Applies the v7 migration: adds `budgets` table for budgeting and variance analysis.
+fn apply_v7(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS budgets (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_slug TEXT    NOT NULL REFERENCES companies(slug),
+            account_code TEXT    NOT NULL,
+            currency     TEXT    NOT NULL DEFAULT 'USD',
+            year         INTEGER NOT NULL,
+            month        INTEGER NOT NULL CHECK(month >= 1 AND month <= 12),
+            amount       INTEGER NOT NULL CHECK(amount >= 0),
+            notes        TEXT,
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (company_slug, account_code) REFERENCES accounts(company_slug, code),
+            UNIQUE (company_slug, account_code, currency, year, month)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_budgets_company_year
+            ON budgets(company_slug, year);
+
+        CREATE INDEX IF NOT EXISTS idx_budgets_company_account
+            ON budgets(company_slug, account_code);
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        params![7],
     )?;
 
     Ok(())
@@ -444,6 +482,47 @@ mod tests {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'attachments'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn v7_migration_adds_budgets_table() {
+        let conn = open_conn();
+        // Apply v1 through v6
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
+        apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
+        apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(6));
+
+        // Now run ensure_schema which should apply v7
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        // Verify budgets table exists
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'budgets'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn budgets_table_exists() {
+        let conn = open_conn();
+        assert!(ensure_schema(&conn).is_ok());
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'budgets'",
                 [],
                 |row| row.get(0),
             )

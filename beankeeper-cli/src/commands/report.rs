@@ -72,6 +72,28 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
+        ReportCommand::BudgetVariance {
+            year,
+            month,
+            from,
+            to,
+            account_type,
+            currency,
+            include_unbudgeted,
+        } => run_budget_variance(
+            cli,
+            &db,
+            company,
+            *year,
+            *month,
+            *from,
+            *to,
+            account_type.as_ref(),
+            currency,
+            *include_unbudgeted,
+            format,
+            use_color,
+        ),
     }
 }
 
@@ -599,4 +621,110 @@ fn run_tax_summary(
     }
 
     Ok(())
+}
+
+/// Execute the `report budget-variance` subcommand.
+#[allow(clippy::too_many_arguments)]
+fn run_budget_variance(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    year: i32,
+    month: Option<i32>,
+    from: Option<i32>,
+    to: Option<i32>,
+    account_type: Option<&AccountTypeArg>,
+    currency_code: &str,
+    include_unbudgeted: bool,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    // Resolve month range
+    let (from_month, to_month) = if let Some(m) = month {
+        if !(1..=12).contains(&m) {
+            return Err(CliError::Validation(format!("month must be 1-12, got {m}")));
+        }
+        (m, m)
+    } else {
+        let f = from.unwrap_or(1);
+        let t = to.unwrap_or(12);
+        if !(1..=12).contains(&f) || !(1..=12).contains(&t) {
+            return Err(CliError::Validation(
+                "from/to months must be 1-12".to_string(),
+            ));
+        }
+        if f > t {
+            return Err(CliError::Validation(format!(
+                "from month ({f}) must be <= to month ({t})"
+            )));
+        }
+        (f, t)
+    };
+
+    let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
+    let currency = Currency::from_code(currency_code)
+        .map_err(|_| CliError::Validation(format!("unknown currency: {currency_code}")))?;
+    let minor_units = currency.minor_units();
+
+    let rows = db::compute_budget_variance(
+        db.conn(),
+        &db::BudgetVarianceParams {
+            company_slug: company,
+            currency: currency_code,
+            year,
+            from_month,
+            to_month,
+            account_type: type_filter.as_deref(),
+            include_unbudgeted,
+        },
+    )?;
+
+    match format {
+        OutputFormat::Table => {
+            let title = build_variance_title(currency_code, year, from_month, to_month);
+            let rendered =
+                output::table::render_budget_variance(&rows, &title, minor_units, use_color);
+            println!("{rendered}");
+        }
+        OutputFormat::Json => {
+            let meta = output::json::meta("report.budget-variance", Some(company));
+            let rendered = output::json::render_budget_variance(
+                &rows,
+                year,
+                from_month,
+                to_month,
+                currency_code,
+                meta,
+            )?;
+            println!("{rendered}");
+        }
+        OutputFormat::Csv => {
+            let rendered = output::csv::render_budget_variance(&rows)?;
+            print!("{rendered}");
+        }
+    }
+
+    if !cli.verbosity.quiet {
+        eprintln!("[ok] budget variance generated ({} accounts)", rows.len());
+    }
+
+    Ok(())
+}
+
+/// Build a title for the budget-variance report.
+fn build_variance_title(currency: &str, year: i32, from_month: i32, to_month: i32) -> String {
+    static MONTH_NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    let from_name = MONTH_NAMES[(from_month - 1) as usize];
+    let to_name = MONTH_NAMES[(to_month - 1) as usize];
+
+    if from_month == to_month {
+        format!("Budget vs. Actual -- {year} {from_name} ({currency})")
+    } else if from_month == 1 && to_month == 12 {
+        format!("Budget vs. Actual -- {year} ({currency})")
+    } else {
+        format!("Budget vs. Actual -- {year} {from_name}-{to_name} ({currency})")
+    }
 }

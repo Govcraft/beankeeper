@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod attachments;
+pub mod budgets;
 pub mod companies;
 pub mod connection;
 pub mod schema;
@@ -10,6 +11,10 @@ pub mod transactions;
 pub use accounts::{
     ListAccountParams, account_exists, create_account, delete_account, get_account,
     list_account_codes, list_accounts, row_to_account,
+};
+pub use budgets::{
+    BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,
+    compute_budget_variance, delete_budget, list_budgets, set_annual_budget, set_budget,
 };
 pub use attachments::{
     AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
@@ -79,6 +84,33 @@ pub struct EntryRow {
     pub memo: Option<String>,
     pub tax_category: Option<String>,
     pub status: String,
+}
+
+/// A row from the `budgets` table.
+#[derive(Debug, Clone)]
+pub struct BudgetRow {
+    pub id: i64,
+    pub company_slug: String,
+    pub account_code: String,
+    pub currency: String,
+    pub year: i32,
+    pub month: i32,
+    pub amount: i64,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+/// A computed row for the budget-variance report.
+#[derive(Debug, Clone)]
+pub struct BudgetVarianceRow {
+    pub code: String,
+    pub name: String,
+    pub account_type: String,
+    pub budget_amount: i64,
+    pub actual_amount: i64,
+    pub variance_amount: i64,
+    pub variance_percent: Option<f64>,
+    pub favorable: bool,
 }
 
 /// Aggregated totals per tax category, used in the tax summary report.

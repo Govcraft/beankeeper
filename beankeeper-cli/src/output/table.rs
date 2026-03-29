@@ -5,8 +5,8 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 
 use crate::db::{
-    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow,
-    TransactionRow,
+    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceRow,
+    CompanyRow, EntryRow, TransactionRow,
 };
 
 // ---------------------------------------------------------------------------
@@ -622,6 +622,145 @@ pub fn render_tax_summary(
     lines.push(format!(
         "\n{count} tax {noun}",
         noun = if count == 1 { "category" } else { "categories" }
+    ));
+
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// Budget tables
+// ---------------------------------------------------------------------------
+
+static MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Render budget rows as a table.
+#[must_use]
+pub fn render_budgets(rows: &[BudgetRow], currency_minor_units: u8, use_color: bool) -> String {
+    if rows.is_empty() {
+        return "No budgets found.".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push(styled("Budgets", bold_style(), use_color));
+    lines.push(String::new());
+
+    let mut table = new_table();
+    table.set_header(vec![
+        Cell::new(styled("Account", bold_style(), use_color)),
+        Cell::new(styled("Year", bold_style(), use_color)),
+        Cell::new(styled("Month", bold_style(), use_color)),
+        Cell::new(styled("Amount", bold_style(), use_color)),
+        Cell::new(styled("Currency", bold_style(), use_color)),
+        Cell::new(styled("Notes", bold_style(), use_color)),
+    ]);
+
+    for row in rows {
+        let month_idx = usize::try_from(row.month - 1).unwrap_or(0);
+        let month_name = MONTH_NAMES.get(month_idx).unwrap_or(&"?");
+        table.add_row(vec![
+            Cell::new(styled(&row.account_code, cyan_style(), use_color)),
+            Cell::new(row.year.to_string()),
+            Cell::new(format!("{} ({})", month_name, row.month)),
+            Cell::new(format_amount(row.amount, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(&row.currency),
+            Cell::new(row.notes.as_deref().unwrap_or("")),
+        ]);
+    }
+
+    lines.push(table.to_string());
+
+    let count = rows.len();
+    lines.push(format!(
+        "\n{count} budget {noun}",
+        noun = if count == 1 { "entry" } else { "entries" }
+    ));
+
+    lines.join("\n")
+}
+
+/// Render a budget-variance report as a table.
+#[must_use]
+pub fn render_budget_variance(
+    rows: &[BudgetVarianceRow],
+    title: &str,
+    currency_minor_units: u8,
+    use_color: bool,
+) -> String {
+    if rows.is_empty() {
+        return "No budget data found for this period.".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push(styled(title, bold_style(), use_color));
+    lines.push(String::new());
+
+    let mut table = new_table();
+    table.set_header(vec![
+        Cell::new(styled("Code", bold_style(), use_color)),
+        Cell::new(styled("Account", bold_style(), use_color)),
+        Cell::new(styled("Type", bold_style(), use_color)),
+        Cell::new(styled("Budget", bold_style(), use_color)),
+        Cell::new(styled("Actual", bold_style(), use_color)),
+        Cell::new(styled("Variance", bold_style(), use_color)),
+        Cell::new(styled("%", bold_style(), use_color)),
+        Cell::new(styled("Status", bold_style(), use_color)),
+    ]);
+
+    let mut total_budget: i64 = 0;
+    let mut total_actual: i64 = 0;
+
+    for row in rows {
+        total_budget = total_budget.saturating_add(row.budget_amount);
+        total_actual = total_actual.saturating_add(row.actual_amount);
+
+        let pct_str = match row.variance_percent {
+            Some(p) => format!("{p:.1}%"),
+            None => "--".to_string(),
+        };
+
+        let status = if row.variance_amount == 0 {
+            "ON BUDGET"
+        } else if row.favorable {
+            "FAV"
+        } else {
+            "UNFAV"
+        };
+
+        let status_style = if row.variance_amount == 0 {
+            bold_style()
+        } else if row.favorable {
+            green_style()
+        } else {
+            red_bold_style()
+        };
+
+        table.add_row(vec![
+            Cell::new(styled(&row.code, cyan_style(), use_color)),
+            Cell::new(&row.name),
+            Cell::new(capitalize_first(&row.account_type)),
+            Cell::new(format_amount(row.budget_amount, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(format_amount(row.actual_amount, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(format_amount(row.variance_amount, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(&pct_str).set_alignment(CellAlignment::Right),
+            Cell::new(styled(status, status_style, use_color)),
+        ]);
+    }
+
+    lines.push(table.to_string());
+    lines.push(String::new());
+
+    let budget_str = format_amount(total_budget, currency_minor_units);
+    let actual_str = format_amount(total_actual, currency_minor_units);
+    lines.push(format!(
+        "Totals:  Budget {b}  Actual {a}",
+        b = styled(&budget_str, bold_style(), use_color),
+        a = styled(&actual_str, bold_style(), use_color),
     ));
 
     lines.join("\n")

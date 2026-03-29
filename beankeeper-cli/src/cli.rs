@@ -186,6 +186,9 @@ EXAMPLES:\n  \
     /// Record and query transactions.
     Txn(TxnArgs),
 
+    /// Set and manage budgets.
+    Budget(BudgetArgs),
+
     /// Generate financial reports.
     Report(ReportArgs),
 }
@@ -264,6 +267,137 @@ pub struct ReportArgs {
     /// Company slug.
     #[arg(long, global = true)]
     pub company: Option<String>,
+}
+
+/// Arguments for budget commands.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "\
+EXAMPLES:\n  \
+    Set a monthly budget:\n    \
+    $ bk --company acme budget set 5000 --year 2026 --month 3 --amount 2500\n\
+    \n  \
+    Set an annual budget (distributed evenly across 12 months):\n    \
+    $ bk --company acme budget set 5000 --year 2026 --annual 30000\n\
+    \n  \
+    List all budgets for a year:\n    \
+    $ bk --company acme budget list --year 2026\
+"
+)]
+pub struct BudgetArgs {
+    #[command(subcommand)]
+    pub command: BudgetCommand,
+
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Budget subcommands.
+#[derive(Subcommand, Debug)]
+pub enum BudgetCommand {
+    /// Set (create or update) a budget for an account.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Set a monthly budget for rent:\n    \
+    $ bk --company acme budget set 5000 --year 2026 --month 3 --amount 2500\n\
+    \n  \
+    Set an annual budget distributed across 12 months:\n    \
+    $ bk --company acme budget set 5000 --year 2026 --annual 30000\n\
+    \n  \
+    Set with a note and specific currency:\n    \
+    $ bk --company acme budget set 5000 --year 2026 --annual 30000 --currency MXN --notes \"Office lease\"\
+")]
+    Set {
+        /// Account code to budget.
+        account: String,
+
+        /// Budget year (e.g. 2026).
+        #[arg(long)]
+        year: i32,
+
+        /// Budget month (1-12). Use with --amount. Mutually exclusive with --annual.
+        #[arg(long, requires = "amount", conflicts_with = "annual")]
+        month: Option<i32>,
+
+        /// Budget amount in major units (e.g. dollars). Required with --month.
+        #[arg(long, conflicts_with = "annual")]
+        amount: Option<String>,
+
+        /// Annual budget in major units, distributed evenly across 12 months.
+        /// Mutually exclusive with --month/--amount.
+        #[arg(long, conflicts_with_all = ["month", "amount"])]
+        annual: Option<String>,
+
+        /// Currency code (default: USD or BEANKEEPER_CURRENCY).
+        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+        currency: String,
+
+        /// Optional note for the budget line.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+
+    /// List budgets.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    List all budgets for a year:\n    \
+    $ bk --company acme budget list --year 2026\n\
+    \n  \
+    List budgets for a specific account:\n    \
+    $ bk --company acme budget list --year 2026 --account 5000\n\
+    \n  \
+    List budgets for a specific month:\n    \
+    $ bk --company acme budget list --year 2026 --month 3\
+")]
+    List {
+        /// Budget year.
+        #[arg(long)]
+        year: i32,
+
+        /// Filter by account code.
+        #[arg(long)]
+        account: Option<String>,
+
+        /// Filter by month (1-12).
+        #[arg(long)]
+        month: Option<i32>,
+    },
+
+    /// Delete budget entries for an account.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Delete all months for an account in a year:\n    \
+    $ bk --company acme budget delete 5000 --year 2026\n\
+    \n  \
+    Delete a single month:\n    \
+    $ bk --company acme budget delete 5000 --year 2026 --month 3\n\
+    \n  \
+    Delete without confirmation:\n    \
+    $ bk --company acme budget delete 5000 --year 2026 --force\
+")]
+    Delete {
+        /// Account code.
+        account: String,
+
+        /// Budget year.
+        #[arg(long)]
+        year: i32,
+
+        /// Specific month to delete (1-12). Omit to delete all months.
+        #[arg(long)]
+        month: Option<i32>,
+
+        /// Currency code.
+        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+        currency: String,
+
+        /// Skip confirmation prompt.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Company subcommands.
@@ -844,6 +978,51 @@ EXAMPLES:\n  \
         #[arg(long)]
         to: Option<String>,
     },
+
+    /// Compare budgeted amounts to actual spending/revenue.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Budget variance for the full year:\n    \
+    $ bk --company acme report budget-variance --year 2026\n\
+    \n  \
+    Single month:\n    \
+    $ bk --company acme report budget-variance --year 2026 --month 3\n\
+    \n  \
+    First half of the year, expenses only:\n    \
+    $ bk --company acme report budget-variance --year 2026 --from 1 --to 6 --type expense\n\
+    \n  \
+    Include accounts that have no budget set:\n    \
+    $ bk --company acme report budget-variance --year 2026 --include-unbudgeted\
+")]
+    BudgetVariance {
+        /// Budget year.
+        #[arg(long)]
+        year: i32,
+
+        /// Single month (1-12). Mutually exclusive with --from/--to.
+        #[arg(long, conflicts_with_all = ["from", "to"])]
+        month: Option<i32>,
+
+        /// Start month (1-12, inclusive). Defaults to 1.
+        #[arg(long)]
+        from: Option<i32>,
+
+        /// End month (1-12, inclusive). Defaults to 12.
+        #[arg(long)]
+        to: Option<i32>,
+
+        /// Filter by account type.
+        #[arg(long = "type", value_enum)]
+        account_type: Option<AccountTypeArg>,
+
+        /// Currency code.
+        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+        currency: String,
+
+        /// Include accounts with actuals but no budget.
+        #[arg(long)]
+        include_unbudgeted: bool,
+    },
 }
 
 /// Output format for general commands.
@@ -979,6 +1158,7 @@ pub fn require_company(cli: &Cli) -> Result<String, CliError> {
     let cmd_company = match &cli.command {
         Command::Account(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),
+        Command::Budget(args) => args.company.as_ref(),
         Command::Report(args) => args.company.as_ref(),
         _ => None,
     };

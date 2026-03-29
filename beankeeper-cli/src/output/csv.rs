@@ -301,6 +301,104 @@ pub fn render_tax_summary(rows: &[crate::db::TaxSummaryRow]) -> Result<String, C
 }
 
 // ---------------------------------------------------------------------------
+// Budgets
+// ---------------------------------------------------------------------------
+
+/// Render budget rows as CSV.
+///
+/// Columns: `account_code`, `currency`, `year`, `month`, `amount`, `notes`
+///
+/// # Errors
+///
+/// Returns `CliError::General` if CSV serialisation fails.
+pub fn render_budgets(rows: &[crate::db::BudgetRow]) -> Result<String, CliError> {
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    wtr.write_record(["account_code", "currency", "year", "month", "amount", "notes"])
+        .map_err(|e| csv_err(&e))?;
+
+    for r in rows {
+        let year = r.year.to_string();
+        let month = r.month.to_string();
+        let amount = r.amount.to_string();
+        let notes = r.notes.as_deref().unwrap_or("");
+        wtr.write_record([
+            r.account_code.as_str(),
+            r.currency.as_str(),
+            year.as_str(),
+            month.as_str(),
+            amount.as_str(),
+            notes,
+        ])
+        .map_err(|e| csv_err(&e))?;
+    }
+
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
+}
+
+/// Render a budget-variance report as CSV.
+///
+/// Columns: `code`, `name`, `type`, `budget`, `actual`, `variance`,
+///          `variance_percent`, `status`
+///
+/// # Errors
+///
+/// Returns `CliError::General` if CSV serialisation fails.
+pub fn render_budget_variance(
+    rows: &[crate::db::BudgetVarianceRow],
+) -> Result<String, CliError> {
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    wtr.write_record([
+        "code",
+        "name",
+        "type",
+        "budget",
+        "actual",
+        "variance",
+        "variance_percent",
+        "status",
+    ])
+    .map_err(|e| csv_err(&e))?;
+
+    for r in rows {
+        let budget = r.budget_amount.to_string();
+        let actual = r.actual_amount.to_string();
+        let variance = r.variance_amount.to_string();
+        let pct = match r.variance_percent {
+            Some(p) => format!("{p:.1}"),
+            None => String::new(),
+        };
+        let status = if r.variance_amount == 0 {
+            "ON BUDGET"
+        } else if r.favorable {
+            "FAV"
+        } else {
+            "UNFAV"
+        };
+        wtr.write_record([
+            r.code.as_str(),
+            r.name.as_str(),
+            r.account_type.as_str(),
+            budget.as_str(),
+            actual.as_str(),
+            variance.as_str(),
+            pct.as_str(),
+            status,
+        ])
+        .map_err(|e| csv_err(&e))?;
+    }
+
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

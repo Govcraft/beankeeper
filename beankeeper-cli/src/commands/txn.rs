@@ -261,7 +261,7 @@ fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64, Option<S
 /// - `50` -> 50 dollars -> 5000 cents (for USD, 2 minor units)
 /// - `50.00` -> 50 dollars -> 5000 cents
 /// - `0.50` -> 0.50 dollars -> 50 cents
-fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, CliError> {
+pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, CliError> {
     let minor_units = currency.minor_units();
     let multiplier = 10i64.pow(u32::from(minor_units));
 
@@ -715,7 +715,9 @@ fn run_clear(
                 "status": status_str
             }
         });
-        println!("{}", serde_json::to_string(&rendered).unwrap());
+        let json = serde_json::to_string(&rendered)
+            .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
+        println!("{json}");
     }
 
     if !cli.verbosity.quiet {
