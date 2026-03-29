@@ -71,6 +71,12 @@ cargo install --git https://github.com/Govcraft/beankeeper beankeeper-cli
 # Create a database
 bk init
 
+# Create at a specific path
+bk init --path /data/books.db
+
+# Create an encrypted database (prompts for passphrase)
+bk init --encrypt
+
 # Set up companies
 bk company create personal "Personal Finances" --description "Day-to-day expenses"
 bk company create govcraft "GovCraft LLC" --description "Consulting entity"
@@ -332,9 +338,14 @@ bk --company personal report trial-balance --json | jq '.data.accounts[] | selec
 # CSV for spreadsheets
 bk --company personal txn list --format csv > transactions.csv
 
+# Export entire database (all companies) to JSON
+bk export --json > backup.json
+
 # Machine-readable for scripts (exit codes: 0=ok, 3=validation error)
 bk txn reconcile --json || echo "Orphaned correlations found"
 ```
+
+> **Note:** Global flags like `--company` are ignored by commands that always operate database-wide, such as `export`, `reconcile`, `verify`, and `init`.
 
 ### JSON Envelope
 

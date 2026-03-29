@@ -47,7 +47,8 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
             account_type,
             name,
             with_balances,
-            as_of,
+            from,
+            to,
         } => {
             let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
 
@@ -57,8 +58,8 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
                     company,
                     type_filter.as_deref(),
                     name.as_deref(),
-                    None,
-                    as_of.as_deref(),
+                    from.as_deref(),
+                    to.as_deref(),
                 )?;
                 render_accounts_with_balances(&rows, company, format, use_color)?;
                 if !cli.verbosity.quiet {

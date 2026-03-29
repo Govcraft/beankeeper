@@ -29,7 +29,7 @@ pub struct Cli {
     pub db: PathBuf,
 
     /// Company slug.
-    #[arg(long, global = true, env = "BEANKEEPER_COMPANY")]
+    #[arg(long, env = "BEANKEEPER_COMPANY")]
     pub company: Option<String>,
 
     /// Output format options.
@@ -181,9 +181,21 @@ EXAMPLES:\n  \
     Company(CompanyCommand),
 
     /// Manage chart of accounts.
-    #[command(
-        subcommand,
-        after_help = "\
+    Account(AccountArgs),
+
+    /// Record and query transactions.
+    Txn(TxnArgs),
+
+    /// Generate financial reports.
+    Report(ReportArgs),
+}
+
+/// Arguments for account commands.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "\
 EXAMPLES:\n  \
     Set up a basic chart of accounts:\n    \
     $ bk --company acme account create 1000 \"Cash\" --type asset\n    \
@@ -192,13 +204,22 @@ EXAMPLES:\n  \
     List all expense accounts with balances:\n    \
     $ bk --company acme account list --type expense --with-balances\
 "
-    )]
-    Account(AccountCommand),
+)]
+pub struct AccountArgs {
+    #[command(subcommand)]
+    pub command: AccountCommand,
 
-    /// Record and query transactions.
-    #[command(
-        subcommand,
-        after_help = "\
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Arguments for transaction commands.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "\
 EXAMPLES:\n  \
     Post a simple transaction:\n    \
     $ bk --company acme txn post -d \"Office rent\" --debit 5000:2500 --credit 1000:2500\n\
@@ -209,13 +230,22 @@ EXAMPLES:\n  \
     View a transaction with its entries:\n    \
     $ bk --company acme txn show 42\
 "
-    )]
-    Txn(Box<TxnCommand>),
+)]
+pub struct TxnArgs {
+    #[command(subcommand)]
+    pub command: Box<TxnCommand>,
 
-    /// Generate financial reports.
-    #[command(
-        subcommand,
-        after_help = "\
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Arguments for report commands.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "\
 EXAMPLES:\n  \
     Generate a trial balance as of today:\n    \
     $ bk --company acme report trial-balance\n\
@@ -226,8 +256,14 @@ EXAMPLES:\n  \
     Export a balance sheet as JSON:\n    \
     $ bk --company acme report balance-sheet --json\
 "
-    )]
-    Report(ReportCommand),
+)]
+pub struct ReportArgs {
+    #[command(subcommand)]
+    pub command: ReportCommand,
+
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
 }
 
 /// Company subcommands.
@@ -349,8 +385,8 @@ EXAMPLES:\n  \
     List only asset accounts:\n    \
     $ bk --company acme account list --type asset\n\
     \n  \
-    Search by name and include balances as of a date:\n    \
-    $ bk --company acme account list --name cash --with-balances --as-of 2025-03-31\
+    Search by name and include balances for a period:\n    \
+    $ bk --company acme account list --name cash --with-balances --from 2025-01-01 --to 2025-03-31\
 ")]
     List {
         /// Filter by account type.
@@ -365,9 +401,13 @@ EXAMPLES:\n  \
         #[arg(long)]
         with_balances: bool,
 
-        /// As-of date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
+        /// Start date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
         #[arg(long)]
-        as_of: Option<String>,
+        from: Option<String>,
+
+        /// End date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
+        #[arg(long)]
+        to: Option<String>,
     },
 
     /// Show account details.
@@ -893,6 +933,17 @@ pub fn resolve_format(command_format: Option<OutputFormat>, cli: &Cli) -> Output
 /// Returns [`CliError::Usage`] when neither `--company` flag nor
 /// `BEANKEEPER_COMPANY` env var is set.
 pub fn require_company(cli: &Cli) -> Result<String, CliError> {
+    let cmd_company = match &cli.command {
+        Command::Account(args) => args.company.as_ref(),
+        Command::Txn(args) => args.company.as_ref(),
+        Command::Report(args) => args.company.as_ref(),
+        _ => None,
+    };
+
+    if let Some(slug) = cmd_company {
+        return Ok(slug.clone());
+    }
+
     cli.company.clone().ok_or_else(|| {
         CliError::Usage("missing required --company flag or BEANKEEPER_COMPANY env var".into())
     })

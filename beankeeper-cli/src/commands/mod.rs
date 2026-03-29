@@ -25,13 +25,13 @@ pub fn command_name(cmd: &Command) -> &'static str {
             CompanyCommand::Show { .. } => "company.show",
             CompanyCommand::Delete { .. } => "company.delete",
         },
-        Command::Account(sub) => match sub {
+        Command::Account(args) => match &args.command {
             AccountCommand::Create { .. } => "account.create",
             AccountCommand::List { .. } => "account.list",
             AccountCommand::Show { .. } => "account.show",
             AccountCommand::Delete { .. } => "account.delete",
         },
-        Command::Txn(sub) => match sub.as_ref() {
+        Command::Txn(args) => match args.command.as_ref() {
             TxnCommand::Post { .. } => "txn.post",
             TxnCommand::List { .. } => "txn.list",
             TxnCommand::Show { .. } => "txn.show",
@@ -39,7 +39,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             TxnCommand::Attach { .. } => "txn.attach",
             TxnCommand::Reconcile => "txn.reconcile",
         },
-        Command::Report(sub) => match sub {
+        Command::Report(args) => match &args.command {
             ReportCommand::TrialBalance { .. } => "report.trial-balance",
             ReportCommand::Balance { .. } => "report.balance",
             ReportCommand::IncomeStatement { .. } => "report.income-statement",
@@ -69,24 +69,24 @@ pub fn dispatch(cli: &Cli) -> Result<(), CliError> {
 
         Command::Company(sub) => company::run(cli, sub),
 
-        Command::Account(sub) => {
+        Command::Account(args) => {
             let company = require_company(cli)?;
-            account::run(cli, &company, sub)
+            account::run(cli, &company, &args.command)
         }
 
-        Command::Txn(sub) => {
+        Command::Txn(args) => {
             // Reconcile scans all companies, so --company is not required.
-            if matches!(sub.as_ref(), crate::cli::TxnCommand::Reconcile) {
-                txn::run(cli, "", sub)
+            if matches!(args.command.as_ref(), crate::cli::TxnCommand::Reconcile) {
+                txn::run(cli, "", args.command.as_ref())
             } else {
                 let company = require_company(cli)?;
-                txn::run(cli, &company, sub)
+                txn::run(cli, &company, args.command.as_ref())
             }
         }
 
-        Command::Report(sub) => {
+        Command::Report(args) => {
             let company = require_company(cli)?;
-            report::run(cli, &company, sub)
+            report::run(cli, &company, &args.command)
         }
     }
 }
