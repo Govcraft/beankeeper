@@ -54,7 +54,7 @@ If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent
 curl -fsSL https://raw.githubusercontent.com/Govcraft/beankeeper/main/install.sh | sh
 ```
 
-Detects your OS and architecture, downloads the right binary, verifies the SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory with `BK_INSTALL=~/.local/bin` or pin a version with `BK_VERSION=0.2.0`.
+Detects your OS and architecture, downloads the right binary, verifies the SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory with `BK_INSTALL=~/.local/bin` or pin a version with `BK_VERSION=0.6.0`.
 
 **Arch Linux (AUR)**:
 ```sh
@@ -584,3 +584,7 @@ Licensed under either of:
 - MIT License ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
