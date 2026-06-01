@@ -79,6 +79,7 @@ pub fn run(
 // Helper – shorthand for posting a transaction, returning its ID
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn post(
     conn: &rusqlite::Connection,
     company: &str,
@@ -179,13 +180,22 @@ fn dr_memo(code: &str, amount: i64, memo: &str) -> PostEntryParams {
 /// - acme-consulting pays acme-products for software licences
 /// - acme-consulting pays the owner (salary draw to personal)
 fn populate_demo_data(db: &Db) -> Result<(), CliError> {
-    use crate::db::{create_account, create_company};
-
     let conn = db.conn();
 
-    // =====================================================================
-    // Companies
-    // =====================================================================
+    seed_companies(conn)?;
+    seed_accounts(conn)?;
+    seed_consulting_transactions(conn)?;
+    seed_products_transactions(conn)?;
+    seed_personal_transactions(conn)?;
+    seed_intercompany_transactions(conn)?;
+
+    Ok(())
+}
+
+/// Create the three demo companies.
+fn seed_companies(conn: &rusqlite::Connection) -> Result<(), CliError> {
+    use crate::db::create_company;
+
     create_company(
         conn,
         "acme-consulting",
@@ -205,284 +215,108 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         Some("Owner personal finances"),
     )?;
 
-    // =====================================================================
-    // Chart of Accounts – acme-consulting
-    // =====================================================================
-    create_account(
-        conn,
-        "acme-consulting",
-        "1000",
-        "Operating Cash",
-        "asset",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "1100",
-        "Accounts Receivable",
-        "asset",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "1500",
-        "Due from Acme Products",
-        "asset",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "2000",
-        "Accounts Payable",
-        "liability",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "2500",
-        "Due to Owner",
-        "liability",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "3000",
-        "Owner Equity",
-        "equity",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "4000",
-        "Consulting Revenue",
-        "revenue",
-        Some("income"),
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "5000",
-        "Rent Expense",
-        "expense",
-        Some("rent"),
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "5100",
-        "Software Licences",
-        "expense",
-        Some("software"),
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "5200",
-        "Office Supplies",
-        "expense",
-        Some("supplies"),
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "5300",
-        "Salary Expense",
-        "expense",
-        Some("payroll"),
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "2600",
-        "Federal Tax Payable",
-        "liability",
-        Some("payroll-tax"),
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "2700",
-        "State Tax Payable",
-        "liability",
-        Some("payroll-tax"),
-    )?;
-    create_account(
-        conn,
-        "acme-consulting",
-        "2800",
-        "FICA Payable",
-        "liability",
-        Some("payroll-tax"),
-    )?;
+    Ok(())
+}
 
-    // =====================================================================
-    // Chart of Accounts – acme-products
-    // =====================================================================
-    create_account(
-        conn,
-        "acme-products",
-        "1000",
-        "Operating Cash",
-        "asset",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-products",
-        "1100",
-        "Accounts Receivable",
-        "asset",
-        None,
-    )?;
-    create_account(conn, "acme-products", "1200", "Inventory", "asset", None)?;
-    create_account(
-        conn,
-        "acme-products",
-        "1500",
-        "Due from Acme Consulting",
-        "asset",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-products",
-        "2000",
-        "Accounts Payable",
-        "liability",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-products",
-        "3000",
-        "Owner Equity",
-        "equity",
-        None,
-    )?;
-    create_account(
-        conn,
-        "acme-products",
-        "4000",
-        "Product Sales",
-        "revenue",
-        Some("income"),
-    )?;
-    create_account(
-        conn,
-        "acme-products",
-        "4100",
-        "Licence Revenue",
-        "revenue",
-        Some("income"),
-    )?;
-    create_account(
-        conn,
-        "acme-products",
-        "5000",
-        "Cost of Goods Sold",
-        "expense",
-        Some("cogs"),
-    )?;
-    create_account(
-        conn,
-        "acme-products",
-        "5100",
-        "Shipping Expense",
-        "expense",
-        Some("shipping"),
-    )?;
+/// Create the chart of accounts for all three demo companies.
+fn seed_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
+    seed_consulting_accounts(conn)?;
+    seed_products_accounts(conn)?;
+    seed_personal_accounts(conn)?;
+    Ok(())
+}
 
-    // =====================================================================
-    // Chart of Accounts – personal
-    // =====================================================================
-    create_account(conn, "personal", "1000", "Checking Account", "asset", None)?;
-    create_account(conn, "personal", "1100", "Savings Account", "asset", None)?;
-    create_account(
-        conn,
-        "personal",
-        "1500",
-        "Due from Acme Consulting",
-        "asset",
-        None,
-    )?;
-    create_account(conn, "personal", "2000", "Credit Card", "liability", None)?;
-    create_account(conn, "personal", "3000", "Net Worth", "equity", None)?;
-    create_account(
-        conn,
-        "personal",
-        "4000",
-        "Salary Income",
-        "revenue",
-        Some("w2-income"),
-    )?;
-    create_account(
-        conn,
-        "personal",
-        "4100",
-        "Investment Income",
-        "revenue",
-        Some("investment"),
-    )?;
-    create_account(conn, "personal", "5000", "Rent", "expense", Some("housing"))?;
-    create_account(
-        conn,
-        "personal",
-        "5100",
-        "Groceries",
-        "expense",
-        Some("food"),
-    )?;
-    create_account(
-        conn,
-        "personal",
-        "5200",
-        "Utilities",
-        "expense",
-        Some("utilities"),
-    )?;
-    create_account(
-        conn,
-        "personal",
-        "5300",
-        "Federal Tax Withheld",
-        "expense",
-        Some("fed-tax"),
-    )?;
-    create_account(
-        conn,
-        "personal",
-        "5400",
-        "State Tax Withheld",
-        "expense",
-        Some("state-tax"),
-    )?;
-    create_account(
-        conn,
-        "personal",
-        "5500",
-        "FICA Withheld",
-        "expense",
-        Some("fica"),
-    )?;
+/// Create a company's chart of accounts from `(code, name, type, tax)` rows.
+fn seed_company_accounts(
+    conn: &rusqlite::Connection,
+    company: &str,
+    accounts: &[(&str, &str, &str, Option<&str>)],
+) -> Result<(), CliError> {
+    use crate::db::create_account;
 
-    // =====================================================================
-    // Transactions – acme-consulting
-    // =====================================================================
+    for &(code, name, account_type, tax) in accounts {
+        create_account(conn, company, code, name, account_type, tax)?;
+    }
+    Ok(())
+}
 
+/// Create the acme-consulting chart of accounts.
+fn seed_consulting_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
+    // Chart of Accounts – acme-consulting. `(code, name, type, tax_category)`.
+    let accounts: &[(&str, &str, &str, Option<&str>)] = &[
+        ("1000", "Operating Cash", "asset", None),
+        ("1100", "Accounts Receivable", "asset", None),
+        ("1500", "Due from Acme Products", "asset", None),
+        ("2000", "Accounts Payable", "liability", None),
+        ("2500", "Due to Owner", "liability", None),
+        ("3000", "Owner Equity", "equity", None),
+        ("4000", "Consulting Revenue", "revenue", Some("income")),
+        ("5000", "Rent Expense", "expense", Some("rent")),
+        ("5100", "Software Licences", "expense", Some("software")),
+        ("5200", "Office Supplies", "expense", Some("supplies")),
+        ("5300", "Salary Expense", "expense", Some("payroll")),
+        ("2600", "Federal Tax Payable", "liability", Some("payroll-tax")),
+        ("2700", "State Tax Payable", "liability", Some("payroll-tax")),
+        ("2800", "FICA Payable", "liability", Some("payroll-tax")),
+    ];
+    seed_company_accounts(conn, "acme-consulting", accounts)?;
+
+    Ok(())
+}
+
+/// Create the acme-products chart of accounts.
+fn seed_products_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
+    // Chart of Accounts – acme-products. `(code, name, type, tax_category)`.
+    let accounts: &[(&str, &str, &str, Option<&str>)] = &[
+        ("1000", "Operating Cash", "asset", None),
+        ("1100", "Accounts Receivable", "asset", None),
+        ("1200", "Inventory", "asset", None),
+        ("1500", "Due from Acme Consulting", "asset", None),
+        ("2000", "Accounts Payable", "liability", None),
+        ("3000", "Owner Equity", "equity", None),
+        ("4000", "Product Sales", "revenue", Some("income")),
+        ("4100", "Licence Revenue", "revenue", Some("income")),
+        ("5000", "Cost of Goods Sold", "expense", Some("cogs")),
+        ("5100", "Shipping Expense", "expense", Some("shipping")),
+    ];
+    seed_company_accounts(conn, "acme-products", accounts)?;
+
+    Ok(())
+}
+
+/// Create the personal-books chart of accounts.
+fn seed_personal_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
+    // Chart of Accounts – personal. `(code, name, type, tax_category)`.
+    let accounts: &[(&str, &str, &str, Option<&str>)] = &[
+        ("1000", "Checking Account", "asset", None),
+        ("1100", "Savings Account", "asset", None),
+        ("1500", "Due from Acme Consulting", "asset", None),
+        ("2000", "Credit Card", "liability", None),
+        ("3000", "Net Worth", "equity", None),
+        ("4000", "Salary Income", "revenue", Some("w2-income")),
+        ("4100", "Investment Income", "revenue", Some("investment")),
+        ("5000", "Rent", "expense", Some("housing")),
+        ("5100", "Groceries", "expense", Some("food")),
+        ("5200", "Utilities", "expense", Some("utilities")),
+        ("5300", "Federal Tax Withheld", "expense", Some("fed-tax")),
+        ("5400", "State Tax Withheld", "expense", Some("state-tax")),
+        ("5500", "FICA Withheld", "expense", Some("fica")),
+    ];
+    seed_company_accounts(conn, "personal", accounts)?;
+
+    Ok(())
+}
+
+/// Seed the acme-consulting demo transactions.
+fn seed_consulting_transactions(conn: &rusqlite::Connection) -> Result<(), CliError> {
     // C1. Owner invests $25,000 into consulting LLC
-    let c1 = post(
+    let _c1 = post(
         conn,
         "acme-consulting",
         "Owner capital contribution",
         "USD",
         "2025-01-01",
-        &[dr("1000", 25_000_00), cr("3000", 25_000_00)],
+        &[dr("1000", 2_500_000), cr("3000", 2_500_000)],
         "AC-001",
         None,
     )?;
@@ -494,7 +328,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "January office rent",
         "USD",
         "2025-01-05",
-        &[dr_tax("5000", 2_500_00, "rent"), cr("1000", 2_500_00)],
+        &[dr_tax("5000", 250_000, "rent"), cr("1000", 250_000)],
         "AC-002",
         None,
     )?;
@@ -506,7 +340,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Invoice #101 - Globex Corp",
         "USD",
         "2025-01-15",
-        &[dr("1100", 12_000_00), cr_tax("4000", 12_000_00, "income")],
+        &[dr("1100", 1_200_000), cr_tax("4000", 1_200_000, "income")],
         "AC-003",
         None,
     )?;
@@ -518,7 +352,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Payment from Globex Corp",
         "USD",
         "2025-01-28",
-        &[dr("1000", 12_000_00), cr("1100", 12_000_00)],
+        &[dr("1000", 1_200_000), cr("1100", 1_200_000)],
         "AC-004",
         None,
     )?;
@@ -530,7 +364,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Office supplies - paper and toner",
         "USD",
         "2025-02-03",
-        &[dr_tax("5200", 275_00, "supplies"), cr("1000", 275_00)],
+        &[dr_tax("5200", 27_500, "supplies"), cr("1000", 27_500)],
         "AC-005",
         None,
     )?;
@@ -542,7 +376,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Invoice #102 - Initech",
         "USD",
         "2025-02-15",
-        &[dr("1100", 8_500_00), cr_tax("4000", 8_500_00, "income")],
+        &[dr("1100", 850_000), cr_tax("4000", 850_000, "income")],
         "AC-006",
         None,
     )?;
@@ -554,23 +388,24 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "February office rent",
         "USD",
         "2025-02-05",
-        &[dr_tax("5000", 2_500_00, "rent"), cr("1000", 2_500_00)],
+        &[dr_tax("5000", 250_000, "rent"), cr("1000", 250_000)],
         "AC-007",
         None,
     )?;
 
-    // =====================================================================
-    // Transactions – acme-products
-    // =====================================================================
+    Ok(())
+}
 
+/// Seed the acme-products demo transactions.
+fn seed_products_transactions(conn: &rusqlite::Connection) -> Result<(), CliError> {
     // P1. Owner invests $15,000 into products company
-    let p1 = post(
+    let _p1 = post(
         conn,
         "acme-products",
         "Owner capital contribution",
         "USD",
         "2025-01-01",
-        &[dr("1000", 15_000_00), cr("3000", 15_000_00)],
+        &[dr("1000", 1_500_000), cr("3000", 1_500_000)],
         "AP-001",
         None,
     )?;
@@ -583,8 +418,8 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "USD",
         "2025-01-08",
         &[
-            dr_memo("1200", 5_000_00, "500 widgets @ $10"),
-            cr("1000", 5_000_00),
+            dr_memo("1200", 500_000, "500 widgets @ $10"),
+            cr("1000", 500_000),
         ],
         "AP-002",
         None,
@@ -597,7 +432,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Widget sale - 100 units",
         "USD",
         "2025-01-20",
-        &[dr("1100", 2_500_00), cr_tax("4000", 2_500_00, "income")],
+        &[dr("1100", 250_000), cr_tax("4000", 250_000, "income")],
         "AP-003",
         None,
     )?;
@@ -609,7 +444,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "COGS - 100 widgets sold",
         "USD",
         "2025-01-20",
-        &[dr_tax("5000", 1_000_00, "cogs"), cr("1200", 1_000_00)],
+        &[dr_tax("5000", 100_000, "cogs"), cr("1200", 100_000)],
         "AP-004",
         None,
     )?;
@@ -621,7 +456,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Payment received - widget sale",
         "USD",
         "2025-02-01",
-        &[dr("1000", 2_500_00), cr("1100", 2_500_00)],
+        &[dr("1000", 250_000), cr("1100", 250_000)],
         "AP-005",
         None,
     )?;
@@ -633,15 +468,16 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Shipping costs - January",
         "USD",
         "2025-01-31",
-        &[dr_tax("5100", 350_00, "shipping"), cr("1000", 350_00)],
+        &[dr_tax("5100", 35_000, "shipping"), cr("1000", 35_000)],
         "AP-006",
         None,
     )?;
 
-    // =====================================================================
-    // Transactions – personal
-    // =====================================================================
+    Ok(())
+}
 
+/// Seed the personal-books demo transactions.
+fn seed_personal_transactions(conn: &rusqlite::Connection) -> Result<(), CliError> {
     // R1. Starting balance (savings)
     post(
         conn,
@@ -649,7 +485,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Opening balance - savings",
         "USD",
         "2025-01-01",
-        &[dr("1100", 50_000_00), cr("3000", 50_000_00)],
+        &[dr("1100", 5_000_000), cr("3000", 5_000_000)],
         "PR-001",
         None,
     )?;
@@ -661,7 +497,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Opening balance - checking",
         "USD",
         "2025-01-01",
-        &[dr("1000", 5_000_00), cr("3000", 5_000_00)],
+        &[dr("1000", 500_000), cr("3000", 500_000)],
         "PR-002",
         None,
     )?;
@@ -673,7 +509,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "January apartment rent",
         "USD",
         "2025-01-03",
-        &[dr_tax("5000", 1_800_00, "housing"), cr("1000", 1_800_00)],
+        &[dr_tax("5000", 180_000, "housing"), cr("1000", 180_000)],
         "PR-003",
         None,
     )?;
@@ -685,7 +521,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Weekly groceries",
         "USD",
         "2025-01-07",
-        &[dr_tax("5100", 185_50, "food"), cr("2000", 185_50)],
+        &[dr_tax("5100", 18_550, "food"), cr("2000", 18_550)],
         "PR-004",
         None,
     )?;
@@ -697,7 +533,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Electric and internet",
         "USD",
         "2025-01-15",
-        &[dr_tax("5200", 210_00, "utilities"), cr("1000", 210_00)],
+        &[dr_tax("5200", 21_000, "utilities"), cr("1000", 21_000)],
         "PR-005",
         None,
     )?;
@@ -709,7 +545,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "February apartment rent",
         "USD",
         "2025-02-03",
-        &[dr_tax("5000", 1_800_00, "housing"), cr("1000", 1_800_00)],
+        &[dr_tax("5000", 180_000, "housing"), cr("1000", 180_000)],
         "PR-006",
         None,
     )?;
@@ -721,15 +557,16 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Quarterly dividend - index fund",
         "USD",
         "2025-01-31",
-        &[dr("1100", 320_00), cr_tax("4100", 320_00, "investment")],
+        &[dr("1100", 32_000), cr_tax("4100", 32_000, "investment")],
         "PR-007",
         None,
     )?;
 
-    // =====================================================================
-    // Intercompany transactions (mirror pairs with correlation)
-    // =====================================================================
+    Ok(())
+}
 
+/// Seed the intercompany demo transactions (mirror pairs with correlation).
+fn seed_intercompany_transactions(conn: &rusqlite::Connection) -> Result<(), CliError> {
     // IC1. Owner funds acme-consulting from personal savings
     //   personal side: savings down, receivable from consulting up
     //   consulting side: already recorded as C1 above — but that was equity.
@@ -740,7 +577,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Loan to Acme Consulting",
         "USD",
         "2025-01-02",
-        &[dr("1500", 5_000_00), cr("1100", 5_000_00)],
+        &[dr("1500", 500_000), cr("1100", 500_000)],
         "IC-001-P",
         None,
     )?;
@@ -750,7 +587,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Loan from owner (personal)",
         "USD",
         "2025-01-02",
-        &[dr("1000", 5_000_00), cr("2500", 5_000_00)],
+        &[dr("1000", 500_000), cr("2500", 500_000)],
         "IC-001-C",
         Some(ic1_personal),
     )?;
@@ -764,7 +601,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Software licences from Acme Products",
         "USD",
         "2025-02-01",
-        &[dr_tax("5100", 3_600_00, "software"), cr("2000", 3_600_00)],
+        &[dr_tax("5100", 360_000, "software"), cr("2000", 360_000)],
         "IC-002-C",
         None,
     )?;
@@ -774,7 +611,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Licence sale to Acme Consulting",
         "USD",
         "2025-02-01",
-        &[dr("1500", 3_600_00), cr_tax("4100", 3_600_00, "income")],
+        &[dr("1500", 360_000), cr_tax("4100", 360_000, "income")],
         "IC-002-P",
         Some(ic2_consulting),
     )?;
@@ -809,11 +646,11 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "USD",
         "2025-02-15",
         &[
-            dr_tax("5300", 5_000_00, "payroll"),
-            cr_tax("2600", 600_00, "payroll-tax"),
-            cr_tax("2700", 250_00, "payroll-tax"),
-            cr_tax("2800", 382_50, "payroll-tax"),
-            cr("1000", 3_767_50),
+            dr_tax("5300", 500_000, "payroll"),
+            cr_tax("2600", 60_000, "payroll-tax"),
+            cr_tax("2700", 25_000, "payroll-tax"),
+            cr_tax("2800", 38_250, "payroll-tax"),
+            cr("1000", 376_750),
         ],
         "IC-003-C",
         None,
@@ -825,11 +662,11 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "USD",
         "2025-02-15",
         &[
-            dr("1000", 3_767_50),
-            dr_tax("5300", 600_00, "fed-tax"),
-            dr_tax("5400", 250_00, "state-tax"),
-            dr_tax("5500", 382_50, "fica"),
-            cr_tax("4000", 5_000_00, "w2-income"),
+            dr("1000", 376_750),
+            dr_tax("5300", 60_000, "fed-tax"),
+            dr_tax("5400", 25_000, "state-tax"),
+            dr_tax("5500", 38_250, "fica"),
+            cr_tax("4000", 500_000, "w2-income"),
         ],
         "IC-003-P",
         Some(ic3_consulting),
@@ -844,7 +681,7 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Payment to Acme Products - licence invoice",
         "USD",
         "2025-02-20",
-        &[dr("2000", 3_600_00), cr("1000", 3_600_00)],
+        &[dr("2000", 360_000), cr("1000", 360_000)],
         "IC-004-C",
         None,
     )?;
@@ -854,14 +691,10 @@ fn populate_demo_data(db: &Db) -> Result<(), CliError> {
         "Payment from Acme Consulting",
         "USD",
         "2025-02-20",
-        &[dr("1000", 3_600_00), cr("1500", 3_600_00)],
+        &[dr("1000", 360_000), cr("1500", 360_000)],
         "IC-004-P",
         Some(ic4_consulting),
     )?;
-
-    // Suppress unused variable warnings for clarity — the IDs are used by
-    // the correlate mechanism at post time, we just don't need them after.
-    let _ = (c1, p1);
 
     Ok(())
 }

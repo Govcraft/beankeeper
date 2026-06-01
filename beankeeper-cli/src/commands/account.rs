@@ -43,80 +43,110 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
             }
             render_accounts(&[row], "account.create", company, format, use_color)?;
         }
-        AccountCommand::List {
-            account_type,
-            name,
-            with_balances,
-            from,
-            to,
-        } => {
-            let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-
-            if *with_balances {
-                let rows = db::list_accounts_with_balances(
-                    db.conn(),
-                    company,
-                    type_filter.as_deref(),
-                    name.as_deref(),
-                    from.as_deref(),
-                    to.as_deref(),
-                )?;
-                render_accounts_with_balances(&rows, company, format, use_color)?;
-                if !cli.verbosity.quiet {
-                    let count = rows.len();
-                    eprintln!(
-                        "{count} {noun}",
-                        noun = if count == 1 { "account" } else { "accounts" }
-                    );
-                }
-            } else {
-                let params = accounts::ListAccountParams {
-                    company_slug: company,
-                    type_filter: type_filter.as_deref(),
-                    name_filter: name.as_deref(),
-                };
-                let rows = accounts::list_accounts(db.conn(), &params)?;
-                render_accounts(&rows, "account.list", company, format, use_color)?;
-                if !cli.verbosity.quiet {
-                    let count = rows.len();
-                    eprintln!(
-                        "{count} {noun}",
-                        noun = if count == 1 { "account" } else { "accounts" }
-                    );
-                }
-            }
+        AccountCommand::List { .. } => {
+            run_list(cli, &db, company, sub, format, use_color)?;
         }
         AccountCommand::Show { code } => {
             let row = accounts::get_account(db.conn(), company, code)?;
             render_accounts(&[row], "account.show", company, format, use_color)?;
         }
         AccountCommand::Delete { code, force } => {
-            if !force {
-                if !std::io::stdin().is_terminal() {
-                    return Err(CliError::Usage(
-                        "use --force to confirm deletion when stdin is not a terminal".into(),
-                    ));
-                }
-                eprint!("Delete account '{code}'? [y/N] ");
-                let mut answer = String::new();
-                std::io::stdin().read_line(&mut answer)?;
-                if !answer.trim().eq_ignore_ascii_case("y") {
-                    eprintln!("Aborted.");
-                    return Ok(());
-                }
-            }
-            accounts::delete_account(db.conn(), company, code)?;
-            if format == OutputFormat::Json {
-                let meta = output::json::meta("account.delete", Some(company));
-                let rendered = output::json::render_deleted(code, meta)?;
-                println!("{rendered}");
-            }
-            if !cli.verbosity.quiet {
-                eprintln!("[ok] Deleted account: {code}");
-            }
+            run_delete(cli, &db, company, code, *force, format)?;
         }
     }
 
+    Ok(())
+}
+
+/// Print an account-count summary to stderr unless quiet mode is set.
+fn print_account_count(cli: &Cli, count: usize) {
+    if !cli.verbosity.quiet {
+        eprintln!(
+            "{count} {noun}",
+            noun = if count == 1 { "account" } else { "accounts" }
+        );
+    }
+}
+
+/// Execute the `account list` subcommand.
+fn run_list(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &AccountCommand,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let AccountCommand::List {
+        account_type,
+        name,
+        with_balances,
+        from,
+        to,
+    } = sub
+    else {
+        return Err(CliError::General("expected account list subcommand".into()));
+    };
+
+    let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
+
+    if *with_balances {
+        let rows = db::list_accounts_with_balances(
+            db.conn(),
+            company,
+            type_filter.as_deref(),
+            name.as_deref(),
+            from.as_deref(),
+            to.as_deref(),
+        )?;
+        render_accounts_with_balances(&rows, company, format, use_color)?;
+        print_account_count(cli, rows.len());
+    } else {
+        let params = accounts::ListAccountParams {
+            company_slug: company,
+            type_filter: type_filter.as_deref(),
+            name_filter: name.as_deref(),
+        };
+        let rows = accounts::list_accounts(db.conn(), &params)?;
+        render_accounts(&rows, "account.list", company, format, use_color)?;
+        print_account_count(cli, rows.len());
+    }
+
+    Ok(())
+}
+
+/// Execute the `account delete` subcommand.
+fn run_delete(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    code: &str,
+    force: bool,
+    format: OutputFormat,
+) -> Result<(), CliError> {
+    if !force {
+        if !std::io::stdin().is_terminal() {
+            return Err(CliError::Usage(
+                "use --force to confirm deletion when stdin is not a terminal".into(),
+            ));
+        }
+        eprint!("Delete account '{code}'? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    }
+    accounts::delete_account(db.conn(), company, code)?;
+    if format == OutputFormat::Json {
+        let meta = output::json::meta("account.delete", Some(company));
+        let rendered = output::json::render_deleted(code, meta)?;
+        println!("{rendered}");
+    }
+    if !cli.verbosity.quiet {
+        eprintln!("[ok] Deleted account: {code}");
+    }
     Ok(())
 }
 

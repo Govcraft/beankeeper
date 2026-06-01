@@ -67,51 +67,8 @@ pub fn run(
             transaction_id,
             entry,
             status,
-        } => run_clear(cli, &db_handle, company, *transaction_id, *entry, status, meta),
-        TxnCommand::Import {
-            file,
-            format: import_format,
-            dry_run,
-            account,
-            suspense,
-            on_conflict,
-        } => {
-            let effective_format = match import_format {
-                Some(f) => *f,
-                None => match file.as_deref() {
-                    Some(path) if path != "-" => crate::commands::import_ofx::detect_format(path)?,
-                    _ => {
-                        return Err(CliError::Usage(
-                            "cannot detect format from stdin; specify --format".into(),
-                        ));
-                    }
-                },
-            };
-
-            match effective_format {
-                crate::cli::ImportFormat::Ofx => {
-                    let acct = account
-                        .as_deref()
-                        .ok_or(crate::commands::import_ofx::OfxImportError::MissingAccountFlag)?;
-                    let susp = suspense
-                        .as_deref()
-                        .ok_or(crate::commands::import_ofx::OfxImportError::MissingSuspenseFlag)?;
-                    crate::commands::import_ofx::run_import_ofx(
-                        cli,
-                        &db_handle,
-                        company,
-                        file.as_deref(),
-                        acct,
-                        susp,
-                        *dry_run,
-                        *on_conflict,
-                    )
-                }
-                crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => Err(
-                    CliError::General(format!("{effective_format:?} import not yet implemented")),
-                ),
-            }
-        }
+        } => run_clear(cli, &db_handle, company, *transaction_id, *entry, *status, meta),
+        TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
         TxnCommand::Attach {
             transaction_id,
             file_path,
@@ -127,6 +84,57 @@ pub fn run(
             *entry,
         ),
         TxnCommand::Reconcile => run_reconcile(cli, &db_handle, format, use_color),
+    }
+}
+
+/// Execute the `txn import` subcommand.
+fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
+    let TxnCommand::Import {
+        file,
+        format: import_format,
+        dry_run,
+        account,
+        suspense,
+        on_conflict,
+    } = sub
+    else {
+        return Err(CliError::General("expected txn import subcommand".into()));
+    };
+
+    let effective_format = match import_format {
+        Some(f) => *f,
+        None => match file.as_deref() {
+            Some(path) if path != "-" => crate::commands::import_ofx::detect_format(path)?,
+            _ => {
+                return Err(CliError::Usage(
+                    "cannot detect format from stdin; specify --format".into(),
+                ));
+            }
+        },
+    };
+
+    match effective_format {
+        crate::cli::ImportFormat::Ofx => {
+            let acct = account
+                .as_deref()
+                .ok_or(crate::commands::import_ofx::OfxImportError::MissingAccountFlag)?;
+            let susp = suspense
+                .as_deref()
+                .ok_or(crate::commands::import_ofx::OfxImportError::MissingSuspenseFlag)?;
+            crate::commands::import_ofx::run_import_ofx(
+                cli,
+                db_handle,
+                company,
+                file.as_deref(),
+                acct,
+                susp,
+                *dry_run,
+                *on_conflict,
+            )
+        }
+        crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => Err(CliError::General(
+            format!("{effective_format:?} import not yet implemented"),
+        )),
     }
 }
 
@@ -439,7 +447,7 @@ fn run_post(
         match post_result {
             transactions::PostResult::Created(id) => eprintln!("[ok] transaction #{id} posted"),
             transactions::PostResult::Skipped(id) => {
-                eprintln!("[skipped] duplicate reference; transaction already exists (id: {id})")
+                eprintln!("[skipped] duplicate reference; transaction already exists (id: {id})");
             }
         }
     }
@@ -575,8 +583,7 @@ fn run_show(
 
     // Determine currency minor units for formatting
     let currency_minor_units = Currency::from_code(&txn.currency)
-        .map(|c| c.minor_units())
-        .unwrap_or(2);
+        .map_or(2, |c| c.minor_units());
 
     match format {
         OutputFormat::Table => {
@@ -681,13 +688,14 @@ fn run_attach(
 }
 
 /// Execute the `txn clear` subcommand.
+#[allow(clippy::too_many_arguments)]
 fn run_clear(
     cli: &Cli,
     db_handle: &Db,
     company: &str,
     transaction_id: i64,
     entry_id: i64,
-    status: &crate::cli::ClearanceArg,
+    status: crate::cli::ClearanceArg,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
     // 1. Verify transaction and entry exist.

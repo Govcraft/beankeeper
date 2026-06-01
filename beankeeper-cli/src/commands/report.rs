@@ -711,14 +711,26 @@ fn run_budget_variance(
     Ok(())
 }
 
-/// Build a title for the budget-variance report.
-fn build_variance_title(currency: &str, year: i32, from_month: i32, to_month: i32) -> String {
+/// Return the three-letter English name for a 1-based month number.
+///
+/// Out-of-range inputs (outside `1..=12`) fall back to `"?"` rather than
+/// panicking on an out-of-bounds index or a sign-losing cast.
+fn month_name(month: i32) -> &'static str {
     static MONTH_NAMES: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
 
-    let from_name = MONTH_NAMES[(from_month - 1) as usize];
-    let to_name = MONTH_NAMES[(to_month - 1) as usize];
+    usize::try_from(month - 1)
+        .ok()
+        .and_then(|i| MONTH_NAMES.get(i))
+        .copied()
+        .unwrap_or("?")
+}
+
+/// Build a title for the budget-variance report.
+fn build_variance_title(currency: &str, year: i32, from_month: i32, to_month: i32) -> String {
+    let from_name = month_name(from_month);
+    let to_name = month_name(to_month);
 
     if from_month == to_month {
         format!("Budget vs. Actual -- {year} {from_name} ({currency})")

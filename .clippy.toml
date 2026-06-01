@@ -1,3 +1,11 @@
 cognitive-complexity-threshold = 15
 too-many-arguments-threshold = 6
 too-many-lines-threshold = 100
+
+# `unwrap_used`/`expect_used` are denied for production code (see workspace
+# Cargo.toml) to keep panics out of shipped paths. In test code, `unwrap`/
+# `expect` are the idiomatic way to assert preconditions and fail fast, so
+# exempt tests via clippy's first-class configuration rather than per-call
+# `#[allow]` suppressions.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

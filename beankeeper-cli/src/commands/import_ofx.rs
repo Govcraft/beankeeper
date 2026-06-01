@@ -293,6 +293,7 @@ fn prepare_transaction(
 }
 
 /// Post one prepared transaction, returning the outcome.
+#[allow(clippy::too_many_arguments)]
 fn post_one(
     conn: &rusqlite::Connection,
     company: &str,
@@ -302,45 +303,9 @@ fn post_one(
     dry_run: bool,
     conflict_strategy: transactions::ConflictStrategy,
 ) -> TransactionOutcome {
-    // Pre-check for duplicates.
-    match reference_exists(conn, company, &prepared.reference) {
-        Ok(true) => {
-            match conflict_strategy {
-                transactions::ConflictStrategy::Error => {
-                    return TransactionOutcome::Failed(FailedTransaction {
-                        date: prepared.date.clone(),
-                        description: prepared.description.clone(),
-                        amount_minor: prepared.amount_minor,
-                        error: format!("duplicate reference: {}", prepared.reference),
-                    });
-                }
-                transactions::ConflictStrategy::Skip => {
-                    return TransactionOutcome::Skipped(SkippedTransaction {
-                        date: prepared.date.clone(),
-                        description: prepared.description.clone(),
-                        amount_minor: prepared.amount_minor,
-                        reference: prepared.reference.clone(),
-                    });
-                }
-                transactions::ConflictStrategy::Upsert => {
-                    return TransactionOutcome::Failed(FailedTransaction {
-                        date: prepared.date.clone(),
-                        description: prepared.description.clone(),
-                        amount_minor: prepared.amount_minor,
-                        error: "on-conflict=upsert not yet implemented".to_string(),
-                    });
-                }
-            }
-        }
-        Ok(false) => {}
-        Err(e) => {
-            return TransactionOutcome::Failed(FailedTransaction {
-                date: prepared.date.clone(),
-                description: prepared.description.clone(),
-                amount_minor: prepared.amount_minor,
-                error: e.to_string(),
-            });
-        }
+    // Pre-check for duplicates; an early outcome means we must not post.
+    if let Some(outcome) = check_conflict(conn, company, prepared, conflict_strategy) {
+        return outcome;
     }
 
     if dry_run {
@@ -353,6 +318,71 @@ fn post_one(
         });
     }
 
+    insert_transaction(
+        conn,
+        company,
+        account_code,
+        suspense_code,
+        prepared,
+        conflict_strategy,
+    )
+}
+
+/// Resolve a pre-existing duplicate reference into an early [`TransactionOutcome`].
+///
+/// Returns `Some(outcome)` when the transaction must not be posted (duplicate
+/// under the active strategy, or a lookup error) and `None` when posting may
+/// proceed.
+fn check_conflict(
+    conn: &rusqlite::Connection,
+    company: &str,
+    prepared: &PreparedTransaction,
+    conflict_strategy: transactions::ConflictStrategy,
+) -> Option<TransactionOutcome> {
+    match reference_exists(conn, company, &prepared.reference) {
+        Ok(true) => Some(match conflict_strategy {
+            transactions::ConflictStrategy::Error => TransactionOutcome::Failed(FailedTransaction {
+                date: prepared.date.clone(),
+                description: prepared.description.clone(),
+                amount_minor: prepared.amount_minor,
+                error: format!("duplicate reference: {}", prepared.reference),
+            }),
+            transactions::ConflictStrategy::Skip => {
+                TransactionOutcome::Skipped(SkippedTransaction {
+                    date: prepared.date.clone(),
+                    description: prepared.description.clone(),
+                    amount_minor: prepared.amount_minor,
+                    reference: prepared.reference.clone(),
+                })
+            }
+            transactions::ConflictStrategy::Upsert => {
+                TransactionOutcome::Failed(FailedTransaction {
+                    date: prepared.date.clone(),
+                    description: prepared.description.clone(),
+                    amount_minor: prepared.amount_minor,
+                    error: "on-conflict=upsert not yet implemented".to_string(),
+                })
+            }
+        }),
+        Ok(false) => None,
+        Err(e) => Some(TransactionOutcome::Failed(FailedTransaction {
+            date: prepared.date.clone(),
+            description: prepared.description.clone(),
+            amount_minor: prepared.amount_minor,
+            error: e.to_string(),
+        })),
+    }
+}
+
+/// Build the balanced double-entry pair and post the prepared transaction.
+fn insert_transaction(
+    conn: &rusqlite::Connection,
+    company: &str,
+    account_code: &str,
+    suspense_code: &str,
+    prepared: &PreparedTransaction,
+    conflict_strategy: transactions::ConflictStrategy,
+) -> TransactionOutcome {
     // Build balanced entries: inflow = debit bank, credit suspense;
     // outflow = debit suspense, credit bank.
     let (debit_code, credit_code) = if prepared.is_inflow {
