@@ -331,14 +331,14 @@ bk --company personal account list --name "Cash" --with-balances --to 2026-06-30
 
 ### Output Formats
 
-Every command supports `--format table` (default), `--format json`, and `--format csv`. Use `--json` as shorthand:
+Every command supports `--format table` (default), `--format json`, and `--format csv`. The output `--format`/`--json` options are top-level: place them before the subcommand (e.g. `bk --format csv txn list`). Use `--json` as shorthand:
 
 ```sh
 # Pipe JSON to jq (data is inside the envelope's "data" field)
-bk --company personal report trial-balance --json | jq '.data.accounts[] | select(.type == "asset")'
+bk --company personal --json report trial-balance | jq '.data.accounts[] | select(.type == "asset")'
 
 # CSV for spreadsheets
-bk --company personal txn list --format csv > transactions.csv
+bk --company personal --format csv txn list > transactions.csv
 
 # Export entire database (all companies) to JSON
 bk export --json > backup.json
