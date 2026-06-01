@@ -222,9 +222,11 @@ If skipped, `id` is null and `existing_id` is provided:
 }
 ```
 
-References are hashed into deterministic `txnref_`-prefixed keys. Transactions without `--reference` are unrestricted.
+References are stored verbatim (whitespace is trimmed; empty strings are rejected). The reference value is what `txn list --reference` matches against. Transactions without `--reference` are unrestricted.
 
 ### OFX / QFX Bank Statement Import
+
+> **Note:** Only OFX/QFX import is currently supported. CSV and JSON import formats are planned; using `--format csv` or `--format json` returns an `UNIMPLEMENTED` error.
 
 Import transactions from bank and credit card statements exported in OFX format. Each OFX transaction becomes a balanced double-entry against a user-specified bank account and suspense/clearing account:
 
@@ -426,7 +428,7 @@ All JSON output follows a uniform envelope contract for reliable programmatic co
 }
 ```
 
-The `meta` block is guaranteed to be present for both success and error responses. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
+The `meta` block is guaranteed to be present for both success and error responses. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `UNIMPLEMENTED`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
 
 ### Environment Variables
 
