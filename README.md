@@ -426,7 +426,7 @@ All JSON output follows a uniform envelope contract for reliable programmatic co
 }
 ```
 
-The `meta` block is guaranteed to be present for both success and error responses. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
+The `meta` block is guaranteed to be present for both success and error responses. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `UNIMPLEMENTED`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
 
 ### Environment Variables
 
