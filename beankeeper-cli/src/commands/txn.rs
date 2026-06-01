@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use beankeeper::core::JournalEntry;
-use beankeeper::prelude::IdempotencyKey;
 use beankeeper::types::{Currency, DocumentType, Money};
 
 use crate::cli::{Cli, OutputFormat, TxnCommand, resolve_format};
@@ -316,6 +315,23 @@ pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, 
     }
 }
 
+/// Normalize a user-supplied transaction reference for storage.
+///
+/// Trims surrounding whitespace and rejects empty input. The returned value is
+/// stored verbatim in the `reference` column so that it round-trips through
+/// `txn list --reference <KEY>`.
+///
+/// # Errors
+///
+/// Returns an error message if the reference is empty or whitespace-only.
+fn normalize_reference(input: &str) -> Result<String, &'static str> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("reference must not be empty");
+    }
+    Ok(trimmed.to_string())
+}
+
 /// Execute the `txn post` subcommand.
 #[allow(clippy::too_many_arguments)]
 fn run_post(
@@ -415,9 +431,12 @@ fn run_post(
         &resolve_tax,
     )?;
 
-    // Resolve idempotency key from the reference, if provided.
-    let idempotency_key = reference
-        .map(IdempotencyKey::from_reference)
+    // Store the user-supplied reference key verbatim so that it round-trips
+    // through `txn list --reference <KEY>`. The reference column is itself the
+    // idempotency/dedup key, so the raw value is also what conflict checks
+    // compare against.
+    let reference = reference
+        .map(normalize_reference)
         .transpose()
         .map_err(|e| CliError::Validation(format!("invalid reference: {e}")))?;
 
@@ -429,7 +448,7 @@ fn run_post(
         date: &effective_date,
         entries: &db_entries,
         correlate,
-        reference: idempotency_key.as_ref().map(IdempotencyKey::as_str),
+        reference: reference.as_deref(),
         on_conflict: match on_conflict {
             crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
             crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
@@ -788,6 +807,31 @@ fn run_reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_reference_stores_verbatim() {
+        // Regression for issue #12: the user key must be stored as-is, not
+        // hashed into a txnref_ token.
+        assert_eq!(
+            normalize_reference("RENT-2026-03").as_deref(),
+            Ok("RENT-2026-03")
+        );
+    }
+
+    #[test]
+    fn normalize_reference_trims_whitespace() {
+        assert_eq!(normalize_reference("  INV-001  ").as_deref(), Ok("INV-001"));
+    }
+
+    #[test]
+    fn normalize_reference_rejects_empty() {
+        assert!(normalize_reference("").is_err());
+    }
+
+    #[test]
+    fn normalize_reference_rejects_whitespace_only() {
+        assert!(normalize_reference("   ").is_err());
+    }
 
     #[test]
     fn parse_amount_whole_usd() {
