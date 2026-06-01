@@ -14,6 +14,8 @@ pub enum CliError {
     NotFound(String),
     /// General error. Exit code 1.
     General(String),
+    /// Advertised capability that is not implemented yet. Exit code 2.
+    Unimplemented(String),
     /// Library error. Exit code 3.
     Bean(beankeeper::error::BeanError),
     /// `rusqlite` error. Exit code 4.
@@ -27,7 +29,7 @@ impl CliError {
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::Usage(_) => 2,
+            Self::Usage(_) | Self::Unimplemented(_) => 2,
             Self::Validation(_) | Self::Bean(_) => 3,
             Self::Database(_) | Self::Sqlite(_) => 4,
             Self::NotFound(_) => 5,
@@ -40,6 +42,7 @@ impl CliError {
     pub fn error_code(&self) -> &'static str {
         match self {
             Self::Usage(_) => "USAGE",
+            Self::Unimplemented(_) => "UNIMPLEMENTED",
             Self::Validation(_) | Self::Bean(_) => "VALIDATION",
             Self::Database(_) | Self::Sqlite(_) => "DATABASE",
             Self::NotFound(_) => "NOT_FOUND",
@@ -96,7 +99,8 @@ impl fmt::Display for CliError {
             | Self::Validation(msg)
             | Self::Database(msg)
             | Self::NotFound(msg)
-            | Self::General(msg) => write!(f, "{msg}"),
+            | Self::General(msg)
+            | Self::Unimplemented(msg) => write!(f, "{msg}"),
             Self::Bean(e) => write!(f, "{e}"),
             Self::Sqlite(e) => write!(f, "database error: {e}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
@@ -114,7 +118,8 @@ impl std::error::Error for CliError {
             | Self::Validation(_)
             | Self::Database(_)
             | Self::NotFound(_)
-            | Self::General(_) => None,
+            | Self::General(_)
+            | Self::Unimplemented(_) => None,
         }
     }
 }
@@ -164,6 +169,13 @@ mod tests {
             CliError::Io(io::Error::new(io::ErrorKind::NotFound, "gone")).exit_code(),
             1
         );
+    }
+
+    #[test]
+    fn unimplemented_uses_usage_exit_code_and_dedicated_error_code() {
+        let err = CliError::Unimplemented("csv import not supported".into());
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.error_code(), "UNIMPLEMENTED");
     }
 
     #[test]

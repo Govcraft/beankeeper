@@ -1131,12 +1131,12 @@ mod tests {
     }
 
     #[test]
-    fn post_transaction_skip_conflict() {
+    fn post_transaction_skip_conflict() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup();
         let entries = sample_entries();
         let mut p1 = make_params(&entries, "First", None, "2024-01-01");
         p1.reference = Some("REF-1");
-        let res1 = post_transaction(db.conn(), &p1).unwrap();
+        let res1 = post_transaction(db.conn(), &p1)?;
         let PostResult::Created(id1) = res1 else {
             panic!("expected Created");
         };
@@ -1144,12 +1144,13 @@ mod tests {
         let mut p2 = make_params(&entries, "Duplicate", None, "2024-01-01");
         p2.reference = Some("REF-1");
         p2.on_conflict = ConflictStrategy::Skip;
-        let res2 = post_transaction(db.conn(), &p2).unwrap();
+        let res2 = post_transaction(db.conn(), &p2)?;
         assert_eq!(res2, PostResult::Skipped(id1));
 
         // Verify only one transaction exists
         let lp = ListTransactionParams::for_company("acme");
-        let count = count_transactions(db.conn(), &lp).unwrap();
+        let count = count_transactions(db.conn(), &lp)?;
         assert_eq!(count, 1);
+        Ok(())
     }
 }
