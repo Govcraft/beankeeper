@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn trial_balance_with_date_range() {
+    fn trial_balance_with_date_range() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
@@ -597,7 +597,8 @@ mod tests {
 
         let balances = compute_trial_balance(db.conn(), "acme", None, Some("2024-02-01"), Some("2024-02-29"))
             .unwrap_or_default();
-        let cash = balances.iter().find(|b| b.code == "1000").unwrap();
+        let cash = balances.iter().find(|b| b.code == "1000").ok_or("expected matching item")?;
         assert_eq!(cash.debit_total, 3000);
+        Ok(())
     }
 }

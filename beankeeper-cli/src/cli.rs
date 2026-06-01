@@ -787,6 +787,7 @@ EXAMPLES:\n  \
         file: Option<String>,
 
         /// Input format. Auto-detected from file extension when omitted.
+        /// Only `ofx` is currently supported; `csv` and `json` are planned.
         #[arg(id = "import_format", long = "format", value_enum)]
         format: Option<ImportFormat>,
 
@@ -1052,9 +1053,9 @@ pub enum ExportFormat {
 /// Import-specific input format.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFormat {
-    /// CSV input.
+    /// CSV input (planned; not yet supported).
     Csv,
-    /// JSON input.
+    /// JSON input (planned; not yet supported).
     Json,
     /// OFX / QFX bank statement.
     Ofx,

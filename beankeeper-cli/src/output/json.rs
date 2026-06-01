@@ -1042,22 +1042,24 @@ mod tests {
     }
 
     #[test]
-    fn envelope_structure_success() {
-        let json = render_companies(&[], test_meta("company.list", None)).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    fn envelope_structure_success() -> Result<(), Box<dyn std::error::Error>> {
+        let json = render_companies(&[], test_meta("company.list", None))?;
+        let v: serde_json::Value = serde_json::from_str(&json)?;
         assert_eq!(v["ok"], true);
         assert_eq!(v["meta"]["command"], "company.list");
         assert_eq!(v["meta"]["timestamp"], "2025-01-01T00:00:00Z");
         assert!(v["meta"]["company"].is_null());
         assert!(v["data"].is_array());
         assert!(v.get("error").is_none());
+        Ok(())
     }
 
     #[test]
-    fn envelope_structure_company_field() {
-        let json = render_accounts(&[], test_meta("account.list", Some("acme"))).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    fn envelope_structure_company_field() -> Result<(), Box<dyn std::error::Error>> {
+        let json = render_accounts(&[], test_meta("account.list", Some("acme")))?;
+        let v: serde_json::Value = serde_json::from_str(&json)?;
         assert_eq!(v["meta"]["company"], "acme");
+        Ok(())
     }
 
     #[test]
