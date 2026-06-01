@@ -52,7 +52,11 @@ pub struct Cli {
 #[derive(Args, Debug)]
 pub struct FormatOptions {
     /// Output format.
-    #[arg(long, global = true, value_enum)]
+    ///
+    /// Defined at the top level only (not `global`) so it does not collide with
+    /// the subcommand-local `--format` options on `export`/`import`, which carry
+    /// their own value enums.
+    #[arg(long, value_enum)]
     pub format: Option<OutputFormat>,
 
     /// Shorthand for --format json.
@@ -157,7 +161,7 @@ EXAMPLES:\n  \
 ")]
     Export {
         /// Output format for export.
-        #[arg(long, value_enum)]
+        #[arg(id = "export_format", long = "format", value_enum)]
         format: Option<ExportFormat>,
 
         /// Output file path (default: stdout).
@@ -331,7 +335,7 @@ EXAMPLES:\n  \
         #[arg(long, conflicts_with_all = ["month", "amount"])]
         annual: Option<String>,
 
-        /// Currency code (default: USD or BEANKEEPER_CURRENCY).
+        /// Currency code (default: USD or `BEANKEEPER_CURRENCY`).
         #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
         currency: String,
 
@@ -783,7 +787,7 @@ EXAMPLES:\n  \
         file: Option<String>,
 
         /// Input format. Auto-detected from file extension when omitted.
-        #[arg(long, value_enum)]
+        #[arg(id = "import_format", long = "format", value_enum)]
         format: Option<ImportFormat>,
 
         /// Validate without persisting.

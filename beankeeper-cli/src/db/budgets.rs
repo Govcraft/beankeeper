@@ -496,7 +496,7 @@ mod tests {
         SetAnnualBudgetParams { company_slug: "acme", account_code: account, currency: "USD", year, annual_amount: amount, notes }
     }
 
-    fn variance<'a>(year: i32, from: i32, to: i32, acct_type: Option<&'a str>, unbudgeted: bool) -> BudgetVarianceParams<'a> {
+    fn variance(year: i32, from: i32, to: i32, acct_type: Option<&str>, unbudgeted: bool) -> BudgetVarianceParams<'_> {
         BudgetVarianceParams { company_slug: "acme", currency: "USD", year, from_month: from, to_month: to, account_type: acct_type, include_unbudgeted: unbudgeted }
     }
 
