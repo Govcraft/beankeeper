@@ -440,6 +440,7 @@ fn run_post(
         .transpose()
         .map_err(|e| CliError::Validation(format!("invalid reference: {e}")))?;
 
+    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
     let params = transactions::PostTransactionParams {
         company_slug: company,
         description,
@@ -454,6 +455,7 @@ fn run_post(
             crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
             crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
         },
+        actor: &actor,
     };
 
     let post_result = transactions::post_transaction(db_handle.conn(), &params)?;
@@ -729,9 +731,18 @@ fn run_clear(
         )));
     }
 
-    // 2. Update the status in the database.
+    // 2. Update the status in the database through the audited mutation path,
+    //    which records the transition (who, when, from -> to).
     let status_str = status.as_str();
-    transactions::update_entry_status(db_handle.conn(), company, transaction_id, entry_id, status_str)?;
+    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
+    crate::db::set_entry_status(
+        db_handle.conn(),
+        &actor,
+        company,
+        transaction_id,
+        entry_id,
+        status.to_entry_status(),
+    )?;
 
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {

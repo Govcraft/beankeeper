@@ -408,6 +408,9 @@ fn insert_transaction(
         },
     ];
 
+    // Imports never correlate, so no audited side effect fires here; the actor
+    // is resolved from the environment to satisfy the post API.
+    let actor = crate::db::Actor::resolve(None);
     let params = transactions::PostTransactionParams {
         company_slug: company,
         description: &prepared.description,
@@ -418,6 +421,7 @@ fn insert_transaction(
         correlate: None,
         reference: Some(&prepared.reference),
         on_conflict: conflict_strategy,
+        actor: &actor,
     };
 
     match transactions::post_transaction(conn, &params) {

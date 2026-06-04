@@ -115,22 +115,6 @@ pub fn get_company(conn: &Connection, slug: &str) -> Result<CompanyRow, CliError
     }
 }
 
-/// Deletes a company by slug.
-///
-/// # Errors
-///
-/// Returns `CliError::NotFound` if the company does not exist.
-/// Returns `CliError::Sqlite` on database errors.
-pub fn delete_company(conn: &Connection, slug: &str) -> Result<(), CliError> {
-    let affected = conn.execute("DELETE FROM companies WHERE slug = ?1", params![slug])?;
-
-    if affected == 0 {
-        return Err(CliError::NotFound(format!("company '{slug}' not found")));
-    }
-
-    Ok(())
-}
-
 /// Returns `true` if a company with the given slug exists.
 ///
 /// # Errors
@@ -207,15 +191,17 @@ mod tests {
     #[test]
     fn delete_company_removes_row() {
         let db = setup();
+        let actor = crate::db::Actor::new("test");
         assert!(create_company(db.conn(), "acme", "Acme", None).is_ok());
-        assert!(delete_company(db.conn(), "acme").is_ok());
+        assert!(crate::db::delete_company(db.conn(), &actor, "acme").is_ok());
         assert!(!company_exists(db.conn(), "acme").unwrap_or(true));
     }
 
     #[test]
     fn delete_missing_company_is_not_found() {
         let db = setup();
-        let result = delete_company(db.conn(), "nope");
+        let actor = crate::db::Actor::new("test");
+        let result = crate::db::delete_company(db.conn(), &actor, "nope");
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 

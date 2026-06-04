@@ -222,6 +222,7 @@ mod tests {
                 tax_category: None,
             },
         ];
+        let actor = crate::db::Actor::new("test");
         let params = transactions::PostTransactionParams {
             company_slug: "acme",
             description: "Sale",
@@ -232,6 +233,7 @@ mod tests {
             correlate: None,
             reference: None,
             on_conflict: transactions::ConflictStrategy::Error,
+            actor: &actor,
         };
         match transactions::post_transaction(db.conn(), &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"))

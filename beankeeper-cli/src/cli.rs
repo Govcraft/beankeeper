@@ -32,6 +32,13 @@ pub struct Cli {
     #[arg(long, env = "BEANKEEPER_COMPANY")]
     pub company: Option<String>,
 
+    /// Principal recorded in the audit trail for mutating operations.
+    ///
+    /// Falls back to the `BK_ACTOR` environment variable, then the OS user,
+    /// then `"cli"`.
+    #[arg(long, global = true, env = "BK_ACTOR")]
+    pub actor: Option<String>,
+
     /// Output format options.
     #[command(flatten)]
     pub output: FormatOptions,
@@ -195,6 +202,104 @@ EXAMPLES:\n  \
 
     /// Generate financial reports.
     Report(ReportArgs),
+
+    /// Inspect the audit trail of ledger mutations.
+    Audit(AuditArgs),
+}
+
+/// Arguments for audit commands.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "\
+EXAMPLES:\n  \
+    Show the most recent recorded changes:\n    \
+    $ bk audit log\n    \
+    \n  \
+    Show clearance/reconciliation history for one company:\n    \
+    $ bk audit log --company acme --entity entry\n    \
+    \n  \
+    Show the last 100 deletions:\n    \
+    $ bk audit log --action company_delete --limit 100\
+"
+)]
+pub struct AuditArgs {
+    #[command(subcommand)]
+    pub command: AuditCommand,
+}
+
+/// Subcommands for inspecting the audit trail.
+#[derive(Subcommand, Debug)]
+pub enum AuditCommand {
+    /// List recorded changes, most recent first.
+    Log {
+        /// Restrict to one company slug.
+        #[arg(long)]
+        company: Option<String>,
+
+        /// Restrict to one entity kind (entry, transaction, budget, account, company).
+        #[arg(long, value_enum)]
+        entity: Option<AuditEntityArg>,
+
+        /// Restrict to one action kind.
+        #[arg(long, value_enum)]
+        action: Option<AuditActionArg>,
+
+        /// Maximum number of rows to show.
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+}
+
+/// Entity-kind filter for `audit log`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditEntityArg {
+    Entry,
+    Transaction,
+    Budget,
+    Account,
+    Company,
+}
+
+impl AuditEntityArg {
+    /// Returns the database string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Entry => "entry",
+            Self::Transaction => "transaction",
+            Self::Budget => "budget",
+            Self::Account => "account",
+            Self::Company => "company",
+        }
+    }
+}
+
+/// Action-kind filter for `audit log`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditActionArg {
+    StatusChange,
+    Correlate,
+    BudgetSet,
+    BudgetDelete,
+    AccountDelete,
+    CompanyDelete,
+}
+
+impl AuditActionArg {
+    /// Returns the database string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StatusChange => "status_change",
+            Self::Correlate => "correlate",
+            Self::BudgetSet => "budget_set",
+            Self::BudgetDelete => "budget_delete",
+            Self::AccountDelete => "account_delete",
+            Self::CompanyDelete => "company_delete",
+        }
+    }
 }
 
 /// Arguments for account commands.
@@ -1096,6 +1201,17 @@ impl ClearanceArg {
             Self::Uncleared => "uncleared",
             Self::Cleared => "cleared",
             Self::Reconciled => "reconciled",
+        }
+    }
+
+    /// Converts to the typed [`EntryStatus`](crate::db::EntryStatus) used by
+    /// the audited mutation API.
+    #[must_use]
+    pub fn to_entry_status(self) -> crate::db::EntryStatus {
+        match self {
+            Self::Uncleared => crate::db::EntryStatus::Uncleared,
+            Self::Cleared => crate::db::EntryStatus::Cleared,
+            Self::Reconciled => crate::db::EntryStatus::Reconciled,
         }
     }
 }

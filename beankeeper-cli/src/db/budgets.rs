@@ -18,45 +18,6 @@ pub struct SetBudgetParams<'a> {
     pub notes: Option<&'a str>,
 }
 
-/// Upserts a single month's budget for an account.
-///
-/// Uses `INSERT OR REPLACE` on the unique `(company_slug, account_code, currency,
-/// year, month)` constraint so repeated calls overwrite the previous value.
-///
-/// # Errors
-///
-/// Returns `CliError::Sqlite` on database errors.
-pub fn set_budget(
-    conn: &Connection,
-    p: &SetBudgetParams<'_>,
-) -> Result<BudgetRow, CliError> {
-    conn.execute(
-        "INSERT OR REPLACE INTO budgets \
-         (company_slug, account_code, currency, year, month, amount, notes) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![p.company_slug, p.account_code, p.currency, p.year, p.month, p.amount, p.notes],
-    )?;
-
-    let id = conn.last_insert_rowid();
-    let created_at: String = conn.query_row(
-        "SELECT created_at FROM budgets WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get(0),
-    )?;
-
-    Ok(BudgetRow {
-        id,
-        company_slug: p.company_slug.to_string(),
-        account_code: p.account_code.to_string(),
-        currency: p.currency.to_string(),
-        year: p.year,
-        month: p.month,
-        amount: p.amount,
-        notes: p.notes.map(String::from),
-        created_at,
-    })
-}
-
 /// Parameters for setting an annual budget.
 pub struct SetAnnualBudgetParams<'a> {
     pub company_slug: &'a str,
@@ -65,42 +26,6 @@ pub struct SetAnnualBudgetParams<'a> {
     pub year: i32,
     pub annual_amount: i64,
     pub notes: Option<&'a str>,
-}
-
-/// Distributes an annual budget amount evenly across 12 months and upserts each.
-///
-/// Each month gets `annual_amount / 12` minor units, with the first
-/// `annual_amount % 12` months receiving an extra 1 unit so the total is exact.
-///
-/// # Errors
-///
-/// Returns `CliError::Sqlite` on database errors.
-pub fn set_annual_budget(
-    conn: &Connection,
-    params: &SetAnnualBudgetParams<'_>,
-) -> Result<Vec<BudgetRow>, CliError> {
-    let base = params.annual_amount / 12;
-    let remainder = params.annual_amount % 12;
-    let mut rows = Vec::with_capacity(12);
-
-    for m in 1..=12 {
-        let extra = i64::from(i64::from(m) <= remainder);
-        let row = set_budget(
-            conn,
-            &SetBudgetParams {
-                company_slug: params.company_slug,
-                account_code: params.account_code,
-                currency: params.currency,
-                year: params.year,
-                month: m,
-                amount: base + extra,
-                notes: params.notes,
-            },
-        )?;
-        rows.push(row);
-    }
-
-    Ok(rows)
 }
 
 /// Parameters for listing budgets.
@@ -167,36 +92,6 @@ pub fn list_budgets(
     Ok(results)
 }
 
-/// Deletes budget rows for an account. If `month` is `None`, deletes all months
-/// for that account/year/currency.
-///
-/// Returns the number of rows deleted.
-///
-/// # Errors
-///
-/// Returns `CliError::Sqlite` on database errors.
-pub fn delete_budget(
-    conn: &Connection,
-    company_slug: &str,
-    account_code: &str,
-    currency: &str,
-    year: i32,
-    month: Option<i32>,
-) -> Result<usize, CliError> {
-    let count = if let Some(m) = month {
-        conn.execute(
-            "DELETE FROM budgets WHERE company_slug = ?1 AND account_code = ?2 AND currency = ?3 AND year = ?4 AND month = ?5",
-            rusqlite::params![company_slug, account_code, currency, year, m],
-        )?
-    } else {
-        conn.execute(
-            "DELETE FROM budgets WHERE company_slug = ?1 AND account_code = ?2 AND currency = ?3 AND year = ?4",
-            rusqlite::params![company_slug, account_code, currency, year],
-        )?
-    };
-
-    Ok(count)
-}
 
 /// Parameters for computing budget variance.
 pub struct BudgetVarianceParams<'a> {
@@ -408,8 +303,36 @@ fn last_day_of_month(year: i32, month: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{Db, create_account, create_company, post_transaction};
+    use crate::db::{Actor, Db, audit, create_account, create_company, post_transaction};
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
+
+    fn test_actor() -> Actor {
+        Actor::new("test")
+    }
+
+    // Test-local shims onto the audited mutation API, so the audited path is
+    // exercised here without restating the actor at every call site.
+    fn set_budget(conn: &Connection, p: &SetBudgetParams<'_>) -> Result<BudgetRow, CliError> {
+        audit::set_budget(conn, &test_actor(), p)
+    }
+
+    fn set_annual_budget(
+        conn: &Connection,
+        p: &SetAnnualBudgetParams<'_>,
+    ) -> Result<Vec<BudgetRow>, CliError> {
+        audit::set_annual_budget(conn, &test_actor(), p)
+    }
+
+    fn delete_budget(
+        conn: &Connection,
+        company_slug: &str,
+        account_code: &str,
+        currency: &str,
+        year: i32,
+        month: Option<i32>,
+    ) -> Result<usize, CliError> {
+        audit::delete_budget(conn, &test_actor(), company_slug, account_code, currency, year, month)
+    }
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
@@ -443,6 +366,7 @@ mod tests {
                 tax_category: None,
             },
         ];
+        let actor = test_actor();
         let params = PostTransactionParams {
             company_slug: "acme",
             description: "Test expense",
@@ -453,6 +377,7 @@ mod tests {
             correlate: None,
             reference: None,
             on_conflict: ConflictStrategy::Error,
+            actor: &actor,
         };
         post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
     }
@@ -474,6 +399,7 @@ mod tests {
                 tax_category: None,
             },
         ];
+        let actor = test_actor();
         let params = PostTransactionParams {
             company_slug: "acme",
             description: "Test revenue",
@@ -484,6 +410,7 @@ mod tests {
             correlate: None,
             reference: None,
             on_conflict: ConflictStrategy::Error,
+            actor: &actor,
         };
         post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
     }

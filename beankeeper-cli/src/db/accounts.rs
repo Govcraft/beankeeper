@@ -186,28 +186,6 @@ pub fn get_account(
     }
 }
 
-/// Deletes an account by company slug and code.
-///
-/// Returns `CliError::NotFound` if the account does not exist.
-///
-/// # Errors
-///
-/// Returns `CliError::NotFound` if the account does not exist.
-pub fn delete_account(conn: &Connection, company_slug: &str, code: &str) -> Result<(), CliError> {
-    let affected = conn.execute(
-        "DELETE FROM accounts WHERE company_slug = ?1 AND code = ?2",
-        params![company_slug, code],
-    )?;
-
-    if affected == 0 {
-        return Err(CliError::NotFound(format!(
-            "account '{code}' not found in company '{company_slug}'"
-        )));
-    }
-
-    Ok(())
-}
-
 /// Returns `true` if an account with the given code exists for the company.
 ///
 /// # Errors
@@ -336,15 +314,17 @@ mod tests {
     #[test]
     fn delete_account_removes_row() {
         let db = setup();
+        let actor = crate::db::Actor::new("test");
         assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
-        assert!(delete_account(db.conn(), "acme", "1000").is_ok());
+        assert!(crate::db::delete_account(db.conn(), &actor, "acme", "1000").is_ok());
         assert!(!account_exists(db.conn(), "acme", "1000").unwrap_or(true));
     }
 
     #[test]
     fn delete_missing_account_is_not_found() {
         let db = setup();
-        let result = delete_account(db.conn(), "acme", "9999");
+        let actor = crate::db::Actor::new("test");
+        let result = crate::db::delete_account(db.conn(), &actor, "acme", "9999");
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 

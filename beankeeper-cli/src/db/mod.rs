@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod attachments;
+pub mod audit;
 pub mod budgets;
 pub mod companies;
 pub mod connection;
@@ -9,18 +10,22 @@ pub mod schema;
 pub mod transactions;
 
 pub use accounts::{
-    ListAccountParams, account_exists, create_account, delete_account, get_account,
-    list_account_codes, list_accounts, row_to_account,
+    ListAccountParams, account_exists, create_account, get_account, list_account_codes,
+    list_accounts, row_to_account,
+};
+pub use audit::{
+    Actor, AuditLogRow, EntryStatus, ListAuditParams, correlate_partner, delete_account,
+    delete_budget, delete_company, list_audit, set_annual_budget, set_budget, set_entry_status,
 };
 pub use budgets::{
     BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,
-    compute_budget_variance, delete_budget, list_budgets, set_annual_budget, set_budget,
+    compute_budget_variance, list_budgets,
 };
 pub use attachments::{
     AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
     store_attachment,
 };
-pub use companies::{company_exists, create_company, delete_company, get_company, list_companies};
+pub use companies::{company_exists, create_company, get_company, list_companies};
 pub use connection::Db;
 pub use schema::{ensure_schema, get_schema_version};
 pub use transactions::{
@@ -471,6 +476,7 @@ mod tests {
                 tax_category: None,
             },
         ];
+        let actor = Actor::new("test");
         let params = transactions::PostTransactionParams {
             company_slug: "acme",
             description: "Sale",
@@ -481,6 +487,7 @@ mod tests {
             correlate: None,
             reference: None,
             on_conflict: transactions::ConflictStrategy::Error,
+            actor: &actor,
         };
         post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
     }

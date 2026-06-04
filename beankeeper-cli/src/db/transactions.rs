@@ -3,6 +3,7 @@ use std::fmt::Write;
 use rusqlite::{Connection, params};
 use serde_json;
 
+use super::audit::{self, Actor};
 use super::{EntryRow, TransactionRow};
 use crate::error::CliError;
 
@@ -42,6 +43,9 @@ pub struct PostTransactionParams<'a> {
     pub reference: Option<&'a str>,
     /// How to handle duplicate references.
     pub on_conflict: ConflictStrategy,
+    /// The principal recorded against any audited side effect (e.g. correlating
+    /// a partner transaction).
+    pub actor: &'a Actor,
 }
 
 /// An orphaned intercompany correlation found by reconcile.
@@ -180,9 +184,11 @@ fn post_transaction_inner(
         )?;
     }
 
-    // If correlating, update the partner transaction bidirectionally.
+    // If correlating, update the partner transaction bidirectionally. The
+    // partner's metadata is mutated in place, so it goes through the audited
+    // mutation path rather than a bare in-place write here.
     if let Some(partner_id) = p.correlate {
-        link_partner(conn, p.company_slug, txn_id, partner_id)?;
+        audit::correlate_partner(conn, p.actor, p.company_slug, txn_id, partner_id)?;
     }
 
     Ok(PostResult::Created(txn_id))
@@ -198,84 +204,6 @@ fn build_metadata(user_metadata: Option<&str>, correlate: Option<i64>) -> Option
             r#"{{"correlate":{cid},"ref":{}}}"#,
             serde_json::json!(m)
         )),
-    }
-}
-
-/// Validate and link a partner transaction bidirectionally.
-///
-/// - Verifies the partner exists and belongs to a different company.
-/// - Verifies the partner is not already correlated.
-/// - Updates the partner's metadata to include `{"correlate": new_txn_id}`.
-fn link_partner(
-    conn: &Connection,
-    new_company: &str,
-    new_txn_id: i64,
-    partner_id: i64,
-) -> Result<(), CliError> {
-    // Look up the partner transaction (any company).
-    let partner: (String, Option<String>) = conn
-        .query_row(
-            "SELECT company_slug, metadata FROM transactions WHERE id = ?1",
-            params![partner_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|_| CliError::NotFound(format!("transaction #{partner_id} not found")))?;
-
-    let (partner_company, partner_metadata) = partner;
-
-    // Must belong to a different company.
-    if partner_company == new_company {
-        return Err(CliError::Validation(format!(
-            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'"
-        )));
-    }
-
-    // Must not already be correlated.
-    if let Some(ref meta) = partner_metadata {
-        if meta.contains("\"correlate\"") {
-            return Err(CliError::Validation(format!(
-                "transaction #{partner_id} is already correlated"
-            )));
-        }
-    }
-
-    // Build the updated metadata for the partner.
-    let updated_partner_meta =
-        merge_correlate_into_metadata(partner_metadata.as_deref(), new_txn_id);
-
-    conn.execute(
-        "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
-        params![updated_partner_meta, partner_id],
-    )?;
-
-    Ok(())
-}
-
-/// Merge a `correlate` key into existing metadata.
-///
-/// - No existing metadata → `{"correlate": id}`
-/// - Existing JSON object → insert `correlate` key
-/// - Existing plain string → `{"correlate": id, "ref": "old_string"}`
-fn merge_correlate_into_metadata(existing: Option<&str>, correlate_id: i64) -> String {
-    match existing {
-        None => format!(r#"{{"correlate":{correlate_id}}}"#),
-        Some(s) if s.starts_with('{') => {
-            // Insert "correlate":N at the beginning of the JSON object.
-            let rest = &s[1..]; // skip opening brace
-            if rest.trim_start().starts_with('}') {
-                // Empty object
-                format!(r#"{{"correlate":{correlate_id}}}"#)
-            } else {
-                format!(r#"{{"correlate":{correlate_id},{rest}"#)
-            }
-        }
-        Some(s) => {
-            // Plain string — wrap into JSON object with ref key.
-            format!(
-                r#"{{"correlate":{correlate_id},"ref":{}}}"#,
-                serde_json::json!(s)
-            )
-        }
     }
 }
 
@@ -595,35 +523,6 @@ pub fn get_entries_for_transaction(
     Ok(entries)
 }
 
-/// Updates the clearance status of a specific entry.
-///
-/// # Errors
-///
-/// Returns `CliError::NotFound` if the entry does not exist or doesn't belong to the given transaction/company.
-/// Returns `CliError::Sqlite` on database errors.
-pub fn update_entry_status(
-    conn: &Connection,
-    company_slug: &str,
-    txn_id: i64,
-    entry_id: i64,
-    status: &str,
-) -> Result<(), CliError> {
-    let rows_affected = conn.execute(
-        "UPDATE entries \
-         SET status = ?1 \
-         WHERE id = ?2 AND transaction_id = ?3 AND company_slug = ?4",
-        params![status, entry_id, txn_id, company_slug],
-    )?;
-
-    if rows_affected == 0 {
-        return Err(CliError::NotFound(format!(
-            "entry {entry_id} not found in transaction {txn_id} for company '{company_slug}'"
-        )));
-    }
-
-    Ok(())
-}
-
 /// Find orphaned intercompany correlations.
 ///
 /// Returns transactions that reference a partner via `json_extract(metadata, '$.correlate')`
@@ -700,6 +599,12 @@ mod tests {
         ]
     }
 
+    fn test_actor() -> &'static Actor {
+        use std::sync::OnceLock;
+        static A: OnceLock<Actor> = OnceLock::new();
+        A.get_or_init(|| Actor::new("test"))
+    }
+
     fn make_params<'a>(
         entries: &'a [PostEntryParams],
         description: &'a str,
@@ -716,6 +621,7 @@ mod tests {
             correlate: None,
             reference: None,
             on_conflict: ConflictStrategy::Error,
+            actor: test_actor(),
         }
     }
 

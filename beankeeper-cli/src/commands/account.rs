@@ -138,7 +138,8 @@ fn run_delete(
             return Ok(());
         }
     }
-    accounts::delete_account(db.conn(), company, code)?;
+    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
+    crate::db::delete_account(db.conn(), &actor, company, code)?;
     if format == OutputFormat::Json {
         let meta = output::json::meta("account.delete", Some(company));
         let rendered = output::json::render_deleted(code, meta)?;

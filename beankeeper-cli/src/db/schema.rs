@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 7;
+const CURRENT_VERSION: i64 = 8;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -67,6 +67,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 7 {
         apply_v7(conn)?;
+    }
+
+    if version < 8 {
+        apply_v8(conn)?;
     }
 
     debug_assert_eq!(
@@ -280,6 +284,47 @@ fn apply_v7(conn: &Connection) -> Result<(), CliError> {
     conn.execute(
         "INSERT INTO schema_version (version) VALUES (?1)",
         params![7],
+    )?;
+
+    Ok(())
+}
+
+/// Applies the v8 migration: adds the append-only `audit_log` table.
+///
+/// Every in-place mutation or deletion in the ledger (clearance-status
+/// changes, intercompany correlation, budget revisions, and account/company
+/// deletions) appends one immutable row here, recording who changed what and
+/// when, with JSON before/after snapshots. This closes the audit gap where
+/// such transitions previously left no trace (see issue #16).
+fn apply_v8(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            changed_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            actor        TEXT    NOT NULL,
+            company_slug TEXT,
+            entity       TEXT    NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company')),
+            entity_id    TEXT    NOT NULL,
+            action       TEXT    NOT NULL CHECK(action IN ('status_change','correlate','budget_set','budget_delete','account_delete','company_delete')),
+            before       TEXT,
+            after        TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_audit_entity
+            ON audit_log(entity, entity_id);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_company_time
+            ON audit_log(company_slug, changed_at);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_action
+            ON audit_log(action);
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        params![8],
     )?;
 
     Ok(())
@@ -520,6 +565,48 @@ mod tests {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'budgets'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn v8_migration_adds_audit_log_table() {
+        let conn = open_conn();
+        // Apply v1 through v7.
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
+        apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
+        apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
+        apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(7));
+
+        // Now run ensure_schema which should apply v8.
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        // Verify audit_log table exists.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'audit_log'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn audit_log_table_exists() {
+        let conn = open_conn();
+        assert!(ensure_schema(&conn).is_ok());
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'audit_log'",
                 [],
                 |row| row.get(0),
             )

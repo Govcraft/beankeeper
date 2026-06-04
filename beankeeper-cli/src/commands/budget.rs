@@ -99,7 +99,8 @@ fn run_set(
     if let Some(annual_str) = annual {
         // Annual budget -- distribute across 12 months
         let annual_minor = parse_amount_to_minor(annual_str, currency)?;
-        let rows = db::set_annual_budget(db.conn(), &db::SetAnnualBudgetParams {
+        let actor = db::Actor::resolve(cli.actor.as_deref());
+        let rows = db::set_annual_budget(db.conn(), &actor, &db::SetAnnualBudgetParams {
             company_slug: company,
             account_code: account,
             currency: currency_code,
@@ -138,7 +139,8 @@ fn run_set(
         }
 
         let minor = parse_amount_to_minor(amount_str, currency)?;
-        let row = db::set_budget(db.conn(), &db::SetBudgetParams {
+        let actor = db::Actor::resolve(cli.actor.as_deref());
+        let row = db::set_budget(db.conn(), &actor, &db::SetBudgetParams {
             company_slug: company,
             account_code: account,
             currency: currency_code,
@@ -252,7 +254,8 @@ fn run_delete(
         }
     }
 
-    let deleted = db::delete_budget(db.conn(), company, account, currency, year, month)?;
+    let actor = db::Actor::resolve(cli.actor.as_deref());
+    let deleted = db::delete_budget(db.conn(), &actor, company, account, currency, year, month)?;
 
     if cli.is_json() {
         let meta = output::json::meta("budget.delete", Some(company));

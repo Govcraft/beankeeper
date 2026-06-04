@@ -93,6 +93,7 @@ fn post(
     use crate::db::post_transaction;
     use crate::db::transactions::PostTransactionParams;
 
+    let actor = crate::db::Actor::resolve(None);
     post_transaction(
         conn,
         &PostTransactionParams {
@@ -105,6 +106,7 @@ fn post(
             correlate,
             reference: Some(reference),
             on_conflict: crate::db::ConflictStrategy::Error,
+            actor: &actor,
         },
     ).map(|res| match res {
         crate::db::PostResult::Created(id) | crate::db::PostResult::Skipped(id) => id,

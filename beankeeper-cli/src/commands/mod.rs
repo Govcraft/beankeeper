@@ -1,4 +1,5 @@
 pub mod account;
+pub mod audit;
 pub mod budget;
 pub mod company;
 pub mod export;
@@ -9,8 +10,8 @@ pub mod txn;
 pub mod verify;
 
 use crate::cli::{
-    AccountCommand, BudgetCommand, Cli, Command, CompanyCommand, ReportCommand, TxnCommand,
-    require_company,
+    AccountCommand, AuditCommand, BudgetCommand, Cli, Command, CompanyCommand, ReportCommand,
+    TxnCommand, require_company,
 };
 use crate::error::CliError;
 use crate::output::json::Meta;
@@ -55,6 +56,9 @@ pub fn command_name(cmd: &Command) -> &'static str {
             ReportCommand::BalanceSheet { .. } => "report.balance-sheet",
             ReportCommand::TaxSummary { .. } => "report.tax-summary",
             ReportCommand::BudgetVariance { .. } => "report.budget-variance",
+        },
+        Command::Audit(args) => match &args.command {
+            AuditCommand::Log { .. } => "audit.log",
         },
     }
 }
@@ -103,5 +107,8 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             let company = require_company(cli)?;
             report::run(cli, &company, &args.command)
         }
+
+        // Audit is cross-company by design, so --company is not required.
+        Command::Audit(args) => audit::run(cli, &args.command),
     }
 }

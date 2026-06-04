@@ -64,7 +64,8 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
                     return Ok(());
                 }
             }
-            companies::delete_company(db.conn(), slug)?;
+            let actor = crate::db::Actor::resolve(cli.actor.as_deref());
+            crate::db::delete_company(db.conn(), &actor, slug)?;
             if format == OutputFormat::Json {
                 let meta = output::json::meta("company.delete", None);
                 let rendered = output::json::render_deleted(slug, meta)?;
