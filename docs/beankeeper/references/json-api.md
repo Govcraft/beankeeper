@@ -286,7 +286,7 @@ Same shape as a single element from `txn list`, with entries included.
 ```json
 {
   "data": {
-    "schema_version": 7,
+    "schema_version": 8,
     "status": "healthy"
   }
 }
@@ -336,6 +336,45 @@ Same shape as a single element from `txn list`, with entries included.
   }
 }
 ```
+
+### `audit log`
+
+`data` is an array of recorded changes, most recent first. `before`/`after`
+are JSON strings (snapshots of the relevant fields) or `null`; `company_slug`
+may be `null` for cross-company changes.
+
+```json
+{
+  "data": [
+    {
+      "id": 12,
+      "changed_at": "2026-03-31 18:04:22",
+      "actor": "roland",
+      "company_slug": "acme",
+      "entity": "entry",
+      "entity_id": "5",
+      "action": "status_change",
+      "before": "{\"status\":\"uncleared\"}",
+      "after": "{\"status\":\"reconciled\"}"
+    },
+    {
+      "id": 11,
+      "changed_at": "2026-03-31 18:03:10",
+      "actor": "roland",
+      "company_slug": "acme",
+      "entity": "budget",
+      "entity_id": "7",
+      "action": "budget_set",
+      "before": "{\"amount\":250000}",
+      "after": "{\"amount\":300000,\"month\":3,\"notes\":null,\"year\":2026}"
+    }
+  ]
+}
+```
+
+`entity` is one of `entry`, `transaction`, `budget`, `account`, `company`.
+`action` is one of `status_change`, `correlate`, `budget_set`, `budget_delete`,
+`account_delete`, `company_delete`.
 
 ## Parsing Tips for Agents
 

@@ -78,6 +78,11 @@ Each entry has a clearance status used during bank reconciliation:
 
 Status progresses forward only: uncleared -> cleared -> reconciled.
 
+Clearance status is the one piece of mutable per-entry state. Each change is
+recorded in the audit trail (actor, timestamp, old -> new status), so the
+reconciliation history — including when an account was last reconciled — is
+recoverable via `bk audit log --entity entry`.
+
 ## Idempotency
 
 Transactions support an optional `--reference` key (unique per company). Posting with the same reference twice returns an error by default, or silently skips with `--on-conflict skip`. This enables safe retries when importing or automating transaction posting.

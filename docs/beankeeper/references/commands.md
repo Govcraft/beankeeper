@@ -1,6 +1,8 @@
 # Command Reference
 
-All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`.
+All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`.
+
+`--actor NAME` sets the principal recorded in the audit trail for any mutating command (see [Audit](#audit)). It falls back to the `BK_ACTOR` environment variable, then the OS user, then `"cli"`.
 
 ## Database
 
@@ -193,7 +195,9 @@ cat data.ofx | bk --company acme txn import \
 
 ### `bk txn clear TXN_ID --entry ENTRY_ID`
 
-Update clearance status of an entry for bank reconciliation.
+Update clearance status of an entry for bank reconciliation. The transition is
+recorded in the audit trail (who/when, old status → new status), so "when was
+this account last reconciled?" is answerable via `bk audit log`.
 
 ```bash
 bk --company acme txn clear 42 --entry 5                     # Mark as cleared
@@ -329,3 +333,39 @@ bk --company acme report budget-variance --year 2026 --include-unbudgeted
 - Expense accounts: variance = budget - actual (positive = favorable, underspent)
 - Revenue accounts: variance = actual - budget (positive = favorable, exceeded target)
 - Status: `FAV`, `UNFAV`, or `ON BUDGET`
+
+## Audit
+
+The ledger is append-only: posted transactions are never edited or deleted
+(corrections go through reversing entries). The few operations that *do* change
+existing rows in place each append an immutable record to the audit trail,
+capturing the actor (`--actor` / `BK_ACTOR`), a timestamp, and JSON before/after
+snapshots. The recorded operations are:
+
+| Action | Recorded when |
+|--------|---------------|
+| `status_change` | `bk txn clear` flips an entry's clearance status |
+| `correlate` | `bk txn post --correlate` links a partner transaction |
+| `budget_set` | `bk budget set` creates or revises a budget (prior amount captured) |
+| `budget_delete` | `bk budget delete` removes a budget |
+| `account_delete` | `bk account delete` removes an account |
+| `company_delete` | `bk company delete` removes a company |
+
+### `bk audit log`
+
+List recorded changes, most recent first. Does not require `--company` (scans
+all by default).
+
+```bash
+bk audit log                                      # 50 most recent changes
+bk audit log --company acme                        # one company
+bk audit log --entity entry                        # clearance/reconciliation history
+bk audit log --action company_delete --limit 100   # last 100 company deletions
+bk audit log --json                                # full before/after snapshots
+```
+
+**Flags:**
+- `--company SLUG`: Restrict to one company
+- `--entity KIND`: One of `entry`, `transaction`, `budget`, `account`, `company`
+- `--action KIND`: One of `status-change`, `correlate`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
+- `--limit N` (default: 50)

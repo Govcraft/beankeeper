@@ -22,6 +22,7 @@ Beankeeper is a double-entry accounting system operated entirely through the `bk
 - **Accounts**: Five types: `asset`, `liability`, `equity`, `revenue`, `expense`. Each has a code (e.g. `1000`) and a normal balance direction (debit or credit).
 - **Amounts**: Always specified in **major units** (dollars, not cents) on the CLI. Stored internally as minor units (cents). Example: `2500` means $2,500.00.
 - **Append-only ledger**: Transactions cannot be edited or deleted after posting. Corrections are made via reversing entries.
+- **Audit trail**: The few operations that mutate or delete existing rows (clearance-status changes, intercompany correlation, budget revisions, account/company deletions) each append an immutable record — actor, timestamp, before/after — readable via `bk audit log`. Set the actor with `--actor NAME` or `BK_ACTOR`.
 - **Idempotency**: Use `--reference KEY` with `--on-conflict skip` for safe retry of duplicate posts.
 
 For detailed accounting concepts and account types, see [`references/accounting.md`](references/accounting.md).
@@ -71,6 +72,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report balance-sheet` | Assets, liabilities, equity as-of a date |
 | `bk report tax-summary` | Entries grouped by tax category |
 | `bk report budget-variance` | Budget vs actual comparison |
+| `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export all data as JSON or CSV |
 
@@ -164,6 +166,7 @@ For additional workflow patterns including bank reconciliation and tax reporting
 | `BEANKEEPER_COMPANY` | Default company slug | (none) |
 | `BEANKEEPER_CURRENCY` | Default currency code | `USD` |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase | (none) |
+| `BK_ACTOR` | Principal recorded in the audit trail for mutations | OS user, else `cli` |
 | `NO_COLOR` | Disable colored output | (unset) |
 
 ## Error Handling

@@ -111,6 +111,26 @@ bk --company mybiz txn clear 50 --entry 100
 
 # 5. After full reconciliation, mark as reconciled
 bk --company mybiz txn clear 50 --entry 99 --status reconciled
+
+# 6. Confirm what was reconciled and when (the audit trail records each change)
+bk --company mybiz audit log --entity entry
+```
+
+### Answer "when was this account last reconciled?"
+
+Every clearance-status change is recorded with an actor and timestamp, so the
+reconciliation history is recoverable even though clearance status itself is a
+mutable flag.
+
+```bash
+# Most recent clearance/reconciliation events for a company
+bk --company mybiz audit log --entity entry
+
+# Full before/after detail as JSON (e.g. for an agent or report)
+bk --company mybiz audit log --entity entry --json
+
+# Attribute changes to a specific operator (e.g. from an automation)
+BK_ACTOR=nightly-import bk --company mybiz txn clear 50 --entry 99 --status reconciled
 ```
 
 ## Budgeting
