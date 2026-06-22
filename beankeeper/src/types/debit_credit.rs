@@ -4,6 +4,7 @@ use core::str::FromStr;
 
 /// Error type for parsing [`DebitOrCredit`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum DebitCreditError {
     /// The provided string does not match "Debit" or "Credit".
@@ -30,6 +31,7 @@ impl std::error::Error for DebitCreditError {}
 /// In double-entry bookkeeping, every transaction records equal
 /// amounts of debits and credits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum DebitOrCredit {
     /// A debit entry.

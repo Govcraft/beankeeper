@@ -9,6 +9,7 @@ use super::money::Money;
 
 /// Error type for [`Entry`] construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum EntryError {
     /// The entry amount was zero.
@@ -53,6 +54,7 @@ impl std::error::Error for EntryError {}
 /// assert!(entry.is_debit());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Entry {
     account: Account,
     amount: Money,
