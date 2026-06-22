@@ -4,6 +4,7 @@ use core::ops::{Add, Mul, Neg, Sub};
 
 /// Error type for monetary amount operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum AmountError {
     /// Arithmetic operation resulted in overflow.
@@ -46,6 +47,7 @@ impl std::error::Error for AmountError {}
 /// [`checked_sub`]: Amount::checked_sub
 /// [`checked_mul`]: Amount::checked_mul
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Amount(i128);
 
 impl Amount {
