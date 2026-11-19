@@ -72,6 +72,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report balance-sheet` | Assets, liabilities, equity as-of a date |
 | `bk report tax-summary` | Entries grouped by tax category |
 | `bk report budget-variance` | Budget vs actual comparison |
+| `bk report ledger` | General ledger / account statement with running balances |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export all data as JSON or CSV |
@@ -125,6 +126,7 @@ bk --company acme report trial-balance
 bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 bk --company acme report balance-sheet --to 2026-03-31
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
+bk --company acme report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
 ```
 
 ### Budgeting

@@ -102,6 +102,7 @@ bk --company personal report trial-balance --from 2026-01-01 --to 2026-03-31
 bk --company personal report balance --account 1000 --to 2026-03-31
 bk --company personal report balance-sheet --to 2026-03-31
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
+bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
 
 # Set a budget and compare against actuals
 bk --company personal budget set 5000 --year 2026 --annual 14400
@@ -348,6 +349,26 @@ bk txn reconcile --json || echo "Orphaned correlations found"
 ```
 
 > **Note:** Global flags like `--company` are ignored by commands that always operate database-wide, such as `export`, `reconcile`, `verify`, and `init`.
+
+### General Ledger
+
+`bk report ledger` prints an account statement: for each account an opening balance as of the day before `--from`, every entry in date / transaction / entry order with a running balance, and a closing balance. Balances are shown on the account's normal side (debit-normal for assets and expenses, credit-normal for liabilities, equity and revenue).
+
+```sh
+# Every account with activity
+bk --company personal report ledger
+
+# Cash statement for Q1, starting from the balance at 2025-12-31
+bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+
+# Pick a currency when the company books in more than one
+bk --company personal report ledger --account 1000 --currency EUR
+
+# Flat CSV: one row per entry plus opening/closing rows per account
+bk --company personal --format csv report ledger > ledger.csv
+```
+
+Without `--currency`, the report uses the company's only transaction currency and fails with a validation error if there are several.
 
 ### Bank Reconciliation
 

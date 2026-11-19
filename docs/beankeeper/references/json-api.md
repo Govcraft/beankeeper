@@ -209,6 +209,52 @@ Same schema as `report trial-balance`. Contains only revenue and expense account
 
 Same schema as `report trial-balance`. Contains only asset, liability, and equity accounts as of the specified date.
 
+### `report ledger`
+
+All amounts are minor units; `balance`, `opening_balance` and `closing_balance`
+are on the account's `normal_balance` side (negative = abnormal side).
+
+```json
+{
+  "ok": true,
+  "meta": { "command": "report.ledger", "company": "acme", "timestamp": "..." },
+  "data": {
+    "currency": "USD",
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "accounts": [
+      {
+        "code": "1000",
+        "name": "Cash",
+        "type": "asset",
+        "normal_balance": "debit",
+        "opening_balance": 100000,
+        "entries": [
+          {
+            "date": "2026-01-05",
+            "transaction_id": 7,
+            "entry_id": 13,
+            "description": "Office rent",
+            "reference": "RENT-2026-01",
+            "memo": null,
+            "debit": 0,
+            "credit": 250000,
+            "balance": -150000
+          }
+        ],
+        "total_debits": 0,
+        "total_credits": 250000,
+        "closing_balance": -150000
+      }
+    ]
+  }
+}
+```
+
+`from`/`to` are `null` when not given. Omitting `--currency` when the company
+has transactions in several currencies returns a `VALIDATION` error
+envelope (exit code 3).
+
 ### `report budget-variance`
 
 ```json

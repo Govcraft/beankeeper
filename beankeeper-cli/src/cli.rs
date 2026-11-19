@@ -1089,6 +1089,36 @@ EXAMPLES:\n  \
         to: Option<String>,
     },
 
+    /// General ledger / account statement with running balances.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Full ledger for every account with activity:\n    \
+    $ bk --company acme report ledger\n\
+    \n  \
+    Statement for the cash account in Q1 (opening balance as of 2024-12-31):\n    \
+    $ bk --company acme report ledger --account 1000 --from 2025-01-01 --to 2025-03-31\n\
+    \n  \
+    Several accounts, one currency:\n    \
+    $ bk --company acme report ledger --account 1000 --account 2000 --currency EUR\
+")]
+    Ledger {
+        /// Account code to include (repeatable). Defaults to all accounts with activity.
+        #[arg(long, num_args = 1)]
+        account: Vec<String>,
+
+        /// Start date (inclusive). The opening balance is as of the day before.
+        #[arg(long)]
+        from: Option<String>,
+
+        /// End date (inclusive).
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Currency code. Defaults to the company's only transaction currency.
+        #[arg(long)]
+        currency: Option<String>,
+    },
+
     /// Compare budgeted amounts to actual spending/revenue.
     #[command(after_help = "\
 EXAMPLES:\n  \
