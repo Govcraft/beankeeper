@@ -128,7 +128,15 @@ bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 bk --company acme report balance-sheet --to 2026-03-31
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 bk --company acme report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+
+# Companies with transactions in several currencies must pick one
+bk --company acme report trial-balance --currency MXN
 ```
+
+Reports never mix currencies. Without `--currency`, the report currency is
+inferred from the company's transactions (USD if there are none); if the
+company uses more than one currency the command fails with a `VALIDATION`
+error listing them, and `--currency CODE` is required.
 
 ### Receivables / payables aging
 
@@ -179,7 +187,7 @@ For additional workflow patterns including bank reconciliation and tax reporting
 |----------|---------|---------|
 | `BEANKEEPER_DB` | Database file path | `beankeeper.db` |
 | `BEANKEEPER_COMPANY` | Default company slug | (none) |
-| `BEANKEEPER_CURRENCY` | Default currency code | `USD` |
+| `BEANKEEPER_CURRENCY` | Default currency code (for `report budget-variance`, inferred from transactions when unset) | `USD` |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase | (none) |
 | `BK_ACTOR` | Principal recorded in the audit trail for mutations | OS user, else `cli` |
 | `NO_COLOR` | Disable colored output | (unset) |

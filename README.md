@@ -104,6 +104,8 @@ bk --company personal report balance --account 1000 --to 2026-03-31
 bk --company personal report balance-sheet --to 2026-03-31
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
 bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+# Multi-currency companies pick the report currency explicitly
+bk --company personal report trial-balance --currency MXN
 
 # Set a budget and compare against actuals
 bk --company personal budget set 5000 --year 2026 --annual 14400
@@ -409,6 +411,8 @@ bk --company personal report budget-variance --year 2026 --from 1 --to 3 --type 
 bk --company personal report budget-variance --year 2026 --include-unbudgeted
 ```
 
+The report currency comes from `--currency` (or `BEANKEEPER_CURRENCY`); when neither is set it is inferred from the company's transactions, as for the other reports.
+
 Variance logic:
 - **Expense accounts**: variance = budget - actual (positive = favorable, underspent)
 - **Revenue accounts**: variance = actual - budget (positive = favorable, exceeded target)
@@ -473,7 +477,7 @@ The `meta` block is guaranteed to be present for both success and error response
 |----------|---------|
 | `BEANKEEPER_DB` | Database file path (default: `./beankeeper.db`) |
 | `BEANKEEPER_COMPANY` | Default company slug (avoids `--company` on every command) |
-| `BEANKEEPER_CURRENCY` | Default currency code for amount filters (default: `USD`) |
+| `BEANKEEPER_CURRENCY` | Default currency code for amount filters (default: `USD`) and for `report budget-variance` (inferred from transactions when unset) |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase |
 | `NO_COLOR` | Disable colored output |
 
@@ -586,6 +590,8 @@ Ten ISO 4217 currencies with correct minor-unit precision:
 | Kuwaiti Dinar | `KWD` | 3 |
 
 Currency mismatches within a transaction are rejected at the type level.
+
+Reports (`trial-balance`, `balance`, `income-statement`, `balance-sheet`, `tax-summary`, `budget-variance`) are always computed in a single currency and never add amounts across currencies. Pass `--currency CODE` to choose it; otherwise it is inferred from the company's transactions (USD when there are none). If a company has transactions in more than one currency, a report without `--currency` fails with a validation error listing the currencies found.
 
 ### Error Handling
 

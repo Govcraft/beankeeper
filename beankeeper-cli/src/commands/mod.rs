@@ -8,6 +8,7 @@ pub mod init;
 pub mod report;
 pub mod report_ledger;
 pub mod report_aging;
+pub mod report_currency;
 pub mod txn;
 pub mod verify;
 

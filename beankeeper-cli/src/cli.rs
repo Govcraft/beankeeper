@@ -995,7 +995,10 @@ EXAMPLES:\n  \
     $ bk --company acme report trial-balance --from 2025-01-01 --to 2025-03-31\n\
     \n  \
     Trial balance filtered to expense accounts only:\n    \
-    $ bk --company acme report trial-balance --type expense\
+    $ bk --company acme report trial-balance --type expense\n\
+    \n  \
+    Trial balance for MXN transactions only (multi-currency company):\n    \
+    $ bk --company acme report trial-balance --currency MXN\
 ")]
     TrialBalance {
         /// Start date (inclusive).
@@ -1009,6 +1012,12 @@ EXAMPLES:\n  \
         /// Filter by account type.
         #[arg(long = "type", value_enum)]
         account_type: Option<AccountTypeArg>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// Show balance for a single account.
@@ -1035,6 +1044,12 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// Generate an income statement.
@@ -1054,6 +1069,12 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// Generate a balance sheet.
@@ -1069,6 +1090,12 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// Summarise entries grouped by tax category.
@@ -1087,6 +1114,12 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// General ledger / account statement with running balances.
@@ -1155,9 +1188,10 @@ EXAMPLES:\n  \
         #[arg(long = "type", value_enum)]
         account_type: Option<AccountTypeArg>,
 
-        /// Currency code.
-        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-        currency: String,
+        /// Currency code. When omitted, inferred from the company's
+        /// transactions (required if they use more than one currency).
+        #[arg(long, env = "BEANKEEPER_CURRENCY")]
+        currency: Option<String>,
 
         /// Include accounts with actuals but no budget.
         #[arg(long)]

@@ -58,6 +58,8 @@ Each currency has a defined number of minor units (decimal places):
 - **JPY**: 0 (whole yen)
 - **BHD, KWD**: 3 (fils)
 
+Reports are computed in one currency at a time and never add amounts across currencies. Use `--currency CODE` on `bk report` subcommands to choose it; it is required when a company has transactions in more than one currency, and inferred otherwise.
+
 On the CLI, amounts are always specified in major units (e.g. `2500` means $2,500.00). Internally and in JSON output, amounts are stored as integers in minor units (e.g. `250000` for $2,500.00 USD).
 
 ## Tax Categories
