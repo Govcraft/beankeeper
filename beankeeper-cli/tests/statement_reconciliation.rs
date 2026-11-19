@@ -834,12 +834,12 @@ fn clearings_are_audited() {
     assert_eq!(after["status"], "cleared");
     assert_eq!(after["cleared_amount"], 10_000);
     assert_eq!(after["op"], "clear");
-    assert_eq!(after["clearings"][0]["statement_ref"], "S-FEB");
+    assert_eq!(after["clearings"][0]["statement"], "S-FEB");
     assert_eq!(after["clearings"][0]["cleared_date"], "2026-02-28");
     assert_eq!(after["clearings"][0]["amount"], 6_000);
     let first = parse(&rows[1]["after"]);
     assert_eq!(first["status"], "uncleared");
-    assert_eq!(first["clearings"][0]["statement_ref"], "S-JAN");
+    assert_eq!(first["clearings"][0]["statement"], "S-JAN");
 }
 
 // ---------------------------------------------------------------------------
@@ -900,7 +900,7 @@ fn reconciled_date_is_point_in_time() {
         assert_eq!(cs[0]["status"], "cleared");
         assert_eq!(cs[0]["cleared_date"], "2026-01-31");
         assert!(cs[0]["reconciled_date"].is_null(), "{pol2}");
-        assert_eq!(cs[0]["statement_ref"], "S-JAN");
+        assert_eq!(cs[0]["statement"], "S-JAN");
     }
 
     // As of February: reconciled.
@@ -1105,12 +1105,12 @@ fn txn_show_lists_clearings() {
     assert_eq!(int(&cs[0], "amount"), 4_000);
     assert_eq!(cs[0]["cleared_date"], "2026-01-31");
     assert_eq!(cs[0]["reconciled_date"], "2026-02-10");
-    assert_eq!(cs[0]["statement_ref"], "S-JAN");
+    assert_eq!(cs[0]["statement"], "S-JAN");
     assert_eq!(cs[0]["status"], "reconciled");
     assert_eq!(int(&cs[1], "amount"), 2_500);
     assert_eq!(cs[1]["cleared_date"], "2026-02-28");
     assert!(cs[1]["reconciled_date"].is_null());
-    assert_eq!(cs[1]["statement_ref"], "S-FEB");
+    assert_eq!(cs[1]["statement"], "S-FEB");
     assert_eq!(cs[1]["status"], "cleared");
     let e2 = &txn["entries"][1];
     assert_eq!(int(e2, "id"), 2);

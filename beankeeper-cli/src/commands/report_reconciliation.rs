@@ -99,6 +99,7 @@ pub struct ItemClearing {
     pub amount: i64,
     pub cleared_date: String,
     pub reconciled_date: Option<String>,
+    #[serde(rename = "statement")]
     pub statement_ref: Option<String>,
     pub status: &'static str,
 }

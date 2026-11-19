@@ -400,7 +400,7 @@ fn clearing_json(c: &Clearing) -> serde_json::Value {
         "amount": c.amount,
         "cleared_date": c.cleared_date,
         "reconciled_date": c.reconciled_date,
-        "statement_ref": c.statement_ref,
+        "statement": c.statement_ref,
         "status": c.status.as_str(),
     })
 }
@@ -1268,7 +1268,7 @@ mod tests {
         assert_eq!(v["status"], "cleared");
         assert_eq!(v["cleared_amount"], 100);
         assert_eq!(v["op"], "clear");
-        assert_eq!(v["clearings"][0]["statement_ref"], "S2");
+        assert_eq!(v["clearings"][0]["statement"], "S2");
         assert_eq!(v["clearings"][0]["amount"], 70);
 
         // Reconcile in full promotes both clearings.

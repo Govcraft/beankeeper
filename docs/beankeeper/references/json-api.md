@@ -511,7 +511,7 @@ the transaction reference (or `null`); `metadata` is the transaction metadata,
 parsed as JSON when valid, else the raw string (or `null`).
 `reconciled_amount` is the raw amount reconciled as of `as_of`. `clearings`
 lists the item's clearings as of `as_of`, oldest first: `id`, `amount` (raw),
-`cleared_date`, `reconciled_date`, `statement_ref`, `status`. A clearing
+`cleared_date`, `reconciled_date`, `statement`, `status`. A clearing
 reconciled after `as_of` appears with `status: "cleared"` and
 `reconciled_date: null`.
 
@@ -566,7 +566,7 @@ the member `entry_ids`.
             "amount": 4000,
             "cleared_date": "2026-03-31",
             "reconciled_date": null,
-            "statement_ref": "STMT-2026-03",
+            "statement": "STMT-2026-03",
             "status": "cleared"
           }
         ]
@@ -634,7 +634,7 @@ entries and `attachments` included. Each entry also carries:
 - `remaining_amount`: `amount - cleared_amount`;
 - `clearings`: the entry's clearings, oldest first, each with `id`, `amount`,
   `cleared_date`, `reconciled_date` (`null` unless `status` is `reconciled`),
-  `statement_ref` (or `null`) and `status` (`cleared` or `reconciled`).
+  `statement` (or `null`) and `status` (`cleared` or `reconciled`).
 
 ```json
 {
@@ -662,7 +662,7 @@ entries and `attachments` included. Each entry also carries:
               "amount": 4000,
               "cleared_date": "2026-03-31",
               "reconciled_date": "2026-04-05",
-              "statement_ref": "STMT-2026-03",
+              "statement": "STMT-2026-03",
               "status": "reconciled"
             },
             {
@@ -670,7 +670,7 @@ entries and `attachments` included. Each entry also carries:
               "amount": 2500,
               "cleared_date": "2026-04-30",
               "reconciled_date": null,
-              "statement_ref": "STMT-2026-04",
+              "statement": "STMT-2026-04",
               "status": "cleared"
             }
           ]
@@ -985,7 +985,7 @@ may be `null` for cross-company changes.
       "entity_id": "5",
       "action": "status_change",
       "before": "{\"cleared_amount\":0,\"status\":\"uncleared\"}",
-      "after": "{\"cleared_amount\":4000,\"clearings\":[{\"amount\":4000,\"cleared_date\":\"2026-03-31\",\"id\":9,\"reconciled_date\":null,\"statement_ref\":\"STMT-2026-03\",\"status\":\"cleared\"}],\"op\":\"clear\",\"status\":\"uncleared\"}"
+      "after": "{\"cleared_amount\":4000,\"clearings\":[{\"amount\":4000,\"cleared_date\":\"2026-03-31\",\"id\":9,\"reconciled_date\":null,\"statement\":\"STMT-2026-03\",\"status\":\"cleared\"}],\"op\":\"clear\",\"status\":\"uncleared\"}"
     },
     {
       "id": 11,
@@ -1010,7 +1010,7 @@ may be `null` for cross-company changes.
 derived `status` and total `cleared_amount`; `after` also carries `op`
 (`clear`, `reconcile` or `unclear`) and `clearings`, the affected clearing rows
 (for `unclear`, the removed ones), each with `id`, `amount`, `cleared_date`,
-`reconciled_date` (`null` unless reconciled), `statement_ref` and `status`.
+`reconciled_date` (`null` unless reconciled), `statement` and `status`.
 
 ## Parsing Tips for Agents
 

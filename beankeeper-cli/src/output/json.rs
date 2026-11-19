@@ -145,6 +145,7 @@ pub struct ClearingJson {
     amount: i64,
     cleared_date: String,
     reconciled_date: Option<String>,
+    #[serde(rename = "statement")]
     statement_ref: Option<String>,
     status: &'static str,
 }

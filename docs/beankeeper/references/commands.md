@@ -652,7 +652,7 @@ snapshots. The recorded operations are:
 
 | Action | Recorded when |
 |--------|---------------|
-| `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, reconciled_date, statement_ref, status of the affected rows). Skips record nothing |
+| `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, reconciled_date, statement, status of the affected rows). Skips record nothing |
 | `correlate` | `bk txn post --correlate` links a partner transaction |
 | `budget_set` | `bk budget set` creates or revises a budget (prior amount captured) |
 | `budget_delete` | `bk budget delete` removes a budget |
