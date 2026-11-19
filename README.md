@@ -102,6 +102,7 @@ bk --company personal report trial-balance --from 2026-01-01 --to 2026-03-31
 bk --company personal report balance --account 1000 --to 2026-03-31
 bk --company personal report balance-sheet --to 2026-03-31
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-03-31
 
 # Set a budget and compare against actuals
 bk --company personal budget set 5000 --year 2026 --annual 14400
@@ -393,6 +394,23 @@ Variance logic:
 - Status labels: `FAV`, `UNFAV`, `ON BUDGET`
 
 Annual budgets are split exactly across 12 months -- any remainder cents are distributed to the earliest months so the total is precise.
+
+### Cash Flow Statement
+
+`bk report cash-flow` produces a direct-method cash flow statement: the net cash movement of each transaction is attributed to its non-cash counter-accounts and grouped into Operating (revenue/expense), Investing (non-cash assets) and Financing (liabilities/equity), followed by the net change, opening cash and closing cash, with a check that opening + net change = closing.
+
+```sh
+# Default cash accounts
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-12-31
+
+# Choose the cash accounts explicitly (repeatable)
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-03-31 --cash-account 1000
+
+# Multi-currency ledgers must pick one currency
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-12-31 --currency EUR
+```
+
+Without `--cash-account`, every **asset** account whose name contains `cash`, `bank`, `checking` or `savings` (case-insensitive) is treated as cash -- this matches the bundled templates (`Operating Cash`, `Checking Account`, `Savings Account`). A code range is deliberately not used: `1100` is `Savings Account` in the personal template but `Accounts Receivable` in the business ones. If no account qualifies, the command exits with a validation error (exit code 3) asking for `--cash-account`. Transfers between two cash accounts net to zero and are excluded.
 
 ### JSON Envelope
 

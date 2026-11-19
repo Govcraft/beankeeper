@@ -334,6 +334,31 @@ bk --company acme report budget-variance --year 2026 --include-unbudgeted
 - Revenue accounts: variance = actual - budget (positive = favorable, exceeded target)
 - Status: `FAV`, `UNFAV`, or `ON BUDGET`
 
+### `bk report cash-flow`
+
+Cash flow statement for a period using the direct method.
+
+```bash
+bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31
+bk --company acme report cash-flow --from 2026-01-01 --to 2026-03-31 \
+  --cash-account 1000 --cash-account 1010
+bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31 --currency EUR
+```
+
+**Flags:**
+- `--from DATE`, `--to DATE` (required, inclusive, `YYYY-MM-DD`)
+- `--cash-account CODE` (repeatable): accounts to treat as cash; each must exist and be an asset
+- `--currency CODE`: report currency. Defaults to the company's only transaction currency; if the company has several, `--currency` is required (validation error); with no transactions, USD
+
+**Default cash accounts:** Without `--cash-account`, every **asset** account whose name contains `cash`, `bank`, `checking` or `savings` (case-insensitive) is treated as cash -- this matches the bundled templates (`Operating Cash`, `Checking Account`, `Savings Account`). A code range is deliberately not used: `1100` is `Savings Account` in the personal template but `Accounts Receivable` in the business ones. If no account qualifies, the command exits with a validation error (exit code 3) asking for `--cash-account`.
+
+**Method:**
+- Only transactions dated in the range, in the report currency, whose cash entries have a non-zero net movement are included. Transfers between two cash accounts net to zero and are excluded.
+- Each non-cash entry of such a transaction is attributed directly to its account: a credit to the counter-account is an inflow, a debit an outflow. Per transaction these sum exactly to the net cash movement, so split transactions need no allocation.
+- Sections by counter-account type: revenue/expense = **Operating**; non-cash asset (receivables, inventory, equipment, ...) = **Investing**; liability/equity = **Financing**. The schema has no current/non-current distinction, so working-capital assets land in Investing.
+- Opening cash = cash balance before `--from`; closing cash = cash balance through `--to`, computed independently. `opening + net change = closing` is checked and a mismatch is flagged (`[!!] MISMATCH` in the table, `reconciled: false` in JSON).
+- CSV columns: `row_type,section,code,name,account_type,amount` with `row_type` `line`, `subtotal` or `summary` (amounts in minor units).
+
 ## Audit
 
 The ledger is append-only: posted transactions are never edited or deleted
