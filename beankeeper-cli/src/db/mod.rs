@@ -197,17 +197,7 @@ pub fn list_accounts_with_balances(
         param_idx += 1;
     }
 
-    if let Some(from) = from_date {
-        let _ = write!(sql, " AND (t.date IS NULL OR t.date >= ?{param_idx})");
-        param_values.push(Box::new(from.to_string()));
-        param_idx += 1;
-    }
-
-    if let Some(to) = to_date {
-        let _ = write!(sql, " AND (t.date IS NULL OR t.date <= ?{param_idx})");
-        param_values.push(Box::new(to.to_string()));
-        let _ = param_idx;
-    }
+    let _ = param_idx;
 
     sql.push_str(" GROUP BY a.code, a.name, a.type, a.default_tax_category ORDER BY a.code");
 
@@ -283,9 +273,21 @@ pub fn compute_trial_balance(
     param_values.push(Box::new(company_slug.to_string()));
 
     if joins_transactions {
+        // Date and currency filters live inside the joined group so accounts
+        // whose entries all fall outside the window still appear with zero.
         if let Some(cur) = currency {
             let _ = write!(sql, " AND t.currency = ?{param_idx}");
             param_values.push(Box::new(cur.to_string()));
+            param_idx += 1;
+        }
+        if let Some(from) = from_date {
+            let _ = write!(sql, " AND t.date >= ?{param_idx}");
+            param_values.push(Box::new(from.to_string()));
+            param_idx += 1;
+        }
+        if let Some(to) = to_date {
+            let _ = write!(sql, " AND t.date <= ?{param_idx}");
+            param_values.push(Box::new(to.to_string()));
             param_idx += 1;
         }
         sql.push_str(") ON e.company_slug = a.company_slug AND e.account_code = a.code");
@@ -299,17 +301,7 @@ pub fn compute_trial_balance(
         param_idx += 1;
     }
 
-    if let Some(from) = from_date {
-        let _ = write!(sql, " AND (t.date IS NULL OR t.date >= ?{param_idx})");
-        param_values.push(Box::new(from.to_string()));
-        param_idx += 1;
-    }
-
-    if let Some(to) = to_date {
-        let _ = write!(sql, " AND (t.date IS NULL OR t.date <= ?{param_idx})");
-        param_values.push(Box::new(to.to_string()));
-        let _ = param_idx;
-    }
+    let _ = param_idx;
 
     sql.push_str(" GROUP BY a.code, a.name, a.type ORDER BY a.code");
 
@@ -709,6 +701,33 @@ mod tests {
 
         let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None, None, Some("MXN"))?;
         assert_eq!((dr, cr), (700, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn date_window_keeps_accounts_with_only_out_of_range_activity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup();
+        post_sample(&db, "2024-01-15", 5000);
+
+        // Every entry predates the window: all accounts are still listed, at zero.
+        let rows = compute_trial_balance(
+            db.conn(),
+            "acme",
+            None,
+            Some("2024-06-01"),
+            Some("2024-06-30"),
+            None,
+        )?;
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.iter()
+                .all(|b| b.debit_total == 0 && b.credit_total == 0)
+        );
+
+        // Same for an `--to` cutoff before any activity.
+        let rows = compute_trial_balance(db.conn(), "acme", None, None, Some("2023-12-31"), None)?;
+        assert_eq!(rows.len(), 3);
         Ok(())
     }
 }

@@ -261,38 +261,14 @@ fn parse_date(flag: &str, value: &str) -> Result<chrono::NaiveDate, CliError> {
     })
 }
 
-/// Resolve the report currency.
-///
-/// An explicit code is validated. Otherwise the company's single distinct
-/// transaction currency is used; several currencies is a validation error and
-/// no transactions defaults to USD.
+/// Resolve the report currency via the shared report resolver
+/// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_currency(
     conn: &Connection,
     company: &str,
     explicit: Option<&str>,
 ) -> Result<Currency, CliError> {
-    if let Some(code) = explicit {
-        let upper = code.trim().to_uppercase();
-        return Currency::from_code(&upper)
-            .map_err(|_| CliError::Validation(format!("unknown currency: {code}")));
-    }
-
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT currency FROM transactions WHERE company_slug = ?1 ORDER BY currency",
-    )?;
-    let codes = stmt
-        .query_map(params![company], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    match codes.as_slice() {
-        [] => Ok(Currency::USD),
-        [code] => Currency::from_code(code)
-            .map_err(|_| CliError::Validation(format!("unknown currency in ledger: {code}"))),
-        many => Err(CliError::Validation(format!(
-            "company has transactions in several currencies ({}); pass --currency",
-            many.join(", ")
-        ))),
-    }
+    super::report_currency::resolve_report_currency(conn, company, explicit)
 }
 
 /// Whether an account name matches the default cash-account rule.

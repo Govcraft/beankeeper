@@ -239,39 +239,14 @@ fn list_uncleared(
     rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
 }
 
-/// Resolve the report currency.
-///
-/// An explicit `--currency` wins. Otherwise use the single distinct currency
-/// of the company's transactions; several currencies are ambiguous
-/// ([`CliError::Validation`]); no transactions at all defaults to USD.
+/// Resolve the report currency via the shared report resolver
+/// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_currency(
     conn: &Connection,
     company: &str,
     explicit: Option<&str>,
 ) -> Result<Currency, CliError> {
-    if let Some(code) = explicit {
-        let upper = code.trim().to_ascii_uppercase();
-        return Currency::from_code(&upper)
-            .map_err(|_| CliError::Validation(format!("unknown currency: {code}")));
-    }
-
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT currency FROM transactions WHERE company_slug = ?1 ORDER BY currency",
-    )?;
-    let codes = stmt
-        .query_map(params![company], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    match codes.as_slice() {
-        [] => Ok(Currency::USD),
-        [code] => Currency::from_code(code)
-            .map_err(|_| CliError::Validation(format!("unknown currency in ledger: {code}"))),
-        many => Err(CliError::Validation(format!(
-            "company '{company}' has transactions in several currencies ({}); \
-             pass --currency to choose one",
-            many.join(", ")
-        ))),
-    }
+    super::report_currency::resolve_report_currency(conn, company, explicit)
 }
 
 /// Parse a major-unit amount that may carry a leading minus sign.

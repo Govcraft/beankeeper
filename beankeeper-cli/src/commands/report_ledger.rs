@@ -237,39 +237,15 @@ fn validate_date(flag: &str, value: &str) -> Result<NaiveDate, CliError> {
     })
 }
 
-/// Resolve the reporting currency.
-///
-/// An explicit code is validated; otherwise the single distinct currency of
-/// the company's transactions is used (USD when there are none). Multiple
-/// distinct currencies are a validation error.
+/// Resolve the report currency via the shared report resolver
+/// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_ledger_currency(
     conn: &Connection,
     company: &str,
     explicit: Option<&str>,
 ) -> Result<String, CliError> {
-    if let Some(code) = explicit {
-        let upper = code.to_ascii_uppercase();
-        return Currency::from_code(&upper)
-            .map(|c| c.code().to_string())
-            .map_err(|_| CliError::Validation(format!("unknown currency: {code}")));
-    }
-
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT currency FROM transactions WHERE company_slug = ?1 ORDER BY currency",
-    )?;
-    let codes: Vec<String> = stmt
-        .query_map(params![company], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-
-    match codes.as_slice() {
-        [] => Ok("USD".to_string()),
-        [single] => Ok(single.clone()),
-        many => Err(CliError::Validation(format!(
-            "company '{company}' has transactions in multiple currencies ({}); \
-             pass --currency <CODE> to choose one",
-            many.join(", ")
-        ))),
-    }
+    super::report_currency::resolve_report_currency(conn, company, explicit)
+        .map(|c| c.code().to_string())
 }
 
 /// Signed effect of a debit/credit pair on an account's normal-side balance.

@@ -437,37 +437,14 @@ fn load_account_transactions(
     rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
 }
 
-/// Resolve the report currency.
-///
-/// An explicit code wins. Otherwise the company's single distinct transaction
-/// currency is used; several currencies are a validation error and none
-/// defaults to USD.
+/// Resolve the report currency via the shared report resolver
+/// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_currency(
     conn: &Connection,
     company: &str,
     explicit: Option<&str>,
 ) -> Result<Currency, CliError> {
-    let parse = |code: &str| {
-        Currency::from_code(&code.to_ascii_uppercase())
-            .map_err(|e| CliError::Validation(format!("invalid currency '{code}': {e}")))
-    };
-    if let Some(code) = explicit {
-        return parse(code);
-    }
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT currency FROM transactions WHERE company_slug = ?1 ORDER BY currency",
-    )?;
-    let codes = stmt
-        .query_map(params![company], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    match codes.as_slice() {
-        [] => Ok(Currency::USD),
-        [one] => parse(one),
-        many => Err(CliError::Validation(format!(
-            "company '{company}' has transactions in multiple currencies ({}); pass --currency",
-            many.join(", ")
-        ))),
-    }
+    super::report_currency::resolve_report_currency(conn, company, explicit)
 }
 
 fn parse_date(s: &str, what: &str) -> Result<NaiveDate, CliError> {

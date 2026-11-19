@@ -32,7 +32,7 @@ pub fn resolve_report_currency(
     requested: Option<&str>,
 ) -> Result<Currency, CliError> {
     if let Some(code) = requested {
-        return parse_currency(code);
+        return parse_currency(&code.trim().to_ascii_uppercase());
     }
 
     let currencies = company_currencies(conn, company)?;
@@ -127,9 +127,22 @@ mod tests {
     #[test]
     fn invalid_requested_currency_is_rejected() {
         let db = setup();
-        assert!(matches!(
-            resolve_report_currency(db.conn(), "acme", Some("usd")),
-            Err(CliError::Validation(_))
-        ));
+        for bad in ["US", "U1D", "dollars"] {
+            assert!(
+                matches!(
+                    resolve_report_currency(db.conn(), "acme", Some(bad)),
+                    Err(CliError::Validation(_))
+                ),
+                "{bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn requested_currency_is_case_insensitive() {
+        let db = setup();
+        let c = resolve_report_currency(db.conn(), "acme", Some(" usd "))
+            .unwrap_or_else(|e| panic!("resolve failed: {e}"));
+        assert_eq!(c.code(), "USD");
     }
 }
