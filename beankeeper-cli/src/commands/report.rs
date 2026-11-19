@@ -37,11 +37,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
-        ReportCommand::Balance {
-            account,
-            from,
-            to,
-        } => run_balance(
+        ReportCommand::Balance { account, from, to } => run_balance(
             cli,
             &db,
             company,
@@ -110,8 +106,7 @@ fn run_trial_balance(
     use_color: bool,
 ) -> Result<(), CliError> {
     let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-    let balances =
-        db::compute_trial_balance(db.conn(), company, type_filter.as_deref(), from, to)?;
+    let balances = db::compute_trial_balance(db.conn(), company, type_filter.as_deref(), from, to)?;
 
     // Determine currency info (default to USD for display)
     let currency = resolve_company_currency(db, company);

@@ -13,6 +13,10 @@ pub use accounts::{
     ListAccountParams, account_exists, create_account, get_account, list_account_codes,
     list_accounts, row_to_account,
 };
+pub use attachments::{
+    AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
+    store_attachment,
+};
 pub use audit::{
     Actor, AuditLogRow, EntryStatus, ListAuditParams, correlate_partner, delete_account,
     delete_budget, delete_company, list_audit, set_annual_budget, set_budget, set_entry_status,
@@ -20,10 +24,6 @@ pub use audit::{
 pub use budgets::{
     BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,
     compute_budget_variance, list_budgets,
-};
-pub use attachments::{
-    AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
-    store_attachment,
 };
 pub use companies::{company_exists, create_company, get_company, list_companies};
 pub use connection::Db;
@@ -495,7 +495,8 @@ mod tests {
     #[test]
     fn trial_balance_empty() {
         let db = setup();
-        let balances = compute_trial_balance(db.conn(), "acme", None, None, None).unwrap_or_default();
+        let balances =
+            compute_trial_balance(db.conn(), "acme", None, None, None).unwrap_or_default();
         // All 3 accounts with zero balances
         assert_eq!(balances.len(), 3);
         for b in &balances {
@@ -509,7 +510,8 @@ mod tests {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
 
-        let balances = compute_trial_balance(db.conn(), "acme", None, None, None).unwrap_or_default();
+        let balances =
+            compute_trial_balance(db.conn(), "acme", None, None, None).unwrap_or_default();
         assert_eq!(balances.len(), 3);
 
         let cash = balances.iter().find(|b| b.code == "1000");
@@ -542,8 +544,8 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let balances =
-            compute_trial_balance(db.conn(), "acme", None, None, Some("2024-01-31")).unwrap_or_default();
+        let balances = compute_trial_balance(db.conn(), "acme", None, None, Some("2024-01-31"))
+            .unwrap_or_default();
 
         let cash = balances.iter().find(|b| b.code == "1000");
         assert!(cash.is_some());
@@ -554,7 +556,8 @@ mod tests {
     #[test]
     fn account_balance_empty() {
         let db = setup();
-        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None, None).unwrap_or((0, 0));
+        let (dr, cr) =
+            compute_account_balance(db.conn(), "acme", "1000", None, None).unwrap_or((0, 0));
         assert_eq!(dr, 0);
         assert_eq!(cr, 0);
     }
@@ -565,7 +568,8 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None, None).unwrap_or((0, 0));
+        let (dr, cr) =
+            compute_account_balance(db.conn(), "acme", "1000", None, None).unwrap_or((0, 0));
         assert_eq!(dr, 8000);
         assert_eq!(cr, 0);
     }
@@ -589,8 +593,14 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
         post_sample(&db, "2024-03-15", 2000);
 
-        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", Some("2024-02-01"), Some("2024-02-29"))
-            .unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(
+            db.conn(),
+            "acme",
+            "1000",
+            Some("2024-02-01"),
+            Some("2024-02-29"),
+        )
+        .unwrap_or((0, 0));
         assert_eq!(dr, 3000);
         assert_eq!(cr, 0);
     }
@@ -602,9 +612,18 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
         post_sample(&db, "2024-03-15", 2000);
 
-        let balances = compute_trial_balance(db.conn(), "acme", None, Some("2024-02-01"), Some("2024-02-29"))
-            .unwrap_or_default();
-        let cash = balances.iter().find(|b| b.code == "1000").ok_or("expected matching item")?;
+        let balances = compute_trial_balance(
+            db.conn(),
+            "acme",
+            None,
+            Some("2024-02-01"),
+            Some("2024-02-29"),
+        )
+        .unwrap_or_default();
+        let cash = balances
+            .iter()
+            .find(|b| b.code == "1000")
+            .ok_or("expected matching item")?;
         assert_eq!(cash.debit_total, 3000);
         Ok(())
     }

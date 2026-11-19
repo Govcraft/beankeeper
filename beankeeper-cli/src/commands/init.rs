@@ -108,7 +108,8 @@ fn post(
             on_conflict: crate::db::ConflictStrategy::Error,
             actor: &actor,
         },
-    ).map(|res| match res {
+    )
+    .map(|res| match res {
         crate::db::PostResult::Created(id) | crate::db::PostResult::Skipped(id) => id,
     })
 }
@@ -257,8 +258,18 @@ fn seed_consulting_accounts(conn: &rusqlite::Connection) -> Result<(), CliError>
         ("5100", "Software Licences", "expense", Some("software")),
         ("5200", "Office Supplies", "expense", Some("supplies")),
         ("5300", "Salary Expense", "expense", Some("payroll")),
-        ("2600", "Federal Tax Payable", "liability", Some("payroll-tax")),
-        ("2700", "State Tax Payable", "liability", Some("payroll-tax")),
+        (
+            "2600",
+            "Federal Tax Payable",
+            "liability",
+            Some("payroll-tax"),
+        ),
+        (
+            "2700",
+            "State Tax Payable",
+            "liability",
+            Some("payroll-tax"),
+        ),
         ("2800", "FICA Payable", "liability", Some("payroll-tax")),
     ];
     seed_company_accounts(conn, "acme-consulting", accounts)?;
