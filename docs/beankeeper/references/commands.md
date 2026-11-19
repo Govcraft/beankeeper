@@ -373,19 +373,49 @@ bk --company acme report aging --account 1100
 bk --company acme report aging --account 2000 --as-of 2026-03-31
 bk --company acme report aging --account 1100 --buckets 15,45
 bk --company acme report aging --account 1100 --group-by-metadata customer
+bk --company acme report aging --account 1100 --group-by customer --detail
+bk --company acme report aging --account 1100 --method specific
+bk --company acme report aging --account 1100 --method specific --link-key invoice
 bk --company acme report aging --account 1100 --currency EUR
 ```
 
 **Flags:**
 - `--account CODE` (required): an asset account (receivable: charges are debits, settlements are credits) or a liability account (payable: charges are credits, settlements are debits). Other account types are a validation error (exit 3).
-- `--as-of DATE`: include transactions dated on or before this date (default: today)
+- `--as-of DATE`: include transactions dated on or before this date (default: today). Charges and settlements dated later are ignored, so rerunning for a past period end gives the same answer after later-dated payments are posted (back-dated postings on or before the date do change it).
 - `--buckets N,N,...`: strictly ascending positive day bounds (default `30,60,90`, giving `Current`, `1-30`, `31-60`, `61-90`, `90+`)
-- `--group-by-metadata KEY`: group by a key of the transaction metadata. Metadata is parsed leniently: if it is a JSON object holding a string or number under `KEY`, that value is the counterparty; anything else (non-JSON text, missing key, other value types) goes to `(none)`.
+- `--group-by-metadata KEY` (alias `--group-by KEY`): group by a key of the transaction metadata. Metadata is parsed leniently: if it is a JSON object holding a non-empty string or a number under `KEY`, that value is the counterparty; anything else (missing key, non-JSON text, JSON that is not an object, other value types) goes to `(unassigned)`.
+- `--method fifo|specific` (default `fifo`): how settlements are matched to charges (see below).
+- `--link-key KEY` (default `applies_to`): metadata key holding a settlement's link to its charge. Only valid with `--method specific` (exit 3 otherwise).
+- `--detail`: list the open charges under each counterparty in table and CSV output (JSON always includes `open_items`).
 - `--currency CODE`: currency to report. Defaults to the company's single transaction currency; if the company has several, `--currency` is required (exit 3); with no transactions, USD.
 
-**How it works.** The ledger has no invoice or due-date model, so ages are measured from transaction dates under a FIFO assumption. Entries on the account are netted per transaction; a net increase is a charge and a net decrease is a settlement. Settlements are applied FIFO (per counterparty when grouping) to the oldest open charges. Settlements beyond the open charges are reported as an *unapplied credit*, which later charges consume first. Each charge's remaining open amount is bucketed by age in days (`as_of - transaction date`; age 0 is `Current`). The report always reconciles: total open - unapplied credit = account balance as of the date.
+**How it works.** The ledger has no invoice or due-date model, so ages are measured from transaction dates. Entries on the account are netted per transaction; a net increase is a *charge* and a net decrease is a *settlement*. For an asset account (receivables) charges are debits and settlements credits; for a liability account (payables) charges are credits and settlements debits -- the same command serves AR and AP. Transactions are processed by date (charges before settlements on the same date, then by id), per counterparty when grouping. Settlements beyond the open charges are reported as an *unapplied credit*, which later charges consume first. Each charge's remaining open amount is bucketed by age in days (`as_of - transaction date`; age 0 is `Current`). The report always reconciles: total open - unapplied credit = account balance as of the date.
 
-Table output has one row per counterparty (or a single `(all)` row) plus a total row; CSV has the same rows with amounts in minor units and a final `TOTAL` row.
+**Matching methods.**
+- `fifo`: every settlement is applied to the oldest open charges.
+- `specific`: a settlement whose metadata links to a charge is applied to that charge first (up to its open amount); any excess, and settlements without a link, fall back to FIFO. Links are ignored on charges.
+
+**Links.** References are unique per company, so a payment cannot share its invoice's reference; instead the settlement's JSON metadata names the charge under the link key (default `applies_to`):
+- a string is the charge's `reference` (as posted with `txn post -r`); if no transaction has that reference and the string is an integer, optionally `#`-prefixed (`"42"`, `"#42"`), it is used as a transaction id;
+- a positive integer is the charge's transaction id;
+- an array of these is applied in order (one payment covering several invoices).
+
+```bash
+bk --company acme txn post -d "Invoice 102" -r INV-102 --debit 1100:300 --credit 4000:300 \
+  -m '{"customer":"Globex"}'
+bk --company acme txn post -d "Globex payment" --debit 1000:100 --credit 1100:100 \
+  -m '{"customer":"Globex","applies_to":"INV-102"}'
+```
+
+A link that cannot be honoured is ignored, the settlement is applied FIFO, a `[warn]` line is printed on stderr (unless `--quiet`), the table lists it under "Unmatched links", and JSON reports it in `unmatched_links` with one of these reasons: `not_found` (no transaction with that reference/id), `not_on_account` (the transaction has no entries on this account in this currency), `not_a_charge` (it is a settlement or nets to zero on this account), `charge_after_settlement` (the charge is dated after the settlement), `after_as_of` (the charge is dated after `--as-of`), `other_counterparty` (the charge belongs to another counterparty group), `invalid` (the value is not a non-empty string, a positive integer, or an array of those). A link to a charge that is already fully settled is not an error: the amount simply falls back to FIFO.
+
+**Credits, refunds and reversals.** On a receivable, every credit-side net movement is a settlement: payments, credit notes, write-offs, and reversals of an invoice. Under `fifo` it reduces the oldest open charge; under `specific`, link it to the invoice (e.g. a credit note with `{"applies_to":"INV-102"}`) and it cancels that invoice. Every debit-side net movement is a charge: invoices, refunds paid out to the customer, and payment chargebacks (bounced payments). A charge first consumes any unapplied credit, so refunding an overpayment clears the credit; a chargeback that is not absorbed becomes a new open item aged from its own date. Payables mirror this with the sides swapped: bills and vendor refunds received are charges (credits), payments and vendor credit notes are settlements (debits).
+
+**Net credit.** When settlements exceed the open charges the counterparty (or the account) is in *net credit*: the customer has prepaid or overpaid (for payables: we have prepaid or overpaid the vendor). Its open buckets are zero and the excess is shown as `Unapplied Credit`; `Net` (= total open - unapplied credit) is negative. The table marks it `CR` (e.g. `-150.00 CR`) and adds a legend line; CSV has a negative `net`; JSON has a negative `net` and `"net_credit": true`.
+
+**Output.** Table output has one row per counterparty (or a single `(all)` row) plus a total row, with columns for each bucket, `Total Open`, `Unapplied Credit` and `Net`. With `--detail`, an "Open items" table follows for each counterparty: date, transaction id, reference, description, age (days), bucket, original amount and open amount.
+
+CSV (amounts in minor units) without `--detail` has columns `counterparty`, one per bucket, `total_open`, `unapplied_credit`, `net`, one row per counterparty and a final `TOTAL` row. With `--detail` it is a single flat table with a leading `row_type` column: `row_type, counterparty, transaction_id, date, reference, description, age_days, bucket, original_amount, open_amount, <bucket columns>, total_open, unapplied_credit, net`. Rows are `item` (one per open charge; its open amount appears in its bucket column and in `total_open`), then a `counterparty` summary row per group (item columns empty), then a final `total` row with counterparty `TOTAL`.
 
 ### `bk report budget-variance`
 

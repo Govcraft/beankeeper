@@ -613,7 +613,13 @@ Amounts are signed minor units (positive = cash inflow).
 
 ### `report aging`
 
-Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) when `--group-by-metadata` is not used; otherwise it is the metadata value or `"(none)"`. `max_days` is `null` for the open-ended last bucket. `totals.net` (= `total_open - unapplied_credit`) always equals `account_balance` (the account's balance in its normal direction as of `as_of`, in `currency`).
+Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) when `--group-by-metadata`/`--group-by` is not used; otherwise it is the metadata value or `"(unassigned)"` (missing key, non-JSON or non-object metadata). `max_days` is `null` for the open-ended last bucket. `totals.net` (= `total_open - unapplied_credit`) always equals `account_balance` (the account's balance in its normal direction as of `as_of`, in `currency`).
+
+- `method` is `"fifo"` or `"specific"`; `basis` is `"fifo-by-transaction-date"` or `"specific-then-fifo-by-transaction-date"` accordingly.
+- `link_key` is the metadata key used for links with `"specific"` (default `"applies_to"`), `null` with `"fifo"`.
+- `net` is negative and `net_credit` is `true` when a group (or the totals) is in net credit, i.e. settlements exceed the open charges.
+- `open_items[].reference` is the charge's transaction reference, or `null`. `open_items` is always present (`--detail` only affects table and CSV output).
+- `unmatched_links` lists settlement links that were not honoured (always `[]` with `"fifo"`); each settlement was applied FIFO instead (`fallback: "fifo"`). `link` is the value as found in metadata (string, number, or the raw invalid value). `reason` is one of `not_found`, `not_on_account`, `not_a_charge`, `charge_after_settlement`, `after_as_of`, `other_counterparty`, `invalid` (see `commands.md`). `counterparty` is the settlement's group (`null` when not grouping); `settlement_amount` is its full amount.
 
 ```json
 {
@@ -623,7 +629,9 @@ Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) whe
     "as_of": "2026-06-30",
     "currency": "USD",
     "group_by": "customer",
-    "basis": "fifo-by-transaction-date",
+    "method": "specific",
+    "link_key": "applies_to",
+    "basis": "specific-then-fifo-by-transaction-date",
     "buckets": [
       { "label": "Current", "min_days": 0, "max_days": 0 },
       { "label": "1-30", "min_days": 1, "max_days": 30 },
@@ -644,10 +652,12 @@ Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) whe
         "total_open": 10000,
         "unapplied_credit": 0,
         "net": 10000,
+        "net_credit": false,
         "open_items": [
           {
             "transaction_id": 1,
             "date": "2026-03-01",
+            "reference": "INV-101",
             "description": "Invoice 101",
             "age_days": 121,
             "bucket": "90+",
@@ -667,10 +677,26 @@ Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) whe
       ],
       "total_open": 10000,
       "unapplied_credit": 0,
-      "net": 10000
+      "net": 10000,
+      "net_credit": false
     },
-    "account_balance": 10000
+    "account_balance": 10000,
+    "unmatched_links": []
   }
+}
+```
+
+An `unmatched_links` element:
+
+```json
+{
+  "settlement_transaction_id": 7,
+  "settlement_date": "2026-06-11",
+  "settlement_amount": 5000,
+  "counterparty": "Globex",
+  "link": "INV-999",
+  "reason": "not_found",
+  "fallback": "fifo"
 }
 ```
 

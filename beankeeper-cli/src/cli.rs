@@ -1215,16 +1215,50 @@ EXAMPLES:\n  \
     /// Receivables / payables aging for one asset or liability account.
     ///
     /// The ledger has no invoice or due-date model: each transaction that
-    /// increases the account is treated as a charge, each one that decreases
-    /// it as a settlement applied FIFO to the oldest open charges, and ages
-    /// are measured from transaction dates.
+    /// increases the account (net) is a charge, each one that decreases it is
+    /// a settlement, and ages are measured from transaction dates. Asset
+    /// accounts (receivables) age debit-side charges and apply credit-side
+    /// settlements; liability accounts (payables) age credit-side charges and
+    /// apply debit-side settlements, so the same command works for AR and AP.
     #[command(after_help = "\
+MATCHING (--method):\n  \
+    fifo      every settlement (payment, credit note, reversal) is applied to\n            \
+    the oldest open charges first (default).\n  \
+    specific  a settlement whose metadata links to a charge is applied to that\n            \
+    charge first; any excess, and unlinked settlements, fall back to FIFO.\n\
+\n  \
+    The link lives in the settlement's JSON metadata under --link-key\n  \
+    (default `applies_to`): the charge's reference (string, as given to\n  \
+    `txn post -r`) or its transaction id (number; a string like \"42\" or\n  \
+    \"#42\" is tried as an id when no reference matches), or an array of\n  \
+    these (applied in order). A link to a missing transaction, to one that is\n  \
+    not a charge on this account, to a later charge, or to another\n  \
+    counterparty's charge is ignored with a warning, the settlement is\n  \
+    applied FIFO, and it is listed under `unmatched_links` in JSON.\n\
+\n\
+CREDITS AND REVERSALS:\n  \
+    Any net decrease (payment, credit note, write-off, invoice reversal) is a\n  \
+    settlement; link it with --method specific to cancel a particular charge.\n  \
+    Any net increase (invoice, refund paid out, payment chargeback) is a charge\n  \
+    that first consumes unapplied credit. Settlements beyond the open charges\n  \
+    are unapplied credit: the Net column is then negative and marked CR.\n\
+\n\
+AS-OF:\n  \
+    Only transactions dated on or before --as-of count, so rerunning for a past\n  \
+    period end gives the same answer after later-dated payments are posted.\n\
+\n\
 EXAMPLES:\n  \
     Receivables aging as of today:\n    \
     $ bk --company acme report aging --account 1100\n\
     \n  \
     Payables aging as of a past date:\n    \
     $ bk --company acme report aging --account 2000 --as-of 2026-03-31\n\
+    \n  \
+    Per customer, with each open invoice listed:\n    \
+    $ bk --company acme report aging --account 1100 --group-by customer --detail\n\
+    \n  \
+    Payments linked to invoices via -m '{\"applies_to\":\"INV-101\"}':\n    \
+    $ bk --company acme report aging --account 1100 --method specific\n\
     \n  \
     Custom buckets, grouped by the `customer` metadata key:\n    \
     $ bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer\
@@ -1234,7 +1268,8 @@ EXAMPLES:\n  \
         #[arg(long)]
         account: String,
 
-        /// As-of date (YYYY-MM-DD, inclusive). Defaults to today.
+        /// As-of date (YYYY-MM-DD, inclusive). Defaults to today. Charges and
+        /// settlements dated after it are ignored.
         #[arg(long)]
         as_of: Option<String>,
 
@@ -1242,13 +1277,28 @@ EXAMPLES:\n  \
         #[arg(long, default_value = "30,60,90")]
         buckets: String,
 
-        /// Group by this key of the (JSON) transaction metadata.
-        #[arg(long)]
+        /// Group by this key of the (JSON) transaction metadata. Missing keys
+        /// and non-JSON or non-object metadata go to `(unassigned)`.
+        #[arg(long, visible_alias = "group-by", value_name = "KEY")]
         group_by_metadata: Option<String>,
 
         /// Currency code. Defaults to the company's single transaction currency.
         #[arg(long)]
         currency: Option<String>,
+
+        /// How settlements are matched to charges.
+        #[arg(long, value_enum, default_value_t = AgingMethodArg::Fifo)]
+        method: AgingMethodArg,
+
+        /// Metadata key holding a settlement's link to a charge (reference or
+        /// transaction id); default `applies_to`. Only used with `--method specific`.
+        #[arg(long, value_name = "KEY")]
+        link_key: Option<String>,
+
+        /// List the individual open charges under each counterparty (table
+        /// and CSV; JSON always includes them).
+        #[arg(long)]
+        detail: bool,
     },
 
     /// Reconcile an account against a bank/card statement using entry
@@ -1407,6 +1457,16 @@ impl AccountTypeArg {
             Self::Expense => beankeeper::types::AccountType::Expense,
         }
     }
+}
+
+/// Settlement matching method for `report aging`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgingMethodArg {
+    /// Apply every settlement to the oldest open charges.
+    #[default]
+    Fifo,
+    /// Apply linked settlements to their charge first, then FIFO.
+    Specific,
 }
 
 /// Conflict resolution strategy for duplicate references.
