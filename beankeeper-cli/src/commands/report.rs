@@ -94,6 +94,24 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
+        ReportCommand::Reconciliation {
+            account,
+            to,
+            statement_balance,
+            currency,
+        } => super::report_reconciliation::run(
+            cli,
+            &db,
+            company,
+            &super::report_reconciliation::ReconciliationArgs {
+                account,
+                to: to.as_deref(),
+                statement_balance: statement_balance.as_deref(),
+                currency: currency.as_deref(),
+            },
+            format,
+            use_color,
+        ),
     }
 }
 

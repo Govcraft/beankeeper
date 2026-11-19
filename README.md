@@ -102,6 +102,7 @@ bk --company personal report trial-balance --from 2026-01-01 --to 2026-03-31
 bk --company personal report balance --account 1000 --to 2026-03-31
 bk --company personal report balance-sheet --to 2026-03-31
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
+bk --company personal report reconciliation --account 1000 --statement-balance 4210.33
 
 # Set a budget and compare against actuals
 bk --company personal budget set 5000 --year 2026 --annual 14400
@@ -362,6 +363,17 @@ bk --company personal txn clear 42 --entry 5 --status reconciled
 ```
 
 Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
+
+`bk report reconciliation` uses those statuses to reconcile an account against a statement. It reports the book balance (all entries), the cleared balance (cleared + reconciled), and the reconciled-only balance on the account's normal side, lists the uncleared entries with their total (book - cleared = uncleared total), and, given `--statement-balance`, shows the difference (statement - cleared) and whether the account is reconciled:
+
+```sh
+bk --company personal report reconciliation --account 1000 --to 2026-03-31 --statement-balance 4210.33
+
+# Credit cards are credit-normal: a positive balance is the amount owed
+bk --company personal report reconciliation --account 2100 --statement-balance 512.80
+```
+
+`--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the uncleared entries followed by `summary` rows (see `docs/beankeeper/references/commands.md`).
 
 ### Budgeting and Variance Analysis
 

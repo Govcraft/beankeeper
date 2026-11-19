@@ -72,6 +72,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report balance-sheet` | Assets, liabilities, equity as-of a date |
 | `bk report tax-summary` | Entries grouped by tax category |
 | `bk report budget-variance` | Budget vs actual comparison |
+| `bk report reconciliation` | Book vs cleared vs reconciled balance for one account, uncleared entries, statement difference |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export all data as JSON or CSV |
@@ -126,6 +127,22 @@ bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 bk --company acme report balance-sheet --to 2026-03-31
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 ```
+
+### Reconcile an account against a statement
+
+```bash
+# Mark the entries that appear on the statement as cleared
+bk --company acme txn clear 42 --entry 5
+
+# Compare the cleared balance to the statement ending balance
+bk --company acme report reconciliation --account 1000 --to 2026-03-31 \
+  --statement-balance 1234.56
+```
+
+Balances are on the account's normal side (debit-normal for asset/expense,
+credit-normal otherwise). `book - cleared` always equals the total of the
+listed uncleared entries; `difference = statement - cleared`, and the account
+is reconciled when the difference is zero.
 
 ### Budgeting
 

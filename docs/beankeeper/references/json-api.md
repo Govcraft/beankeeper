@@ -238,6 +238,50 @@ Same schema as `report trial-balance`. Contains only asset, liability, and equit
 }
 ```
 
+### `report reconciliation`
+
+Amounts are minor units on the account's normal side. `statement_balance`,
+`difference` (`statement - cleared`), and `reconciled` (`difference == 0`) are
+`null` unless `--statement-balance` is given; `as_of` is `null` without `--to`.
+`signed_amount` is the entry's effect on the normal-side balance; `amount` is
+the raw (positive) entry amount. `book_balance - cleared_balance ==
+uncleared_total`.
+
+```json
+{
+  "data": {
+    "account": {
+      "code": "1000",
+      "name": "Checking",
+      "type": "asset",
+      "normal_balance": "debit"
+    },
+    "currency": "USD",
+    "as_of": "2026-03-31",
+    "book_balance": 86050,
+    "cleared_balance": 70000,
+    "reconciled_balance": 100000,
+    "uncleared_total": 16050,
+    "uncleared_count": 1,
+    "statement_balance": 70000,
+    "difference": 0,
+    "reconciled": true,
+    "uncleared_entries": [
+      {
+        "entry_id": 5,
+        "transaction_id": 3,
+        "date": "2026-01-20",
+        "description": "Owner top-up",
+        "memo": null,
+        "direction": "debit",
+        "amount": 16050,
+        "signed_amount": 16050
+      }
+    ]
+  }
+}
+```
+
 ### `budget list`
 
 ```json
