@@ -231,7 +231,8 @@ fn run_balance(
 
 /// Execute the `report income-statement` subcommand.
 ///
-/// An income statement shows revenue and expense accounts for a given period.
+/// An income statement shows revenue and expense accounts for a given period,
+/// grouped into sections with subtotals and a net income (or net loss) line.
 #[allow(clippy::too_many_arguments)]
 fn run_income_statement(
     cli: &Cli,
@@ -242,17 +243,10 @@ fn run_income_statement(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
-    // For income statement, we compute trial balance filtered by revenue and
-    // expense account types. The date filter uses `to` as the as-of date, but
-    // we also need to handle the `from` date for period-based filtering.
-    //
-    // We'll compute revenue and expense balances separately and combine them.
     let revenue_balances = compute_period_balances(db, company, "revenue", from, to)?;
     let expense_balances = compute_period_balances(db, company, "expense", from, to)?;
-
-    let mut all_balances = Vec::new();
-    all_balances.extend(revenue_balances);
-    all_balances.extend(expense_balances);
+    let stmt =
+        output::statements::build_income_statement(from, to, &revenue_balances, &expense_balances);
 
     let currency = resolve_company_currency(db, company);
     let minor_units = currency.minor_units();
@@ -260,22 +254,21 @@ fn run_income_statement(
     match format {
         OutputFormat::Table => {
             let title = build_period_title("Income Statement", currency.code(), from, to);
-            let rendered = render_report_table(
+            let rendered = output::statements::render_income_statement_table(
+                &stmt,
                 &title,
-                &all_balances,
                 minor_units,
                 use_color,
-                ReportKind::IncomeStatement,
             );
             println!("{rendered}");
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.income-statement", Some(company));
-            let rendered = output::json::render_trial_balance(&all_balances, meta)?;
+            let rendered = output::statements::render_income_statement_json(&stmt, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
-            let rendered = output::csv::render_trial_balance(&all_balances)?;
+            let rendered = output::statements::render_income_statement_csv(&stmt)?;
             print!("{rendered}");
         }
     }
@@ -290,6 +283,9 @@ fn run_income_statement(
 /// Execute the `report balance-sheet` subcommand.
 ///
 /// A balance sheet shows asset, liability, and equity accounts as of a date.
+/// Because there are no closing entries, equity includes a computed retained
+/// earnings line (cumulative revenue minus expenses up to `to`) so that
+/// Assets = Liabilities + Equity for any valid ledger.
 fn run_balance_sheet(
     cli: &Cli,
     db: &Db,
@@ -302,11 +298,19 @@ fn run_balance_sheet(
     let liability_balances =
         db::compute_trial_balance(db.conn(), company, Some("liability"), None, to)?;
     let equity_balances = db::compute_trial_balance(db.conn(), company, Some("equity"), None, to)?;
+    let revenue_balances =
+        db::compute_trial_balance(db.conn(), company, Some("revenue"), None, to)?;
+    let expense_balances =
+        db::compute_trial_balance(db.conn(), company, Some("expense"), None, to)?;
 
-    let mut all_balances = Vec::new();
-    all_balances.extend(asset_balances);
-    all_balances.extend(liability_balances);
-    all_balances.extend(equity_balances);
+    let sheet = output::statements::build_balance_sheet(&output::statements::BalanceSheetInputs {
+        as_of: to,
+        assets: &asset_balances,
+        liabilities: &liability_balances,
+        equity: &equity_balances,
+        revenue: &revenue_balances,
+        expenses: &expense_balances,
+    });
 
     let currency = resolve_company_currency(db, company);
     let minor_units = currency.minor_units();
@@ -314,22 +318,21 @@ fn run_balance_sheet(
     match format {
         OutputFormat::Table => {
             let title = build_period_title("Balance Sheet", currency.code(), None, to);
-            let rendered = render_report_table(
+            let rendered = output::statements::render_balance_sheet_table(
+                &sheet,
                 &title,
-                &all_balances,
                 minor_units,
                 use_color,
-                ReportKind::BalanceCheck,
             );
             println!("{rendered}");
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.balance-sheet", Some(company));
-            let rendered = output::json::render_trial_balance(&all_balances, meta)?;
+            let rendered = output::statements::render_balance_sheet_json(&sheet, meta)?;
             println!("{rendered}");
         }
         OutputFormat::Csv => {
-            let rendered = output::csv::render_trial_balance(&all_balances)?;
+            let rendered = output::statements::render_balance_sheet_csv(&sheet)?;
             print!("{rendered}");
         }
     }
@@ -387,218 +390,6 @@ fn build_period_title(
         (Some(f), None) => format!("{base} (from {f}) ({currency_code})"),
         (None, Some(t)) => format!("{base} (through {t}) ({currency_code})"),
         (None, None) => format!("{base} ({currency_code})"),
-    }
-}
-
-/// Whether the report checks for balanced debits/credits or shows net income.
-#[derive(Clone, Copy)]
-enum ReportKind {
-    /// Balance sheet / trial balance: debits must equal credits.
-    BalanceCheck,
-    /// Income statement: the difference is net income (or net loss).
-    IncomeStatement,
-}
-
-/// Apply ANSI styling to text if colours are enabled.
-fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
-    if use_color {
-        format!("{style}{text}{reset}", reset = anstyle::Reset)
-    } else {
-        text.to_string()
-    }
-}
-
-/// Format minor-unit integers with thousands separators and decimal places.
-fn format_amount(minor_units: i64, decimal_places: u8) -> String {
-    let abs_units = minor_units.unsigned_abs();
-    let divisor = 10u64.pow(u32::from(decimal_places));
-    let whole = abs_units / divisor;
-    let frac = abs_units % divisor;
-
-    let whole_str = {
-        let s = whole.to_string();
-        let len = s.len();
-        if len <= 3 {
-            s
-        } else {
-            let mut result = String::with_capacity(len + (len - 1) / 3);
-            for (i, ch) in s.chars().enumerate() {
-                if i > 0 && (len - i) % 3 == 0 {
-                    result.push(',');
-                }
-                result.push(ch);
-            }
-            result
-        }
-    };
-
-    let formatted = if decimal_places == 0 {
-        whole_str
-    } else {
-        let frac_str = format!("{frac:0>width$}", width = usize::from(decimal_places));
-        format!("{whole_str}.{frac_str}")
-    };
-
-    if minor_units < 0 {
-        format!("-{formatted}")
-    } else {
-        formatted
-    }
-}
-
-/// Capitalise the first letter of a string.
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => {
-            let upper: String = first.to_uppercase().collect();
-            format!("{upper}{rest}", rest = chars.as_str())
-        }
-    }
-}
-
-/// Render a report as a styled table (reuses trial-balance layout with a custom title).
-fn render_report_table(
-    title: &str,
-    balances: &[db::BalanceRow],
-    currency_minor_units: u8,
-    use_color: bool,
-    kind: ReportKind,
-) -> String {
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-    use comfy_table::{Cell, ContentArrangement, Table};
-
-    let bold = anstyle::Style::new().bold();
-    let cyan = anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
-    let green =
-        anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)));
-    let red_bold = anstyle::Style::new()
-        .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red)))
-        .bold();
-
-    let mut lines = Vec::new();
-    lines.push(styled(title, bold, use_color));
-    lines.push(String::new());
-
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_content_arrangement(ContentArrangement::Dynamic);
-
-    table.set_header(vec![
-        Cell::new(styled("Code", bold, use_color)),
-        Cell::new(styled("Account", bold, use_color)),
-        Cell::new(styled("Type", bold, use_color)),
-        Cell::new(styled("Debit", bold, use_color)),
-        Cell::new(styled("Credit", bold, use_color)),
-    ]);
-
-    let (grand_debits, grand_credits) =
-        populate_balance_rows(&mut table, balances, currency_minor_units, cyan, use_color);
-
-    append_totals_and_status(
-        &mut lines,
-        &table,
-        grand_debits,
-        grand_credits,
-        currency_minor_units,
-        bold,
-        green,
-        red_bold,
-        use_color,
-        kind,
-    );
-
-    lines.join("\n")
-}
-
-/// Add balance data rows to the table, returning `(total_debits, total_credits)`.
-fn populate_balance_rows(
-    table: &mut comfy_table::Table,
-    balances: &[db::BalanceRow],
-    currency_minor_units: u8,
-    cyan: anstyle::Style,
-    use_color: bool,
-) -> (i64, i64) {
-    use comfy_table::{Cell, CellAlignment};
-
-    let mut grand_debits: i64 = 0;
-    let mut grand_credits: i64 = 0;
-
-    for row in balances {
-        grand_debits = grand_debits.saturating_add(row.debit_total);
-        grand_credits = grand_credits.saturating_add(row.credit_total);
-
-        table.add_row(vec![
-            Cell::new(styled(&row.code, cyan, use_color)),
-            Cell::new(&row.name),
-            Cell::new(capitalize_first(&row.account_type)),
-            Cell::new(format_amount(row.debit_total, currency_minor_units))
-                .set_alignment(CellAlignment::Right),
-            Cell::new(format_amount(row.credit_total, currency_minor_units))
-                .set_alignment(CellAlignment::Right),
-        ]);
-    }
-
-    (grand_debits, grand_credits)
-}
-
-/// Append the totals row and status to the output lines.
-///
-/// For `BalanceCheck` reports (balance sheet), debits must equal credits.
-/// For `IncomeStatement` reports, the difference is net income or net loss.
-#[allow(clippy::too_many_arguments)]
-fn append_totals_and_status(
-    lines: &mut Vec<String>,
-    table: &comfy_table::Table,
-    grand_debits: i64,
-    grand_credits: i64,
-    currency_minor_units: u8,
-    bold: anstyle::Style,
-    green: anstyle::Style,
-    red_bold: anstyle::Style,
-    use_color: bool,
-    kind: ReportKind,
-) {
-    lines.push(table.to_string());
-    lines.push(String::new());
-
-    let debit_str = format_amount(grand_debits, currency_minor_units);
-    let credit_str = format_amount(grand_credits, currency_minor_units);
-    lines.push(format!(
-        "Totals:  DR {dr}  CR {cr}",
-        dr = styled(&debit_str, bold, use_color),
-        cr = styled(&credit_str, bold, use_color),
-    ));
-
-    match kind {
-        ReportKind::BalanceCheck => {
-            if grand_debits == grand_credits {
-                lines.push(styled("[ok] BALANCED", green, use_color));
-            } else {
-                let diff = grand_debits.saturating_sub(grand_credits).abs();
-                let diff_str = format_amount(diff, currency_minor_units);
-                lines.push(styled(
-                    &format!("[!!] UNBALANCED (difference: {diff_str})"),
-                    red_bold,
-                    use_color,
-                ));
-            }
-        }
-        ReportKind::IncomeStatement => {
-            // Revenue is credit-normal, expenses are debit-normal.
-            // Net income = credits (revenue) - debits (expenses).
-            let net = grand_credits.saturating_sub(grand_debits);
-            let net_str = format_amount(net.abs(), currency_minor_units);
-            if net >= 0 {
-                lines.push(styled(&format!("Net Income: {net_str}"), green, use_color));
-            } else {
-                lines.push(styled(&format!("Net Loss: {net_str}"), red_bold, use_color));
-            }
-        }
     }
 }
 

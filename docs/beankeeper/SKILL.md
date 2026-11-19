@@ -68,8 +68,8 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk budget delete` | Remove budget entries |
 | `bk report trial-balance` | All accounts with debit/credit totals |
 | `bk report balance` | Single account balance |
-| `bk report income-statement` | Revenue and expense summary for a period |
-| `bk report balance-sheet` | Assets, liabilities, equity as-of a date |
+| `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |
+| `bk report balance-sheet` | Assets, Liabilities, Equity sections (incl. computed retained earnings) and balance check as of a date |
 | `bk report tax-summary` | Entries grouped by tax category |
 | `bk report budget-variance` | Budget vs actual comparison |
 | `bk report ledger` | General ledger / account statement with running balances |

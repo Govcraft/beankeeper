@@ -286,7 +286,10 @@ bk --company acme report balance --account 1000 --from 2026-01-01 --to 2026-03-3
 
 ### `bk report income-statement`
 
-Revenue and expense summary for a period.
+Revenue and expense summary for a period. Output has a **Revenue** section and an
+**Expenses** section, each listing accounts with one signed amount on the
+account's normal side (credit for revenue, debit for expenses) and a subtotal,
+followed by **Net Income** (or **Net Loss** when expenses exceed revenue).
 
 ```bash
 bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
@@ -294,7 +297,17 @@ bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 
 ### `bk report balance-sheet`
 
-Assets, liabilities, and equity as of a date.
+Assets, liabilities, and equity as of a date. Output has **Assets**,
+**Liabilities** and **Equity** sections with subtotals, then **Total
+Liabilities + Equity** and a balance check (`[ok] BALANCED` /
+`[!!] UNBALANCED`).
+
+Beankeeper does not post closing entries, so the Equity section always
+includes a computed line, **Retained Earnings (computed)**, equal to cumulative
+revenue minus expenses up to `--to`. This keeps Assets = Liabilities + Equity
+for any valid ledger. If you post your own closing entries into a retained
+earnings account, the revenue/expense balances drop to zero and the computed
+line becomes zero accordingly.
 
 ```bash
 bk --company acme report balance-sheet

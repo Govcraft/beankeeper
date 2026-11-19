@@ -22,7 +22,7 @@ use crate::db::{
 /// - `format_amount(5000, 0)` => `"5,000"`
 /// - `format_amount(1234567, 3)` => `"1,234.567"`
 /// - `format_amount(0, 2)` => `"0.00"`
-fn format_amount(minor_units: i64, decimal_places: u8) -> String {
+pub(super) fn format_amount(minor_units: i64, decimal_places: u8) -> String {
     let negative = minor_units < 0;
     let abs_units = minor_units.unsigned_abs();
     let divisor = 10u64.pow(u32::from(decimal_places));
@@ -79,7 +79,7 @@ fn normal_balance_label(account_type: &str) -> &'static str {
 }
 
 /// Wrap `text` in ANSI escape codes if colours are enabled.
-fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
+pub(super) fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     if use_color {
         format!("{style}{text}{reset}", reset = anstyle::Reset)
     } else {
@@ -87,21 +87,21 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     }
 }
 
-fn cyan_style() -> anstyle::Style {
+pub(super) fn cyan_style() -> anstyle::Style {
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)))
 }
 
-fn green_style() -> anstyle::Style {
+pub(super) fn green_style() -> anstyle::Style {
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)))
 }
 
-fn red_bold_style() -> anstyle::Style {
+pub(super) fn red_bold_style() -> anstyle::Style {
     anstyle::Style::new()
         .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red)))
         .bold()
 }
 
-fn bold_style() -> anstyle::Style {
+pub(super) fn bold_style() -> anstyle::Style {
     anstyle::Style::new().bold()
 }
 
@@ -497,7 +497,7 @@ fn capitalize_first(s: &str) -> String {
 }
 
 /// Create a new `comfy_table::Table` with consistent styling.
-fn new_table() -> Table {
+pub(super) fn new_table() -> Table {
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
