@@ -268,6 +268,16 @@ bk --company acme budget delete 5000 --year 2026 --force   # Skip confirmation
 
 All report commands require `--company`.
 
+**Report currency.** Every report is computed in a single currency; amounts in
+different currencies are never added together. All report subcommands accept
+`--currency CODE`, which limits the report to transactions in that currency.
+When it is omitted the currency is inferred from the company's transactions:
+
+- one currency in use: that currency is used;
+- no transactions yet: USD;
+- several currencies in use: the command fails with a `VALIDATION` error
+  (exit code 3) that lists the currencies found; rerun with `--currency`.
+
 ### `bk report trial-balance`
 
 ```bash
@@ -275,6 +285,7 @@ bk --company acme report trial-balance
 bk --company acme report trial-balance --to 2026-03-31
 bk --company acme report trial-balance --from 2026-01-01 --to 2026-03-31
 bk --company acme report trial-balance --type expense
+bk --company acme report trial-balance --currency MXN
 ```
 
 ### `bk report balance --account CODE`
@@ -282,6 +293,7 @@ bk --company acme report trial-balance --type expense
 ```bash
 bk --company acme report balance --account 1000
 bk --company acme report balance --account 1000 --from 2026-01-01 --to 2026-03-31
+bk --company acme report balance --account 1000 --currency MXN
 ```
 
 ### `bk report income-statement`
@@ -326,7 +338,8 @@ bk --company acme report budget-variance --year 2026 --include-unbudgeted
 - `--month N`: Single month (mutually exclusive with `--from`/`--to`)
 - `--from N`, `--to N`: Month range, 1-12 (defaults to full year)
 - `--type TYPE`: Filter by account type
-- `--currency CODE` (default: USD)
+- `--currency CODE`: Currency of the budgets and actuals (env: `BEANKEEPER_CURRENCY`;
+  inferred from the company's transactions when omitted, see above)
 - `--include-unbudgeted`: Show accounts with actuals but no budget
 
 **Variance logic:**

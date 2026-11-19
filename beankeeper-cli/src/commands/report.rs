@@ -1,6 +1,5 @@
-use beankeeper::types::Currency;
-
 use crate::cli::{AccountTypeArg, Cli, OutputFormat, ReportCommand, resolve_format};
+use crate::commands::report_currency::resolve_report_currency;
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
@@ -27,6 +26,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             from,
             to,
             account_type,
+            currency,
         } => run_trial_balance(
             cli,
             &db,
@@ -34,6 +34,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             from.as_deref(),
             to.as_deref(),
             account_type.as_ref(),
+            currency.as_deref(),
             format,
             use_color,
         ),
@@ -41,6 +42,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             account,
             from,
             to,
+            currency,
         } => run_balance(
             cli,
             &db,
@@ -48,27 +50,36 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             account,
             from.as_deref(),
             to.as_deref(),
+            currency.as_deref(),
             format,
             use_color,
         ),
-        ReportCommand::IncomeStatement { from, to } => run_income_statement(
+        ReportCommand::IncomeStatement { from, to, currency } => run_income_statement(
             cli,
             &db,
             company,
             from.as_deref(),
             to.as_deref(),
+            currency.as_deref(),
             format,
             use_color,
         ),
-        ReportCommand::BalanceSheet { to } => {
-            run_balance_sheet(cli, &db, company, to.as_deref(), format, use_color)
-        }
-        ReportCommand::TaxSummary { from, to } => run_tax_summary(
+        ReportCommand::BalanceSheet { to, currency } => run_balance_sheet(
+            cli,
+            &db,
+            company,
+            to.as_deref(),
+            currency.as_deref(),
+            format,
+            use_color,
+        ),
+        ReportCommand::TaxSummary { from, to, currency } => run_tax_summary(
             cli,
             &db,
             company,
             from.as_deref(),
             to.as_deref(),
+            currency.as_deref(),
             format,
             use_color,
         ),
@@ -89,7 +100,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             *from,
             *to,
             account_type.as_ref(),
-            currency,
+            currency.as_deref(),
             *include_unbudgeted,
             format,
             use_color,
@@ -106,15 +117,21 @@ fn run_trial_balance(
     from: Option<&str>,
     to: Option<&str>,
     account_type: Option<&AccountTypeArg>,
+    currency: Option<&str>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let currency = resolve_report_currency(db.conn(), company, currency)?;
     let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-    let balances =
-        db::compute_trial_balance(db.conn(), company, type_filter.as_deref(), from, to)?;
+    let balances = db::compute_trial_balance(
+        db.conn(),
+        company,
+        type_filter.as_deref(),
+        from,
+        to,
+        Some(currency.code()),
+    )?;
 
-    // Determine currency info (default to USD for display)
-    let currency = resolve_company_currency(db, company);
     let minor_units = currency.minor_units();
 
     match format {
@@ -156,15 +173,21 @@ fn run_balance(
     account_code: &str,
     from: Option<&str>,
     to: Option<&str>,
+    currency: Option<&str>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
     // Look up the account to get name and type
     let account_row = db::get_account(db.conn(), company, account_code)?;
-    let (debit_total, credit_total) =
-        db::compute_account_balance(db.conn(), company, account_code, from, to)?;
-
-    let currency = resolve_company_currency(db, company);
+    let currency = resolve_report_currency(db.conn(), company, currency)?;
+    let (debit_total, credit_total) = db::compute_account_balance(
+        db.conn(),
+        company,
+        account_code,
+        from,
+        to,
+        Some(currency.code()),
+    )?;
 
     let balance_row = db::BalanceRow {
         code: account_row.code.clone(),
@@ -221,22 +244,25 @@ fn run_income_statement(
     company: &str,
     from: Option<&str>,
     to: Option<&str>,
+    currency: Option<&str>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let currency = resolve_report_currency(db.conn(), company, currency)?;
+
     // For income statement, we compute trial balance filtered by revenue and
     // expense account types. The date filter uses `to` as the as-of date, but
     // we also need to handle the `from` date for period-based filtering.
     //
     // We'll compute revenue and expense balances separately and combine them.
-    let revenue_balances = compute_period_balances(db, company, "revenue", from, to)?;
-    let expense_balances = compute_period_balances(db, company, "expense", from, to)?;
+    let code = Some(currency.code());
+    let revenue_balances = compute_period_balances(db, company, "revenue", from, to, code)?;
+    let expense_balances = compute_period_balances(db, company, "expense", from, to, code)?;
 
     let mut all_balances = Vec::new();
     all_balances.extend(revenue_balances);
     all_balances.extend(expense_balances);
 
-    let currency = resolve_company_currency(db, company);
     let minor_units = currency.minor_units();
 
     match format {
@@ -272,25 +298,30 @@ fn run_income_statement(
 /// Execute the `report balance-sheet` subcommand.
 ///
 /// A balance sheet shows asset, liability, and equity accounts as of a date.
+#[allow(clippy::too_many_arguments)]
 fn run_balance_sheet(
     cli: &Cli,
     db: &Db,
     company: &str,
     to: Option<&str>,
+    currency: Option<&str>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
-    let asset_balances = db::compute_trial_balance(db.conn(), company, Some("asset"), None, to)?;
+    let currency = resolve_report_currency(db.conn(), company, currency)?;
+    let code = Some(currency.code());
+    let asset_balances =
+        db::compute_trial_balance(db.conn(), company, Some("asset"), None, to, code)?;
     let liability_balances =
-        db::compute_trial_balance(db.conn(), company, Some("liability"), None, to)?;
-    let equity_balances = db::compute_trial_balance(db.conn(), company, Some("equity"), None, to)?;
+        db::compute_trial_balance(db.conn(), company, Some("liability"), None, to, code)?;
+    let equity_balances =
+        db::compute_trial_balance(db.conn(), company, Some("equity"), None, to, code)?;
 
     let mut all_balances = Vec::new();
     all_balances.extend(asset_balances);
     all_balances.extend(liability_balances);
     all_balances.extend(equity_balances);
 
-    let currency = resolve_company_currency(db, company);
     let minor_units = currency.minor_units();
 
     match format {
@@ -335,26 +366,9 @@ fn compute_period_balances(
     type_filter: &str,
     from: Option<&str>,
     to: Option<&str>,
+    currency: Option<&str>,
 ) -> Result<Vec<db::BalanceRow>, CliError> {
-    db::compute_trial_balance(db.conn(), company, Some(type_filter), from, to)
-}
-
-/// Resolve the currency for a company by checking transactions.
-///
-/// Defaults to USD if no transactions exist or the currency is unrecognized.
-fn resolve_company_currency(db: &Db, company: &str) -> Currency {
-    // Try to find the most common currency in the company's transactions
-    let result: Result<String, _> = db.conn().query_row(
-        "SELECT currency FROM transactions WHERE company_slug = ?1 \
-         GROUP BY currency ORDER BY COUNT(*) DESC LIMIT 1",
-        rusqlite::params![company],
-        |row| row.get(0),
-    );
-
-    match result {
-        Ok(code) => Currency::from_code(&code).unwrap_or(Currency::USD),
-        Err(_) => Currency::USD,
-    }
+    db::compute_trial_balance(db.conn(), company, Some(type_filter), from, to, currency)
 }
 
 /// Build a period-qualified report title.
@@ -592,11 +606,12 @@ fn run_tax_summary(
     company: &str,
     from: Option<&str>,
     to: Option<&str>,
+    currency: Option<&str>,
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
-    let rows = db::compute_tax_summary(db.conn(), company, from, to)?;
-    let currency = resolve_company_currency(db, company);
+    let currency = resolve_report_currency(db.conn(), company, currency)?;
+    let rows = db::compute_tax_summary(db.conn(), company, from, to, Some(currency.code()))?;
     let minor_units = currency.minor_units();
 
     match format {
@@ -634,7 +649,7 @@ fn run_budget_variance(
     from: Option<i32>,
     to: Option<i32>,
     account_type: Option<&AccountTypeArg>,
-    currency_code: &str,
+    currency: Option<&str>,
     include_unbudgeted: bool,
     format: OutputFormat,
     use_color: bool,
@@ -662,8 +677,8 @@ fn run_budget_variance(
     };
 
     let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-    let currency = Currency::from_code(currency_code)
-        .map_err(|_| CliError::Validation(format!("unknown currency: {currency_code}")))?;
+    let currency = resolve_report_currency(db.conn(), company, currency)?;
+    let currency_code = currency.code();
     let minor_units = currency.minor_units();
 
     let rows = db::compute_budget_variance(

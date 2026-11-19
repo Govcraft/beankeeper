@@ -6,6 +6,7 @@ pub mod export;
 pub mod import_ofx;
 pub mod init;
 pub mod report;
+pub mod report_currency;
 pub mod txn;
 pub mod verify;
 

@@ -739,8 +739,9 @@ mod tests {
             );
 
             // Verify trial balance is balanced
-            let balances = crate::db::compute_trial_balance(db.conn(), slug, None, None, None)
-                .expect("trial balance");
+            let balances =
+                crate::db::compute_trial_balance(db.conn(), slug, None, None, None, None)
+                    .expect("trial balance");
             let total_debits: i64 = balances.iter().map(|b| b.debit_total).sum();
             let total_credits: i64 = balances.iter().map(|b| b.credit_total).sum();
             assert_eq!(
