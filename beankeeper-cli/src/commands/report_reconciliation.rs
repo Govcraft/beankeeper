@@ -466,19 +466,10 @@ fn resolve_currency(
     super::report_currency::resolve_report_currency(conn, company, explicit)
 }
 
-/// Parse a major-unit amount that may carry a leading minus sign.
-///
-/// Delegates to [`parse_amount_to_minor`] (the helper behind `txn list
-/// --amount-gt`) for the magnitude, so sign handling stays correct for
-/// fractional amounts like `-12.34`.
+/// Parse a major-unit amount that may carry a leading minus sign
+/// (e.g. an overdrawn account's statement balance, `-12.34`).
 fn parse_signed_amount(s: &str, currency: Currency) -> Result<i64, CliError> {
-    let trimmed = s.trim();
-    if let Some(rest) = trimmed.strip_prefix('-') {
-        let magnitude = parse_amount_to_minor(rest, currency)?;
-        Ok(-magnitude)
-    } else {
-        parse_amount_to_minor(trimmed.strip_prefix('+').unwrap_or(trimmed), currency)
-    }
+    parse_amount_to_minor(s.trim(), currency)
 }
 
 // ---------------------------------------------------------------------------

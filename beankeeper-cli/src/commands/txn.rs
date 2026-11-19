@@ -272,48 +272,69 @@ fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64, Option<S
 /// - `50` -> 50 dollars -> 5000 cents (for USD, 2 minor units)
 /// - `50.00` -> 50 dollars -> 5000 cents
 /// - `0.50` -> 0.50 dollars -> 50 cents
+/// - `-12.34` -> -1234 cents (an optional leading `-` or `+` applies to the
+///   whole amount, fractional part included)
+///
+/// Both the whole and fractional parts must be plain ASCII digits; the whole
+/// part must be present (`.5` is rejected, `0.5` is fine).
 pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, CliError> {
     let minor_units = currency.minor_units();
     let multiplier = 10i64.pow(u32::from(minor_units));
 
-    if let Some((whole_str, frac_str)) = s.split_once('.') {
-        // Has decimal point
-        let whole: i64 = whole_str.parse().map_err(|_| {
-            CliError::Usage(format!("invalid amount '{s}': cannot parse whole part"))
-        })?;
+    let (negative, unsigned) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (whole_str, frac_str) = match unsigned.split_once('.') {
+        Some((w, f)) => (w, Some(f)),
+        None => (unsigned, None),
+    };
 
-        // Validate fractional part length
-        if frac_str.len() > usize::from(minor_units) {
-            return Err(CliError::Validation(format!(
-                "amount '{s}' has too many decimal places for {currency} \
-                 (max {minor_units})"
-            )));
-        }
-
-        // Pad fractional part to minor_units digits
-        let padded = format!("{frac_str:0<width$}", width = usize::from(minor_units));
-        let frac: i64 = padded.parse().map_err(|_| {
-            CliError::Usage(format!(
-                "invalid amount '{s}': cannot parse fractional part"
-            ))
-        })?;
-
-        let total = whole
-            .checked_mul(multiplier)
-            .and_then(|w| w.checked_add(frac))
-            .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))?;
-
-        Ok(total)
-    } else {
-        // No decimal point: treat as whole major units
-        let whole: i64 = s
-            .parse()
-            .map_err(|_| CliError::Usage(format!("invalid amount '{s}': not a valid number")))?;
-
-        whole
-            .checked_mul(multiplier)
-            .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))
+    let all_digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if whole_str.is_empty() || !all_digits(whole_str) {
+        return Err(CliError::Usage(format!(
+            "invalid amount '{s}': not a valid number"
+        )));
     }
+    let whole: i64 = whole_str
+        .parse()
+        .map_err(|_| CliError::Validation(format!("amount '{s}' is too large")))?;
+
+    let frac: i64 = match frac_str {
+        None => 0,
+        Some(f) => {
+            if !all_digits(f) {
+                return Err(CliError::Usage(format!(
+                    "invalid amount '{s}': cannot parse fractional part"
+                )));
+            }
+            if f.len() > usize::from(minor_units) {
+                return Err(CliError::Validation(format!(
+                    "amount '{s}' has too many decimal places for {currency} \
+                     (max {minor_units})"
+                )));
+            }
+            // Pad fractional part to minor_units digits ("5" -> "50" for USD).
+            let padded = format!("{f:0<width$}", width = usize::from(minor_units));
+            if padded.is_empty() {
+                0
+            } else {
+                padded.parse().map_err(|_| {
+                    CliError::Usage(format!(
+                        "invalid amount '{s}': cannot parse fractional part"
+                    ))
+                })?
+            }
+        }
+    };
+
+    let magnitude = whole
+        .checked_mul(multiplier)
+        .and_then(|w| w.checked_add(frac))
+        .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))?;
+
+    Ok(if negative { -magnitude } else { magnitude })
 }
 
 /// Normalize a user-supplied transaction reference for storage.
@@ -831,6 +852,37 @@ mod tests {
         // BHD: 50.125 -> 50125
         let result = parse_amount_to_minor("50.125", Currency::BHD);
         assert_eq!(result.ok(), Some(50125));
+    }
+
+    #[test]
+    fn parse_amount_negative_fraction() {
+        // Regression: "-12.34" used to come out as -1166 (-1200 + 34).
+        assert_eq!(
+            parse_amount_to_minor("-12.34", Currency::USD).ok(),
+            Some(-1234)
+        );
+        // Regression: "-0.50" used to lose its sign ("-0" parses as 0).
+        assert_eq!(
+            parse_amount_to_minor("-0.50", Currency::USD).ok(),
+            Some(-50)
+        );
+        assert_eq!(parse_amount_to_minor("-7", Currency::USD).ok(), Some(-700));
+        assert_eq!(parse_amount_to_minor("+7.5", Currency::USD).ok(), Some(750));
+    }
+
+    #[test]
+    fn parse_amount_rejects_malformed_input() {
+        for bad in [
+            "", "-", ".5", "1.-5", "1.+5", "--1", "1e3", " 1", "1,000", "1.2.3", "abc",
+        ] {
+            assert!(
+                parse_amount_to_minor(bad, Currency::USD).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        // JPY has no minor units: a trailing "." is fine, a fraction is not.
+        assert_eq!(parse_amount_to_minor("50.", Currency::JPY).ok(), Some(50));
+        assert!(parse_amount_to_minor("50.5", Currency::JPY).is_err());
     }
 
     #[test]
