@@ -19,6 +19,7 @@ use std::str::FromStr;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+use super::metadata;
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
 use crate::error::CliError;
 
@@ -333,15 +334,18 @@ pub fn correlate_partner(
             )));
         }
 
-        if let Some(ref meta) = partner_metadata {
-            if meta.contains("\"correlate\"") {
-                return Err(CliError::Validation(format!(
-                    "transaction #{partner_id} is already correlated"
-                )));
-            }
+        // Same rule as the reconcile query: only a valid JSON object with a
+        // non-null `correlate` key counts. A memo that merely mentions the
+        // word "correlate" does not block linking (issue #17).
+        if metadata::has_correlate(partner_metadata.as_deref()) {
+            return Err(CliError::Validation(format!(
+                "transaction #{partner_id} is already correlated"
+            )));
         }
 
-        let updated = merge_correlate_into_metadata(partner_metadata.as_deref(), new_txn_id);
+        // Normalizes legacy free-text metadata to `{"memo": ...}` and splices
+        // in the correlate key, so the partner's metadata stays a JSON object.
+        let updated = metadata::with_correlate(partner_metadata.as_deref(), new_txn_id)?;
 
         conn.execute(
             "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
@@ -366,29 +370,6 @@ pub fn correlate_partner(
 
         Ok(())
     })
-}
-
-/// Merge a `correlate` key into existing metadata.
-///
-/// - No existing metadata -> `{"correlate": id}`
-/// - Existing JSON object -> insert `correlate` key
-/// - Existing plain string -> `{"correlate": id, "ref": "old_string"}`
-fn merge_correlate_into_metadata(existing: Option<&str>, correlate_id: i64) -> String {
-    match existing {
-        None => format!(r#"{{"correlate":{correlate_id}}}"#),
-        Some(s) if s.starts_with('{') => {
-            let rest = &s[1..]; // skip opening brace
-            if rest.trim_start().starts_with('}') {
-                format!(r#"{{"correlate":{correlate_id}}}"#)
-            } else {
-                format!(r#"{{"correlate":{correlate_id},{rest}"#)
-            }
-        }
-        Some(s) => format!(
-            r#"{{"correlate":{correlate_id},"ref":{}}}"#,
-            serde_json::json!(s)
-        ),
-    }
 }
 
 /// Upserts a single month's budget, recording the prior amount (if any).
@@ -888,6 +869,45 @@ mod tests {
             .expect("read audit");
         assert_eq!(action, "account_delete");
         assert!(before.unwrap_or_default().contains("Cash"));
+    }
+
+    #[test]
+    fn correlate_partner_ignores_word_correlate_in_memo() {
+        let db = seed();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO companies (slug, name) VALUES ('beta', 'Beta')",
+            [],
+        )
+        .expect("insert company");
+        // Legacy free-text metadata that mentions the word "correlate".
+        conn.execute(
+            "INSERT INTO transactions (company_slug, description, currency, date, metadata) \
+             VALUES ('beta', 'Partner', 'USD', '2026-01-01', 'please \"correlate\" later')",
+            [],
+        )
+        .expect("insert partner");
+        let partner_id = conn.last_insert_rowid();
+
+        let actor = Actor::new("tester");
+        correlate_partner(conn, &actor, "acme", 1, partner_id).expect("correlate");
+
+        let meta: String = conn
+            .query_row(
+                "SELECT metadata FROM transactions WHERE id = ?1",
+                params![partner_id],
+                |r| r.get(0),
+            )
+            .expect("read metadata");
+        let value: serde_json::Value = serde_json::from_str(&meta).expect("metadata is JSON");
+        assert_eq!(value["correlate"], serde_json::json!(1));
+        assert_eq!(
+            value["memo"],
+            serde_json::json!("please \"correlate\" later")
+        );
+
+        // Now it really is correlated, so a second link is refused.
+        assert!(correlate_partner(conn, &actor, "acme", 1, partner_id).is_err());
     }
 
     #[test]

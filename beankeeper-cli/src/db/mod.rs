@@ -6,6 +6,7 @@ pub mod audit;
 pub mod budgets;
 pub mod companies;
 pub mod connection;
+pub mod metadata;
 pub mod schema;
 pub mod transactions;
 

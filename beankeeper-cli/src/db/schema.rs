@@ -1,9 +1,10 @@
 use rusqlite::{Connection, params};
 
+use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 8;
+const CURRENT_VERSION: i64 = 9;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -71,6 +72,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 8 {
         apply_v8(conn)?;
+    }
+
+    if version < 9 {
+        apply_v9(conn)?;
     }
 
     debug_assert_eq!(
@@ -328,6 +333,60 @@ fn apply_v8(conn: &Connection) -> Result<(), CliError> {
     )?;
 
     Ok(())
+}
+
+/// Applies the v9 migration: normalizes `transactions.metadata` so it is
+/// always `NULL` or a JSON object (issue #17).
+///
+/// `txn post -m` used to store free text verbatim, which made the reconcile
+/// query's `json_extract` fail with "malformed JSON". Every existing value that
+/// is not valid JSON, or is valid JSON but not an object, is rewritten with
+/// the same [`metadata::normalize`] rule new writes use: free text becomes
+/// `{"memo": "<text>"}`, empty text becomes `NULL`, objects are untouched.
+///
+/// This one-off rewrite is intentionally *not* recorded in `audit_log`. It is
+/// a schema-level data-format migration, not a ledger mutation by an actor:
+/// the information content is preserved verbatim under `memo`, and there are
+/// no deployed databases holding such rows to protect. Recording it would
+/// require a new audit action kind and a rebuild of the `audit_log.action`
+/// CHECK constraint for no practical benefit.
+fn apply_v9(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch("SAVEPOINT apply_v9")?;
+    let result = (|| -> Result<(), CliError> {
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, metadata FROM transactions \
+                 WHERE metadata IS NOT NULL \
+                   AND (NOT json_valid(metadata) OR json_type(metadata) <> 'object')",
+            )?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?
+        };
+
+        for (id, raw) in rows {
+            conn.execute(
+                "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
+                params![metadata::normalize(&raw), id],
+            )?;
+        }
+
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![9],
+        )?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("RELEASE apply_v9")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO apply_v9; RELEASE apply_v9");
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -598,6 +657,74 @@ mod tests {
             )
             .unwrap_or(0);
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn v9_migration_normalizes_metadata() {
+        let conn = open_conn();
+        // Build a v8-shaped database.
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
+        apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
+        apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
+        apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
+        apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(8));
+
+        conn.execute(
+            "INSERT INTO companies (slug, name) VALUES ('acme', 'Acme')",
+            [],
+        )
+        .unwrap_or_else(|e| panic!("insert company: {e}"));
+        let samples: [Option<&str>; 7] = [
+            Some("open:1000"),
+            Some(r#"{"ref":"INV-1"}"#),
+            Some("[1,2]"),
+            Some("42"),
+            Some(""),
+            None,
+            Some(r#"{"correlate":2}"#),
+        ];
+        for m in samples {
+            conn.execute(
+                "INSERT INTO transactions (company_slug, description, metadata, date) \
+                 VALUES ('acme', 'x', ?1, '2026-01-01')",
+                params![m],
+            )
+            .unwrap_or_else(|e| panic!("insert txn: {e}"));
+        }
+
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        let mut stmt = conn
+            .prepare("SELECT metadata FROM transactions ORDER BY id")
+            .unwrap_or_else(|e| panic!("prepare: {e}"));
+        let got: Vec<Option<String>> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("query: {e}"))
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                Some(r#"{"memo":"open:1000"}"#.to_string()),
+                Some(r#"{"ref":"INV-1"}"#.to_string()),
+                Some(r#"{"memo":[1,2]}"#.to_string()),
+                Some(r#"{"memo":"42"}"#.to_string()),
+                None,
+                None,
+                Some(r#"{"correlate":2}"#.to_string()),
+            ]
+        );
+
+        // The migration is unaudited by design.
+        let audited: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap_or(-1);
+        assert_eq!(audited, 0);
     }
 
     #[test]

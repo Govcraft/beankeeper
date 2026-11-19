@@ -1,9 +1,9 @@
 use std::fmt::Write;
 
 use rusqlite::{Connection, params};
-use serde_json;
 
 use super::audit::{self, Actor};
+use super::metadata;
 use super::{EntryRow, TransactionRow};
 use crate::error::CliError;
 
@@ -142,7 +142,7 @@ fn post_transaction_inner(
     }
 
     // Build the metadata string, merging --correlate and --metadata if both present.
-    let effective_metadata = build_metadata(p.metadata, p.correlate);
+    let effective_metadata = build_metadata(p.metadata, p.correlate)?;
 
     conn.execute(
         "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference) \
@@ -194,16 +194,18 @@ fn post_transaction_inner(
     Ok(PostResult::Created(txn_id))
 }
 
-/// Build effective metadata JSON from optional user metadata and correlate ID.
-fn build_metadata(user_metadata: Option<&str>, correlate: Option<i64>) -> Option<String> {
-    match (user_metadata, correlate) {
-        (None, None) => None,
-        (Some(m), None) => Some(m.to_string()),
-        (None, Some(cid)) => Some(format!(r#"{{"correlate":{cid}}}"#)),
-        (Some(m), Some(cid)) => Some(format!(
-            r#"{{"correlate":{cid},"ref":{}}}"#,
-            serde_json::json!(m)
-        )),
+/// Build the stored metadata from user metadata and an optional correlate ID.
+///
+/// The result is always `None` or a JSON object (see [`metadata`] for the
+/// normalization rules), so every writer that goes through `post_transaction`
+/// -- `txn post`, the OFX importer, demo data -- stores the same shape.
+fn build_metadata(
+    user_metadata: Option<&str>,
+    correlate: Option<i64>,
+) -> Result<Option<String>, CliError> {
+    match correlate {
+        None => Ok(user_metadata.and_then(metadata::normalize)),
+        Some(cid) => metadata::with_correlate(user_metadata, cid).map(Some),
     }
 }
 
@@ -235,6 +237,9 @@ pub struct ListTransactionParams<'a> {
     pub reference_filter: Option<&'a str>,
     /// Substring search on transaction metadata (case-insensitive).
     pub metadata_like: Option<&'a str>,
+    /// Exact-match filters on top-level metadata keys (`key`, `value`),
+    /// AND-ed together. See [`build_list_query`] for comparison semantics.
+    pub meta_eq: &'a [(String, String)],
     /// Exact match on entry tax category.
     pub tax_category_filter: Option<&'a str>,
     /// Filter entries by direction ("debit" or "credit").
@@ -259,6 +264,7 @@ impl<'a> ListTransactionParams<'a> {
             currency_filter: None,
             reference_filter: None,
             metadata_like: None,
+            meta_eq: &[],
             tax_category_filter: None,
             direction_filter: None,
         }
@@ -365,6 +371,31 @@ fn build_list_query(
         let _ = write!(sql, " AND t.metadata LIKE '%' || ?{param_idx} || '%'");
         param_values.push(Box::new(meta.to_string()));
         param_idx += 1;
+    }
+
+    // Exact match on a top-level metadata key. A JSON string matches when it
+    // equals the value exactly (case-sensitive). A JSON number or boolean
+    // matches when its JSON text equals the value (`--meta qty=3` matches
+    // `{"qty":3}`; `--meta paid=true` matches `{"paid":true}`). null, arrays
+    // and objects never match. Non-JSON metadata never matches (and never
+    // errors) thanks to the json_valid guard.
+    for (key, value) in params.meta_eq {
+        let p = param_idx;
+        let v = param_idx + 1;
+        let _ = write!(
+            sql,
+            " AND (CASE WHEN json_valid(t.metadata) THEN \
+               CASE json_type(t.metadata, ?{p}) \
+                 WHEN 'text' THEN json_extract(t.metadata, ?{p}) \
+                 WHEN 'integer' THEN t.metadata -> ?{p} \
+                 WHEN 'real' THEN t.metadata -> ?{p} \
+                 WHEN 'true' THEN 'true' \
+                 WHEN 'false' THEN 'false' \
+               END END) = ?{v}"
+        );
+        param_values.push(Box::new(format!("$.\"{key}\"")));
+        param_values.push(Box::new(value.clone()));
+        param_idx += 2;
     }
 
     (sql, param_values, param_idx)
@@ -532,18 +563,23 @@ pub fn get_entries_for_transaction(
 ///
 /// Returns [`CliError`] on database query failure.
 pub fn find_orphaned_correlations(conn: &Connection) -> Result<Vec<OrphanedCorrelation>, CliError> {
-    let mut stmt = conn.prepare(
+    // NULL or non-JSON metadata means "no correlate" (issue #17); the guarded
+    // expression is shared with the Rust-side rule in `metadata::has_correlate`.
+    let own = metadata::sql_correlate("t.metadata");
+    let partner = metadata::sql_correlate("t2.metadata");
+    let sql = format!(
         "SELECT t.id, t.company_slug, t.description, t.date, \
-                CAST(json_extract(t.metadata, '$.correlate') AS INTEGER) AS partner_id \
+                CAST({own} AS INTEGER) AS partner_id \
          FROM transactions t \
-         WHERE json_extract(t.metadata, '$.correlate') IS NOT NULL \
+         WHERE {own} IS NOT NULL \
            AND NOT EXISTS ( \
                SELECT 1 FROM transactions t2 \
-               WHERE t2.id = CAST(json_extract(t.metadata, '$.correlate') AS INTEGER) \
-                 AND CAST(json_extract(t2.metadata, '$.correlate') AS INTEGER) = t.id \
+               WHERE t2.id = CAST({own} AS INTEGER) \
+                 AND CAST({partner} AS INTEGER) = t.id \
            ) \
-         ORDER BY t.id",
-    )?;
+         ORDER BY t.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
     let rows = stmt.query_map([], |row| {
         Ok(OrphanedCorrelation {
@@ -1034,6 +1070,84 @@ mod tests {
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Taxed");
+    }
+
+    #[test]
+    fn post_transaction_wraps_plain_text_metadata() {
+        let db = setup();
+        let entries = sample_entries();
+        let p = make_params(&entries, "Memo", Some("open:1000"), "2024-01-15");
+        let PostResult::Created(id) =
+            post_transaction(db.conn(), &p).unwrap_or_else(|e| panic!("post failed: {e}"))
+        else {
+            panic!("expected Created");
+        };
+        let (txn, _) =
+            get_transaction(db.conn(), "acme", id).unwrap_or_else(|e| panic!("get failed: {e}"));
+        assert_eq!(txn.metadata.as_deref(), Some(r#"{"memo":"open:1000"}"#));
+    }
+
+    #[test]
+    fn find_orphaned_correlations_tolerates_non_json_metadata() {
+        let db = setup();
+        // Bypass normalization to simulate rows written before schema v9.
+        for meta in ["open:1000", "[1,2]", "", r#"{"correlate":42}"#] {
+            db.conn()
+                .execute(
+                    "INSERT INTO transactions (company_slug, description, metadata, date) \
+                     VALUES ('acme', 'raw', ?1, '2024-01-01')",
+                    params![meta],
+                )
+                .unwrap_or_else(|e| panic!("insert failed: {e}"));
+        }
+        let orphans =
+            find_orphaned_correlations(db.conn()).unwrap_or_else(|e| panic!("reconcile: {e}"));
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].partner_id, 42);
+    }
+
+    #[test]
+    fn list_transactions_with_meta_eq_filter() {
+        let db = setup();
+        let entries = sample_entries();
+        let metas = [
+            r#"{"vendor":"AWS","qty":3}"#,
+            r#"{"vendor":"aws"}"#,
+            r#"{"memo":"vendor=AWS"}"#,
+        ];
+        for m in metas {
+            let p = make_params(&entries, m, Some(m), "2024-01-01");
+            assert!(post_transaction(db.conn(), &p).is_ok());
+        }
+        // A pre-v9 free-text row must not break the json_extract filter.
+        db.conn()
+            .execute(
+                "INSERT INTO transactions (company_slug, description, metadata, date) \
+                 VALUES ('acme', 'raw', 'vendor AWS', '2024-01-01')",
+                [],
+            )
+            .unwrap_or_else(|e| panic!("insert failed: {e}"));
+
+        let check = |pairs: &[(&str, &str)], expected: usize| {
+            let owned: Vec<(String, String)> = pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            let mut lp = ListTransactionParams::for_company("acme");
+            lp.meta_eq = &owned;
+            let list = list_transactions(db.conn(), &lp).unwrap_or_else(|e| panic!("list: {e}"));
+            assert_eq!(list.len(), expected, "filters {pairs:?}");
+            assert_eq!(
+                count_transactions(db.conn(), &lp).unwrap_or(-1),
+                i64::try_from(expected).unwrap_or(-1)
+            );
+        };
+        check(&[("vendor", "AWS")], 1);
+        check(&[("vendor", "AWS"), ("qty", "3")], 1);
+        check(&[("vendor", "aws"), ("qty", "3")], 0);
+        check(&[("qty", "3.0")], 0);
+        check(&[("memo", "vendor=AWS")], 1);
+        check(&[("missing", "")], 0);
     }
 
     #[test]

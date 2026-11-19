@@ -764,4 +764,5 @@ may be `null` for cross-company changes.
 2. **Use `meta.command`** to confirm the response matches the expected command
 3. **Convert amounts**: Divide by `10^minor_units` for the currency (2 for USD/EUR/MXN, 0 for JPY, 3 for BHD)
 4. **Handle null fields**: `metadata`, `reference`, `memo`, `notes`, `description` can be null
-5. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout
+5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Databases created before schema v9 are migrated to this form automatically on open.
+6. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout

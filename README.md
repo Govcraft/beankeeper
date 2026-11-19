@@ -321,7 +321,20 @@ bk --company personal txn list --tax-category "sched-c:24b" --direction debit --
 bk --company personal txn list --currency MXN --json
 bk --company personal txn list --reference "chase-2026-03-15-001" --json
 bk --company personal txn list --metadata "vendor" --json
+
+# Exact match on structured metadata keys (repeatable, AND-ed)
+bk --company personal txn list --meta vendor=AWS --meta project=apollo --json
 ```
+
+Transaction metadata is always stored as a JSON object. Free text from `-m` becomes `{"memo": "..."}`, a JSON object passes through unchanged, and `--meta key=value` adds top-level string keys:
+
+```bash
+bk --company personal txn post -d "AWS bill" --debit 5000:120 --credit 1000:120 \
+  -m "Q1 cloud" --meta vendor=AWS --meta project=apollo
+# metadata: {"memo":"Q1 cloud","vendor":"AWS","project":"apollo"}
+```
+
+`--meta` filters compare JSON strings exactly and numbers/booleans by their JSON text (`--meta qty=3` matches `{"qty":3}`). Databases created before schema v9 have any free-text metadata rewritten to `{"memo": "..."}` automatically on first open; this one-off format migration is not recorded in the audit log.
 
 All filters can be combined. Amount filters use the `--currency` value (or `BEANKEEPER_CURRENCY` env, defaulting to USD) for major-to-minor unit conversion.
 

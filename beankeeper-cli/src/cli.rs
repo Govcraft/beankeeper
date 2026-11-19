@@ -726,7 +726,11 @@ EXAMPLES:\n  \
     \n  \
     Post only if reference doesn't exist, otherwise skip silently:\n    \
     $ bk --company acme txn post -d \"Monthly rent\" \\\n      \
-    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\" --on-conflict skip\
+    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\" --on-conflict skip\n\
+    \n  \
+    Structured metadata (stored as {\"memo\":\"Q1 cloud\",\"vendor\":\"AWS\",\"project\":\"apollo\"}):\n    \
+    $ bk --company acme txn post -d \"AWS bill\" --debit 5000:120 --credit 1000:120 \\\n      \
+    -m \"Q1 cloud\" --meta vendor=AWS --meta project=apollo\
 ")]
     Post {
         /// Transaction description.
@@ -741,9 +745,16 @@ EXAMPLES:\n  \
         #[arg(long, required = true, num_args = 1)]
         credit: Vec<String>,
 
-        /// Reference number or memo.
+        /// Free-text memo or a JSON object. Text (and non-object JSON) is
+        /// stored as `{"memo": ...}`; a JSON object is stored unchanged.
         #[arg(short = 'm', long)]
         metadata: Option<String>,
+
+        /// Set a top-level metadata key as `key=value` (repeatable). Values are
+        /// stored as JSON strings and merged with `-m`. Duplicate keys are an
+        /// error; `correlate` is reserved (use --correlate).
+        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        meta: Vec<String>,
 
         /// Currency code.
         #[arg(long, default_value = "USD")]
@@ -787,6 +798,9 @@ EXAMPLES:\n  \
     \n  \
     Find large transactions:\n    \
     $ bk --company acme txn list --amount-gt 10000\n\
+    \n  \
+    Exact match on a metadata key (repeatable, AND-ed):\n    \
+    $ bk --company acme txn list --meta vendor=AWS --meta project=apollo\n\
     \n  \
     Count matching transactions without listing them:\n    \
     $ bk --company acme txn list --from 2025-01-01 --count\n\
@@ -843,6 +857,12 @@ EXAMPLES:\n  \
         /// Search in metadata field (substring, case-insensitive).
         #[arg(long)]
         metadata: Option<String>,
+
+        /// Exact match on a top-level metadata key, as `key=value` (repeatable,
+        /// AND-ed). Matches JSON strings exactly, and numbers/booleans by their
+        /// JSON text (`qty=3` matches `{"qty":3}`).
+        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        meta: Vec<String>,
 
         /// Filter by tax category on entries.
         #[arg(long)]
