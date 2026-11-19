@@ -94,6 +94,9 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
+        ReportCommand::Aging { .. } => {
+            super::report_aging::run_command(cli, &db, company, sub, format, use_color)
+        }
     }
 }
 

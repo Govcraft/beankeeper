@@ -6,6 +6,7 @@ pub mod export;
 pub mod import_ofx;
 pub mod init;
 pub mod report;
+pub mod report_aging;
 pub mod txn;
 pub mod verify;
 
@@ -56,6 +57,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             ReportCommand::BalanceSheet { .. } => "report.balance-sheet",
             ReportCommand::TaxSummary { .. } => "report.tax-summary",
             ReportCommand::BudgetVariance { .. } => "report.budget-variance",
+            ReportCommand::Aging { .. } => "report.aging",
         },
         Command::Audit(args) => match &args.command {
             AuditCommand::Log { .. } => "audit.log",

@@ -72,6 +72,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report balance-sheet` | Assets, liabilities, equity as-of a date |
 | `bk report tax-summary` | Entries grouped by tax category |
 | `bk report budget-variance` | Budget vs actual comparison |
+| `bk report aging` | Receivables/payables aging buckets (FIFO by transaction date) |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export all data as JSON or CSV |
@@ -126,6 +127,18 @@ bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 bk --company acme report balance-sheet --to 2026-03-31
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 ```
+
+### Receivables / payables aging
+
+```bash
+bk --company acme report aging --account 1100                     # AR as of today
+bk --company acme report aging --account 2000 --as-of 2026-03-31  # AP
+bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer
+```
+
+There is no invoice or due-date model: payments are applied FIFO to the oldest
+open charges and ages are measured from transaction dates. To age per customer
+or vendor, post with JSON metadata such as `-m '{"customer":"Globex"}'`.
 
 ### Budgeting
 

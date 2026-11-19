@@ -292,6 +292,69 @@ Same shape as a single element from `txn list`, with entries included.
 }
 ```
 
+### `report aging`
+
+Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) when `--group-by-metadata` is not used; otherwise it is the metadata value or `"(none)"`. `max_days` is `null` for the open-ended last bucket. `totals.net` (= `total_open - unapplied_credit`) always equals `account_balance` (the account's balance in its normal direction as of `as_of`, in `currency`).
+
+```json
+{
+  "data": {
+    "account": { "code": "1100", "name": "Accounts Receivable", "type": "asset" },
+    "kind": "receivable",
+    "as_of": "2026-06-30",
+    "currency": "USD",
+    "group_by": "customer",
+    "basis": "fifo-by-transaction-date",
+    "buckets": [
+      { "label": "Current", "min_days": 0, "max_days": 0 },
+      { "label": "1-30", "min_days": 1, "max_days": 30 },
+      { "label": "31-60", "min_days": 31, "max_days": 60 },
+      { "label": "61-90", "min_days": 61, "max_days": 90 },
+      { "label": "90+", "min_days": 91, "max_days": null }
+    ],
+    "groups": [
+      {
+        "counterparty": "Globex",
+        "buckets": [
+          { "label": "Current", "amount": 0 },
+          { "label": "1-30", "amount": 0 },
+          { "label": "31-60", "amount": 0 },
+          { "label": "61-90", "amount": 0 },
+          { "label": "90+", "amount": 10000 }
+        ],
+        "total_open": 10000,
+        "unapplied_credit": 0,
+        "net": 10000,
+        "open_items": [
+          {
+            "transaction_id": 1,
+            "date": "2026-03-01",
+            "description": "Invoice 101",
+            "age_days": 121,
+            "bucket": "90+",
+            "original_amount": 10000,
+            "open_amount": 10000
+          }
+        ]
+      }
+    ],
+    "totals": {
+      "buckets": [
+        { "label": "Current", "amount": 0 },
+        { "label": "1-30", "amount": 0 },
+        { "label": "31-60", "amount": 0 },
+        { "label": "61-90", "amount": 0 },
+        { "label": "90+", "amount": 10000 }
+      ],
+      "total_open": 10000,
+      "unapplied_credit": 0,
+      "net": 10000
+    },
+    "account_balance": 10000
+  }
+}
+```
+
 ### `report tax-summary`
 
 ```json

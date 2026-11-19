@@ -44,6 +44,7 @@ Posted transactions cannot be edited or deleted. The entries, amounts, accounts,
 - **Tax category tagging** -- per-entry or account-level defaults, free-form strings mapping to any tax form lines you need
 - **Encryption at rest** -- SQLCipher baked in from the start, not bolted on
 - **Intercompany linking** -- mirror transactions across entities stay paired through bidirectional correlation IDs; `bk txn reconcile` catches orphans
+- **Receivables / payables aging** -- `bk report aging --account <code>` buckets open charges on an asset (AR) or liability (AP) account into Current / 1-30 / 31-60 / 61-90 / 90+ days, optionally per customer or vendor from JSON metadata
 - **Budgeting and variance analysis** -- set monthly or annual spending/revenue targets per account, then run `bk report budget-variance` to see where actuals land relative to the plan
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
@@ -393,6 +394,23 @@ Variance logic:
 - Status labels: `FAV`, `UNFAV`, `ON BUDGET`
 
 Annual budgets are split exactly across 12 months -- any remainder cents are distributed to the earliest months so the total is precise.
+
+### Receivables and Payables Aging
+
+`bk report aging` ages the open balance of an asset (receivables) or liability (payables) account:
+
+```sh
+# Accounts receivable as of today (buckets: Current, 1-30, 31-60, 61-90, 90+)
+bk --company personal report aging --account 1100
+
+# Accounts payable as of quarter end, with custom buckets
+bk --company personal report aging --account 2000 --as-of 2026-03-31 --buckets 15,45
+
+# Per customer, using JSON transaction metadata like -m '{"customer":"Globex"}'
+bk --company personal report aging --account 1100 --group-by-metadata customer
+```
+
+The ledger has no invoice or due-date model, so the report works on a FIFO assumption: each net increase to the account is a charge, each net decrease is a settlement applied to the oldest open charges, and ages are measured from **transaction dates**. Settlements beyond the open charges show as an unapplied credit. Non-JSON metadata (or a missing key) is grouped under `(none)`. The totals always reconcile: total open - unapplied credit = account balance as of the date. If the company uses more than one currency, pass `--currency`.
 
 ### JSON Envelope
 

@@ -1133,6 +1133,45 @@ EXAMPLES:\n  \
         #[arg(long)]
         include_unbudgeted: bool,
     },
+
+    /// Receivables / payables aging for one asset or liability account.
+    ///
+    /// The ledger has no invoice or due-date model: each transaction that
+    /// increases the account is treated as a charge, each one that decreases
+    /// it as a settlement applied FIFO to the oldest open charges, and ages
+    /// are measured from transaction dates.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Receivables aging as of today:\n    \
+    $ bk --company acme report aging --account 1100\n\
+    \n  \
+    Payables aging as of a past date:\n    \
+    $ bk --company acme report aging --account 2000 --as-of 2026-03-31\n\
+    \n  \
+    Custom buckets, grouped by the `customer` metadata key:\n    \
+    $ bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer\
+")]
+    Aging {
+        /// Asset (receivable) or liability (payable) account code.
+        #[arg(long)]
+        account: String,
+
+        /// As-of date (YYYY-MM-DD, inclusive). Defaults to today.
+        #[arg(long)]
+        as_of: Option<String>,
+
+        /// Ascending, comma-separated bucket upper bounds in days.
+        #[arg(long, default_value = "30,60,90")]
+        buckets: String,
+
+        /// Group by this key of the (JSON) transaction metadata.
+        #[arg(long)]
+        group_by_metadata: Option<String>,
+
+        /// Currency code. Defaults to the company's single transaction currency.
+        #[arg(long)]
+        currency: Option<String>,
+    },
 }
 
 /// Output format for general commands.
