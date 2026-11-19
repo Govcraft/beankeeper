@@ -11,6 +11,7 @@ use crate::passphrase;
 /// # Errors
 ///
 /// Returns [`CliError`] if the subcommand fails.
+#[allow(clippy::too_many_lines)] // flat dispatch over every report subcommand
 pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError> {
     let pp = passphrase::resolve_passphrase(
         cli.passphrase.passphrase_fd,
@@ -21,12 +22,19 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
+    // `--period` / `--compare` multi-column modes (issue #22).
+    let multi = super::report_periods::try_run(cli, &db, company, sub, format, use_color);
+    if let Some(result) = multi {
+        return result;
+    }
+
     match sub {
         ReportCommand::TrialBalance {
             from,
             to,
             account_type,
             currency,
+            ..
         } => run_trial_balance(
             cli,
             &db,
@@ -54,7 +62,9 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
-        ReportCommand::IncomeStatement { from, to, currency } => run_income_statement(
+        ReportCommand::IncomeStatement {
+            from, to, currency, ..
+        } => run_income_statement(
             cli,
             &db,
             company,

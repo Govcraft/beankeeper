@@ -1018,6 +1018,13 @@ EXAMPLES:\n  \
         /// than one currency; otherwise inferred.
         #[arg(long)]
         currency: Option<String>,
+        /// One column per period (requires --from and --to), plus a Total column.
+        #[arg(long, value_enum, conflicts_with = "compare")]
+        period: Option<crate::commands::report_periods::PeriodArg>,
+
+        /// Add a column for an earlier range, with change and percent (requires --from and --to).
+        #[arg(long, value_enum)]
+        compare: Option<crate::commands::report_periods::CompareArg>,
     },
 
     /// Show balance for a single account.
@@ -1075,6 +1082,13 @@ EXAMPLES:\n  \
         /// than one currency; otherwise inferred.
         #[arg(long)]
         currency: Option<String>,
+        /// One column per period (requires --from and --to), plus a Total column.
+        #[arg(long, value_enum, conflicts_with = "compare")]
+        period: Option<crate::commands::report_periods::PeriodArg>,
+
+        /// Add a column for an earlier range, with change and percent (requires --from and --to).
+        #[arg(long, value_enum)]
+        compare: Option<crate::commands::report_periods::CompareArg>,
     },
 
     /// Generate a balance sheet.

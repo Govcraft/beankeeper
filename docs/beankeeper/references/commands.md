@@ -413,6 +413,49 @@ bk --company acme report budget-variance --year 2026 --include-unbudgeted
 - Revenue accounts: variance = actual - budget (positive = favorable, exceeded target)
 - Status: `FAV`, `UNFAV`, or `ON BUDGET`
 
+### Multi-column reports: `--period` and `--compare`
+
+`report income-statement` and `report trial-balance` accept two options that
+turn the single-column report into a multi-column one. Both require `--from`
+and `--to` (a missing date is a validation error, exit code 3), and they
+cannot be combined (usage error, exit code 2). Without either option the
+output is unchanged.
+
+```bash
+# One column per month, plus a Total column and a Net Income row per month
+bk --company acme report income-statement --from 2026-01-01 --to 2026-06-30 --period month
+
+# Quarterly trial-balance activity, expense accounts only
+bk --company acme report trial-balance --from 2026-01-01 --to 2026-12-31 --period quarter --type expense
+
+# This quarter vs. the same quarter last year, with change and change %
+bk --company acme report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-year
+
+# This quarter vs. the previous quarter
+bk --company acme report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-period
+```
+
+**Flags:**
+- `--period month|quarter|year`: One column per calendar period between
+  `--from` and `--to`, plus a `Total` column. The first and last periods are
+  clipped to the range. Columns are labelled `2026-01`, `2026-Q1`, `2026`.
+  At most 120 columns.
+- `--compare prior-year|prior-period`: Adds a column for an earlier range,
+  plus `Change` (current - prior) and `Change %` (relative to the absolute
+  prior amount; `n/a` when the prior amount is 0).
+  - `prior-year`: the same dates one year earlier (Feb 29 becomes Feb 28).
+  - `prior-period`: the range of equal length ending the day before `--from`.
+    When the range is whole calendar months it shifts back by that many
+    months (Q2 compares with Q1, March with February).
+
+**Amounts:** every cell is the account's net activity in that window on its
+normal side (debit - credit for assets and expenses, credit - debit for
+liabilities, equity and revenue), so a positive number is a "normal" balance.
+Trial-balance columns show activity within each window, not cumulative
+balances. The income statement adds `Total Revenue`, `Total Expenses` and
+`Net Income` rows; the trial balance adds `Total Debits` and `Total Credits`
+rows (raw debit/credit totals per window).
+
 ## Audit
 
 The ledger is append-only: posted transactions are never edited or deleted

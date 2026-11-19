@@ -387,6 +387,22 @@ bk --company personal txn clear 42 --entry 5 --status reconciled
 
 Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
 
+### Period-over-Period Reports
+
+The income statement and trial balance can be broken into columns or compared with an earlier range. Both options need `--from` and `--to`, and they cannot be combined:
+
+```sh
+# One column per month (or quarter / year) plus a Total column and a Net Income row per month
+bk --company personal report income-statement --from 2026-01-01 --to 2026-06-30 --period month
+bk --company personal report trial-balance --from 2026-01-01 --to 2026-12-31 --period quarter
+
+# Compare with the same range last year, or with the immediately preceding range
+bk --company personal report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-year
+bk --company personal report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-period
+```
+
+Each cell is the account's net activity on its normal side. Periods are labelled `2026-01`, `2026-Q1` or `2026`, and the first and last periods are clipped to `--from`/`--to`. Comparisons add `Change` and `Change %` columns (`n/a` when the prior amount is 0). Table, JSON (`report.income-statement.periods`, `report.income-statement.compare`, ...) and CSV output are supported.
+
 ### Budgeting and Variance Analysis
 
 Set spending targets per account, then compare budgeted amounts to actual activity:
