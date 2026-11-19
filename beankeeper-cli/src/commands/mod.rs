@@ -6,6 +6,7 @@ pub mod export;
 pub mod import_ofx;
 pub mod init;
 pub mod report;
+pub mod report_periods;
 pub mod txn;
 pub mod verify;
 
@@ -19,6 +20,9 @@ use crate::output::json::Meta;
 /// Map a parsed `Command` to its dot-notation command name.
 #[must_use]
 pub fn command_name(cmd: &Command) -> &'static str {
+    if let Some(id) = report_periods::command_id(cmd) {
+        return id;
+    }
     match cmd {
         Command::Init { .. } => "init",
         Command::Verify => "verify",

@@ -125,7 +125,20 @@ bk --company acme report trial-balance
 bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 bk --company acme report balance-sheet --to 2026-03-31
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
+
+# Multi-column views (income-statement and trial-balance; need --from and --to)
+bk --company acme report income-statement --from 2026-01-01 --to 2026-06-30 --period month
+bk --company acme report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-year
 ```
+
+`--period month|quarter|year` gives one column per period plus a Total (and a
+Net Income row per period on the income statement). `--compare
+prior-period|prior-year` adds the earlier range with change and change %
+(`null`/`n/a` when the prior amount is 0). The two options conflict. Amounts
+are net on each account's normal side. JSON command ids are
+`report.<report>.periods` and `report.<report>.compare`; see
+[`references/commands.md`](references/commands.md) and
+[`references/json-api.md`](references/json-api.md).
 
 ### Budgeting
 

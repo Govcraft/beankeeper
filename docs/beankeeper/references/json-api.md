@@ -238,6 +238,90 @@ Same schema as `report trial-balance`. Contains only asset, liability, and equit
 }
 ```
 
+### `report income-statement --period` / `report trial-balance --period`
+
+`meta.command` is `report.income-statement.periods` or
+`report.trial-balance.periods`. Each account's `amounts` array has one entry
+per element of `columns` (net amount on the account's normal side, minor
+units); `total` is their sum. `totals` holds `total_revenue`,
+`total_expenses` and `net_income` (income statement) or `total_debits` and
+`total_credits` (trial balance), each with the same `amounts`/`total` shape.
+
+```json
+{
+  "data": {
+    "report": "income-statement",
+    "mode": "periods",
+    "period": "month",
+    "from": "2026-01-01",
+    "to": "2026-02-28",
+    "currency": "USD",
+    "columns": [
+      { "label": "2026-01", "from": "2026-01-01", "to": "2026-01-31" },
+      { "label": "2026-02", "from": "2026-02-01", "to": "2026-02-28" }
+    ],
+    "accounts": [
+      {
+        "code": "4000",
+        "name": "Sales",
+        "type": "revenue",
+        "normal_balance": "credit",
+        "amounts": [200000, 50000],
+        "total": 250000
+      }
+    ],
+    "totals": {
+      "net_income": { "amounts": [200000, 50000], "total": 250000 },
+      "total_expenses": { "amounts": [0, 0], "total": 0 },
+      "total_revenue": { "amounts": [200000, 50000], "total": 250000 }
+    }
+  }
+}
+```
+
+### `report income-statement --compare` / `report trial-balance --compare`
+
+`meta.command` is `report.income-statement.compare` or
+`report.trial-balance.compare`. `change` is `current - prior`;
+`change_percent` is `change / |prior| * 100` rounded to two decimals, or
+`null` when `prior` is 0. `totals` uses the same keys as the periods mode.
+
+```json
+{
+  "data": {
+    "report": "income-statement",
+    "mode": "compare",
+    "compare": "prior-year",
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "currency": "USD",
+    "current": { "label": "2026-Q1", "from": "2026-01-01", "to": "2026-03-31" },
+    "prior": { "label": "2025-Q1", "from": "2025-01-01", "to": "2025-03-31" },
+    "accounts": [
+      {
+        "code": "4000",
+        "name": "Sales",
+        "type": "revenue",
+        "normal_balance": "credit",
+        "current": 250000,
+        "prior": 100000,
+        "change": 150000,
+        "change_percent": 150.0
+      }
+    ],
+    "totals": {
+      "net_income": { "current": 210000, "prior": 70000, "change": 140000, "change_percent": 200.0 }
+    }
+  }
+}
+```
+
+CSV output for these modes has the columns `code,name,type,<period labels...>,total`
+(periods) or `code,name,type,current,prior,change,change_percent` (compare),
+with amounts in minor units. Summary rows follow the accounts with an empty
+`code`, the summary key (e.g. `net_income`) in `name` and `type` set to
+`total`; `change_percent` is `n/a` when the prior amount is 0.
+
 ### `budget list`
 
 ```json
