@@ -203,11 +203,124 @@ Entry `status` values: `"uncleared"`, `"cleared"`, `"reconciled"`.
 
 ### `report income-statement`
 
-Same schema as `report trial-balance`. Contains only revenue and expense accounts for the specified period.
+Accounts are grouped into sections. Each account carries a single signed
+`amount` on its normal side (credit for revenue, debit for expenses), so a
+contra balance shows as negative. `net_income` is `total_revenue - total_expenses`;
+a negative value is a net loss. `from` / `to` echo the requested period (`null`
+when omitted).
+
+```json
+{
+  "data": {
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "sections": [
+      {
+        "key": "revenue",
+        "title": "Revenue",
+        "normal_balance": "credit",
+        "accounts": [
+          { "code": "4000", "name": "Sales", "type": "revenue", "amount": 30000, "computed": false }
+        ],
+        "total": 30000
+      },
+      {
+        "key": "expenses",
+        "title": "Expenses",
+        "normal_balance": "debit",
+        "accounts": [
+          { "code": "5000", "name": "Rent", "type": "expense", "amount": 17000, "computed": false }
+        ],
+        "total": 17000
+      }
+    ],
+    "total_revenue": 30000,
+    "total_expenses": 17000,
+    "net_income": 13000
+  }
+}
+```
 
 ### `report balance-sheet`
 
-Same schema as `report trial-balance`. Contains only asset, liability, and equity accounts as of the specified date.
+Sections are `assets` (debit-normal), `liabilities` and `equity`
+(credit-normal), with the same account line shape as the income statement.
+The equity section always ends with a computed line (`"code": null`,
+`"computed": true`, name `Retained Earnings (computed)`) equal to cumulative
+revenue minus expenses up to `as_of`; the same value is exposed as
+`computed_earnings`. `difference` is `total_assets - total_liabilities_and_equity`
+and `balanced` is `true` when it is zero. `as_of` is the `--to` date (`null`
+when omitted).
+
+```json
+{
+  "data": {
+    "as_of": "2026-03-31",
+    "sections": [
+      {
+        "key": "assets",
+        "title": "Assets",
+        "normal_balance": "debit",
+        "accounts": [
+          { "code": "1000", "name": "Cash", "type": "asset", "amount": 118000, "computed": false }
+        ],
+        "total": 118000
+      },
+      {
+        "key": "liabilities",
+        "title": "Liabilities",
+        "normal_balance": "credit",
+        "accounts": [
+          { "code": "2000", "name": "Accounts Payable", "type": "liability", "amount": 5000, "computed": false }
+        ],
+        "total": 5000
+      },
+      {
+        "key": "equity",
+        "title": "Equity",
+        "normal_balance": "credit",
+        "accounts": [
+          { "code": "3000", "name": "Owner Equity", "type": "equity", "amount": 100000, "computed": false },
+          { "code": null, "name": "Retained Earnings (computed)", "type": "equity", "amount": 13000, "computed": true }
+        ],
+        "total": 113000
+      }
+    ],
+    "total_assets": 118000,
+    "total_liabilities": 5000,
+    "total_equity": 113000,
+    "computed_earnings": 13000,
+    "total_liabilities_and_equity": 118000,
+    "difference": 0,
+    "balanced": true
+  }
+}
+```
+
+### Statement CSV output
+
+`--format csv` for `report income-statement` and `report balance-sheet` uses
+the columns `section,line_type,code,name,type,amount`, one row per line in
+display order:
+
+| `line_type` | Meaning |
+|---|---|
+| `account` | An account line (`amount` is signed on the normal side) |
+| `computed` | The computed retained-earnings line (balance sheet, `equity` section, empty `code`) |
+| `subtotal` | Section subtotal (e.g. `Total Revenue`, `Total Assets`) |
+| `net_income` | Income statement bottom line (`section` = `summary`; name is `Net Income` or `Net Loss`) |
+| `total` | Balance sheet `Total Liabilities + Equity` (`section` = `summary`) |
+| `difference` | Balance sheet assets minus liabilities + equity (`section` = `summary`) |
+| `balanced` | Balance sheet check, `amount` is `true` or `false` (`section` = `summary`) |
+
+```csv
+section,line_type,code,name,type,amount
+revenue,account,4000,Sales,revenue,30000
+revenue,subtotal,,Total Revenue,,30000
+expenses,account,5000,Rent,expense,17000
+expenses,subtotal,,Total Expenses,,17000
+summary,net_income,,Net Income,,13000
+```
 
 ### `report budget-variance`
 
