@@ -62,19 +62,7 @@ pub fn run(
             run_list_or_count(cli, &db_handle, company, sub, format, use_color)
         }
         TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
-        TxnCommand::Clear {
-            transaction_id,
-            entry,
-            status,
-        } => run_clear(
-            cli,
-            &db_handle,
-            company,
-            *transaction_id,
-            *entry,
-            *status,
-            meta,
-        ),
+        TxnCommand::Clear { .. } => super::txn_clear::run(cli, &db_handle, company, sub, meta),
         TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
         TxnCommand::Attach {
             transaction_id,
@@ -713,63 +701,6 @@ fn run_attach(
             "[ok] attachment #{att_id} added to transaction #{transaction_id} ({doc_type}, {hash_short})",
             hash_short = &hash[..hash.len().min(12)]
         );
-    }
-
-    Ok(())
-}
-
-/// Execute the `txn clear` subcommand.
-#[allow(clippy::too_many_arguments)]
-fn run_clear(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    transaction_id: i64,
-    entry_id: i64,
-    status: crate::cli::ClearanceArg,
-    meta: Option<output::json::Meta>,
-) -> Result<(), CliError> {
-    // 1. Verify transaction and entry exist.
-    let (_txn, entries) = transactions::get_transaction(db_handle.conn(), company, transaction_id)?;
-
-    if !entries.iter().any(|e| e.id == entry_id) {
-        return Err(CliError::NotFound(format!(
-            "entry {entry_id} not found in transaction {transaction_id}"
-        )));
-    }
-
-    // 2. Update the status in the database through the audited mutation path,
-    //    which records the transition (who, when, from -> to).
-    let status_str = status.as_str();
-    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
-    crate::db::set_entry_status(
-        db_handle.conn(),
-        &actor,
-        company,
-        transaction_id,
-        entry_id,
-        status.to_entry_status(),
-    )?;
-
-    let format = crate::cli::resolve_format(None, cli);
-    if format == crate::cli::OutputFormat::Json {
-        let meta = meta.unwrap_or_else(|| crate::output::json::meta("txn.clear", Some(company)));
-        let rendered = serde_json::json!({
-            "ok": true,
-            "meta": meta,
-            "data": {
-                "transaction_id": transaction_id,
-                "entry_id": entry_id,
-                "status": status_str
-            }
-        });
-        let json = serde_json::to_string(&rendered)
-            .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
-        println!("{json}");
-    }
-
-    if !cli.verbosity.quiet {
-        eprintln!("[ok] entry #{entry_id} of transaction #{transaction_id} marked as {status_str}");
     }
 
     Ok(())

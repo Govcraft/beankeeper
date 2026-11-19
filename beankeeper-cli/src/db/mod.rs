@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod attachments;
 pub mod audit;
 pub mod budgets;
+pub mod clearings;
 pub mod companies;
 pub mod connection;
 pub mod schema;
@@ -18,13 +19,15 @@ pub use attachments::{
     store_attachment,
 };
 pub use audit::{
-    Actor, AuditLogRow, EntryStatus, ListAuditParams, correlate_partner, delete_account,
-    delete_budget, delete_company, list_audit, set_annual_budget, set_budget, set_entry_status,
+    Actor, AuditLogRow, ClearAction, ClearOutcome, ClearRequest, EntryStatus, ListAuditParams,
+    atomically, clear_entry, correlate_partner, delete_account, delete_budget, delete_company,
+    list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
 };
 pub use budgets::{
     BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,
     compute_budget_variance, list_budgets,
 };
+pub use clearings::{ClearingStatus, EntryTarget, find_entry_by_reference, get_entry_target};
 pub use companies::{company_exists, create_company, get_company, list_companies};
 pub use connection::Db;
 pub use schema::{ensure_schema, get_schema_version};

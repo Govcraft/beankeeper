@@ -73,7 +73,8 @@ impl Ledger {
     }
 
     /// Set the clearance status of the (uncleared) entry that `txn_id` posted
-    /// to `account`, discovering the entry id from the report itself.
+    /// to `account`, discovering the entry id from the report itself. The
+    /// clearing is dated 2026-01-31 (clearings only count from their date).
     fn clear(&self, account: &str, txn_id: i64, status: &str) {
         let data = self.report(&["--account", account]);
         let entry_id = entries(&data)
@@ -82,7 +83,17 @@ impl Ledger {
             .and_then(|e| e["entry_id"].as_i64())
             .unwrap_or_else(|| panic!("txn {txn_id} has an uncleared entry on {account}"));
         let (txn, entry) = (txn_id.to_string(), entry_id.to_string());
-        self.co(&["txn", "clear", &txn, "--entry", &entry, "--status", status]);
+        self.co(&[
+            "txn",
+            "clear",
+            &txn,
+            "--entry",
+            &entry,
+            "--status",
+            status,
+            "--date",
+            "2026-01-31",
+        ]);
     }
 }
 
@@ -99,13 +110,16 @@ fn int(v: &Value, key: &str) -> i64 {
         .unwrap_or_else(|| panic!("{key} is an integer: {v}"))
 }
 
-/// Assert the core invariant: book - cleared == uncleared total == sum of
-/// the listed uncleared entries' signed amounts.
+/// Assert the core invariant: book - total cleared == uncleared total == sum
+/// of the listed uncleared entries' signed remaining amounts.
 fn assert_invariant(data: &Value) {
-    let listed: i64 = entries(data).iter().map(|e| int(e, "signed_amount")).sum();
+    let listed: i64 = entries(data)
+        .iter()
+        .map(|e| int(e, "signed_remaining"))
+        .sum();
     assert_eq!(int(data, "uncleared_total"), listed);
     assert_eq!(
-        int(data, "book_balance") - int(data, "cleared_balance"),
+        int(data, "book_balance") - int(data, "total_cleared_balance"),
         int(data, "uncleared_total"),
         "book - cleared must equal the uncleared total: {data}"
     );
@@ -330,9 +344,15 @@ fn json_shape() {
             "cleared_balance",
             "currency",
             "difference",
+            "group_by_metadata",
+            "groups",
+            "metadata_filters",
+            "partially_cleared_count",
             "reconciled",
             "reconciled_balance",
+            "statement",
             "statement_balance",
+            "total_cleared_balance",
             "uncleared_count",
             "uncleared_entries",
             "uncleared_total",
@@ -356,15 +376,26 @@ fn json_shape() {
         entry_keys,
         vec![
             "amount",
+            "cleared_amount",
             "date",
             "description",
             "direction",
             "entry_id",
             "memo",
+            "metadata",
+            "partially_cleared",
+            "reference",
+            "remaining_amount",
             "signed_amount",
+            "signed_remaining",
             "transaction_id",
         ]
     );
+    assert_eq!(int(first, "cleared_amount"), 0);
+    assert_eq!(int(first, "remaining_amount"), 25_050);
+    assert_eq!(first["partially_cleared"], false);
+    assert!(first["reference"].is_null());
+    assert!(first["metadata"].is_null());
     assert_eq!(first["direction"], "debit");
     assert_eq!(int(first, "amount"), 25_050);
 }
@@ -387,17 +418,24 @@ fn csv_output_has_entries_then_summary() {
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(
         lines[0],
-        "row_type,entry_id,transaction_id,date,description,amount,currency"
+        "row_type,entry_id,transaction_id,date,reference,description,amount,\
+         cleared_amount,remaining_amount,currency,group,metadata"
     );
     assert!(lines[1].starts_with("entry,"), "{csv}");
-    assert!(lines[1].ends_with(",Owner top-up,25050,USD"), "{csv}");
-    assert!(csv.contains("summary,,,,book_balance,86050,USD"), "{csv}");
     assert!(
-        csv.contains("summary,,,,cleared_balance,70000,USD"),
+        lines[1].ends_with(",Owner top-up,25050,0,25050,USD,,"),
         "{csv}"
     );
-    assert!(csv.contains("summary,,,,difference,0,USD"), "{csv}");
-    assert!(csv.contains("summary,,,,reconciled,1,USD"), "{csv}");
+    assert!(
+        csv.contains("summary,,,,,book_balance,86050,,,USD,,"),
+        "{csv}"
+    );
+    assert!(
+        csv.contains("summary,,,,,cleared_balance,70000,,,USD,,"),
+        "{csv}"
+    );
+    assert!(csv.contains("summary,,,,,difference,0,,,USD,,"), "{csv}");
+    assert!(csv.contains("summary,,,,,reconciled,1,,,USD,,"), "{csv}");
 }
 
 #[test]

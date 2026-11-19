@@ -22,7 +22,7 @@ Beankeeper is a double-entry accounting system operated entirely through the `bk
 - **Accounts**: Five types: `asset`, `liability`, `equity`, `revenue`, `expense`. Each has a code (e.g. `1000`) and a normal balance direction (debit or credit).
 - **Amounts**: Always specified in **major units** (dollars, not cents) on the CLI. Stored internally as minor units (cents). Example: `2500` means $2,500.00.
 - **Append-only ledger**: Transactions cannot be edited or deleted after posting. Corrections are made via reversing entries.
-- **Audit trail**: The few operations that mutate or delete existing rows (clearance-status changes, intercompany correlation, budget revisions, account/company deletions) each append an immutable record — actor, timestamp, before/after — readable via `bk audit log`. Set the actor with `--actor NAME` or `BK_ACTOR`.
+- **Audit trail**: The few operations that mutate or delete existing rows (clearance changes, intercompany correlation, budget revisions, account/company deletions) each append an immutable record — actor, timestamp, before/after — readable via `bk audit log`. Set the actor with `--actor NAME` or `BK_ACTOR`.
 - **Idempotency**: Use `--reference KEY` with `--on-conflict skip` for safe retry of duplicate posts.
 
 For detailed accounting concepts and account types, see [`references/accounting.md`](references/accounting.md).
@@ -60,7 +60,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk txn list` | Search and filter transactions |
 | `bk txn show ID` | Display a single transaction with entries |
 | `bk txn import` | Import OFX/CSV/JSON bank statements |
-| `bk txn clear` | Mark entries as cleared/reconciled |
+| `bk txn clear` | Clear entries (in full or in part) against a statement, by id, by reference, or in an atomic batch; mark reconciled |
 | `bk txn attach` | Link documents (receipts, invoices) to transactions |
 | `bk txn reconcile` | Find orphaned intercompany correlations |
 | `bk budget set` | Create or update monthly/annual budgets |
@@ -74,7 +74,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report budget-variance` | Budget vs actual comparison |
 | `bk report ledger` | General ledger / account statement with running balances |
 | `bk report aging` | Receivables/payables aging buckets (FIFO by transaction date) |
-| `bk report reconciliation` | Book vs cleared vs reconciled balance for one account, uncleared entries, statement difference |
+| `bk report reconciliation` | Book vs cleared vs reconciled balance for one account (point in time, per statement), outstanding and partially cleared items, statement difference, metadata filter/grouping |
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
@@ -178,9 +178,34 @@ bk --company acme report reconciliation --account 1000 --to 2026-03-31 \
 ```
 
 Balances are on the account's normal side (debit-normal for asset/expense,
-credit-normal otherwise). `book - cleared` always equals the total of the
-listed uncleared entries; `difference = statement - cleared`, and the account
-is reconciled when the difference is zero.
+credit-normal otherwise). `book - total cleared` always equals the total of the
+listed uncleared entries' remaining amounts; `difference = statement - cleared`,
+and the account is reconciled when the difference is zero.
+
+Entries can be cleared **in parts**, each clearing with an amount, a date and a
+statement id. Clear by transaction reference instead of ids, or a whole
+statement from a file/stdin (atomic; re-running is a no-op because each
+entry is cleared at most once per statement):
+
+```bash
+# Partial payment of one item
+bk --company acme txn clear --reference POL-123 --account 1200 \
+  --amount 40 --date 2026-03-31 --statement STMT-03
+
+# A whole statement: one `reference[,amount]` per line (no amount = full remaining)
+printf 'POL-123,40\nPOL-124\n' | bk --json --company acme txn clear \
+  --from-file - --account 1200 --date 2026-03-31 --statement STMT-03
+
+# Check that statement alone, and list what is still open by carrier
+bk --company acme report reconciliation --account 1200 --statement STMT-03 --statement-balance 65
+bk --company acme report reconciliation --account 1200 --group-by-metadata carrier \
+  --filter-metadata region=west
+```
+
+`--to` is point-in-time: only clearings dated on or before it count. Over-clearing
+is a `VALIDATION` error. Outstanding items carry `reference`, `metadata`,
+`cleared_amount` and `remaining_amount`. See the statement-reconciliation recipe
+in [`references/workflows.md`](references/workflows.md).
 
 `report cash-flow` treats asset accounts named like `cash`/`bank`/`checking`/`savings` as cash unless you pass `--cash-account CODE` (repeatable); see [`references/commands.md`](references/commands.md#bk-report-cash-flow).
 

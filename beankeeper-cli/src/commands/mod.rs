@@ -13,6 +13,7 @@ pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;
 pub mod txn;
+pub mod txn_clear;
 pub mod verify;
 
 use crate::cli::{

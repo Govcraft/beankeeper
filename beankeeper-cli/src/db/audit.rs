@@ -19,6 +19,10 @@ use std::str::FromStr;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+use super::clearings::{
+    ClearPlan, ClearSpec, Clearing, ClearingStatus, SkipReason, cleared_sum, derive_status,
+    get_entry_target, list_clearings, plan_clear, plan_unclear,
+};
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
 use crate::error::CliError;
 
@@ -251,7 +255,11 @@ fn snapshot<T: Serialize>(value: &T) -> String {
 // Audited mutations -- the only way to change persisted ledger state
 // ---------------------------------------------------------------------------
 
-/// Sets the clearance status of an entry, recording the transition.
+/// Sets the clearance status of an entry in full, recording the transition.
+///
+/// A convenience over [`clear_entry`] / [`unclear_entry`]: `cleared` and
+/// `reconciled` clear the full remaining amount as of today (reconciled also
+/// promotes existing clearings), `uncleared` removes every clearing.
 ///
 /// Returns the previous status.
 ///
@@ -267,39 +275,353 @@ pub fn set_entry_status(
     entry_id: i64,
     to: EntryStatus,
 ) -> Result<EntryStatus, CliError> {
-    in_savepoint(conn, "sp_entry_status", || {
-        let current: String = conn
-            .query_row(
-                "SELECT status FROM entries \
-                 WHERE id = ?1 AND transaction_id = ?2 AND company_slug = ?3",
-                params![entry_id, transaction_id, company_slug],
-                |row| row.get(0),
-            )
-            .map_err(|_| {
-                CliError::NotFound(format!(
-                    "entry {entry_id} not found in transaction {transaction_id} for company '{company_slug}'"
-                ))
-            })?;
-        let from = EntryStatus::from_str(&current)?;
+    let status = match to {
+        EntryStatus::Uncleared => {
+            return unclear_entry(conn, actor, company_slug, transaction_id, entry_id, None)
+                .map(|o| o.previous_status);
+        }
+        EntryStatus::Cleared => ClearingStatus::Cleared,
+        EntryStatus::Reconciled => ClearingStatus::Reconciled,
+    };
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    clear_entry(
+        conn,
+        actor,
+        &ClearRequest {
+            company_slug,
+            transaction_id,
+            entry_id,
+            amount: None,
+            cleared_date: &today,
+            statement: None,
+            status,
+        },
+    )
+    .map(|o| o.previous_status)
+}
 
-        conn.execute(
-            "UPDATE entries SET status = ?1 \
-             WHERE id = ?2 AND transaction_id = ?3 AND company_slug = ?4",
-            params![to.as_str(), entry_id, transaction_id, company_slug],
+/// A request to clear (part of) one entry.
+#[derive(Debug, Clone, Copy)]
+pub struct ClearRequest<'a> {
+    pub company_slug: &'a str,
+    pub transaction_id: i64,
+    pub entry_id: i64,
+    /// Minor units; `None` clears the full remaining amount.
+    pub amount: Option<i64>,
+    /// `YYYY-MM-DD`.
+    pub cleared_date: &'a str,
+    pub statement: Option<&'a str>,
+    pub status: ClearingStatus,
+}
+
+/// What a clear/unclear call did to an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClearAction {
+    /// A new clearing was recorded.
+    Cleared,
+    /// Existing clearings were promoted to reconciled (possibly alongside a
+    /// new reconciled clearing).
+    Reconciled,
+    /// Clearings were removed.
+    Uncleared,
+    /// Nothing changed.
+    Skipped,
+}
+
+impl ClearAction {
+    /// Returns the lowercase string used in output.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cleared => "cleared",
+            Self::Reconciled => "reconciled",
+            Self::Uncleared => "uncleared",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+/// The result of [`clear_entry`] / [`unclear_entry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearOutcome {
+    pub transaction_id: i64,
+    pub entry_id: i64,
+    pub action: ClearAction,
+    /// Id of the clearing inserted by this call, if any.
+    pub clearing_id: Option<i64>,
+    /// Amount newly cleared (or removed, for `uncleared`) by this call.
+    pub amount: i64,
+    /// Entry amount.
+    pub entry_amount: i64,
+    /// Total cleared amount after the call.
+    pub cleared_amount: i64,
+    /// `entry_amount - cleared_amount`.
+    pub remaining_amount: i64,
+    pub previous_status: EntryStatus,
+    pub entry_status: EntryStatus,
+    pub skip_reason: Option<SkipReason>,
+}
+
+/// Runs `f` atomically: every audited mutation it performs lands, or none
+/// does. Used by batch clearing (`txn clear --from-file`).
+///
+/// # Errors
+///
+/// Propagates the first error from `f` after rolling everything back.
+pub fn atomically<T>(
+    conn: &Connection,
+    f: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    in_savepoint(conn, "sp_atomic_batch", f)
+}
+
+/// Re-derives and stores `entries.status`, returning `(cleared, status)`.
+fn sync_entry_status(
+    conn: &Connection,
+    entry_id: i64,
+    entry_amount: i64,
+) -> Result<(Vec<Clearing>, EntryStatus), CliError> {
+    let after = list_clearings(conn, entry_id)?;
+    let status = derive_status(entry_amount, &after);
+    conn.execute(
+        "UPDATE entries SET status = ?1 WHERE id = ?2",
+        params![status.as_str(), entry_id],
+    )?;
+    Ok((after, status))
+}
+
+fn clearing_json(c: &Clearing) -> serde_json::Value {
+    serde_json::json!({
+        "id": c.id,
+        "amount": c.amount,
+        "cleared_date": c.cleared_date,
+        "statement_ref": c.statement_ref,
+        "status": c.status.as_str(),
+    })
+}
+
+/// Records one `status_change` audit row for an entry's clearing change.
+///
+/// Payload: `before`/`after` carry `status` (the derived entry status, as
+/// before #25) and `cleared_amount`; `after` adds `op` (`clear`,
+/// `reconcile`, `unclear`) and `clearings` (the affected clearing rows).
+#[allow(clippy::too_many_arguments)]
+fn record_clearing_change(
+    conn: &Connection,
+    actor: &Actor,
+    company_slug: &str,
+    entry_id: i64,
+    op: &str,
+    before: (EntryStatus, i64),
+    after: (EntryStatus, i64),
+    affected: &[Clearing],
+) -> Result<(), CliError> {
+    record(
+        conn,
+        actor,
+        Some(company_slug),
+        AuditEntity::Entry,
+        &entry_id.to_string(),
+        AuditAction::StatusChange,
+        Some(&snapshot(&serde_json::json!({
+            "status": before.0.as_str(),
+            "cleared_amount": before.1,
+        }))),
+        Some(&snapshot(&serde_json::json!({
+            "status": after.0.as_str(),
+            "cleared_amount": after.1,
+            "op": op,
+            "clearings": affected.iter().map(clearing_json).collect::<Vec<_>>(),
+        }))),
+    )
+}
+
+/// Clears (part of) an entry, keeping `entries.status` in sync and recording
+/// the change. See [`super::clearings::plan_clear`] for the rules; a skip
+/// changes nothing and records nothing.
+///
+/// # Errors
+///
+/// Returns `CliError::NotFound` for an unknown entry, `CliError::Validation`
+/// for over-clearing or a conflicting statement amount, or
+/// `CliError::Sqlite` on database errors.
+pub fn clear_entry(
+    conn: &Connection,
+    actor: &Actor,
+    req: &ClearRequest<'_>,
+) -> Result<ClearOutcome, CliError> {
+    in_savepoint(conn, "sp_entry_clear", || {
+        let target = get_entry_target(conn, req.company_slug, req.transaction_id, req.entry_id)?;
+        let existing = list_clearings(conn, req.entry_id)?;
+        let before_sum = cleared_sum(&existing);
+        let before_status = derive_status(target.amount, &existing);
+        let plan = plan_clear(
+            target.amount,
+            &existing,
+            &ClearSpec {
+                amount: req.amount,
+                status: req.status,
+                statement: req.statement,
+            },
         )?;
 
-        record(
+        let (action, inserted, amount, promote) = match plan {
+            ClearPlan::Skip(reason) => {
+                return Ok(ClearOutcome {
+                    transaction_id: req.transaction_id,
+                    entry_id: req.entry_id,
+                    action: ClearAction::Skipped,
+                    clearing_id: None,
+                    amount: 0,
+                    entry_amount: target.amount,
+                    cleared_amount: before_sum,
+                    remaining_amount: target.amount - before_sum,
+                    previous_status: before_status,
+                    entry_status: before_status,
+                    skip_reason: Some(reason),
+                });
+            }
+            ClearPlan::Insert { amount, promote } => {
+                conn.execute(
+                    "INSERT INTO entry_clearings \
+                     (entry_id, company_slug, amount, cleared_date, statement_ref, status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        req.entry_id,
+                        req.company_slug,
+                        amount,
+                        req.cleared_date,
+                        req.statement,
+                        req.status.as_str()
+                    ],
+                )?;
+                let action = if promote.is_empty() {
+                    ClearAction::Cleared
+                } else {
+                    ClearAction::Reconciled
+                };
+                (action, Some(conn.last_insert_rowid()), amount, promote)
+            }
+            ClearPlan::Promote { ids } => (ClearAction::Reconciled, None, 0, ids),
+        };
+
+        for id in &promote {
+            conn.execute(
+                "UPDATE entry_clearings SET status = 'reconciled' WHERE id = ?1",
+                params![id],
+            )?;
+        }
+
+        let (after, status) = sync_entry_status(conn, req.entry_id, target.amount)?;
+        let after_sum = cleared_sum(&after);
+        let affected: Vec<Clearing> = after
+            .into_iter()
+            .filter(|c| Some(c.id) == inserted || promote.contains(&c.id))
+            .collect();
+        let op = if action == ClearAction::Reconciled {
+            "reconcile"
+        } else {
+            "clear"
+        };
+        record_clearing_change(
             conn,
             actor,
-            Some(company_slug),
-            AuditEntity::Entry,
-            &entry_id.to_string(),
-            AuditAction::StatusChange,
-            Some(&snapshot(&serde_json::json!({ "status": from.as_str() }))),
-            Some(&snapshot(&serde_json::json!({ "status": to.as_str() }))),
+            req.company_slug,
+            req.entry_id,
+            op,
+            (before_status, before_sum),
+            (status, after_sum),
+            &affected,
         )?;
 
-        Ok(from)
+        Ok(ClearOutcome {
+            transaction_id: req.transaction_id,
+            entry_id: req.entry_id,
+            action,
+            clearing_id: inserted,
+            amount,
+            entry_amount: target.amount,
+            cleared_amount: after_sum,
+            remaining_amount: target.amount - after_sum,
+            previous_status: before_status,
+            entry_status: status,
+            skip_reason: None,
+        })
+    })
+}
+
+/// Removes an entry's clearings (all, or only `statement`'s), keeping
+/// `entries.status` in sync and recording the removed rows.
+///
+/// # Errors
+///
+/// Returns `CliError::NotFound` for an unknown entry or `CliError::Sqlite`
+/// on database errors.
+pub fn unclear_entry(
+    conn: &Connection,
+    actor: &Actor,
+    company_slug: &str,
+    transaction_id: i64,
+    entry_id: i64,
+    statement: Option<&str>,
+) -> Result<ClearOutcome, CliError> {
+    in_savepoint(conn, "sp_entry_unclear", || {
+        let target = get_entry_target(conn, company_slug, transaction_id, entry_id)?;
+        let existing = list_clearings(conn, entry_id)?;
+        let before_sum = cleared_sum(&existing);
+        let before_status = derive_status(target.amount, &existing);
+        let ids = plan_unclear(&existing, statement);
+
+        if ids.is_empty() {
+            return Ok(ClearOutcome {
+                transaction_id,
+                entry_id,
+                action: ClearAction::Skipped,
+                clearing_id: None,
+                amount: 0,
+                entry_amount: target.amount,
+                cleared_amount: before_sum,
+                remaining_amount: target.amount - before_sum,
+                previous_status: before_status,
+                entry_status: before_status,
+                skip_reason: Some(SkipReason::NothingToUnclear),
+            });
+        }
+
+        let removed: Vec<Clearing> = existing
+            .into_iter()
+            .filter(|c| ids.contains(&c.id))
+            .collect();
+        for id in &ids {
+            conn.execute("DELETE FROM entry_clearings WHERE id = ?1", params![id])?;
+        }
+        let (after, status) = sync_entry_status(conn, entry_id, target.amount)?;
+        let after_sum = cleared_sum(&after);
+        record_clearing_change(
+            conn,
+            actor,
+            company_slug,
+            entry_id,
+            "unclear",
+            (before_status, before_sum),
+            (status, after_sum),
+            &removed,
+        )?;
+
+        Ok(ClearOutcome {
+            transaction_id,
+            entry_id,
+            action: ClearAction::Uncleared,
+            clearing_id: None,
+            amount: cleared_sum(&removed),
+            entry_amount: target.amount,
+            cleared_amount: after_sum,
+            remaining_amount: target.amount - after_sum,
+            previous_status: before_status,
+            entry_status: status,
+            skip_reason: None,
+        })
     })
 }
 
@@ -888,6 +1210,114 @@ mod tests {
             .expect("read audit");
         assert_eq!(action, "account_delete");
         assert!(before.unwrap_or_default().contains("Cash"));
+    }
+
+    fn req<'a>(amount: Option<i64>, date: &'a str, stmt: Option<&'a str>) -> ClearRequest<'a> {
+        ClearRequest {
+            company_slug: "acme",
+            transaction_id: 1,
+            entry_id: 1,
+            amount,
+            cleared_date: date,
+            statement: stmt,
+            status: ClearingStatus::Cleared,
+        }
+    }
+
+    fn entry_status(db: &Db) -> String {
+        db.conn()
+            .query_row("SELECT status FROM entries WHERE id = 1", [], |r| r.get(0))
+            .expect("read status")
+    }
+
+    fn audit_count(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .expect("count audit")
+    }
+
+    #[test]
+    fn partial_clears_keep_status_in_sync_and_audit() {
+        let db = seed();
+        let actor = Actor::new("tester");
+
+        let o = clear_entry(db.conn(), &actor, &req(Some(30), "2026-01-31", Some("S1")))
+            .expect("partial clear");
+        assert_eq!(o.action, ClearAction::Cleared);
+        assert_eq!(
+            (o.amount, o.cleared_amount, o.remaining_amount),
+            (30, 30, 70)
+        );
+        assert_eq!(o.entry_status, EntryStatus::Uncleared);
+        assert_eq!(entry_status(&db), "uncleared");
+
+        let o = clear_entry(db.conn(), &actor, &req(None, "2026-02-28", Some("S2")))
+            .expect("clear remainder");
+        assert_eq!(
+            (o.amount, o.cleared_amount, o.remaining_amount),
+            (70, 100, 0)
+        );
+        assert_eq!(entry_status(&db), "cleared");
+
+        // Re-running S1 is a skip and leaves no audit row.
+        let o = clear_entry(db.conn(), &actor, &req(Some(30), "2026-01-31", Some("S1")))
+            .expect("rerun");
+        assert_eq!(o.action, ClearAction::Skipped);
+        assert_eq!(audit_count(&db), 2);
+
+        let after: String = db
+            .conn()
+            .query_row(
+                "SELECT after FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read audit");
+        let v: serde_json::Value = serde_json::from_str(&after).expect("json");
+        assert_eq!(v["status"], "cleared");
+        assert_eq!(v["cleared_amount"], 100);
+        assert_eq!(v["op"], "clear");
+        assert_eq!(v["clearings"][0]["statement_ref"], "S2");
+        assert_eq!(v["clearings"][0]["amount"], 70);
+
+        // Reconcile in full promotes both clearings.
+        let mut r = req(None, "2026-03-01", None);
+        r.status = ClearingStatus::Reconciled;
+        let o = clear_entry(db.conn(), &actor, &r).expect("reconcile");
+        assert_eq!(o.action, ClearAction::Reconciled);
+        assert_eq!(entry_status(&db), "reconciled");
+
+        // Unclear one statement drops back to uncleared.
+        let o = unclear_entry(db.conn(), &actor, "acme", 1, 1, Some("S2")).expect("unclear");
+        assert_eq!((o.amount, o.cleared_amount), (70, 30));
+        assert_eq!(entry_status(&db), "uncleared");
+    }
+
+    #[test]
+    fn over_clear_fails_without_side_effects() {
+        let db = seed();
+        let actor = Actor::new("tester");
+        clear_entry(db.conn(), &actor, &req(Some(60), "2026-01-31", None)).expect("clear 60");
+        let err = clear_entry(db.conn(), &actor, &req(Some(41), "2026-01-31", None));
+        assert!(matches!(err, Err(CliError::Validation(_))));
+        assert_eq!(audit_count(&db), 1);
+    }
+
+    #[test]
+    fn atomically_rolls_back_the_whole_batch() {
+        let db = seed();
+        let actor = Actor::new("tester");
+        let result = atomically(db.conn(), || {
+            clear_entry(db.conn(), &actor, &req(Some(50), "2026-01-31", Some("S1")))?;
+            clear_entry(db.conn(), &actor, &req(Some(51), "2026-01-31", Some("S2")))
+        });
+        assert!(result.is_err());
+        let n: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM entry_clearings", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 0);
+        assert_eq!(audit_count(&db), 0);
     }
 
     #[test]
