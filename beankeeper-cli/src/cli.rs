@@ -969,22 +969,74 @@ EXAMPLES:\n  \
 ")]
     Reconcile,
 
-    /// Update the clearance status of an entry for bank reconciliation.
+    /// Clear (part of) an entry against a statement, for reconciliation.
+    ///
+    /// Pick the entry by `<TRANSACTION_ID> --entry <ID>`, by
+    /// `--reference <REF> --account <CODE>`, or clear many at once with
+    /// `--from-file <PATH|-> --account <CODE>`. Each clearing records an
+    /// amount (default: the full remaining amount), a date and an optional
+    /// statement id. Re-clearing the same entry for the same statement is a
+    /// no-op, so a statement batch can be re-run safely.
     #[command(after_help = "\
+TARGETING:\n  \
+    <TRANSACTION_ID> --entry <ID>          one entry by id\n  \
+    --reference <REF> --account <CODE>     the entry on <CODE> of the transaction with <REF>\n  \
+    --from-file <PATH|-> --account <CODE>  a batch: one `reference[,amount]` per line (CSV);\n                                         \
+blank lines and lines starting with # are ignored. All or nothing.\n\
+\n\
+STATUS:\n  \
+    cleared (default) adds a clearing. reconciled adds a reconciled clearing; with no\n  \
+    --amount/--statement it also promotes the entry's existing clearings, and for an\n  \
+    entry already cleared by --statement it promotes that statement's clearing.\n  \
+    uncleared removes the entry's clearings (only --statement's, when given).\n\
+\n\
 EXAMPLES:\n  \
-    Mark an entry as cleared:\n    \
+    Mark an entry as cleared in full (today):\n    \
     $ bk --company acme txn clear 42 --entry 5\n\
+    \n  \
+    Clear part of an item on a statement:\n    \
+    $ bk --company acme txn clear --reference POL-123 --account 1200 --amount 40 \\\n        \
+    --date 2026-03-31 --statement STMT-2026-03\n\
+    \n  \
+    Clear a whole statement from stdin (reference,amount per line):\n    \
+    $ printf 'POL-123,40\\nPOL-124\\n' | bk --json --company acme txn clear --from-file - \\\n        \
+    --account 1200 --date 2026-03-31 --statement STMT-2026-03\n\
     \n  \
     Mark an entry as reconciled:\n    \
     $ bk --company acme txn clear 42 --entry 5 --status reconciled\
 ")]
     Clear {
-        /// Transaction ID.
-        transaction_id: i64,
+        /// Transaction ID (with --entry).
+        #[arg(conflicts_with_all = ["reference", "from_file"])]
+        transaction_id: Option<i64>,
 
-        /// Entry ID to update.
+        /// Entry ID to clear (with a transaction ID).
+        #[arg(long, requires = "transaction_id")]
+        entry: Option<i64>,
+
+        /// Transaction reference; the entry is picked by --account.
+        #[arg(long, requires = "account", conflicts_with = "from_file")]
+        reference: Option<String>,
+
+        /// Account code selecting the entry (with --reference or --from-file).
         #[arg(long)]
-        entry: i64,
+        account: Option<String>,
+
+        /// Batch file of `reference[,amount]` lines; `-` reads stdin.
+        #[arg(long, requires = "account", conflicts_with = "amount")]
+        from_file: Option<String>,
+
+        /// Amount to clear in major units (default: the full remaining amount).
+        #[arg(long)]
+        amount: Option<String>,
+
+        /// Cleared date (YYYY-MM-DD). Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+
+        /// Statement id stored on the clearing (idempotency key with the entry).
+        #[arg(long)]
+        statement: Option<String>,
 
         /// Status to apply.
         #[arg(long, value_enum, default_value_t = ClearanceArg::Cleared)]
@@ -1348,6 +1400,21 @@ EXAMPLES:\n  \
         #[arg(long, allow_hyphen_values = true)]
         statement_balance: Option<String>,
 
+        /// Only count clearings made for this statement id in the cleared and
+        /// reconciled balances (outstanding items still reflect all clearings).
+        #[arg(long)]
+        statement: Option<String>,
+
+        /// Only include entries whose transaction metadata has KEY equal to
+        /// VALUE (top-level key, compared as strings). Repeatable; AND-ed.
+        #[arg(long = "filter-metadata", value_name = "KEY=VALUE")]
+        filter_metadata: Vec<String>,
+
+        /// Group outstanding items by this top-level metadata key, with
+        /// subtotals and a `(none)` group for items without it.
+        #[arg(long, value_name = "KEY")]
+        group_by_metadata: Option<String>,
+
         /// Currency code. Defaults to the company's single transaction
         /// currency (USD when there are no transactions).
         #[arg(long)]
@@ -1440,6 +1507,16 @@ impl ClearanceArg {
             Self::Uncleared => "uncleared",
             Self::Cleared => "cleared",
             Self::Reconciled => "reconciled",
+        }
+    }
+
+    /// Converts to a clearing status; `None` for `uncleared`.
+    #[must_use]
+    pub fn to_clearing_status(self) -> Option<crate::db::ClearingStatus> {
+        match self {
+            Self::Uncleared => None,
+            Self::Cleared => Some(crate::db::ClearingStatus::Cleared),
+            Self::Reconciled => Some(crate::db::ClearingStatus::Reconciled),
         }
     }
 

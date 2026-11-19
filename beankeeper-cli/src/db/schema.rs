@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 9;
+const CURRENT_VERSION: i64 = 10;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -76,6 +76,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 9 {
         apply_v9(conn)?;
+    }
+
+    if version < 10 {
+        apply_v10(conn)?;
     }
 
     debug_assert_eq!(
@@ -389,9 +393,148 @@ fn apply_v9(conn: &Connection) -> Result<(), CliError> {
     }
 }
 
+/// Applies the v10 migration: adds the `entry_clearings` table (issue #25).
+///
+/// An entry can be cleared in several parts, on different dates, by
+/// different statements. `entries.status` stays as a derived summary of the
+/// entry's clearings (see `db::clearings::derive_status`).
+///
+/// Backfill: every entry that is already `cleared` or `reconciled` gets one
+/// clearing row for its full amount, with that status, dated on its
+/// transaction date and with no statement reference.
+///
+/// Self-contained: it only depends on tables from v1-v6, so it can be
+/// renumbered by changing the version literal below and the call site.
+fn apply_v10(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        SAVEPOINT sp_migrate_entry_clearings;
+
+        CREATE TABLE IF NOT EXISTS entry_clearings (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id      INTEGER NOT NULL REFERENCES entries(id),
+            company_slug  TEXT    NOT NULL REFERENCES companies(slug),
+            amount        INTEGER NOT NULL CHECK(amount > 0),
+            cleared_date  TEXT    NOT NULL,
+            statement_ref TEXT,
+            status        TEXT    NOT NULL DEFAULT 'cleared' CHECK(status IN ('cleared', 'reconciled')),
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_entry_clearings_entry
+            ON entry_clearings(entry_id);
+
+        CREATE INDEX IF NOT EXISTS idx_entry_clearings_company_statement
+            ON entry_clearings(company_slug, statement_ref);
+
+        -- Idempotency key: at most one clearing per (entry, statement).
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_clearings_entry_statement
+            ON entry_clearings(entry_id, statement_ref) WHERE statement_ref IS NOT NULL;
+
+        INSERT INTO entry_clearings (entry_id, company_slug, amount, cleared_date, status)
+        SELECT e.id, e.company_slug, e.amount, t.date, e.status
+        FROM entries e
+        JOIN transactions t ON t.id = e.transaction_id
+        WHERE e.status IN ('cleared', 'reconciled')
+          AND NOT EXISTS (SELECT 1 FROM entry_clearings c WHERE c.entry_id = e.id);
+
+        INSERT INTO schema_version (version) VALUES (10);
+
+        RELEASE sp_migrate_entry_clearings;
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v10_migration_backfills_clearings_from_v8() {
+        let conn = open_conn();
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
+        apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
+        apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
+        apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
+        apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(8));
+
+        // A v8-shaped ledger: one transaction with a cleared, a reconciled,
+        // and an uncleared entry.
+        conn.execute_batch(
+            "
+            INSERT INTO companies (slug, name) VALUES ('co', 'Co');
+            INSERT INTO accounts (company_slug, code, name, type) VALUES
+                ('co', '1000', 'Cash', 'asset'),
+                ('co', '1200', 'Receivable', 'asset'),
+                ('co', '4000', 'Revenue', 'revenue');
+            INSERT INTO transactions (id, company_slug, description, date)
+                VALUES (1, 'co', 'Sale', '2026-03-15');
+            INSERT INTO entries (id, transaction_id, account_code, company_slug, direction, amount, status) VALUES
+                (1, 1, '1000', 'co', 'debit', 500, 'cleared'),
+                (2, 1, '1200', 'co', 'debit', 300, 'reconciled'),
+                (3, 1, '4000', 'co', 'credit', 800, 'uncleared');
+            ",
+        )
+        .unwrap_or_else(|e| panic!("seed v8 ledger: {e}"));
+
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT entry_id, company_slug, amount, cleared_date, statement_ref, status \
+                 FROM entry_clearings ORDER BY entry_id",
+            )
+            .unwrap_or_else(|e| panic!("prepare: {e}"));
+        let rows: Vec<(i64, String, i64, String, Option<String>, String)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .unwrap_or_else(|e| panic!("query: {e}"))
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    1,
+                    "co".into(),
+                    500,
+                    "2026-03-15".into(),
+                    None,
+                    "cleared".into()
+                ),
+                (
+                    2,
+                    "co".into(),
+                    300,
+                    "2026-03-15".into(),
+                    None,
+                    "reconciled".into()
+                ),
+            ]
+        );
+
+        // Re-running ensure_schema neither re-applies nor duplicates.
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema rerun: {e}"));
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entry_clearings", [], |r| r.get(0))
+            .unwrap_or(-1);
+        assert_eq!(n, 2);
+    }
 
     fn open_conn() -> Connection {
         let conn = Connection::open_in_memory()

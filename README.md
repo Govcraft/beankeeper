@@ -390,7 +390,7 @@ Without `--currency`, the report uses the company's only transaction currency an
 
 ### Bank Reconciliation
 
-Mark individual entries as `cleared` or `reconciled` to support bank statement verification workflows:
+Clear entries against statements, in full or in part. Each clearing records an amount (default: whatever remains uncleared), a date (`--date`, default today) and an optional statement id (`--statement`), so an item can be paid across several statements:
 
 ```sh
 # Mark the bank-leg of a transaction as cleared
@@ -398,9 +398,19 @@ bk --company personal txn clear 42 --entry 5 --status cleared
 
 # Mark as reconciled (finalized)
 bk --company personal txn clear 42 --entry 5 --status reconciled
+
+# Clear part of an item, picking the entry by transaction reference + account
+bk --company agency txn clear --reference POL-123 --account 1200 \
+  --amount 40 --date 2026-03-31 --statement ACME-2026-03
+
+# Clear a whole statement from stdin or a file: one `reference[,amount]` per line
+printf 'POL-123,40\nPOL-124\n' | bk --json --company agency txn clear \
+  --from-file - --account 1200 --date 2026-03-31 --statement ACME-2026-03
 ```
 
-Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
+Batches are atomic (all lines or none) and report what was cleared and what was skipped. Each entry is cleared at most once per statement, so re-running a statement batch is a no-op. Clearing more than the remaining amount is rejected. Every clearing is recorded in the audit trail.
+
+An entry's status is derived from its clearings: `cleared` once fully cleared, `reconciled` once fully cleared by reconciled clearings, `uncleared` otherwise (including partially cleared items). Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
 
 ### Period-over-Period Reports
 
@@ -418,16 +428,23 @@ bk --company personal report income-statement --from 2026-04-01 --to 2026-06-30 
 
 Each cell is the account's net activity on its normal side. Periods are labelled `2026-01`, `2026-Q1` or `2026`, and the first and last periods are clipped to `--from`/`--to`. Comparisons add `Change` and `Change %` columns (`n/a` when the prior amount is 0). Table, JSON (`report.income-statement.periods`, `report.income-statement.compare`, ...) and CSV output are supported.
 
-`bk report reconciliation` uses those statuses to reconcile an account against a statement. It reports the book balance (all entries), the cleared balance (cleared + reconciled), and the reconciled-only balance on the account's normal side, lists the uncleared entries with their total (book - cleared = uncleared total), and, given `--statement-balance`, shows the difference (statement - cleared) and whether the account is reconciled:
+`bk report reconciliation` uses those clearings to reconcile an account against a statement. It reports the book balance (all entries), the cleared balance, and the reconciled balance on the account's normal side, lists the outstanding entries (including partially cleared ones, with their reference, metadata, cleared and remaining amounts) with their total (book - cleared = uncleared total), and, given `--statement-balance`, shows the difference (statement - cleared) and whether the account is reconciled:
 
 ```sh
 bk --company personal report reconciliation --account 1000 --to 2026-03-31 --statement-balance 4210.33
 
 # Credit cards are credit-normal: a positive balance is the amount owed
 bk --company personal report reconciliation --account 2100 --statement-balance 512.80
+
+# Check one statement's clearings against its total
+bk --company agency report reconciliation --account 1200 --statement ACME-2026-03 --statement-balance 175
+
+# Outstanding receivables for one carrier, grouped by policy, with subtotals
+bk --company agency report reconciliation --account 1200 \
+  --filter-metadata carrier=Acme --group-by-metadata policy
 ```
 
-`--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the uncleared entries followed by `summary` rows (see `docs/beankeeper/references/commands.md`).
+`--to` is point-in-time: only clearings dated on or before it count, so an item cleared later is still outstanding as of an earlier date. `--statement ID` limits the cleared balance to that statement's clearings. `--filter-metadata KEY=VALUE` (repeatable, AND-ed) and `--group-by-metadata KEY` match top-level keys of JSON transaction metadata (anything else has no keys; ungrouped items go under `(none)`). `--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the outstanding entries, then group subtotals, then `summary` rows (see `docs/beankeeper/references/commands.md`).
 
 ### Budgeting and Variance Analysis
 

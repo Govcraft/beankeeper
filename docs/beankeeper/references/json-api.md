@@ -485,41 +485,90 @@ with amounts in minor units. Summary rows follow the accounts with an empty
 
 Amounts are minor units on the account's normal side. `statement_balance`,
 `difference` (`statement - cleared`), and `reconciled` (`difference == 0`) are
-`null` unless `--statement-balance` is given; `as_of` is `null` without `--to`.
-`signed_amount` is the entry's effect on the normal-side balance; `amount` is
-the raw (positive) entry amount. `book_balance - cleared_balance ==
-uncleared_total`.
+`null` unless `--statement-balance` is given; `as_of` is `null` without `--to`;
+`statement` is `null` without `--statement`; `group_by_metadata` and `groups`
+are `null` without `--group-by-metadata`; `metadata_filters` lists the
+`--filter-metadata` pairs (empty without them).
+
+`cleared_balance` counts only `--statement`'s clearings when given;
+`total_cleared_balance` always counts every statement's (they are equal without
+`--statement`). With `--to`, only clearings with `cleared_date <= as_of` count.
+Invariant: `book_balance - total_cleared_balance == uncleared_total`.
+
+`uncleared_entries` lists every entry not fully cleared. Per item: `amount` is
+the raw (positive) entry amount and `signed_amount` its effect on the
+normal-side balance; `cleared_amount` and `remaining_amount` are raw amounts
+(`amount = cleared_amount + remaining_amount`); `signed_remaining` is the
+remaining amount on the normal side (they sum to `uncleared_total`);
+`partially_cleared` is true when `0 < cleared_amount < amount`. `reference` is
+the transaction reference (or `null`); `metadata` is the transaction metadata,
+parsed as JSON when valid, else the raw string (or `null`).
+
+Each `groups` element has the group `value` (`"(none)"` for items without the
+key, listed last), `count`, `uncleared_total` (sum of `signed_remaining`), and
+the member `entry_ids`.
 
 ```json
 {
   "data": {
     "account": {
-      "code": "1000",
-      "name": "Checking",
+      "code": "1200",
+      "name": "Commission Receivable",
       "type": "asset",
       "normal_balance": "debit"
     },
     "currency": "USD",
     "as_of": "2026-03-31",
-    "book_balance": 86050,
-    "cleared_balance": 70000,
-    "reconciled_balance": 100000,
-    "uncleared_total": 16050,
-    "uncleared_count": 1,
-    "statement_balance": 70000,
+    "statement": "STMT-2026-03",
+    "metadata_filters": [{ "key": "carrier", "value": "Acme" }],
+    "group_by_metadata": "policy",
+    "book_balance": 15000,
+    "cleared_balance": 4000,
+    "total_cleared_balance": 4000,
+    "reconciled_balance": 0,
+    "uncleared_total": 11000,
+    "uncleared_count": 2,
+    "partially_cleared_count": 1,
+    "statement_balance": 4000,
     "difference": 0,
     "reconciled": true,
     "uncleared_entries": [
       {
+        "entry_id": 1,
+        "transaction_id": 1,
+        "date": "2026-01-05",
+        "reference": "POL-1",
+        "description": "Commission POL-1",
+        "memo": null,
+        "metadata": { "carrier": "Acme", "policy": "P1" },
+        "direction": "debit",
+        "amount": 10000,
+        "signed_amount": 10000,
+        "cleared_amount": 4000,
+        "remaining_amount": 6000,
+        "signed_remaining": 6000,
+        "partially_cleared": true
+      },
+      {
         "entry_id": 5,
         "transaction_id": 3,
-        "date": "2026-01-20",
-        "description": "Owner top-up",
+        "date": "2026-01-15",
+        "reference": "POL-3",
+        "description": "Commission POL-3",
         "memo": null,
+        "metadata": { "carrier": "Acme" },
         "direction": "debit",
-        "amount": 16050,
-        "signed_amount": 16050
+        "amount": 5000,
+        "signed_amount": 5000,
+        "cleared_amount": 0,
+        "remaining_amount": 5000,
+        "signed_remaining": 5000,
+        "partially_cleared": false
       }
+    ],
+    "groups": [
+      { "value": "P1", "count": 1, "uncleared_total": 6000, "entry_ids": [1] },
+      { "value": "(none)", "count": 1, "uncleared_total": 5000, "entry_ids": [5] }
     ]
   }
 }
@@ -558,12 +607,89 @@ Same shape as a single element from `txn list`, with entries included.
 
 ### `txn clear`
 
+Single entry (`TXN_ID --entry ID` or `--reference REF --account CODE`).
+`status` is the requested status; `entry_status` the entry's derived status
+afterwards. `action` is `cleared` (a clearing was added), `reconciled`
+(clearings were promoted, possibly with a new reconciled clearing),
+`uncleared` (clearings were removed) or `skipped` (nothing changed;
+`skip_reason` is `already_cleared_by_statement`, `fully_cleared` or
+`nothing_to_unclear`). `amount` is what this call cleared (or removed);
+`cleared_amount`/`remaining_amount` are the entry's totals afterwards.
+`clearing_id` is the new clearing's id, or `null`.
+
 ```json
 {
   "data": {
+    "reference": "POL-123",
     "transaction_id": 42,
     "entry_id": 5,
-    "status": "cleared"
+    "action": "cleared",
+    "clearing_id": 9,
+    "amount": 4000,
+    "entry_amount": 10000,
+    "cleared_amount": 4000,
+    "remaining_amount": 6000,
+    "previous_status": "uncleared",
+    "entry_status": "uncleared",
+    "skip_reason": null,
+    "status": "cleared",
+    "cleared_date": "2026-03-31",
+    "statement": "STMT-2026-03"
+  }
+}
+```
+
+Batch (`--from-file`). The batch is atomic: on any error nothing is applied
+and the error envelope names the failing line. `cleared` holds every item that
+changed (whatever its `action`), `skipped` the rest; each item has the fields
+above (except the batch-level `status`, `cleared_date`, `statement`) plus its
+1-based input `line`. `cleared_total` sums `amount` over `cleared`.
+
+```json
+{
+  "data": {
+    "account": "1200",
+    "status": "cleared",
+    "cleared_date": "2026-03-31",
+    "statement": "STMT-2026-03",
+    "count": 2,
+    "cleared_count": 1,
+    "skipped_count": 1,
+    "cleared_total": 4000,
+    "cleared": [
+      {
+        "line": 1,
+        "reference": "POL-123",
+        "transaction_id": 42,
+        "entry_id": 5,
+        "action": "cleared",
+        "clearing_id": 9,
+        "amount": 4000,
+        "entry_amount": 10000,
+        "cleared_amount": 4000,
+        "remaining_amount": 6000,
+        "previous_status": "uncleared",
+        "entry_status": "uncleared",
+        "skip_reason": null
+      }
+    ],
+    "skipped": [
+      {
+        "line": 2,
+        "reference": "POL-124",
+        "transaction_id": 43,
+        "entry_id": 7,
+        "action": "skipped",
+        "clearing_id": null,
+        "amount": 0,
+        "entry_amount": 2500,
+        "cleared_amount": 2500,
+        "remaining_amount": 0,
+        "previous_status": "cleared",
+        "entry_status": "cleared",
+        "skip_reason": "already_cleared_by_statement"
+      }
+    ]
   }
 }
 ```
@@ -762,8 +888,8 @@ may be `null` for cross-company changes.
       "entity": "entry",
       "entity_id": "5",
       "action": "status_change",
-      "before": "{\"status\":\"uncleared\"}",
-      "after": "{\"status\":\"reconciled\"}"
+      "before": "{\"cleared_amount\":0,\"status\":\"uncleared\"}",
+      "after": "{\"cleared_amount\":4000,\"clearings\":[{\"amount\":4000,\"cleared_date\":\"2026-03-31\",\"id\":9,\"statement_ref\":\"STMT-2026-03\",\"status\":\"cleared\"}],\"op\":\"clear\",\"status\":\"uncleared\"}"
     },
     {
       "id": 11,
@@ -783,6 +909,11 @@ may be `null` for cross-company changes.
 `entity` is one of `entry`, `transaction`, `budget`, `account`, `company`.
 `action` is one of `status_change`, `correlate`, `budget_set`, `budget_delete`,
 `account_delete`, `company_delete`.
+
+`status_change` rows come from `txn clear`. `before`/`after` carry the entry's
+derived `status` and total `cleared_amount`; `after` also carries `op`
+(`clear`, `reconcile` or `unclear`) and `clearings`, the affected clearing rows
+(for `unclear`, the removed ones).
 
 ## Parsing Tips for Agents
 
