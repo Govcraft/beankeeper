@@ -728,10 +728,7 @@ struct BudgetJson {
 /// # Errors
 ///
 /// Returns [`CliError`] on serialisation failure.
-pub fn render_budgets(
-    rows: &[crate::db::BudgetRow],
-    meta: Meta,
-) -> Result<String, CliError> {
+pub fn render_budgets(rows: &[crate::db::BudgetRow], meta: Meta) -> Result<String, CliError> {
     let json_rows: Vec<BudgetJson> = rows
         .iter()
         .map(|r| BudgetJson {

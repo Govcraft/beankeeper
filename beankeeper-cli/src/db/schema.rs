@@ -447,16 +447,16 @@ mod tests {
         assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
 
         // Verify the reference column exists by querying pragma
-        let has_reference: bool = conn
-            .prepare("PRAGMA table_info(transactions)")
-            .is_ok_and(|mut stmt| {
-                let names: Vec<String> = stmt
-                    .query_map([], |row| row.get::<_, String>(1))
-                    .unwrap_or_else(|e| panic!("query failed: {e}"))
-                    .filter_map(Result::ok)
-                    .collect();
-                names.contains(&"reference".to_string())
-            });
+        let has_reference: bool =
+            conn.prepare("PRAGMA table_info(transactions)")
+                .is_ok_and(|mut stmt| {
+                    let names: Vec<String> = stmt
+                        .query_map([], |row| row.get::<_, String>(1))
+                        .unwrap_or_else(|e| panic!("query failed: {e}"))
+                        .filter_map(Result::ok)
+                        .collect();
+                    names.contains(&"reference".to_string())
+                });
         assert!(
             has_reference,
             "reference column should exist after v3 migration"
@@ -477,32 +477,32 @@ mod tests {
         assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
 
         // Verify tax_category column on entries
-        let has_tax_category: bool = conn
-            .prepare("PRAGMA table_info(entries)")
-            .is_ok_and(|mut stmt| {
-                let names: Vec<String> = stmt
-                    .query_map([], |row| row.get::<_, String>(1))
-                    .unwrap_or_else(|e| panic!("query failed: {e}"))
-                    .filter_map(Result::ok)
-                    .collect();
-                names.contains(&"tax_category".to_string())
-            });
+        let has_tax_category: bool =
+            conn.prepare("PRAGMA table_info(entries)")
+                .is_ok_and(|mut stmt| {
+                    let names: Vec<String> = stmt
+                        .query_map([], |row| row.get::<_, String>(1))
+                        .unwrap_or_else(|e| panic!("query failed: {e}"))
+                        .filter_map(Result::ok)
+                        .collect();
+                    names.contains(&"tax_category".to_string())
+                });
         assert!(
             has_tax_category,
             "tax_category column should exist on entries after v4"
         );
 
         // Verify default_tax_category column on accounts
-        let has_default_tax: bool = conn
-            .prepare("PRAGMA table_info(accounts)")
-            .is_ok_and(|mut stmt| {
-                let names: Vec<String> = stmt
-                    .query_map([], |row| row.get::<_, String>(1))
-                    .unwrap_or_else(|e| panic!("query failed: {e}"))
-                    .filter_map(Result::ok)
-                    .collect();
-                names.contains(&"default_tax_category".to_string())
-            });
+        let has_default_tax: bool =
+            conn.prepare("PRAGMA table_info(accounts)")
+                .is_ok_and(|mut stmt| {
+                    let names: Vec<String> = stmt
+                        .query_map([], |row| row.get::<_, String>(1))
+                        .unwrap_or_else(|e| panic!("query failed: {e}"))
+                        .filter_map(Result::ok)
+                        .collect();
+                    names.contains(&"default_tax_category".to_string())
+                });
         assert!(
             has_default_tax,
             "default_tax_category column should exist on accounts after v4"
@@ -640,9 +640,6 @@ mod tests {
                     .collect();
                 names.contains(&"status".to_string())
             });
-        assert!(
-            has_status,
-            "status column should exist on entries after v6"
-        );
+        assert!(has_status, "status column should exist on entries after v6");
     }
 }

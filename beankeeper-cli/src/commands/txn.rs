@@ -66,7 +66,15 @@ pub fn run(
             transaction_id,
             entry,
             status,
-        } => run_clear(cli, &db_handle, company, *transaction_id, *entry, *status, meta),
+        } => run_clear(
+            cli,
+            &db_handle,
+            company,
+            *transaction_id,
+            *entry,
+            *status,
+            meta,
+        ),
         TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
         TxnCommand::Attach {
             transaction_id,
@@ -606,8 +614,7 @@ fn run_show(
     let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
 
     // Determine currency minor units for formatting
-    let currency_minor_units = Currency::from_code(&txn.currency)
-        .map_or(2, |c| c.minor_units());
+    let currency_minor_units = Currency::from_code(&txn.currency).map_or(2, |c| c.minor_units());
 
     match format {
         OutputFormat::Table => {
@@ -762,9 +769,7 @@ fn run_clear(
     }
 
     if !cli.verbosity.quiet {
-        eprintln!(
-            "[ok] entry #{entry_id} of transaction #{transaction_id} marked as {status_str}"
-        );
+        eprintln!("[ok] entry #{entry_id} of transaction #{transaction_id} marked as {status_str}");
     }
 
     Ok(())

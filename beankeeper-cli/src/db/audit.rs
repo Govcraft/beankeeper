@@ -98,10 +98,7 @@ impl Actor {
     /// environment, falling back to `"cli"`.
     #[must_use]
     pub fn resolve(explicit: Option<&str>) -> Self {
-        if let Some(name) = explicit
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
+        if let Some(name) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
             return Self(name.to_string());
         }
 
@@ -358,7 +355,9 @@ pub fn correlate_partner(
             AuditEntity::Transaction,
             &partner_id.to_string(),
             AuditAction::Correlate,
-            Some(&snapshot(&serde_json::json!({ "metadata": partner_metadata }))),
+            Some(&snapshot(
+                &serde_json::json!({ "metadata": partner_metadata }),
+            )),
             Some(&snapshot(&serde_json::json!({
                 "metadata": updated,
                 "correlated_with": new_txn_id,
@@ -397,7 +396,11 @@ fn merge_correlate_into_metadata(existing: Option<&str>, correlate_id: i64) -> S
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn set_budget(conn: &Connection, actor: &Actor, p: &SetBudgetParams<'_>) -> Result<BudgetRow, CliError> {
+pub fn set_budget(
+    conn: &Connection,
+    actor: &Actor,
+    p: &SetBudgetParams<'_>,
+) -> Result<BudgetRow, CliError> {
     in_savepoint(conn, "sp_budget_set", || {
         let prior_amount: Option<i64> = conn
             .query_row(
@@ -523,7 +526,8 @@ pub fn delete_budget(
 ) -> Result<usize, CliError> {
     in_savepoint(conn, "sp_budget_delete", || {
         // Snapshot the rows about to be removed.
-        let victims = collect_budget_victims(conn, company_slug, account_code, currency, year, month)?;
+        let victims =
+            collect_budget_victims(conn, company_slug, account_code, currency, year, month)?;
 
         let count = if let Some(m) = month {
             conn.execute(
@@ -592,14 +596,18 @@ fn collect_budget_victims(
              WHERE company_slug = ?1 AND account_code = ?2 AND currency = ?3 \
              AND year = ?4 AND month = ?5",
         )?;
-        let mapped = stmt.query_map(params![company_slug, account_code, currency, year, m], map_row)?;
+        let mapped = stmt.query_map(
+            params![company_slug, account_code, currency, year, m],
+            map_row,
+        )?;
         mapped.collect::<Result<_, _>>()?
     } else {
         let mut stmt = conn.prepare(
             "SELECT id, month, amount, notes FROM budgets \
              WHERE company_slug = ?1 AND account_code = ?2 AND currency = ?3 AND year = ?4",
         )?;
-        let mapped = stmt.query_map(params![company_slug, account_code, currency, year], map_row)?;
+        let mapped =
+            stmt.query_map(params![company_slug, account_code, currency, year], map_row)?;
         mapped.collect::<Result<_, _>>()?
     };
 
@@ -792,7 +800,11 @@ mod tests {
 
     #[test]
     fn entry_status_parses_round_trip() {
-        for s in [EntryStatus::Uncleared, EntryStatus::Cleared, EntryStatus::Reconciled] {
+        for s in [
+            EntryStatus::Uncleared,
+            EntryStatus::Cleared,
+            EntryStatus::Reconciled,
+        ] {
             assert_eq!(EntryStatus::from_str(s.as_str()).ok(), Some(s));
         }
         assert!(EntryStatus::from_str("bogus").is_err());
@@ -826,15 +838,15 @@ mod tests {
             .expect("read status");
         assert_eq!(status, "cleared");
 
-        let (actor_col, action, before, after): (String, String, Option<String>, Option<String>) = db
-            .conn()
-            .query_row(
-                "SELECT actor, action, before, after FROM audit_log \
+        let (actor_col, action, before, after): (String, String, Option<String>, Option<String>) =
+            db.conn()
+                .query_row(
+                    "SELECT actor, action, before, after FROM audit_log \
                  WHERE entity = 'entry' AND entity_id = '1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .expect("read audit row");
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .expect("read audit row");
         assert_eq!(actor_col, "tester");
         assert_eq!(action, "status_change");
         assert!(before.unwrap_or_default().contains("uncleared"));

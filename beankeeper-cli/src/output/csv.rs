@@ -313,8 +313,15 @@ pub fn render_tax_summary(rows: &[crate::db::TaxSummaryRow]) -> Result<String, C
 /// Returns `CliError::General` if CSV serialisation fails.
 pub fn render_budgets(rows: &[crate::db::BudgetRow]) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
-    wtr.write_record(["account_code", "currency", "year", "month", "amount", "notes"])
-        .map_err(|e| csv_err(&e))?;
+    wtr.write_record([
+        "account_code",
+        "currency",
+        "year",
+        "month",
+        "amount",
+        "notes",
+    ])
+    .map_err(|e| csv_err(&e))?;
 
     for r in rows {
         let year = r.year.to_string();
@@ -347,9 +354,7 @@ pub fn render_budgets(rows: &[crate::db::BudgetRow]) -> Result<String, CliError>
 /// # Errors
 ///
 /// Returns `CliError::General` if CSV serialisation fails.
-pub fn render_budget_variance(
-    rows: &[crate::db::BudgetVarianceRow],
-) -> Result<String, CliError> {
+pub fn render_budget_variance(rows: &[crate::db::BudgetVarianceRow]) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
     wtr.write_record([
         "code",

@@ -13,6 +13,10 @@ pub use accounts::{
     ListAccountParams, account_exists, create_account, get_account, list_account_codes,
     list_accounts, row_to_account,
 };
+pub use attachments::{
+    AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
+    store_attachment,
+};
 pub use audit::{
     Actor, AuditLogRow, EntryStatus, ListAuditParams, correlate_partner, delete_account,
     delete_budget, delete_company, list_audit, set_annual_budget, set_budget, set_entry_status,
@@ -20,10 +24,6 @@ pub use audit::{
 pub use budgets::{
     BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,
     compute_budget_variance, list_budgets,
-};
-pub use attachments::{
-    AttachmentRow, StoreAttachmentParams, get_attachment, hash_and_store_file, list_attachments,
-    store_attachment,
 };
 pub use companies::{company_exists, create_company, get_company, list_companies};
 pub use connection::Db;

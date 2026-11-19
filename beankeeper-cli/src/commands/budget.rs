@@ -52,15 +52,7 @@ pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError
             year,
             account,
             month,
-        } => run_list(
-            cli,
-            &db,
-            company,
-            *year,
-            account.as_deref(),
-            *month,
-            format,
-        ),
+        } => run_list(cli, &db, company, *year, account.as_deref(), *month, format),
         BudgetCommand::Delete {
             account,
             year,
@@ -100,14 +92,18 @@ fn run_set(
         // Annual budget -- distribute across 12 months
         let annual_minor = parse_amount_to_minor(annual_str, currency)?;
         let actor = db::Actor::resolve(cli.actor.as_deref());
-        let rows = db::set_annual_budget(db.conn(), &actor, &db::SetAnnualBudgetParams {
-            company_slug: company,
-            account_code: account,
-            currency: currency_code,
-            year,
-            annual_amount: annual_minor,
-            notes,
-        })?;
+        let rows = db::set_annual_budget(
+            db.conn(),
+            &actor,
+            &db::SetAnnualBudgetParams {
+                company_slug: company,
+                account_code: account,
+                currency: currency_code,
+                year,
+                annual_amount: annual_minor,
+                notes,
+            },
+        )?;
 
         match format {
             OutputFormat::Table => {
@@ -126,9 +122,7 @@ fn run_set(
         }
 
         if !cli.verbosity.quiet {
-            eprintln!(
-                "[ok] annual budget set for {account} in {year} (12 months)"
-            );
+            eprintln!("[ok] annual budget set for {account} in {year} (12 months)");
         }
     } else if let Some(amount_str) = amount {
         let m = month.ok_or_else(|| {
@@ -140,20 +134,23 @@ fn run_set(
 
         let minor = parse_amount_to_minor(amount_str, currency)?;
         let actor = db::Actor::resolve(cli.actor.as_deref());
-        let row = db::set_budget(db.conn(), &actor, &db::SetBudgetParams {
-            company_slug: company,
-            account_code: account,
-            currency: currency_code,
-            year,
-            month: m,
-            amount: minor,
-            notes,
-        })?;
+        let row = db::set_budget(
+            db.conn(),
+            &actor,
+            &db::SetBudgetParams {
+                company_slug: company,
+                account_code: account,
+                currency: currency_code,
+                year,
+                month: m,
+                amount: minor,
+                notes,
+            },
+        )?;
 
         match format {
             OutputFormat::Table => {
-                let rendered =
-                    output::table::render_budgets(&[row], currency.minor_units(), true);
+                let rendered = output::table::render_budgets(&[row], currency.minor_units(), true);
                 println!("{rendered}");
             }
             OutputFormat::Json => {
@@ -247,7 +244,9 @@ fn run_delete(
         };
         eprint!("Delete budget for {scope}? [y/N] ");
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).map_err(CliError::Io)?;
+        std::io::stdin()
+            .read_line(&mut input)
+            .map_err(CliError::Io)?;
         if !input.trim().eq_ignore_ascii_case("y") {
             eprintln!("aborted");
             return Ok(());
