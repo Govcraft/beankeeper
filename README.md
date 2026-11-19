@@ -44,7 +44,7 @@ Posted transactions cannot be edited or deleted. The entries, amounts, accounts,
 - **Tax category tagging** -- per-entry or account-level defaults, free-form strings mapping to any tax form lines you need
 - **Encryption at rest** -- SQLCipher baked in from the start, not bolted on
 - **Intercompany linking** -- mirror transactions across entities stay paired through bidirectional correlation IDs; `bk txn reconcile` catches orphans
-- **Receivables / payables aging** -- `bk report aging --account <code>` buckets open charges on an asset (AR) or liability (AP) account into Current / 1-30 / 31-60 / 61-90 / 90+ days, optionally per customer or vendor from JSON metadata
+- **Receivables / payables aging** -- `bk report aging --account <code>` buckets open charges on an asset (AR) or liability (AP) account into Current / 1-30 / 31-60 / 61-90 / 90+ days, FIFO or matched to specific invoices, optionally per customer or vendor from JSON metadata, with an open-item `--detail` view
 - **Budgeting and variance analysis** -- set monthly or annual spending/revenue targets per account, then run `bk report budget-variance` to see where actuals land relative to the plan
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
@@ -473,11 +473,27 @@ bk --company personal report aging --account 1100
 # Accounts payable as of quarter end, with custom buckets
 bk --company personal report aging --account 2000 --as-of 2026-03-31 --buckets 15,45
 
-# Per customer, using JSON transaction metadata like -m '{"customer":"Globex"}'
-bk --company personal report aging --account 1100 --group-by-metadata customer
+# Per customer, using JSON transaction metadata like -m '{"customer":"Globex"}',
+# listing every open invoice under its customer
+bk --company personal report aging --account 1100 --group-by customer --detail
+
+# Apply payments to the invoice they name (specific identification)
+bk --company personal txn post -d "Invoice 102" -r INV-102 --debit 1100:300 --credit 4000:300
+bk --company personal txn post -d "Payment" --debit 1000:100 --credit 1100:100 \
+  -m '{"customer":"Globex","applies_to":"INV-102"}'
+bk --company personal report aging --account 1100 --method specific
 ```
 
-The ledger has no invoice or due-date model, so the report works on a FIFO assumption: each net increase to the account is a charge, each net decrease is a settlement applied to the oldest open charges, and ages are measured from **transaction dates**. Settlements beyond the open charges show as an unapplied credit. Non-JSON metadata (or a missing key) is grouped under `(none)`. The totals always reconcile: total open - unapplied credit = account balance as of the date. If the company uses more than one currency, pass `--currency`.
+The ledger has no invoice or due-date model, so the report works from transactions: entries on the account are netted per transaction, each net increase is a **charge** and each net decrease is a **settlement**, and ages are measured from **transaction dates**.
+
+- **Sign convention.** An asset account (receivables) ages debit-side charges and applies credit-side settlements; a liability account (payables) ages credit-side charges and applies debit-side settlements. The same command works for AR and AP.
+- **Matching (`--method`).** With `fifo` (default) every settlement goes to the oldest open charges. With `specific`, a settlement whose metadata links to a charge is applied to that charge first; any excess, and unlinked settlements, fall back to FIFO. The link is the metadata key `applies_to` (change it with `--link-key`), holding the charge's reference (`txn post -r`; references are unique per company, so the payment carries the link rather than sharing the reference) or its transaction id, or an array of these. A link to a missing transaction, to one that is not a charge on this account, to a charge dated later or after `--as-of`, or to another counterparty's charge is reported as a warning and under `unmatched_links` in JSON, and the settlement is applied FIFO.
+- **Credits and reversals.** Credit notes, write-offs and invoice reversals are settlements like payments; with `--method specific`, link one to its invoice to cancel that invoice. Refunds paid out and payment chargebacks are charges (aged from their own date) that first consume any unapplied credit. Payables mirror this: vendor credits are settlements, vendor refunds are charges.
+- **Net credit.** Settlements beyond the open charges are an *unapplied credit*. A counterparty (or account) in net credit shows a negative `Net` marked `CR` in the table, a negative `net` in CSV, and `"net_credit": true` in JSON.
+- **As-of.** Only transactions dated on or before `--as-of` count, so rerunning for a past period end gives the same answer after later-dated payments are posted.
+- **Counterparties.** `--group-by-metadata KEY` (alias `--group-by`) groups by a key of JSON object metadata; missing keys and non-JSON or non-object metadata go to `(unassigned)`. Matching runs per counterparty.
+
+The totals always reconcile: total open - unapplied credit = account balance as of the date. If the company uses more than one currency, pass `--currency`.
 
 ### Cash Flow Statement
 

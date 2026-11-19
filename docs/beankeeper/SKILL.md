@@ -73,7 +73,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report tax-summary` | Entries grouped by tax category |
 | `bk report budget-variance` | Budget vs actual comparison |
 | `bk report ledger` | General ledger / account statement with running balances |
-| `bk report aging` | Receivables/payables aging buckets (FIFO by transaction date) |
+| `bk report aging` | Receivables/payables aging buckets (FIFO or specific invoice matching, by transaction date) |
 | `bk report reconciliation` | Book vs cleared vs reconciled balance for one account, uncleared entries, statement difference |
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
@@ -160,11 +160,26 @@ error listing them, and `--currency CODE` is required.
 bk --company acme report aging --account 1100                     # AR as of today
 bk --company acme report aging --account 2000 --as-of 2026-03-31  # AP
 bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer
+bk --company acme report aging --account 1100 --group-by customer --detail   # list open invoices
+bk --company acme report aging --account 1100 --method specific              # honour applies_to links
 ```
 
-There is no invoice or due-date model: payments are applied FIFO to the oldest
-open charges and ages are measured from transaction dates. To age per customer
-or vendor, post with JSON metadata such as `-m '{"customer":"Globex"}'`.
+There is no invoice or due-date model: each net increase to the account is a
+charge, each net decrease a settlement, and ages are measured from transaction
+dates. Asset accounts (AR) age debit-side charges and apply credit-side
+settlements; liability accounts (AP) the reverse.
+
+- To age per customer or vendor, post with JSON metadata such as
+  `-m '{"customer":"Globex"}'`. Missing keys and non-JSON metadata go to
+  `(unassigned)`.
+- Settlements are applied FIFO by default. To pay a specific invoice, post the
+  invoice with a reference (`-r INV-102`) and the payment, credit note or
+  reversal with `-m '{"applies_to":"INV-102"}'` (a transaction id also works),
+  then run with `--method specific`. Excess and unlinked amounts fall back to
+  FIFO; broken links are warned about and listed in `data.unmatched_links`.
+- Overpayments become unapplied credit: `net` is negative and `net_credit` is
+  `true`. Refunds and chargebacks are charges that consume it.
+- `--as-of` ignores later-dated transactions, so past period ends are stable.
 
 ### Reconcile an account against a statement
 
