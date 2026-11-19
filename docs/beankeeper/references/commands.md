@@ -352,6 +352,29 @@ bk --company acme --format csv report ledger --account 1000
 `entry`, or `closing` (date = `--to`, `debit`/`credit` = period totals,
 `balance` = closing balance). Amounts are minor units.
 
+### `bk report aging`
+
+Receivables / payables aging for a single asset or liability account.
+
+```bash
+bk --company acme report aging --account 1100
+bk --company acme report aging --account 2000 --as-of 2026-03-31
+bk --company acme report aging --account 1100 --buckets 15,45
+bk --company acme report aging --account 1100 --group-by-metadata customer
+bk --company acme report aging --account 1100 --currency EUR
+```
+
+**Flags:**
+- `--account CODE` (required): an asset account (receivable: charges are debits, settlements are credits) or a liability account (payable: charges are credits, settlements are debits). Other account types are a validation error (exit 3).
+- `--as-of DATE`: include transactions dated on or before this date (default: today)
+- `--buckets N,N,...`: strictly ascending positive day bounds (default `30,60,90`, giving `Current`, `1-30`, `31-60`, `61-90`, `90+`)
+- `--group-by-metadata KEY`: group by a key of the transaction metadata. Metadata is parsed leniently: if it is a JSON object holding a string or number under `KEY`, that value is the counterparty; anything else (non-JSON text, missing key, other value types) goes to `(none)`.
+- `--currency CODE`: currency to report. Defaults to the company's single transaction currency; if the company has several, `--currency` is required (exit 3); with no transactions, USD.
+
+**How it works.** The ledger has no invoice or due-date model, so ages are measured from transaction dates under a FIFO assumption. Entries on the account are netted per transaction; a net increase is a charge and a net decrease is a settlement. Settlements are applied FIFO (per counterparty when grouping) to the oldest open charges. Settlements beyond the open charges are reported as an *unapplied credit*, which later charges consume first. Each charge's remaining open amount is bucketed by age in days (`as_of - transaction date`; age 0 is `Current`). The report always reconciles: total open - unapplied credit = account balance as of the date.
+
+Table output has one row per counterparty (or a single `(all)` row) plus a total row; CSV has the same rows with amounts in minor units and a final `TOTAL` row.
+
 ### `bk report budget-variance`
 
 Compare budgeted amounts to actual spending/revenue.
