@@ -309,6 +309,36 @@ Entries grouped by tax category.
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 ```
 
+### `bk report ledger`
+
+General ledger / account statement. For each account: an opening balance as of
+the day before `--from` (zero without `--from`), one row per entry (ordered by
+date, transaction id, entry id) with a running balance, and a closing balance.
+Balances are on the account's normal side: `debits - credits` for asset and
+expense accounts, `credits - debits` for liability, equity and revenue accounts.
+
+```bash
+bk --company acme report ledger
+bk --company acme report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+bk --company acme report ledger --account 1000 --account 4000 --currency EUR
+bk --company acme --format csv report ledger --account 1000
+```
+
+**Flags:**
+- `--account CODE` (repeatable): Accounts to include. Default: every account
+  with activity (entries in the period or a non-zero opening balance).
+- `--from DATE`, `--to DATE`: Inclusive date range (`YYYY-MM-DD`).
+- `--currency CODE`: Only entries of this currency. Default: the company's only
+  transaction currency; if the company has several, the command fails with a
+  validation error (exit 3) asking for `--currency`; with no transactions, USD.
+
+**CSV:** one flat row per statement line. Columns: `account_code`,
+`account_name`, `account_type`, `currency`, `row_type`, `date`,
+`transaction_id`, `entry_id`, `description`, `reference`, `memo`, `debit`,
+`credit`, `balance`. `row_type` is `opening` (balance only, date = `--from`),
+`entry`, or `closing` (date = `--to`, `debit`/`credit` = period totals,
+`balance` = closing balance). Amounts are minor units.
+
 ### `bk report budget-variance`
 
 Compare budgeted amounts to actual spending/revenue.

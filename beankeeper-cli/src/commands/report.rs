@@ -94,6 +94,24 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
+        ReportCommand::Ledger {
+            account,
+            from,
+            to,
+            currency,
+        } => super::report_ledger::run(
+            cli,
+            &db,
+            company,
+            &super::report_ledger::LedgerOptions {
+                accounts: account,
+                from: from.as_deref(),
+                to: to.as_deref(),
+                currency: currency.as_deref(),
+            },
+            format,
+            use_color,
+        ),
     }
 }
 
