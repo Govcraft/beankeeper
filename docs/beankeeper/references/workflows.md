@@ -163,17 +163,26 @@ bk --json --company agency report reconciliation --account 1200 \
 #    (cleared_amount / remaining_amount per item), grouped by carrier
 bk --company agency report reconciliation --account 1200 --group-by-metadata carrier
 
-# 6. Lock the statement once it checks out (promotes its clearings)
+# 6. Lock the statement once it checks out (promotes its clearings;
+#    --date is the reconciled date, on or after the cleared date)
 bk --company agency txn clear --from-file acme-2026-03.csv \
-  --account 1200 --date 2026-03-31 --statement ACME-2026-03 --status reconciled
+  --account 1200 --date 2026-04-05 --statement ACME-2026-03 --status reconciled
 
-# 7. Point in time: what was cleared as of the end of February?
-#    Only clearings dated on or before --to count.
-bk --company agency report reconciliation --account 1200 --to 2026-02-28
+# 7. Point in time: what was cleared, and what reconciled, as of March 31?
+#    Clearings count as cleared when cleared on or before --to, and as
+#    reconciled only when also reconciled on or before --to: the statement
+#    above is cleared but not yet reconciled as of 2026-03-31.
+bk --company agency report reconciliation --account 1200 --to 2026-03-31
+
+# 8. Inspect one item's clearings (amounts, dates, statements, status)
+bk --json --company agency txn show 42
 ```
 
-To undo a statement's clearing on one item, run
-`bk --company agency txn clear --reference POL-123 --account 1200 --statement ACME-2026-03 --status uncleared`.
+Reconciled clearings are locked: re-running the statement with
+`--status cleared` fails. To undo a statement's clearing on one item (cleared
+or reconciled), run
+`bk --company agency txn clear --reference POL-123 --account 1200 --statement ACME-2026-03 --status uncleared`,
+then clear it again if needed.
 A single partial payment can also be cleared directly with
 `txn clear --reference POL-123 --account 1200 --amount 50 --statement ACME-2026-04`.
 

@@ -8,10 +8,14 @@
 //!
 //! Clearing is per part: an entry may be cleared by several clearings
 //! (`entry_clearings`), on different dates, by different statements. With
-//! `--to`, only entries dated on or before it and only clearings with
-//! `cleared_date <= --to` count, so the report answers "as cleared as of that
-//! date". With `--statement`, the cleared and reconciled balances only count
-//! that statement's clearings; outstanding items still reflect every clearing.
+//! `--to`, only entries dated on or before it count; a clearing counts toward
+//! the cleared balance when `cleared_date <= --to`, and toward the reconciled
+//! balance only when it is reconciled **and** `reconciled_date <= --to`. The
+//! report therefore answers "what was cleared, and what was reconciled, as of
+//! that date": a clearing reconciled after `--to` shows as cleared but not
+//! reconciled. With `--statement`, the cleared and reconciled balances only
+//! count that statement's clearings (same date rules); outstanding items
+//! still reflect every clearing.
 //!
 //! Invariant: `book_balance - total_cleared_balance == uncleared_total`, where
 //! the uncleared total is the sum of the listed items' `signed_remaining`.
@@ -71,15 +75,60 @@ pub struct UnclearedEntry {
     pub signed_amount: i64,
     /// Raw amount cleared as of the report date (all statements).
     pub cleared_amount: i64,
+    /// Raw amount reconciled as of the report date (all statements).
+    pub reconciled_amount: i64,
     /// Raw amount still uncleared: `amount - cleared_amount`.
     pub remaining_amount: i64,
     /// `remaining_amount` signed relative to the account's normal side.
     pub signed_remaining: i64,
     /// Whether part (but not all) of the entry is cleared.
     pub partially_cleared: bool,
+    /// The entry's clearings as of the report date (oldest first).
+    pub clearings: Vec<ItemClearing>,
     /// Group value when `--group-by-metadata` is set.
     #[serde(skip)]
     pub group: Option<String>,
+}
+
+/// One clearing of an outstanding entry, as of the report date: a clearing
+/// reconciled after `--to` shows as `cleared` with no `reconciled_date`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ItemClearing {
+    pub id: i64,
+    /// Raw (always positive) amount in minor units.
+    pub amount: i64,
+    pub cleared_date: String,
+    pub reconciled_date: Option<String>,
+    pub statement_ref: Option<String>,
+    pub status: &'static str,
+}
+
+/// The clearings of an entry as of `to` (`None`: current state).
+fn clearings_as_of(
+    conn: &Connection,
+    entry_id: i64,
+    to: Option<&str>,
+) -> Result<Vec<ItemClearing>, CliError> {
+    let on_or_before = |d: &str| to.is_none_or(|to| d <= to);
+    Ok(db::clearings::list_clearings(conn, entry_id)?
+        .into_iter()
+        .filter(|c| on_or_before(&c.cleared_date))
+        .map(|c| {
+            let reconciled_date = c.reconciled_date.filter(|d| on_or_before(d));
+            ItemClearing {
+                id: c.id,
+                amount: c.amount,
+                cleared_date: c.cleared_date,
+                status: if reconciled_date.is_some() {
+                    "reconciled"
+                } else {
+                    "cleared"
+                },
+                reconciled_date,
+                statement_ref: c.statement_ref,
+            }
+        })
+        .collect())
 }
 
 /// Subtotal for one `--group-by-metadata` value.
@@ -323,6 +372,7 @@ pub fn build_report(
             let group = args
                 .group_by_metadata
                 .and_then(|k| metadata_value(r.metadata.as_deref(), k));
+            let clearings = clearings_as_of(conn, r.entry_id, args.to)?;
             uncleared.push(UnclearedEntry {
                 entry_id: r.entry_id,
                 transaction_id: r.transaction_id,
@@ -335,9 +385,11 @@ pub fn build_report(
                 amount: r.amount,
                 signed_amount: r.amount * dsign,
                 cleared_amount: r.cleared_all,
+                reconciled_amount: r.reconciled_all,
                 remaining_amount: remaining,
                 signed_remaining: remaining * dsign,
                 partially_cleared: r.cleared_all > 0,
+                clearings,
                 group,
             });
         }
@@ -401,8 +453,9 @@ struct EntryRow {
     reconciled_stmt: i64,
 }
 
-/// Load the account's entries (oldest first) with clearing sums counting
-/// only clearings dated on or before `to`.
+/// Load the account's entries (oldest first) with clearing sums as of `to`:
+/// cleared sums count clearings with `cleared_date <= to`, reconciled sums
+/// only reconciled clearings with `reconciled_date <= to`.
 fn load_entries(
     conn: &Connection,
     company: &str,
@@ -421,9 +474,12 @@ fn load_entries(
          LEFT JOIN ( \
              SELECT entry_id, \
                     SUM(amount) AS cleared_all, \
-                    SUM(CASE WHEN status = 'reconciled' THEN amount ELSE 0 END) AS reconciled_all, \
+                    SUM(CASE WHEN status = 'reconciled' \
+                              AND (?4 IS NULL OR reconciled_date <= ?4) \
+                             THEN amount ELSE 0 END) AS reconciled_all, \
                     SUM(CASE WHEN statement_ref = ?5 THEN amount ELSE 0 END) AS cleared_stmt, \
                     SUM(CASE WHEN statement_ref = ?5 AND status = 'reconciled' \
+                              AND (?4 IS NULL OR reconciled_date <= ?4) \
                              THEN amount ELSE 0 END) AS reconciled_stmt \
              FROM entry_clearings \
              WHERE company_slug = ?1 AND (?4 IS NULL OR cleared_date <= ?4) \

@@ -399,9 +399,14 @@ fn apply_v9(conn: &Connection) -> Result<(), CliError> {
 /// different statements. `entries.status` stays as a derived summary of the
 /// entry's clearings (see `db::clearings::derive_status`).
 ///
+/// A reconciled clearing carries a `reconciled_date` (required, and on or
+/// after its `cleared_date`); a cleared one has none. CHECK constraints
+/// enforce both.
+///
 /// Backfill: every entry that is already `cleared` or `reconciled` gets one
 /// clearing row for its full amount, with that status, dated on its
-/// transaction date and with no statement reference.
+/// transaction date (both `cleared_date` and, when reconciled,
+/// `reconciled_date`) and with no statement reference.
 ///
 /// Self-contained: it only depends on tables from v1-v6, so it can be
 /// renumbered by changing the version literal below and the call site.
@@ -418,7 +423,11 @@ fn apply_v10(conn: &Connection) -> Result<(), CliError> {
             cleared_date  TEXT    NOT NULL,
             statement_ref TEXT,
             status        TEXT    NOT NULL DEFAULT 'cleared' CHECK(status IN ('cleared', 'reconciled')),
-            created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            reconciled_date TEXT,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+            -- A reconciled clearing has a reconciled date; a cleared one has none.
+            CHECK ((status = 'reconciled') = (reconciled_date IS NOT NULL)),
+            CHECK (reconciled_date IS NULL OR reconciled_date >= cleared_date)
         );
 
         CREATE INDEX IF NOT EXISTS idx_entry_clearings_entry
@@ -431,8 +440,10 @@ fn apply_v10(conn: &Connection) -> Result<(), CliError> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_clearings_entry_statement
             ON entry_clearings(entry_id, statement_ref) WHERE statement_ref IS NOT NULL;
 
-        INSERT INTO entry_clearings (entry_id, company_slug, amount, cleared_date, status)
-        SELECT e.id, e.company_slug, e.amount, t.date, e.status
+        INSERT INTO entry_clearings
+            (entry_id, company_slug, amount, cleared_date, status, reconciled_date)
+        SELECT e.id, e.company_slug, e.amount, t.date, e.status,
+               CASE WHEN e.status = 'reconciled' THEN t.date END
         FROM entries e
         JOIN transactions t ON t.id = e.transaction_id
         WHERE e.status IN ('cleared', 'reconciled')
@@ -450,6 +461,18 @@ fn apply_v10(conn: &Connection) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `(entry_id, company_slug, amount, cleared_date, statement_ref, status,
+    /// reconciled_date)`.
+    type ClearingRow = (
+        i64,
+        String,
+        i64,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    );
 
     #[test]
     fn v10_migration_backfills_clearings_from_v8() {
@@ -488,11 +511,12 @@ mod tests {
 
         let mut stmt = conn
             .prepare(
-                "SELECT entry_id, company_slug, amount, cleared_date, statement_ref, status \
+                "SELECT entry_id, company_slug, amount, cleared_date, statement_ref, status, \
+                        reconciled_date \
                  FROM entry_clearings ORDER BY entry_id",
             )
             .unwrap_or_else(|e| panic!("prepare: {e}"));
-        let rows: Vec<(i64, String, i64, String, Option<String>, String)> = stmt
+        let rows: Vec<ClearingRow> = stmt
             .query_map([], |r| {
                 Ok((
                     r.get(0)?,
@@ -501,6 +525,7 @@ mod tests {
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
                 ))
             })
             .unwrap_or_else(|e| panic!("query: {e}"))
@@ -515,7 +540,8 @@ mod tests {
                     500,
                     "2026-03-15".into(),
                     None,
-                    "cleared".into()
+                    "cleared".into(),
+                    None
                 ),
                 (
                     2,
@@ -523,7 +549,8 @@ mod tests {
                     300,
                     "2026-03-15".into(),
                     None,
-                    "reconciled".into()
+                    "reconciled".into(),
+                    Some("2026-03-15".into())
                 ),
             ]
         );

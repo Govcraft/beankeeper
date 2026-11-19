@@ -8,9 +8,12 @@
 //! - `--from-file <PATH|-> --account <CODE>`: a batch of `reference[,amount]`
 //!   CSV lines, applied atomically (all or nothing).
 //!
-//! `--date`, `--statement` and `--status` apply to every entry. The clearing
-//! rules (partial amounts, over-clearing, idempotency on `(entry, statement)`)
-//! live in [`crate::db::clearings`]; every change is audited by
+//! `--date`, `--statement` and `--status` apply to every entry. `--date` is
+//! the cleared date of new clearings and, with `--status reconciled`, also
+//! the reconciled date of every clearing created or promoted; it may not be
+//! before the transaction date. The clearing rules (partial amounts,
+//! over-clearing, idempotency on `(entry, statement)`, locked reconciled
+//! clearings) live in [`crate::db::clearings`]; every change is audited by
 //! [`crate::db::audit`].
 
 use std::collections::HashSet;
@@ -69,7 +72,7 @@ pub fn run(
         conn: db_handle.conn(),
         actor: Actor::resolve(cli.actor.as_deref()),
         company,
-        cleared_date: &cleared_date,
+        date: &cleared_date,
         statement,
         status: *status,
     };
@@ -120,9 +123,18 @@ struct Ctx<'a> {
     conn: &'a rusqlite::Connection,
     actor: Actor,
     company: &'a str,
-    cleared_date: &'a str,
+    /// `--date`: the cleared date of new clearings and, with
+    /// `--status reconciled`, the reconciled date.
+    date: &'a str,
     statement: Option<&'a str>,
     status: ClearanceArg,
+}
+
+impl Ctx<'_> {
+    /// The reconciled date this invocation sets, if any.
+    fn reconciled_date(&self) -> Option<&str> {
+        (self.status == ClearanceArg::Reconciled).then_some(self.date)
+    }
 }
 
 fn resolve_date(date: Option<&str>) -> Result<String, CliError> {
@@ -170,7 +182,7 @@ fn apply(
                 transaction_id: target.transaction_id,
                 entry_id: target.entry_id,
                 amount,
-                cleared_date: ctx.cleared_date,
+                date: ctx.date,
                 statement: ctx.statement,
                 status,
             },
@@ -414,7 +426,7 @@ fn to_csv(ctx: &Ctx<'_>, items: &[Item]) -> Result<String, CliError> {
             i.cleared_amount.to_string(),
             i.remaining_amount.to_string(),
             i.entry_status.to_string(),
-            ctx.cleared_date.to_string(),
+            ctx.date.to_string(),
             ctx.statement.unwrap_or_default().to_string(),
             i.skip_reason.unwrap_or_default().to_string(),
         ])
@@ -451,6 +463,8 @@ fn render_single(
         /// The requested status (pre-#25 field).
         status: &'static str,
         cleared_date: &'a str,
+        /// `--date` when `--status reconciled`.
+        reconciled_date: Option<&'a str>,
         statement: Option<&'a str>,
     }
 
@@ -459,7 +473,8 @@ fn render_single(
             let data = Single {
                 item,
                 status: ctx.status.as_str(),
-                cleared_date: ctx.cleared_date,
+                cleared_date: ctx.date,
+                reconciled_date: ctx.reconciled_date(),
                 statement: ctx.statement,
             };
             println!("{}", to_json(data, meta)?);
@@ -486,6 +501,8 @@ fn render_batch(
         account: &'a str,
         status: &'static str,
         cleared_date: &'a str,
+        /// `--date` when `--status reconciled`.
+        reconciled_date: Option<&'a str>,
         statement: Option<&'a str>,
         count: usize,
         cleared_count: usize,
@@ -503,7 +520,8 @@ fn render_batch(
             let data = Batch {
                 account,
                 status: ctx.status.as_str(),
-                cleared_date: ctx.cleared_date,
+                cleared_date: ctx.date,
+                reconciled_date: ctx.reconciled_date(),
                 statement: ctx.statement,
                 count: items.len(),
                 cleared_count: cleared.len(),

@@ -408,9 +408,11 @@ printf 'POL-123,40\nPOL-124\n' | bk --json --company agency txn clear \
   --from-file - --account 1200 --date 2026-03-31 --statement ACME-2026-03
 ```
 
-Batches are atomic (all lines or none) and report what was cleared and what was skipped. Each entry is cleared at most once per statement, so re-running a statement batch is a no-op. Clearing more than the remaining amount is rejected. Every clearing is recorded in the audit trail.
+Batches are atomic (all lines or none) and report what was cleared and what was skipped. Each entry is cleared at most once per statement, so re-running a statement batch is a no-op. Clearing more than the remaining amount is rejected, and so is a `--date` before the transaction's date. Every clearing is recorded in the audit trail.
 
-An entry's status is derived from its clearings: `cleared` once fully cleared, `reconciled` once fully cleared by reconciled clearings, `uncleared` otherwise (including partially cleared items). Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
+Reconciling records a **reconciled date**: with `--status reconciled`, `--date` (default today) is the day the clearings were locked in. Promoting a statement's clearings keeps their cleared date and sets the reconciled date (it may not be before the cleared date); a clearing created directly as reconciled gets the same cleared and reconciled date. Reconciled clearings are locked: `--status cleared` on them is an error. To redo one, remove it with `--status uncleared` (plus `--statement`), then clear it again.
+
+An entry's status is derived from its clearings: `cleared` once fully cleared, `reconciled` once fully cleared by reconciled clearings, `uncleared` otherwise (including partially cleared items). Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field. `bk txn show` also lists each entry's id, cleared and remaining amounts, and individual clearings (amount, cleared date, reconciled date, statement, status).
 
 ### Period-over-Period Reports
 
@@ -444,7 +446,7 @@ bk --company agency report reconciliation --account 1200 \
   --filter-metadata carrier=Acme --group-by-metadata policy
 ```
 
-`--to` is point-in-time: only clearings dated on or before it count, so an item cleared later is still outstanding as of an earlier date. `--statement ID` limits the cleared balance to that statement's clearings. `--filter-metadata KEY=VALUE` (repeatable, AND-ed) and `--group-by-metadata KEY` match top-level keys of JSON transaction metadata (anything else has no keys; ungrouped items go under `(none)`). `--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the outstanding entries, then group subtotals, then `summary` rows (see `docs/beankeeper/references/commands.md`).
+`--to` is point-in-time: a clearing counts as cleared when its cleared date is on or before `--to`, and as reconciled only when it was also reconciled on or before `--to`. An item cleared later is still outstanding as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled. `--statement ID` limits the cleared balance to that statement's clearings. `--filter-metadata KEY=VALUE` (repeatable, AND-ed) and `--group-by-metadata KEY` match top-level keys of JSON transaction metadata (anything else has no keys; ungrouped items go under `(none)`). `--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the outstanding entries, then group subtotals, then `summary` rows (see `docs/beankeeper/references/commands.md`).
 
 ### Budgeting and Variance Analysis
 

@@ -58,7 +58,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk account create/list/show/delete` | Manage chart of accounts |
 | `bk txn post` | Record a balanced journal entry |
 | `bk txn list` | Search and filter transactions |
-| `bk txn show ID` | Display a single transaction with entries |
+| `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV/JSON bank statements |
 | `bk txn clear` | Clear entries (in full or in part) against a statement, by id, by reference, or in an atomic batch; mark reconciled |
 | `bk txn attach` | Link documents (receipts, invoices) to transactions |
@@ -217,9 +217,14 @@ bk --company acme report reconciliation --account 1200 --group-by-metadata carri
   --filter-metadata region=west
 ```
 
-`--to` is point-in-time: only clearings dated on or before it count. Over-clearing
-is a `VALIDATION` error. Outstanding items carry `reference`, `metadata`,
-`cleared_amount` and `remaining_amount`. See the statement-reconciliation recipe
+`--to` is point-in-time: clearings count as cleared when cleared on or before it,
+and as reconciled only when also reconciled on or before it (`--status reconciled
+--date D` records reconciled date `D`). Over-clearing, a `--date` before the
+transaction date, and a reconciled date before the cleared date are `VALIDATION`
+errors. Reconciled clearings are locked: `--status cleared` on them fails; undo
+with `--status uncleared`, then clear again. Outstanding items carry `reference`,
+`metadata`, `cleared_amount`, `reconciled_amount`, `remaining_amount` and
+`clearings`; `bk txn show` lists every entry's clearings. See the statement-reconciliation recipe
 in [`references/workflows.md`](references/workflows.md).
 
 `report cash-flow` treats asset accounts named like `cash`/`bank`/`checking`/`savings` as cash unless you pass `--cash-account CODE` (repeatable); see [`references/commands.md`](references/commands.md#bk-report-cash-flow).
