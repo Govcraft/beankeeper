@@ -1422,8 +1422,8 @@ EXAMPLES:\n  \
         filter_metadata: Vec<String>,
 
         /// Group outstanding items by this top-level metadata key, with
-        /// subtotals and a `(none)` group for items without it.
-        #[arg(long, value_name = "KEY")]
+        /// subtotals and an `(unassigned)` group for items without it.
+        #[arg(long, visible_alias = "group-by", value_name = "KEY")]
         group_by_metadata: Option<String>,
 
         /// Currency code. Defaults to the company's single transaction

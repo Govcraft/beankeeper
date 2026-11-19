@@ -598,7 +598,7 @@ bk --company acme report reconciliation --account 1200 \
 - `--statement-balance AMT`: Statement ending balance in major units (e.g. `1234.56`, may be negative), on the account's normal side
 - `--statement ID`: The cleared and reconciled balances count only this statement's clearings, so `--statement-balance` checks that statement alone. Outstanding items still reflect every statement's clearings
 - `--filter-metadata KEY=VALUE` (repeatable, AND-ed): Only entries whose transaction metadata has top-level `KEY` equal to `VALUE`, compared as strings (numbers and booleans by their JSON text). Applies to every balance and the item list. Metadata that is not a JSON object has no keys
-- `--group-by-metadata KEY`: Group outstanding items by top-level `KEY`, with per-group counts and subtotals; items without the key (or with null, blank or nested values) go to `(none)`, listed last
+- `--group-by-metadata KEY` (alias `--group-by`): Group outstanding items by top-level `KEY`, with per-group counts and subtotals; items without the key (or with null, blank or nested values) go to `(unassigned)`, listed last
 - `--currency CODE`: Only entries of transactions in this currency. If omitted, the company's single transaction currency is used (USD if it has no transactions); if the company has several currencies, the command fails with `VALIDATION` and `--currency` is required
 
 **Output:**

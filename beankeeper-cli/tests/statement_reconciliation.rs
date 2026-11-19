@@ -747,7 +747,7 @@ fn metadata_filter_and_group() {
         vec![
             ("Acme".to_string(), 2, 13_000),
             ("Beta".to_string(), 1, 20_000),
-            ("(none)".to_string(), 1, 8_000),
+            ("(unassigned)".to_string(), 1, 8_000),
         ]
     );
 
@@ -760,7 +760,7 @@ fn metadata_filter_and_group() {
         "carrier",
     ]);
     assert!(table.contains("carrier = Acme (2 items"), "{table}");
-    assert!(table.contains("carrier = (none) (1 items"), "{table}");
+    assert!(table.contains("carrier = (unassigned) (1 items"), "{table}");
 
     let csv = l.co(&[
         "--format",
@@ -773,7 +773,10 @@ fn metadata_filter_and_group() {
         "carrier",
     ]);
     assert!(csv.contains("group,,,,,Acme,,,13000,USD,Acme,"), "{csv}");
-    assert!(csv.contains("group,,,,,(none),,,8000,USD,(none),"), "{csv}");
+    assert!(
+        csv.contains("group,,,,,(unassigned),,,8000,USD,(unassigned),"),
+        "{csv}"
+    );
 
     // Ungrouped: groups is null.
     let r = l.report(&[]);

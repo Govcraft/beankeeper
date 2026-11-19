@@ -36,7 +36,7 @@ use crate::error::CliError;
 use crate::output;
 
 /// Group label for outstanding items whose metadata lacks the grouping key.
-pub const NO_GROUP: &str = "(none)";
+pub const NO_GROUP: &str = "(unassigned)";
 
 /// Arguments for the `report reconciliation` subcommand.
 #[derive(Default)]

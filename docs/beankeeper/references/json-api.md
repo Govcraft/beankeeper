@@ -515,7 +515,7 @@ lists the item's clearings as of `as_of`, oldest first: `id`, `amount` (raw),
 reconciled after `as_of` appears with `status: "cleared"` and
 `reconciled_date: null`.
 
-Each `groups` element has the group `value` (`"(none)"` for items without the
+Each `groups` element has the group `value` (`"(unassigned)"` for items without the
 key, listed last), `count`, `uncleared_total` (sum of `signed_remaining`), and
 the member `entry_ids`.
 
@@ -592,7 +592,7 @@ the member `entry_ids`.
     ],
     "groups": [
       { "value": "P1", "count": 1, "uncleared_total": 6000, "entry_ids": [1] },
-      { "value": "(none)", "count": 1, "uncleared_total": 5000, "entry_ids": [5] }
+      { "value": "(unassigned)", "count": 1, "uncleared_total": 5000, "entry_ids": [5] }
     ]
   }
 }
