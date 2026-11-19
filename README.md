@@ -44,6 +44,7 @@ Posted transactions cannot be edited or deleted. The entries, amounts, accounts,
 - **Tax category tagging** -- per-entry or account-level defaults, free-form strings mapping to any tax form lines you need
 - **Encryption at rest** -- SQLCipher baked in from the start, not bolted on
 - **Intercompany linking** -- mirror transactions across entities stay paired through bidirectional correlation IDs; `bk txn reconcile` catches orphans
+- **Receivables / payables aging** -- `bk report aging --account <code>` buckets open charges on an asset (AR) or liability (AP) account into Current / 1-30 / 31-60 / 61-90 / 90+ days, FIFO or matched to specific invoices, optionally per customer or vendor from JSON metadata, with an open-item `--detail` view
 - **Budgeting and variance analysis** -- set monthly or annual spending/revenue targets per account, then run `bk report budget-variance` to see where actuals land relative to the plan
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
@@ -102,6 +103,11 @@ bk --company personal report trial-balance --from 2026-01-01 --to 2026-03-31
 bk --company personal report balance --account 1000 --to 2026-03-31
 bk --company personal report balance-sheet --to 2026-03-31
 bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
+bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+# Multi-currency companies pick the report currency explicitly
+bk --company personal report trial-balance --currency MXN
+bk --company personal report reconciliation --account 1000 --statement-balance 4210.33
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-03-31
 
 # Set a budget and compare against actuals
 bk --company personal budget set 5000 --year 2026 --annual 14400
@@ -315,7 +321,20 @@ bk --company personal txn list --tax-category "sched-c:24b" --direction debit --
 bk --company personal txn list --currency MXN --json
 bk --company personal txn list --reference "chase-2026-03-15-001" --json
 bk --company personal txn list --metadata "vendor" --json
+
+# Exact match on structured metadata keys (repeatable, AND-ed)
+bk --company personal txn list --meta vendor=AWS --meta project=apollo --json
 ```
+
+Transaction metadata is always stored as a JSON object. Free text from `-m` becomes `{"memo": "..."}`, a JSON object passes through unchanged, and `--meta key=value` adds top-level string keys:
+
+```bash
+bk --company personal txn post -d "AWS bill" --debit 5000:120 --credit 1000:120 \
+  -m "Q1 cloud" --meta vendor=AWS --meta project=apollo
+# metadata: {"memo":"Q1 cloud","vendor":"AWS","project":"apollo"}
+```
+
+`--meta` filters compare JSON strings exactly and numbers/booleans by their JSON text (`--meta qty=3` matches `{"qty":3}`). Databases created before schema v9 have any free-text metadata rewritten to `{"memo": "..."}` automatically on first open; this one-off format migration is not recorded in the audit log.
 
 All filters can be combined. Amount filters use the `--currency` value (or `BEANKEEPER_CURRENCY` env, defaulting to USD) for major-to-minor unit conversion.
 
@@ -349,9 +368,29 @@ bk txn reconcile --json || echo "Orphaned correlations found"
 
 > **Note:** Global flags like `--company` are ignored by commands that always operate database-wide, such as `export`, `reconcile`, `verify`, and `init`.
 
+### General Ledger
+
+`bk report ledger` prints an account statement: for each account an opening balance as of the day before `--from`, every entry in date / transaction / entry order with a running balance, and a closing balance. Balances are shown on the account's normal side (debit-normal for assets and expenses, credit-normal for liabilities, equity and revenue).
+
+```sh
+# Every account with activity
+bk --company personal report ledger
+
+# Cash statement for Q1, starting from the balance at 2025-12-31
+bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+
+# Pick a currency when the company books in more than one
+bk --company personal report ledger --account 1000 --currency EUR
+
+# Flat CSV: one row per entry plus opening/closing rows per account
+bk --company personal --format csv report ledger > ledger.csv
+```
+
+Without `--currency`, the report uses the company's only transaction currency and fails with a validation error if there are several.
+
 ### Bank Reconciliation
 
-Mark individual entries as `cleared` or `reconciled` to support bank statement verification workflows:
+Clear entries against statements, in full or in part. Each clearing records an amount (default: whatever remains uncleared), a date (`--date`, default today) and an optional statement id (`--statement`), so an item can be paid across several statements:
 
 ```sh
 # Mark the bank-leg of a transaction as cleared
@@ -359,9 +398,55 @@ bk --company personal txn clear 42 --entry 5 --status cleared
 
 # Mark as reconciled (finalized)
 bk --company personal txn clear 42 --entry 5 --status reconciled
+
+# Clear part of an item, picking the entry by transaction reference + account
+bk --company agency txn clear --reference POL-123 --account 1200 \
+  --amount 40 --date 2026-03-31 --statement ACME-2026-03
+
+# Clear a whole statement from stdin or a file: one `reference[,amount]` per line
+printf 'POL-123,40\nPOL-124\n' | bk --json --company agency txn clear \
+  --from-file - --account 1200 --date 2026-03-31 --statement ACME-2026-03
 ```
 
-Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field.
+Batches are atomic (all lines or none) and report what was cleared and what was skipped. Each entry is cleared at most once per statement, so re-running a statement batch is a no-op. Clearing more than the remaining amount is rejected, and so is a `--date` before the transaction's date. Every clearing is recorded in the audit trail.
+
+Reconciling records a **reconciled date**: with `--status reconciled`, `--date` (default today) is the day the clearings were locked in. Promoting a statement's clearings keeps their cleared date and sets the reconciled date (it may not be before the cleared date); a clearing created directly as reconciled gets the same cleared and reconciled date. Reconciled clearings are locked: `--status cleared` on them is an error. To redo one, remove it with `--status uncleared` (plus `--statement`), then clear it again.
+
+An entry's status is derived from its clearings: `cleared` once fully cleared, `reconciled` once fully cleared by reconciled clearings, `uncleared` otherwise (including partially cleared items). Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field. `bk txn show` also lists each entry's id, cleared and remaining amounts, and individual clearings (amount, cleared date, reconciled date, statement, status).
+
+### Period-over-Period Reports
+
+The income statement and trial balance can be broken into columns or compared with an earlier range. Both options need `--from` and `--to`, and they cannot be combined:
+
+```sh
+# One column per month (or quarter / year) plus a Total column and a Net Income row per month
+bk --company personal report income-statement --from 2026-01-01 --to 2026-06-30 --period month
+bk --company personal report trial-balance --from 2026-01-01 --to 2026-12-31 --period quarter
+
+# Compare with the same range last year, or with the immediately preceding range
+bk --company personal report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-year
+bk --company personal report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-period
+```
+
+Each cell is the account's net activity on its normal side. Periods are labelled `2026-01`, `2026-Q1` or `2026`, and the first and last periods are clipped to `--from`/`--to`. Comparisons add `Change` and `Change %` columns (`n/a` when the prior amount is 0). Table, JSON (`report.income-statement.periods`, `report.income-statement.compare`, ...) and CSV output are supported.
+
+`bk report reconciliation` uses those clearings to reconcile an account against a statement. It reports the book balance (all entries), the cleared balance, and the reconciled balance on the account's normal side, lists the outstanding entries (including partially cleared ones, with their reference, metadata, cleared and remaining amounts) with their total (book - cleared = uncleared total), and, given `--statement-balance`, shows the difference (statement - cleared) and whether the account is reconciled:
+
+```sh
+bk --company personal report reconciliation --account 1000 --to 2026-03-31 --statement-balance 4210.33
+
+# Credit cards are credit-normal: a positive balance is the amount owed
+bk --company personal report reconciliation --account 2100 --statement-balance 512.80
+
+# Check one statement's clearings against its total
+bk --company agency report reconciliation --account 1200 --statement ACME-2026-03 --statement-balance 175
+
+# Outstanding receivables for one carrier, grouped by policy, with subtotals
+bk --company agency report reconciliation --account 1200 \
+  --filter-metadata carrier=Acme --group-by-metadata policy
+```
+
+`--to` is point-in-time: a clearing counts as cleared when its cleared date is on or before `--to`, and as reconciled only when it was also reconciled on or before `--to`. An item cleared later is still outstanding as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled. `--statement ID` limits the cleared balance to that statement's clearings. `--filter-metadata KEY=VALUE` (repeatable, AND-ed) and `--group-by-metadata KEY` match top-level keys of JSON transaction metadata (anything else has no keys; ungrouped items go under `(unassigned)`). `--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the outstanding entries, then group subtotals, then `summary` rows (see `docs/beankeeper/references/commands.md`).
 
 ### Budgeting and Variance Analysis
 
@@ -387,12 +472,64 @@ bk --company personal report budget-variance --year 2026 --from 1 --to 3 --type 
 bk --company personal report budget-variance --year 2026 --include-unbudgeted
 ```
 
+The report currency comes from `--currency` (or `BEANKEEPER_CURRENCY`); when neither is set it is inferred from the company's transactions, as for the other reports.
+
 Variance logic:
 - **Expense accounts**: variance = budget - actual (positive = favorable, underspent)
 - **Revenue accounts**: variance = actual - budget (positive = favorable, exceeded target)
 - Status labels: `FAV`, `UNFAV`, `ON BUDGET`
 
 Annual budgets are split exactly across 12 months -- any remainder cents are distributed to the earliest months so the total is precise.
+
+### Receivables and Payables Aging
+
+`bk report aging` ages the open balance of an asset (receivables) or liability (payables) account:
+
+```sh
+# Accounts receivable as of today (buckets: Current, 1-30, 31-60, 61-90, 90+)
+bk --company personal report aging --account 1100
+
+# Accounts payable as of quarter end, with custom buckets
+bk --company personal report aging --account 2000 --as-of 2026-03-31 --buckets 15,45
+
+# Per customer, using JSON transaction metadata like -m '{"customer":"Globex"}',
+# listing every open invoice under its customer
+bk --company personal report aging --account 1100 --group-by customer --detail
+
+# Apply payments to the invoice they name (specific identification)
+bk --company personal txn post -d "Invoice 102" -r INV-102 --debit 1100:300 --credit 4000:300
+bk --company personal txn post -d "Payment" --debit 1000:100 --credit 1100:100 \
+  -m '{"customer":"Globex","applies_to":"INV-102"}'
+bk --company personal report aging --account 1100 --method specific
+```
+
+The ledger has no invoice or due-date model, so the report works from transactions: entries on the account are netted per transaction, each net increase is a **charge** and each net decrease is a **settlement**, and ages are measured from **transaction dates**.
+
+- **Sign convention.** An asset account (receivables) ages debit-side charges and applies credit-side settlements; a liability account (payables) ages credit-side charges and applies debit-side settlements. The same command works for AR and AP.
+- **Matching (`--method`).** With `fifo` (default) every settlement goes to the oldest open charges. With `specific`, a settlement whose metadata links to a charge is applied to that charge first; any excess, and unlinked settlements, fall back to FIFO. The link is the metadata key `applies_to` (change it with `--link-key`), holding the charge's reference (`txn post -r`; references are unique per company, so the payment carries the link rather than sharing the reference) or its transaction id, or an array of these. A link to a missing transaction, to one that is not a charge on this account, to a charge dated later or after `--as-of`, or to another counterparty's charge is reported as a warning and under `unmatched_links` in JSON, and the settlement is applied FIFO.
+- **Credits and reversals.** Credit notes, write-offs and invoice reversals are settlements like payments; with `--method specific`, link one to its invoice to cancel that invoice. Refunds paid out and payment chargebacks are charges (aged from their own date) that first consume any unapplied credit. Payables mirror this: vendor credits are settlements, vendor refunds are charges.
+- **Net credit.** Settlements beyond the open charges are an *unapplied credit*. A counterparty (or account) in net credit shows a negative `Net` marked `CR` in the table, a negative `net` in CSV, and `"net_credit": true` in JSON.
+- **As-of.** Only transactions dated on or before `--as-of` count, so rerunning for a past period end gives the same answer after later-dated payments are posted.
+- **Counterparties.** `--group-by-metadata KEY` (alias `--group-by`) groups by a key of JSON object metadata; missing keys and non-JSON or non-object metadata go to `(unassigned)`. Matching runs per counterparty.
+
+The totals always reconcile: total open - unapplied credit = account balance as of the date. If the company uses more than one currency, pass `--currency`.
+
+### Cash Flow Statement
+
+`bk report cash-flow` produces a direct-method cash flow statement: the net cash movement of each transaction is attributed to its non-cash counter-accounts and grouped into Operating (revenue/expense), Investing (non-cash assets) and Financing (liabilities/equity), followed by the net change, opening cash and closing cash, with a check that opening + net change = closing.
+
+```sh
+# Default cash accounts
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-12-31
+
+# Choose the cash accounts explicitly (repeatable)
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-03-31 --cash-account 1000
+
+# Multi-currency ledgers must pick one currency
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-12-31 --currency EUR
+```
+
+Without `--cash-account`, every **asset** account whose name contains `cash`, `bank`, `checking` or `savings` (case-insensitive) is treated as cash -- this matches the bundled templates (`Operating Cash`, `Checking Account`, `Savings Account`). A code range is deliberately not used: `1100` is `Savings Account` in the personal template but `Accounts Receivable` in the business ones. If no account qualifies, the command exits with a validation error (exit code 3) asking for `--cash-account`. Transfers between two cash accounts net to zero and are excluded.
 
 ### JSON Envelope
 
@@ -434,7 +571,7 @@ The `meta` block is guaranteed to be present for both success and error response
 |----------|---------|
 | `BEANKEEPER_DB` | Database file path (default: `./beankeeper.db`) |
 | `BEANKEEPER_COMPANY` | Default company slug (avoids `--company` on every command) |
-| `BEANKEEPER_CURRENCY` | Default currency code for amount filters (default: `USD`) |
+| `BEANKEEPER_CURRENCY` | Default currency code for amount filters (default: `USD`) and for `report budget-variance` (inferred from transactions when unset) |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase |
 | `NO_COLOR` | Disable colored output |
 
@@ -547,6 +684,8 @@ Ten ISO 4217 currencies with correct minor-unit precision:
 | Kuwaiti Dinar | `KWD` | 3 |
 
 Currency mismatches within a transaction are rejected at the type level.
+
+Reports (`trial-balance`, `balance`, `income-statement`, `balance-sheet`, `tax-summary`, `budget-variance`) are always computed in a single currency and never add amounts across currencies. Pass `--currency CODE` to choose it; otherwise it is inferred from the company's transactions (USD when there are none). If a company has transactions in more than one currency, a report without `--currency` fails with a validation error listing the currencies found.
 
 ### Error Handling
 

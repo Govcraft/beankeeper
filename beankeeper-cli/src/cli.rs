@@ -726,7 +726,11 @@ EXAMPLES:\n  \
     \n  \
     Post only if reference doesn't exist, otherwise skip silently:\n    \
     $ bk --company acme txn post -d \"Monthly rent\" \\\n      \
-    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\" --on-conflict skip\
+    --debit 5000:2500 --credit 1000:2500 -r \"RENT-2025-03\" --on-conflict skip\n\
+    \n  \
+    Structured metadata (stored as {\"memo\":\"Q1 cloud\",\"vendor\":\"AWS\",\"project\":\"apollo\"}):\n    \
+    $ bk --company acme txn post -d \"AWS bill\" --debit 5000:120 --credit 1000:120 \\\n      \
+    -m \"Q1 cloud\" --meta vendor=AWS --meta project=apollo\
 ")]
     Post {
         /// Transaction description.
@@ -741,9 +745,16 @@ EXAMPLES:\n  \
         #[arg(long, required = true, num_args = 1)]
         credit: Vec<String>,
 
-        /// Reference number or memo.
+        /// Free-text memo or a JSON object. Text (and non-object JSON) is
+        /// stored as `{"memo": ...}`; a JSON object is stored unchanged.
         #[arg(short = 'm', long)]
         metadata: Option<String>,
+
+        /// Set a top-level metadata key as `key=value` (repeatable). Values are
+        /// stored as JSON strings and merged with `-m`. Duplicate keys are an
+        /// error; `correlate` is reserved (use --correlate).
+        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        meta: Vec<String>,
 
         /// Currency code.
         #[arg(long, default_value = "USD")]
@@ -787,6 +798,9 @@ EXAMPLES:\n  \
     \n  \
     Find large transactions:\n    \
     $ bk --company acme txn list --amount-gt 10000\n\
+    \n  \
+    Exact match on a metadata key (repeatable, AND-ed):\n    \
+    $ bk --company acme txn list --meta vendor=AWS --meta project=apollo\n\
     \n  \
     Count matching transactions without listing them:\n    \
     $ bk --company acme txn list --from 2025-01-01 --count\n\
@@ -843,6 +857,12 @@ EXAMPLES:\n  \
         /// Search in metadata field (substring, case-insensitive).
         #[arg(long)]
         metadata: Option<String>,
+
+        /// Exact match on a top-level metadata key, as `key=value` (repeatable,
+        /// AND-ed). Matches JSON strings exactly, and numbers/booleans by their
+        /// JSON text (`qty=3` matches `{"qty":3}`).
+        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        meta: Vec<String>,
 
         /// Filter by tax category on entries.
         #[arg(long)]
@@ -949,22 +969,83 @@ EXAMPLES:\n  \
 ")]
     Reconcile,
 
-    /// Update the clearance status of an entry for bank reconciliation.
+    /// Clear (part of) an entry against a statement, for reconciliation.
+    ///
+    /// Pick the entry by `<TRANSACTION_ID> --entry <ID>`, by
+    /// `--reference <REF> --account <CODE>`, or clear many at once with
+    /// `--from-file <PATH|-> --account <CODE>`. Each clearing records an
+    /// amount (default: the full remaining amount), a date and an optional
+    /// statement id. Re-clearing the same entry for the same statement is a
+    /// no-op, so a statement batch can be re-run safely.
     #[command(after_help = "\
+TARGETING:\n  \
+    <TRANSACTION_ID> --entry <ID>          one entry by id\n  \
+    --reference <REF> --account <CODE>     the entry on <CODE> of the transaction with <REF>\n  \
+    --from-file <PATH|-> --account <CODE>  a batch: one `reference[,amount]` per line (CSV);\n                                         \
+blank lines and lines starting with # are ignored. All or nothing.\n\
+\n\
+STATUS:\n  \
+    cleared (default) adds a clearing. reconciled adds a reconciled clearing; with no\n  \
+    --amount/--statement it also promotes the entry's existing clearings, and for an\n  \
+    entry already cleared by --statement it promotes that statement's clearing.\n  \
+    Reconciled clearings are locked: --status cleared on them is an error; use\n  \
+    --status uncleared, then clear again. uncleared removes the entry's clearings\n  \
+    (only --statement's, when given).\n\
+\n\
+DATES:\n  \
+    --date (default today) is the cleared date of new clearings and, with\n  \
+    --status reconciled, the reconciled date of every clearing created or promoted\n  \
+    (a new reconciled clearing gets both). It may not be before the transaction\n  \
+    date, and a clearing cannot be reconciled before its cleared date.\n\
+\n\
 EXAMPLES:\n  \
-    Mark an entry as cleared:\n    \
+    Mark an entry as cleared in full (today):\n    \
     $ bk --company acme txn clear 42 --entry 5\n\
+    \n  \
+    Clear part of an item on a statement:\n    \
+    $ bk --company acme txn clear --reference POL-123 --account 1200 --amount 40 \\\n        \
+    --date 2026-03-31 --statement STMT-2026-03\n\
+    \n  \
+    Clear a whole statement from stdin (reference,amount per line):\n    \
+    $ printf 'POL-123,40\\nPOL-124\\n' | bk --json --company acme txn clear --from-file - \\\n        \
+    --account 1200 --date 2026-03-31 --statement STMT-2026-03\n\
     \n  \
     Mark an entry as reconciled:\n    \
     $ bk --company acme txn clear 42 --entry 5 --status reconciled\
 ")]
     Clear {
-        /// Transaction ID.
-        transaction_id: i64,
+        /// Transaction ID (with --entry).
+        #[arg(conflicts_with_all = ["reference", "from_file"])]
+        transaction_id: Option<i64>,
 
-        /// Entry ID to update.
+        /// Entry ID to clear (with a transaction ID).
+        #[arg(long, requires = "transaction_id")]
+        entry: Option<i64>,
+
+        /// Transaction reference; the entry is picked by --account.
+        #[arg(long, requires = "account", conflicts_with = "from_file")]
+        reference: Option<String>,
+
+        /// Account code selecting the entry (with --reference or --from-file).
         #[arg(long)]
-        entry: i64,
+        account: Option<String>,
+
+        /// Batch file of `reference[,amount]` lines; `-` reads stdin.
+        #[arg(long, requires = "account", conflicts_with = "amount")]
+        from_file: Option<String>,
+
+        /// Amount to clear in major units (default: the full remaining amount).
+        #[arg(long)]
+        amount: Option<String>,
+
+        /// Cleared date, or reconciled date with --status reconciled
+        /// (YYYY-MM-DD). Defaults to today; not before the transaction date.
+        #[arg(long)]
+        date: Option<String>,
+
+        /// Statement id stored on the clearing (idempotency key with the entry).
+        #[arg(long)]
+        statement: Option<String>,
 
         /// Status to apply.
         #[arg(long, value_enum, default_value_t = ClearanceArg::Cleared)]
@@ -995,7 +1076,10 @@ EXAMPLES:\n  \
     $ bk --company acme report trial-balance --from 2025-01-01 --to 2025-03-31\n\
     \n  \
     Trial balance filtered to expense accounts only:\n    \
-    $ bk --company acme report trial-balance --type expense\
+    $ bk --company acme report trial-balance --type expense\n\
+    \n  \
+    Trial balance for MXN transactions only (multi-currency company):\n    \
+    $ bk --company acme report trial-balance --currency MXN\
 ")]
     TrialBalance {
         /// Start date (inclusive).
@@ -1009,6 +1093,19 @@ EXAMPLES:\n  \
         /// Filter by account type.
         #[arg(long = "type", value_enum)]
         account_type: Option<AccountTypeArg>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
+        /// One column per period (requires --from and --to), plus a Total column.
+        #[arg(long, value_enum, conflicts_with = "compare")]
+        period: Option<crate::commands::report_periods::PeriodArg>,
+
+        /// Add a column for an earlier range, with change and percent (requires --from and --to).
+        #[arg(long, value_enum)]
+        compare: Option<crate::commands::report_periods::CompareArg>,
     },
 
     /// Show balance for a single account.
@@ -1035,6 +1132,12 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// Generate an income statement.
@@ -1054,6 +1157,19 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
+        /// One column per period (requires --from and --to), plus a Total column.
+        #[arg(long, value_enum, conflicts_with = "compare")]
+        period: Option<crate::commands::report_periods::PeriodArg>,
+
+        /// Add a column for an earlier range, with change and percent (requires --from and --to).
+        #[arg(long, value_enum)]
+        compare: Option<crate::commands::report_periods::CompareArg>,
     },
 
     /// Generate a balance sheet.
@@ -1069,6 +1185,12 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// Summarise entries grouped by tax category.
@@ -1087,6 +1209,42 @@ EXAMPLES:\n  \
         /// End date (inclusive).
         #[arg(long)]
         to: Option<String>,
+
+        /// Report currency (e.g. USD, MXN). Only transactions in this currency
+        /// are included. Required when the company has transactions in more
+        /// than one currency; otherwise inferred.
+        #[arg(long)]
+        currency: Option<String>,
+    },
+
+    /// General ledger / account statement with running balances.
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Full ledger for every account with activity:\n    \
+    $ bk --company acme report ledger\n\
+    \n  \
+    Statement for the cash account in Q1 (opening balance as of 2024-12-31):\n    \
+    $ bk --company acme report ledger --account 1000 --from 2025-01-01 --to 2025-03-31\n\
+    \n  \
+    Several accounts, one currency:\n    \
+    $ bk --company acme report ledger --account 1000 --account 2000 --currency EUR\
+")]
+    Ledger {
+        /// Account code to include (repeatable). Defaults to all accounts with activity.
+        #[arg(long, num_args = 1)]
+        account: Vec<String>,
+
+        /// Start date (inclusive). The opening balance is as of the day before.
+        #[arg(long)]
+        from: Option<String>,
+
+        /// End date (inclusive).
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Currency code. Defaults to the company's only transaction currency.
+        #[arg(long)]
+        currency: Option<String>,
     },
 
     /// Compare budgeted amounts to actual spending/revenue.
@@ -1125,14 +1283,173 @@ EXAMPLES:\n  \
         #[arg(long = "type", value_enum)]
         account_type: Option<AccountTypeArg>,
 
-        /// Currency code.
-        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-        currency: String,
+        /// Currency code. When omitted, inferred from the company's
+        /// transactions (required if they use more than one currency).
+        #[arg(long, env = "BEANKEEPER_CURRENCY")]
+        currency: Option<String>,
 
         /// Include accounts with actuals but no budget.
         #[arg(long)]
         include_unbudgeted: bool,
     },
+
+    /// Receivables / payables aging for one asset or liability account.
+    ///
+    /// The ledger has no invoice or due-date model: each transaction that
+    /// increases the account (net) is a charge, each one that decreases it is
+    /// a settlement, and ages are measured from transaction dates. Asset
+    /// accounts (receivables) age debit-side charges and apply credit-side
+    /// settlements; liability accounts (payables) age credit-side charges and
+    /// apply debit-side settlements, so the same command works for AR and AP.
+    #[command(after_help = "\
+MATCHING (--method):\n  \
+    fifo      every settlement (payment, credit note, reversal) is applied to\n            \
+    the oldest open charges first (default).\n  \
+    specific  a settlement whose metadata links to a charge is applied to that\n            \
+    charge first; any excess, and unlinked settlements, fall back to FIFO.\n\
+\n  \
+    The link lives in the settlement's JSON metadata under --link-key\n  \
+    (default `applies_to`): the charge's reference (string, as given to\n  \
+    `txn post -r`) or its transaction id (number; a string like \"42\" or\n  \
+    \"#42\" is tried as an id when no reference matches), or an array of\n  \
+    these (applied in order). A link to a missing transaction, to one that is\n  \
+    not a charge on this account, to a later charge, or to another\n  \
+    counterparty's charge is ignored with a warning, the settlement is\n  \
+    applied FIFO, and it is listed under `unmatched_links` in JSON.\n\
+\n\
+CREDITS AND REVERSALS:\n  \
+    Any net decrease (payment, credit note, write-off, invoice reversal) is a\n  \
+    settlement; link it with --method specific to cancel a particular charge.\n  \
+    Any net increase (invoice, refund paid out, payment chargeback) is a charge\n  \
+    that first consumes unapplied credit. Settlements beyond the open charges\n  \
+    are unapplied credit: the Net column is then negative and marked CR.\n\
+\n\
+AS-OF:\n  \
+    Only transactions dated on or before --as-of count, so rerunning for a past\n  \
+    period end gives the same answer after later-dated payments are posted.\n\
+\n\
+EXAMPLES:\n  \
+    Receivables aging as of today:\n    \
+    $ bk --company acme report aging --account 1100\n\
+    \n  \
+    Payables aging as of a past date:\n    \
+    $ bk --company acme report aging --account 2000 --as-of 2026-03-31\n\
+    \n  \
+    Per customer, with each open invoice listed:\n    \
+    $ bk --company acme report aging --account 1100 --group-by customer --detail\n\
+    \n  \
+    Payments linked to invoices via -m '{\"applies_to\":\"INV-101\"}':\n    \
+    $ bk --company acme report aging --account 1100 --method specific\n\
+    \n  \
+    Custom buckets, grouped by the `customer` metadata key:\n    \
+    $ bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer\
+")]
+    Aging {
+        /// Asset (receivable) or liability (payable) account code.
+        #[arg(long)]
+        account: String,
+
+        /// As-of date (YYYY-MM-DD, inclusive). Defaults to today. Charges and
+        /// settlements dated after it are ignored.
+        #[arg(long)]
+        as_of: Option<String>,
+
+        /// Ascending, comma-separated bucket upper bounds in days.
+        #[arg(long, default_value = "30,60,90")]
+        buckets: String,
+
+        /// Group by this key of the (JSON) transaction metadata. Missing keys
+        /// and non-JSON or non-object metadata go to `(unassigned)`.
+        #[arg(long, visible_alias = "group-by", value_name = "KEY")]
+        group_by_metadata: Option<String>,
+
+        /// Currency code. Defaults to the company's single transaction currency.
+        #[arg(long)]
+        currency: Option<String>,
+
+        /// How settlements are matched to charges.
+        #[arg(long, value_enum, default_value_t = AgingMethodArg::Fifo)]
+        method: AgingMethodArg,
+
+        /// Metadata key holding a settlement's link to a charge (reference or
+        /// transaction id); default `applies_to`. Only used with `--method specific`.
+        #[arg(long, value_name = "KEY")]
+        link_key: Option<String>,
+
+        /// List the individual open charges under each counterparty (table
+        /// and CSV; JSON always includes them).
+        #[arg(long)]
+        detail: bool,
+    },
+
+    /// Reconcile an account against a bank/card statement using entry
+    /// clearance status (book vs. cleared vs. reconciled balances).
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Book, cleared, and reconciled balances for the checking account:\n    \
+    $ bk --company acme report reconciliation --account 1000\n\
+    \n  \
+    Compare against a statement ending 2026-03-31:\n    \
+    $ bk --company acme report reconciliation --account 1000 --to 2026-03-31 --statement-balance 1234.56\n\
+    \n  \
+    Credit card (credit-normal) in a specific currency:\n    \
+    $ bk --company acme report reconciliation --account 2100 --currency USD\
+")]
+    Reconciliation {
+        /// Account code to reconcile.
+        #[arg(long)]
+        account: String,
+
+        /// As-of date (inclusive, YYYY-MM-DD). Defaults to all dates. Counts
+        /// clearings cleared on or before it, and as reconciled only those
+        /// reconciled on or before it.
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Statement ending balance in major units (e.g. 1234.56), on the
+        /// account's normal side.
+        #[arg(long, allow_hyphen_values = true)]
+        statement_balance: Option<String>,
+
+        /// Only count clearings made for this statement id in the cleared and
+        /// reconciled balances (outstanding items still reflect all clearings).
+        #[arg(long)]
+        statement: Option<String>,
+
+        /// Only include entries whose transaction metadata has KEY equal to
+        /// VALUE (top-level key, compared as strings). Repeatable; AND-ed.
+        #[arg(long = "filter-metadata", value_name = "KEY=VALUE")]
+        filter_metadata: Vec<String>,
+
+        /// Group outstanding items by this top-level metadata key, with
+        /// subtotals and an `(unassigned)` group for items without it.
+        #[arg(long, visible_alias = "group-by", value_name = "KEY")]
+        group_by_metadata: Option<String>,
+
+        /// Currency code. Defaults to the company's single transaction
+        /// currency (USD when there are no transactions).
+        #[arg(long)]
+        currency: Option<String>,
+    },
+
+    /// Generate a cash flow statement (direct method).
+    #[command(after_help = "\
+CASH ACCOUNTS:\n  \
+    Without --cash-account, every asset account whose name contains \"cash\",\n  \
+    \"bank\", \"checking\" or \"savings\" (case-insensitive) is treated as cash.\n\
+\n\
+EXAMPLES:\n  \
+    Cash flow for the year:\n    \
+    $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-12-31\n\
+    \n  \
+    Restrict cash to specific accounts:\n    \
+    $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-03-31 \\\n        \
+    --cash-account 1000 --cash-account 1010\n\
+    \n  \
+    A single currency in a multi-currency ledger:\n    \
+    $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-12-31 --currency EUR\
+")]
+    CashFlow(crate::commands::report_cash_flow::CashFlowArgs),
 }
 
 /// Output format for general commands.
@@ -1204,6 +1521,16 @@ impl ClearanceArg {
         }
     }
 
+    /// Converts to a clearing status; `None` for `uncleared`.
+    #[must_use]
+    pub fn to_clearing_status(self) -> Option<crate::db::ClearingStatus> {
+        match self {
+            Self::Uncleared => None,
+            Self::Cleared => Some(crate::db::ClearingStatus::Cleared),
+            Self::Reconciled => Some(crate::db::ClearingStatus::Reconciled),
+        }
+    }
+
     /// Converts to the typed [`EntryStatus`](crate::db::EntryStatus) used by
     /// the audited mutation API.
     #[must_use]
@@ -1238,6 +1565,16 @@ impl AccountTypeArg {
             Self::Expense => beankeeper::types::AccountType::Expense,
         }
     }
+}
+
+/// Settlement matching method for `report aging`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgingMethodArg {
+    /// Apply every settlement to the oldest open charges.
+    #[default]
+    Fifo,
+    /// Apply linked settlements to their charge first, then FIFO.
+    Specific,
 }
 
 /// Conflict resolution strategy for duplicate references.

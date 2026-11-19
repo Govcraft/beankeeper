@@ -111,7 +111,8 @@ bk --company acme txn post -d "Office rent" \
 - `-r, --reference KEY`: Idempotency reference
 - `--on-conflict {error|skip}`: Duplicate handling (default: error)
 - `--correlate TXN_ID`: Link to intercompany transaction
-- `-m, --metadata TEXT`: Arbitrary metadata
+- `-m, --metadata TEXT`: Free-text memo or a JSON object (normalized to a JSON object, see below)
+- `--meta KEY=VALUE` (repeatable): Set a top-level metadata string key; merges with `-m`; duplicate keys are an error
 - `--tax ACCOUNT=CATEGORY` (repeatable): Tax category for entries
 
 **Amount format:** `account_code:amount` where amount is in major units (dollars).
@@ -135,7 +136,36 @@ bk --company acme txn post -d "MXN payment" \
 # Intercompany link
 bk --company acme-products txn post -d "Payment to Consulting" \
   --debit 5400:5000 --credit 2500:5000 --correlate 15
+
+# Structured metadata -> {"memo":"Q1 cloud","vendor":"AWS","project":"apollo"}
+bk --company acme txn post -d "AWS bill" \
+  --debit 5000:120 --credit 1000:120 \
+  -m "Q1 cloud" --meta vendor=AWS --meta project=apollo
 ```
+
+### Transaction metadata
+
+`metadata` is always `null` or a **JSON object** (stored and returned as a JSON
+string). Whatever you pass to `-m/--metadata` is normalized on write:
+
+| `-m` input | Stored metadata |
+|---|---|
+| free text, e.g. `open:1000` | `{"memo":"open:1000"}` |
+| a JSON object, e.g. `{"ref":"INV-1"}` | unchanged |
+| a JSON string, e.g. `"abc"` | `{"memo":"abc"}` |
+| a JSON array, e.g. `[1,2]` | `{"memo":[1,2]}` |
+| a bare number / `true` / `false` / `null`, e.g. `00123` | `{"memo":"00123"}` (kept as the text you typed, so reference numbers keep leading zeros and precision) |
+| empty or whitespace | no metadata (`null`) |
+
+`--meta key=value` (repeatable) sets top-level **string** keys and merges with
+`-m`: free text goes under `memo`, a JSON object gets the extra keys. A key
+given twice (or already present in the `-m` object, or `memo` alongside free
+text) is a `VALIDATION` error. `correlate` is reserved for `--correlate`.
+
+`--correlate ID` adds `"correlate": ID` to the new transaction's metadata and
+to the partner's (via the audited `correlate` action). A transaction counts as
+correlated only if its metadata is a JSON object with a non-null `correlate`
+key; plain text that mentions "correlate" never does.
 
 ### `bk txn list`
 
@@ -150,6 +180,7 @@ bk --company acme txn list --amount-gt 10000
 bk --company acme txn list --amount-eq 2500
 bk --company acme txn list --currency MXN
 bk --company acme txn list --tax-category payroll
+bk --company acme txn list --meta vendor=AWS --meta project=apollo
 bk --company acme txn list --count   # Count only, no rows
 ```
 
@@ -160,7 +191,8 @@ bk --company acme txn list --count   # Count only, no rows
 - `--amount-gt`, `--amount-lt`, `--amount-eq`: Amount filters (major units)
 - `--currency CODE`: Filter by currency
 - `--reference KEY`: Filter by idempotency key
-- `--metadata TEXT`: Search metadata field
+- `--metadata TEXT`: Substring search over the raw metadata JSON text
+- `--meta KEY=VALUE` (repeatable, AND-ed): Exact match on a top-level metadata key. JSON strings match exactly (case-sensitive); numbers and booleans match by their JSON text as stored (`qty=3` matches `{"qty":3}` but not `{"qty":3.0}`; `paid=true` matches `{"paid":true}`); `null`, arrays and objects never match. Free text from `-m` is matched with `--meta memo=TEXT`.
 - `--tax-category CAT`: Filter by tax category
 - `--direction {debit|credit}`: Filter entry direction
 - `--limit N` (default: 50), `--offset N` (default: 0): Pagination
@@ -168,7 +200,11 @@ bk --company acme txn list --count   # Count only, no rows
 
 ### `bk txn show ID`
 
-Display a single transaction with all its entries.
+Display a single transaction with all its entries. Under each entry, the table
+shows the entry id, its cleared and remaining amounts, and one line per
+clearing (id, amount, status, cleared date, reconciled date, statement). JSON
+adds `id`, `cleared_amount`, `remaining_amount` and `clearings` to each entry
+(see `json-api.md`). CSV output is the transaction row only (no entries).
 
 ### `bk txn import`
 
@@ -193,16 +229,64 @@ cat data.ofx | bk --company acme txn import \
 - `--dry-run`: Validate without persisting
 - `--on-conflict {error|skip}` (default: skip)
 
-### `bk txn clear TXN_ID --entry ENTRY_ID`
+### `bk txn clear`
 
-Update clearance status of an entry for bank reconciliation. The transition is
-recorded in the audit trail (who/when, old status → new status), so "when was
-this account last reconciled?" is answerable via `bk audit log`.
+Clear all or part of an entry against a statement, for reconciliation. Each
+call records a **clearing**: an amount, a cleared date, an optional
+statement id and, once reconciled, a reconciled date. An entry can be cleared in several parts, on different dates,
+by different statements. Every change is recorded in the audit trail
+(`status_change` on the entry), so "when was this item cleared, and by which
+statement?" is answerable via `bk audit log`.
 
 ```bash
-bk --company acme txn clear 42 --entry 5                     # Mark as cleared
+bk --company acme txn clear 42 --entry 5                     # Clear in full, today
 bk --company acme txn clear 42 --entry 5 --status reconciled # Mark as reconciled
+
+# Partial clearing by transaction reference; the account picks the entry
+bk --company acme txn clear --reference POL-123 --account 1200 \
+  --amount 40 --date 2026-03-31 --statement STMT-2026-03
+
+# A whole statement as a batch (stdin or a file), all or nothing
+printf 'POL-123,40\nPOL-124\n' | bk --json --company acme txn clear \
+  --from-file - --account 1200 --date 2026-03-31 --statement STMT-2026-03
 ```
+
+**Picking entries** (exactly one of):
+- `TXN_ID --entry ENTRY_ID`: one entry by id
+- `--reference REF --account CODE`: the entry on `CODE` of the transaction whose reference is `REF` (references are unique per company). Errors: no such reference or no entry on that account → `NOT_FOUND`; several entries on that account → `VALIDATION` (use `TXN_ID --entry`)
+- `--from-file PATH|- --account CODE`: a batch. One `reference[,amount]` CSV record per line (quote references that contain commas); blank lines and `#` comments are ignored, as is a leading `reference,amount` header. A reference may appear only once per batch. Every line is resolved and validated first, then all are applied in one transaction: if any line fails, nothing changes and the error names the line
+
+**Flags:**
+- `--amount AMT`: Amount to clear in major units (default: the full remaining amount). Not with `--from-file` (put amounts in the file)
+- `--date YYYY-MM-DD`: Cleared date (default: today); with `--status reconciled`, the reconciled date of every clearing created or promoted. May not be before the transaction date (`VALIDATION`). `report reconciliation --to` counts clearings cleared on or before `--to`, and as reconciled only those also reconciled on or before it
+- `--statement ID`: Statement id stored on the clearing
+- `--status {cleared|reconciled|uncleared}` (default: `cleared`)
+
+**Rules:**
+- *Over-clearing* is a `VALIDATION` error: an explicit amount may not exceed the remaining (uncleared) amount; amounts must be positive.
+- *Idempotency:* the key is **(entry, statement)**. An entry has at most one clearing per statement, so re-running the same statement (single or batch) skips entries it already cleared (`action: "skipped"`, `skip_reason: "already_cleared_by_statement"`). Re-running with a *different* explicit amount for the same entry and statement is a `VALIDATION` error. Without `--statement` there is no key: each call adds a clearing, except that clearing the full remaining amount of a fully cleared entry is a skip (`fully_cleared`).
+- *Dates:* `--date` may not be before the transaction's date. In a batch the error names the line and nothing is applied.
+- `--status reconciled` records a reconciled clearing. With no `--amount`/`--statement` it reconciles the entry in full (promotes its existing clearings and clears any remainder). For an entry the statement already cleared, it promotes that clearing, so re-running a statement batch with `--status reconciled` locks it in. Every clearing it creates or promotes gets `reconciled_date = --date`; a new reconciled clearing also has `cleared_date = --date`. Promoting a clearing whose cleared date is after `--date` is a `VALIDATION` error.
+- *Reconciled clearings are locked.* `--status cleared` never downgrades them: for an entry whose clearing for `--statement` is reconciled, or (without `--statement`) a fully reconciled entry, it is a `VALIDATION` error (in a batch: the batch fails, naming the line). To redo it, remove the clearing with `--status uncleared` (with the same `--statement`), then clear it again. Re-running a statement whose clearings are still only `cleared` is unchanged: a skip.
+- `--status uncleared` removes the entry's clearings (only that statement's with `--statement`); `--amount` is not allowed.
+
+**Entry status** (`entries.status`, shown by `txn show`) is derived from the clearings:
+`reconciled` when they cover the full amount and all are reconciled; `cleared`
+when they cover the full amount; `uncleared` otherwise, including partially
+cleared entries (the reconciliation report shows their cleared and remaining
+amounts).
+
+**Output:** with `--json`, a single entry returns `transaction_id`, `entry_id`,
+`reference`, `status` (requested), `action` (`cleared`, `reconciled`,
+`uncleared`, `skipped`), `clearing_id`, `amount` (cleared or removed by this
+call), `entry_amount`, `cleared_amount`, `remaining_amount`, `previous_status`,
+`entry_status`, `skip_reason`, `cleared_date`, `reconciled_date` (`--date`
+with `--status reconciled`, else null), `statement`. A batch returns
+`account`, `status`, `cleared_date`, `reconciled_date`, `statement`, `count`, `cleared_count`,
+`skipped_count`, `cleared_total`, and `cleared`/`skipped` arrays of those items
+(each with its input `line`). Amounts are minor units. With `--format csv`,
+one row per entry: `line,reference,transaction_id,entry_id,action,amount,cleared_amount,remaining_amount,entry_status,cleared_date,statement,skip_reason`.
+The table format prints one `[ok]`/`[skip]` line per entry.
 
 ### `bk txn attach TXN_ID FILE --type TYPE`
 
@@ -268,6 +352,16 @@ bk --company acme budget delete 5000 --year 2026 --force   # Skip confirmation
 
 All report commands require `--company`.
 
+**Report currency.** Every report is computed in a single currency; amounts in
+different currencies are never added together. All report subcommands accept
+`--currency CODE`, which limits the report to transactions in that currency.
+When it is omitted the currency is inferred from the company's transactions:
+
+- one currency in use: that currency is used;
+- no transactions yet: USD;
+- several currencies in use: the command fails with a `VALIDATION` error
+  (exit code 3) that lists the currencies found; rerun with `--currency`.
+
 ### `bk report trial-balance`
 
 ```bash
@@ -275,6 +369,7 @@ bk --company acme report trial-balance
 bk --company acme report trial-balance --to 2026-03-31
 bk --company acme report trial-balance --from 2026-01-01 --to 2026-03-31
 bk --company acme report trial-balance --type expense
+bk --company acme report trial-balance --currency MXN
 ```
 
 ### `bk report balance --account CODE`
@@ -282,11 +377,15 @@ bk --company acme report trial-balance --type expense
 ```bash
 bk --company acme report balance --account 1000
 bk --company acme report balance --account 1000 --from 2026-01-01 --to 2026-03-31
+bk --company acme report balance --account 1000 --currency MXN
 ```
 
 ### `bk report income-statement`
 
-Revenue and expense summary for a period.
+Revenue and expense summary for a period. Output has a **Revenue** section and an
+**Expenses** section, each listing accounts with one signed amount on the
+account's normal side (credit for revenue, debit for expenses) and a subtotal,
+followed by **Net Income** (or **Net Loss** when expenses exceed revenue).
 
 ```bash
 bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
@@ -294,7 +393,17 @@ bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 
 ### `bk report balance-sheet`
 
-Assets, liabilities, and equity as of a date.
+Assets, liabilities, and equity as of a date. Output has **Assets**,
+**Liabilities** and **Equity** sections with subtotals, then **Total
+Liabilities + Equity** and a balance check (`[ok] BALANCED` /
+`[!!] UNBALANCED`).
+
+Beankeeper does not post closing entries, so the Equity section always
+includes a computed line, **Retained Earnings (computed)**, equal to cumulative
+revenue minus expenses up to `--to`. This keeps Assets = Liabilities + Equity
+for any valid ledger. If you post your own closing entries into a retained
+earnings account, the revenue/expense balances drop to zero and the computed
+line becomes zero accordingly.
 
 ```bash
 bk --company acme report balance-sheet
@@ -308,6 +417,89 @@ Entries grouped by tax category.
 ```bash
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 ```
+
+### `bk report ledger`
+
+General ledger / account statement. For each account: an opening balance as of
+the day before `--from` (zero without `--from`), one row per entry (ordered by
+date, transaction id, entry id) with a running balance, and a closing balance.
+Balances are on the account's normal side: `debits - credits` for asset and
+expense accounts, `credits - debits` for liability, equity and revenue accounts.
+
+```bash
+bk --company acme report ledger
+bk --company acme report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+bk --company acme report ledger --account 1000 --account 4000 --currency EUR
+bk --company acme --format csv report ledger --account 1000
+```
+
+**Flags:**
+- `--account CODE` (repeatable): Accounts to include. Default: every account
+  with activity (entries in the period or a non-zero opening balance).
+- `--from DATE`, `--to DATE`: Inclusive date range (`YYYY-MM-DD`).
+- `--currency CODE`: Only entries of this currency. Default: the company's only
+  transaction currency; if the company has several, the command fails with a
+  validation error (exit 3) asking for `--currency`; with no transactions, USD.
+
+**CSV:** one flat row per statement line. Columns: `account_code`,
+`account_name`, `account_type`, `currency`, `row_type`, `date`,
+`transaction_id`, `entry_id`, `description`, `reference`, `memo`, `debit`,
+`credit`, `balance`. `row_type` is `opening` (balance only, date = `--from`),
+`entry`, or `closing` (date = `--to`, `debit`/`credit` = period totals,
+`balance` = closing balance). Amounts are minor units.
+
+### `bk report aging`
+
+Receivables / payables aging for a single asset or liability account.
+
+```bash
+bk --company acme report aging --account 1100
+bk --company acme report aging --account 2000 --as-of 2026-03-31
+bk --company acme report aging --account 1100 --buckets 15,45
+bk --company acme report aging --account 1100 --group-by-metadata customer
+bk --company acme report aging --account 1100 --group-by customer --detail
+bk --company acme report aging --account 1100 --method specific
+bk --company acme report aging --account 1100 --method specific --link-key invoice
+bk --company acme report aging --account 1100 --currency EUR
+```
+
+**Flags:**
+- `--account CODE` (required): an asset account (receivable: charges are debits, settlements are credits) or a liability account (payable: charges are credits, settlements are debits). Other account types are a validation error (exit 3).
+- `--as-of DATE`: include transactions dated on or before this date (default: today). Charges and settlements dated later are ignored, so rerunning for a past period end gives the same answer after later-dated payments are posted (back-dated postings on or before the date do change it).
+- `--buckets N,N,...`: strictly ascending positive day bounds (default `30,60,90`, giving `Current`, `1-30`, `31-60`, `61-90`, `90+`)
+- `--group-by-metadata KEY` (alias `--group-by KEY`): group by a key of the transaction metadata. Metadata is parsed leniently: if it is a JSON object holding a non-empty string or a number under `KEY`, that value is the counterparty; anything else (missing key, non-JSON text, JSON that is not an object, other value types) goes to `(unassigned)`.
+- `--method fifo|specific` (default `fifo`): how settlements are matched to charges (see below).
+- `--link-key KEY` (default `applies_to`): metadata key holding a settlement's link to its charge. Only valid with `--method specific` (exit 3 otherwise).
+- `--detail`: list the open charges under each counterparty in table and CSV output (JSON always includes `open_items`).
+- `--currency CODE`: currency to report. Defaults to the company's single transaction currency; if the company has several, `--currency` is required (exit 3); with no transactions, USD.
+
+**How it works.** The ledger has no invoice or due-date model, so ages are measured from transaction dates. Entries on the account are netted per transaction; a net increase is a *charge* and a net decrease is a *settlement*. For an asset account (receivables) charges are debits and settlements credits; for a liability account (payables) charges are credits and settlements debits -- the same command serves AR and AP. Transactions are processed by date (charges before settlements on the same date, then by id), per counterparty when grouping. Settlements beyond the open charges are reported as an *unapplied credit*, which later charges consume first. Each charge's remaining open amount is bucketed by age in days (`as_of - transaction date`; age 0 is `Current`). The report always reconciles: total open - unapplied credit = account balance as of the date.
+
+**Matching methods.**
+- `fifo`: every settlement is applied to the oldest open charges.
+- `specific`: a settlement whose metadata links to a charge is applied to that charge first (up to its open amount); any excess, and settlements without a link, fall back to FIFO. Links are ignored on charges.
+
+**Links.** References are unique per company, so a payment cannot share its invoice's reference; instead the settlement's JSON metadata names the charge under the link key (default `applies_to`):
+- a string is the charge's `reference` (as posted with `txn post -r`); if no transaction has that reference and the string is an integer, optionally `#`-prefixed (`"42"`, `"#42"`), it is used as a transaction id;
+- a positive integer is the charge's transaction id;
+- an array of these is applied in order (one payment covering several invoices).
+
+```bash
+bk --company acme txn post -d "Invoice 102" -r INV-102 --debit 1100:300 --credit 4000:300 \
+  -m '{"customer":"Globex"}'
+bk --company acme txn post -d "Globex payment" --debit 1000:100 --credit 1100:100 \
+  -m '{"customer":"Globex","applies_to":"INV-102"}'
+```
+
+A link that cannot be honoured is ignored, the settlement is applied FIFO, a `[warn]` line is printed on stderr (unless `--quiet`), the table lists it under "Unmatched links", and JSON reports it in `unmatched_links` with one of these reasons: `not_found` (no transaction with that reference/id), `not_on_account` (the transaction has no entries on this account in this currency), `not_a_charge` (it is a settlement or nets to zero on this account), `charge_after_settlement` (the charge is dated after the settlement), `after_as_of` (the charge is dated after `--as-of`), `other_counterparty` (the charge belongs to another counterparty group), `invalid` (the value is not a non-empty string, a positive integer, or an array of those). A link to a charge that is already fully settled is not an error: the amount simply falls back to FIFO.
+
+**Credits, refunds and reversals.** On a receivable, every credit-side net movement is a settlement: payments, credit notes, write-offs, and reversals of an invoice. Under `fifo` it reduces the oldest open charge; under `specific`, link it to the invoice (e.g. a credit note with `{"applies_to":"INV-102"}`) and it cancels that invoice. Every debit-side net movement is a charge: invoices, refunds paid out to the customer, and payment chargebacks (bounced payments). A charge first consumes any unapplied credit, so refunding an overpayment clears the credit; a chargeback that is not absorbed becomes a new open item aged from its own date. Payables mirror this with the sides swapped: bills and vendor refunds received are charges (credits), payments and vendor credit notes are settlements (debits).
+
+**Net credit.** When settlements exceed the open charges the counterparty (or the account) is in *net credit*: the customer has prepaid or overpaid (for payables: we have prepaid or overpaid the vendor). Its open buckets are zero and the excess is shown as `Unapplied Credit`; `Net` (= total open - unapplied credit) is negative. The table marks it `CR` (e.g. `-150.00 CR`) and adds a legend line; CSV has a negative `net`; JSON has a negative `net` and `"net_credit": true`.
+
+**Output.** Table output has one row per counterparty (or a single `(all)` row) plus a total row, with columns for each bucket, `Total Open`, `Unapplied Credit` and `Net`. With `--detail`, an "Open items" table follows for each counterparty: date, transaction id, reference, description, age (days), bucket, original amount and open amount.
+
+CSV (amounts in minor units) without `--detail` has columns `counterparty`, one per bucket, `total_open`, `unapplied_credit`, `net`, one row per counterparty and a final `TOTAL` row. With `--detail` it is a single flat table with a leading `row_type` column: `row_type, counterparty, transaction_id, date, reference, description, age_days, bucket, original_amount, open_amount, <bucket columns>, total_open, unapplied_credit, net`. Rows are `item` (one per open charge; its open amount appears in its bucket column and in `total_open`), then a `counterparty` summary row per group (item columns empty), then a final `total` row with counterparty `TOTAL`.
 
 ### `bk report budget-variance`
 
@@ -326,13 +518,129 @@ bk --company acme report budget-variance --year 2026 --include-unbudgeted
 - `--month N`: Single month (mutually exclusive with `--from`/`--to`)
 - `--from N`, `--to N`: Month range, 1-12 (defaults to full year)
 - `--type TYPE`: Filter by account type
-- `--currency CODE` (default: USD)
+- `--currency CODE`: Currency of the budgets and actuals (env: `BEANKEEPER_CURRENCY`;
+  inferred from the company's transactions when omitted, see above)
 - `--include-unbudgeted`: Show accounts with actuals but no budget
 
 **Variance logic:**
 - Expense accounts: variance = budget - actual (positive = favorable, underspent)
 - Revenue accounts: variance = actual - budget (positive = favorable, exceeded target)
 - Status: `FAV`, `UNFAV`, or `ON BUDGET`
+
+### Multi-column reports: `--period` and `--compare`
+
+`report income-statement` and `report trial-balance` accept two options that
+turn the single-column report into a multi-column one. Both require `--from`
+and `--to` (a missing date is a validation error, exit code 3), and they
+cannot be combined (usage error, exit code 2). Without either option the
+output is unchanged.
+
+```bash
+# One column per month, plus a Total column and a Net Income row per month
+bk --company acme report income-statement --from 2026-01-01 --to 2026-06-30 --period month
+
+# Quarterly trial-balance activity, expense accounts only
+bk --company acme report trial-balance --from 2026-01-01 --to 2026-12-31 --period quarter --type expense
+
+# This quarter vs. the same quarter last year, with change and change %
+bk --company acme report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-year
+
+# This quarter vs. the previous quarter
+bk --company acme report income-statement --from 2026-04-01 --to 2026-06-30 --compare prior-period
+```
+
+**Flags:**
+- `--period month|quarter|year`: One column per calendar period between
+  `--from` and `--to`, plus a `Total` column. The first and last periods are
+  clipped to the range. Columns are labelled `2026-01`, `2026-Q1`, `2026`.
+  At most 120 columns.
+- `--compare prior-year|prior-period`: Adds a column for an earlier range,
+  plus `Change` (current - prior) and `Change %` (relative to the absolute
+  prior amount; `n/a` when the prior amount is 0).
+  - `prior-year`: the same dates one year earlier (Feb 29 becomes Feb 28).
+  - `prior-period`: the range of equal length ending the day before `--from`.
+    When the range is whole calendar months it shifts back by that many
+    months (Q2 compares with Q1, March with February).
+
+**Amounts:** every cell is the account's net activity in that window on its
+normal side (debit - credit for assets and expenses, credit - debit for
+liabilities, equity and revenue), so a positive number is a "normal" balance.
+Trial-balance columns show activity within each window, not cumulative
+balances. The income statement adds `Total Revenue`, `Total Expenses` and
+`Net Income` rows; the trial balance adds `Total Debits` and `Total Credits`
+rows (raw debit/credit totals per window).
+
+### `bk report reconciliation --account CODE`
+
+Reconcile one account against a bank, card or carrier statement using entry
+clearings (recorded with `bk txn clear`). Not to be confused with
+`bk txn reconcile`, which finds orphaned intercompany correlations.
+
+```bash
+bk --company acme report reconciliation --account 1000
+bk --company acme report reconciliation --account 1000 --to 2026-03-31
+bk --company acme report reconciliation --account 1000 --to 2026-03-31 \
+  --statement-balance 1234.56
+bk --company acme report reconciliation --account 2100 --currency USD   # credit card
+
+# Check one statement's cleared set against its total
+bk --company acme report reconciliation --account 1200 \
+  --statement STMT-2026-03 --statement-balance 1500
+
+# Outstanding receivables for one carrier, grouped by policy
+bk --company acme report reconciliation --account 1200 \
+  --filter-metadata carrier=Acme --group-by-metadata policy
+```
+
+**Flags:**
+- `--account CODE` (required): Account to reconcile
+- `--to YYYY-MM-DD`: As-of date, inclusive (default: all dates). Point in time: only entries dated on or before it count; a clearing counts toward the cleared balance when `cleared_date <= --to`, and toward the reconciled balance only when it is reconciled and `reconciled_date <= --to`. So an item cleared later shows as uncleared as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled (also with `--statement`)
+- `--statement-balance AMT`: Statement ending balance in major units (e.g. `1234.56`, may be negative), on the account's normal side
+- `--statement ID`: The cleared and reconciled balances count only this statement's clearings, so `--statement-balance` checks that statement alone. Outstanding items still reflect every statement's clearings
+- `--filter-metadata KEY=VALUE` (repeatable, AND-ed): Only entries whose transaction metadata has top-level `KEY` equal to `VALUE`, compared as strings (numbers and booleans by their JSON text). Applies to every balance and the item list. Metadata that is not a JSON object has no keys
+- `--group-by-metadata KEY` (alias `--group-by`): Group outstanding items by top-level `KEY`, with per-group counts and subtotals; items without the key (or with null, blank or nested values) go to `(unassigned)`, listed last
+- `--currency CODE`: Only entries of transactions in this currency. If omitted, the company's single transaction currency is used (USD if it has no transactions); if the company has several currencies, the command fails with `VALIDATION` and `--currency` is required
+
+**Output:**
+- Book balance (all entries), cleared balance (sum of clearings; only `--statement`'s when given), total cleared balance (all statements), and reconciled balance (reconciled clearings), all on the account's normal side (debit-normal for asset/expense, credit-normal for liability/equity/revenue)
+- The outstanding entries, i.e. not fully cleared: entry id, transaction id, date, **reference**, description, **metadata**, amount, **cleared amount**, **remaining amount** (JSON also has `reconciled_amount` and the item's `clearings` as of `--to`). Partially cleared items are counted (`partially_cleared_count`) and flagged. Invariant: `book - total cleared = uncleared total` (the sum of the items' signed remaining amounts)
+- With `--statement-balance`: the statement balance, `difference = statement - cleared`, and `reconciled: yes/no` (yes when the difference is zero)
+
+**CSV:** one header row
+`row_type,entry_id,transaction_id,date,reference,description,amount,cleared_amount,remaining_amount,currency,group,metadata`,
+then one `entry` row per outstanding entry (`group` filled when grouping;
+`metadata` as compact JSON or the raw text), one `group` row per group
+(`description` and `group` = the value, `remaining_amount` = subtotal), then
+`summary` rows whose `description` names the metric and whose `amount` holds
+it (`book_balance`, `cleared_balance`, `total_cleared_balance`,
+`reconciled_balance`, `uncleared_total`, plus `statement_balance`,
+`difference`, and `reconciled` (`1`/`0`) when a statement balance is given).
+Amounts are signed minor units.
+
+### `bk report cash-flow`
+
+Cash flow statement for a period using the direct method.
+
+```bash
+bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31
+bk --company acme report cash-flow --from 2026-01-01 --to 2026-03-31 \
+  --cash-account 1000 --cash-account 1010
+bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31 --currency EUR
+```
+
+**Flags:**
+- `--from DATE`, `--to DATE` (required, inclusive, `YYYY-MM-DD`)
+- `--cash-account CODE` (repeatable): accounts to treat as cash; each must exist and be an asset
+- `--currency CODE`: report currency. Defaults to the company's only transaction currency; if the company has several, `--currency` is required (validation error); with no transactions, USD
+
+**Default cash accounts:** Without `--cash-account`, every **asset** account whose name contains `cash`, `bank`, `checking` or `savings` (case-insensitive) is treated as cash -- this matches the bundled templates (`Operating Cash`, `Checking Account`, `Savings Account`). A code range is deliberately not used: `1100` is `Savings Account` in the personal template but `Accounts Receivable` in the business ones. If no account qualifies, the command exits with a validation error (exit code 3) asking for `--cash-account`.
+
+**Method:**
+- Only transactions dated in the range, in the report currency, whose cash entries have a non-zero net movement are included. Transfers between two cash accounts net to zero and are excluded.
+- Each non-cash entry of such a transaction is attributed directly to its account: a credit to the counter-account is an inflow, a debit an outflow. Per transaction these sum exactly to the net cash movement, so split transactions need no allocation.
+- Sections by counter-account type: revenue/expense = **Operating**; non-cash asset (receivables, inventory, equipment, ...) = **Investing**; liability/equity = **Financing**. The schema has no current/non-current distinction, so working-capital assets land in Investing.
+- Opening cash = cash balance before `--from`; closing cash = cash balance through `--to`, computed independently. `opening + net change = closing` is checked and a mismatch is flagged (`[!!] MISMATCH` in the table, `reconciled: false` in JSON).
+- CSV columns: `row_type,section,code,name,account_type,amount` with `row_type` `line`, `subtotal` or `summary` (amounts in minor units).
 
 ## Audit
 
@@ -344,7 +652,7 @@ snapshots. The recorded operations are:
 
 | Action | Recorded when |
 |--------|---------------|
-| `status_change` | `bk txn clear` flips an entry's clearance status |
+| `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, reconciled_date, statement, status of the affected rows). Skips record nothing |
 | `correlate` | `bk txn post --correlate` links a partner transaction |
 | `budget_set` | `bk budget set` creates or revises a budget (prior amount captured) |
 | `budget_delete` | `bk budget delete` removes a budget |

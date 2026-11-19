@@ -45,8 +45,9 @@ pub fn list_budgets(
     conn: &Connection,
     params: &ListBudgetParams<'_>,
 ) -> Result<Vec<BudgetRow>, CliError> {
-    let mut sql =
-        String::from("SELECT id, company_slug, account_code, currency, year, month, amount, notes, created_at FROM budgets WHERE company_slug = ?1 AND year = ?2");
+    let mut sql = String::from(
+        "SELECT id, company_slug, account_code, currency, year, month, amount, notes, created_at FROM budgets WHERE company_slug = ?1 AND year = ?2",
+    );
 
     let mut param_idx = 3u32;
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -91,7 +92,6 @@ pub fn list_budgets(
     }
     Ok(results)
 }
-
 
 /// Parameters for computing budget variance.
 pub struct BudgetVarianceParams<'a> {
@@ -303,8 +303,8 @@ fn last_day_of_month(year: i32, month: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{Actor, Db, audit, create_account, create_company, post_transaction};
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
+    use crate::db::{Actor, Db, audit, create_account, create_company, post_transaction};
 
     fn test_actor() -> Actor {
         Actor::new("test")
@@ -331,7 +331,15 @@ mod tests {
         year: i32,
         month: Option<i32>,
     ) -> Result<usize, CliError> {
-        audit::delete_budget(conn, &test_actor(), company_slug, account_code, currency, year, month)
+        audit::delete_budget(
+            conn,
+            &test_actor(),
+            company_slug,
+            account_code,
+            currency,
+            year,
+            month,
+        )
     }
 
     fn setup() -> Db {
@@ -415,22 +423,65 @@ mod tests {
         post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
     }
 
-    fn budget<'a>(account: &'a str, year: i32, month: i32, amount: i64, notes: Option<&'a str>) -> SetBudgetParams<'a> {
-        SetBudgetParams { company_slug: "acme", account_code: account, currency: "USD", year, month, amount, notes }
+    fn budget<'a>(
+        account: &'a str,
+        year: i32,
+        month: i32,
+        amount: i64,
+        notes: Option<&'a str>,
+    ) -> SetBudgetParams<'a> {
+        SetBudgetParams {
+            company_slug: "acme",
+            account_code: account,
+            currency: "USD",
+            year,
+            month,
+            amount,
+            notes,
+        }
     }
 
-    fn annual<'a>(account: &'a str, year: i32, amount: i64, notes: Option<&'a str>) -> SetAnnualBudgetParams<'a> {
-        SetAnnualBudgetParams { company_slug: "acme", account_code: account, currency: "USD", year, annual_amount: amount, notes }
+    fn annual<'a>(
+        account: &'a str,
+        year: i32,
+        amount: i64,
+        notes: Option<&'a str>,
+    ) -> SetAnnualBudgetParams<'a> {
+        SetAnnualBudgetParams {
+            company_slug: "acme",
+            account_code: account,
+            currency: "USD",
+            year,
+            annual_amount: amount,
+            notes,
+        }
     }
 
-    fn variance(year: i32, from: i32, to: i32, acct_type: Option<&str>, unbudgeted: bool) -> BudgetVarianceParams<'_> {
-        BudgetVarianceParams { company_slug: "acme", currency: "USD", year, from_month: from, to_month: to, account_type: acct_type, include_unbudgeted: unbudgeted }
+    fn variance(
+        year: i32,
+        from: i32,
+        to: i32,
+        acct_type: Option<&str>,
+        unbudgeted: bool,
+    ) -> BudgetVarianceParams<'_> {
+        BudgetVarianceParams {
+            company_slug: "acme",
+            currency: "USD",
+            year,
+            from_month: from,
+            to_month: to,
+            account_type: acct_type,
+            include_unbudgeted: unbudgeted,
+        }
     }
 
     #[test]
     fn set_budget_creates_row() -> Result<(), CliError> {
         let db = setup();
-        let row = set_budget(db.conn(), &budget("5000", 2026, 3, 250_000, Some("March rent")))?;
+        let row = set_budget(
+            db.conn(),
+            &budget("5000", 2026, 3, 250_000, Some("March rent")),
+        )?;
         assert_eq!(row.account_code, "5000");
         assert_eq!(row.year, 2026);
         assert_eq!(row.month, 3);
@@ -443,12 +494,21 @@ mod tests {
     fn set_budget_upserts() -> Result<(), CliError> {
         let db = setup();
         set_budget(db.conn(), &budget("5000", 2026, 3, 100_000, None))?;
-        let row = set_budget(db.conn(), &budget("5000", 2026, 3, 200_000, Some("updated")))?;
+        let row = set_budget(
+            db.conn(),
+            &budget("5000", 2026, 3, 200_000, Some("updated")),
+        )?;
         assert_eq!(row.amount, 200_000);
 
-        let rows = list_budgets(db.conn(), &ListBudgetParams {
-            company_slug: "acme", year: 2026, account_code: Some("5000"), month: Some(3),
-        })?;
+        let rows = list_budgets(
+            db.conn(),
+            &ListBudgetParams {
+                company_slug: "acme",
+                year: 2026,
+                account_code: Some("5000"),
+                month: Some(3),
+            },
+        )?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].amount, 200_000);
         Ok(())
@@ -474,8 +534,12 @@ mod tests {
         assert_eq!(rows.len(), 12);
         let total: i64 = rows.iter().map(|r| r.amount).sum();
         assert_eq!(total, 100_000);
-        for row in &rows[..4] { assert_eq!(row.amount, 8334); }
-        for row in &rows[4..] { assert_eq!(row.amount, 8333); }
+        for row in &rows[..4] {
+            assert_eq!(row.amount, 8334);
+        }
+        for row in &rows[4..] {
+            assert_eq!(row.amount, 8333);
+        }
         Ok(())
     }
 
@@ -485,19 +549,37 @@ mod tests {
         set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
         set_budget(db.conn(), &budget("5100", 2026, 1, 5000, None))?;
 
-        let all = list_budgets(db.conn(), &ListBudgetParams {
-            company_slug: "acme", year: 2026, account_code: None, month: None,
-        })?;
+        let all = list_budgets(
+            db.conn(),
+            &ListBudgetParams {
+                company_slug: "acme",
+                year: 2026,
+                account_code: None,
+                month: None,
+            },
+        )?;
         assert_eq!(all.len(), 13);
 
-        let rent_only = list_budgets(db.conn(), &ListBudgetParams {
-            company_slug: "acme", year: 2026, account_code: Some("5000"), month: None,
-        })?;
+        let rent_only = list_budgets(
+            db.conn(),
+            &ListBudgetParams {
+                company_slug: "acme",
+                year: 2026,
+                account_code: Some("5000"),
+                month: None,
+            },
+        )?;
         assert_eq!(rent_only.len(), 12);
 
-        let jan = list_budgets(db.conn(), &ListBudgetParams {
-            company_slug: "acme", year: 2026, account_code: None, month: Some(1),
-        })?;
+        let jan = list_budgets(
+            db.conn(),
+            &ListBudgetParams {
+                company_slug: "acme",
+                year: 2026,
+                account_code: None,
+                month: Some(1),
+            },
+        )?;
         assert_eq!(jan.len(), 2);
         Ok(())
     }
@@ -508,9 +590,15 @@ mod tests {
         set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
         let deleted = delete_budget(db.conn(), "acme", "5000", "USD", 2026, Some(3))?;
         assert_eq!(deleted, 1);
-        let remaining = list_budgets(db.conn(), &ListBudgetParams {
-            company_slug: "acme", year: 2026, account_code: Some("5000"), month: None,
-        })?;
+        let remaining = list_budgets(
+            db.conn(),
+            &ListBudgetParams {
+                company_slug: "acme",
+                year: 2026,
+                account_code: Some("5000"),
+                month: None,
+            },
+        )?;
         assert_eq!(remaining.len(), 11);
         Ok(())
     }
@@ -521,9 +609,15 @@ mod tests {
         set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
         let deleted = delete_budget(db.conn(), "acme", "5000", "USD", 2026, None)?;
         assert_eq!(deleted, 12);
-        let remaining = list_budgets(db.conn(), &ListBudgetParams {
-            company_slug: "acme", year: 2026, account_code: Some("5000"), month: None,
-        })?;
+        let remaining = list_budgets(
+            db.conn(),
+            &ListBudgetParams {
+                company_slug: "acme",
+                year: 2026,
+                account_code: Some("5000"),
+                month: None,
+            },
+        )?;
         assert!(remaining.is_empty());
         Ok(())
     }
@@ -565,7 +659,10 @@ mod tests {
         post_revenue(&db, "2026-01-15", 150_000);
 
         let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, false))?;
-        let r = rows.iter().find(|r| r.code == "4000").ok_or_else(|| CliError::General("expected matching row".into()))?;
+        let r = rows
+            .iter()
+            .find(|r| r.code == "4000")
+            .ok_or_else(|| CliError::General("expected matching row".into()))?;
         assert_eq!(r.budget_amount, 100_000);
         assert_eq!(r.actual_amount, 150_000);
         assert_eq!(r.variance_amount, 50_000);
@@ -580,7 +677,10 @@ mod tests {
         post_revenue(&db, "2026-01-15", 100_000);
 
         let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, false))?;
-        let r = rows.iter().find(|r| r.code == "4000").ok_or_else(|| CliError::General("expected matching row".into()))?;
+        let r = rows
+            .iter()
+            .find(|r| r.code == "4000")
+            .ok_or_else(|| CliError::General("expected matching row".into()))?;
         assert_eq!(r.variance_amount, -100_000);
         assert!(!r.favorable);
         Ok(())
@@ -597,7 +697,10 @@ mod tests {
         post_expense(&db, "2026-03-15", "5000", 50_000);
 
         let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 3, None, false))?;
-        let r = rows.iter().find(|r| r.code == "5000").ok_or_else(|| CliError::General("expected matching row".into()))?;
+        let r = rows
+            .iter()
+            .find(|r| r.code == "5000")
+            .ok_or_else(|| CliError::General("expected matching row".into()))?;
         assert_eq!(r.budget_amount, 150_000);
         assert_eq!(r.actual_amount, 150_000);
         assert_eq!(r.variance_amount, 0);
@@ -617,7 +720,10 @@ mod tests {
 
         let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, true))?;
         assert!(rows.len() >= 2);
-        let supplies = rows.iter().find(|r| r.code == "5100").ok_or_else(|| CliError::General("expected matching row".into()))?;
+        let supplies = rows
+            .iter()
+            .find(|r| r.code == "5100")
+            .ok_or_else(|| CliError::General("expected matching row".into()))?;
         assert_eq!(supplies.budget_amount, 0);
         assert_eq!(supplies.actual_amount, 30_000);
         Ok(())
@@ -629,7 +735,8 @@ mod tests {
         set_budget(db.conn(), &budget("5000", 2026, 1, 100_000, None))?;
         set_budget(db.conn(), &budget("4000", 2026, 1, 200_000, None))?;
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, Some("expense"), false))?;
+        let rows =
+            compute_budget_variance(db.conn(), &variance(2026, 1, 1, Some("expense"), false))?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].code, "5000");
         Ok(())

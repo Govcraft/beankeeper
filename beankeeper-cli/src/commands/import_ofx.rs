@@ -341,12 +341,14 @@ fn check_conflict(
 ) -> Option<TransactionOutcome> {
     match reference_exists(conn, company, &prepared.reference) {
         Ok(true) => Some(match conflict_strategy {
-            transactions::ConflictStrategy::Error => TransactionOutcome::Failed(FailedTransaction {
-                date: prepared.date.clone(),
-                description: prepared.description.clone(),
-                amount_minor: prepared.amount_minor,
-                error: format!("duplicate reference: {}", prepared.reference),
-            }),
+            transactions::ConflictStrategy::Error => {
+                TransactionOutcome::Failed(FailedTransaction {
+                    date: prepared.date.clone(),
+                    description: prepared.description.clone(),
+                    amount_minor: prepared.amount_minor,
+                    error: format!("duplicate reference: {}", prepared.reference),
+                })
+            }
             transactions::ConflictStrategy::Skip => {
                 TransactionOutcome::Skipped(SkippedTransaction {
                     date: prepared.date.clone(),

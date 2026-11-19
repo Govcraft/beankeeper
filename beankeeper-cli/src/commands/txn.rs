@@ -37,6 +37,7 @@ pub fn run(
             debit,
             credit,
             metadata,
+            meta,
             currency,
             date,
             correlate,
@@ -51,6 +52,7 @@ pub fn run(
             debit,
             credit,
             metadata.as_deref(),
+            meta,
             currency,
             date.as_deref(),
             *correlate,
@@ -62,11 +64,7 @@ pub fn run(
             run_list_or_count(cli, &db_handle, company, sub, format, use_color)
         }
         TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
-        TxnCommand::Clear {
-            transaction_id,
-            entry,
-            status,
-        } => run_clear(cli, &db_handle, company, *transaction_id, *entry, *status, meta),
+        TxnCommand::Clear { .. } => super::txn_clear::run(cli, &db_handle, company, sub, meta),
         TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
         TxnCommand::Attach {
             transaction_id,
@@ -163,6 +161,7 @@ fn run_list_or_count(
         currency,
         reference,
         metadata,
+        meta,
         tax_category,
         direction,
         count,
@@ -197,6 +196,8 @@ fn run_list_or_count(
     lp.currency_filter = currency.as_deref();
     lp.reference_filter = reference.as_deref();
     lp.metadata_like = metadata.as_deref();
+    let meta_eq = db::metadata::parse_meta_args(meta)?;
+    lp.meta_eq = &meta_eq;
     lp.tax_category_filter = tax_category.as_deref();
     lp.direction_filter = dir_str;
 
@@ -271,48 +272,69 @@ fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64, Option<S
 /// - `50` -> 50 dollars -> 5000 cents (for USD, 2 minor units)
 /// - `50.00` -> 50 dollars -> 5000 cents
 /// - `0.50` -> 0.50 dollars -> 50 cents
+/// - `-12.34` -> -1234 cents (an optional leading `-` or `+` applies to the
+///   whole amount, fractional part included)
+///
+/// Both the whole and fractional parts must be plain ASCII digits; the whole
+/// part must be present (`.5` is rejected, `0.5` is fine).
 pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, CliError> {
     let minor_units = currency.minor_units();
     let multiplier = 10i64.pow(u32::from(minor_units));
 
-    if let Some((whole_str, frac_str)) = s.split_once('.') {
-        // Has decimal point
-        let whole: i64 = whole_str.parse().map_err(|_| {
-            CliError::Usage(format!("invalid amount '{s}': cannot parse whole part"))
-        })?;
+    let (negative, unsigned) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (whole_str, frac_str) = match unsigned.split_once('.') {
+        Some((w, f)) => (w, Some(f)),
+        None => (unsigned, None),
+    };
 
-        // Validate fractional part length
-        if frac_str.len() > usize::from(minor_units) {
-            return Err(CliError::Validation(format!(
-                "amount '{s}' has too many decimal places for {currency} \
-                 (max {minor_units})"
-            )));
-        }
-
-        // Pad fractional part to minor_units digits
-        let padded = format!("{frac_str:0<width$}", width = usize::from(minor_units));
-        let frac: i64 = padded.parse().map_err(|_| {
-            CliError::Usage(format!(
-                "invalid amount '{s}': cannot parse fractional part"
-            ))
-        })?;
-
-        let total = whole
-            .checked_mul(multiplier)
-            .and_then(|w| w.checked_add(frac))
-            .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))?;
-
-        Ok(total)
-    } else {
-        // No decimal point: treat as whole major units
-        let whole: i64 = s
-            .parse()
-            .map_err(|_| CliError::Usage(format!("invalid amount '{s}': not a valid number")))?;
-
-        whole
-            .checked_mul(multiplier)
-            .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))
+    let all_digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if whole_str.is_empty() || !all_digits(whole_str) {
+        return Err(CliError::Usage(format!(
+            "invalid amount '{s}': not a valid number"
+        )));
     }
+    let whole: i64 = whole_str
+        .parse()
+        .map_err(|_| CliError::Validation(format!("amount '{s}' is too large")))?;
+
+    let frac: i64 = match frac_str {
+        None => 0,
+        Some(f) => {
+            if !all_digits(f) {
+                return Err(CliError::Usage(format!(
+                    "invalid amount '{s}': cannot parse fractional part"
+                )));
+            }
+            if f.len() > usize::from(minor_units) {
+                return Err(CliError::Validation(format!(
+                    "amount '{s}' has too many decimal places for {currency} \
+                     (max {minor_units})"
+                )));
+            }
+            // Pad fractional part to minor_units digits ("5" -> "50" for USD).
+            let padded = format!("{f:0<width$}", width = usize::from(minor_units));
+            if padded.is_empty() {
+                0
+            } else {
+                padded.parse().map_err(|_| {
+                    CliError::Usage(format!(
+                        "invalid amount '{s}': cannot parse fractional part"
+                    ))
+                })?
+            }
+        }
+    };
+
+    let magnitude = whole
+        .checked_mul(multiplier)
+        .and_then(|w| w.checked_add(frac))
+        .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))?;
+
+    Ok(if negative { -magnitude } else { magnitude })
 }
 
 /// Normalize a user-supplied transaction reference for storage.
@@ -333,7 +355,7 @@ fn normalize_reference(input: &str) -> Result<String, &'static str> {
 }
 
 /// Execute the `txn post` subcommand.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_post(
     cli: &Cli,
     db_handle: &Db,
@@ -342,6 +364,7 @@ fn run_post(
     debit_args: &[String],
     credit_args: &[String],
     metadata: Option<&str>,
+    meta_args: &[String],
     currency_code: &str,
     date: Option<&str>,
     correlate: Option<i64>,
@@ -374,6 +397,11 @@ fn run_post(
     };
     let txn_date = chrono::NaiveDate::parse_from_str(&effective_date, "%Y-%m-%d")
         .map_err(|e| CliError::Validation(format!("invalid date '{effective_date}': {e}")))?;
+
+    // 3b. Normalize -m and merge --meta pairs into a JSON object (issue #17).
+    let meta_pairs = db::metadata::parse_meta_args(meta_args)?;
+    let metadata = db::metadata::build_post_metadata(metadata, &meta_pairs)?;
+    let metadata = metadata.as_deref();
 
     // 4. Look up accounts, resolve tax categories, and build library Entry objects
     let mut journal = JournalEntry::new(txn_date, description);
@@ -604,16 +632,20 @@ fn run_show(
 ) -> Result<(), CliError> {
     let (txn, entries) = transactions::get_transaction(db_handle.conn(), company, id)?;
     let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
+    let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
+    for e in &entries {
+        clearings.insert(e.id, db::clearings::list_clearings(db_handle.conn(), e.id)?);
+    }
 
     // Determine currency minor units for formatting
-    let currency_minor_units = Currency::from_code(&txn.currency)
-        .map_or(2, |c| c.minor_units());
+    let currency_minor_units = Currency::from_code(&txn.currency).map_or(2, |c| c.minor_units());
 
     match format {
         OutputFormat::Table => {
-            let rendered = output::table::render_transaction_detail(
+            let rendered = output::table::render_transaction_detail_with_clearings(
                 &txn,
                 &entries,
+                Some(&clearings),
                 currency_minor_units,
                 use_color,
             );
@@ -633,6 +665,7 @@ fn run_show(
                 &[txn],
                 &entries_map,
                 &att_map,
+                &clearings,
                 meta,
             )?;
             println!("{rendered}");
@@ -705,65 +738,6 @@ fn run_attach(
         eprintln!(
             "[ok] attachment #{att_id} added to transaction #{transaction_id} ({doc_type}, {hash_short})",
             hash_short = &hash[..hash.len().min(12)]
-        );
-    }
-
-    Ok(())
-}
-
-/// Execute the `txn clear` subcommand.
-#[allow(clippy::too_many_arguments)]
-fn run_clear(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    transaction_id: i64,
-    entry_id: i64,
-    status: crate::cli::ClearanceArg,
-    meta: Option<output::json::Meta>,
-) -> Result<(), CliError> {
-    // 1. Verify transaction and entry exist.
-    let (_txn, entries) = transactions::get_transaction(db_handle.conn(), company, transaction_id)?;
-
-    if !entries.iter().any(|e| e.id == entry_id) {
-        return Err(CliError::NotFound(format!(
-            "entry {entry_id} not found in transaction {transaction_id}"
-        )));
-    }
-
-    // 2. Update the status in the database through the audited mutation path,
-    //    which records the transition (who, when, from -> to).
-    let status_str = status.as_str();
-    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
-    crate::db::set_entry_status(
-        db_handle.conn(),
-        &actor,
-        company,
-        transaction_id,
-        entry_id,
-        status.to_entry_status(),
-    )?;
-
-    let format = crate::cli::resolve_format(None, cli);
-    if format == crate::cli::OutputFormat::Json {
-        let meta = meta.unwrap_or_else(|| crate::output::json::meta("txn.clear", Some(company)));
-        let rendered = serde_json::json!({
-            "ok": true,
-            "meta": meta,
-            "data": {
-                "transaction_id": transaction_id,
-                "entry_id": entry_id,
-                "status": status_str
-            }
-        });
-        let json = serde_json::to_string(&rendered)
-            .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
-        println!("{json}");
-    }
-
-    if !cli.verbosity.quiet {
-        eprintln!(
-            "[ok] entry #{entry_id} of transaction #{transaction_id} marked as {status_str}"
         );
     }
 
@@ -884,6 +858,37 @@ mod tests {
         // BHD: 50.125 -> 50125
         let result = parse_amount_to_minor("50.125", Currency::BHD);
         assert_eq!(result.ok(), Some(50125));
+    }
+
+    #[test]
+    fn parse_amount_negative_fraction() {
+        // Regression: "-12.34" used to come out as -1166 (-1200 + 34).
+        assert_eq!(
+            parse_amount_to_minor("-12.34", Currency::USD).ok(),
+            Some(-1234)
+        );
+        // Regression: "-0.50" used to lose its sign ("-0" parses as 0).
+        assert_eq!(
+            parse_amount_to_minor("-0.50", Currency::USD).ok(),
+            Some(-50)
+        );
+        assert_eq!(parse_amount_to_minor("-7", Currency::USD).ok(), Some(-700));
+        assert_eq!(parse_amount_to_minor("+7.5", Currency::USD).ok(), Some(750));
+    }
+
+    #[test]
+    fn parse_amount_rejects_malformed_input() {
+        for bad in [
+            "", "-", ".5", "1.-5", "1.+5", "--1", "1e3", " 1", "1,000", "1.2.3", "abc",
+        ] {
+            assert!(
+                parse_amount_to_minor(bad, Currency::USD).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        // JPY has no minor units: a trailing "." is fine, a fraction is not.
+        assert_eq!(parse_amount_to_minor("50.", Currency::JPY).ok(), Some(50));
+        assert!(parse_amount_to_minor("50.5", Currency::JPY).is_err());
     }
 
     #[test]

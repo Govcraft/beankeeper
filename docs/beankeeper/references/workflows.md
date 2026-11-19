@@ -109,12 +109,82 @@ bk --company mybiz txn post -d "Reclassify: Netflix subscription" \
 bk --company mybiz txn clear 50 --entry 99
 bk --company mybiz txn clear 50 --entry 100
 
-# 5. After full reconciliation, mark as reconciled
+# 5. Compare the cleared balance to the statement ending balance.
+#    Lists the still-uncleared entries; "reconciled: yes" when the
+#    difference (statement - cleared) is zero.
+bk --company mybiz report reconciliation --account 1000 \
+  --to 2026-03-31 --statement-balance 4210.33
+
+# 6. After full reconciliation, mark as reconciled
 bk --company mybiz txn clear 50 --entry 99 --status reconciled
 
-# 6. Confirm what was reconciled and when (the audit trail records each change)
+# 7. Confirm what was reconciled and when (the audit trail records each change)
 bk --company mybiz audit log --entity entry
 ```
+
+### Reconcile receivables against statements (partial payments)
+
+Use this when each expected item is posted to a receivable account and
+statements pay items in full or in part, e.g. commissions owed by carriers.
+Post each item with a unique `--reference` and JSON metadata, then clear it
+by reference when a statement pays it.
+
+```bash
+# 1. Post each expected item: receivable debit, revenue credit
+bk --company agency txn post -d "Commission POL-123" --date 2026-03-02 \
+  --debit 1200:150 --credit 4100:150 \
+  --reference POL-123 -m '{"carrier":"Acme","policy":"POL-123"}'
+
+# 2. What is outstanding for this carrier?
+bk --json --company agency report reconciliation --account 1200 \
+  --filter-metadata carrier=Acme
+
+# 3. Clear the statement's lines as one atomic batch: one `reference[,amount]`
+#    per line, the amount being what the statement paid (omit it to clear the
+#    full remaining amount). Over-clearing an item fails the whole batch.
+cat > acme-2026-03.csv <<'EOF'
+reference,amount
+POL-123,100
+POL-124
+EOF
+bk --json --company agency txn clear --from-file acme-2026-03.csv \
+  --account 1200 --date 2026-03-31 --statement ACME-2026-03
+
+#    Re-running the same file is safe: each (entry, statement) is cleared at
+#    most once, and repeats come back under "skipped".
+
+# 4. Check the statement: its cleared total must equal the statement total
+bk --json --company agency report reconciliation --account 1200 \
+  --statement ACME-2026-03 --statement-balance 175
+#    -> "reconciled": true when difference == 0. Otherwise compare
+#       `cleared` from step 3 with the statement lines.
+
+# 5. Review what is still open, partially paid items included
+#    (cleared_amount / remaining_amount per item), grouped by carrier
+bk --company agency report reconciliation --account 1200 --group-by-metadata carrier
+
+# 6. Lock the statement once it checks out (promotes its clearings;
+#    --date is the reconciled date, on or after the cleared date)
+bk --company agency txn clear --from-file acme-2026-03.csv \
+  --account 1200 --date 2026-04-05 --statement ACME-2026-03 --status reconciled
+
+# 7. Point in time: what was cleared, and what reconciled, as of March 31?
+#    Clearings count as cleared when cleared on or before --to, and as
+#    reconciled only when also reconciled on or before --to: the statement
+#    above is cleared but not yet reconciled as of 2026-03-31.
+bk --company agency report reconciliation --account 1200 --to 2026-03-31
+
+# 8. Inspect one item's clearings (amounts, dates, statements, status)
+bk --json --company agency txn show 42
+```
+
+Reconciled clearings are locked: re-running the statement with
+`--status cleared` fails. To undo a statement's clearing on one item (cleared
+or reconciled), run
+`bk --company agency txn clear --reference POL-123 --account 1200 --statement ACME-2026-03 --status uncleared`,
+then clear it again if needed.
+A single partial payment can also be cleared directly with
+`txn clear --reference POL-123 --account 1200 --amount 50 --statement ACME-2026-04`.
 
 ### Answer "when was this account last reconciled?"
 

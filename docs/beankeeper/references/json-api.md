@@ -136,6 +136,7 @@ When `--on-conflict skip` and reference already exists:
       "date": "2026-03-01",
       "entries": [
         {
+          "id": 1,
           "account_code": "5000",
           "direction": "debit",
           "amount": 250000,
@@ -143,6 +144,7 @@ When `--on-conflict skip` and reference already exists:
           "status": "uncleared"
         },
         {
+          "id": 2,
           "account_code": "1000",
           "direction": "credit",
           "amount": 250000,
@@ -155,7 +157,8 @@ When `--on-conflict skip` and reference already exists:
 }
 ```
 
-Entry `status` values: `"uncleared"`, `"cleared"`, `"reconciled"`.
+Entry `id` is the entry id (`txn clear TXN_ID --entry ID`). Entry `status`
+values: `"uncleared"`, `"cleared"`, `"reconciled"`.
 
 ### `txn list --count`
 
@@ -203,11 +206,170 @@ Entry `status` values: `"uncleared"`, `"cleared"`, `"reconciled"`.
 
 ### `report income-statement`
 
-Same schema as `report trial-balance`. Contains only revenue and expense accounts for the specified period.
+Accounts are grouped into sections. Each account carries a single signed
+`amount` on its normal side (credit for revenue, debit for expenses), so a
+contra balance shows as negative. `net_income` is `total_revenue - total_expenses`;
+a negative value is a net loss. `from` / `to` echo the requested period (`null`
+when omitted).
+
+```json
+{
+  "data": {
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "sections": [
+      {
+        "key": "revenue",
+        "title": "Revenue",
+        "normal_balance": "credit",
+        "accounts": [
+          { "code": "4000", "name": "Sales", "type": "revenue", "amount": 30000, "computed": false }
+        ],
+        "total": 30000
+      },
+      {
+        "key": "expenses",
+        "title": "Expenses",
+        "normal_balance": "debit",
+        "accounts": [
+          { "code": "5000", "name": "Rent", "type": "expense", "amount": 17000, "computed": false }
+        ],
+        "total": 17000
+      }
+    ],
+    "total_revenue": 30000,
+    "total_expenses": 17000,
+    "net_income": 13000
+  }
+}
+```
 
 ### `report balance-sheet`
 
-Same schema as `report trial-balance`. Contains only asset, liability, and equity accounts as of the specified date.
+Sections are `assets` (debit-normal), `liabilities` and `equity`
+(credit-normal), with the same account line shape as the income statement.
+The equity section always ends with a computed line (`"code": null`,
+`"computed": true`, name `Retained Earnings (computed)`) equal to cumulative
+revenue minus expenses up to `as_of`; the same value is exposed as
+`computed_earnings`. `difference` is `total_assets - total_liabilities_and_equity`
+and `balanced` is `true` when it is zero. `as_of` is the `--to` date (`null`
+when omitted).
+
+```json
+{
+  "data": {
+    "as_of": "2026-03-31",
+    "sections": [
+      {
+        "key": "assets",
+        "title": "Assets",
+        "normal_balance": "debit",
+        "accounts": [
+          { "code": "1000", "name": "Cash", "type": "asset", "amount": 118000, "computed": false }
+        ],
+        "total": 118000
+      },
+      {
+        "key": "liabilities",
+        "title": "Liabilities",
+        "normal_balance": "credit",
+        "accounts": [
+          { "code": "2000", "name": "Accounts Payable", "type": "liability", "amount": 5000, "computed": false }
+        ],
+        "total": 5000
+      },
+      {
+        "key": "equity",
+        "title": "Equity",
+        "normal_balance": "credit",
+        "accounts": [
+          { "code": "3000", "name": "Owner Equity", "type": "equity", "amount": 100000, "computed": false },
+          { "code": null, "name": "Retained Earnings (computed)", "type": "equity", "amount": 13000, "computed": true }
+        ],
+        "total": 113000
+      }
+    ],
+    "total_assets": 118000,
+    "total_liabilities": 5000,
+    "total_equity": 113000,
+    "computed_earnings": 13000,
+    "total_liabilities_and_equity": 118000,
+    "difference": 0,
+    "balanced": true
+  }
+}
+```
+
+### Statement CSV output
+
+`--format csv` for `report income-statement` and `report balance-sheet` uses
+the columns `section,line_type,code,name,type,amount`, one row per line in
+display order:
+
+| `line_type` | Meaning |
+|---|---|
+| `account` | An account line (`amount` is signed on the normal side) |
+| `computed` | The computed retained-earnings line (balance sheet, `equity` section, empty `code`) |
+| `subtotal` | Section subtotal (e.g. `Total Revenue`, `Total Assets`) |
+| `net_income` | Income statement bottom line (`section` = `summary`; name is `Net Income` or `Net Loss`) |
+| `total` | Balance sheet `Total Liabilities + Equity` (`section` = `summary`) |
+| `difference` | Balance sheet assets minus liabilities + equity (`section` = `summary`) |
+| `balanced` | Balance sheet check, `amount` is `true` or `false` (`section` = `summary`) |
+
+```csv
+section,line_type,code,name,type,amount
+revenue,account,4000,Sales,revenue,30000
+revenue,subtotal,,Total Revenue,,30000
+expenses,account,5000,Rent,expense,17000
+expenses,subtotal,,Total Expenses,,17000
+summary,net_income,,Net Income,,13000
+```
+
+### `report ledger`
+
+All amounts are minor units; `balance`, `opening_balance` and `closing_balance`
+are on the account's `normal_balance` side (negative = abnormal side).
+
+```json
+{
+  "ok": true,
+  "meta": { "command": "report.ledger", "company": "acme", "timestamp": "..." },
+  "data": {
+    "currency": "USD",
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "accounts": [
+      {
+        "code": "1000",
+        "name": "Cash",
+        "type": "asset",
+        "normal_balance": "debit",
+        "opening_balance": 100000,
+        "entries": [
+          {
+            "date": "2026-01-05",
+            "transaction_id": 7,
+            "entry_id": 13,
+            "description": "Office rent",
+            "reference": "RENT-2026-01",
+            "memo": null,
+            "debit": 0,
+            "credit": 250000,
+            "balance": -150000
+          }
+        ],
+        "total_debits": 0,
+        "total_credits": 250000,
+        "closing_balance": -150000
+      }
+    ]
+  }
+}
+```
+
+`from`/`to` are `null` when not given. Omitting `--currency` when the company
+has transactions in several currencies returns a `VALIDATION` error
+envelope (exit code 3).
 
 ### `report budget-variance`
 
@@ -234,6 +396,204 @@ Same schema as `report trial-balance`. Contains only asset, liability, and equit
       "budget": 3000000,
       "actual": 2500000
     }
+  }
+}
+```
+
+### `report income-statement --period` / `report trial-balance --period`
+
+`meta.command` is `report.income-statement.periods` or
+`report.trial-balance.periods`. Each account's `amounts` array has one entry
+per element of `columns` (net amount on the account's normal side, minor
+units); `total` is their sum. `totals` holds `total_revenue`,
+`total_expenses` and `net_income` (income statement) or `total_debits` and
+`total_credits` (trial balance), each with the same `amounts`/`total` shape.
+
+```json
+{
+  "data": {
+    "report": "income-statement",
+    "mode": "periods",
+    "period": "month",
+    "from": "2026-01-01",
+    "to": "2026-02-28",
+    "currency": "USD",
+    "columns": [
+      { "label": "2026-01", "from": "2026-01-01", "to": "2026-01-31" },
+      { "label": "2026-02", "from": "2026-02-01", "to": "2026-02-28" }
+    ],
+    "accounts": [
+      {
+        "code": "4000",
+        "name": "Sales",
+        "type": "revenue",
+        "normal_balance": "credit",
+        "amounts": [200000, 50000],
+        "total": 250000
+      }
+    ],
+    "totals": {
+      "net_income": { "amounts": [200000, 50000], "total": 250000 },
+      "total_expenses": { "amounts": [0, 0], "total": 0 },
+      "total_revenue": { "amounts": [200000, 50000], "total": 250000 }
+    }
+  }
+}
+```
+
+### `report income-statement --compare` / `report trial-balance --compare`
+
+`meta.command` is `report.income-statement.compare` or
+`report.trial-balance.compare`. `change` is `current - prior`;
+`change_percent` is `change / |prior| * 100` rounded to two decimals, or
+`null` when `prior` is 0. `totals` uses the same keys as the periods mode.
+
+```json
+{
+  "data": {
+    "report": "income-statement",
+    "mode": "compare",
+    "compare": "prior-year",
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "currency": "USD",
+    "current": { "label": "2026-Q1", "from": "2026-01-01", "to": "2026-03-31" },
+    "prior": { "label": "2025-Q1", "from": "2025-01-01", "to": "2025-03-31" },
+    "accounts": [
+      {
+        "code": "4000",
+        "name": "Sales",
+        "type": "revenue",
+        "normal_balance": "credit",
+        "current": 250000,
+        "prior": 100000,
+        "change": 150000,
+        "change_percent": 150.0
+      }
+    ],
+    "totals": {
+      "net_income": { "current": 210000, "prior": 70000, "change": 140000, "change_percent": 200.0 }
+    }
+  }
+}
+```
+
+CSV output for these modes has the columns `code,name,type,<period labels...>,total`
+(periods) or `code,name,type,current,prior,change,change_percent` (compare),
+with amounts in minor units. Summary rows follow the accounts with an empty
+`code`, the summary key (e.g. `net_income`) in `name` and `type` set to
+`total`; `change_percent` is `n/a` when the prior amount is 0.
+
+### `report reconciliation`
+
+Amounts are minor units on the account's normal side. `statement_balance`,
+`difference` (`statement - cleared`), and `reconciled` (`difference == 0`) are
+`null` unless `--statement-balance` is given; `as_of` is `null` without `--to`;
+`statement` is `null` without `--statement`; `group_by_metadata` and `groups`
+are `null` without `--group-by-metadata`; `metadata_filters` lists the
+`--filter-metadata` pairs (empty without them).
+
+`cleared_balance` counts only `--statement`'s clearings when given;
+`total_cleared_balance` always counts every statement's (they are equal without
+`--statement`). With `--to`, a clearing counts toward the cleared balances when
+`cleared_date <= as_of`, and toward `reconciled_balance` only when it is
+reconciled and `reconciled_date <= as_of` (a clearing reconciled after `as_of`
+is cleared but not reconciled as of `as_of`; same with `--statement`).
+Invariant: `book_balance - total_cleared_balance == uncleared_total`.
+
+`uncleared_entries` lists every entry not fully cleared. Per item: `amount` is
+the raw (positive) entry amount and `signed_amount` its effect on the
+normal-side balance; `cleared_amount` and `remaining_amount` are raw amounts
+(`amount = cleared_amount + remaining_amount`); `signed_remaining` is the
+remaining amount on the normal side (they sum to `uncleared_total`);
+`partially_cleared` is true when `0 < cleared_amount < amount`. `reference` is
+the transaction reference (or `null`); `metadata` is the transaction metadata,
+parsed as JSON when valid, else the raw string (or `null`).
+`reconciled_amount` is the raw amount reconciled as of `as_of`. `clearings`
+lists the item's clearings as of `as_of`, oldest first: `id`, `amount` (raw),
+`cleared_date`, `reconciled_date`, `statement`, `status`. A clearing
+reconciled after `as_of` appears with `status: "cleared"` and
+`reconciled_date: null`.
+
+Each `groups` element has the group `value` (`"(unassigned)"` for items without the
+key, listed last), `count`, `uncleared_total` (sum of `signed_remaining`), and
+the member `entry_ids`.
+
+```json
+{
+  "data": {
+    "account": {
+      "code": "1200",
+      "name": "Commission Receivable",
+      "type": "asset",
+      "normal_balance": "debit"
+    },
+    "currency": "USD",
+    "as_of": "2026-03-31",
+    "statement": "STMT-2026-03",
+    "metadata_filters": [{ "key": "carrier", "value": "Acme" }],
+    "group_by_metadata": "policy",
+    "book_balance": 15000,
+    "cleared_balance": 4000,
+    "total_cleared_balance": 4000,
+    "reconciled_balance": 0,
+    "uncleared_total": 11000,
+    "uncleared_count": 2,
+    "partially_cleared_count": 1,
+    "statement_balance": 4000,
+    "difference": 0,
+    "reconciled": true,
+    "uncleared_entries": [
+      {
+        "entry_id": 1,
+        "transaction_id": 1,
+        "date": "2026-01-05",
+        "reference": "POL-1",
+        "description": "Commission POL-1",
+        "memo": null,
+        "metadata": { "carrier": "Acme", "policy": "P1" },
+        "direction": "debit",
+        "amount": 10000,
+        "signed_amount": 10000,
+        "cleared_amount": 4000,
+        "reconciled_amount": 0,
+        "remaining_amount": 6000,
+        "signed_remaining": 6000,
+        "partially_cleared": true,
+        "clearings": [
+          {
+            "id": 9,
+            "amount": 4000,
+            "cleared_date": "2026-03-31",
+            "reconciled_date": null,
+            "statement": "STMT-2026-03",
+            "status": "cleared"
+          }
+        ]
+      },
+      {
+        "entry_id": 5,
+        "transaction_id": 3,
+        "date": "2026-01-15",
+        "reference": "POL-3",
+        "description": "Commission POL-3",
+        "memo": null,
+        "metadata": { "carrier": "Acme" },
+        "direction": "debit",
+        "amount": 5000,
+        "signed_amount": 5000,
+        "cleared_amount": 0,
+        "reconciled_amount": 0,
+        "remaining_amount": 5000,
+        "signed_remaining": 5000,
+        "partially_cleared": false,
+        "clearings": []
+      }
+    ],
+    "groups": [
+      { "value": "P1", "count": 1, "uncleared_total": 6000, "entry_ids": [1] },
+      { "value": "(unassigned)", "count": 1, "uncleared_total": 5000, "entry_ids": [5] }
+    ]
   }
 }
 ```
@@ -267,16 +627,165 @@ Same schema as `report trial-balance`. Contains only asset, liability, and equit
 
 ### `txn show`
 
-Same shape as a single element from `txn list`, with entries included.
+Same shape as a single element from `txn list` (as a one-element array), with
+entries and `attachments` included. Each entry also carries:
+
+- `cleared_amount`: total cleared amount (all clearings, minor units);
+- `remaining_amount`: `amount - cleared_amount`;
+- `clearings`: the entry's clearings, oldest first, each with `id`, `amount`,
+  `cleared_date`, `reconciled_date` (`null` unless `status` is `reconciled`),
+  `statement` (or `null`) and `status` (`cleared` or `reconciled`).
+
+```json
+{
+  "data": [
+    {
+      "id": 42,
+      "description": "Commission POL-123",
+      "metadata": null,
+      "reference": "POL-123",
+      "currency": "USD",
+      "date": "2026-03-05",
+      "entries": [
+        {
+          "id": 5,
+          "account_code": "1200",
+          "direction": "debit",
+          "amount": 10000,
+          "memo": null,
+          "status": "uncleared",
+          "cleared_amount": 6500,
+          "remaining_amount": 3500,
+          "clearings": [
+            {
+              "id": 9,
+              "amount": 4000,
+              "cleared_date": "2026-03-31",
+              "reconciled_date": "2026-04-05",
+              "statement": "STMT-2026-03",
+              "status": "reconciled"
+            },
+            {
+              "id": 12,
+              "amount": 2500,
+              "cleared_date": "2026-04-30",
+              "reconciled_date": null,
+              "statement": "STMT-2026-04",
+              "status": "cleared"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "account_code": "4000",
+          "direction": "credit",
+          "amount": 10000,
+          "memo": null,
+          "status": "uncleared",
+          "cleared_amount": 0,
+          "remaining_amount": 10000,
+          "clearings": []
+        }
+      ],
+      "attachments": []
+    }
+  ]
+}
+```
 
 ### `txn clear`
+
+Single entry (`TXN_ID --entry ID` or `--reference REF --account CODE`).
+`status` is the requested status; `entry_status` the entry's derived status
+afterwards. `action` is `cleared` (a clearing was added), `reconciled`
+(clearings were promoted, possibly with a new reconciled clearing),
+`uncleared` (clearings were removed) or `skipped` (nothing changed;
+`skip_reason` is `already_cleared_by_statement`, `fully_cleared` or
+`nothing_to_unclear`). `amount` is what this call cleared (or removed);
+`cleared_amount`/`remaining_amount` are the entry's totals afterwards.
+`clearing_id` is the new clearing's id, or `null`. `reconciled_date` is
+`--date` with `--status reconciled` (the reconciled date it set), else `null`.
+
+Validation errors (exit 3): a `--date` before the transaction date; with
+`--status reconciled`, a `--date` before a promoted clearing's cleared date;
+and `--status cleared` on reconciled (locked) clearings, whose message says to
+run `--status uncleared` first and then clear again.
 
 ```json
 {
   "data": {
+    "reference": "POL-123",
     "transaction_id": 42,
     "entry_id": 5,
-    "status": "cleared"
+    "action": "cleared",
+    "clearing_id": 9,
+    "amount": 4000,
+    "entry_amount": 10000,
+    "cleared_amount": 4000,
+    "remaining_amount": 6000,
+    "previous_status": "uncleared",
+    "entry_status": "uncleared",
+    "skip_reason": null,
+    "status": "cleared",
+    "cleared_date": "2026-03-31",
+    "reconciled_date": null,
+    "statement": "STMT-2026-03"
+  }
+}
+```
+
+Batch (`--from-file`). The batch is atomic: on any error nothing is applied
+and the error envelope names the failing line. `cleared` holds every item that
+changed (whatever its `action`), `skipped` the rest; each item has the fields
+above (except the batch-level `status`, `cleared_date`, `reconciled_date`, `statement`) plus its
+1-based input `line`. `cleared_total` sums `amount` over `cleared`.
+
+```json
+{
+  "data": {
+    "account": "1200",
+    "status": "cleared",
+    "cleared_date": "2026-03-31",
+    "reconciled_date": null,
+    "statement": "STMT-2026-03",
+    "count": 2,
+    "cleared_count": 1,
+    "skipped_count": 1,
+    "cleared_total": 4000,
+    "cleared": [
+      {
+        "line": 1,
+        "reference": "POL-123",
+        "transaction_id": 42,
+        "entry_id": 5,
+        "action": "cleared",
+        "clearing_id": 9,
+        "amount": 4000,
+        "entry_amount": 10000,
+        "cleared_amount": 4000,
+        "remaining_amount": 6000,
+        "previous_status": "uncleared",
+        "entry_status": "uncleared",
+        "skip_reason": null
+      }
+    ],
+    "skipped": [
+      {
+        "line": 2,
+        "reference": "POL-124",
+        "transaction_id": 43,
+        "entry_id": 7,
+        "action": "skipped",
+        "clearing_id": null,
+        "amount": 0,
+        "entry_amount": 2500,
+        "cleared_amount": 2500,
+        "remaining_amount": 0,
+        "previous_status": "cleared",
+        "entry_status": "cleared",
+        "skip_reason": "already_cleared_by_statement"
+      }
+    ]
   }
 }
 ```
@@ -289,6 +798,127 @@ Same shape as a single element from `txn list`, with entries included.
     "schema_version": 8,
     "status": "healthy"
   }
+}
+```
+
+### `report cash-flow`
+
+Amounts are signed minor units (positive = cash inflow).
+
+```json
+{
+  "data": {
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "currency": "USD",
+    "cash_accounts": [{ "code": "1000", "name": "Checking" }],
+    "operating": {
+      "lines": [
+        { "code": "4000", "name": "Sales", "account_type": "revenue", "amount": 65000 },
+        { "code": "5000", "name": "Rent", "account_type": "expense", "amount": -25000 }
+      ],
+      "total": 40000
+    },
+    "investing": { "lines": [], "total": 0 },
+    "financing": {
+      "lines": [{ "code": "2000", "name": "Loan Payable", "account_type": "liability", "amount": 100000 }],
+      "total": 100000
+    },
+    "net_change": 140000,
+    "opening_cash": 100000,
+    "closing_cash": 240000,
+    "reconciled": true,
+    "difference": 0
+  }
+}
+```
+
+### `report aging`
+
+Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) when `--group-by-metadata`/`--group-by` is not used; otherwise it is the metadata value or `"(unassigned)"` (missing key, non-JSON or non-object metadata). `max_days` is `null` for the open-ended last bucket. `totals.net` (= `total_open - unapplied_credit`) always equals `account_balance` (the account's balance in its normal direction as of `as_of`, in `currency`).
+
+- `method` is `"fifo"` or `"specific"`; `basis` is `"fifo-by-transaction-date"` or `"specific-then-fifo-by-transaction-date"` accordingly.
+- `link_key` is the metadata key used for links with `"specific"` (default `"applies_to"`), `null` with `"fifo"`.
+- `net` is negative and `net_credit` is `true` when a group (or the totals) is in net credit, i.e. settlements exceed the open charges.
+- `open_items[].reference` is the charge's transaction reference, or `null`. `open_items` is always present (`--detail` only affects table and CSV output).
+- `unmatched_links` lists settlement links that were not honoured (always `[]` with `"fifo"`); each settlement was applied FIFO instead (`fallback: "fifo"`). `link` is the value as found in metadata (string, number, or the raw invalid value). `reason` is one of `not_found`, `not_on_account`, `not_a_charge`, `charge_after_settlement`, `after_as_of`, `other_counterparty`, `invalid` (see `commands.md`). `counterparty` is the settlement's group (`null` when not grouping); `settlement_amount` is its full amount.
+
+```json
+{
+  "data": {
+    "account": { "code": "1100", "name": "Accounts Receivable", "type": "asset" },
+    "kind": "receivable",
+    "as_of": "2026-06-30",
+    "currency": "USD",
+    "group_by": "customer",
+    "method": "specific",
+    "link_key": "applies_to",
+    "basis": "specific-then-fifo-by-transaction-date",
+    "buckets": [
+      { "label": "Current", "min_days": 0, "max_days": 0 },
+      { "label": "1-30", "min_days": 1, "max_days": 30 },
+      { "label": "31-60", "min_days": 31, "max_days": 60 },
+      { "label": "61-90", "min_days": 61, "max_days": 90 },
+      { "label": "90+", "min_days": 91, "max_days": null }
+    ],
+    "groups": [
+      {
+        "counterparty": "Globex",
+        "buckets": [
+          { "label": "Current", "amount": 0 },
+          { "label": "1-30", "amount": 0 },
+          { "label": "31-60", "amount": 0 },
+          { "label": "61-90", "amount": 0 },
+          { "label": "90+", "amount": 10000 }
+        ],
+        "total_open": 10000,
+        "unapplied_credit": 0,
+        "net": 10000,
+        "net_credit": false,
+        "open_items": [
+          {
+            "transaction_id": 1,
+            "date": "2026-03-01",
+            "reference": "INV-101",
+            "description": "Invoice 101",
+            "age_days": 121,
+            "bucket": "90+",
+            "original_amount": 10000,
+            "open_amount": 10000
+          }
+        ]
+      }
+    ],
+    "totals": {
+      "buckets": [
+        { "label": "Current", "amount": 0 },
+        { "label": "1-30", "amount": 0 },
+        { "label": "31-60", "amount": 0 },
+        { "label": "61-90", "amount": 0 },
+        { "label": "90+", "amount": 10000 }
+      ],
+      "total_open": 10000,
+      "unapplied_credit": 0,
+      "net": 10000,
+      "net_credit": false
+    },
+    "account_balance": 10000,
+    "unmatched_links": []
+  }
+}
+```
+
+An `unmatched_links` element:
+
+```json
+{
+  "settlement_transaction_id": 7,
+  "settlement_date": "2026-06-11",
+  "settlement_amount": 5000,
+  "counterparty": "Globex",
+  "link": "INV-999",
+  "reason": "not_found",
+  "fallback": "fifo"
 }
 ```
 
@@ -354,8 +984,8 @@ may be `null` for cross-company changes.
       "entity": "entry",
       "entity_id": "5",
       "action": "status_change",
-      "before": "{\"status\":\"uncleared\"}",
-      "after": "{\"status\":\"reconciled\"}"
+      "before": "{\"cleared_amount\":0,\"status\":\"uncleared\"}",
+      "after": "{\"cleared_amount\":4000,\"clearings\":[{\"amount\":4000,\"cleared_date\":\"2026-03-31\",\"id\":9,\"reconciled_date\":null,\"statement\":\"STMT-2026-03\",\"status\":\"cleared\"}],\"op\":\"clear\",\"status\":\"uncleared\"}"
     },
     {
       "id": 11,
@@ -376,10 +1006,17 @@ may be `null` for cross-company changes.
 `action` is one of `status_change`, `correlate`, `budget_set`, `budget_delete`,
 `account_delete`, `company_delete`.
 
+`status_change` rows come from `txn clear`. `before`/`after` carry the entry's
+derived `status` and total `cleared_amount`; `after` also carries `op`
+(`clear`, `reconcile` or `unclear`) and `clearings`, the affected clearing rows
+(for `unclear`, the removed ones), each with `id`, `amount`, `cleared_date`,
+`reconciled_date` (`null` unless reconciled), `statement` and `status`.
+
 ## Parsing Tips for Agents
 
 1. **Check `ok` first**: If `false`, read `error.code` and `error.message` to decide next steps
 2. **Use `meta.command`** to confirm the response matches the expected command
 3. **Convert amounts**: Divide by `10^minor_units` for the currency (2 for USD/EUR/MXN, 0 for JPY, 3 for BHD)
 4. **Handle null fields**: `metadata`, `reference`, `memo`, `notes`, `description` can be null
-5. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout
+5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Databases created before schema v9 are migrated to this form automatically on open.
+6. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout

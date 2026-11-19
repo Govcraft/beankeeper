@@ -16,15 +16,15 @@ const USER_KEY: &str = "RENT-2026-03";
 /// Run `bk` with the given args against the provided database path and return
 /// (success, stdout) — capturing stdout so we can parse JSON.
 fn run_bk(db_path: &str, args: &[&str]) -> (bool, String) {
-    let mut cmd = Command::cargo_bin("bk")
-        .unwrap_or_else(|e| panic!("bk binary should build: {e}"));
+    let mut cmd =
+        Command::cargo_bin("bk").unwrap_or_else(|e| panic!("bk binary should build: {e}"));
     cmd.arg("--db").arg(db_path);
     cmd.args(args);
     let output = cmd
         .output()
         .unwrap_or_else(|e| panic!("bk should execute: {e}"));
-    let stdout = String::from_utf8(output.stdout)
-        .unwrap_or_else(|e| panic!("stdout is valid utf-8: {e}"));
+    let stdout =
+        String::from_utf8(output.stdout).unwrap_or_else(|e| panic!("stdout is valid utf-8: {e}"));
     (output.status.success(), stdout)
 }
 

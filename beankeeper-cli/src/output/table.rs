@@ -4,6 +4,9 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 
+use std::collections::HashMap;
+
+use crate::db::clearings::{Clearing, cleared_sum};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceRow,
     CompanyRow, EntryRow, TransactionRow,
@@ -22,7 +25,7 @@ use crate::db::{
 /// - `format_amount(5000, 0)` => `"5,000"`
 /// - `format_amount(1234567, 3)` => `"1,234.567"`
 /// - `format_amount(0, 2)` => `"0.00"`
-fn format_amount(minor_units: i64, decimal_places: u8) -> String {
+pub(super) fn format_amount(minor_units: i64, decimal_places: u8) -> String {
     let negative = minor_units < 0;
     let abs_units = minor_units.unsigned_abs();
     let divisor = 10u64.pow(u32::from(decimal_places));
@@ -79,7 +82,7 @@ fn normal_balance_label(account_type: &str) -> &'static str {
 }
 
 /// Wrap `text` in ANSI escape codes if colours are enabled.
-fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
+pub(super) fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     if use_color {
         format!("{style}{text}{reset}", reset = anstyle::Reset)
     } else {
@@ -87,21 +90,21 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     }
 }
 
-fn cyan_style() -> anstyle::Style {
+pub(super) fn cyan_style() -> anstyle::Style {
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)))
 }
 
-fn green_style() -> anstyle::Style {
+pub(super) fn green_style() -> anstyle::Style {
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)))
 }
 
-fn red_bold_style() -> anstyle::Style {
+pub(super) fn red_bold_style() -> anstyle::Style {
     anstyle::Style::new()
         .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red)))
         .bold()
 }
 
-fn bold_style() -> anstyle::Style {
+pub(super) fn bold_style() -> anstyle::Style {
     anstyle::Style::new().bold()
 }
 
@@ -254,6 +257,26 @@ pub fn render_transaction_detail(
     currency_minor_units: u8,
     use_color: bool,
 ) -> String {
+    render_transaction_detail_with_clearings::<std::hash::RandomState>(
+        txn,
+        entries,
+        None,
+        currency_minor_units,
+        use_color,
+    )
+}
+
+/// Render a single transaction in detail. With `clearings` (entry id to its
+/// clearings), each entry line is followed by its id, cleared and remaining
+/// amounts, and one line per clearing.
+#[must_use]
+pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
+    txn: &TransactionRow,
+    entries: &[EntryRow],
+    clearings: Option<&HashMap<i64, Vec<Clearing>, S>>,
+    currency_minor_units: u8,
+    use_color: bool,
+) -> String {
     let mut lines = Vec::new();
 
     // Header
@@ -324,6 +347,11 @@ pub fn render_transaction_detail(
             prefix = styled(prefix, direction_style, use_color),
             code = styled(&entry.account_code, cyan_style(), use_color),
         ));
+
+        if let Some(map) = clearings {
+            let list = map.get(&entry.id).map_or(&[][..], Vec::as_slice);
+            lines.extend(clearing_lines(entry, list, currency_minor_units, use_color));
+        }
     }
 
     lines.push(String::new());
@@ -341,6 +369,48 @@ pub fn render_transaction_detail(
     }
 
     lines.join("\n")
+}
+
+/// The `txn show` lines under an entry: its id with cleared and remaining
+/// amounts, then one line per clearing.
+fn clearing_lines(
+    entry: &EntryRow,
+    clearings: &[Clearing],
+    currency_minor_units: u8,
+    use_color: bool,
+) -> Vec<String> {
+    let cleared = cleared_sum(clearings);
+    let mut out = vec![styled(
+        &format!(
+            "       entry #{}: cleared {} of {}, remaining {}",
+            entry.id,
+            format_amount(cleared, currency_minor_units),
+            format_amount(entry.amount, currency_minor_units),
+            format_amount(entry.amount - cleared, currency_minor_units),
+        ),
+        dim_style(),
+        use_color,
+    )];
+    for c in clearings {
+        let reconciled = c
+            .reconciled_date
+            .as_deref()
+            .map(|d| format!("  reconciled {d}"))
+            .unwrap_or_default();
+        let statement = c
+            .statement_ref
+            .as_deref()
+            .map(|s| format!("  statement {s}"))
+            .unwrap_or_default();
+        out.push(format!(
+            "         clearing #{id}  {amount}  {status}  cleared {date}{reconciled}{statement}",
+            id = c.id,
+            amount = format_amount(c.amount, currency_minor_units),
+            status = c.status.as_str(),
+            date = c.cleared_date,
+        ));
+    }
+    out
 }
 
 /// Render a trial balance report as a table with totals and balance status.
@@ -497,7 +567,7 @@ fn capitalize_first(s: &str) -> String {
 }
 
 /// Create a new `comfy_table::Table` with consistent styling.
-fn new_table() -> Table {
+pub(super) fn new_table() -> Table {
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)

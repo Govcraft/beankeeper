@@ -1,9 +1,10 @@
 use rusqlite::{Connection, params};
 
+use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 8;
+const CURRENT_VERSION: i64 = 10;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -71,6 +72,14 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 8 {
         apply_v8(conn)?;
+    }
+
+    if version < 9 {
+        apply_v9(conn)?;
+    }
+
+    if version < 10 {
+        apply_v10(conn)?;
     }
 
     debug_assert_eq!(
@@ -330,9 +339,229 @@ fn apply_v8(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Applies the v9 migration: normalizes `transactions.metadata` so it is
+/// always `NULL` or a JSON object (issue #17).
+///
+/// `txn post -m` used to store free text verbatim, which made the reconcile
+/// query's `json_extract` fail with "malformed JSON". Every existing value that
+/// is not valid JSON, or is valid JSON but not an object, is rewritten with
+/// the same [`metadata::normalize`] rule new writes use: free text becomes
+/// `{"memo": "<text>"}`, empty text becomes `NULL`, objects are untouched.
+///
+/// This one-off rewrite is intentionally *not* recorded in `audit_log`. It is
+/// a schema-level data-format migration, not a ledger mutation by an actor:
+/// the information content is preserved verbatim under `memo`, and there are
+/// no deployed databases holding such rows to protect. Recording it would
+/// require a new audit action kind and a rebuild of the `audit_log.action`
+/// CHECK constraint for no practical benefit.
+fn apply_v9(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch("SAVEPOINT apply_v9")?;
+    let result = (|| -> Result<(), CliError> {
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, metadata FROM transactions \
+                 WHERE metadata IS NOT NULL \
+                   AND (NOT json_valid(metadata) OR json_type(metadata) <> 'object')",
+            )?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?
+        };
+
+        for (id, raw) in rows {
+            conn.execute(
+                "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
+                params![metadata::normalize(&raw), id],
+            )?;
+        }
+
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![9],
+        )?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("RELEASE apply_v9")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO apply_v9; RELEASE apply_v9");
+            Err(e)
+        }
+    }
+}
+
+/// Applies the v10 migration: adds the `entry_clearings` table (issue #25).
+///
+/// An entry can be cleared in several parts, on different dates, by
+/// different statements. `entries.status` stays as a derived summary of the
+/// entry's clearings (see `db::clearings::derive_status`).
+///
+/// A reconciled clearing carries a `reconciled_date` (required, and on or
+/// after its `cleared_date`); a cleared one has none. CHECK constraints
+/// enforce both.
+///
+/// Backfill: every entry that is already `cleared` or `reconciled` gets one
+/// clearing row for its full amount, with that status, dated on its
+/// transaction date (both `cleared_date` and, when reconciled,
+/// `reconciled_date`) and with no statement reference.
+///
+/// Self-contained: it only depends on tables from v1-v6, so it can be
+/// renumbered by changing the version literal below and the call site.
+fn apply_v10(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "
+        SAVEPOINT sp_migrate_entry_clearings;
+
+        CREATE TABLE IF NOT EXISTS entry_clearings (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id      INTEGER NOT NULL REFERENCES entries(id),
+            company_slug  TEXT    NOT NULL REFERENCES companies(slug),
+            amount        INTEGER NOT NULL CHECK(amount > 0),
+            cleared_date  TEXT    NOT NULL,
+            statement_ref TEXT,
+            status        TEXT    NOT NULL DEFAULT 'cleared' CHECK(status IN ('cleared', 'reconciled')),
+            reconciled_date TEXT,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+            -- A reconciled clearing has a reconciled date; a cleared one has none.
+            CHECK ((status = 'reconciled') = (reconciled_date IS NOT NULL)),
+            CHECK (reconciled_date IS NULL OR reconciled_date >= cleared_date)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_entry_clearings_entry
+            ON entry_clearings(entry_id);
+
+        CREATE INDEX IF NOT EXISTS idx_entry_clearings_company_statement
+            ON entry_clearings(company_slug, statement_ref);
+
+        -- Idempotency key: at most one clearing per (entry, statement).
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_clearings_entry_statement
+            ON entry_clearings(entry_id, statement_ref) WHERE statement_ref IS NOT NULL;
+
+        INSERT INTO entry_clearings
+            (entry_id, company_slug, amount, cleared_date, status, reconciled_date)
+        SELECT e.id, e.company_slug, e.amount, t.date, e.status,
+               CASE WHEN e.status = 'reconciled' THEN t.date END
+        FROM entries e
+        JOIN transactions t ON t.id = e.transaction_id
+        WHERE e.status IN ('cleared', 'reconciled')
+          AND NOT EXISTS (SELECT 1 FROM entry_clearings c WHERE c.entry_id = e.id);
+
+        INSERT INTO schema_version (version) VALUES (10);
+
+        RELEASE sp_migrate_entry_clearings;
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `(entry_id, company_slug, amount, cleared_date, statement_ref, status,
+    /// reconciled_date)`.
+    type ClearingRow = (
+        i64,
+        String,
+        i64,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    );
+
+    #[test]
+    fn v10_migration_backfills_clearings_from_v8() {
+        let conn = open_conn();
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
+        apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
+        apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
+        apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
+        apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(8));
+
+        // A v8-shaped ledger: one transaction with a cleared, a reconciled,
+        // and an uncleared entry.
+        conn.execute_batch(
+            "
+            INSERT INTO companies (slug, name) VALUES ('co', 'Co');
+            INSERT INTO accounts (company_slug, code, name, type) VALUES
+                ('co', '1000', 'Cash', 'asset'),
+                ('co', '1200', 'Receivable', 'asset'),
+                ('co', '4000', 'Revenue', 'revenue');
+            INSERT INTO transactions (id, company_slug, description, date)
+                VALUES (1, 'co', 'Sale', '2026-03-15');
+            INSERT INTO entries (id, transaction_id, account_code, company_slug, direction, amount, status) VALUES
+                (1, 1, '1000', 'co', 'debit', 500, 'cleared'),
+                (2, 1, '1200', 'co', 'debit', 300, 'reconciled'),
+                (3, 1, '4000', 'co', 'credit', 800, 'uncleared');
+            ",
+        )
+        .unwrap_or_else(|e| panic!("seed v8 ledger: {e}"));
+
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT entry_id, company_slug, amount, cleared_date, statement_ref, status, \
+                        reconciled_date \
+                 FROM entry_clearings ORDER BY entry_id",
+            )
+            .unwrap_or_else(|e| panic!("prepare: {e}"));
+        let rows: Vec<ClearingRow> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })
+            .unwrap_or_else(|e| panic!("query: {e}"))
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    1,
+                    "co".into(),
+                    500,
+                    "2026-03-15".into(),
+                    None,
+                    "cleared".into(),
+                    None
+                ),
+                (
+                    2,
+                    "co".into(),
+                    300,
+                    "2026-03-15".into(),
+                    None,
+                    "reconciled".into(),
+                    Some("2026-03-15".into())
+                ),
+            ]
+        );
+
+        // Re-running ensure_schema neither re-applies nor duplicates.
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema rerun: {e}"));
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entry_clearings", [], |r| r.get(0))
+            .unwrap_or(-1);
+        assert_eq!(n, 2);
+    }
 
     fn open_conn() -> Connection {
         let conn = Connection::open_in_memory()
@@ -447,16 +676,16 @@ mod tests {
         assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
 
         // Verify the reference column exists by querying pragma
-        let has_reference: bool = conn
-            .prepare("PRAGMA table_info(transactions)")
-            .is_ok_and(|mut stmt| {
-                let names: Vec<String> = stmt
-                    .query_map([], |row| row.get::<_, String>(1))
-                    .unwrap_or_else(|e| panic!("query failed: {e}"))
-                    .filter_map(Result::ok)
-                    .collect();
-                names.contains(&"reference".to_string())
-            });
+        let has_reference: bool =
+            conn.prepare("PRAGMA table_info(transactions)")
+                .is_ok_and(|mut stmt| {
+                    let names: Vec<String> = stmt
+                        .query_map([], |row| row.get::<_, String>(1))
+                        .unwrap_or_else(|e| panic!("query failed: {e}"))
+                        .filter_map(Result::ok)
+                        .collect();
+                    names.contains(&"reference".to_string())
+                });
         assert!(
             has_reference,
             "reference column should exist after v3 migration"
@@ -477,32 +706,32 @@ mod tests {
         assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
 
         // Verify tax_category column on entries
-        let has_tax_category: bool = conn
-            .prepare("PRAGMA table_info(entries)")
-            .is_ok_and(|mut stmt| {
-                let names: Vec<String> = stmt
-                    .query_map([], |row| row.get::<_, String>(1))
-                    .unwrap_or_else(|e| panic!("query failed: {e}"))
-                    .filter_map(Result::ok)
-                    .collect();
-                names.contains(&"tax_category".to_string())
-            });
+        let has_tax_category: bool =
+            conn.prepare("PRAGMA table_info(entries)")
+                .is_ok_and(|mut stmt| {
+                    let names: Vec<String> = stmt
+                        .query_map([], |row| row.get::<_, String>(1))
+                        .unwrap_or_else(|e| panic!("query failed: {e}"))
+                        .filter_map(Result::ok)
+                        .collect();
+                    names.contains(&"tax_category".to_string())
+                });
         assert!(
             has_tax_category,
             "tax_category column should exist on entries after v4"
         );
 
         // Verify default_tax_category column on accounts
-        let has_default_tax: bool = conn
-            .prepare("PRAGMA table_info(accounts)")
-            .is_ok_and(|mut stmt| {
-                let names: Vec<String> = stmt
-                    .query_map([], |row| row.get::<_, String>(1))
-                    .unwrap_or_else(|e| panic!("query failed: {e}"))
-                    .filter_map(Result::ok)
-                    .collect();
-                names.contains(&"default_tax_category".to_string())
-            });
+        let has_default_tax: bool =
+            conn.prepare("PRAGMA table_info(accounts)")
+                .is_ok_and(|mut stmt| {
+                    let names: Vec<String> = stmt
+                        .query_map([], |row| row.get::<_, String>(1))
+                        .unwrap_or_else(|e| panic!("query failed: {e}"))
+                        .filter_map(Result::ok)
+                        .collect();
+                    names.contains(&"default_tax_category".to_string())
+                });
         assert!(
             has_default_tax,
             "default_tax_category column should exist on accounts after v4"
@@ -601,6 +830,74 @@ mod tests {
     }
 
     #[test]
+    fn v9_migration_normalizes_metadata() {
+        let conn = open_conn();
+        // Build a v8-shaped database.
+        apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
+        apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
+        apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
+        apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
+        apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
+        apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
+        apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
+        apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(8));
+
+        conn.execute(
+            "INSERT INTO companies (slug, name) VALUES ('acme', 'Acme')",
+            [],
+        )
+        .unwrap_or_else(|e| panic!("insert company: {e}"));
+        let samples: [Option<&str>; 7] = [
+            Some("open:1000"),
+            Some(r#"{"ref":"INV-1"}"#),
+            Some("[1,2]"),
+            Some("42"),
+            Some(""),
+            None,
+            Some(r#"{"correlate":2}"#),
+        ];
+        for m in samples {
+            conn.execute(
+                "INSERT INTO transactions (company_slug, description, metadata, date) \
+                 VALUES ('acme', 'x', ?1, '2026-01-01')",
+                params![m],
+            )
+            .unwrap_or_else(|e| panic!("insert txn: {e}"));
+        }
+
+        ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
+        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+
+        let mut stmt = conn
+            .prepare("SELECT metadata FROM transactions ORDER BY id")
+            .unwrap_or_else(|e| panic!("prepare: {e}"));
+        let got: Vec<Option<String>> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("query: {e}"))
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                Some(r#"{"memo":"open:1000"}"#.to_string()),
+                Some(r#"{"ref":"INV-1"}"#.to_string()),
+                Some(r#"{"memo":[1,2]}"#.to_string()),
+                Some(r#"{"memo":"42"}"#.to_string()),
+                None,
+                None,
+                Some(r#"{"correlate":2}"#.to_string()),
+            ]
+        );
+
+        // The migration is unaudited by design.
+        let audited: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap_or(-1);
+        assert_eq!(audited, 0);
+    }
+
+    #[test]
     fn audit_log_table_exists() {
         let conn = open_conn();
         assert!(ensure_schema(&conn).is_ok());
@@ -640,9 +937,6 @@ mod tests {
                     .collect();
                 names.contains(&"status".to_string())
             });
-        assert!(
-            has_status,
-            "status column should exist on entries after v6"
-        );
+        assert!(has_status, "status column should exist on entries after v6");
     }
 }

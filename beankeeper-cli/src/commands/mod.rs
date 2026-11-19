@@ -6,7 +6,14 @@ pub mod export;
 pub mod import_ofx;
 pub mod init;
 pub mod report;
+pub mod report_aging;
+pub mod report_cash_flow;
+pub mod report_currency;
+pub mod report_ledger;
+pub mod report_periods;
+pub mod report_reconciliation;
 pub mod txn;
+pub mod txn_clear;
 pub mod verify;
 
 use crate::cli::{
@@ -19,6 +26,9 @@ use crate::output::json::Meta;
 /// Map a parsed `Command` to its dot-notation command name.
 #[must_use]
 pub fn command_name(cmd: &Command) -> &'static str {
+    if let Some(id) = report_periods::command_id(cmd) {
+        return id;
+    }
     match cmd {
         Command::Init { .. } => "init",
         Command::Verify => "verify",
@@ -56,6 +66,10 @@ pub fn command_name(cmd: &Command) -> &'static str {
             ReportCommand::BalanceSheet { .. } => "report.balance-sheet",
             ReportCommand::TaxSummary { .. } => "report.tax-summary",
             ReportCommand::BudgetVariance { .. } => "report.budget-variance",
+            ReportCommand::Ledger { .. } => "report.ledger",
+            ReportCommand::Aging { .. } => "report.aging",
+            ReportCommand::Reconciliation { .. } => "report.reconciliation",
+            ReportCommand::CashFlow(_) => "report.cash-flow",
         },
         Command::Audit(args) => match &args.command {
             AuditCommand::Log { .. } => "audit.log",

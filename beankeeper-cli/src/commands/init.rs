@@ -108,7 +108,8 @@ fn post(
             on_conflict: crate::db::ConflictStrategy::Error,
             actor: &actor,
         },
-    ).map(|res| match res {
+    )
+    .map(|res| match res {
         crate::db::PostResult::Created(id) | crate::db::PostResult::Skipped(id) => id,
     })
 }
@@ -257,8 +258,18 @@ fn seed_consulting_accounts(conn: &rusqlite::Connection) -> Result<(), CliError>
         ("5100", "Software Licences", "expense", Some("software")),
         ("5200", "Office Supplies", "expense", Some("supplies")),
         ("5300", "Salary Expense", "expense", Some("payroll")),
-        ("2600", "Federal Tax Payable", "liability", Some("payroll-tax")),
-        ("2700", "State Tax Payable", "liability", Some("payroll-tax")),
+        (
+            "2600",
+            "Federal Tax Payable",
+            "liability",
+            Some("payroll-tax"),
+        ),
+        (
+            "2700",
+            "State Tax Payable",
+            "liability",
+            Some("payroll-tax"),
+        ),
         ("2800", "FICA Payable", "liability", Some("payroll-tax")),
     ];
     seed_company_accounts(conn, "acme-consulting", accounts)?;
@@ -739,8 +750,9 @@ mod tests {
             );
 
             // Verify trial balance is balanced
-            let balances = crate::db::compute_trial_balance(db.conn(), slug, None, None, None)
-                .expect("trial balance");
+            let balances =
+                crate::db::compute_trial_balance(db.conn(), slug, None, None, None, None)
+                    .expect("trial balance");
             let total_debits: i64 = balances.iter().map(|b| b.debit_total).sum();
             let total_credits: i64 = balances.iter().map(|b| b.credit_total).sum();
             assert_eq!(

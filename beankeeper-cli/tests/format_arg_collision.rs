@@ -50,7 +50,10 @@ const DOWNCAST_PANIC: &str = "Mismatch between definition and access";
 
 /// Run a command and return stdout+stderr concatenated.
 fn run(args: &[&str], dir: &tempfile::TempDir) -> Result<String, Box<dyn Error>> {
-    let output = Command::cargo_bin("bk")?.args(args).current_dir(dir.path()).output()?;
+    let output = Command::cargo_bin("bk")?
+        .args(args)
+        .current_dir(dir.path())
+        .output()?;
     let mut combined = String::from_utf8(output.stdout)?;
     combined.push_str(&String::from_utf8(output.stderr)?);
     Ok(combined)
@@ -99,10 +102,7 @@ fn txn_import_format_ofx_does_not_panic_on_arg_downcast() -> TestResult {
 fn export_format_does_not_panic_on_arg_downcast() -> TestResult {
     let dir = init_demo_db()?;
 
-    let combined = run(
-        &["--db", "books.db", "export", "--format", "json"],
-        &dir,
-    )?;
+    let combined = run(&["--db", "books.db", "export", "--format", "json"], &dir)?;
 
     // Bug (#10): `--format json` on `export` panicked because the global
     // OutputFormat `format` id collided with the ExportFormat one.
