@@ -1250,6 +1250,39 @@ EXAMPLES:\n  \
         #[arg(long)]
         currency: Option<String>,
     },
+
+    /// Reconcile an account against a bank/card statement using entry
+    /// clearance status (book vs. cleared vs. reconciled balances).
+    #[command(after_help = "\
+EXAMPLES:\n  \
+    Book, cleared, and reconciled balances for the checking account:\n    \
+    $ bk --company acme report reconciliation --account 1000\n\
+    \n  \
+    Compare against a statement ending 2026-03-31:\n    \
+    $ bk --company acme report reconciliation --account 1000 --to 2026-03-31 --statement-balance 1234.56\n\
+    \n  \
+    Credit card (credit-normal) in a specific currency:\n    \
+    $ bk --company acme report reconciliation --account 2100 --currency USD\
+")]
+    Reconciliation {
+        /// Account code to reconcile.
+        #[arg(long)]
+        account: String,
+
+        /// As-of date (inclusive, YYYY-MM-DD). Defaults to all dates.
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Statement ending balance in major units (e.g. 1234.56), on the
+        /// account's normal side.
+        #[arg(long, allow_hyphen_values = true)]
+        statement_balance: Option<String>,
+
+        /// Currency code. Defaults to the company's single transaction
+        /// currency (USD when there are no transactions).
+        #[arg(long)]
+        currency: Option<String>,
+    },
 }
 
 /// Output format for general commands.

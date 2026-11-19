@@ -10,6 +10,7 @@ pub mod report_ledger;
 pub mod report_aging;
 pub mod report_currency;
 pub mod report_periods;
+pub mod report_reconciliation;
 pub mod txn;
 pub mod verify;
 
@@ -65,6 +66,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             ReportCommand::BudgetVariance { .. } => "report.budget-variance",
             ReportCommand::Ledger { .. } => "report.ledger",
             ReportCommand::Aging { .. } => "report.aging",
+            ReportCommand::Reconciliation { .. } => "report.reconciliation",
         },
         Command::Audit(args) => match &args.command {
             AuditCommand::Log { .. } => "audit.log",

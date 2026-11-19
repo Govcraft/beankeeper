@@ -109,10 +109,16 @@ bk --company mybiz txn post -d "Reclassify: Netflix subscription" \
 bk --company mybiz txn clear 50 --entry 99
 bk --company mybiz txn clear 50 --entry 100
 
-# 5. After full reconciliation, mark as reconciled
+# 5. Compare the cleared balance to the statement ending balance.
+#    Lists the still-uncleared entries; "reconciled: yes" when the
+#    difference (statement - cleared) is zero.
+bk --company mybiz report reconciliation --account 1000 \
+  --to 2026-03-31 --statement-balance 4210.33
+
+# 6. After full reconciliation, mark as reconciled
 bk --company mybiz txn clear 50 --entry 99 --status reconciled
 
-# 6. Confirm what was reconciled and when (the audit trail records each change)
+# 7. Confirm what was reconciled and when (the audit trail records each change)
 bk --company mybiz audit log --entity entry
 ```
 

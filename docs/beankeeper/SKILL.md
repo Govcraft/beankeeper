@@ -74,6 +74,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report budget-variance` | Budget vs actual comparison |
 | `bk report ledger` | General ledger / account statement with running balances |
 | `bk report aging` | Receivables/payables aging buckets (FIFO by transaction date) |
+| `bk report reconciliation` | Book vs cleared vs reconciled balance for one account, uncleared entries, statement difference |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export all data as JSON or CSV |
@@ -162,6 +163,22 @@ bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadat
 There is no invoice or due-date model: payments are applied FIFO to the oldest
 open charges and ages are measured from transaction dates. To age per customer
 or vendor, post with JSON metadata such as `-m '{"customer":"Globex"}'`.
+
+### Reconcile an account against a statement
+
+```bash
+# Mark the entries that appear on the statement as cleared
+bk --company acme txn clear 42 --entry 5
+
+# Compare the cleared balance to the statement ending balance
+bk --company acme report reconciliation --account 1000 --to 2026-03-31 \
+  --statement-balance 1234.56
+```
+
+Balances are on the account's normal side (debit-normal for asset/expense,
+credit-normal otherwise). `book - cleared` always equals the total of the
+listed uncleared entries; `difference = statement - cleared`, and the account
+is reconciled when the difference is zero.
 
 ### Budgeting
 

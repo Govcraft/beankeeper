@@ -106,6 +106,7 @@ bk --company personal report income-statement --from 2026-01-01 --to 2026-12-31
 bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
 # Multi-currency companies pick the report currency explicitly
 bk --company personal report trial-balance --currency MXN
+bk --company personal report reconciliation --account 1000 --statement-balance 4210.33
 
 # Set a budget and compare against actuals
 bk --company personal budget set 5000 --year 2026 --annual 14400
@@ -402,6 +403,17 @@ bk --company personal report income-statement --from 2026-04-01 --to 2026-06-30 
 ```
 
 Each cell is the account's net activity on its normal side. Periods are labelled `2026-01`, `2026-Q1` or `2026`, and the first and last periods are clipped to `--from`/`--to`. Comparisons add `Change` and `Change %` columns (`n/a` when the prior amount is 0). Table, JSON (`report.income-statement.periods`, `report.income-statement.compare`, ...) and CSV output are supported.
+
+`bk report reconciliation` uses those statuses to reconcile an account against a statement. It reports the book balance (all entries), the cleared balance (cleared + reconciled), and the reconciled-only balance on the account's normal side, lists the uncleared entries with their total (book - cleared = uncleared total), and, given `--statement-balance`, shows the difference (statement - cleared) and whether the account is reconciled:
+
+```sh
+bk --company personal report reconciliation --account 1000 --to 2026-03-31 --statement-balance 4210.33
+
+# Credit cards are credit-normal: a positive balance is the amount owed
+bk --company personal report reconciliation --account 2100 --statement-balance 512.80
+```
+
+`--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the uncleared entries followed by `summary` rows (see `docs/beankeeper/references/commands.md`).
 
 ### Budgeting and Variance Analysis
 

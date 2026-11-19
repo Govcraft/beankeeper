@@ -456,6 +456,37 @@ balances. The income statement adds `Total Revenue`, `Total Expenses` and
 `Net Income` rows; the trial balance adds `Total Debits` and `Total Credits`
 rows (raw debit/credit totals per window).
 
+### `bk report reconciliation --account CODE`
+
+Reconcile one account against a bank or card statement using entry clearance
+status (set with `bk txn clear`). Not to be confused with `bk txn reconcile`,
+which finds orphaned intercompany correlations.
+
+```bash
+bk --company acme report reconciliation --account 1000
+bk --company acme report reconciliation --account 1000 --to 2026-03-31
+bk --company acme report reconciliation --account 1000 --to 2026-03-31 \
+  --statement-balance 1234.56
+bk --company acme report reconciliation --account 2100 --currency USD   # credit card
+```
+
+**Flags:**
+- `--account CODE` (required): Account to reconcile
+- `--to YYYY-MM-DD`: As-of date, inclusive (default: all dates)
+- `--statement-balance AMT`: Statement ending balance in major units (e.g. `1234.56`, may be negative), on the account's normal side
+- `--currency CODE`: Only entries of transactions in this currency. If omitted, the company's single transaction currency is used (USD if it has no transactions); if the company has several currencies, the command fails with `VALIDATION` and `--currency` is required
+
+**Output:**
+- Book balance (all entries), cleared balance (`cleared` + `reconciled` entries), and reconciled-only balance, all on the account's normal side (debit-normal for asset/expense, credit-normal for liability/equity/revenue)
+- The uncleared entries (entry id, transaction id, date, description, signed amount) and their total. Invariant: `book - cleared = uncleared total`
+- With `--statement-balance`: the statement balance, `difference = statement - cleared`, and `reconciled: yes/no` (yes when the difference is zero)
+
+**CSV:** one header row `row_type,entry_id,transaction_id,date,description,amount,currency`,
+then one `entry` row per uncleared entry, then `summary` rows whose `description`
+names the metric (`book_balance`, `cleared_balance`, `reconciled_balance`,
+`uncleared_total`, plus `statement_balance`, `difference`, and `reconciled`
+(`1`/`0`) when a statement balance is given). Amounts are signed minor units.
+
 ## Audit
 
 The ledger is append-only: posted transactions are never edited or deleted
