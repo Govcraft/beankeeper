@@ -37,6 +37,7 @@ pub fn run(
             debit,
             credit,
             metadata,
+            meta,
             currency,
             date,
             correlate,
@@ -51,6 +52,7 @@ pub fn run(
             debit,
             credit,
             metadata.as_deref(),
+            meta,
             currency,
             date.as_deref(),
             *correlate,
@@ -171,6 +173,7 @@ fn run_list_or_count(
         currency,
         reference,
         metadata,
+        meta,
         tax_category,
         direction,
         count,
@@ -205,6 +208,8 @@ fn run_list_or_count(
     lp.currency_filter = currency.as_deref();
     lp.reference_filter = reference.as_deref();
     lp.metadata_like = metadata.as_deref();
+    let meta_eq = db::metadata::parse_meta_args(meta)?;
+    lp.meta_eq = &meta_eq;
     lp.tax_category_filter = tax_category.as_deref();
     lp.direction_filter = dir_str;
 
@@ -341,7 +346,7 @@ fn normalize_reference(input: &str) -> Result<String, &'static str> {
 }
 
 /// Execute the `txn post` subcommand.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_post(
     cli: &Cli,
     db_handle: &Db,
@@ -350,6 +355,7 @@ fn run_post(
     debit_args: &[String],
     credit_args: &[String],
     metadata: Option<&str>,
+    meta_args: &[String],
     currency_code: &str,
     date: Option<&str>,
     correlate: Option<i64>,
@@ -382,6 +388,11 @@ fn run_post(
     };
     let txn_date = chrono::NaiveDate::parse_from_str(&effective_date, "%Y-%m-%d")
         .map_err(|e| CliError::Validation(format!("invalid date '{effective_date}': {e}")))?;
+
+    // 3b. Normalize -m and merge --meta pairs into a JSON object (issue #17).
+    let meta_pairs = db::metadata::parse_meta_args(meta_args)?;
+    let metadata = db::metadata::build_post_metadata(metadata, &meta_pairs)?;
+    let metadata = metadata.as_deref();
 
     // 4. Look up accounts, resolve tax categories, and build library Entry objects
     let mut journal = JournalEntry::new(txn_date, description);

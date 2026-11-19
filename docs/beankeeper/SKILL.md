@@ -156,6 +156,20 @@ bk --company acme-products txn post -d "Payment to Consulting" \
 bk txn reconcile
 ```
 
+### Metadata
+
+Transaction `metadata` is always `null` or a JSON object. `-m "free text"` is
+stored as `{"memo":"free text"}`; `-m '{"k":"v"}'` is stored unchanged.
+`--meta key=value` (repeatable) adds top-level string keys; duplicates are a
+validation error. Filter with `txn list --meta key=value` (exact, AND-ed) or
+`--metadata TEXT` (substring).
+
+```bash
+bk --company acme txn post -d "AWS bill" --debit 5000:120 --credit 1000:120 \
+  -m "Q1 cloud" --meta vendor=AWS --meta project=apollo
+bk --company acme txn list --meta vendor=AWS --json
+```
+
 For additional workflow patterns including bank reconciliation and tax reporting, see [`references/workflows.md`](references/workflows.md).
 
 ## Environment Variables

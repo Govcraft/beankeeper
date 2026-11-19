@@ -91,4 +91,4 @@ The reference is a human-readable string (e.g. `RENT-2026-03`, `CHASE-20260315-0
 
 ## Intercompany Linking
 
-Transactions across companies can be linked via `--correlate TRANSACTION_ID`. This creates bidirectional metadata references between the two transactions. The `bk txn reconcile` command detects broken (orphaned) correlations where one side of the link is missing.
+Transactions across companies can be linked via `--correlate TRANSACTION_ID`. This creates bidirectional metadata references (`{"correlate": <id>}` in each transaction's JSON-object metadata) between the two transactions. Free-text metadata is kept under `memo` and never counts as a correlation. The `bk txn reconcile` command detects broken (orphaned) correlations where one side of the link is missing.

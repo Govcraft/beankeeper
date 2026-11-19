@@ -111,7 +111,8 @@ bk --company acme txn post -d "Office rent" \
 - `-r, --reference KEY`: Idempotency reference
 - `--on-conflict {error|skip}`: Duplicate handling (default: error)
 - `--correlate TXN_ID`: Link to intercompany transaction
-- `-m, --metadata TEXT`: Arbitrary metadata
+- `-m, --metadata TEXT`: Free-text memo or a JSON object (normalized to a JSON object, see below)
+- `--meta KEY=VALUE` (repeatable): Set a top-level metadata string key; merges with `-m`; duplicate keys are an error
 - `--tax ACCOUNT=CATEGORY` (repeatable): Tax category for entries
 
 **Amount format:** `account_code:amount` where amount is in major units (dollars).
@@ -135,7 +136,36 @@ bk --company acme txn post -d "MXN payment" \
 # Intercompany link
 bk --company acme-products txn post -d "Payment to Consulting" \
   --debit 5400:5000 --credit 2500:5000 --correlate 15
+
+# Structured metadata -> {"memo":"Q1 cloud","vendor":"AWS","project":"apollo"}
+bk --company acme txn post -d "AWS bill" \
+  --debit 5000:120 --credit 1000:120 \
+  -m "Q1 cloud" --meta vendor=AWS --meta project=apollo
 ```
+
+### Transaction metadata
+
+`metadata` is always `null` or a **JSON object** (stored and returned as a JSON
+string). Whatever you pass to `-m/--metadata` is normalized on write:
+
+| `-m` input | Stored metadata |
+|---|---|
+| free text, e.g. `open:1000` | `{"memo":"open:1000"}` |
+| a JSON object, e.g. `{"ref":"INV-1"}` | unchanged |
+| a JSON string, e.g. `"abc"` | `{"memo":"abc"}` |
+| a JSON array, e.g. `[1,2]` | `{"memo":[1,2]}` |
+| a bare number / `true` / `false` / `null`, e.g. `00123` | `{"memo":"00123"}` (kept as the text you typed, so reference numbers keep leading zeros and precision) |
+| empty or whitespace | no metadata (`null`) |
+
+`--meta key=value` (repeatable) sets top-level **string** keys and merges with
+`-m`: free text goes under `memo`, a JSON object gets the extra keys. A key
+given twice (or already present in the `-m` object, or `memo` alongside free
+text) is a `VALIDATION` error. `correlate` is reserved for `--correlate`.
+
+`--correlate ID` adds `"correlate": ID` to the new transaction's metadata and
+to the partner's (via the audited `correlate` action). A transaction counts as
+correlated only if its metadata is a JSON object with a non-null `correlate`
+key; plain text that mentions "correlate" never does.
 
 ### `bk txn list`
 
@@ -150,6 +180,7 @@ bk --company acme txn list --amount-gt 10000
 bk --company acme txn list --amount-eq 2500
 bk --company acme txn list --currency MXN
 bk --company acme txn list --tax-category payroll
+bk --company acme txn list --meta vendor=AWS --meta project=apollo
 bk --company acme txn list --count   # Count only, no rows
 ```
 
@@ -160,7 +191,8 @@ bk --company acme txn list --count   # Count only, no rows
 - `--amount-gt`, `--amount-lt`, `--amount-eq`: Amount filters (major units)
 - `--currency CODE`: Filter by currency
 - `--reference KEY`: Filter by idempotency key
-- `--metadata TEXT`: Search metadata field
+- `--metadata TEXT`: Substring search over the raw metadata JSON text
+- `--meta KEY=VALUE` (repeatable, AND-ed): Exact match on a top-level metadata key. JSON strings match exactly (case-sensitive); numbers and booleans match by their JSON text as stored (`qty=3` matches `{"qty":3}` but not `{"qty":3.0}`; `paid=true` matches `{"paid":true}`); `null`, arrays and objects never match. Free text from `-m` is matched with `--meta memo=TEXT`.
 - `--tax-category CAT`: Filter by tax category
 - `--direction {debit|credit}`: Filter entry direction
 - `--limit N` (default: 50), `--offset N` (default: 0): Pagination
