@@ -377,6 +377,7 @@ fn json_shape() {
         vec![
             "amount",
             "cleared_amount",
+            "clearings",
             "date",
             "description",
             "direction",
@@ -384,6 +385,7 @@ fn json_shape() {
             "memo",
             "metadata",
             "partially_cleared",
+            "reconciled_amount",
             "reference",
             "remaining_amount",
             "signed_amount",

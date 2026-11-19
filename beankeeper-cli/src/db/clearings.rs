@@ -9,6 +9,22 @@
 //! statement (`statement_ref`), with status `cleared` or `reconciled`. The sum
 //! of an entry's clearings never exceeds the entry amount.
 //!
+//! # Dates
+//!
+//! A clearing is never dated before its transaction. A reconciled clearing
+//! also carries a `reconciled_date` (`>= cleared_date`): the day it was
+//! locked in. A clearing created directly as reconciled has
+//! `cleared_date == reconciled_date`; promoting a cleared clearing sets only
+//! its `reconciled_date`. This lets reports answer "what was cleared, and
+//! what was reconciled, as of a date".
+//!
+//! # Locking
+//!
+//! Reconciled clearings are locked: a `cleared` request never downgrades
+//! them. Asking to clear a reconciled clearing (by its statement, or a fully
+//! reconciled entry without a statement) is a validation error; the way back
+//! is `--status uncleared`, then clearing again.
+//!
 //! `entries.status` is a derived summary kept in sync on every change
 //! ([`derive_status`]):
 //!
@@ -78,8 +94,16 @@ pub struct Clearing {
     pub entry_id: i64,
     pub amount: i64,
     pub cleared_date: String,
+    /// Day the clearing was reconciled; `Some` exactly when `status` is
+    /// [`ClearingStatus::Reconciled`].
+    pub reconciled_date: Option<String>,
     pub statement_ref: Option<String>,
     pub status: ClearingStatus,
+}
+
+/// The `YYYY-MM-DD` day of a stored date (tolerates a trailing time).
+fn day(s: &str) -> &str {
+    s.get(..10).unwrap_or(s)
 }
 
 /// Total cleared amount of a set of clearings.
@@ -111,6 +135,12 @@ pub struct ClearSpec<'a> {
     pub amount: Option<i64>,
     pub status: ClearingStatus,
     pub statement: Option<&'a str>,
+    /// `YYYY-MM-DD` date of the request: the `cleared_date` of a new clearing
+    /// and, with status reconciled, the `reconciled_date` of every clearing it
+    /// creates or promotes.
+    pub date: &'a str,
+    /// Date of the entry's transaction; no clearing may predate it.
+    pub txn_date: &'a str,
 }
 
 /// Why a clear request changed nothing.
@@ -153,22 +183,30 @@ pub enum ClearPlan {
 ///
 /// Rules:
 ///
+/// 0. The request date must not be before the transaction date.
 /// 1. With a statement that already cleared this entry (idempotency hit):
 ///    an explicit amount must equal the recorded one (else a validation
 ///    error); `--status reconciled` promotes that clearing if it is only
-///    cleared; otherwise skip.
+///    cleared; `--status cleared` on a reconciled clearing is an error
+///    (reconciled clearings are locked); otherwise skip.
 /// 2. Otherwise the amount defaults to the remaining amount. An explicit
 ///    amount must be positive and must not exceed the remaining amount
 ///    (over-clearing is a validation error).
 /// 3. Reconciling in full (no amount, no statement, status reconciled) also
 ///    promotes every existing cleared clearing, so the entry ends up
 ///    reconciled -- the pre-#25 `txn clear --status reconciled` semantics.
-/// 4. Nothing remaining and nothing to promote is a skip.
+/// 4. `--status cleared` on a fully cleared entry whose clearings are all
+///    reconciled is an error (locked); with some still only cleared it is a
+///    skip, like any other fully cleared entry.
+/// 5. Nothing remaining and nothing to promote is a skip.
+/// 6. A promoted clearing must not be cleared after the reconciled date.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::Validation`] for non-positive amounts, over-clearing,
-/// or a conflicting amount for an already-applied statement.
+/// a conflicting amount for an already-applied statement, a date before the
+/// transaction, a reconciled date before a promoted clearing's cleared date,
+/// or a `cleared` request on locked (reconciled) clearings.
 pub fn plan_clear(
     entry_amount: i64,
     existing: &[Clearing],
@@ -180,6 +218,18 @@ pub fn plan_clear(
                 "clearing amount must be positive".to_string(),
             ));
         }
+    }
+    if day(spec.date) < day(spec.txn_date) {
+        let what = if spec.status == ClearingStatus::Reconciled {
+            "reconciled"
+        } else {
+            "clearing"
+        };
+        return Err(CliError::Validation(format!(
+            "{what} date {} is before the transaction date {}",
+            spec.date,
+            day(spec.txn_date)
+        )));
     }
 
     if let Some(stmt) = spec.statement {
@@ -196,17 +246,32 @@ pub fn plan_clear(
                     )));
                 }
             }
-            if spec.status == ClearingStatus::Reconciled && prior.status == ClearingStatus::Cleared
-            {
-                return Ok(ClearPlan::Promote {
-                    ids: vec![prior.id],
-                });
-            }
-            return Ok(ClearPlan::Skip(SkipReason::AlreadyClearedByStatement));
+            return match (spec.status, prior.status) {
+                (ClearingStatus::Reconciled, ClearingStatus::Cleared) => {
+                    check_promotable(prior, spec.date)?;
+                    Ok(ClearPlan::Promote {
+                        ids: vec![prior.id],
+                    })
+                }
+                (ClearingStatus::Cleared, ClearingStatus::Reconciled) => {
+                    Err(locked_error(prior.entry_id, Some(stmt)))
+                }
+                _ => Ok(ClearPlan::Skip(SkipReason::AlreadyClearedByStatement)),
+            };
         }
     }
 
     let remaining = entry_amount - cleared_sum(existing);
+    if spec.status == ClearingStatus::Cleared && remaining <= 0 {
+        if let Some(first) = existing.first() {
+            if existing
+                .iter()
+                .all(|c| c.status == ClearingStatus::Reconciled)
+            {
+                return Err(locked_error(first.entry_id, None));
+            }
+        }
+    }
     let amount = spec.amount.unwrap_or(remaining);
     if amount > remaining {
         return Err(CliError::Validation(format!(
@@ -218,11 +283,15 @@ pub fn plan_clear(
         && spec.amount.is_none()
         && spec.statement.is_none()
     {
-        existing
+        let mut ids = Vec::new();
+        for c in existing
             .iter()
             .filter(|c| c.status == ClearingStatus::Cleared)
-            .map(|c| c.id)
-            .collect()
+        {
+            check_promotable(c, spec.date)?;
+            ids.push(c.id);
+        }
+        ids
     } else {
         Vec::new()
     };
@@ -234,6 +303,33 @@ pub fn plan_clear(
     } else {
         Ok(ClearPlan::Promote { ids: promote })
     }
+}
+
+/// A clearing can only be reconciled on or after its cleared date.
+fn check_promotable(c: &Clearing, reconciled_date: &str) -> Result<(), CliError> {
+    if day(reconciled_date) < day(&c.cleared_date) {
+        return Err(CliError::Validation(format!(
+            "reconciled date {reconciled_date} is before the cleared date {} of clearing {} \
+             (entry {}); reconcile on or after the cleared date",
+            c.cleared_date, c.id, c.entry_id
+        )));
+    }
+    Ok(())
+}
+
+/// The error for a `cleared` request on reconciled (locked) clearings.
+fn locked_error(entry_id: i64, statement: Option<&str>) -> CliError {
+    let (what, flag) = match statement {
+        Some(s) => (
+            format!("entry {entry_id} is reconciled by statement '{s}'"),
+            format!(" --statement {s}"),
+        ),
+        None => (format!("entry {entry_id} is reconciled"), String::new()),
+    };
+    CliError::Validation(format!(
+        "{what}; reconciled clearings are locked and cannot be downgraded to cleared. \
+         To redo it, remove the clearing with `--status uncleared{flag}`, then clear it again"
+    ))
 }
 
 /// Plans an "unclear": the ids of the clearings to remove (all of the
@@ -258,7 +354,7 @@ pub fn plan_unclear(existing: &[Clearing], statement: Option<&str>) -> Vec<i64> 
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_clearings(conn: &Connection, entry_id: i64) -> Result<Vec<Clearing>, CliError> {
     let mut stmt = conn.prepare(
-        "SELECT id, entry_id, amount, cleared_date, statement_ref, status \
+        "SELECT id, entry_id, amount, cleared_date, statement_ref, status, reconciled_date \
          FROM entry_clearings WHERE entry_id = ?1 ORDER BY cleared_date, id",
     )?;
     let rows = stmt.query_map(params![entry_id], |row| {
@@ -268,6 +364,7 @@ pub fn list_clearings(conn: &Connection, entry_id: i64) -> Result<Vec<Clearing>,
                 entry_id: row.get(1)?,
                 amount: row.get(2)?,
                 cleared_date: row.get(3)?,
+                reconciled_date: row.get(6)?,
                 statement_ref: row.get(4)?,
                 status: ClearingStatus::Cleared,
             },
@@ -390,16 +487,32 @@ mod tests {
             entry_id: 1,
             amount,
             cleared_date: "2026-01-01".into(),
+            reconciled_date: (status == ClearingStatus::Reconciled).then(|| "2026-01-01".into()),
             statement_ref: stmt.map(str::to_string),
             status,
         }
     }
+
+    const TXN_DATE: &str = "2026-01-01";
+    const DATE: &str = "2026-01-31";
 
     fn spec(amount: Option<i64>, statement: Option<&str>) -> ClearSpec<'_> {
         ClearSpec {
             amount,
             status: ClearingStatus::Cleared,
             statement,
+            date: DATE,
+            txn_date: TXN_DATE,
+        }
+    }
+
+    fn reconcile<'a>(statement: Option<&'a str>, date: &'a str) -> ClearSpec<'a> {
+        ClearSpec {
+            amount: None,
+            status: ClearingStatus::Reconciled,
+            statement,
+            date,
+            txn_date: TXN_DATE,
         }
     }
 
@@ -491,24 +604,15 @@ mod tests {
             Err(CliError::Validation(_))
         ));
         // Reconciling a statement promotes its clearing.
-        let reconcile = ClearSpec {
-            amount: None,
-            status: Reconciled,
-            statement: Some("S1"),
-        };
         assert_eq!(
-            plan_clear(100, &existing, &reconcile).ok(),
+            plan_clear(100, &existing, &reconcile(Some("S1"), DATE)).ok(),
             Some(ClearPlan::Promote { ids: vec![7] })
         );
     }
 
     #[test]
     fn reconcile_in_full_promotes_existing() {
-        let reconcile = ClearSpec {
-            amount: None,
-            status: Reconciled,
-            statement: None,
-        };
+        let reconcile = reconcile(None, DATE);
         let partial = [c(1, 40, None, Cleared)];
         assert_eq!(
             plan_clear(100, &partial, &reconcile).ok(),
@@ -526,6 +630,93 @@ mod tests {
         assert_eq!(
             plan_clear(100, &done, &reconcile).ok(),
             Some(ClearPlan::Skip(SkipReason::FullyCleared))
+        );
+    }
+
+    #[test]
+    fn date_before_transaction_is_rejected() {
+        let mut early = spec(None, None);
+        early.date = "2025-12-31";
+        let err = plan_clear(100, &[], &early);
+        assert!(
+            matches!(&err, Err(CliError::Validation(m)) if m.contains("before the transaction date")),
+            "{err:?}"
+        );
+        // Same day is fine; a stored date with a time is compared by day.
+        let mut same = spec(None, None);
+        same.date = TXN_DATE;
+        same.txn_date = "2026-01-01 09:00:00";
+        assert!(plan_clear(100, &[], &same).is_ok());
+        // The rule applies to the reconciled date too.
+        let err = plan_clear(100, &[], &reconcile(None, "2025-12-31"));
+        assert!(
+            matches!(&err, Err(CliError::Validation(m)) if m.starts_with("reconciled date")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn reconciled_date_must_not_precede_cleared_date() {
+        let mut feb = c(7, 100, Some("S1"), Cleared);
+        feb.cleared_date = "2026-02-15".into();
+        let existing = [feb];
+        // Promote by statement and promote in full both check the date.
+        for spec in [
+            reconcile(Some("S1"), "2026-02-14"),
+            reconcile(None, "2026-02-14"),
+        ] {
+            let err = plan_clear(100, &existing, &spec);
+            assert!(
+                matches!(&err, Err(CliError::Validation(m)) if m.contains("before the cleared date")),
+                "{err:?}"
+            );
+        }
+        assert_eq!(
+            plan_clear(100, &existing, &reconcile(Some("S1"), "2026-02-15")).ok(),
+            Some(ClearPlan::Promote { ids: vec![7] })
+        );
+    }
+
+    #[test]
+    fn cleared_request_on_reconciled_clearings_is_locked() {
+        // By statement.
+        let existing = [c(7, 30, Some("S1"), Reconciled)];
+        let err = plan_clear(100, &existing, &spec(None, Some("S1")));
+        assert!(
+            matches!(&err, Err(CliError::Validation(m))
+                if m.contains("locked") && m.contains("--status uncleared --statement S1")),
+            "{err:?}"
+        );
+        // Fully reconciled entry, no statement.
+        let full = [c(1, 40, None, Reconciled), c(2, 60, Some("S2"), Reconciled)];
+        let err = plan_clear(100, &full, &spec(None, None));
+        assert!(
+            matches!(&err, Err(CliError::Validation(m)) if m.contains("locked")),
+            "{err:?}"
+        );
+        let err = plan_clear(100, &full, &spec(Some(1), Some("S3")));
+        assert!(
+            matches!(&err, Err(CliError::Validation(m)) if m.contains("locked")),
+            "{err:?}"
+        );
+        // A partially reconciled entry can still clear its remainder.
+        assert_eq!(
+            plan_clear(100, &existing, &spec(None, None)).ok(),
+            Some(ClearPlan::Insert {
+                amount: 70,
+                promote: vec![]
+            })
+        );
+        // Mixed, fully covered: still a plain skip.
+        let mixed = [c(1, 40, None, Reconciled), c(2, 60, None, Cleared)];
+        assert_eq!(
+            plan_clear(100, &mixed, &spec(None, None)).ok(),
+            Some(ClearPlan::Skip(SkipReason::FullyCleared))
+        );
+        // Reconciling an already reconciled statement is still a skip.
+        assert_eq!(
+            plan_clear(100, &existing, &reconcile(Some("S1"), DATE)).ok(),
+            Some(ClearPlan::Skip(SkipReason::AlreadyClearedByStatement))
         );
     }
 

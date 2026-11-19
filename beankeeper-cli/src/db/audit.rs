@@ -293,7 +293,7 @@ pub fn set_entry_status(
             transaction_id,
             entry_id,
             amount: None,
-            cleared_date: &today,
+            date: &today,
             statement: None,
             status,
         },
@@ -309,8 +309,10 @@ pub struct ClearRequest<'a> {
     pub entry_id: i64,
     /// Minor units; `None` clears the full remaining amount.
     pub amount: Option<i64>,
-    /// `YYYY-MM-DD`.
-    pub cleared_date: &'a str,
+    /// `YYYY-MM-DD`: the cleared date of a new clearing and, with status
+    /// reconciled, the reconciled date of every clearing created or promoted.
+    /// Must not be before the transaction date.
+    pub date: &'a str,
     pub statement: Option<&'a str>,
     pub status: ClearingStatus,
 }
@@ -397,6 +399,7 @@ fn clearing_json(c: &Clearing) -> serde_json::Value {
         "id": c.id,
         "amount": c.amount,
         "cleared_date": c.cleared_date,
+        "reconciled_date": c.reconciled_date,
         "statement_ref": c.statement_ref,
         "status": c.status.as_str(),
     })
@@ -445,8 +448,10 @@ fn record_clearing_change(
 /// # Errors
 ///
 /// Returns `CliError::NotFound` for an unknown entry, `CliError::Validation`
-/// for over-clearing or a conflicting statement amount, or
-/// `CliError::Sqlite` on database errors.
+/// for over-clearing, a conflicting statement amount, a date before the
+/// transaction or before a promoted clearing's cleared date, or a `cleared`
+/// request on reconciled (locked) clearings, or `CliError::Sqlite` on
+/// database errors.
 pub fn clear_entry(
     conn: &Connection,
     actor: &Actor,
@@ -464,6 +469,8 @@ pub fn clear_entry(
                 amount: req.amount,
                 status: req.status,
                 statement: req.statement,
+                date: req.date,
+                txn_date: &target.date,
             },
         )?;
 
@@ -486,15 +493,17 @@ pub fn clear_entry(
             ClearPlan::Insert { amount, promote } => {
                 conn.execute(
                     "INSERT INTO entry_clearings \
-                     (entry_id, company_slug, amount, cleared_date, statement_ref, status) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                     (entry_id, company_slug, amount, cleared_date, statement_ref, status, \
+                      reconciled_date) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![
                         req.entry_id,
                         req.company_slug,
                         amount,
-                        req.cleared_date,
+                        req.date,
                         req.statement,
-                        req.status.as_str()
+                        req.status.as_str(),
+                        (req.status == ClearingStatus::Reconciled).then_some(req.date),
                     ],
                 )?;
                 let action = if promote.is_empty() {
@@ -509,8 +518,9 @@ pub fn clear_entry(
 
         for id in &promote {
             conn.execute(
-                "UPDATE entry_clearings SET status = 'reconciled' WHERE id = ?1",
-                params![id],
+                "UPDATE entry_clearings SET status = 'reconciled', reconciled_date = ?2 \
+                 WHERE id = ?1",
+                params![id, req.date],
             )?;
         }
 
@@ -1199,7 +1209,7 @@ mod tests {
             transaction_id: 1,
             entry_id: 1,
             amount,
-            cleared_date: date,
+            date,
             statement: stmt,
             status: ClearingStatus::Cleared,
         }
@@ -1299,6 +1309,84 @@ mod tests {
             .expect("count");
         assert_eq!(n, 0);
         assert_eq!(audit_count(&db), 0);
+    }
+
+    #[test]
+    fn reconciled_dates_are_stored_and_audited() {
+        let db = seed();
+        let actor = Actor::new("tester");
+        clear_entry(db.conn(), &actor, &req(Some(40), "2026-01-31", Some("S1"))).expect("clear S1");
+
+        // Promote S1 in February: cleared_date stays, reconciled_date is set.
+        let mut r = req(None, "2026-02-10", Some("S1"));
+        r.status = ClearingStatus::Reconciled;
+        let o = clear_entry(db.conn(), &actor, &r).expect("promote S1");
+        assert_eq!(o.action, ClearAction::Reconciled);
+        let rows = list_clearings(db.conn(), 1).expect("list");
+        assert_eq!(rows[0].cleared_date, "2026-01-31");
+        assert_eq!(rows[0].reconciled_date.as_deref(), Some("2026-02-10"));
+
+        let after: String = db
+            .conn()
+            .query_row(
+                "SELECT after FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read audit");
+        let v: serde_json::Value = serde_json::from_str(&after).expect("json");
+        assert_eq!(v["op"], "reconcile");
+        assert_eq!(v["clearings"][0]["reconciled_date"], "2026-02-10");
+
+        // A clearing created directly as reconciled gets both dates.
+        let mut r = req(Some(60), "2026-03-01", Some("S2"));
+        r.status = ClearingStatus::Reconciled;
+        clear_entry(db.conn(), &actor, &r).expect("reconcile S2");
+        let rows = list_clearings(db.conn(), 1).expect("list");
+        assert_eq!(rows[1].cleared_date, "2026-03-01");
+        assert_eq!(rows[1].reconciled_date.as_deref(), Some("2026-03-01"));
+        assert_eq!(entry_status(&db), "reconciled");
+
+        // Locked: a cleared request on the reconciled entry fails, no audit.
+        let n = audit_count(&db);
+        let err = clear_entry(db.conn(), &actor, &req(None, "2026-03-02", None));
+        assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
+        assert_eq!(audit_count(&db), n);
+    }
+
+    #[test]
+    fn invalid_dates_fail_without_side_effects() {
+        let db = seed();
+        let actor = Actor::new("tester");
+        // Transaction is dated 2026-01-01.
+        let err = clear_entry(db.conn(), &actor, &req(None, "2025-12-31", None));
+        assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
+
+        clear_entry(db.conn(), &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
+        let mut r = req(None, "2026-01-30", Some("S1"));
+        r.status = ClearingStatus::Reconciled;
+        let err = clear_entry(db.conn(), &actor, &r);
+        assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
+        assert_eq!(audit_count(&db), 1);
+        assert_eq!(entry_status(&db), "cleared");
+    }
+
+    #[test]
+    fn schema_rejects_inconsistent_reconciled_dates() {
+        let db = seed();
+        let insert = |status: &str, cleared: &str, reconciled: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO entry_clearings \
+                 (entry_id, company_slug, amount, cleared_date, status, reconciled_date) \
+                 VALUES (1, 'acme', 10, ?1, ?2, ?3)",
+                params![cleared, status, reconciled],
+            )
+        };
+        assert!(insert("reconciled", "2026-01-31", None).is_err());
+        assert!(insert("reconciled", "2026-01-31", Some("2026-01-30")).is_err());
+        assert!(insert("cleared", "2026-01-31", Some("2026-02-01")).is_err());
+        assert!(insert("reconciled", "2026-01-31", Some("2026-01-31")).is_ok());
+        assert!(insert("cleared", "2026-01-31", None).is_ok());
     }
 
     #[test]

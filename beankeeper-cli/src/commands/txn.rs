@@ -611,15 +611,20 @@ fn run_show(
 ) -> Result<(), CliError> {
     let (txn, entries) = transactions::get_transaction(db_handle.conn(), company, id)?;
     let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
+    let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
+    for e in &entries {
+        clearings.insert(e.id, db::clearings::list_clearings(db_handle.conn(), e.id)?);
+    }
 
     // Determine currency minor units for formatting
     let currency_minor_units = Currency::from_code(&txn.currency).map_or(2, |c| c.minor_units());
 
     match format {
         OutputFormat::Table => {
-            let rendered = output::table::render_transaction_detail(
+            let rendered = output::table::render_transaction_detail_with_clearings(
                 &txn,
                 &entries,
+                Some(&clearings),
                 currency_minor_units,
                 use_color,
             );
@@ -639,6 +644,7 @@ fn run_show(
                 &[txn],
                 &entries_map,
                 &att_map,
+                &clearings,
                 meta,
             )?;
             println!("{rendered}");

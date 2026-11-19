@@ -988,7 +988,15 @@ STATUS:\n  \
     cleared (default) adds a clearing. reconciled adds a reconciled clearing; with no\n  \
     --amount/--statement it also promotes the entry's existing clearings, and for an\n  \
     entry already cleared by --statement it promotes that statement's clearing.\n  \
-    uncleared removes the entry's clearings (only --statement's, when given).\n\
+    Reconciled clearings are locked: --status cleared on them is an error; use\n  \
+    --status uncleared, then clear again. uncleared removes the entry's clearings\n  \
+    (only --statement's, when given).\n\
+\n\
+DATES:\n  \
+    --date (default today) is the cleared date of new clearings and, with\n  \
+    --status reconciled, the reconciled date of every clearing created or promoted\n  \
+    (a new reconciled clearing gets both). It may not be before the transaction\n  \
+    date, and a clearing cannot be reconciled before its cleared date.\n\
 \n\
 EXAMPLES:\n  \
     Mark an entry as cleared in full (today):\n    \
@@ -1030,7 +1038,8 @@ EXAMPLES:\n  \
         #[arg(long)]
         amount: Option<String>,
 
-        /// Cleared date (YYYY-MM-DD). Defaults to today.
+        /// Cleared date, or reconciled date with --status reconciled
+        /// (YYYY-MM-DD). Defaults to today; not before the transaction date.
         #[arg(long)]
         date: Option<String>,
 
@@ -1391,7 +1400,9 @@ EXAMPLES:\n  \
         #[arg(long)]
         account: String,
 
-        /// As-of date (inclusive, YYYY-MM-DD). Defaults to all dates.
+        /// As-of date (inclusive, YYYY-MM-DD). Defaults to all dates. Counts
+        /// clearings cleared on or before it, and as reconciled only those
+        /// reconciled on or before it.
         #[arg(long)]
         to: Option<String>,
 

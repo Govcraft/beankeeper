@@ -200,7 +200,11 @@ bk --company acme txn list --count   # Count only, no rows
 
 ### `bk txn show ID`
 
-Display a single transaction with all its entries.
+Display a single transaction with all its entries. Under each entry, the table
+shows the entry id, its cleared and remaining amounts, and one line per
+clearing (id, amount, status, cleared date, reconciled date, statement). JSON
+adds `id`, `cleared_amount`, `remaining_amount` and `clearings` to each entry
+(see `json-api.md`). CSV output is the transaction row only (no entries).
 
 ### `bk txn import`
 
@@ -228,8 +232,8 @@ cat data.ofx | bk --company acme txn import \
 ### `bk txn clear`
 
 Clear all or part of an entry against a statement, for reconciliation. Each
-call records a **clearing**: an amount, a cleared date and an optional
-statement id. An entry can be cleared in several parts, on different dates,
+call records a **clearing**: an amount, a cleared date, an optional
+statement id and, once reconciled, a reconciled date. An entry can be cleared in several parts, on different dates,
 by different statements. Every change is recorded in the audit trail
 (`status_change` on the entry), so "when was this item cleared, and by which
 statement?" is answerable via `bk audit log`.
@@ -254,14 +258,16 @@ printf 'POL-123,40\nPOL-124\n' | bk --json --company acme txn clear \
 
 **Flags:**
 - `--amount AMT`: Amount to clear in major units (default: the full remaining amount). Not with `--from-file` (put amounts in the file)
-- `--date YYYY-MM-DD`: Cleared date (default: today). `report reconciliation --to` counts only clearings dated on or before `--to`
+- `--date YYYY-MM-DD`: Cleared date (default: today); with `--status reconciled`, the reconciled date of every clearing created or promoted. May not be before the transaction date (`VALIDATION`). `report reconciliation --to` counts clearings cleared on or before `--to`, and as reconciled only those also reconciled on or before it
 - `--statement ID`: Statement id stored on the clearing
 - `--status {cleared|reconciled|uncleared}` (default: `cleared`)
 
 **Rules:**
 - *Over-clearing* is a `VALIDATION` error: an explicit amount may not exceed the remaining (uncleared) amount; amounts must be positive.
 - *Idempotency:* the key is **(entry, statement)**. An entry has at most one clearing per statement, so re-running the same statement (single or batch) skips entries it already cleared (`action: "skipped"`, `skip_reason: "already_cleared_by_statement"`). Re-running with a *different* explicit amount for the same entry and statement is a `VALIDATION` error. Without `--statement` there is no key: each call adds a clearing, except that clearing the full remaining amount of a fully cleared entry is a skip (`fully_cleared`).
-- `--status reconciled` records a reconciled clearing. With no `--amount`/`--statement` it reconciles the entry in full (promotes its existing clearings and clears any remainder). For an entry the statement already cleared, it promotes that clearing, so re-running a statement batch with `--status reconciled` locks it in.
+- *Dates:* `--date` may not be before the transaction's date. In a batch the error names the line and nothing is applied.
+- `--status reconciled` records a reconciled clearing. With no `--amount`/`--statement` it reconciles the entry in full (promotes its existing clearings and clears any remainder). For an entry the statement already cleared, it promotes that clearing, so re-running a statement batch with `--status reconciled` locks it in. Every clearing it creates or promotes gets `reconciled_date = --date`; a new reconciled clearing also has `cleared_date = --date`. Promoting a clearing whose cleared date is after `--date` is a `VALIDATION` error.
+- *Reconciled clearings are locked.* `--status cleared` never downgrades them: for an entry whose clearing for `--statement` is reconciled, or (without `--statement`) a fully reconciled entry, it is a `VALIDATION` error (in a batch: the batch fails, naming the line). To redo it, remove the clearing with `--status uncleared` (with the same `--statement`), then clear it again. Re-running a statement whose clearings are still only `cleared` is unchanged: a skip.
 - `--status uncleared` removes the entry's clearings (only that statement's with `--statement`); `--amount` is not allowed.
 
 **Entry status** (`entries.status`, shown by `txn show`) is derived from the clearings:
@@ -274,8 +280,9 @@ amounts).
 `reference`, `status` (requested), `action` (`cleared`, `reconciled`,
 `uncleared`, `skipped`), `clearing_id`, `amount` (cleared or removed by this
 call), `entry_amount`, `cleared_amount`, `remaining_amount`, `previous_status`,
-`entry_status`, `skip_reason`, `cleared_date`, `statement`. A batch returns
-`account`, `status`, `cleared_date`, `statement`, `count`, `cleared_count`,
+`entry_status`, `skip_reason`, `cleared_date`, `reconciled_date` (`--date`
+with `--status reconciled`, else null), `statement`. A batch returns
+`account`, `status`, `cleared_date`, `reconciled_date`, `statement`, `count`, `cleared_count`,
 `skipped_count`, `cleared_total`, and `cleared`/`skipped` arrays of those items
 (each with its input `line`). Amounts are minor units. With `--format csv`,
 one row per entry: `line,reference,transaction_id,entry_id,action,amount,cleared_amount,remaining_amount,entry_status,cleared_date,statement,skip_reason`.
@@ -587,7 +594,7 @@ bk --company acme report reconciliation --account 1200 \
 
 **Flags:**
 - `--account CODE` (required): Account to reconcile
-- `--to YYYY-MM-DD`: As-of date, inclusive (default: all dates). Point in time: only entries dated on or before it and only clearings with `cleared_date <= --to` count, so an item cleared later shows as uncleared as of an earlier date
+- `--to YYYY-MM-DD`: As-of date, inclusive (default: all dates). Point in time: only entries dated on or before it count; a clearing counts toward the cleared balance when `cleared_date <= --to`, and toward the reconciled balance only when it is reconciled and `reconciled_date <= --to`. So an item cleared later shows as uncleared as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled (also with `--statement`)
 - `--statement-balance AMT`: Statement ending balance in major units (e.g. `1234.56`, may be negative), on the account's normal side
 - `--statement ID`: The cleared and reconciled balances count only this statement's clearings, so `--statement-balance` checks that statement alone. Outstanding items still reflect every statement's clearings
 - `--filter-metadata KEY=VALUE` (repeatable, AND-ed): Only entries whose transaction metadata has top-level `KEY` equal to `VALUE`, compared as strings (numbers and booleans by their JSON text). Applies to every balance and the item list. Metadata that is not a JSON object has no keys
@@ -596,7 +603,7 @@ bk --company acme report reconciliation --account 1200 \
 
 **Output:**
 - Book balance (all entries), cleared balance (sum of clearings; only `--statement`'s when given), total cleared balance (all statements), and reconciled balance (reconciled clearings), all on the account's normal side (debit-normal for asset/expense, credit-normal for liability/equity/revenue)
-- The outstanding entries, i.e. not fully cleared: entry id, transaction id, date, **reference**, description, **metadata**, amount, **cleared amount**, **remaining amount**. Partially cleared items are counted (`partially_cleared_count`) and flagged. Invariant: `book - total cleared = uncleared total` (the sum of the items' signed remaining amounts)
+- The outstanding entries, i.e. not fully cleared: entry id, transaction id, date, **reference**, description, **metadata**, amount, **cleared amount**, **remaining amount** (JSON also has `reconciled_amount` and the item's `clearings` as of `--to`). Partially cleared items are counted (`partially_cleared_count`) and flagged. Invariant: `book - total cleared = uncleared total` (the sum of the items' signed remaining amounts)
 - With `--statement-balance`: the statement balance, `difference = statement - cleared`, and `reconciled: yes/no` (yes when the difference is zero)
 
 **CSV:** one header row
@@ -645,7 +652,7 @@ snapshots. The recorded operations are:
 
 | Action | Recorded when |
 |--------|---------------|
-| `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, statement_ref, status of the affected rows). Skips record nothing |
+| `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, reconciled_date, statement_ref, status of the affected rows). Skips record nothing |
 | `correlate` | `bk txn post --correlate` links a partner transaction |
 | `budget_set` | `bk budget set` creates or revises a budget (prior amount captured) |
 | `budget_delete` | `bk budget delete` removes a budget |

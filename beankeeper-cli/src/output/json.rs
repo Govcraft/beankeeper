@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 
+use crate::db::clearings::Clearing;
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, PostResult,
     TransactionRow,
@@ -117,6 +118,8 @@ pub struct TransactionJson {
 
 #[derive(Serialize)]
 pub struct EntryJson {
+    /// Entry id (the `--entry` of `txn clear`).
+    id: i64,
     account_code: String,
     direction: String,
     amount: i64,
@@ -124,6 +127,54 @@ pub struct EntryJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     tax_category: Option<String>,
     status: String,
+    /// Total cleared amount (`txn show` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleared_amount: Option<i64>,
+    /// `amount - cleared_amount` (`txn show` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remaining_amount: Option<i64>,
+    /// The entry's individual clearings, oldest first (`txn show` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clearings: Option<Vec<ClearingJson>>,
+}
+
+/// One clearing of an entry (`txn show`).
+#[derive(Serialize)]
+pub struct ClearingJson {
+    id: i64,
+    amount: i64,
+    cleared_date: String,
+    reconciled_date: Option<String>,
+    statement_ref: Option<String>,
+    status: &'static str,
+}
+
+/// Builds an entry's JSON; `clearings` adds the clearing breakdown.
+fn entry_json(e: &EntryRow, clearings: Option<&[Clearing]>) -> EntryJson {
+    let cleared = clearings.map(crate::db::clearings::cleared_sum);
+    EntryJson {
+        id: e.id,
+        account_code: e.account_code.clone(),
+        direction: e.direction.clone(),
+        amount: e.amount,
+        memo: e.memo.clone(),
+        tax_category: e.tax_category.clone(),
+        status: e.status.clone(),
+        cleared_amount: cleared,
+        remaining_amount: cleared.map(|c| e.amount - c),
+        clearings: clearings.map(|cs| {
+            cs.iter()
+                .map(|c| ClearingJson {
+                    id: c.id,
+                    amount: c.amount,
+                    cleared_date: c.cleared_date.clone(),
+                    reconciled_date: c.reconciled_date.clone(),
+                    statement_ref: c.statement_ref.clone(),
+                    status: c.status.as_str(),
+                })
+                .collect()
+        }),
+    }
 }
 
 #[derive(Serialize)]
@@ -250,18 +301,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
         .map(|txn| {
             let entries = entries_map
                 .get(&txn.id)
-                .map(|rows| {
-                    rows.iter()
-                        .map(|e| EntryJson {
-                            account_code: e.account_code.clone(),
-                            direction: e.direction.clone(),
-                            amount: e.amount,
-                            memo: e.memo.clone(),
-                            tax_category: e.tax_category.clone(),
-                            status: e.status.clone(),
-                        })
-                        .collect()
-                })
+                .map(|rows| rows.iter().map(|e| entry_json(e, None)).collect())
                 .unwrap_or_default();
 
             TransactionJson {
@@ -281,16 +321,22 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
 
 /// Render transactions with entries and attachments as an enveloped JSON response.
 ///
+/// `clearings_map` maps entry ids to their clearings; every entry then also
+/// carries `cleared_amount`, `remaining_amount` and `clearings` (entries
+/// missing from the map have none).
+///
 /// # Errors
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
 pub fn render_transactions_with_attachments<
     S: ::std::hash::BuildHasher,
     T: ::std::hash::BuildHasher,
+    U: ::std::hash::BuildHasher,
 >(
     transactions: &[TransactionRow],
     entries_map: &HashMap<i64, Vec<EntryRow>, S>,
     attachments_map: &HashMap<i64, Vec<AttachmentRow>, T>,
+    clearings_map: &HashMap<i64, Vec<Clearing>, U>,
     meta: Meta,
 ) -> Result<String, CliError> {
     let rows: Vec<TransactionWithAttachmentsJson> = transactions
@@ -300,13 +346,9 @@ pub fn render_transactions_with_attachments<
                 .get(&txn.id)
                 .map(|rows| {
                     rows.iter()
-                        .map(|e| EntryJson {
-                            account_code: e.account_code.clone(),
-                            direction: e.direction.clone(),
-                            amount: e.amount,
-                            memo: e.memo.clone(),
-                            tax_category: e.tax_category.clone(),
-                            status: e.status.clone(),
+                        .map(|e| {
+                            let clearings = clearings_map.get(&e.id).map_or(&[][..], Vec::as_slice);
+                            entry_json(e, Some(clearings))
                         })
                         .collect()
                 })

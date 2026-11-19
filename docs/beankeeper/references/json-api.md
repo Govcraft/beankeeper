@@ -136,6 +136,7 @@ When `--on-conflict skip` and reference already exists:
       "date": "2026-03-01",
       "entries": [
         {
+          "id": 1,
           "account_code": "5000",
           "direction": "debit",
           "amount": 250000,
@@ -143,6 +144,7 @@ When `--on-conflict skip` and reference already exists:
           "status": "uncleared"
         },
         {
+          "id": 2,
           "account_code": "1000",
           "direction": "credit",
           "amount": 250000,
@@ -155,7 +157,8 @@ When `--on-conflict skip` and reference already exists:
 }
 ```
 
-Entry `status` values: `"uncleared"`, `"cleared"`, `"reconciled"`.
+Entry `id` is the entry id (`txn clear TXN_ID --entry ID`). Entry `status`
+values: `"uncleared"`, `"cleared"`, `"reconciled"`.
 
 ### `txn list --count`
 
@@ -492,7 +495,10 @@ are `null` without `--group-by-metadata`; `metadata_filters` lists the
 
 `cleared_balance` counts only `--statement`'s clearings when given;
 `total_cleared_balance` always counts every statement's (they are equal without
-`--statement`). With `--to`, only clearings with `cleared_date <= as_of` count.
+`--statement`). With `--to`, a clearing counts toward the cleared balances when
+`cleared_date <= as_of`, and toward `reconciled_balance` only when it is
+reconciled and `reconciled_date <= as_of` (a clearing reconciled after `as_of`
+is cleared but not reconciled as of `as_of`; same with `--statement`).
 Invariant: `book_balance - total_cleared_balance == uncleared_total`.
 
 `uncleared_entries` lists every entry not fully cleared. Per item: `amount` is
@@ -503,6 +509,11 @@ remaining amount on the normal side (they sum to `uncleared_total`);
 `partially_cleared` is true when `0 < cleared_amount < amount`. `reference` is
 the transaction reference (or `null`); `metadata` is the transaction metadata,
 parsed as JSON when valid, else the raw string (or `null`).
+`reconciled_amount` is the raw amount reconciled as of `as_of`. `clearings`
+lists the item's clearings as of `as_of`, oldest first: `id`, `amount` (raw),
+`cleared_date`, `reconciled_date`, `statement_ref`, `status`. A clearing
+reconciled after `as_of` appears with `status: "cleared"` and
+`reconciled_date: null`.
 
 Each `groups` element has the group `value` (`"(none)"` for items without the
 key, listed last), `count`, `uncleared_total` (sum of `signed_remaining`), and
@@ -545,9 +556,20 @@ the member `entry_ids`.
         "amount": 10000,
         "signed_amount": 10000,
         "cleared_amount": 4000,
+        "reconciled_amount": 0,
         "remaining_amount": 6000,
         "signed_remaining": 6000,
-        "partially_cleared": true
+        "partially_cleared": true,
+        "clearings": [
+          {
+            "id": 9,
+            "amount": 4000,
+            "cleared_date": "2026-03-31",
+            "reconciled_date": null,
+            "statement_ref": "STMT-2026-03",
+            "status": "cleared"
+          }
+        ]
       },
       {
         "entry_id": 5,
@@ -561,9 +583,11 @@ the member `entry_ids`.
         "amount": 5000,
         "signed_amount": 5000,
         "cleared_amount": 0,
+        "reconciled_amount": 0,
         "remaining_amount": 5000,
         "signed_remaining": 5000,
-        "partially_cleared": false
+        "partially_cleared": false,
+        "clearings": []
       }
     ],
     "groups": [
@@ -603,7 +627,71 @@ the member `entry_ids`.
 
 ### `txn show`
 
-Same shape as a single element from `txn list`, with entries included.
+Same shape as a single element from `txn list` (as a one-element array), with
+entries and `attachments` included. Each entry also carries:
+
+- `cleared_amount`: total cleared amount (all clearings, minor units);
+- `remaining_amount`: `amount - cleared_amount`;
+- `clearings`: the entry's clearings, oldest first, each with `id`, `amount`,
+  `cleared_date`, `reconciled_date` (`null` unless `status` is `reconciled`),
+  `statement_ref` (or `null`) and `status` (`cleared` or `reconciled`).
+
+```json
+{
+  "data": [
+    {
+      "id": 42,
+      "description": "Commission POL-123",
+      "metadata": null,
+      "reference": "POL-123",
+      "currency": "USD",
+      "date": "2026-03-05",
+      "entries": [
+        {
+          "id": 5,
+          "account_code": "1200",
+          "direction": "debit",
+          "amount": 10000,
+          "memo": null,
+          "status": "uncleared",
+          "cleared_amount": 6500,
+          "remaining_amount": 3500,
+          "clearings": [
+            {
+              "id": 9,
+              "amount": 4000,
+              "cleared_date": "2026-03-31",
+              "reconciled_date": "2026-04-05",
+              "statement_ref": "STMT-2026-03",
+              "status": "reconciled"
+            },
+            {
+              "id": 12,
+              "amount": 2500,
+              "cleared_date": "2026-04-30",
+              "reconciled_date": null,
+              "statement_ref": "STMT-2026-04",
+              "status": "cleared"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "account_code": "4000",
+          "direction": "credit",
+          "amount": 10000,
+          "memo": null,
+          "status": "uncleared",
+          "cleared_amount": 0,
+          "remaining_amount": 10000,
+          "clearings": []
+        }
+      ],
+      "attachments": []
+    }
+  ]
+}
+```
 
 ### `txn clear`
 
@@ -615,7 +703,13 @@ afterwards. `action` is `cleared` (a clearing was added), `reconciled`
 `skip_reason` is `already_cleared_by_statement`, `fully_cleared` or
 `nothing_to_unclear`). `amount` is what this call cleared (or removed);
 `cleared_amount`/`remaining_amount` are the entry's totals afterwards.
-`clearing_id` is the new clearing's id, or `null`.
+`clearing_id` is the new clearing's id, or `null`. `reconciled_date` is
+`--date` with `--status reconciled` (the reconciled date it set), else `null`.
+
+Validation errors (exit 3): a `--date` before the transaction date; with
+`--status reconciled`, a `--date` before a promoted clearing's cleared date;
+and `--status cleared` on reconciled (locked) clearings, whose message says to
+run `--status uncleared` first and then clear again.
 
 ```json
 {
@@ -634,6 +728,7 @@ afterwards. `action` is `cleared` (a clearing was added), `reconciled`
     "skip_reason": null,
     "status": "cleared",
     "cleared_date": "2026-03-31",
+    "reconciled_date": null,
     "statement": "STMT-2026-03"
   }
 }
@@ -642,7 +737,7 @@ afterwards. `action` is `cleared` (a clearing was added), `reconciled`
 Batch (`--from-file`). The batch is atomic: on any error nothing is applied
 and the error envelope names the failing line. `cleared` holds every item that
 changed (whatever its `action`), `skipped` the rest; each item has the fields
-above (except the batch-level `status`, `cleared_date`, `statement`) plus its
+above (except the batch-level `status`, `cleared_date`, `reconciled_date`, `statement`) plus its
 1-based input `line`. `cleared_total` sums `amount` over `cleared`.
 
 ```json
@@ -651,6 +746,7 @@ above (except the batch-level `status`, `cleared_date`, `statement`) plus its
     "account": "1200",
     "status": "cleared",
     "cleared_date": "2026-03-31",
+    "reconciled_date": null,
     "statement": "STMT-2026-03",
     "count": 2,
     "cleared_count": 1,
@@ -889,7 +985,7 @@ may be `null` for cross-company changes.
       "entity_id": "5",
       "action": "status_change",
       "before": "{\"cleared_amount\":0,\"status\":\"uncleared\"}",
-      "after": "{\"cleared_amount\":4000,\"clearings\":[{\"amount\":4000,\"cleared_date\":\"2026-03-31\",\"id\":9,\"statement_ref\":\"STMT-2026-03\",\"status\":\"cleared\"}],\"op\":\"clear\",\"status\":\"uncleared\"}"
+      "after": "{\"cleared_amount\":4000,\"clearings\":[{\"amount\":4000,\"cleared_date\":\"2026-03-31\",\"id\":9,\"reconciled_date\":null,\"statement_ref\":\"STMT-2026-03\",\"status\":\"cleared\"}],\"op\":\"clear\",\"status\":\"uncleared\"}"
     },
     {
       "id": 11,
@@ -913,7 +1009,8 @@ may be `null` for cross-company changes.
 `status_change` rows come from `txn clear`. `before`/`after` carry the entry's
 derived `status` and total `cleared_amount`; `after` also carries `op`
 (`clear`, `reconcile` or `unclear`) and `clearings`, the affected clearing rows
-(for `unclear`, the removed ones).
+(for `unclear`, the removed ones), each with `id`, `amount`, `cleared_date`,
+`reconciled_date` (`null` unless reconciled), `statement_ref` and `status`.
 
 ## Parsing Tips for Agents
 

@@ -841,3 +841,378 @@ fn clearings_are_audited() {
     assert_eq!(first["status"], "uncleared");
     assert_eq!(first["clearings"][0]["statement_ref"], "S-JAN");
 }
+
+// ---------------------------------------------------------------------------
+// Reconciled dates, date validation, locked clearings, `txn show` clearings
+// ---------------------------------------------------------------------------
+
+/// Clearings of a listed report item.
+fn item_clearings(item: &Value) -> Vec<Value> {
+    item["clearings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("clearings is an array: {item}"))
+        .clone()
+}
+
+#[test]
+fn reconciled_date_is_point_in_time() {
+    let l = seeded();
+    let jan = ["--date", "2026-01-31", "--statement", "S-JAN"];
+    // Cleared in January: POL-1 in full, POL-2 partially.
+    l.clear_ref("POL-1", &jan);
+    l.clear_ref("POL-2", &[&jan[..], &["--amount", "50"]].concat());
+    // Reconciled in February.
+    let d = l.clear_ref(
+        "POL-1",
+        &[
+            "--date",
+            "2026-02-10",
+            "--statement",
+            "S-JAN",
+            "--status",
+            "reconciled",
+        ],
+    );
+    assert_eq!(d["action"], "reconciled");
+    assert_eq!(d["reconciled_date"], "2026-02-10");
+    l.clear_ref(
+        "POL-2",
+        &[
+            "--date",
+            "2026-02-10",
+            "--statement",
+            "S-JAN",
+            "--status",
+            "reconciled",
+        ],
+    );
+
+    // As of January: cleared but not yet reconciled.
+    for extra in [&[][..], &["--statement", "S-JAN"][..]] {
+        let r = l.report(&[&["--to", "2026-01-31"][..], extra].concat());
+        assert_eq!(int(&r, "cleared_balance"), 15_000, "{r}");
+        assert_eq!(int(&r, "reconciled_balance"), 0, "{r}");
+        let list = items(&r);
+        let pol2 = item(&list, "POL-2").unwrap_or_else(|| panic!("POL-2 listed: {r}"));
+        assert_eq!(int(pol2, "reconciled_amount"), 0);
+        let cs = item_clearings(pol2);
+        assert_eq!(cs.len(), 1, "{pol2}");
+        assert_eq!(cs[0]["status"], "cleared");
+        assert_eq!(cs[0]["cleared_date"], "2026-01-31");
+        assert!(cs[0]["reconciled_date"].is_null(), "{pol2}");
+        assert_eq!(cs[0]["statement_ref"], "S-JAN");
+    }
+
+    // As of February: reconciled.
+    for extra in [&[][..], &["--statement", "S-JAN"][..]] {
+        let r = l.report(&[&["--to", "2026-02-28"][..], extra].concat());
+        assert_eq!(int(&r, "cleared_balance"), 15_000, "{r}");
+        assert_eq!(int(&r, "reconciled_balance"), 15_000, "{r}");
+        let list = items(&r);
+        let pol2 = item(&list, "POL-2").unwrap_or_else(|| panic!("POL-2 listed: {r}"));
+        assert_eq!(int(pol2, "reconciled_amount"), 5_000);
+        let cs = item_clearings(pol2);
+        assert_eq!(cs[0]["status"], "reconciled");
+        assert_eq!(cs[0]["reconciled_date"], "2026-02-10");
+    }
+
+    // A clearing created directly as reconciled gets both dates.
+    let d = l.clear_ref("POL-3", &["--date", "2026-02-15", "--status", "reconciled"]);
+    assert_eq!(d["entry_status"], "reconciled");
+    assert_eq!(d["cleared_date"], "2026-02-15");
+    assert_eq!(d["reconciled_date"], "2026-02-15");
+    let r = l.report(&["--to", "2026-02-14"]);
+    assert_eq!(int(&r, "reconciled_balance"), 15_000);
+    let r = l.report(&["--to", "2026-02-15"]);
+    assert_eq!(int(&r, "reconciled_balance"), 20_000);
+
+    // The audit payload carries the reconciled date.
+    let rows = l.json(
+        &[
+            "audit",
+            "log",
+            "--entity",
+            "entry",
+            "--action",
+            "status-change",
+        ],
+        None,
+    );
+    let latest: Value =
+        serde_json::from_str(rows[0]["after"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(latest["clearings"][0]["cleared_date"], "2026-02-15");
+    assert_eq!(latest["clearings"][0]["reconciled_date"], "2026-02-15");
+}
+
+#[test]
+fn clearing_dated_before_transaction_is_rejected() {
+    let l = seeded();
+    // POL-1 is dated 2026-01-05.
+    let out = l.co_run(
+        &[
+            "txn",
+            "clear",
+            "--reference",
+            "POL-1",
+            "--account",
+            "1200",
+            "--date",
+            "2026-01-04",
+        ],
+        None,
+    );
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("before the transaction date 2026-01-05"),
+        "{}",
+        out.stderr
+    );
+    // Also for a clearing created as reconciled.
+    let out = l.co_run(
+        &[
+            "txn",
+            "clear",
+            "1",
+            "--entry",
+            "1",
+            "--date",
+            "2026-01-01",
+            "--status",
+            "reconciled",
+        ],
+        None,
+    );
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+
+    // Batch: POL-2 (2026-01-10) fails on line 2, and POL-1 is not applied.
+    let out = l.batch("POL-1\nPOL-2\n", &["--date", "2026-01-08"]);
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+    assert!(out.stderr.contains("line 2 (POL-2)"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("before the transaction date"),
+        "{}",
+        out.stderr
+    );
+    let r = l.report(&[]);
+    assert_eq!(int(&r, "cleared_balance"), 0);
+    assert_eq!(int(&r, "uncleared_count"), 4);
+}
+
+#[test]
+fn reconciled_date_before_cleared_date_is_rejected() {
+    let l = seeded();
+    l.clear_ref("POL-1", &["--date", "2026-01-31", "--statement", "S-JAN"]);
+    let out = l.co_run(
+        &[
+            "txn",
+            "clear",
+            "--reference",
+            "POL-1",
+            "--account",
+            "1200",
+            "--date",
+            "2026-01-20",
+            "--statement",
+            "S-JAN",
+            "--status",
+            "reconciled",
+        ],
+        None,
+    );
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("before the cleared date 2026-01-31"),
+        "{}",
+        out.stderr
+    );
+    // Same for reconciling in full (no statement).
+    let out = l.co_run(
+        &[
+            "txn",
+            "clear",
+            "1",
+            "--entry",
+            "1",
+            "--date",
+            "2026-01-30",
+            "--status",
+            "reconciled",
+        ],
+        None,
+    );
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+    let r = l.report(&[]);
+    assert_eq!(int(&r, "reconciled_balance"), 0);
+}
+
+#[test]
+fn txn_show_lists_clearings() {
+    let l = seeded();
+    // POL-1 is transaction 1; entry 1 is its 1200 debit, entry 2 the credit.
+    l.clear_ref(
+        "POL-1",
+        &[
+            "--amount",
+            "40",
+            "--date",
+            "2026-01-31",
+            "--statement",
+            "S-JAN",
+        ],
+    );
+    l.clear_ref(
+        "POL-1",
+        &[
+            "--date",
+            "2026-02-10",
+            "--statement",
+            "S-JAN",
+            "--status",
+            "reconciled",
+        ],
+    );
+    l.clear_ref(
+        "POL-1",
+        &[
+            "--amount",
+            "25",
+            "--date",
+            "2026-02-28",
+            "--statement",
+            "S-FEB",
+        ],
+    );
+
+    let d = l.json(&["txn", "show", "1"], None);
+    let txn = &d[0];
+    assert_eq!(txn["id"], 1);
+    let e1 = &txn["entries"][0];
+    // Existing fields are unchanged.
+    assert_eq!(e1["account_code"], "1200");
+    assert_eq!(e1["direction"], "debit");
+    assert_eq!(int(e1, "amount"), 10_000);
+    assert_eq!(e1["status"], "uncleared");
+    // New fields.
+    assert_eq!(int(e1, "id"), 1);
+    assert_eq!(int(e1, "cleared_amount"), 6_500);
+    assert_eq!(int(e1, "remaining_amount"), 3_500);
+    let cs = e1["clearings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("clearings: {e1}"));
+    assert_eq!(cs.len(), 2, "{e1}");
+    assert!(cs[0]["id"].is_i64());
+    assert_eq!(int(&cs[0], "amount"), 4_000);
+    assert_eq!(cs[0]["cleared_date"], "2026-01-31");
+    assert_eq!(cs[0]["reconciled_date"], "2026-02-10");
+    assert_eq!(cs[0]["statement_ref"], "S-JAN");
+    assert_eq!(cs[0]["status"], "reconciled");
+    assert_eq!(int(&cs[1], "amount"), 2_500);
+    assert_eq!(cs[1]["cleared_date"], "2026-02-28");
+    assert!(cs[1]["reconciled_date"].is_null());
+    assert_eq!(cs[1]["statement_ref"], "S-FEB");
+    assert_eq!(cs[1]["status"], "cleared");
+    let e2 = &txn["entries"][1];
+    assert_eq!(int(e2, "id"), 2);
+    assert_eq!(int(e2, "cleared_amount"), 0);
+    assert_eq!(int(e2, "remaining_amount"), 10_000);
+    assert_eq!(e2["clearings"].as_array().map(Vec::len), Some(0));
+
+    // `txn list` keeps its shape (no clearing breakdown).
+    let list = l.json(&["txn", "list"], None);
+    assert!(list[0]["entries"][0].get("clearings").is_none(), "{list}");
+
+    let table = l.co(&["txn", "show", "1"]);
+    for needle in [
+        "entry #1: cleared 65.00 of 100.00, remaining 35.00",
+        "40.00  reconciled  cleared 2026-01-31  reconciled 2026-02-10  statement S-JAN",
+        "25.00  cleared  cleared 2026-02-28  statement S-FEB",
+        "entry #2: cleared 0.00 of 100.00, remaining 100.00",
+    ] {
+        assert!(table.contains(needle), "missing {needle}: {table}");
+    }
+}
+
+#[test]
+fn cleared_status_on_reconciled_clearings_is_an_error() {
+    let l = seeded();
+    let jan = ["--date", "2026-01-31", "--statement", "S-JAN"];
+    assert!(l.batch("POL-1\nPOL-2\n", &jan).ok);
+    assert!(
+        l.batch(
+            "POL-1\nPOL-2\n",
+            &[&jan[..], &["--status", "reconciled"]].concat()
+        )
+        .ok
+    );
+
+    // Single, by statement.
+    let out = l.co_run(
+        &[
+            "txn",
+            "clear",
+            "--reference",
+            "POL-1",
+            "--account",
+            "1200",
+            "--date",
+            "2026-01-31",
+            "--statement",
+            "S-JAN",
+        ],
+        None,
+    );
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+    assert!(out.stderr.contains("locked"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("--status uncleared --statement S-JAN"),
+        "{}",
+        out.stderr
+    );
+
+    // Single, without a statement (the legacy form).
+    let out = l.co_run(&["txn", "clear", "1", "--entry", "1"], None);
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+    assert!(out.stderr.contains("locked"), "{}", out.stderr);
+
+    // Batch: line 2 fails, POL-3 on line 1 is not applied.
+    let out = l.batch("POL-3\nPOL-1\n", &jan);
+    assert_eq!(out.code, Some(3), "{}", out.stderr);
+    assert!(out.stderr.contains("line 2 (POL-1)"), "{}", out.stderr);
+    assert!(out.stderr.contains("locked"), "{}", out.stderr);
+    let r = l.report(&[]);
+    let list = items(&r);
+    let pol3 = item(&list, "POL-3").unwrap_or_else(|| panic!("POL-3 listed: {r}"));
+    assert_eq!(int(pol3, "cleared_amount"), 0);
+    assert_eq!(int(&r, "reconciled_balance"), 30_000);
+
+    // The documented way back: unclear, then clear again.
+    let d = l.clear_ref("POL-1", &["--status", "uncleared", "--statement", "S-JAN"]);
+    assert_eq!(d["action"], "uncleared");
+    let d = l.clear_ref("POL-1", &jan);
+    assert_eq!(d["action"], "cleared");
+    assert_eq!(d["entry_status"], "cleared");
+}
+
+#[test]
+fn rerunning_a_cleared_statement_is_still_a_skip() {
+    let l = seeded();
+    let jan = ["--date", "2026-01-31", "--statement", "S-JAN"];
+    let feb = ["--date", "2026-02-28", "--statement", "S-FEB"];
+    assert!(l.batch("POL-1,40\n", &jan).ok);
+    assert!(l.batch("POL-1,60\nPOL-2\n", &feb).ok);
+    // Reconcile January only; February stays cleared.
+    assert!(
+        l.batch("POL-1\n", &[&jan[..], &["--status", "reconciled"]].concat())
+            .ok
+    );
+
+    let out = l.batch("POL-1,60\nPOL-2\n", &feb);
+    assert!(out.ok, "{}", out.stderr);
+    let v: Value = serde_json::from_str(&out.stdout).unwrap_or_else(|e| panic!("json: {e}"));
+    assert_eq!(int(&v["data"], "skipped_count"), 2);
+    assert_eq!(
+        v["data"]["skipped"][0]["skip_reason"],
+        "already_cleared_by_statement"
+    );
+}
