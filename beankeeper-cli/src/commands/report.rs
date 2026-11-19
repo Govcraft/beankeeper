@@ -139,6 +139,9 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
+        ReportCommand::CashFlow(args) => {
+            super::report_cash_flow::run(cli, &db, company, args, format, use_color)
+        }
     }
 }
 

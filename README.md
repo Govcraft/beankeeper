@@ -107,6 +107,7 @@ bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-0
 # Multi-currency companies pick the report currency explicitly
 bk --company personal report trial-balance --currency MXN
 bk --company personal report reconciliation --account 1000 --statement-balance 4210.33
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-03-31
 
 # Set a budget and compare against actuals
 bk --company personal budget set 5000 --year 2026 --annual 14400
@@ -464,6 +465,23 @@ bk --company personal report aging --account 1100 --group-by-metadata customer
 ```
 
 The ledger has no invoice or due-date model, so the report works on a FIFO assumption: each net increase to the account is a charge, each net decrease is a settlement applied to the oldest open charges, and ages are measured from **transaction dates**. Settlements beyond the open charges show as an unapplied credit. Non-JSON metadata (or a missing key) is grouped under `(none)`. The totals always reconcile: total open - unapplied credit = account balance as of the date. If the company uses more than one currency, pass `--currency`.
+
+### Cash Flow Statement
+
+`bk report cash-flow` produces a direct-method cash flow statement: the net cash movement of each transaction is attributed to its non-cash counter-accounts and grouped into Operating (revenue/expense), Investing (non-cash assets) and Financing (liabilities/equity), followed by the net change, opening cash and closing cash, with a check that opening + net change = closing.
+
+```sh
+# Default cash accounts
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-12-31
+
+# Choose the cash accounts explicitly (repeatable)
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-03-31 --cash-account 1000
+
+# Multi-currency ledgers must pick one currency
+bk --company personal report cash-flow --from 2026-01-01 --to 2026-12-31 --currency EUR
+```
+
+Without `--cash-account`, every **asset** account whose name contains `cash`, `bank`, `checking` or `savings` (case-insensitive) is treated as cash -- this matches the bundled templates (`Operating Cash`, `Checking Account`, `Savings Account`). A code range is deliberately not used: `1100` is `Savings Account` in the personal template but `Accounts Receivable` in the business ones. If no account qualifies, the command exits with a validation error (exit code 3) asking for `--cash-account`. Transfers between two cash accounts net to zero and are excluded.
 
 ### JSON Envelope
 

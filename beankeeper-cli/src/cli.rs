@@ -1283,6 +1283,25 @@ EXAMPLES:\n  \
         #[arg(long)]
         currency: Option<String>,
     },
+
+    /// Generate a cash flow statement (direct method).
+    #[command(after_help = "\
+CASH ACCOUNTS:\n  \
+    Without --cash-account, every asset account whose name contains \"cash\",\n  \
+    \"bank\", \"checking\" or \"savings\" (case-insensitive) is treated as cash.\n\
+\n\
+EXAMPLES:\n  \
+    Cash flow for the year:\n    \
+    $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-12-31\n\
+    \n  \
+    Restrict cash to specific accounts:\n    \
+    $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-03-31 \\\n        \
+    --cash-account 1000 --cash-account 1010\n\
+    \n  \
+    A single currency in a multi-currency ledger:\n    \
+    $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-12-31 --currency EUR\
+")]
+    CashFlow(crate::commands::report_cash_flow::CashFlowArgs),
 }
 
 /// Output format for general commands.

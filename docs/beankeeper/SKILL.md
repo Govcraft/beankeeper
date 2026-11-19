@@ -75,6 +75,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report ledger` | General ledger / account statement with running balances |
 | `bk report aging` | Receivables/payables aging buckets (FIFO by transaction date) |
 | `bk report reconciliation` | Book vs cleared vs reconciled balance for one account, uncleared entries, statement difference |
+| `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export all data as JSON or CSV |
@@ -129,6 +130,7 @@ bk --company acme report income-statement --from 2026-01-01 --to 2026-03-31
 bk --company acme report balance-sheet --to 2026-03-31
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 bk --company acme report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
+bk --company acme report cash-flow --from 2026-01-01 --to 2026-03-31
 
 # Companies with transactions in several currencies must pick one
 bk --company acme report trial-balance --currency MXN
@@ -179,6 +181,8 @@ Balances are on the account's normal side (debit-normal for asset/expense,
 credit-normal otherwise). `book - cleared` always equals the total of the
 listed uncleared entries; `difference = statement - cleared`, and the account
 is reconciled when the difference is zero.
+
+`report cash-flow` treats asset accounts named like `cash`/`bank`/`checking`/`savings` as cash unless you pass `--cash-account CODE` (repeatable); see [`references/commands.md`](references/commands.md#bk-report-cash-flow).
 
 ### Budgeting
 

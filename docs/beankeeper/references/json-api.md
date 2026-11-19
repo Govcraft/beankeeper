@@ -579,6 +579,38 @@ Same shape as a single element from `txn list`, with entries included.
 }
 ```
 
+### `report cash-flow`
+
+Amounts are signed minor units (positive = cash inflow).
+
+```json
+{
+  "data": {
+    "from": "2026-01-01",
+    "to": "2026-03-31",
+    "currency": "USD",
+    "cash_accounts": [{ "code": "1000", "name": "Checking" }],
+    "operating": {
+      "lines": [
+        { "code": "4000", "name": "Sales", "account_type": "revenue", "amount": 65000 },
+        { "code": "5000", "name": "Rent", "account_type": "expense", "amount": -25000 }
+      ],
+      "total": 40000
+    },
+    "investing": { "lines": [], "total": 0 },
+    "financing": {
+      "lines": [{ "code": "2000", "name": "Loan Payable", "account_type": "liability", "amount": 100000 }],
+      "total": 100000
+    },
+    "net_change": 140000,
+    "opening_cash": 100000,
+    "closing_cash": 240000,
+    "reconciled": true,
+    "difference": 0
+  }
+}
+```
+
 ### `report aging`
 
 Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) when `--group-by-metadata` is not used; otherwise it is the metadata value or `"(none)"`. `max_days` is `null` for the open-ended last bucket. `totals.net` (= `total_open - unapplied_credit`) always equals `account_balance` (the account's balance in its normal direction as of `as_of`, in `currency`).
