@@ -11,6 +11,28 @@ pub struct Db {
 }
 
 impl Db {
+    /// Open a current-version ledger read-only, without migrations or PRAGMA writes.
+    ///
+    /// # Errors
+    /// Returns a database error for an invalid, unsupported, or unreadable snapshot.
+    pub fn open_snapshot(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        if let Some(pp) = passphrase {
+            conn.pragma_update(None, "key", pp.expose_secret())?;
+        }
+        let version = super::schema::get_schema_version(&conn)?;
+        if version != super::schema::CURRENT_VERSION {
+            return Err(CliError::Database(format!(
+                "not a supported beankeeper snapshot: schema version {version}; expected {}",
+                super::schema::CURRENT_VERSION
+            )));
+        }
+        Ok(Self { conn })
+    }
+
     /// Opens (or creates) a database at `path`, optionally encrypting with `passphrase`.
     ///
     /// Enables foreign keys, WAL journal mode, and ensures the schema is up to date.

@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 17;
+pub(crate) const CURRENT_VERSION: i64 = 17;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
