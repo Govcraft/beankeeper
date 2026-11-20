@@ -15,6 +15,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
 
 use super::LedgerServer;
+use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
 use crate::cli::Cli;
 use crate::db::connection::Db;
 use crate::error::CliError;
@@ -234,6 +235,37 @@ pub fn http_router_with_passphrase(
     read_only: bool,
     config: StreamableHttpServerConfig,
 ) -> Result<Router, CliError> {
+    http_router_with_host_tools(cli, passphrase, read_only, config, NoHostTools)
+}
+
+/// Compose host and ledger MCP tools behind the authenticated `/mcp` boundary.
+///
+/// This shares the resolved-passphrase and lifecycle contract of
+/// [`http_router_with_passphrase`]. The host's catalog is captured once; duplicate
+/// names, including collisions with built-in tools, fail construction. Read-only
+/// mode removes every host tool declared as a mutation, including navigation.
+///
+/// Discovery and dispatch require each host tool's explicit signed grant even
+/// when ledger enforcement is off. Dispatch supplies a freshly verified,
+/// request-scoped identity to [`HostToolHandler::call_tool`]. Header credentials
+/// override the CLI fallback; sessions do not retain credentials. Ledger tools
+/// retain their existing live policy checks and atomic execution.
+///
+/// See the [host integration guide](https://github.com/Govcraft/beankeeper/blob/main/docs/mcp-host-tools.md)
+/// for a complete host example and grant contract.
+///
+/// # Errors
+///
+/// Returns a CLI error for an invalid catalog or failure to open the ledger.
+pub fn http_router_with_host_tools<H: HostToolHandler>(
+    cli: &Cli,
+    passphrase: Option<&SecretString>,
+    read_only: bool,
+    config: StreamableHttpServerConfig,
+    host: H,
+) -> Result<Router, CliError> {
+    let tools = catalog(host.tools(), read_only)?;
+    let host = Arc::new(host);
     let db = Db::open_existing(&cli.db, passphrase)?;
     let mut server = LedgerServer::new(db, read_only);
     server.require_request_token = true;
@@ -242,7 +274,13 @@ pub fn http_router_with_passphrase(
         fallback: cli.agent_token.clone(),
     };
     let service = StreamableHttpService::new(
-        move || Ok(server.clone()),
+        move || {
+            Ok(HostServer {
+                ledger: server.clone(),
+                host: host.clone(),
+                tools: tools.clone(),
+            })
+        },
         Arc::new(LocalSessionManager::default()),
         config,
     );

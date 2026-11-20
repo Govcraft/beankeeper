@@ -595,6 +595,12 @@ keeps the same MCP authentication. It works across platforms without a file
 descriptor bridge or plaintext passphrase file. Drop the secret after opening
 both connections. See its Rustdoc for an example.
 
+Hosts can add application tools with `http_router_with_host_tools` and a
+`HostToolHandler`. Beankeeper filters their discovery and dispatch using the
+current request's verified grants, revocations, and read-only ceiling. Navigation
+uses an explicit `ui/navigate` grant on a separate UI-scoped token. See the
+[host tool API and example](docs/mcp-host-tools.md).
+
 ## Demo Mode
 
 Create sample books for three companies and explore the walkthrough below:

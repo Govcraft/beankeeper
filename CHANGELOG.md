@@ -8,6 +8,12 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Added
 
+- UI-scoped `ui/navigate` tokens and authenticated HTTP host tool composition
+  through `http_router_with_host_tools` and `HostToolHandler`. Host discovery
+  and calls require explicit current-request grants, live verification, and
+  the read-only ceiling; existing ledger tokens retain their scope.
+  ([#110](https://github.com/Govcraft/beankeeper/issues/110))
+
 - Public `beankeeper_cli::mcp::http_router_with_passphrase` factory for sharing
   one resolved in-memory secret with a read-only snapshot across platforms.
   The existing CLI-source factory delegates to it and preserves authentication.

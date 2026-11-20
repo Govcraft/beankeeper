@@ -75,9 +75,16 @@ bk --json agent issue --name claude --generate-key --ttl 8h
 The URI is `agent://<id>.bk.local/ledger/<name>_<typeid-suffix>`. The common
 `ledger` path accommodates sibling grants such as `ledger/post`,
 `ledger/reverse`, `ledger/reconcile`, `ledger/budget` and `ledger/admin`.
-`ledger/read,ledger/post` is the default grant list. All grants must be valid
+`ledger/read,ledger/post` is the default grant list. Ledger grants must be valid
 capability paths strictly below `ledger`. A bare `ledger` grant is rejected at
 issuance and verification, including when enforcement is off.
+
+Hosts can issue separate `--caps ui/navigate` tokens. These use a `/ui/` subject
+and require explicit navigation authority even when ledger enforcement is off.
+Bare `ui` grants and mixed `ledger/*,ui/*` lists are rejected; use separate
+bearers for the two subject scopes. Ledger grants never authorize navigation.
+See [authenticated host tools](mcp-host-tools.md) for the issuance, authorization
+and read-only contract, with a Rust integration example.
 
 `--ttl` accepts a positive integer followed by `s`, `m`, `h` or `d`, up to `30d`;
 the default is `8h`. Issue output includes `agent_uri`, `token_jti`, `agent_key`
