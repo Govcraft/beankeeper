@@ -58,6 +58,7 @@ The `companies` array contains the exported companies with their accounts and tr
 | `VALIDATION` | Business rule violation (unbalanced entry, invalid account type) |
 | `DATABASE` | SQLite or I/O error |
 | `NOT_FOUND` | Entity does not exist |
+| `UNAUTHORIZED` | Invalid, expired, revoked or untrusted supplied agent token (exit 6) |
 | `GENERAL` | Other error |
 | `IO` | File I/O error |
 
@@ -1288,3 +1289,18 @@ derived `status` and total `cleared_amount`; `after` also carries `op`
 4. **Handle null fields**: `metadata`, `reference`, `memo`, `notes`, `description` can be null
 5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Databases created before schema v9 are migrated to this form automatically on open.
 6. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout
+
+## Optional identity fields (0.14.0)
+
+With `--agent-token` / `BK_AGENT_TOKEN`, envelopes add `meta.agent` containing
+the verified `agent://` URI. It is absent without a token, and unverified input
+is never echoed into metadata. Transaction show/list data and audit rows add
+nullable `agent_uri` and `token_jti`. Named `posted_by`/`actor` retain their
+meaning. Audit rows also include `hash_version`: 1 for preserved historical
+hashes, 2 for new rows including nullable identity in the hash payload.
+
+`key.init`, `agent.issue`, `agent.list`, `agent.revoke` use the normal envelope.
+See [the command reference](commands.md#agent-identity) for their data fields.
+Tokens and generated private seeds appear only in issuance output; list and
+audit data contain public claims. Successful export output remains standalone.
+Capabilities and agent write signatures are not enforced in Phase 1.

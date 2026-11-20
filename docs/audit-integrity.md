@@ -78,3 +78,21 @@ cannot distinguish those histories. For pre-v12 transactions it can check the
 accounting invariants, but has no creation snapshot for detecting a balanced
 rewrite made after bypassing the triggers. Raw SQL metadata or clearance edits
 are allowed by storage protections and cannot be attributed by the chain.
+
+## Schema v13 agent attribution
+
+Schema v13 preserves every existing v1 hash and snapshot, with null
+`agent_uri`/`token_jti` and `hash_version = 1`. New rows use `hash_version = 2`.
+Their canonical tuple is the v1 tuple with tag `beankeeper.audit.v2`, followed
+by `agent_uri` and `token_jti` in that order, including JSON nulls for named-only
+writes. The predecessor/hash construction stays the same, and v2 rows extend
+the v1 tail. Migration checks the old chain and tail atomically and adds no
+invented identity or anchor. New transaction identity columns are immutable.
+
+V2 creation snapshots include both identity fields. `verify` compares them to
+the transaction and audit row; v1 snapshots keep their original shape. Company
+and account creation, attachments and key/token management now append audit
+records too. Root private keys, complete tokens and generated agent private keys
+are excluded from snapshots. Token revocation/expiry leaves old hashes valid.
+The token signature attests claims; Phase 1 has no signatures over ledger writes
+or proof of agent private-key possession. See [agent identity](agent-identity.md).
