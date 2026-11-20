@@ -206,6 +206,22 @@ pub fn try_run(
     format: OutputFormat,
     use_color: bool,
 ) -> Option<Result<(), CliError>> {
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput {
+        format,
+        use_color,
+        writer: &mut stdout,
+    };
+    try_run_to(cli, db, company, sub, &mut output)
+}
+
+pub(crate) fn try_run_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Option<Result<(), CliError>> {
     let (kind, layout) = requested_layout(sub)?;
     let (from, to, account_type, currency) = match sub {
         ReportCommand::IncomeStatement {
@@ -232,8 +248,7 @@ pub fn try_run(
             account_type,
             currency: currency.as_deref(),
         },
-        format,
-        use_color,
+        output,
     ))
 }
 
@@ -252,8 +267,7 @@ fn run(
     db: &Db,
     company: &str,
     req: &Request<'_>,
-    format: OutputFormat,
-    use_color: bool,
+    output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let option = match req.layout {
         Layout::Periods(_) => "--period",
@@ -304,20 +318,29 @@ fn run(
         summary,
     };
 
-    match format {
+    match output.format {
         OutputFormat::Table => {
-            println!(
+            writeln!(
+                output.writer,
                 "{}",
-                output::report_periods::render_table(&report, use_color)
-            );
+                output::report_periods::render_table(&report, output.use_color)
+            )?;
         }
         OutputFormat::Json => {
             let id = mode_command_id(req.kind, req.layout);
             let meta = output::json::meta(id, Some(company));
-            println!("{}", output::report_periods::render_json(&report, meta)?);
+            writeln!(
+                output.writer,
+                "{}",
+                output::report_periods::render_json(&report, meta)?
+            )?;
         }
         OutputFormat::Csv => {
-            print!("{}", output::report_periods::render_csv(&report)?);
+            write!(
+                output.writer,
+                "{}",
+                output::report_periods::render_csv(&report)?
+            )?;
         }
     }
 

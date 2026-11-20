@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use crate::cli::{AccountTypeArg, Cli, OutputFormat, ReportCommand, resolve_format};
 use crate::commands::report_currency::resolve_report_currency;
 use crate::db;
@@ -18,15 +20,64 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
         false,
     )?;
     let db = Db::open_existing(&cli.db, pp.as_ref())?;
-    crate::db::companies::get_company(db.conn(), company)?;
-    let use_color = output::should_use_color(cli.verbosity.no_color);
-    let format = resolve_format(None, cli);
+    let mut stdout = std::io::stdout().lock();
+    let mut output = ReportOutput {
+        format: resolve_format(None, cli),
+        use_color: output::should_use_color(cli.verbosity.no_color),
+        writer: &mut stdout,
+    };
+    run_to(cli, &db, company, sub, &mut output)
+}
 
+/// Output destination and presentation options for a report.
+pub(crate) struct ReportOutput<'a> {
+    pub format: OutputFormat,
+    pub use_color: bool,
+    pub writer: &'a mut dyn Write,
+}
+
+/// Compute a report using the CLI's JSON contract, without writing to stdout.
+///
+/// The connection is supplied by the caller, so server transports can reuse an
+/// already-open database and its startup credentials.
+///
+/// # Errors
+///
+/// Returns [`CliError`] for invalid report options or database failures.
+pub fn execute_json(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+) -> Result<serde_json::Value, CliError> {
+    let mut bytes = Vec::new();
+    let mut output = ReportOutput {
+        format: OutputFormat::Json,
+        use_color: false,
+        writer: &mut bytes,
+    };
+    run_to(cli, db, company, sub, &mut output)?;
+    let mut envelope: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| CliError::General(format!("invalid report JSON: {error}")))?;
+    envelope
+        .get_mut("data")
+        .map(serde_json::Value::take)
+        .ok_or_else(|| CliError::General("report did not produce a data payload".into()))
+}
+
+fn run_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    output: &mut ReportOutput<'_>,
+) -> Result<(), CliError> {
+    crate::db::companies::get_company(db.conn(), company)?;
     let resolved = super::report_dates::resolve(sub, chrono::Local::now().date_naive())?;
     let sub = &resolved;
 
     // `--period` / `--compare` multi-column modes (issue #22).
-    let multi = super::report_periods::try_run(cli, &db, company, sub, format, use_color);
+    let multi = super::report_periods::try_run_to(cli, db, company, sub, output);
     if let Some(result) = multi {
         return result;
     }
@@ -36,20 +87,18 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
         | ReportCommand::Balance { .. }
         | ReportCommand::IncomeStatement { .. }
         | ReportCommand::BalanceSheet { .. }
-        | ReportCommand::TaxSummary { .. } => {
-            run_statement_command(cli, &db, company, sub, format, use_color)
-        }
+        | ReportCommand::TaxSummary { .. } => run_statement_command(cli, db, company, sub, output),
         ReportCommand::BudgetVariance { .. } | ReportCommand::Reconciliation { .. } => {
-            run_entry_command(cli, &db, company, sub, format, use_color)
+            run_entry_command(cli, db, company, sub, output)
         }
         ReportCommand::Ledger { .. } => {
-            super::report_ledger::run_command(cli, &db, company, sub, format, use_color)
+            super::report_ledger::run_command_to(cli, db, company, sub, output)
         }
         ReportCommand::Aging { .. } => {
-            super::report_aging::run_command(cli, &db, company, sub, format, use_color)
+            super::report_aging::run_command_to(cli, db, company, sub, output)
         }
         ReportCommand::CashFlow(args) => {
-            super::report_cash_flow::run(cli, &db, company, args, format, use_color)
+            super::report_cash_flow::run_to(cli, db, company, args, output)
         }
     }
 }
@@ -61,8 +110,7 @@ fn run_statement_command(
     db: &Db,
     company: &str,
     sub: &ReportCommand,
-    format: OutputFormat,
-    use_color: bool,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     match sub {
         ReportCommand::TrialBalance {
@@ -75,12 +123,13 @@ fn run_statement_command(
             cli,
             db,
             company,
-            from.as_deref(),
-            to.as_deref(),
-            account_type.as_ref(),
-            currency.as_deref(),
-            format,
-            use_color,
+            &StatementOptions {
+                from: from.as_deref(),
+                to: to.as_deref(),
+                currency: currency.as_deref(),
+                account_type: account_type.as_ref(),
+            },
+            output,
         ),
         ReportCommand::Balance {
             account,
@@ -92,11 +141,13 @@ fn run_statement_command(
             db,
             company,
             account,
-            from.as_deref(),
-            to.as_deref(),
-            currency.as_deref(),
-            format,
-            use_color,
+            &StatementOptions {
+                from: from.as_deref(),
+                to: to.as_deref(),
+                currency: currency.as_deref(),
+                account_type: None,
+            },
+            output,
         ),
         ReportCommand::IncomeStatement {
             from, to, currency, ..
@@ -104,30 +155,28 @@ fn run_statement_command(
             cli,
             db,
             company,
-            from.as_deref(),
-            to.as_deref(),
-            currency.as_deref(),
-            format,
-            use_color,
+            &StatementOptions {
+                from: from.as_deref(),
+                to: to.as_deref(),
+                currency: currency.as_deref(),
+                account_type: None,
+            },
+            output,
         ),
-        ReportCommand::BalanceSheet { to, currency } => run_balance_sheet(
-            cli,
-            db,
-            company,
-            to.as_deref(),
-            currency.as_deref(),
-            format,
-            use_color,
-        ),
+        ReportCommand::BalanceSheet { to, currency } => {
+            run_balance_sheet(cli, db, company, to.as_deref(), currency.as_deref(), output)
+        }
         ReportCommand::TaxSummary { from, to, currency } => run_tax_summary(
             cli,
             db,
             company,
-            from.as_deref(),
-            to.as_deref(),
-            currency.as_deref(),
-            format,
-            use_color,
+            &StatementOptions {
+                from: from.as_deref(),
+                to: to.as_deref(),
+                currency: currency.as_deref(),
+                account_type: None,
+            },
+            output,
         ),
         _ => Err(CliError::General(
             "internal error: not a statement report".to_string(),
@@ -141,8 +190,7 @@ fn run_entry_command(
     db: &Db,
     company: &str,
     sub: &ReportCommand,
-    format: OutputFormat,
-    use_color: bool,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     match sub {
         ReportCommand::BudgetVariance {
@@ -157,18 +205,19 @@ fn run_entry_command(
             cli,
             db,
             company,
-            *year,
-            *month,
-            *from,
-            *to,
-            account_type.as_ref(),
-            currency.as_deref(),
-            *include_unbudgeted,
-            format,
-            use_color,
+            &BudgetVarianceOptions {
+                year: *year,
+                month: *month,
+                from: *from,
+                to: *to,
+                account_type: account_type.as_ref(),
+                currency: currency.as_deref(),
+                include_unbudgeted: *include_unbudgeted,
+            },
+            output,
         ),
         ReportCommand::Reconciliation { .. } => {
-            super::report_reconciliation::run_command(cli, db, company, sub, format, use_color)
+            super::report_reconciliation::run_command_to(cli, db, company, sub, output)
         }
         _ => Err(CliError::General(
             "internal error: not a budget or reconciliation report".to_string(),
@@ -176,19 +225,27 @@ fn run_entry_command(
     }
 }
 
+struct StatementOptions<'a> {
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+    currency: Option<&'a str>,
+    account_type: Option<&'a AccountTypeArg>,
+}
+
 /// Execute the `report trial-balance` subcommand.
-#[allow(clippy::too_many_arguments)]
 fn run_trial_balance(
     cli: &Cli,
     db: &Db,
     company: &str,
-    from: Option<&str>,
-    to: Option<&str>,
-    account_type: Option<&AccountTypeArg>,
-    currency: Option<&str>,
-    format: OutputFormat,
-    use_color: bool,
+    opts: &StatementOptions<'_>,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
+    let StatementOptions {
+        from,
+        to,
+        currency,
+        account_type,
+    } = *opts;
     let currency = resolve_report_currency(db.conn(), company, currency)?;
     let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
     let balances = db::compute_trial_balance(
@@ -202,26 +259,26 @@ fn run_trial_balance(
 
     let minor_units = currency.minor_units();
 
-    match format {
+    match output.format {
         OutputFormat::Table => {
             let title = build_period_title("Trial Balance", currency.code(), from, to);
             let rendered = output::table::render_trial_balance(
                 &balances,
                 currency.code(),
                 minor_units,
-                use_color,
+                output.use_color,
                 Some(&title),
             );
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.trial-balance", Some(company));
             let rendered = output::json::render_trial_balance(&balances, meta)?;
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_trial_balance(&balances)?;
-            print!("{rendered}");
+            write!(output.writer, "{rendered}")?;
         }
     }
 
@@ -233,18 +290,17 @@ fn run_trial_balance(
 }
 
 /// Execute the `report balance` subcommand.
-#[allow(clippy::too_many_arguments)]
 fn run_balance(
     cli: &Cli,
     db: &Db,
     company: &str,
     account_code: &str,
-    from: Option<&str>,
-    to: Option<&str>,
-    currency: Option<&str>,
-    format: OutputFormat,
-    use_color: bool,
+    opts: &StatementOptions<'_>,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
+    let StatementOptions {
+        from, to, currency, ..
+    } = *opts;
     // Look up the account to get name and type
     let account_row = db::get_account(db.conn(), company, account_code)?;
     let currency = resolve_report_currency(db.conn(), company, currency)?;
@@ -265,7 +321,7 @@ fn run_balance(
         credit_total,
     };
 
-    match format {
+    match output.format {
         OutputFormat::Table => {
             let params = output::table::AccountBalanceParams {
                 code: &account_row.code,
@@ -275,21 +331,21 @@ fn run_balance(
                 credit_total,
                 currency_code: currency.code(),
                 currency_minor_units: currency.minor_units(),
-                use_color,
+                use_color: output.use_color,
             };
             let title = build_period_title("Account Balance", currency.code(), from, to);
             let rendered = output::table::render_account_balance(&params);
-            print_period_table(&rendered, &title);
+            print_period_table(&rendered, &title, output.writer)?;
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.balance", Some(company));
             let rendered =
                 output::json::render_account_balance(&balance_row, currency.code(), meta)?;
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_account_balance(&balance_row, currency.code())?;
-            print!("{rendered}");
+            write!(output.writer, "{rendered}")?;
         }
     }
 
@@ -307,17 +363,16 @@ fn run_balance(
 ///
 /// An income statement shows revenue and expense accounts for a given period,
 /// grouped into sections with subtotals and a net income (or net loss) line.
-#[allow(clippy::too_many_arguments)]
 fn run_income_statement(
     cli: &Cli,
     db: &Db,
     company: &str,
-    from: Option<&str>,
-    to: Option<&str>,
-    currency: Option<&str>,
-    format: OutputFormat,
-    use_color: bool,
+    opts: &StatementOptions<'_>,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
+    let StatementOptions {
+        from, to, currency, ..
+    } = *opts;
     let currency = resolve_report_currency(db.conn(), company, currency)?;
     let code = Some(currency.code());
     let revenue_balances = compute_period_balances(db, company, "revenue", from, to, code)?;
@@ -327,25 +382,25 @@ fn run_income_statement(
 
     let minor_units = currency.minor_units();
 
-    match format {
+    match output.format {
         OutputFormat::Table => {
             let title = build_period_title("Income Statement", currency.code(), from, to);
             let rendered = output::statements::render_income_statement_table(
                 &stmt,
                 &title,
                 minor_units,
-                use_color,
+                output.use_color,
             );
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.income-statement", Some(company));
             let rendered = output::statements::render_income_statement_json(&stmt, meta)?;
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::statements::render_income_statement_csv(&stmt)?;
-            print!("{rendered}");
+            write!(output.writer, "{rendered}")?;
         }
     }
 
@@ -362,15 +417,13 @@ fn run_income_statement(
 /// Because there are no closing entries, equity includes a computed retained
 /// earnings line (cumulative revenue minus expenses up to `to`) so that
 /// Assets = Liabilities + Equity for any valid ledger.
-#[allow(clippy::too_many_arguments)]
 fn run_balance_sheet(
     cli: &Cli,
     db: &Db,
     company: &str,
     to: Option<&str>,
     currency: Option<&str>,
-    format: OutputFormat,
-    use_color: bool,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let currency = resolve_report_currency(db.conn(), company, currency)?;
     let code = Some(currency.code());
@@ -396,25 +449,25 @@ fn run_balance_sheet(
 
     let minor_units = currency.minor_units();
 
-    match format {
+    match output.format {
         OutputFormat::Table => {
             let title = build_period_title("Balance Sheet", currency.code(), None, to);
             let rendered = output::statements::render_balance_sheet_table(
                 &sheet,
                 &title,
                 minor_units,
-                use_color,
+                output.use_color,
             );
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.balance-sheet", Some(company));
             let rendered = output::statements::render_balance_sheet_json(&sheet, meta)?;
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::statements::render_balance_sheet_csv(&sheet)?;
-            print!("{rendered}");
+            write!(output.writer, "{rendered}")?;
         }
     }
 
@@ -443,9 +496,10 @@ fn compute_period_balances(
 }
 
 /// Replace a renderer's plain heading with its effective date window.
-fn print_period_table(rendered: &str, title: &str) {
+fn print_period_table(rendered: &str, title: &str, writer: &mut dyn Write) -> Result<(), CliError> {
     let body = rendered.split_once('\n').map_or(rendered, |(_, body)| body);
-    println!("{title}\n{body}");
+    writeln!(writer, "{title}\n{body}")?;
+    Ok(())
 }
 
 /// Build a period-qualified report title.
@@ -464,36 +518,39 @@ fn build_period_title(
 }
 
 /// Execute the `report tax-summary` subcommand.
-#[allow(clippy::too_many_arguments)]
 fn run_tax_summary(
     cli: &Cli,
     db: &Db,
     company: &str,
-    from: Option<&str>,
-    to: Option<&str>,
-    currency: Option<&str>,
-    format: OutputFormat,
-    use_color: bool,
+    opts: &StatementOptions<'_>,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
+    let StatementOptions {
+        from, to, currency, ..
+    } = *opts;
     let currency = resolve_report_currency(db.conn(), company, currency)?;
     let rows = db::compute_tax_summary(db.conn(), company, from, to, Some(currency.code()))?;
     let minor_units = currency.minor_units();
 
-    match format {
+    match output.format {
         OutputFormat::Table => {
             let title = build_period_title("Tax Summary", currency.code(), from, to);
-            let rendered =
-                output::table::render_tax_summary(&rows, currency.code(), minor_units, use_color);
-            print_period_table(&rendered, &title);
+            let rendered = output::table::render_tax_summary(
+                &rows,
+                currency.code(),
+                minor_units,
+                output.use_color,
+            );
+            print_period_table(&rendered, &title, output.writer)?;
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.tax-summary", Some(company));
             let rendered = output::json::render_tax_summary(&rows, meta)?;
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_tax_summary(&rows)?;
-            print!("{rendered}");
+            write!(output.writer, "{rendered}")?;
         }
     }
 
@@ -504,22 +561,33 @@ fn run_tax_summary(
     Ok(())
 }
 
-/// Execute the `report budget-variance` subcommand.
-#[allow(clippy::too_many_arguments)]
-fn run_budget_variance(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
+struct BudgetVarianceOptions<'a> {
     year: i32,
     month: Option<i32>,
     from: Option<i32>,
     to: Option<i32>,
-    account_type: Option<&AccountTypeArg>,
-    currency: Option<&str>,
+    account_type: Option<&'a AccountTypeArg>,
+    currency: Option<&'a str>,
     include_unbudgeted: bool,
-    format: OutputFormat,
-    use_color: bool,
+}
+
+/// Execute the `report budget-variance` subcommand.
+fn run_budget_variance(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    opts: &BudgetVarianceOptions<'_>,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
+    let BudgetVarianceOptions {
+        year,
+        month,
+        from,
+        to,
+        account_type,
+        currency,
+        include_unbudgeted,
+    } = *opts;
     // Resolve month range
     let (from_month, to_month) = if let Some(m) = month {
         if !(1..=12).contains(&m) {
@@ -560,12 +628,12 @@ fn run_budget_variance(
         },
     )?;
 
-    match format {
+    match output.format {
         OutputFormat::Table => {
             let title = build_variance_title(currency_code, year, from_month, to_month);
             let rendered =
-                output::table::render_budget_variance(&rows, &title, minor_units, use_color);
-            println!("{rendered}");
+                output::table::render_budget_variance(&rows, &title, minor_units, output.use_color);
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.budget-variance", Some(company));
@@ -577,11 +645,11 @@ fn run_budget_variance(
                 currency_code,
                 meta,
             )?;
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_budget_variance(&rows)?;
-            print!("{rendered}");
+            write!(output.writer, "{rendered}")?;
         }
     }
 
