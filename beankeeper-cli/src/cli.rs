@@ -187,11 +187,20 @@ impl Cli {
 /// MCP transport commands.
 #[derive(Subcommand, Debug)]
 pub enum McpCommand {
-    /// Serve MCP JSON-RPC over stdin/stdout against an existing database.
+    /// Serve MCP over stdio (default) or authenticated Streamable HTTP.
     Serve {
         /// Register only tools that read the ledger.
         #[arg(long)]
         read_only: bool,
+        /// Use Streamable HTTP at /mcp instead of stdin/stdout.
+        #[arg(long)]
+        http: bool,
+        /// HTTP listen address [default: 127.0.0.1:8750].
+        #[arg(long, requires = "http")]
+        bind: Option<std::net::SocketAddr>,
+        /// Permit a non-loopback bind over plaintext HTTP (no TLS).
+        #[arg(long, requires = "http")]
+        allow_remote: bool,
     },
 }
 

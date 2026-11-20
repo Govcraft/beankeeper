@@ -6,6 +6,20 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.25.0] - Unreleased
+
+### Added
+
+- Authenticated MCP Streamable HTTP at `/mcp` with `bk mcp serve --http`,
+  defaulting to `127.0.0.1:8750`. `--bind` selects an address; non-loopback binds
+  require `--allow-remote` and serve plaintext HTTP without TLS.
+- Every HTTP request verifies an `Authorization: Bearer` agent token, even when
+  ledger enforcement is off. Process credentials are a fallback for absent
+  headers. Discovery and tool authorization use the current requesting token and
+  policy, with live expiry/revocation checks and the existing read-only ceiling.
+  Stdio remains the default. No schema migration is added.
+  ([#74](https://github.com/Govcraft/beankeeper/issues/74))
+
 ## [0.24.0] - Unreleased
 
 ### Added

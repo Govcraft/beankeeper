@@ -158,9 +158,20 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         }
         Command::Key(_) | Command::Agent(_) => agent::run(cli),
         Command::Policy(command) => policy::run(cli, command),
-        Command::Mcp(crate::cli::McpCommand::Serve { read_only }) => {
-            crate::mcp::serve(cli, *read_only)
-        }
+        Command::Mcp(crate::cli::McpCommand::Serve {
+            read_only,
+            http,
+            bind,
+            allow_remote,
+        }) => match http {
+            true => crate::mcp::serve_http(
+                cli,
+                *read_only,
+                bind.unwrap_or_else(|| ([127, 0, 0, 1], 8750).into()),
+                *allow_remote,
+            ),
+            false => crate::mcp::serve(cli, *read_only),
+        },
         Command::Init {
             encrypt,
             path,

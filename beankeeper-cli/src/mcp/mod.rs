@@ -1,9 +1,12 @@
-//! Transport-independent MCP tools and the local stdio server.
+//! Transport-independent MCP tools with stdio and authenticated HTTP servers.
 //!
 //! Tool bodies use the same in-process database operations and JSON renderers
 //! as the CLI. Only the transport writes to stdout.
 
+mod http;
 mod inputs;
+
+pub use http::serve_http;
 
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +31,7 @@ pub struct LedgerServer {
     db: Arc<Mutex<Db>>,
     tool_router: ToolRouter<Self>,
     agent_token: Option<secrecy::SecretString>,
+    require_request_token: bool,
 }
 
 impl LedgerServer {
@@ -48,6 +52,7 @@ impl LedgerServer {
             db: Arc::new(Mutex::new(db)),
             tool_router,
             agent_token: None,
+            require_request_token: false,
         }
     }
 
@@ -69,7 +74,10 @@ impl LedgerServer {
             Err(error) => return tool_error(&CliError::General(error.to_string())),
         };
         let db = self.db.clone();
-        let token = self.agent_token.clone();
+        let token = match self.request_token(&context) {
+            Ok(token) => token,
+            Err(error) => return tool_error(&error),
+        };
         let result = tokio::task::spawn_blocking(move || {
             let db = db
                 .lock()
@@ -106,6 +114,21 @@ impl LedgerServer {
                 "ledger operation did not complete".into(),
             )),
         }
+    }
+
+    fn request_token(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<Option<secrecy::SecretString>, CliError> {
+        if !self.require_request_token {
+            return Ok(self.agent_token.clone());
+        }
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<http::RequestToken>())
+            .map(|token| Some(token.0.clone()))
+            .ok_or_else(|| CliError::Unauthorized("HTTP requires an agent token".into()))
     }
 }
 
@@ -616,18 +639,46 @@ impl LedgerServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for LedgerServer {
-    // Override the SDK macro's async list method: listing is synchronous.
-    fn list_tools(
+    async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, rmcp::ErrorData>>
-    + Send
-    + '_ {
-        std::future::ready(Ok(rmcp::model::ListToolsResult {
-            tools: self.tool_router.list_all(),
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let mut tools = self.tool_router.list_all();
+        if self.require_request_token {
+            let token = self
+                .request_token(&context)
+                .map_err(|error| http::protocol_error(&error))?;
+            let db = self.db.clone();
+            tools = tokio::task::spawn_blocking(move || {
+                let db = db
+                    .lock()
+                    .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
+                crate::db::audit::atomically(db.conn(), || {
+                    let token = token.as_ref().ok_or_else(|| {
+                        CliError::Unauthorized("HTTP requires an agent token".into())
+                    })?;
+                    let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
+                    if crate::db::policy::get(db.conn())?.enforce {
+                        let mut allowed = Vec::new();
+                        for tool in tools {
+                            if identity.allows(Capability::for_operation(&tool.name)?)? {
+                                allowed.push(tool);
+                            }
+                        }
+                        return Ok(allowed);
+                    }
+                    Ok(tools)
+                })
+            })
+            .await
+            .map_err(|_| rmcp::ErrorData::internal_error("tool discovery failed", None))?
+            .map_err(|error| http::protocol_error(&error))?;
+        }
+        Ok(rmcp::model::ListToolsResult {
+            tools,
             ..Default::default()
-        }))
+        })
     }
 
     fn get_info(&self) -> ServerConfig {
