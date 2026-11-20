@@ -17,7 +17,7 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open(&cli.db, pp.as_ref())?;
+    let db = Db::open_existing(&cli.db, pp.as_ref())?;
 
     // Check schema version
     let version = schema::get_schema_version(db.conn())?;

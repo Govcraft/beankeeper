@@ -18,7 +18,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open(&cli.db, pp.as_ref())?;
+    let db = Db::open_existing(&cli.db, pp.as_ref())?;
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 

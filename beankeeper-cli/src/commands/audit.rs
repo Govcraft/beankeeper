@@ -17,7 +17,7 @@ pub fn run(cli: &Cli, sub: &AuditCommand) -> Result<(), CliError> {
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open(&cli.db, pp.as_ref())?;
+    let db = Db::open_existing(&cli.db, pp.as_ref())?;
     let format = resolve_format(None, cli);
 
     match sub {
