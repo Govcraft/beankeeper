@@ -71,7 +71,9 @@ download_and_install() {
     info "verifying checksum..."
     curl -fsSL "$CHECKSUM_URL" -o "${TMPDIR}/checksums-sha256.txt"
 
-    EXPECTED="$(grep "$ARCHIVE" "${TMPDIR}/checksums-sha256.txt" | awk '{print $1}')"
+    verify_signatures
+
+    EXPECTED="$(awk -v archive="$ARCHIVE" '$2 == archive {print $1}' "${TMPDIR}/checksums-sha256.txt")"
     if [ -z "$EXPECTED" ]; then
         fatal "no checksum found for ${ARCHIVE}"
     fi
@@ -89,6 +91,26 @@ download_and_install() {
         info "installing to ${INSTALL_DIR} (requires sudo)..."
         sudo install -m755 "${TMPDIR}/bk-${VERSION}-${TARGET}/bk" "${INSTALL_DIR}/bk"
     fi
+}
+
+verify_signatures() {
+    if ! command -v cosign >/dev/null 2>&1; then
+        warn "cosign not found: only the SHA-256 checksum will be checked; release authenticity is not verified"
+        return
+    fi
+
+    IDENTITY="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/beankeeper-cli-v${VERSION}"
+    for ARTIFACT in "$ARCHIVE" checksums-sha256.txt; do
+        info "verifying Sigstore bundle for ${ARTIFACT}..."
+        curl -fsSL "${URL%/*}/${ARTIFACT}.sigstore" -o "${TMPDIR}/${ARTIFACT}.sigstore" \
+            || fatal "could not download Sigstore bundle for ${ARTIFACT}"
+        cosign verify-blob \
+            --bundle "${TMPDIR}/${ARTIFACT}.sigstore" \
+            --certificate-identity "$IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${TMPDIR}/${ARTIFACT}" \
+            || fatal "Sigstore verification failed for ${ARTIFACT}"
+    done
 }
 
 compute_sha256() {
