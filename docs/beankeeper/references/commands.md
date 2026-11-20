@@ -212,6 +212,44 @@ clearing (id, amount, status, cleared date, reconciled date, statement). JSON
 adds `id`, `cleared_amount`, `remaining_amount` and `clearings` to each entry
 (see `json-api.md`). CSV output is the transaction row only (no entries).
 
+### `bk txn reverse ID`
+
+Alias: `bk txn void ID`. Creates a linked opposite posting in the selected
+company without changing the original entries, amounts, dates or clearings.
+
+```bash
+bk --company acme txn reverse 42 --date 2026-11-19 --reference VOID-42
+bk --company acme txn reverse 42 --reference VOID-42  # successful retry (skip)
+bk --company acme txn void 43 --description "Duplicate expense"
+```
+
+- `--date YYYY-MM-DD`: Defaults to local today, on or after the original date.
+- `-d, --description TEXT`: Defaults to `Reversal of #ID: ORIGINAL DESCRIPTION`.
+- `-r, --reference REF`: Defaults to `reversal-of-ID`. Trimmed and nonempty.
+  A retry with an explicit reference matching the existing linked reversal
+  succeeds with a skip; other attempts to reverse the same original fail.
+  A reference belonging to any other transaction in the company is rejected.
+
+Every entry is mirrored, retaining account, amount, memo and tax category;
+the currency is unchanged. New entries start uncleared. Any reconciled
+clearing on the original, including a partial reconciled clearing, blocks
+reversal. Other clearings stay on the original. Reconciliation shows its
+existing cleared/remaining amounts alongside the outstanding opposite
+posting, effective from the reversal date. Neither side is automatically
+cleared or reconciled.
+
+Metadata links both ways (`reversed_by` on the original, `reverses` on the
+reversal, numeric IDs). The original's other metadata is preserved. The new
+transaction carries only `reverses`; transaction metadata and attachments
+are not copied. Table views of `txn show` and `txn list` display the links;
+JSON exposes them in `metadata`. The posting, original link and `reverse`
+audit record commit atomically, recording `--actor` / `BK_ACTOR` as usual.
+
+JSON returns the `txn post` result shape with `meta.command = "txn.reverse"`.
+Missing/foreign IDs exit 5; invalid dates, duplicate references, reconciled
+originals and repeated reversals exit 3. Reversing a reversal is allowed,
+but each transaction can be reversed only once.
+
 ### `bk txn import`
 
 Import transactions from OFX, CSV, or JSON files.
@@ -695,6 +733,7 @@ snapshots. The recorded operations are:
 | Action | Recorded when |
 |--------|---------------|
 | `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, reconciled_date, statement, status of the affected rows). Skips record nothing |
+| `reverse` | `bk txn reverse` posts and links a reversal |
 | `correlate` | `bk txn post --correlate` links a partner transaction |
 | `budget_set` | `bk budget set` creates or revises a budget (prior amount captured) |
 | `budget_delete` | `bk budget delete` removes a budget |
@@ -717,5 +756,5 @@ bk audit log --json                                # full before/after snapshots
 **Flags:**
 - `--company SLUG`: Restrict to one company
 - `--entity KIND`: One of `entry`, `transaction`, `budget`, `account`, `company`
-- `--action KIND`: One of `status-change`, `correlate`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
+- `--action KIND`: One of `status-change`, `correlate`, `reverse`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
 - `--limit N` (default: 50)

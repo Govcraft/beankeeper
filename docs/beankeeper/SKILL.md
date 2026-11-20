@@ -58,6 +58,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk account create/list/show/delete` | Manage chart of accounts |
 | `bk txn post` | Record a balanced journal entry |
 | `bk txn list` | Search and filter transactions |
+| `bk txn reverse ID` | Post a linked mirror transaction (alias `void`); reject reconciled originals |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV/JSON bank statements |
 | `bk txn clear` | Clear entries (in full or in part) against a statement, by id, by reference, or in an atomic batch; mark reconciled |
@@ -113,6 +114,29 @@ bk --company acme txn post -d "March payroll" \
   --credit 2600:600 --credit 2800:382.50 --credit 1000:4017.50 \
   --tax 5300=payroll --tax 2600=payroll-tax
 ```
+
+### Reverse a mistake
+
+```bash
+bk --company acme txn reverse 42 --date 2026-11-19 --reference VOID-42
+```
+
+`txn reverse` (alias `void`) flips every debit/credit and preserves accounts,
+amounts, memos, tax categories and currency. The date defaults to today,
+cannot precede the original, and `--description TEXT` overrides the default
+`Reversal of #ID: ORIGINAL DESCRIPTION`. The reference defaults to
+`reversal-of-ID`. An already reversed transaction is rejected, unless an
+explicit `--reference` matches its linked reversal, in which case it is a
+successful skip. JSON uses `txn.reverse` and the `txn post` result shape.
+
+Both links are numeric metadata IDs: `reversed_by` on the original and
+`reverses` on the reversal. They appear in `txn show` and `txn list`. Original
+metadata is preserved; the new transaction carries only the reversal link,
+without copying transaction metadata or attachments. The posting, links and
+`reverse` audit record are atomic. Reconciled clearings block the operation;
+other original clearings remain intact. New entries start uncleared and
+appear as separate outstanding opposite postings in reconciliation from
+the reversal date. Clear or reconcile them explicitly when appropriate.
 
 ### Import bank statements
 
