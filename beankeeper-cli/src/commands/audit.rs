@@ -20,6 +20,17 @@ pub fn run(cli: &Cli, sub: &AuditCommand) -> Result<(), CliError> {
     let db = Db::open_existing(&cli.db, pp.as_ref())?;
     let format = resolve_format(None, cli);
 
+    if format == OutputFormat::Json {
+        let data = execute_json(&db, sub)?;
+        let AuditCommand::Log { company, .. } = sub;
+        let meta = output::json::meta("audit.log", company.as_deref());
+        println!(
+            "{}",
+            serde_json::json!({"ok": true, "meta": meta, "data": data})
+        );
+        return Ok(());
+    }
+
     match sub {
         AuditCommand::Log {
             company,
@@ -29,54 +40,29 @@ pub fn run(cli: &Cli, sub: &AuditCommand) -> Result<(), CliError> {
         } => run_log(
             cli,
             &db,
-            company.as_deref(),
-            entity.map(crate::cli::AuditEntityArg::as_str),
-            action.map(crate::cli::AuditActionArg::as_str),
-            *limit,
+            &ListAuditParams {
+                company_slug: company.as_deref(),
+                entity: entity.map(crate::cli::AuditEntityArg::as_str),
+                action: action.map(crate::cli::AuditActionArg::as_str),
+                limit: (*limit).max(0),
+            },
             format,
         ),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_log(
     cli: &Cli,
     db: &Db,
-    company: Option<&str>,
-    entity: Option<&str>,
-    action: Option<&str>,
-    limit: i64,
+    params: &ListAuditParams<'_>,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    let params = ListAuditParams {
-        company_slug: company,
-        entity,
-        action,
-        limit: limit.max(0),
-    };
-    let rows = list_audit(db.conn(), &params)?;
+    let rows = list_audit(db.conn(), params)?;
 
     match format {
         OutputFormat::Json => {
-            let meta = output::json::meta("audit.log", company);
-            let data: Vec<serde_json::Value> = rows
-                .iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "id": r.id,
-                        "changed_at": r.changed_at,
-                        "actor": r.actor,
-                        "company_slug": r.company_slug,
-                        "entity": r.entity,
-                        "entity_id": r.entity_id,
-                        "action": r.action,
-                        "before": r.before,
-                        "after": r.after,
-                        "prev_hash": r.prev_hash,
-                        "row_hash": r.row_hash,
-                    })
-                })
-                .collect();
+            let meta = output::json::meta("audit.log", params.company_slug);
+            let data = audit_data(&rows);
             let rendered = serde_json::json!({ "ok": true, "meta": meta, "data": data });
             let json = serde_json::to_string(&rendered)
                 .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
@@ -145,4 +131,48 @@ fn truncate(s: &str, max: usize) -> String {
         let kept: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{kept}…")
     }
+}
+
+/// Read the audit trail without writing to stdout.
+///
+/// # Errors
+///
+/// Returns database errors if the audit trail cannot be read.
+pub fn execute_json(db: &Db, sub: &AuditCommand) -> Result<serde_json::Value, CliError> {
+    let AuditCommand::Log {
+        company,
+        entity,
+        action,
+        limit,
+    } = sub;
+    let rows = list_audit(
+        db.conn(),
+        &ListAuditParams {
+            company_slug: company.as_deref(),
+            entity: entity.map(crate::cli::AuditEntityArg::as_str),
+            action: action.map(crate::cli::AuditActionArg::as_str),
+            limit: (*limit).max(0),
+        },
+    )?;
+    Ok(serde_json::Value::Array(audit_data(&rows)))
+}
+
+fn audit_data(rows: &[crate::db::AuditLogRow]) -> Vec<serde_json::Value> {
+    rows.iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "changed_at": r.changed_at,
+                "actor": r.actor,
+                "company_slug": r.company_slug,
+                "entity": r.entity,
+                "entity_id": r.entity_id,
+                "action": r.action,
+                "before": r.before,
+                "after": r.after,
+                "prev_hash": r.prev_hash,
+                "row_hash": r.row_hash,
+            })
+        })
+        .collect()
 }

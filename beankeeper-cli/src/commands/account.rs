@@ -23,6 +23,54 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
+    if let AccountCommand::Delete { code, force } = sub {
+        return run_delete(cli, &db, company, code, *force, format);
+    }
+    let result = compute(&db, company, sub)?;
+    match &result {
+        AccountData::Rows(rows) => {
+            render_accounts(rows, operation(sub), company, format, use_color)?;
+        }
+        AccountData::Balances(rows) => {
+            render_accounts_with_balances(rows, company, format, use_color)?;
+        }
+    }
+    if !cli.verbosity.quiet {
+        match sub {
+            AccountCommand::Create { code, name, .. } => {
+                eprintln!("[ok] Created account: {code} ({name})");
+            }
+            AccountCommand::List { .. } => {
+                let count = match &result {
+                    AccountData::Rows(rows) => rows.len(),
+                    AccountData::Balances(rows) => rows.len(),
+                };
+                eprintln!(
+                    "{count} {noun}",
+                    noun = if count == 1 { "account" } else { "accounts" }
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+enum AccountData {
+    Rows(Vec<db::AccountRow>),
+    Balances(Vec<db::AccountWithBalanceRow>),
+}
+
+fn operation(sub: &AccountCommand) -> &'static str {
+    match sub {
+        AccountCommand::Create { .. } => "account.create",
+        AccountCommand::Show { .. } => "account.show",
+        _ => "account.list",
+    }
+}
+
+fn compute(db: &Db, company: &str, sub: &AccountCommand) -> Result<AccountData, CliError> {
+    db::companies::get_company(db.conn(), company)?;
     match sub {
         AccountCommand::Create {
             code,
@@ -30,90 +78,72 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
             account_type,
             default_tax_category,
         } => {
-            let type_str = format!("{account_type:?}").to_lowercase();
+            let account_type = format!("{account_type:?}").to_lowercase();
             let row = accounts::create_account(
                 db.conn(),
                 company,
                 code,
                 name,
-                &type_str,
+                &account_type,
                 default_tax_category.as_deref(),
             )?;
-            if !cli.verbosity.quiet {
-                eprintln!("[ok] Created account: {} ({})", row.code, row.name);
+            Ok(AccountData::Rows(vec![row]))
+        }
+        AccountCommand::List {
+            account_type,
+            name,
+            with_balances,
+            from,
+            to,
+        } => {
+            let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
+            if *with_balances {
+                Ok(AccountData::Balances(db::list_accounts_with_balances(
+                    db.conn(),
+                    company,
+                    type_filter.as_deref(),
+                    name.as_deref(),
+                    from.as_deref(),
+                    to.as_deref(),
+                )?))
+            } else {
+                Ok(AccountData::Rows(accounts::list_accounts(
+                    db.conn(),
+                    &accounts::ListAccountParams {
+                        company_slug: company,
+                        type_filter: type_filter.as_deref(),
+                        name_filter: name.as_deref(),
+                    },
+                )?))
             }
-            render_accounts(&[row], "account.create", company, format, use_color)?;
         }
-        AccountCommand::List { .. } => {
-            run_list(cli, &db, company, sub, format, use_color)?;
-        }
-        AccountCommand::Show { code } => {
-            let row = accounts::get_account(db.conn(), company, code)?;
-            render_accounts(&[row], "account.show", company, format, use_color)?;
-        }
-        AccountCommand::Delete { code, force } => {
-            run_delete(cli, &db, company, code, *force, format)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Print an account-count summary to stderr unless quiet mode is set.
-fn print_account_count(cli: &Cli, count: usize) {
-    if !cli.verbosity.quiet {
-        eprintln!(
-            "{count} {noun}",
-            noun = if count == 1 { "account" } else { "accounts" }
-        );
+        AccountCommand::Show { code } => Ok(AccountData::Rows(vec![accounts::get_account(
+            db.conn(),
+            company,
+            code,
+        )?])),
+        AccountCommand::Delete { .. } => Err(CliError::Usage(
+            "account deletion is unavailable through MCP".into(),
+        )),
     }
 }
 
-/// Execute the `account list` subcommand.
-fn run_list(
-    cli: &Cli,
+/// Execute an account operation without writing to stdout.
+///
+/// # Errors
+///
+/// Returns the same validation and database errors as the CLI.
+pub fn execute_json(
     db: &Db,
     company: &str,
     sub: &AccountCommand,
-    format: OutputFormat,
-    use_color: bool,
-) -> Result<(), CliError> {
-    let AccountCommand::List {
-        account_type,
-        name,
-        with_balances,
-        from,
-        to,
-    } = sub
-    else {
-        return Err(CliError::General("expected account list subcommand".into()));
+) -> Result<serde_json::Value, CliError> {
+    let meta = output::json::meta(operation(sub), Some(company));
+    let rendered = match compute(db, company, sub)? {
+        AccountData::Rows(rows) => output::json::render_accounts(&rows, meta)?,
+        AccountData::Balances(rows) => output::json::render_accounts_with_balances(&rows, meta)?,
     };
-
-    let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
-
-    if *with_balances {
-        let rows = db::list_accounts_with_balances(
-            db.conn(),
-            company,
-            type_filter.as_deref(),
-            name.as_deref(),
-            from.as_deref(),
-            to.as_deref(),
-        )?;
-        render_accounts_with_balances(&rows, company, format, use_color)?;
-        print_account_count(cli, rows.len());
-    } else {
-        let params = accounts::ListAccountParams {
-            company_slug: company,
-            type_filter: type_filter.as_deref(),
-            name_filter: name.as_deref(),
-        };
-        let rows = accounts::list_accounts(db.conn(), &params)?;
-        render_accounts(&rows, "account.list", company, format, use_color)?;
-        print_account_count(cli, rows.len());
-    }
-
-    Ok(())
+    super::company::json_data(&rendered)
 }
 
 /// Execute the `account delete` subcommand.
