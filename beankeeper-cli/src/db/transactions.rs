@@ -39,8 +39,6 @@ pub enum ConflictStrategy {
     Error,
     /// Skip the transaction silently on duplicate reference.
     Skip,
-    /// Update the existing transaction (not yet implemented).
-    Upsert,
 }
 
 /// Parameters for posting a new transaction.
@@ -144,11 +142,6 @@ fn post_transaction_inner(
                 }
                 ConflictStrategy::Skip => {
                     return Ok(PostResult::Skipped(existing_id));
-                }
-                ConflictStrategy::Upsert => {
-                    return Err(CliError::General(
-                        "on-conflict=upsert not yet implemented".to_string(),
-                    ));
                 }
             }
         }

@@ -24,7 +24,7 @@ Beankeeper is a double-entry accounting system operated through the `bk` CLI or 
 - **Append-only ledger**: Database triggers reject edits, deletion, and replacement of posted financial fields and entry details. Transaction metadata and entry clearance status remain mutable. Corrections use reversing entries.
 - **Audit trail**: Posts, imports, and reversals store a poster (`posted_by`) and a `create` record. Supported mutations record an actor, timestamp, and before/after snapshots atomically. Set the principal with `--actor NAME` or `BK_ACTOR`, including OFX imports. `bk audit log --action create` lists creations; JSON audit rows include `prev_hash` and `row_hash`.
 - **Verification**: `bk verify` validates the SHA-256 audit chain and its tail, compares newly audited posting snapshots, and checks entry count, positive amounts, valid directions/currency, company ownership, debit/credit balance, SQLite integrity, and foreign keys. Failures use `DATABASE` (exit 4). Legacy audit rows are chained on migration without changing IDs or timestamps; legacy posters stay unknown. Tamper evidence has no external trust anchor and cannot prove history against a complete database/hash rewrite or rollback.
-- **Idempotency**: `--reference KEY` is trimmed, stored verbatim, and unique per company. Empty references are rejected. Use `--on-conflict skip` for safe retry of duplicate posts; `upsert` is not implemented.
+- **Idempotency**: `--reference KEY` is trimmed, stored verbatim, and unique per company. Empty references are rejected. Use `--on-conflict skip` for safe retry of duplicate posts; Only `error` and `skip` are accepted.
 
 For detailed accounting concepts and account types, see [`references/accounting.md`](references/accounting.md).
 
@@ -95,7 +95,7 @@ for that server process.
 
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
-- Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; the existing CLI `upsert` strategy remains unsupported. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
+- Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; only `error` and `skip` are accepted conflict strategies. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
 - Call `txn_reverse` with `company` and the original `id` to create a linked mirror posting; optional fields are `date`, `description`, and `reference`. Supply the same explicit `reference` on retries to get `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed. Existing clearings stay on the original; reversal entries start uncleared. This write tool is absent in read-only mode.
 - Call `txn_list` or `txn_show` to inspect posted entries. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
 - For `report` with `kind: "reconciliation"`, `mode` accepts `bank` (default) or `settlement`. Settlement mode requires `statement` and accepts `link_key` (default `applies_to`) for payment-to-charge metadata links.
@@ -236,7 +236,7 @@ uses its own accounts and balanced entries; it does not need bank flags.
 
 CSV/JSON batches commit atomically. `--dry-run` posts inside a rolled-back
 transaction, checking intra-batch duplicates too. Default `--on-conflict skip`
-skips duplicates; `error` rolls back the batch. `upsert` is unsupported.
+skips duplicates; `error` rolls back the batch. Only `skip` and `error` are accepted.
 Missing references use a normalized row hash plus an occurrence ordinal,
 starting at 1 for each distinct content in the batch. Identical unreferenced
 rows are all posted; re-importing the same or an overlapping file skips matching

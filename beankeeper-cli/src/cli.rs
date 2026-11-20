@@ -1881,8 +1881,6 @@ pub enum OnConflictArg {
     Error,
     /// Skip the transaction silently on duplicate reference.
     Skip,
-    /// Update the existing transaction (not yet implemented).
-    Upsert,
 }
 
 /// Resolve the effective output format.

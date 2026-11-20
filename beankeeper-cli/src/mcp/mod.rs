@@ -387,7 +387,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Post balanced debits and credits in decimal major units. Always pass reference and on_conflict=skip for safe retries. The existing CLI conflict rules apply; upsert is currently unsupported."
+        description = "Post balanced debits and credits in decimal major units. Always pass reference and on_conflict=skip for safe retries. Conflict strategies are error or skip."
     )]
     async fn txn_post(
         &self,

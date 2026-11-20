@@ -642,7 +642,6 @@ fn conflict_strategy(arg: crate::cli::OnConflictArg) -> transactions::ConflictSt
     match arg {
         crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
         crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
-        crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
     }
 }
 

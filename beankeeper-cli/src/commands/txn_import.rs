@@ -517,12 +517,6 @@ pub fn run(
     let strategy = match on_conflict {
         OnConflictArg::Error => transactions::ConflictStrategy::Error,
         OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
-        OnConflictArg::Upsert => {
-            return Err(CliError::Usage(
-                "CSV/JSON import supports --on-conflict skip or error; upsert is not supported"
-                    .into(),
-            ));
-        }
     };
     let content = match file.as_deref() {
         None | Some("-") => {

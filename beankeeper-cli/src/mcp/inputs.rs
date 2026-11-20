@@ -18,7 +18,6 @@ pub(super) enum AccountTypeArg {
 pub(super) enum OnConflictArg {
     Error,
     Skip,
-    Upsert,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

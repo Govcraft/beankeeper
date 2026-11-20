@@ -339,15 +339,6 @@ fn check_conflict(
                     reference: prepared.reference.clone(),
                 })
             }
-            transactions::ConflictStrategy::Upsert => {
-                TransactionOutcome::Failed(FailedTransaction {
-                    date: prepared.date.clone(),
-                    description: prepared.description.clone(),
-                    amount_minor: prepared.amount_minor,
-                    currency: prepared.currency.clone(),
-                    error: "on-conflict=upsert not yet implemented".to_string(),
-                })
-            }
         }),
         Ok(false) => None,
         Err(e) => Some(TransactionOutcome::Failed(FailedTransaction {
@@ -569,7 +560,6 @@ pub fn run_import_ofx(
     let conflict_strategy = match on_conflict {
         crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
         crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
-        crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
     };
 
     validate_accounts(conn, company, account_code, suspense_code)?;

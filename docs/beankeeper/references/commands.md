@@ -86,8 +86,7 @@ an explicit `company` argument, regardless of the CLI's default company.
 `amount` is a decimal string in major units. `meta` is a string-to-string map;
 `tax` is an array of `account=category` strings. Use `reference` with
 `on_conflict: "skip"` for safe retries returning the existing transaction ID.
-`error` preserves duplicate rejection, and `upsert` preserves the CLI's current
-unsupported-strategy error.
+`error` preserves duplicate rejection. Only `error` and `skip` are accepted.
 
 `txn_reverse` creates a linked mirror posting with the CLI reversal rules. Its
 `date` defaults to today and must be on or after the original date. Description
@@ -399,8 +398,8 @@ JSON numbers and unknown fields are rejected. JSON needs no bank/suspense flags.
 CSV/JSON imports are atomic, including `--on-conflict error`: one bad row or
 posting rolls back the entire batch. Errors return a validation envelope and
 exit 3, with no success summary. `--dry-run` uses the same posting path and
-rolls back, so duplicate checks include rows earlier in the batch. `upsert` is
-unsupported (usage error, exit 2).
+rolls back, so duplicate checks include rows earlier in the batch. Only `skip` and `error` are
+accepted (other values are usage errors, exit 2).
 
 Explicit references are trimmed, stored verbatim, and scoped to the company.
 CSV blank/missing references and JSON missing/null references get a

@@ -211,8 +211,8 @@ accepted arguments. For example, `txn_post` takes:
 ```
 
 Always supply a stable `reference` and `on_conflict: "skip"` for safe retries.
-The CLI's default `error` strategy rejects duplicates; its existing `upsert`
-strategy remains unsupported. Inputs use decimal major-unit strings, and results
+The CLI's default `error` strategy rejects duplicates. Only `error` and `skip`
+are accepted conflict strategies. Inputs use decimal major-unit strings, and results
 use the same data payload and integer minor units as `bk --json`. Results are
 available as JSON text content and, where the negotiated MCP protocol permits the
 payload's shape, `structuredContent`. Tool failures set `isError: true` with
@@ -343,7 +343,7 @@ If skipped, `id` is null and `existing_id` is provided:
 }
 ```
 
-References are stored verbatim after trimming surrounding whitespace; empty or whitespace-only references are rejected. The same reference can be used in different companies. Transactions without `--reference` have no reference-based deduplication. `--on-conflict upsert` is not implemented.
+References are stored verbatim after trimming surrounding whitespace; empty or whitespace-only references are rejected. The same reference can be used in different companies. Transactions without `--reference` have no reference-based deduplication. `--on-conflict` accepts only `error` or `skip`.
 
 ### Reverse a mistaken transaction
 
@@ -443,7 +443,7 @@ rejected. This bulk posting schema differs from the full-database export schema.
 fails with no new transactions or entries committed. `--dry-run` exercises the
 same posting and duplicate checks, including duplicates inside the batch, then
 rolls everything back. `--on-conflict skip` is the default; `error` rejects the
-entire batch on a duplicate. `upsert` is unsupported.
+entire batch on a duplicate. Only `skip` and `error` are accepted.
 
 References are trimmed and stored verbatim, with uniqueness scoped to the
 company. CSV uses its `reference` column automatically (or `--reference-col`);
