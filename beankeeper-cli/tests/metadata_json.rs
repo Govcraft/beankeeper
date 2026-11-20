@@ -314,7 +314,22 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "INSERT INTO transactions (company_slug, description, metadata, date) \
+            "DROP TRIGGER protect_transactions_insert;
+             DROP TRIGGER protect_transactions_update;
+             DROP TRIGGER protect_transactions_delete;
+             DROP TRIGGER protect_entries_insert;
+             DROP TRIGGER protect_entries_update;
+             DROP TRIGGER protect_entries_delete;
+             DROP TRIGGER protect_audit_insert;
+             DROP TRIGGER protect_audit_update;
+             DROP TRIGGER protect_audit_delete;
+             CREATE TABLE audit_log_v8 AS
+                 SELECT id, changed_at, actor, company_slug, entity, entity_id, action, before, after
+                 FROM audit_log WHERE action <> 'create';
+             DROP TABLE audit_log;
+             ALTER TABLE audit_log_v8 RENAME TO audit_log;
+             ALTER TABLE transactions DROP COLUMN posted_by;
+             INSERT INTO transactions (company_slug, description, metadata, date) \
              VALUES ('acme', 'legacy', 'open:1000', '2026-01-01'); \
              INSERT INTO transactions (company_slug, description, metadata, date) \
              VALUES ('acme', 'legacy-num', '42', '2026-01-01'); \

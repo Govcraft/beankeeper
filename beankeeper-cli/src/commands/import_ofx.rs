@@ -293,22 +293,13 @@ fn prepare_transaction(
 }
 
 /// Post one prepared transaction, returning the outcome.
-#[allow(clippy::too_many_arguments)]
-fn post_one(
-    conn: &rusqlite::Connection,
-    company: &str,
-    account_code: &str,
-    suspense_code: &str,
-    prepared: &PreparedTransaction,
-    dry_run: bool,
-    conflict_strategy: transactions::ConflictStrategy,
-) -> TransactionOutcome {
+fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> TransactionOutcome {
     // Pre-check for duplicates; an early outcome means we must not post.
-    if let Some(outcome) = check_conflict(conn, company, prepared, conflict_strategy) {
+    if let Some(outcome) = check_conflict(ctx.conn, ctx.company, prepared, ctx.conflict_strategy) {
         return outcome;
     }
 
-    if dry_run {
+    if ctx.dry_run {
         return TransactionOutcome::Imported(ImportedTransaction {
             id: 0,
             date: prepared.date.clone(),
@@ -318,14 +309,7 @@ fn post_one(
         });
     }
 
-    insert_transaction(
-        conn,
-        company,
-        account_code,
-        suspense_code,
-        prepared,
-        conflict_strategy,
-    )
+    insert_transaction(ctx, prepared)
 }
 
 /// Resolve a pre-existing duplicate reference into an early [`TransactionOutcome`].
@@ -378,19 +362,15 @@ fn check_conflict(
 
 /// Build the balanced double-entry pair and post the prepared transaction.
 fn insert_transaction(
-    conn: &rusqlite::Connection,
-    company: &str,
-    account_code: &str,
-    suspense_code: &str,
+    ctx: &StatementContext<'_>,
     prepared: &PreparedTransaction,
-    conflict_strategy: transactions::ConflictStrategy,
 ) -> TransactionOutcome {
     // Build balanced entries: inflow = debit bank, credit suspense;
     // outflow = debit suspense, credit bank.
     let (debit_code, credit_code) = if prepared.is_inflow {
-        (account_code, suspense_code)
+        (ctx.account_code, ctx.suspense_code)
     } else {
-        (suspense_code, account_code)
+        (ctx.suspense_code, ctx.account_code)
     };
 
     let entries = vec![
@@ -410,11 +390,8 @@ fn insert_transaction(
         },
     ];
 
-    // Imports never correlate, so no audited side effect fires here; the actor
-    // is resolved from the environment to satisfy the post API.
-    let actor = crate::db::Actor::resolve(None);
     let params = transactions::PostTransactionParams {
-        company_slug: company,
+        company_slug: ctx.company,
         description: &prepared.description,
         metadata: Some(&prepared.metadata),
         currency: &prepared.currency,
@@ -422,11 +399,11 @@ fn insert_transaction(
         entries: &entries,
         correlate: None,
         reference: Some(&prepared.reference),
-        on_conflict: conflict_strategy,
-        actor: &actor,
+        on_conflict: ctx.conflict_strategy,
+        actor: ctx.actor,
     };
 
-    match transactions::post_transaction(conn, &params) {
+    match transactions::post_transaction(ctx.conn, &params) {
         Ok(transactions::PostResult::Created(id)) => {
             TransactionOutcome::Imported(ImportedTransaction {
                 id,
@@ -466,6 +443,7 @@ enum TransactionOutcome {
 
 /// Context for processing a statement's transactions.
 struct StatementContext<'a> {
+    actor: &'a crate::db::Actor,
     conn: &'a rusqlite::Connection,
     company: &'a str,
     account_code: &'a str,
@@ -513,15 +491,7 @@ fn process_transactions(
             }
         };
 
-        match post_one(
-            ctx.conn,
-            ctx.company,
-            ctx.account_code,
-            ctx.suspense_code,
-            &prepared,
-            ctx.dry_run,
-            ctx.conflict_strategy,
-        ) {
+        match post_one(ctx, &prepared) {
             TransactionOutcome::Imported(t) => result.imported.push(t),
             TransactionOutcome::Skipped(t) => result.skipped.push(t),
             TransactionOutcome::Failed(t) => result.errors.push(t),
@@ -573,6 +543,7 @@ pub fn run_import_ofx(
 ) -> Result<(), CliError> {
     let conn = db_handle.conn();
     let verbose = cli.verbosity.verbose;
+    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
     let format = crate::cli::resolve_format(None, cli);
 
     let conflict_strategy = match on_conflict {
@@ -581,18 +552,13 @@ pub fn run_import_ofx(
         crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
     };
 
-    // Validate accounts exist.
-    if !accounts::account_exists(conn, company, account_code)? {
-        return Err(OfxImportError::AccountNotFound {
-            code: account_code.to_string(),
+    for code in [account_code, suspense_code] {
+        if !accounts::account_exists(conn, company, code)? {
+            return Err(OfxImportError::AccountNotFound {
+                code: code.to_string(),
+            }
+            .into());
         }
-        .into());
-    }
-    if !accounts::account_exists(conn, company, suspense_code)? {
-        return Err(OfxImportError::AccountNotFound {
-            code: suspense_code.to_string(),
-        }
-        .into());
     }
 
     // Read and parse OFX.
@@ -614,6 +580,7 @@ pub fn run_import_ofx(
                 let (currency_code, minor_units) =
                     validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
+                    actor: &actor,
                     conn,
                     company,
                     account_code,
@@ -639,6 +606,7 @@ pub fn run_import_ofx(
                 let (currency_code, minor_units) =
                     validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
+                    actor: &actor,
                     conn,
                     company,
                     account_code,
@@ -664,6 +632,7 @@ pub fn run_import_ofx(
                 let (currency_code, minor_units) =
                     validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
+                    actor: &actor,
                     conn,
                     company,
                     account_code,

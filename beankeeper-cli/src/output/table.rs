@@ -317,6 +317,14 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
         "  Posted at:   {}",
         styled(&txn.posted_at, dim_style(), use_color)
     ));
+    lines.push(format!(
+        "  Posted by:   {}",
+        styled(
+            txn.posted_by.as_deref().unwrap_or("unknown (legacy)"),
+            dim_style(),
+            use_color
+        )
+    ));
     lines.push(String::new());
 
     // Entries
@@ -1008,6 +1016,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
+            posted_by: None,
             reference: None,
         }];
         let out = render_transaction_list(&rows, false);
@@ -1029,6 +1038,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
+            posted_by: None,
             reference: None,
         };
         let entries = vec![
@@ -1075,6 +1085,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
+            posted_by: None,
             reference: None,
         };
         let entries = vec![

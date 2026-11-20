@@ -11,6 +11,7 @@ pub mod metadata;
 pub mod metadata_filter;
 pub mod schema;
 pub mod transactions;
+pub mod verification;
 
 pub use accounts::{
     ListAccountParams, account_exists, create_account, get_account, list_account_codes,
@@ -80,6 +81,8 @@ pub struct TransactionRow {
     pub date: String,
     pub posted_at: String,
     pub reference: Option<String>,
+    /// Unknown for transactions predating creation auditing.
+    pub posted_by: Option<String>,
 }
 
 /// A row from the `entries` table.

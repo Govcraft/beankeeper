@@ -16,8 +16,9 @@
 
 use std::str::FromStr;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use super::clearings::{
     ClearPlan, ClearSpec, Clearing, ClearingStatus, SkipReason, cleared_sum, derive_status,
@@ -156,6 +157,7 @@ impl AuditEntity {
 /// The kind of change recorded. Maps to the `action` CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditAction {
+    Create,
     StatusChange,
     Correlate,
     Reverse,
@@ -168,6 +170,7 @@ enum AuditAction {
 impl AuditAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Create => "create",
             Self::StatusChange => "status_change",
             Self::Correlate => "correlate",
             Self::Reverse => "reverse",
@@ -191,6 +194,108 @@ pub struct AuditLogRow {
     pub action: String,
     pub before: Option<String>,
     pub after: Option<String>,
+    pub prev_hash: String,
+    pub row_hash: String,
+}
+
+/// The predecessor of the first row in a version 1 audit chain.
+pub(super) const GENESIS_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Versioned, ordered JSON tuple: field boundaries and nulls are unambiguous.
+/// Snapshots are hashed as their stored UTF-8 strings, without reformatting JSON.
+fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
+    let canonical = serde_json::to_vec(&(
+        "beankeeper.audit.v1",
+        row.id,
+        &row.changed_at,
+        &row.actor,
+        &row.company_slug,
+        &row.entity,
+        &row.entity_id,
+        &row.action,
+        &row.before,
+        &row.after,
+    ))
+    .map_err(|e| CliError::Database(format!("cannot encode audit row: {e}")))?;
+    let mut hasher = Sha256::new();
+    hasher.update(row.prev_hash.as_bytes());
+    hasher.update(canonical);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn read_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
+    Ok(AuditLogRow {
+        id: row.get(0)?,
+        changed_at: row.get(1)?,
+        actor: row.get(2)?,
+        company_slug: row.get(3)?,
+        entity: row.get(4)?,
+        entity_id: row.get(5)?,
+        action: row.get(6)?,
+        before: row.get(7)?,
+        after: row.get(8)?,
+        prev_hash: row.get(9)?,
+        row_hash: row.get(10)?,
+    })
+}
+
+const AUDIT_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash";
+
+/// Called only by the v12 migration, before append-only triggers are installed.
+pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {AUDIT_COLUMNS} FROM audit_log ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([], read_audit_row)?;
+    let mut previous = GENESIS_HASH.to_string();
+    for row in rows {
+        let mut row = row?;
+        row.prev_hash = previous;
+        row.row_hash = row_hash(&row)?;
+        conn.execute(
+            "UPDATE audit_log SET prev_hash = ?1, row_hash = ?2 WHERE id = ?3",
+            params![row.prev_hash, row.row_hash, row.id],
+        )?;
+        previous = row.row_hash;
+    }
+    Ok(())
+}
+
+/// Recomputes the chain in ID order and reports the first broken link.
+/// The AUTOINCREMENT high-water mark also detects removal of the tail.
+///
+/// # Errors
+/// Returns a database error for altered, missing, or unlinked audit records.
+pub fn verify_hash_chain(conn: &Connection) -> Result<(), CliError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {AUDIT_COLUMNS} FROM audit_log ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([], read_audit_row)?;
+    let mut previous = GENESIS_HASH.to_string();
+    let mut last_id = 0;
+    for row in rows {
+        let row = row?;
+        if row.prev_hash != previous || row.row_hash != row_hash(&row)? {
+            return Err(CliError::Database(format!(
+                "audit hash chain broken at row #{}",
+                row.id
+            )));
+        }
+        last_id = row.id;
+        previous = row.row_hash;
+    }
+    let sequence: i64 = conn.query_row(
+        "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)",
+        [],
+        |r| r.get(0),
+    )?;
+    if sequence != last_id {
+        return Err(CliError::Database(format!(
+            "audit hash chain tail missing after row #{last_id} (expected row #{sequence})"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -218,31 +323,65 @@ fn in_savepoint<T>(
     }
 }
 
+#[derive(Clone, Copy)]
+struct AuditChange<'a> {
+    company_slug: Option<&'a str>,
+    entity: AuditEntity,
+    entity_id: &'a str,
+    action: AuditAction,
+    snapshots: (Option<&'a str>, Option<&'a str>),
+}
+
 /// Appends one immutable row to `audit_log`. Private: callers reach it only
 /// through the audited mutation functions below, never directly.
-#[allow(clippy::too_many_arguments)]
-fn record(
-    conn: &Connection,
-    actor: &Actor,
-    company_slug: Option<&str>,
-    entity: AuditEntity,
-    entity_id: &str,
-    action: AuditAction,
-    before: Option<&str>,
-    after: Option<&str>,
-) -> Result<(), CliError> {
+fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(), CliError> {
+    let AuditChange {
+        company_slug,
+        entity,
+        entity_id,
+        action,
+        snapshots,
+    } = change;
+    let (id, changed_at): (i64, String) = conn.query_row(
+        "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0) + 1, datetime('now')",
+        [], |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let prev_hash = conn
+        .query_row(
+            "SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| GENESIS_HASH.to_string());
+    let row = AuditLogRow {
+        id,
+        changed_at,
+        actor: actor.name().to_string(),
+        company_slug: company_slug.map(str::to_string),
+        entity: entity.as_str().to_string(),
+        entity_id: entity_id.to_string(),
+        action: action.as_str().to_string(),
+        before: snapshots.0.map(str::to_string),
+        after: snapshots.1.map(str::to_string),
+        prev_hash,
+        row_hash: String::new(),
+    };
+    let hash = row_hash(&row)?;
     conn.execute(
         "INSERT INTO audit_log \
-         (actor, company_slug, entity, entity_id, action, before, after) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
+            row.id, row.changed_at,
             actor.name(),
             company_slug,
             entity.as_str(),
             entity_id,
             action.as_str(),
-            before,
-            after
+            snapshots.0,
+            snapshots.1,
+            row.prev_hash, hash,
         ],
     )?;
     Ok(())
@@ -252,6 +391,92 @@ fn record(
 /// columns.
 fn snapshot<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
+/// Captures immutable posting data, excluding mutable metadata and clearings.
+fn posting_snapshot(
+    conn: &Connection,
+    company: &str,
+    id: i64,
+) -> Result<serde_json::Value, CliError> {
+    let (txn, entries) = super::transactions::get_transaction(conn, company, id)?;
+    let entries: Vec<_> = entries.iter().map(|entry| serde_json::json!({
+        "id": entry.id, "account_code": entry.account_code, "company_slug": entry.company_slug,
+        "direction": entry.direction, "amount": entry.amount,
+        "memo": entry.memo, "tax_category": entry.tax_category,
+    })).collect();
+    Ok(serde_json::json!({
+        "id": txn.id, "company_slug": txn.company_slug, "description": txn.description,
+        "currency": txn.currency, "date": txn.date, "posted_at": txn.posted_at,
+        "reference": txn.reference, "posted_by": txn.posted_by, "entries": entries,
+    }))
+}
+
+/// Records creation inside the posting savepoint, including every entry.
+pub(super) fn record_creation(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    id: i64,
+) -> Result<(), CliError> {
+    let posting = posting_snapshot(conn, company, id)?;
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: Some(company),
+            entity: AuditEntity::Transaction,
+            entity_id: &id.to_string(),
+            action: AuditAction::Create,
+            snapshots: (None, Some(&posting.to_string())),
+        },
+    )
+}
+
+/// Checks that newly audited postings still match their immutable snapshots.
+/// Historical transactions have no invented creation records or poster.
+///
+/// # Errors
+/// Returns a database error if an audited posting is changed or unrecorded.
+pub fn verify_creations(conn: &Connection) -> Result<(), CliError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, company_slug FROM transactions WHERE posted_by IS NOT NULL
+         UNION SELECT CAST(entity_id AS INTEGER), company_slug FROM audit_log
+             WHERE entity = 'transaction' AND action = 'create'
+         ORDER BY 1",
+    )?;
+    let txns = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    for txn in txns {
+        let (id, company) = txn?;
+        let mut creates = conn.prepare(
+            "SELECT actor, after FROM audit_log WHERE entity = 'transaction' AND action = 'create'
+             AND entity_id = ?1 AND company_slug = ?2 ORDER BY id",
+        )?;
+        let mut rows = creates.query(params![id.to_string(), company])?;
+        let expected = posting_snapshot(conn, &company, id).map_err(|e| {
+            CliError::Database(format!(
+                "transaction #{id} missing for creation audit record: {e}"
+            ))
+        })?;
+        let valid = if let Some(row) = rows.next()? {
+            let actor: String = row.get(0)?;
+            let after: String = row.get(1)?;
+            serde_json::from_str::<serde_json::Value>(&after)
+                .ok()
+                .as_ref()
+                == Some(&expected)
+                && expected["posted_by"].as_str() == Some(actor.as_str())
+                && rows.next()?.is_none()
+        } else {
+            false
+        };
+        if !valid {
+            return Err(CliError::Database(format!(
+                "transaction #{id} does not match its creation audit record"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -426,20 +651,24 @@ fn record_clearing_change(
     record(
         conn,
         actor,
-        Some(company_slug),
-        AuditEntity::Entry,
-        &entry_id.to_string(),
-        AuditAction::StatusChange,
-        Some(&snapshot(&serde_json::json!({
-            "status": before.0.as_str(),
-            "cleared_amount": before.1,
-        }))),
-        Some(&snapshot(&serde_json::json!({
-            "status": after.0.as_str(),
-            "cleared_amount": after.1,
-            "op": op,
-            "clearings": affected.iter().map(clearing_json).collect::<Vec<_>>(),
-        }))),
+        AuditChange {
+            company_slug: Some(company_slug),
+            entity: AuditEntity::Entry,
+            entity_id: &entry_id.to_string(),
+            action: AuditAction::StatusChange,
+            snapshots: (
+                Some(&snapshot(&serde_json::json!({
+                    "status": before.0.as_str(),
+                    "cleared_amount": before.1,
+                }))),
+                Some(&snapshot(&serde_json::json!({
+                    "status": after.0.as_str(),
+                    "cleared_amount": after.1,
+                    "op": op,
+                    "clearings": affected.iter().map(clearing_json).collect::<Vec<_>>(),
+                }))),
+            ),
+        },
     )
 }
 
@@ -689,17 +918,21 @@ pub fn correlate_partner(
         record(
             conn,
             actor,
-            Some(partner_company.as_str()),
-            AuditEntity::Transaction,
-            &partner_id.to_string(),
-            AuditAction::Correlate,
-            Some(&snapshot(
-                &serde_json::json!({ "metadata": partner_metadata }),
-            )),
-            Some(&snapshot(&serde_json::json!({
-                "metadata": updated,
-                "correlated_with": new_txn_id,
-            }))),
+            AuditChange {
+                company_slug: Some(partner_company.as_str()),
+                entity: AuditEntity::Transaction,
+                entity_id: &partner_id.to_string(),
+                action: AuditAction::Correlate,
+                snapshots: (
+                    Some(&snapshot(
+                        &serde_json::json!({ "metadata": partner_metadata }),
+                    )),
+                    Some(&snapshot(&serde_json::json!({
+                        "metadata": updated,
+                        "correlated_with": new_txn_id,
+                    }))),
+                ),
+            },
         )?;
 
         Ok(())
@@ -785,16 +1018,20 @@ pub fn reverse_transaction(
         record(
             conn,
             p.actor,
-            Some(p.company_slug),
-            AuditEntity::Transaction,
-            &p.id.to_string(),
-            AuditAction::Reverse,
-            Some(&snapshot(
-                &serde_json::json!({"metadata": original.metadata}),
-            )),
-            Some(&snapshot(
-                &serde_json::json!({"metadata": updated, "reversed_by": reversal_id, "reference": reference}),
-            )),
+            AuditChange {
+                company_slug: Some(p.company_slug),
+                entity: AuditEntity::Transaction,
+                entity_id: &p.id.to_string(),
+                action: AuditAction::Reverse,
+                snapshots: (
+                    Some(&snapshot(
+                        &serde_json::json!({"metadata": original.metadata}),
+                    )),
+                    Some(&snapshot(
+                        &serde_json::json!({"metadata": updated, "reversed_by": reversal_id, "reference": reference}),
+                    )),
+                ),
+            },
         )?;
         Ok(result)
     })
@@ -952,17 +1189,21 @@ pub fn set_budget(
         record(
             conn,
             actor,
-            Some(p.company_slug),
-            AuditEntity::Budget,
-            &id.to_string(),
-            AuditAction::BudgetSet,
-            before.as_deref(),
-            Some(&snapshot(&serde_json::json!({
-                "amount": p.amount,
-                "notes": p.notes,
-                "year": p.year,
-                "month": p.month,
-            }))),
+            AuditChange {
+                company_slug: Some(p.company_slug),
+                entity: AuditEntity::Budget,
+                entity_id: &id.to_string(),
+                action: AuditAction::BudgetSet,
+                snapshots: (
+                    before.as_deref(),
+                    Some(&snapshot(&serde_json::json!({
+                        "amount": p.amount,
+                        "notes": p.notes,
+                        "year": p.year,
+                        "month": p.month,
+                    }))),
+                ),
+            },
         )?;
 
         Ok(BudgetRow {
@@ -1061,17 +1302,21 @@ pub fn delete_budget(
             record(
                 conn,
                 actor,
-                Some(company_slug),
-                AuditEntity::Budget,
-                &v.id.to_string(),
-                AuditAction::BudgetDelete,
-                Some(&snapshot(&serde_json::json!({
-                    "year": year,
-                    "month": v.month,
-                    "amount": v.amount,
-                    "notes": v.notes,
-                }))),
-                None,
+                AuditChange {
+                    company_slug: Some(company_slug),
+                    entity: AuditEntity::Budget,
+                    entity_id: &v.id.to_string(),
+                    action: AuditAction::BudgetDelete,
+                    snapshots: (
+                        Some(&snapshot(&serde_json::json!({
+                            "year": year,
+                            "month": v.month,
+                            "amount": v.amount,
+                            "notes": v.notes,
+                        }))),
+                        None,
+                    ),
+                },
             )?;
         }
 
@@ -1170,18 +1415,22 @@ pub fn delete_account(
         record(
             conn,
             actor,
-            Some(company_slug),
-            AuditEntity::Account,
-            code,
-            AuditAction::AccountDelete,
-            Some(&snapshot(&serde_json::json!({
-                "code": row.code,
-                "name": row.name,
-                "type": row.account_type,
-                "created_at": row.created_at,
-                "default_tax_category": row.default_tax_category,
-            }))),
-            None,
+            AuditChange {
+                company_slug: Some(company_slug),
+                entity: AuditEntity::Account,
+                entity_id: code,
+                action: AuditAction::AccountDelete,
+                snapshots: (
+                    Some(&snapshot(&serde_json::json!({
+                        "code": row.code,
+                        "name": row.name,
+                        "type": row.account_type,
+                        "created_at": row.created_at,
+                        "default_tax_category": row.default_tax_category,
+                    }))),
+                    None,
+                ),
+            },
         )?;
 
         Ok(())
@@ -1231,17 +1480,21 @@ pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<()
         record(
             conn,
             actor,
-            Some(slug),
-            AuditEntity::Company,
-            slug,
-            AuditAction::CompanyDelete,
-            Some(&snapshot(&serde_json::json!({
-                "slug": row.slug,
-                "name": row.name,
-                "description": row.description,
-                "created_at": row.created_at,
-            }))),
-            None,
+            AuditChange {
+                company_slug: Some(slug),
+                entity: AuditEntity::Company,
+                entity_id: slug,
+                action: AuditAction::CompanyDelete,
+                snapshots: (
+                    Some(&snapshot(&serde_json::json!({
+                        "slug": row.slug,
+                        "name": row.name,
+                        "description": row.description,
+                        "created_at": row.created_at,
+                    }))),
+                    None,
+                ),
+            },
         )?;
 
         Ok(())
@@ -1271,10 +1524,7 @@ pub fn list_audit(
 ) -> Result<Vec<AuditLogRow>, CliError> {
     use std::fmt::Write as _;
 
-    let mut sql = String::from(
-        "SELECT id, changed_at, actor, company_slug, entity, entity_id, action, before, after \
-         FROM audit_log WHERE 1 = 1",
-    );
+    let mut sql = format!("SELECT {AUDIT_COLUMNS} FROM audit_log WHERE 1 = 1");
 
     let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut idx = 1u32;
@@ -1301,19 +1551,7 @@ pub fn list_audit(
     let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(AsRef::as_ref).collect();
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(refs.as_slice(), |row| {
-        Ok(AuditLogRow {
-            id: row.get(0)?,
-            changed_at: row.get(1)?,
-            actor: row.get(2)?,
-            company_slug: row.get(3)?,
-            entity: row.get(4)?,
-            entity_id: row.get(5)?,
-            action: row.get(6)?,
-            before: row.get(7)?,
-            after: row.get(8)?,
-        })
-    })?;
+    let rows = stmt.query_map(refs.as_slice(), read_audit_row)?;
 
     let mut out = Vec::new();
     for row in rows {
@@ -1430,12 +1668,10 @@ mod tests {
     fn delete_account_snapshots_before_removal() {
         let db = seed();
         let actor = Actor::new("tester");
-        // Remove the dependent entry first so the FK delete succeeds.
-        db.conn()
-            .execute("DELETE FROM entries WHERE company_slug = 'acme'", [])
-            .expect("clear entries");
-
-        delete_account(db.conn(), &actor, "acme", "1000").expect("delete account");
+        // Delete an unused account without touching posted entries.
+        super::super::create_account(db.conn(), "acme", "1100", "Unused Cash", "asset", None)
+            .expect("create unused account");
+        delete_account(db.conn(), &actor, "acme", "1100").expect("delete account");
 
         let (action, before): (String, Option<String>) = db
             .conn()
