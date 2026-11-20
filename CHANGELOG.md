@@ -66,7 +66,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 - MCP `--read-only` now hides `txn_reconcile` along with all other write tools.
 
-## [0.23.0] - Unreleased
+## [0.23.0] - 2026-11-20
+
+Released as [beankeeper-cli-v0.23.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.23.0),
+including the changes tracked under 0.21.0 and 0.22.0 below.
 
 ### Added
 
@@ -84,7 +87,9 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   [tax export conventions](docs/tax-exports.md).
   ([#80](https://github.com/Govcraft/beankeeper/pull/80))
 
-## [0.22.0] - Unreleased
+## [0.22.0] - 2026-11-20
+
+Shipped as part of CLI 0.23.0; no separate 0.22.0 GitHub release was cut.
 
 ### Added
 
@@ -98,12 +103,13 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   stored outside the database. Back up those files separately and preserve the
   paths referenced by attachment records when restoring on another machine.
 
-## [0.21.0] - Unreleased
+## [0.21.0] - 2026-11-20
 
 This catch-up section covers changes since the published CLI 0.10.0 baseline
 through CLI 0.21.0. The intermediate source versions are grouped here rather than
-presented as separate GitHub releases. This section does not mean that a 0.21.0
-tag or binary release has been published. See the [release procedure](docs/RELEASE.md).
+presented as separate GitHub releases. These changes shipped as part of CLI
+0.23.0; no separate 0.21.0 GitHub release was cut. See the
+[release procedure](docs/RELEASE.md).
 
 ### Added
 
