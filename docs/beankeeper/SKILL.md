@@ -225,6 +225,60 @@ other original clearings remain intact. New entries start uncleared and
 appear as separate outstanding opposite postings in reconciliation from
 the reversal date. Clear or reconcile them explicitly when appropriate.
 
+### Scheduled and recurring transactions
+
+Pending templates describe future obligations without affecting posted balances or
+reports. Create a one-time reminder or repeat it daily, weekly, monthly, or yearly:
+
+```bash
+bk --company acme schedule create -d "Monthly rent" \
+  --start 2026-01-31 --frequency monthly --end 2026-12-31 \
+  --debit "5000:1200:Office rent" --credit 1000:1200 --meta vendor=landlord
+bk --company acme schedule list --json
+bk --company acme schedule list --due-through 2026-03-31
+bk --company acme schedule run --through 2026-03-31 --dry-run
+bk --company acme schedule run --through 2026-03-31
+bk --company acme schedule cancel <SCHEDULE_ID>
+bk --company acme schedule list --all --json
+```
+
+`--start` is required; `--frequency` defaults to `once`. `--end` is inclusive.
+Amounts use major currency units, just like `txn post`; repeated `--debit` and
+`--credit` support splits and optional memos. `--currency` defaults to
+`BEANKEEPER_CURRENCY`, then USD. Metadata (`-m`, repeated `--meta`) and explicit
+`--tax account=category` values are copied to every occurrence. Account tax
+category defaults are captured when the template is created.
+
+`list` shows pending templates and their next due date; `--due-through` limits
+reminders to templates due by that date, while `--all` also shows completed and
+cancelled templates. JSON create/cancel responses contain one template; list
+responses contain an array. Templates include their entries, currency, metadata,
+start/end dates, cadence, next due date, and status. CSV/table output summarizes
+templates; JSON entry amounts include integer minor units and decimal displays.
+
+`run` posts all pending occurrences through today in local time by default.
+`--through YYYY-MM-DD` supplies an explicit inclusive cutoff, including future
+posting dates if intentionally requested. Monthly/yearly dates use the original
+start as their anchor: January 31 becomes February 28 (29 in leap years), then
+March 31; February 29 returns in later leap years. Daily/weekly intervals use
+calendar days. One-time templates complete after their first posting; recurring
+templates complete when their next occurrence would exceed `--end`.
+
+The entire company-scoped run commits atomically with its audit records and
+schedule progress. Each posting uses reference `schedule:<SCHEDULE_ID>:<YYYY-MM-DD>`.
+Retries after a successful run return an empty array. `run --dry-run` previews
+`{schedule_id, date, transaction_id: null}` rows without posting, advancing progress,
+or writing audit records; real runs return the same shape with transaction IDs.
+New entries start uncleared, as with ordinary postings.
+
+Nothing runs in the background. Invoke `schedule run` explicitly, or call it
+from cron/systemd with `--db /absolute/path/books.db --company acme`. A cancelled
+template keeps its history and existing postings. Cancellation is idempotent.
+To change a template, cancel it and create a replacement. Accounts and companies
+referenced by retained templates cannot be deleted. Schedule creation,
+cancellation, and progress are audited under entity `schedule`, with actions
+`create`, `schedule_cancel`, and `schedule_run`.
+
 ### Import bank statements
 
 ```bash
