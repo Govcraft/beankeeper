@@ -12,8 +12,8 @@ versions are supported by this procedure. The library version is independent.
 Use `beankeeper-vX.Y.Z` for library tags and `beankeeper-cli-vX.Y.Z` for CLI
 tags going forward; do not create new bare `vX.Y.Z` tags or rewrite historical
 tags. Library tags do not trigger the binary release workflow. See
-[crates.io publishing](#cratesio-publishing) below for registry publishing and
-the one-time CLI bootstrap.
+[crates.io publishing](#cratesio-publishing) below: only the library is
+published there; the CLI ships as GitHub Release binaries.
 
 CLI [0.23.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.23.0)
 was released on 2026-11-20, including the changes tracked under 0.21.0 and
@@ -146,10 +146,10 @@ a new version and tag.
    `.SRCINFO` for `bk-bin`, and pushes to AUR over SSH.
 
 After all four builds succeed, `publish-crates` authenticates to crates.io with
-OIDC and publishes the library followed by the CLI, skipping versions already
-published. It runs alongside the GitHub release job. A CLI authorization rejection
-warns without failing the job while its trusted publisher awaits setup; other
-publishing failures fail the job. See the bootstrap procedure below.
+OIDC and publishes the `beankeeper` library, skipping a version that is already
+published. It runs alongside the GitHub release job, so a publishing failure
+cannot block the GitHub release or AUR update. The CLI is never published to
+crates.io.
 
 Watch the Release workflow in GitHub Actions and inspect the resulting release:
 
@@ -304,11 +304,11 @@ validated by the next intentional release run.
 
 ## crates.io publishing
 
-As of 2026-11-20, the `beankeeper` library is published at 0.7.0, but
-`beankeeper-cli` has not been published. Its first publication and trusted-publisher
-setup are still pending. Until then, use `install.sh`, AUR, or the Git source
-install in the [README](../README.md#install) for the CLI. Neither
-`cargo install beankeeper-cli` nor `cargo binstall beankeeper-cli` is available yet.
+Only the `beankeeper` library is published to crates.io. `beankeeper-cli` sets
+`publish = false` and is distributed only as GitHub Release binaries (via
+`install.sh`, AUR, or a manual download); `cargo install beankeeper-cli` and
+`cargo binstall beankeeper-cli` are not supported. See the
+[README](../README.md#install) for CLI install options.
 
 `beankeeper` publishes only through the `publish-crates` job in
 [release.yml](../.github/workflows/release.yml), never with an API token. Its
@@ -332,68 +332,21 @@ On a clean release commit, use current stable Rust and run:
 cargo fetch --locked
 python3 -B -m unittest discover -s scripts/tests -v
 cargo package -p beankeeper --list
-cargo package -p beankeeper-cli --list
 cargo publish --dry-run --workspace --locked
 ```
 
-The last command packages and builds both crates in dependency order without
-uploading. Cargo stages the library archive in a temporary local registry so the
-CLI is verified even before the matching library version exists on crates.io.
-This is the same check CI runs. Do not replace it with `--no-verify`, a path
-patch, or a check that ignores failures. It needs network access for the registry
+The last command packages and builds the library without uploading; Cargo skips
+the CLI because it sets `publish = false`. This is the same check CI runs. Do
+not replace it with `--no-verify`, a path patch, or a check that ignores
+failures. It needs network access for the registry
 index and dependencies, but no publishing credential.
 
-The release job checks each manifest's exact version on crates.io and skips
-an existing version. Otherwise it runs `cargo publish -p beankeeper --locked`,
-waits for Cargo to confirm registry availability, then runs
-`cargo publish -p beankeeper-cli --locked`. Registry lookup failures stop the job
-rather than being treated as missing versions. Published versions are immutable;
-confirm an existing library version is the intended dependency before tagging.
-Rerun the failed job to retry; do not bump versions or retag solely for a retry.
-
-### Bootstrap the CLI once
-
-`beankeeper-cli` cannot configure a trusted publisher until its first version
-exists on crates.io. Until the owner completes setup, the job warns and skips a
-CLI upload rejected for authentication or permission reasons. Library failures
-and other CLI failures still fail the publishing job. Check the warning before
-assuming a successful workflow published both crates.
-
-After merge, a successful release build, and library publication through the job,
-the maintainer or PM performs the **first CLI publish once, manually with a
-crates.io API token** authorized to create `beankeeper-cli`. Confirm the library's
-manifest version is available, authenticate Cargo with that token, and run:
-
-```sh
-# Maintainer/PM only: one-time CLI bootstrap after the library is live.
-cargo info beankeeper@0.7.0 --registry crates-io
-cargo publish -p beankeeper-cli --dry-run --locked
-cargo publish -p beankeeper-cli --locked
-```
-
-Reread the manifests at release time; the versions here are examples. A CLI-only
-dry run needs the matching library in the registry because Cargo removes the
-local dependency path when packaging.
-
-The owner then opens `beankeeper-cli` settings on crates.io and adds the same
-trusted publisher: GitHub repository `Govcraft/beankeeper`, workflow `release.yml`.
-Enable the requirement for Trusted Publishing for all new versions, as on the
-library. Subsequent CLI releases use the job's OIDC credential. Rerunning the job
-after bootstrap skips both versions that are already live.
-
-After both crates are published, verify a source install in a temporary root:
-
-```sh
-install_dir=$(mktemp -d)
-cargo install beankeeper-cli --version 0.27.0 --locked --root "$install_dir"
-"$install_dir/bin/bk" --version
-```
-
-Remove that temporary root afterward. For a binary install, first complete the
-GitHub CLI release procedure above, then use `cargo binstall beankeeper-cli
---version 0.27.0`. The package name is `beankeeper-cli`; it installs the executable
-`bk`. Its manifest's binstall templates point at
-`beankeeper-cli-vX.Y.Z/bk-X.Y.Z-TARGET.tar.gz`, with `bk` inside the
-`bk-X.Y.Z-TARGET/` directory. These names match the four Linux GNU and macOS
-targets in `release.yml`. Versions without matching GitHub assets cannot use
-this download path; the source installation remains available after publishing.
+The release job checks the library's exact version on crates.io and skips an
+existing version. Otherwise it runs `cargo publish -p beankeeper --locked`. If
+that upload is rejected because the version already exists and crates.io then
+confirms it, the job also succeeds. Registry lookup failures and all other
+publishing failures, including authorization rejections, fail the job rather
+than being treated as missing or skipped versions. Published versions are
+immutable; confirm an existing library version is the intended dependency
+before tagging. Rerun the failed job to retry; do not bump versions or retag
+solely for a retry.

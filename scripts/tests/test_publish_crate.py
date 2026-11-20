@@ -1,6 +1,6 @@
 """Exercise publishing decisions with mocked registry and Cargo calls; never upload."""
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
@@ -65,56 +65,59 @@ class PublishCrateTests(unittest.TestCase):
         stdout.__enter__()
         self.addCleanup(stdout.__exit__, None, None, None)
 
-    def test_existing_versions_skip_cargo_for_both_crates(self):
+    def test_existing_library_version_skips_cargo(self):
         self.registry.return_value = True
-        for crate in ("beankeeper", "beankeeper-cli"):
-            with self.subTest(crate=crate):
-                self.assertEqual(publisher.publish(crate), 0)
+        self.assertEqual(publisher.publish("beankeeper"), 0)
         self.cargo.assert_not_called()
         self.assertIn("already published", self.output.getvalue())
 
-    def test_missing_versions_publish_matching_package_with_locked_dependencies(self):
-        for crate in ("beankeeper", "beankeeper-cli"):
-            with self.subTest(crate=crate):
-                self.assertEqual(publisher.publish(crate), 0)
-                self.cargo.assert_called_with(
-                    ["cargo", "publish", "-p", crate, "--locked"],
-                    cwd=publisher.ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
+    def test_missing_library_version_publishes_with_locked_dependencies(self):
+        self.assertEqual(publisher.publish("beankeeper"), 0)
+        self.cargo.assert_called_once_with(
+            ["cargo", "publish", "-p", "beankeeper", "--locked"],
+            cwd=publisher.ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, check=False,
+        )
 
-    def test_cli_authorization_rejections_warn_and_succeed(self):
+    def test_cli_is_never_published(self):
+        with self.assertRaises(ValueError):
+            publisher.publish("beankeeper-cli")
+        self.registry.assert_not_called()
+        self.cargo.assert_not_called()
+        with patch("sys.argv", ["publish_crate.py", "beankeeper-cli"]), \
+                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit_:
+            publisher.main()
+        self.assertNotEqual(exit_.exception.code, 0)
+        self.cargo.assert_not_called()
+
+    def test_already_uploaded_race_succeeds_once_registry_confirms(self):
+        self.registry.side_effect = [False, True]
+        self.cargo.return_value = subprocess.CompletedProcess(
+            [], 101, "error: crate version `0.7.0` is already uploaded",
+        )
+        self.assertEqual(publisher.publish("beankeeper"), 0)
+        self.assertIn("already published", self.output.getvalue())
+
+    def test_already_uploaded_message_without_registry_confirmation_fails(self):
+        self.registry.side_effect = [False, False]
+        self.cargo.return_value = subprocess.CompletedProcess([], 101, "already exists")
+        self.assertEqual(publisher.publish("beankeeper"), 101)
+
+    def test_library_publish_failures_fail(self):
         for message in (
             "the remote server responded with an error (status 403 Forbidden)",
-            "401 Unauthorized",
-            "this token does not have the required scopes to perform this action",
-            "only trusted publishing is allowed",
-        ):
-            with self.subTest(message=message):
-                self.cargo.return_value = subprocess.CompletedProcess([], 101, message)
-                self.assertEqual(publisher.publish("beankeeper-cli"), 0)
-        self.assertIn("::warning::Skipping beankeeper-cli", self.output.getvalue())
-        self.assertIn("Govcraft/beankeeper, release.yml", self.output.getvalue())
-
-    def test_library_authorization_rejection_fails(self):
-        self.cargo.return_value = subprocess.CompletedProcess([], 101, "403 Forbidden")
-        self.assertEqual(publisher.publish("beankeeper"), 101)
-        self.assertNotIn("::warning::", self.output.getvalue())
-
-    def test_unrelated_cli_publish_failure_fails(self):
-        for message in (
+            "401 Unauthorized", "only trusted publishing is allowed",
             "error: could not compile", "network timeout", "500 Internal Server Error",
-            "error: src/lib.rs:403: could not compile",
         ):
             with self.subTest(message=message):
                 self.cargo.return_value = subprocess.CompletedProcess([], 101, message)
-                self.assertEqual(publisher.publish("beankeeper-cli"), 101)
+                self.assertEqual(publisher.publish("beankeeper"), 101)
         self.assertNotIn("::warning::", self.output.getvalue())
 
     def test_registry_failure_never_attempts_upload(self):
         self.registry.side_effect = URLError("connection failed")
         with self.assertRaises(URLError):
-            publisher.publish("beankeeper-cli")
+            publisher.publish("beankeeper")
         self.cargo.assert_not_called()
 
 

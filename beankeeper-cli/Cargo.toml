@@ -9,11 +9,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Govcraft/beankeeper"
 readme = "../README.md"
 include = ["/src/**", "/tests/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
-
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/beankeeper-cli-v{ version }/bk-{ version }-{ target }.tar.gz"
-bin-dir = "bk-{ version }-{ target }/{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
+# The CLI ships as GitHub Release binaries (install.sh, AUR), not on crates.io.
+publish = false
 
 [[bin]]
 name = "bk"
