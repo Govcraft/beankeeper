@@ -52,6 +52,22 @@ Audit rows form a SHA-256 hash chain. `bk verify` checks the chain, its tail, ne
 
 These protections detect tampering against the stored chain; they are not signatures or an external trust anchor. Someone with unrestricted database access can remove triggers and rewrite the ledger, hashes, and sequence together, or restore an older complete database. See [audit integrity](docs/audit-integrity.md) for the format, migration behavior, and limits.
 
+### Optional verified agent identity
+
+`bk key init` creates a local trust root inside an encrypted ledger.
+`bk agent issue --name claude --public-key "$AGENT_PUBLIC_KEY" --ttl 8h` issues
+an attestation. Supply it with `--agent-token` or `BK_AGENT_TOKEN` to record its
+verified `agent_uri` and `token_jti` on new postings and audit rows. `txn show`,
+`audit log --agent URI`, and JSON `meta.agent` expose attribution; `agent list`
+and `agent revoke URI_OR_JTI` manage issued tokens. MCP accepts one token per
+session and rechecks it on every call. Invalid, expired or revoked supplied
+tokens return `UNAUTHORIZED` (exit 6).
+
+Tokens remain optional. Capabilities are recorded, and do not restrict commands
+in this phase. Token verification attests claims without proving possession of
+the agent private key; writes have no agent signatures. See
+[agent identity setup and limits](docs/agent-identity.md).
+
 ### Everything else
 
 - **Multi-company tenancy** -- multiple entities in one database, isolated by slug; the agent manages your LLC and personal books in the same place
@@ -786,7 +802,7 @@ JSON command responses follow a uniform envelope contract for reliable programma
 }
 ```
 
-For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
+For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `UNAUTHORIZED`, `IO`, `GENERAL`.
 
 ### Environment Variables
 
@@ -796,6 +812,8 @@ For enveloped responses, the `meta` block is present on both success and error. 
 | `BEANKEEPER_COMPANY` | Default company slug (avoids `--company` on every command) |
 | `BEANKEEPER_CURRENCY` | Default currency code for amount filters (default: `USD`) and for `report budget-variance` (inferred from transactions when unset) |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase |
+| `BK_ACTOR` | Named poster and audit actor |
+| `BK_AGENT_TOKEN` | Optional local agent attestation; overridden by `--agent-token` |
 | `NO_COLOR` | Disable colored output |
 
 ### Encryption
@@ -941,7 +959,7 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 Every pull request and push to `main` runs formatting, Clippy with warnings
 treated as errors, and the workspace tests (including doctests) on Linux and
 macOS using stable Rust. A separate job checks all workspace and test targets
-with Rust 1.88.0, the minimum supported version declared by both crates.
+with Rust 1.91.0, the minimum supported version declared by both crates.
 Compiled dependencies are cached per platform and toolchain.
 
 Run the quality checks locally before submitting a change:
@@ -950,7 +968,7 @@ Run the quality checks locally before submitting a change:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cargo +1.88.0 check --workspace --all-targets --locked
+cargo +1.91.0 check --workspace --all-targets --locked
 ```
 
 ## License

@@ -1496,7 +1496,11 @@ pub(crate) fn run_to(
             "{}",
             render_table(&report, &ctx, output.use_color)
         )?,
-        OutputFormat::Json => writeln!(output.writer, "{}", render_json(&report, &ctx, company)?)?,
+        OutputFormat::Json => writeln!(
+            output.writer,
+            "{}",
+            render_json(&report, &ctx, cli.meta("report.aging", Some(company)))?
+        )?,
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report, &ctx)?)?,
     }
 
@@ -2216,7 +2220,7 @@ fn account_json<'a>(buckets: &'a [Bucket], a: &'a AccountAging) -> AccountAgingJ
 fn render_json(
     r: &MultiAgingReport,
     ctx: &RenderContext<'_>,
-    company: &str,
+    meta: output::json::Meta,
 ) -> Result<String, CliError> {
     let b = &r.buckets;
     let groups = r
@@ -2261,7 +2265,7 @@ fn render_json(
 
     let env = output::json::Envelope {
         ok: true,
-        meta: output::json::meta("report.aging", Some(company)),
+        meta,
         data: Some(data),
         error: None,
     };

@@ -2,7 +2,6 @@ use crate::cli::Cli;
 use crate::db::connection::Db;
 use crate::db::schema;
 use crate::error::CliError;
-use crate::passphrase;
 
 /// Run the `bk verify` command.
 ///
@@ -12,12 +11,7 @@ use crate::passphrase;
 ///
 /// Returns [`CliError`] if verification encounters a problem.
 pub fn run(cli: &Cli) -> Result<(), CliError> {
-    let pp = passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db = Db::open_existing(&cli.db, pp.as_ref())?;
+    let db = cli.open_db()?;
 
     let version = verify(&db)?;
     if cli.verbosity.verbose {
@@ -25,7 +19,7 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
     }
 
     if cli.is_json() {
-        let meta = crate::output::json::meta("verify", None);
+        let meta = cli.meta("verify", None);
         let rendered = crate::output::json::render_verify(version, meta)?;
         println!("{rendered}");
     }

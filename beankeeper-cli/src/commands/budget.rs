@@ -10,7 +10,6 @@ use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output;
-use crate::passphrase;
 
 /// Run a `bk budget` subcommand.
 ///
@@ -18,12 +17,7 @@ use crate::passphrase;
 ///
 /// Returns [`CliError`] if the subcommand fails.
 pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError> {
-    let pp = passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db = Db::open_existing(&cli.db, pp.as_ref())?;
+    let db = cli.open_db()?;
     db::companies::get_company(db.conn(), company)?;
     if let BudgetCommand::Delete {
         account,
@@ -46,7 +40,7 @@ pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError
             return Ok(());
         }
     }
-    let actor = db::Actor::resolve(cli.actor.as_deref());
+    let actor = cli.principal();
     let result = compute(&db, company, sub, &actor)?;
     render(cli, company, sub, &result)?;
     if !cli.verbosity.quiet {
@@ -202,8 +196,7 @@ fn command(sub: &BudgetCommand) -> &'static str {
     }
 }
 
-fn json(company: &str, sub: &BudgetCommand, data: &BudgetData) -> Result<String, CliError> {
-    let meta = output::json::meta(command(sub), Some(company));
+fn json(data: &BudgetData, meta: output::json::Meta) -> Result<String, CliError> {
     match data {
         BudgetData::Rows(rows) => output::json::render_budgets(rows, meta),
         BudgetData::Deleted(count) => output::json::render_budget_deleted(*count, meta),
@@ -218,7 +211,7 @@ fn render(
 ) -> Result<(), CliError> {
     let format = resolve_format(None, cli);
     if format == OutputFormat::Json {
-        println!("{}", json(company, sub, data)?);
+        println!("{}", json(data, cli.meta(command(sub), Some(company)))?);
     } else if let BudgetData::Rows(rows) = data {
         match format {
             OutputFormat::Table => {
@@ -256,7 +249,10 @@ pub fn execute_json(
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
     let result = compute(db, company, sub, actor)?;
-    super::company::json_data(&json(company, sub, &result)?)
+    super::company::json_data(&json(
+        &result,
+        output::json::meta(command(sub), Some(company)),
+    )?)
 }
 
 #[cfg(test)]
@@ -314,6 +310,7 @@ mod tests {
         let audit = super::super::audit::execute_json(
             &db,
             &AuditCommand::Log {
+                agent: None,
                 company: Some("acme".into()),
                 entity: None,
                 action: None,
@@ -344,6 +341,15 @@ mod tests {
     fn invalid_budget_does_not_write() -> Result<(), CliError> {
         let db = ledger()?;
         let actor = db::Actor::new("mcp:test-client");
+        let log = AuditCommand::Log {
+            agent: None,
+            company: None,
+            entity: None,
+            action: None,
+            limit: 50,
+            offset: 0,
+        };
+        let before = super::super::audit::execute_json(&db, &log)?;
         assert!(matches!(
             execute_json(&db, "acme", &monthly(13), &actor),
             Err(CliError::Validation(_))
@@ -352,17 +358,8 @@ mod tests {
             execute_json(&db, "unknown", &monthly(3), &actor),
             Err(CliError::NotFound(_))
         ));
-        let audit = super::super::audit::execute_json(
-            &db,
-            &AuditCommand::Log {
-                company: None,
-                entity: None,
-                action: None,
-                limit: 50,
-                offset: 0,
-            },
-        )?;
-        assert_eq!(audit, serde_json::json!([]));
+        let after = super::super::audit::execute_json(&db, &log)?;
+        assert_eq!(after, before);
         Ok(())
     }
 }

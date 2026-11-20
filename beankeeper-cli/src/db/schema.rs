@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 12;
+const CURRENT_VERSION: i64 = 13;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -88,6 +88,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 12 {
         apply_v12(conn)?;
+    }
+
+    if version < 13 {
+        apply_v13(conn)?;
     }
 
     debug_assert_eq!(
@@ -561,9 +565,197 @@ fn apply_v12(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
+/// Preserves v1 hashes and snapshots; all later records use the v2 payload.
+fn apply_v13(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        let tail_valid: bool = conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                = COALESCE((SELECT MAX(id) FROM audit_log), 0)",
+            [],
+            |r| r.get(0),
+        )?;
+        if !tail_valid {
+            return Err(CliError::Database(
+                "audit hash chain tail missing before v13 migration".into(),
+            ));
+        }
+        conn.execute_batch(
+            "ALTER TABLE transactions ADD COLUMN agent_uri TEXT;
+            ALTER TABLE transactions ADD COLUMN token_jti TEXT;
+            CREATE TABLE identity_root (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                kid TEXT NOT NULL UNIQUE,
+                trust_root TEXT NOT NULL UNIQUE,
+                private_key BLOB NOT NULL CHECK(length(private_key) = 32),
+                public_key TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE agent_tokens (
+                jti TEXT PRIMARY KEY,
+                agent_uri TEXT NOT NULL,
+                agent_key TEXT NOT NULL,
+                capabilities TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_agent_tokens_uri ON agent_tokens(agent_uri);
+            CREATE TABLE agent_revocations (
+                jti TEXT PRIMARY KEY REFERENCES agent_tokens(jti),
+                revoked_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE audit_log_v13 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 2 CHECK(hash_version IN (1,2)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v13
+                SELECT *, NULL, NULL, 1 FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v13 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 2
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+            CREATE TRIGGER protect_transaction_identity BEFORE UPDATE ON transactions
+            WHEN NEW.agent_uri IS NOT OLD.agent_uri OR NEW.token_jti IS NOT OLD.token_jti
+            BEGIN SELECT RAISE(ABORT, 'posted transaction identity is immutable'); END;
+            INSERT INTO schema_version (version) VALUES (13);"
+        )?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn v12_connection() -> Result<Connection, CliError> {
+        let conn = open_conn();
+        for migration in [
+            apply_v1, apply_v2, apply_v3, apply_v4, apply_v5, apply_v6, apply_v7, apply_v8,
+            apply_v9, apply_v10, apply_v11, apply_v12,
+        ] {
+            migration(&conn)?;
+        }
+        Ok(conn)
+    }
+
+    fn seed_v12_creation(conn: &Connection) -> Result<(), CliError> {
+        use sha2::{Digest, Sha256};
+        let snapshot = serde_json::json!({
+            "id": 1, "company_slug": "legacy", "description": "Old sale",
+            "currency": "USD", "date": "2026-01-01", "posted_at": "2026-01-01 00:00:00",
+            "reference": "old", "posted_by": "v12", "entries": [
+                {"id":1, "account_code":"1000", "company_slug":"legacy", "direction":"debit", "amount":100, "memo":null, "tax_category":null},
+                {"id":2, "account_code":"4000", "company_slug":"legacy", "direction":"credit", "amount":100, "memo":null, "tax_category":null}
+            ]
+        }).to_string();
+        conn.execute_batch("INSERT INTO companies (slug, name) VALUES ('legacy','Legacy');
+            INSERT INTO accounts (company_slug, code, name, type) VALUES
+                ('legacy','1000','Cash','asset'), ('legacy','4000','Revenue','revenue');
+            INSERT INTO transactions (company_slug, description, currency, date, posted_at, reference, posted_by)
+                VALUES ('legacy','Old sale','USD','2026-01-01','2026-01-01 00:00:00','old','v12');
+            INSERT INTO entries (transaction_id, account_code, company_slug, direction, amount)
+                VALUES (1,'1000','legacy','debit',100), (1,'4000','legacy','credit',100);")?;
+        let canonical = serde_json::json!([
+            "beankeeper.audit.v1",
+            1,
+            "2026-01-01 00:00:00",
+            "v12",
+            "legacy",
+            "transaction",
+            "1",
+            "create",
+            null,
+            snapshot
+        ])
+        .to_string();
+        let genesis = "0".repeat(64);
+        let mut hash = Sha256::new();
+        hash.update(genesis.as_bytes());
+        hash.update(canonical.as_bytes());
+        conn.execute("INSERT INTO audit_log (id, changed_at, actor, company_slug, entity, entity_id, action, after, prev_hash, row_hash)
+            VALUES (1,'2026-01-01 00:00:00','v12','legacy','transaction','1','create',?1,?2,?3)",
+            params![snapshot, genesis, format!("{:x}", hash.finalize())])?;
+        Ok(())
+    }
+
+    #[test]
+    fn v13_preserves_v12_creation_snapshots_and_extends_the_same_chain() -> Result<(), CliError> {
+        let conn = v12_connection()?;
+        seed_v12_creation(&conn)?;
+        let old_hash: String =
+            conn.query_row("SELECT row_hash FROM audit_log", [], |r| r.get(0))?;
+        apply_v13(&conn)?;
+        let preserved: (String, Option<String>, Option<String>, i64) = conn.query_row(
+            "SELECT row_hash, agent_uri, token_jti, hash_version FROM audit_log",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        assert_eq!(preserved, (old_hash.clone(), None, None, 1));
+        super::super::audit::record_identity(
+            &conn,
+            &super::super::Actor::new("new"),
+            "token_revoke",
+            "test",
+            &serde_json::json!({}),
+        )?;
+        let tail: (String, i64) = conn.query_row(
+            "SELECT prev_hash, hash_version FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(tail, (old_hash, 2));
+        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_creations(&conn)?;
+        ensure_schema(&conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn v13_rejects_corrupt_history_and_rolls_back_all_schema_changes() -> Result<(), CliError> {
+        for corruption in [
+            "DROP TRIGGER protect_audit_update; UPDATE audit_log SET row_hash = printf('%064d', 1)",
+            "DROP TRIGGER protect_audit_delete; DELETE FROM audit_log",
+        ] {
+            let conn = v12_connection()?;
+            seed_v12_creation(&conn)?;
+            conn.execute_batch(corruption)?;
+            assert!(apply_v13(&conn).is_err());
+            assert_eq!(get_schema_version(&conn)?, 12);
+            assert!(conn.prepare("SELECT agent_uri FROM transactions").is_err());
+            assert!(conn.prepare("SELECT * FROM identity_root").is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn v12_preserves_history_and_backfills_a_stable_chain() -> Result<(), CliError> {
@@ -611,7 +803,7 @@ mod tests {
         let poster: Option<String> =
             conn.query_row("SELECT posted_by FROM transactions", [], |r| r.get(0))?;
         assert_eq!(poster, None);
-        assert_eq!(get_schema_version(&conn)?, 12);
+        assert_eq!(get_schema_version(&conn)?, 13);
         Ok(())
     }
 

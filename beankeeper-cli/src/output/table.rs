@@ -325,6 +325,13 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
             use_color
         )
     ));
+    if let Some(uri) = &txn.agent_uri {
+        lines.push(format!("  Agent:       {uri}"));
+        lines.push(format!(
+            "  Token:       {}",
+            txn.token_jti.as_deref().unwrap_or("unknown")
+        ));
+    }
     lines.push(String::new());
 
     // Entries
@@ -1017,6 +1024,8 @@ mod tests {
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
+            agent_uri: None,
+            token_jti: None,
             reference: None,
         }];
         let out = render_transaction_list(&rows, false);
@@ -1039,6 +1048,8 @@ mod tests {
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
+            agent_uri: None,
+            token_jti: None,
             reference: None,
         };
         let entries = vec![
@@ -1086,6 +1097,8 @@ mod tests {
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
+            agent_uri: None,
+            token_jti: None,
             reference: None,
         };
         let entries = vec![

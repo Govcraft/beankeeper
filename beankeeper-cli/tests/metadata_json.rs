@@ -314,7 +314,13 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "DROP TRIGGER protect_transactions_insert;
+            "DROP TRIGGER protect_transaction_identity;
+             DROP TABLE agent_revocations;
+             DROP TABLE agent_tokens;
+             DROP TABLE identity_root;
+             ALTER TABLE transactions DROP COLUMN agent_uri;
+             ALTER TABLE transactions DROP COLUMN token_jti;
+             DROP TRIGGER protect_transactions_insert;
              DROP TRIGGER protect_transactions_update;
              DROP TRIGGER protect_transactions_delete;
              DROP TRIGGER protect_entries_insert;

@@ -1,8 +1,12 @@
 # Command Reference
 
-All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
+All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`, `--agent-token TOKEN`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
 
 `--actor NAME` sets the principal recorded in the audit trail for any mutating command (see [Audit](#audit)). It falls back to the `BK_ACTOR` environment variable, then the OS user, then `"cli"`.
+`--agent-token TOKEN` / `BK_AGENT_TOKEN` optionally records verified local identity;
+invalid, expired or revoked supplied tokens return `UNAUTHORIZED` (exit 6).
+No token is required, and capabilities are not enforced in Phase 1.
+
 
 ## Database
 
@@ -968,7 +972,41 @@ bk audit log --json                                # full before/after snapshots
 
 JSON keeps the row array and adds `meta.pagination` (`limit`, `offset`, `returned`,
 `total`, `has_more`). Table mode signals more rows on stderr unless quiet.
-Continue with `--offset`; the total uses the same company/entity/action filters.
+Continue with `--offset`; the total uses the same agent/company/entity/action filters.
 Audit JSON also includes parsed `before_display` and `after_display` snapshots
 with decimal monetary companions; original snapshot strings and hashes remain
 unchanged. See [amount conventions](json-api.md#amount-conventions).
+
+## Agent identity
+
+- `bk key init`: create one local root in an **encrypted** existing ledger.
+  Returns public `kid`, `trust_root`, `public_key`; refuses reinitialization.
+- `bk agent issue --name PREFIX --public-key BASE64 [--caps PATH,...] [--ttl 8h]`:
+  issue an attestation for the supplied Ed25519 public key. `--generate-key`
+  replaces `--public-key` and prints the agent private seed once as hex.
+  Names are lowercase TypeID prefixes. The URI path is `ledger`, allowing sibling
+  grants. Capabilities default to `ledger/read,ledger/post` and must be under
+  `ledger`. TTL accepts positive `s`, `m`, `h`, `d` values, maximum `30d`.
+- `bk agent list`: list public claims and nullable `revoked_at`, without tokens
+  or private keys.
+- `bk agent revoke URI_OR_JTI`: revoke one token or all current tokens for a URI.
+  Repeating is a no-op. Unknown targets return `NOT_FOUND`.
+- `bk audit log --agent URI`: select audit rows attributed to that verified URI.
+
+All support `--json`. Issue data includes `agent_uri`, `token_jti`, `agent_key`,
+`capabilities`, `issued_at`, `expires_at`, `token`, plus `private_key` only when
+requested. JSON envelopes add `meta.agent` when a valid token is supplied.
+`txn show`/`list` and audit rows expose nullable `agent_uri`/`token_jti`;
+audit rows also expose `hash_version` (1 for historical rows, 2 for new rows).
+Audit filters also support entities `key`, `agent` and actions `create`,
+`key-init`, `token-issue`, `token-revoke`, `attach` (JSON uses underscores).
+
+`bk mcp serve` accepts the global token flag/environment variable per process.
+Startup and every call verify it, including live revocations. Tool arguments do
+not accept tokens. With no token, named actors work as before.
+
+Phase 1 does not enforce permissions or prove possession of the agent private
+key. `init` rejects supplied tokens before modifying files; initialize the new
+ledger and root without one. Root keys travel with full encrypted DB backups,
+not accounting exports. There is no recovery or rotation command in this phase.
+See [identity setup and limits](../../agent-identity.md).

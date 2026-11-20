@@ -10,7 +10,6 @@ use crate::db::connection::Db;
 use crate::db::{self, accounts, attachments, transactions};
 use crate::error::CliError;
 use crate::output;
-use crate::passphrase;
 
 /// Run a `bk txn` subcommand.
 ///
@@ -23,12 +22,7 @@ pub fn run(
     sub: &TxnCommand,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
-    let pp = passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db_handle = Db::open_existing(&cli.db, pp.as_ref())?;
+    let db_handle = cli.open_db()?;
     if !matches!(sub, TxnCommand::Reconcile) {
         crate::db::companies::get_company(db_handle.conn(), company)?;
     }
@@ -37,7 +31,7 @@ pub fn run(
 
     match sub {
         TxnCommand::Post { .. } => {
-            let actor = db::Actor::resolve(cli.actor.as_deref());
+            let actor = cli.principal();
             let result = execute_post(&db_handle, company, sub, &actor)?;
             print_post_result(cli, company, result)
         }
@@ -53,17 +47,21 @@ pub fn run(
             &db_handle,
             company,
             *id,
-            format,
-            use_color,
+            (format, use_color),
             &mut std::io::stdout(),
+            cli.meta("txn.show", Some(company)),
         ),
         TxnCommand::Reverse { .. } => run_reverse(cli, &db_handle, company, sub),
         TxnCommand::Clear { .. } => super::txn_clear::run(cli, &db_handle, company, sub, meta),
         TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
         TxnCommand::Attach { .. } => run_attach(cli, &db_handle, company, sub),
-        TxnCommand::Reconcile => {
-            run_reconcile(&db_handle, format, use_color, &mut std::io::stdout())
-        }
+        TxnCommand::Reconcile => run_reconcile(
+            &db_handle,
+            format,
+            use_color,
+            &mut std::io::stdout(),
+            cli.meta("txn.reconcile", None),
+        ),
     }
 }
 
@@ -73,15 +71,12 @@ fn run_reverse(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Re
         return Err(CliError::General("expected txn reverse subcommand".into()));
     };
     let format = resolve_format(None, cli);
-    let actor = db::Actor::resolve(cli.actor.as_deref());
+    let actor = cli.principal();
     let result = execute_reverse(db_handle, company, sub, &actor)?;
     if format == OutputFormat::Json {
         println!(
             "{}",
-            output::json::render_post_result(
-                result,
-                output::json::meta("txn.reverse", Some(company))
-            )?
+            output::json::render_post_result(result, cli.meta("txn.reverse", Some(company)))?
         );
     }
     if !cli.verbosity.quiet {
@@ -175,7 +170,7 @@ pub fn execute_json_with_pagination(
     match sub {
         TxnCommand::Post { .. } => {
             let result = execute_post(db_handle, company, sub, actor)?;
-            let meta = output::json::meta("txn.post", Some(company));
+            let meta = cli.meta("txn.post", Some(company));
             out = output::json::render_post_result(result, meta)?.into_bytes();
         }
         TxnCommand::List { .. } => run_list_or_count(
@@ -187,16 +182,29 @@ pub fn execute_json_with_pagination(
             &mut out,
         )?,
         TxnCommand::Show { id } => {
-            run_show(db_handle, company, *id, OutputFormat::Json, false, &mut out)?;
+            run_show(
+                db_handle,
+                company,
+                *id,
+                (OutputFormat::Json, false),
+                &mut out,
+                cli.meta("txn.show", Some(company)),
+            )?;
         }
-        TxnCommand::Reconcile => run_reconcile(db_handle, OutputFormat::Json, false, &mut out)?,
+        TxnCommand::Reconcile => run_reconcile(
+            db_handle,
+            OutputFormat::Json,
+            false,
+            &mut out,
+            cli.meta("txn.reconcile", None),
+        )?,
         TxnCommand::Clear { .. } => {
             return super::txn_clear::execute_json(db_handle, company, sub, actor, None)
                 .map(|data| (data, None));
         }
         TxnCommand::Reverse { .. } => {
             let result = execute_reverse(db_handle, company, sub, actor)?;
-            let meta = output::json::meta("txn.reverse", Some(company));
+            let meta = cli.meta("txn.reverse", Some(company));
             out = output::json::render_post_result(result, meta)?.into_bytes();
         }
         TxnCommand::Import { .. } | TxnCommand::Attach { .. } => {
@@ -672,7 +680,7 @@ fn print_post_result(
 ) -> Result<(), CliError> {
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {
-        let meta = crate::output::json::meta("txn.post", Some(company));
+        let meta = cli.meta("txn.post", Some(company));
         let rendered = crate::output::json::render_post_result(post_result, meta)?;
         println!("{rendered}");
     }
@@ -746,7 +754,8 @@ fn run_list(
                 let entries = transactions::get_entries_for_transaction(db_handle.conn(), txn.id)?;
                 entries_map.insert(txn.id, entries);
             }
-            let meta = output::json::meta("txn.list", Some(params.company_slug))
+            let meta = cli
+                .meta("txn.list", Some(params.company_slug))
                 .with_pagination(pagination.clone());
             let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
             writeln!(out, "{rendered}")?;
@@ -788,7 +797,7 @@ fn run_count(
 
     match format {
         OutputFormat::Json => {
-            let meta = output::json::meta("txn.list", Some(params.company_slug));
+            let meta = cli.meta("txn.list", Some(params.company_slug));
             let rendered = output::json::render_count(count, meta)?;
             writeln!(out, "{rendered}")?;
         }
@@ -816,10 +825,11 @@ fn run_show(
     db_handle: &Db,
     company: &str,
     id: i64,
-    format: OutputFormat,
-    use_color: bool,
+    display: (OutputFormat, bool),
     out: &mut dyn Write,
+    meta: output::json::Meta,
 ) -> Result<(), CliError> {
+    let (format, use_color) = display;
     let (txn, entries) = transactions::get_transaction(db_handle.conn(), company, id)?;
     let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
     let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
@@ -850,7 +860,6 @@ fn run_show(
             entries_map.insert(txn.id, entries);
             let mut att_map: HashMap<i64, Vec<db::AttachmentRow>> = HashMap::new();
             att_map.insert(txn.id, att_rows);
-            let meta = output::json::meta("txn.show", Some(company));
             let rendered = output::json::render_transactions_with_attachments(
                 &[txn],
                 &entries_map,
@@ -917,11 +926,22 @@ fn run_attach(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
         hash: Some(hash.as_str()),
         original_filename: original_filename.as_deref(),
     };
-    let att_id = attachments::store_attachment(db_handle.conn(), &params)?;
+    let att_id = db::audit::atomically(db_handle.conn(), || {
+        let id = attachments::store_attachment(db_handle.conn(), &params)?;
+        db::audit::record_insert(
+            db_handle.conn(),
+            &cli.principal(),
+            company,
+            "attachment",
+            &transaction_id.to_string(),
+            &serde_json::json!({"attachment_id": id, "entry_id": entry_id, "uri": uri, "hash": hash, "document_type": doc_type.to_string()}),
+        )?;
+        Ok(id)
+    })?;
 
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {
-        let meta = crate::output::json::meta("txn.attach", Some(company));
+        let meta = cli.meta("txn.attach", Some(company));
         let rendered = crate::output::json::render_attached(att_id, transaction_id, meta)?;
         println!("{rendered}");
     }
@@ -940,13 +960,13 @@ fn run_reconcile(
     format: OutputFormat,
     use_color: bool,
     out: &mut dyn Write,
+    meta: output::json::Meta,
 ) -> Result<(), CliError> {
     let orphans = transactions::find_orphaned_correlations(db_handle.conn())?;
 
     if orphans.is_empty() {
         match format {
             OutputFormat::Json => {
-                let meta = output::json::meta("txn.reconcile", None);
                 let rendered = output::json::render_orphaned_correlations(&[], meta)?;
                 writeln!(out, "{rendered}")?;
             }
@@ -965,7 +985,6 @@ fn run_reconcile(
             eprintln!("[!!] {} orphaned correlation(s) found", orphans.len());
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("txn.reconcile", None);
             let rendered = output::json::render_orphaned_correlations(&orphans, meta)?;
             writeln!(out, "{rendered}")?;
         }

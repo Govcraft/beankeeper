@@ -7,7 +7,6 @@ use crate::cli::{AuditCommand, Cli, OutputFormat, resolve_format};
 use crate::db::{Db, ListAuditParams, count_audit, list_audit};
 use crate::error::CliError;
 use crate::output;
-use crate::passphrase;
 
 /// Execute the `audit` command group.
 ///
@@ -15,12 +14,7 @@ use crate::passphrase;
 ///
 /// Returns [`CliError`] on database or rendering failure.
 pub fn run(cli: &Cli, sub: &AuditCommand) -> Result<(), CliError> {
-    let pp = passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db = Db::open_existing(&cli.db, pp.as_ref())?;
+    let db = cli.open_db()?;
     let format = resolve_format(None, cli);
 
     run_log(cli, &db, &list_params(sub), format)
@@ -28,6 +22,7 @@ pub fn run(cli: &Cli, sub: &AuditCommand) -> Result<(), CliError> {
 
 fn list_params(sub: &AuditCommand) -> ListAuditParams<'_> {
     let AuditCommand::Log {
+        agent,
         company,
         entity,
         action,
@@ -35,6 +30,7 @@ fn list_params(sub: &AuditCommand) -> ListAuditParams<'_> {
         offset,
     } = sub;
     ListAuditParams {
+        agent_uri: agent.as_deref(),
         company_slug: company.as_deref(),
         entity: entity.map(crate::cli::AuditEntityArg::as_str),
         action: action.map(crate::cli::AuditActionArg::as_str),
@@ -59,8 +55,9 @@ fn run_log(
 
     match format {
         OutputFormat::Json => {
-            let meta =
-                output::json::meta("audit.log", params.company_slug).with_pagination(pagination);
+            let meta = cli
+                .meta("audit.log", params.company_slug)
+                .with_pagination(pagination);
             let data = audit_data(db, &rows)?;
             let rendered = serde_json::json!({ "ok": true, "meta": meta, "data": data });
             let json = serde_json::to_string(&rendered)
@@ -68,10 +65,10 @@ fn run_log(
             println!("{json}");
         }
         OutputFormat::Csv => {
-            println!("id,changed_at,actor,company,entity,entity_id,action");
+            println!("id,changed_at,actor,company,entity,entity_id,action,agent_uri,token_jti");
             for r in &rows {
                 println!(
-                    "{},{},{},{},{},{},{}",
+                    "{},{},{},{},{},{},{},{},{}",
                     r.id,
                     csv_field(&r.changed_at),
                     csv_field(&r.actor),
@@ -79,6 +76,8 @@ fn run_log(
                     csv_field(&r.entity),
                     csv_field(&r.entity_id),
                     csv_field(&r.action),
+                    csv_field(r.agent_uri.as_deref().unwrap_or("")),
+                    csv_field(r.token_jti.as_deref().unwrap_or("")),
                 );
             }
         }
@@ -103,6 +102,12 @@ fn run_log(
                     truncate(&r.entity_id, 10),
                     r.company_slug.as_deref().unwrap_or("-"),
                 );
+                if let Some(uri) = &r.agent_uri {
+                    println!(
+                        "  Agent: {uri}  Token: {}",
+                        r.token_jti.as_deref().unwrap_or("unknown")
+                    );
+                }
             }
             if !cli.verbosity.quiet {
                 print_count(rows.len(), &pagination);
@@ -185,6 +190,9 @@ fn audit_data(
                 "id": r.id,
                 "changed_at": r.changed_at,
                 "actor": r.actor,
+                "agent_uri": r.agent_uri,
+                "token_jti": r.token_jti,
+                "hash_version": r.hash_version,
                 "company_slug": r.company_slug,
                 "entity": r.entity,
                 "entity_id": r.entity_id,

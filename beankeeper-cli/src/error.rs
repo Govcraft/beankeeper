@@ -6,6 +6,8 @@ use std::io;
 pub enum CliError {
     /// Invalid arguments or CLI usage error. Exit code 2.
     Usage(String),
+    /// Invalid, expired, or revoked agent token. Exit code 6.
+    Unauthorized(String),
     /// Validation error (unbalanced transaction, invalid account). Exit code 3.
     Validation(String),
     /// Database error (I/O, corruption). Exit code 4.
@@ -33,6 +35,7 @@ impl CliError {
             Self::Validation(_) | Self::Bean(_) => 3,
             Self::Database(_) | Self::Sqlite(_) => 4,
             Self::NotFound(_) => 5,
+            Self::Unauthorized(_) => 6,
             Self::General(_) | Self::Io(_) => 1,
         }
     }
@@ -46,6 +49,7 @@ impl CliError {
             Self::Validation(_) | Self::Bean(_) => "VALIDATION",
             Self::Database(_) | Self::Sqlite(_) => "DATABASE",
             Self::NotFound(_) => "NOT_FOUND",
+            Self::Unauthorized(_) => "UNAUTHORIZED",
             Self::Io(_) => "IO",
             Self::General(_) => "GENERAL",
         }
@@ -96,6 +100,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Usage(msg)
+            | Self::Unauthorized(msg)
             | Self::Validation(msg)
             | Self::Database(msg)
             | Self::NotFound(msg)
@@ -115,6 +120,7 @@ impl std::error::Error for CliError {
             Self::Sqlite(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Usage(_)
+            | Self::Unauthorized(_)
             | Self::Validation(_)
             | Self::Database(_)
             | Self::NotFound(_)

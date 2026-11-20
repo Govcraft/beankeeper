@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.13.1
+version: 0.14.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -52,6 +52,37 @@ Key conventions for agents:
 - Use `--reference` + `--on-conflict skip` for idempotent transaction posting
 
 For the complete JSON envelope specification, see [`references/json-api.md`](references/json-api.md).
+
+## Optional agent identity
+
+For an encrypted ledger, the owner runs `bk key init` once. Supply an agent's
+base64 Ed25519 public key with `bk --json agent issue --name claude
+--public-key "$AGENT_PUBLIC_KEY" --caps ledger/read,ledger/post --ttl 8h`.
+For local setups `--generate-key` replaces `--public-key` and prints a private
+hex seed once. Save the returned token securely and set `BK_AGENT_TOKEN`, or
+pass `--agent-token` globally (the flag wins). `--ttl` accepts positive `s`,
+`m`, `h`, `d` values up to `30d`, default `8h`.
+
+Supplied tokens are verified against this database's root and revocations;
+invalid, expired or revoked tokens fail with `UNAUTHORIZED` (exit 6). New
+transactions and audit rows include `agent_uri` and `token_jti`; JSON envelopes
+add `meta.agent`. `bk audit log --agent URI` filters identity. `bk agent list`
+shows public claims and revocation dates without secrets. `bk agent revoke
+URI_OR_JTI` revokes one token or all current tokens for a URI, idempotently.
+Revocation does not invalidate historical chain verification.
+
+Phase 1 records identity optionally; it does not enforce capabilities or verify
+agent signatures/private-key possession. Treat the token as sensitive. Omit it
+for the existing named-actor behavior; reads require no token. The private root
+stays in the encrypted DB and travels with full database backups. Root recovery,
+rotation, signed writes and permission policies are outside this phase.
+`init` rejects supplied tokens before creating a new ledger; bootstrap without
+one. `init --demo` honors the named actor.
+
+For MCP, supply the token in the server's environment or startup arguments. It
+is per session and reverified on every tool call, so expiry/revocation takes
+effect without a restart. Keep token values out of tool arguments. See the
+[key and agent command reference](references/commands.md#agent-identity).
 
 ## Using MCP
 
@@ -421,6 +452,7 @@ For additional workflow patterns including bank reconciliation and tax reporting
 | `BEANKEEPER_COMPANY` | Default company slug | (none) |
 | `BEANKEEPER_CURRENCY` | Default currency code (for `report budget-variance`, inferred from transactions when unset) | `USD` |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase | (none) |
+| `BK_AGENT_TOKEN` | Optional agent attestation, overridden by `--agent-token` | (none) |
 | `BK_ACTOR` | Poster and audit principal, overridden by `--actor` | OS user, else `cli` |
 | `NO_COLOR` | Disable colored output | (unset) |
 
@@ -435,6 +467,7 @@ All errors return a non-zero exit code and, in JSON mode, a structured error:
 | 3 | Validation error (unbalanced transaction, invalid account) |
 | 4 | Database error |
 | 5 | Not found |
+| 6 | Unauthorized agent token |
 
 Validate before posting: ensure account codes exist (`bk account list`), amounts are positive, and total debits equal total credits. The CLI enforces balance at post time and will reject unbalanced entries.
 

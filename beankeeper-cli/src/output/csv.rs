@@ -495,6 +495,8 @@ mod tests {
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
+            agent_uri: None,
+            token_jti: None,
             reference: None,
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();
@@ -512,6 +514,8 @@ mod tests {
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
+            agent_uri: None,
+            token_jti: None,
             reference: None,
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();

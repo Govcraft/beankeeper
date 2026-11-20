@@ -5,7 +5,6 @@ use crate::db::companies;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output;
-use crate::passphrase;
 
 /// Run a `bk company` subcommand.
 ///
@@ -13,12 +12,7 @@ use crate::passphrase;
 ///
 /// Returns [`CliError`] if the subcommand fails.
 pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
-    let pp = passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db = Db::open_existing(&cli.db, pp.as_ref())?;
+    let db = cli.open_db()?;
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
@@ -28,15 +22,26 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             name,
             description,
         } => {
-            let row = companies::create_company(db.conn(), slug, name, description.as_deref())?;
+            let row = crate::db::audit::atomically(db.conn(), || {
+                let row = companies::create_company(db.conn(), slug, name, description.as_deref())?;
+                crate::db::audit::record_insert(
+                    db.conn(),
+                    &cli.principal(),
+                    slug,
+                    "company",
+                    slug,
+                    &serde_json::json!({"slug": row.slug, "name": row.name, "description": row.description, "created_at": row.created_at}),
+                )?;
+                Ok(row)
+            })?;
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
             }
-            render_companies(&[row], "company.create", format, use_color)?;
+            render_companies(&[row], "company.create", format, use_color, cli)?;
         }
         CompanyCommand::List => {
             let rows = read_companies(&db, sub)?;
-            render_companies(&rows, "company.list", format, use_color)?;
+            render_companies(&rows, "company.list", format, use_color, cli)?;
             if !cli.verbosity.quiet {
                 let count = rows.len();
                 eprintln!(
@@ -47,7 +52,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
         }
         CompanyCommand::Show { .. } => {
             let rows = read_companies(&db, sub)?;
-            render_companies(&rows, "company.show", format, use_color)?;
+            render_companies(&rows, "company.show", format, use_color, cli)?;
         }
         CompanyCommand::Delete { slug, force } => {
             if !force {
@@ -64,10 +69,10 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
                     return Ok(());
                 }
             }
-            let actor = crate::db::Actor::resolve(cli.actor.as_deref());
+            let actor = cli.principal();
             crate::db::delete_company(db.conn(), &actor, slug)?;
             if format == OutputFormat::Json {
-                let meta = output::json::meta("company.delete", None);
+                let meta = cli.meta("company.delete", None);
                 let rendered = output::json::render_deleted(slug, meta)?;
                 println!("{rendered}");
             }
@@ -86,6 +91,7 @@ fn render_companies(
     command: &str,
     format: OutputFormat,
     use_color: bool,
+    cli: &Cli,
 ) -> Result<(), CliError> {
     match format {
         OutputFormat::Table => {
@@ -93,7 +99,7 @@ fn render_companies(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let meta = output::json::meta(command, None);
+            let meta = cli.meta(command, None);
             let rendered = output::json::render_companies(rows, meta)?;
             println!("{rendered}");
         }

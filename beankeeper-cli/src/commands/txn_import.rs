@@ -442,7 +442,7 @@ pub fn run(
         account.as_deref(),
         suspense.as_deref(),
     )?;
-    let actor = db::Actor::resolve(cli.actor.as_deref());
+    let actor = cli.principal();
     let transaction = db.conn().unchecked_transaction()?;
     let mut result = BatchResult {
         dry_run: *dry_run,
@@ -510,7 +510,7 @@ fn render_result(
     if crate::cli::resolve_format(None, cli) == OutputFormat::Json {
         let envelope = json::Envelope {
             ok: true,
-            meta: json::meta("txn.import", Some(company)),
+            meta: cli.meta("txn.import", Some(company)),
             data: Some(result),
             error: None,
         };
