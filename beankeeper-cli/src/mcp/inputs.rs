@@ -329,6 +329,19 @@ pub(super) enum ReportOptions {
         to: Option<String>,
         currency: Option<String>,
     },
+    ScheduleC {
+        from: Option<String>,
+        to: Option<String>,
+        currency: Option<String>,
+    },
+    #[serde(rename = "1099", alias = "1099-nec")]
+    Vendor1099 {
+        from: Option<String>,
+        to: Option<String>,
+        currency: Option<String>,
+        /// Nonnegative decimal in major currency units; defaults to "600".
+        threshold: Option<String>,
+    },
     TaxSummary {
         from: Option<String>,
         to: Option<String>,

@@ -92,6 +92,12 @@ pub(super) fn resolve(sub: &ReportCommand, today: NaiveDate) -> Result<ReportCom
                 *as_of = Some(today.to_string());
             }
         }
+        ReportCommand::ScheduleC(args) => {
+            resolve_bounds(&mut args.from, &mut args.to, true, today)?;
+        }
+        ReportCommand::Vendor1099(args) => {
+            resolve_bounds(&mut args.period.from, &mut args.period.to, true, today)?;
+        }
         ReportCommand::Trend(args) => {
             resolve_bounds(&mut args.from, &mut args.to, true, today)?;
         }

@@ -17,6 +17,7 @@ mod report_dates;
 pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;
+pub mod report_tax;
 pub mod report_trend;
 pub mod rule;
 pub mod schedule;
@@ -98,6 +99,8 @@ pub fn command_name(cmd: &Command) -> &'static str {
             ReportCommand::IncomeStatement { .. } => "report.income-statement",
             ReportCommand::BalanceSheet { .. } => "report.balance-sheet",
             ReportCommand::TaxSummary { .. } => "report.tax-summary",
+            ReportCommand::ScheduleC(_) => "report.schedule-c",
+            ReportCommand::Vendor1099(_) => "report.1099",
             ReportCommand::BudgetVariance { .. } => "report.budget-variance",
             ReportCommand::Ledger { .. } => "report.ledger",
             ReportCommand::Aging { .. } => "report.aging",
