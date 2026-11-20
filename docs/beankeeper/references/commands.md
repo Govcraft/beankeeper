@@ -289,12 +289,15 @@ unsupported (usage error, exit 2).
 
 Explicit references are trimmed, stored verbatim, and scoped to the company.
 CSV blank/missing references and JSON missing/null references get a
-`csv:sha256:...` or `json:sha256:...` reference derived from normalized posting
-data, including accounts, currency, date, description, entries, and metadata.
-The file name and row position are excluded. Identical rows deduplicate;
-give distinct explicit references to distinct transactions with identical
-contents. Explicit blank JSON references are rejected. Re-import skips
-duplicates by default, including duplicates within a batch.
+`csv:sha256:<hash>:<n>` or `json:sha256:<hash>:<n>` reference. The hash covers
+normalized posting data, including accounts, currency, date, description,
+entries, and metadata. The ordinal `n` starts at 1 for each distinct content
+among unreferenced rows in the batch. Identical unreferenced rows are all posted.
+Re-importing the same or an overlapping file skips matching occurrences by
+default; a later file with one more identical row imports only that additional
+occurrence. File names and unrelated rows do not affect these references.
+Duplicate explicit references within a batch still skip or error according to
+`--on-conflict`. Explicit blank JSON references are rejected.
 
 ### `bk txn clear`
 

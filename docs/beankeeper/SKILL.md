@@ -143,8 +143,11 @@ uses its own accounts and balanced entries; it does not need bank flags.
 CSV/JSON batches commit atomically. `--dry-run` posts inside a rolled-back
 transaction, checking intra-batch duplicates too. Default `--on-conflict skip`
 skips duplicates; `error` rolls back the batch. `upsert` is unsupported.
-Missing references use a normalized row hash. Identical rows deduplicate, so
-give distinct references to distinct transactions with identical contents.
+Missing references use a normalized row hash plus an occurrence ordinal,
+starting at 1 for each distinct content in the batch. Identical unreferenced
+rows are all posted; re-importing the same or an overlapping file skips matching
+occurrences and posts only additional ones. Duplicate explicit references still
+skip or error according to `--on-conflict`.
 See [commands.md](references/commands.md) for the full import contract.
 
 ### Generate reports

@@ -305,11 +305,14 @@ entire batch on a duplicate. `upsert` is unsupported.
 References are trimmed and stored verbatim, with uniqueness scoped to the
 company. CSV uses its `reference` column automatically (or `--reference-col`);
 blank CSV references and missing/null JSON references use a deterministic
-`csv:sha256:...` or `json:sha256:...` hash of normalized posting data, including
-accounts and currency. File names and row positions do not affect the hash.
-Identical rows without references deduplicate, including within one file.
-Supply distinct explicit references for legitimate transactions with identical
-contents. Explicit blank JSON references are rejected.
+`csv:sha256:<hash>:<n>` or `json:sha256:<hash>:<n>` reference. The hash covers
+normalized posting data, including accounts and currency; `n` is the occurrence
+of that content among unreferenced rows in the batch, starting at 1. Identical
+unreferenced rows in one file are all posted. Re-importing the same or an
+overlapping file skips matching occurrences; a file with one more identical row
+posts only the additional occurrence. File names and unrelated rows do not
+affect these references. Duplicate explicit references still skip or error
+according to `--on-conflict`. Explicit blank JSON references are rejected.
 
 ### OFX / QFX Bank Statement Import
 
