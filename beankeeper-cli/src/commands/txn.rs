@@ -355,7 +355,7 @@ fn normalize_reference(input: &str) -> Result<String, &'static str> {
 }
 
 /// Execute the `txn post` subcommand.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn run_post(
     cli: &Cli,
     db_handle: &Db,
@@ -417,34 +417,11 @@ fn run_post(
             .or_else(|| account_row.default_tax_category.clone())
     };
 
-    for (code, minor, memo) in &parsed_debits {
-        let row = accounts::get_account(db_handle.conn(), company, code)?;
-        let account = db::row_to_account(&row)?;
-        let money = Money::from_minor(i128::from(*minor), currency);
-        let mut entry = if let Some(m) = memo {
-            beankeeper::types::Entry::debit_with_memo(account, money, m)?
-        } else {
-            beankeeper::types::Entry::debit(account, money)?
-        };
-        if let Some(cat) = resolve_tax(code, &row) {
-            entry = entry.with_tax_category(cat);
+    for (args, debit) in [(&parsed_debits, true), (&parsed_credits, false)] {
+        for arg in args {
+            let entry = library_entry(db_handle, company, arg, currency, debit, &resolve_tax)?;
+            journal = journal.entry(entry);
         }
-        journal = journal.entry(entry);
-    }
-
-    for (code, minor, memo) in &parsed_credits {
-        let row = accounts::get_account(db_handle.conn(), company, code)?;
-        let account = db::row_to_account(&row)?;
-        let money = Money::from_minor(i128::from(*minor), currency);
-        let mut entry = if let Some(m) = memo {
-            beankeeper::types::Entry::credit_with_memo(account, money, m)?
-        } else {
-            beankeeper::types::Entry::credit(account, money)?
-        };
-        if let Some(cat) = resolve_tax(code, &row) {
-            entry = entry.with_tax_category(cat);
-        }
-        journal = journal.entry(entry);
     }
 
     // 5. Validate via post() - enforces balance invariant
@@ -478,16 +455,55 @@ fn run_post(
         entries: &db_entries,
         correlate,
         reference: reference.as_deref(),
-        on_conflict: match on_conflict {
-            crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
-            crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
-            crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
-        },
+        on_conflict: conflict_strategy(on_conflict),
         actor: &actor,
     };
 
     let post_result = transactions::post_transaction(db_handle.conn(), &params)?;
+    print_post_result(cli, company, post_result)
+}
 
+/// Map the `--on-conflict` flag to the storage strategy.
+fn conflict_strategy(arg: crate::cli::OnConflictArg) -> transactions::ConflictStrategy {
+    match arg {
+        crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
+        crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
+        crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
+    }
+}
+
+/// Look up the account of one parsed `--debit`/`--credit` argument and build
+/// the library entry (with its memo and resolved tax category).
+fn library_entry(
+    db_handle: &Db,
+    company: &str,
+    (code, minor, memo): &(String, i64, Option<String>),
+    currency: Currency,
+    debit: bool,
+    resolve_tax: &dyn Fn(&str, &db::AccountRow) -> Option<String>,
+) -> Result<beankeeper::types::Entry, CliError> {
+    use beankeeper::types::Entry;
+    let row = accounts::get_account(db_handle.conn(), company, code)?;
+    let account = db::row_to_account(&row)?;
+    let money = Money::from_minor(i128::from(*minor), currency);
+    let entry = match (debit, memo) {
+        (true, Some(m)) => Entry::debit_with_memo(account, money, m)?,
+        (true, None) => Entry::debit(account, money)?,
+        (false, Some(m)) => Entry::credit_with_memo(account, money, m)?,
+        (false, None) => Entry::credit(account, money)?,
+    };
+    Ok(match resolve_tax(code, &row) {
+        Some(cat) => entry.with_tax_category(cat),
+        None => entry,
+    })
+}
+
+/// Report a posted (or skipped) transaction: JSON on stdout, status on stderr.
+fn print_post_result(
+    cli: &Cli,
+    company: &str,
+    post_result: transactions::PostResult,
+) -> Result<(), CliError> {
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {
         let meta = crate::output::json::meta("txn.post", Some(company));

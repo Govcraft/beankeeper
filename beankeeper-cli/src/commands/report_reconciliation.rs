@@ -586,37 +586,40 @@ fn metadata_cell(m: Option<&serde_json::Value>) -> String {
     }
 }
 
-/// Render the report as human-readable tables.
-#[must_use]
-#[allow(clippy::too_many_lines)]
-pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
+fn new_table() -> comfy_table::Table {
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
-    use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
+    let mut t = comfy_table::Table::new();
+    t.load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+    t
+}
 
+/// Amount with the currency code, e.g. `1,234.56 USD`.
+fn with_currency(r: &ReconciliationReport, v: i64) -> String {
+    format!(
+        "{} {}",
+        format_amount(v, r.currency.minor_units()),
+        r.currency.code()
+    )
+}
+
+/// Title, account type, statement and filter lines.
+fn header_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
     let bold = anstyle::Style::new().bold();
-    let cyan = color(anstyle::AnsiColor::Cyan);
-    let green = color(anstyle::AnsiColor::Green);
-    let red_bold = color(anstyle::AnsiColor::Red).bold();
-    let mu = r.currency.minor_units();
-    let ccy = r.currency.code();
-    let fmt = |v: i64| format!("{} {ccy}", format_amount(v, mu));
-
-    let new_table = || {
-        let mut t = Table::new();
-        t.load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_content_arrangement(ContentArrangement::Dynamic);
-        t
-    };
-
     let as_of = r
         .as_of
         .as_deref()
         .map_or_else(|| "all dates".to_string(), |d| format!("through {d}"));
     let mut lines = vec![
         styled(
-            &format!("Reconciliation -- {} {} ({as_of}) ({ccy})", r.code, r.name),
+            &format!(
+                "Reconciliation -- {} {} ({as_of}) ({})",
+                r.code,
+                r.name,
+                r.currency.code()
+            ),
             bold,
             use_color,
         ),
@@ -634,103 +637,104 @@ pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
             metadata_filter::describe(&r.filters)
         ));
     }
-    lines.push(String::new());
+    lines
+}
 
+/// The balances table.
+fn balances_table(r: &ReconciliationReport, use_color: bool) -> String {
+    use comfy_table::{Cell, CellAlignment};
+    let bold = anstyle::Style::new().bold();
     let mut summary = new_table();
     summary.set_header(vec![
         Cell::new(styled("Balance", bold, use_color)),
         Cell::new(styled("Amount", bold, use_color)),
     ]);
-    let mut add = |label: &str, value: String| {
+    let mut add = |label: &str, value: i64| {
         summary.add_row(vec![
             Cell::new(label),
-            Cell::new(value).set_alignment(CellAlignment::Right),
+            Cell::new(with_currency(r, value)).set_alignment(CellAlignment::Right),
         ]);
     };
-    add("Book balance", fmt(r.book_balance));
+    add("Book balance", r.book_balance);
     if r.statement.is_some() {
-        add("Cleared balance (this statement)", fmt(r.cleared_balance));
-        add(
-            "Cleared balance (all statements)",
-            fmt(r.total_cleared_balance),
-        );
+        add("Cleared balance (this statement)", r.cleared_balance);
+        add("Cleared balance (all statements)", r.total_cleared_balance);
     } else {
-        add("Cleared balance", fmt(r.cleared_balance));
+        add("Cleared balance", r.cleared_balance);
     }
-    add("Reconciled balance", fmt(r.reconciled_balance));
-    add("Uncleared total", fmt(r.uncleared_total));
+    add("Reconciled balance", r.reconciled_balance);
+    add("Uncleared total", r.uncleared_total);
     if let (Some(stmt), Some(diff)) = (r.statement_balance, r.difference()) {
-        add("Statement balance", fmt(stmt));
-        add("Difference (statement - cleared)", fmt(diff));
+        add("Statement balance", stmt);
+        add("Difference (statement - cleared)", diff);
     }
-    lines.push(summary.to_string());
+    summary.to_string()
+}
 
-    if let Some(ok) = r.is_reconciled() {
-        lines.push(if ok {
-            styled("[ok] reconciled: yes", green, use_color)
+/// A table of outstanding entries.
+fn items_table(items: &[&UnclearedEntry], minor_units: u8, use_color: bool) -> String {
+    use comfy_table::{Cell, CellAlignment};
+    let bold = anstyle::Style::new().bold();
+    let cyan = color(anstyle::AnsiColor::Cyan);
+    let mut t = new_table();
+    t.set_header(
+        [
+            "Entry",
+            "Txn",
+            "Date",
+            "Reference",
+            "Description",
+            "Amount",
+            "Cleared",
+            "Remaining",
+            "Metadata",
+        ]
+        .iter()
+        .map(|h| Cell::new(styled(h, bold, use_color)))
+        .collect::<Vec<_>>(),
+    );
+    let amount =
+        |v: i64| Cell::new(format_amount(v, minor_units)).set_alignment(CellAlignment::Right);
+    for e in items {
+        let cleared = if e.partially_cleared {
+            format_amount(e.cleared_amount * e.signed_amount.signum(), minor_units)
         } else {
-            styled("[!!] reconciled: no", red_bold, use_color)
-        });
+            String::new()
+        };
+        t.add_row(vec![
+            Cell::new(e.entry_id).set_alignment(CellAlignment::Right),
+            Cell::new(styled(&e.transaction_id.to_string(), cyan, use_color))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(&e.date),
+            Cell::new(e.reference.as_deref().unwrap_or("")),
+            Cell::new(&e.description),
+            amount(e.signed_amount),
+            Cell::new(cleared).set_alignment(CellAlignment::Right),
+            amount(e.signed_remaining),
+            Cell::new(metadata_cell(e.metadata.as_ref())),
+        ]);
     }
+    t.to_string()
+}
 
-    lines.push(String::new());
+/// The outstanding entries, grouped when `--group-by-metadata` is set.
+fn uncleared_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
+    let bold = anstyle::Style::new().bold();
+    let mu = r.currency.minor_units();
     if r.uncleared.is_empty() {
-        lines.push("No uncleared entries.".to_string());
-        return lines.join("\n");
+        return vec!["No uncleared entries.".to_string()];
     }
-
-    let items_table = |items: &[&UnclearedEntry]| {
-        let mut t = new_table();
-        t.set_header(
-            [
-                "Entry",
-                "Txn",
-                "Date",
-                "Reference",
-                "Description",
-                "Amount",
-                "Cleared",
-                "Remaining",
-                "Metadata",
-            ]
-            .iter()
-            .map(|h| Cell::new(styled(h, bold, use_color)))
-            .collect::<Vec<_>>(),
-        );
-        for e in items {
-            let cleared = if e.partially_cleared {
-                format_amount(e.cleared_amount * e.signed_amount.signum(), mu)
-            } else {
-                String::new()
-            };
-            t.add_row(vec![
-                Cell::new(e.entry_id).set_alignment(CellAlignment::Right),
-                Cell::new(styled(&e.transaction_id.to_string(), cyan, use_color))
-                    .set_alignment(CellAlignment::Right),
-                Cell::new(&e.date),
-                Cell::new(e.reference.as_deref().unwrap_or("")),
-                Cell::new(&e.description),
-                Cell::new(format_amount(e.signed_amount, mu)).set_alignment(CellAlignment::Right),
-                Cell::new(cleared).set_alignment(CellAlignment::Right),
-                Cell::new(format_amount(e.signed_remaining, mu))
-                    .set_alignment(CellAlignment::Right),
-                Cell::new(metadata_cell(e.metadata.as_ref())),
-            ]);
-        }
-        t.to_string()
-    };
-
     let partial = r.partially_cleared_count();
     let partial_note = if partial > 0 {
         format!(", {partial} partially cleared")
     } else {
         String::new()
     };
-    lines.push(styled(
+    let mut lines = vec![styled(
         &format!("Uncleared entries ({}{partial_note})", r.uncleared.len()),
         bold,
         use_color,
-    ));
+    )];
 
     if let (Some(groups), Some(key)) = (&r.groups, &r.group_by) {
         for g in groups {
@@ -744,18 +748,38 @@ pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
                     "{key} = {} ({} items, subtotal {})",
                     g.value,
                     g.count,
-                    fmt(g.uncleared_total)
+                    with_currency(r, g.uncleared_total)
                 ),
                 bold,
                 use_color,
             ));
-            lines.push(items_table(&items));
+            lines.push(items_table(&items, mu, use_color));
         }
     } else {
         let items: Vec<&UnclearedEntry> = r.uncleared.iter().collect();
-        lines.push(items_table(&items));
+        lines.push(items_table(&items, mu, use_color));
     }
+    lines
+}
 
+/// Render the report as human-readable tables.
+#[must_use]
+pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
+    let green = color(anstyle::AnsiColor::Green);
+    let red_bold = color(anstyle::AnsiColor::Red).bold();
+
+    let mut lines = header_lines(r, use_color);
+    lines.push(String::new());
+    lines.push(balances_table(r, use_color));
+    if let Some(ok) = r.is_reconciled() {
+        lines.push(if ok {
+            styled("[ok] reconciled: yes", green, use_color)
+        } else {
+            styled("[!!] reconciled: no", red_bold, use_color)
+        });
+    }
+    lines.push(String::new());
+    lines.extend(uncleared_lines(r, use_color));
     lines.join("\n")
 }
 
