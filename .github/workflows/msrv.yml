@@ -18,5 +18,6 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@v2
       - name: Check workspace and test targets with locked dependencies
         run: cargo check --workspace --all-targets --locked
