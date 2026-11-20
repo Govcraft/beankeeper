@@ -35,9 +35,15 @@ Named error codes (`NOT_FOUND`, `VALIDATION`, `DATABASE`, etc.), `meta.command` 
 
 A successful `bk export --output-format json` writes a standalone `{"beankeeper_export": {"version": 1, "companies": [...]}}` object, without `ok`, `meta`, or `data`, even with `--json`. Read its companies with `jq '.beankeeper_export.companies'`.
 
-### The audit trail is tamper-proof
+### The audit trail is tamper-evident
 
-Posted transactions cannot be edited or deleted. The entries, amounts, accounts, and dates are immutable. The only thing that can change after posting is a transaction's metadata field. The audit trail is intact by design, not by convention -- if the agent makes a mistake, you can see exactly what happened and when.
+Database triggers reject changes to posted financial fields, entry details, and audit records, including deletion and replacement. Transaction metadata and entry clearance status remain mutable for correlation, reversals, and reconciliation. Supported mutations append an actor, timestamp, and before/after snapshots in the same atomic operation.
+
+Every new posting, including imports and reversals, stores `posted_by` and a `create` audit record containing its immutable transaction and entry details. Set the principal with `--actor NAME` or `BK_ACTOR`. `bk txn show` displays the poster; JSON transaction output includes `posted_by`. Legacy transactions have an unknown poster (`null` in JSON).
+
+Audit rows form a SHA-256 hash chain. `bk verify` checks the chain, its tail, new posting snapshots, and accounting invariants alongside SQLite integrity and foreign keys. It reports the first broken link or invalid transaction as a `DATABASE` error (exit code 4).
+
+These protections detect tampering against the stored chain; they are not signatures or an external trust anchor. Someone with unrestricted database access can remove triggers and rewrite the ledger, hashes, and sequence together, or restore an older complete database. See [audit integrity](docs/audit-integrity.md) for the format, migration behavior, and limits.
 
 ### Everything else
 

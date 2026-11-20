@@ -21,8 +21,9 @@ Beankeeper is a double-entry accounting system operated entirely through the `bk
 - **Companies**: Multi-tenant -- each company has its own chart of accounts and ledger. Specified via `--company SLUG` or `BEANKEEPER_COMPANY` env var.
 - **Accounts**: Five types: `asset`, `liability`, `equity`, `revenue`, `expense`. Each has a code (e.g. `1000`) and a normal balance direction (debit or credit).
 - **Amounts**: Always specified in **major units** (dollars, not cents) on the CLI. Stored internally as minor units (cents). Example: `2500` means $2,500.00.
-- **Append-only ledger**: Transactions cannot be edited or deleted after posting. Corrections are made via reversing entries.
-- **Audit trail**: The few operations that mutate or delete existing rows (clearance changes, intercompany correlation, budget revisions, account/company deletions) each append an immutable record — actor, timestamp, before/after — readable via `bk audit log`. Set the actor with `--actor NAME` or `BK_ACTOR`.
+- **Append-only ledger**: Database triggers reject edits, deletion, and replacement of posted financial fields and entry details. Transaction metadata and entry clearance status remain mutable. Corrections use reversing entries.
+- **Audit trail**: Posts, imports, and reversals store a poster (`posted_by`) and a `create` record. Supported mutations record an actor, timestamp, and before/after snapshots atomically. Set the principal with `--actor NAME` or `BK_ACTOR`, including OFX imports. `bk audit log --action create` lists creations; JSON audit rows include `prev_hash` and `row_hash`.
+- **Verification**: `bk verify` validates the SHA-256 audit chain and its tail, compares newly audited posting snapshots, and checks entry count, positive amounts, valid directions/currency, company ownership, debit/credit balance, SQLite integrity, and foreign keys. Failures use `DATABASE` (exit 4). Legacy audit rows are chained on migration without changing IDs or timestamps; legacy posters stay unknown. Tamper evidence has no external trust anchor and cannot prove history against a complete database/hash rewrite or rollback.
 - **Idempotency**: `--reference KEY` is trimmed, stored verbatim, and unique per company. Empty references are rejected. Use `--on-conflict skip` for safe retry of duplicate posts; `upsert` is not implemented.
 
 For detailed accounting concepts and account types, see [`references/accounting.md`](references/accounting.md).
@@ -353,7 +354,7 @@ For additional workflow patterns including bank reconciliation and tax reporting
 | `BEANKEEPER_COMPANY` | Default company slug | (none) |
 | `BEANKEEPER_CURRENCY` | Default currency code (for `report budget-variance`, inferred from transactions when unset) | `USD` |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase | (none) |
-| `BK_ACTOR` | Principal recorded in the audit trail for mutations | OS user, else `cli` |
+| `BK_ACTOR` | Poster and audit principal, overridden by `--actor` | OS user, else `cli` |
 | `NO_COLOR` | Disable colored output | (unset) |
 
 ## Error Handling
