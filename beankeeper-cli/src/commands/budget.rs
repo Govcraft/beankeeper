@@ -318,6 +318,7 @@ mod tests {
                 entity: None,
                 action: None,
                 limit: 50,
+                offset: 0,
             },
         )?;
         assert_eq!(audit[0]["actor"], "mcp:test-client");
@@ -358,6 +359,7 @@ mod tests {
                 entity: None,
                 action: None,
                 limit: 50,
+                offset: 0,
             },
         )?;
         assert_eq!(audit, serde_json::json!([]));

@@ -472,11 +472,13 @@ struct Item {
     entry_id: i64,
     action: &'static str,
     clearing_id: Option<i64>,
+    currency: String,
     /// Amount cleared (or removed) by this call, minor units.
     amount: i64,
     entry_amount: i64,
     cleared_amount: i64,
     remaining_amount: i64,
+    partially_cleared: bool,
     previous_status: &'static str,
     entry_status: &'static str,
     skip_reason: Option<&'static str>,
@@ -491,10 +493,12 @@ impl Item {
             entry_id: o.entry_id,
             action: o.action.as_str(),
             clearing_id: o.clearing_id,
+            currency: target.currency.clone(),
             amount: o.amount,
             entry_amount: o.entry_amount,
             cleared_amount: o.cleared_amount,
             remaining_amount: o.remaining_amount,
+            partially_cleared: o.cleared_amount > 0 && o.remaining_amount > 0,
             previous_status: o.previous_status.as_str(),
             entry_status: o.entry_status.as_str(),
             skip_reason: o.skip_reason.map(db::clearings::SkipReason::as_str),
@@ -559,15 +563,26 @@ fn to_csv(ctx: &Ctx<'_>, items: &[Item]) -> Result<String, CliError> {
     String::from_utf8(bytes).map_err(|e| CliError::General(format!("CSV is not UTF-8: {e}")))
 }
 
-fn describe(i: &Item) -> String {
+fn describe(i: &Item) -> Result<String, CliError> {
     let what = format!("entry #{} of transaction #{}", i.entry_id, i.transaction_id);
-    match i.skip_reason {
+    let currency = Currency::from_code(&i.currency)
+        .map_err(|e| CliError::Validation(format!("invalid transaction currency: {e}")))?;
+    let amount = |minor| output::table::format_amount(minor, currency.minor_units());
+    let status = if i.partially_cleared {
+        "partially cleared"
+    } else {
+        i.entry_status
+    };
+    Ok(match i.skip_reason {
         Some(reason) => format!("[skip] {what}: {reason}"),
         None => format!(
-            "[ok] {what} {} ({} minor units); cleared {} of {}, entry now {}",
-            i.action, i.amount, i.cleared_amount, i.entry_amount, i.entry_status
+            "[ok] {what} {} ({} {currency}); cleared {} of {} {currency}, entry now {status}",
+            i.action,
+            amount(i.amount),
+            amount(i.cleared_amount),
+            amount(i.entry_amount)
         ),
-    }
+    })
 }
 
 fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError> {
@@ -591,6 +606,7 @@ fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError
         statement: ctx.statement,
     };
     serde_json::to_value(data)
+        .map(|value| output::json::with_amount_displays(value, None))
         .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
@@ -610,7 +626,7 @@ fn render_single(
         OutputFormat::Table => {}
     }
     if !cli.verbosity.quiet {
-        eprintln!("{}", describe(item));
+        eprintln!("{}", describe(item)?);
     }
     Ok(())
 }
@@ -629,12 +645,18 @@ fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json
         skipped_count: usize,
         /// Sum of `amount` over the `cleared` items, minor units.
         cleared_total: i64,
+        /// Currency of the total, absent for a batch spanning currencies.
+        currency: Option<&'a str>,
         cleared: Vec<&'a Item>,
         skipped: Vec<&'a Item>,
     }
 
     let (skipped, cleared): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.skipped());
     let cleared_total = cleared.iter().map(|i| i.amount).sum();
+    let currency = items
+        .first()
+        .map(|item| item.currency.as_str())
+        .filter(|currency| items.iter().all(|item| item.currency == *currency));
     let data = Batch {
         account,
         status: ctx.status.as_str(),
@@ -645,10 +667,12 @@ fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json
         cleared_count: cleared.len(),
         skipped_count: skipped.len(),
         cleared_total,
+        currency,
         cleared,
         skipped,
     };
     serde_json::to_value(data)
+        .map(|value| output::json::with_amount_displays(value, None))
         .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
@@ -670,7 +694,7 @@ fn render_batch(
         OutputFormat::Csv => print!("{}", to_csv(ctx, items)?),
         OutputFormat::Table => {
             for i in items {
-                println!("{}", describe(i));
+                println!("{}", describe(i)?);
             }
         }
     }

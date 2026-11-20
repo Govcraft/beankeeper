@@ -1185,7 +1185,9 @@ pub fn set_budget(
             |row| row.get(0),
         )?;
 
-        let before = prior_amount.map(|amount| snapshot(&serde_json::json!({ "amount": amount })));
+        let before = prior_amount.map(|amount| {
+            snapshot(&serde_json::json!({ "amount": amount, "currency": p.currency }))
+        });
         record(
             conn,
             actor,
@@ -1198,6 +1200,7 @@ pub fn set_budget(
                     before.as_deref(),
                     Some(&snapshot(&serde_json::json!({
                         "amount": p.amount,
+                        "currency": p.currency,
                         "notes": p.notes,
                         "year": p.year,
                         "month": p.month,
@@ -1312,6 +1315,7 @@ pub fn delete_budget(
                             "year": year,
                             "month": v.month,
                             "amount": v.amount,
+                            "currency": currency,
                             "notes": v.notes,
                         }))),
                         None,
@@ -1505,12 +1509,45 @@ pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<()
 // Reading the trail
 // ---------------------------------------------------------------------------
 
-/// Filters for [`list_audit`].
+/// Filters and pagination for [`list_audit`].
 pub struct ListAuditParams<'a> {
     pub company_slug: Option<&'a str>,
     pub entity: Option<&'a str>,
     pub action: Option<&'a str>,
     pub limit: i64,
+    pub offset: i64,
+}
+
+fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::Value>) {
+    use std::fmt::Write as _;
+
+    let mut sql = String::from(" FROM audit_log WHERE 1 = 1");
+    let mut values = Vec::new();
+    for (column, value) in [
+        ("company_slug", params.company_slug),
+        ("entity", params.entity),
+        ("action", params.action),
+    ] {
+        if let Some(value) = value {
+            let _ = write!(sql, " AND {column} = ?");
+            values.push(rusqlite::types::Value::Text(value.to_string()));
+        }
+    }
+    (sql, values)
+}
+
+/// Count audit-log rows matching the filters, ignoring pagination.
+///
+/// # Errors
+///
+/// Returns `CliError::Sqlite` on database errors.
+pub fn count_audit(conn: &Connection, params: &ListAuditParams<'_>) -> Result<i64, CliError> {
+    let (filter, values) = audit_filter(params);
+    Ok(conn.query_row(
+        &format!("SELECT COUNT(*){filter}"),
+        rusqlite::params_from_iter(values.iter()),
+        |row| row.get(0),
+    )?)
 }
 
 /// Lists audit-log rows most-recent-first, with optional filters.
@@ -1522,42 +1559,13 @@ pub fn list_audit(
     conn: &Connection,
     params: &ListAuditParams<'_>,
 ) -> Result<Vec<AuditLogRow>, CliError> {
-    use std::fmt::Write as _;
-
-    let mut sql = format!("SELECT {AUDIT_COLUMNS} FROM audit_log WHERE 1 = 1");
-
-    let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut idx = 1u32;
-
-    if let Some(c) = params.company_slug {
-        let _ = write!(sql, " AND company_slug = ?{idx}");
-        values.push(Box::new(c.to_string()));
-        idx += 1;
-    }
-    if let Some(e) = params.entity {
-        let _ = write!(sql, " AND entity = ?{idx}");
-        values.push(Box::new(e.to_string()));
-        idx += 1;
-    }
-    if let Some(a) = params.action {
-        let _ = write!(sql, " AND action = ?{idx}");
-        values.push(Box::new(a.to_string()));
-        idx += 1;
-    }
-
-    let _ = write!(sql, " ORDER BY id DESC LIMIT ?{idx}");
-    values.push(Box::new(params.limit));
-
-    let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(AsRef::as_ref).collect();
-
+    let (filter, mut values) = audit_filter(params);
+    let sql = format!("SELECT {AUDIT_COLUMNS}{filter} ORDER BY id DESC LIMIT ? OFFSET ?");
+    values.push(rusqlite::types::Value::Integer(params.limit));
+    values.push(rusqlite::types::Value::Integer(params.offset));
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(refs.as_slice(), read_audit_row)?;
-
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
-    Ok(out)
+    let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), read_audit_row)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
 }
 
 #[cfg(test)]

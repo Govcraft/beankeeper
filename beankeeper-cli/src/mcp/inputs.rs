@@ -205,6 +205,7 @@ pub(super) struct AuditLog {
     pub entity: Option<AuditEntityArg>,
     pub action: Option<AuditActionArg>,
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

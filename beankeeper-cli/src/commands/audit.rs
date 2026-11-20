@@ -1,7 +1,10 @@
 //! `bk audit` command: inspect the append-only audit trail.
 
+use beankeeper::types::Currency;
+use rusqlite::OptionalExtension as _;
+
 use crate::cli::{AuditCommand, Cli, OutputFormat, resolve_format};
-use crate::db::{Db, ListAuditParams, list_audit};
+use crate::db::{Db, ListAuditParams, count_audit, list_audit};
 use crate::error::CliError;
 use crate::output;
 use crate::passphrase;
@@ -20,34 +23,23 @@ pub fn run(cli: &Cli, sub: &AuditCommand) -> Result<(), CliError> {
     let db = Db::open_existing(&cli.db, pp.as_ref())?;
     let format = resolve_format(None, cli);
 
-    if format == OutputFormat::Json {
-        let data = execute_json(&db, sub)?;
-        let AuditCommand::Log { company, .. } = sub;
-        let meta = output::json::meta("audit.log", company.as_deref());
-        println!(
-            "{}",
-            serde_json::json!({"ok": true, "meta": meta, "data": data})
-        );
-        return Ok(());
-    }
+    run_log(cli, &db, &list_params(sub), format)
+}
 
-    match sub {
-        AuditCommand::Log {
-            company,
-            entity,
-            action,
-            limit,
-        } => run_log(
-            cli,
-            &db,
-            &ListAuditParams {
-                company_slug: company.as_deref(),
-                entity: entity.map(crate::cli::AuditEntityArg::as_str),
-                action: action.map(crate::cli::AuditActionArg::as_str),
-                limit: (*limit).max(0),
-            },
-            format,
-        ),
+fn list_params(sub: &AuditCommand) -> ListAuditParams<'_> {
+    let AuditCommand::Log {
+        company,
+        entity,
+        action,
+        limit,
+        offset,
+    } = sub;
+    ListAuditParams {
+        company_slug: company.as_deref(),
+        entity: entity.map(crate::cli::AuditEntityArg::as_str),
+        action: action.map(crate::cli::AuditActionArg::as_str),
+        limit: (*limit).max(0),
+        offset: (*offset).max(0),
     }
 }
 
@@ -58,11 +50,18 @@ fn run_log(
     format: OutputFormat,
 ) -> Result<(), CliError> {
     let rows = list_audit(db.conn(), params)?;
+    let pagination = output::json::Pagination::new(
+        params.limit,
+        params.offset,
+        rows.len(),
+        count_audit(db.conn(), params)?,
+    );
 
     match format {
         OutputFormat::Json => {
-            let meta = output::json::meta("audit.log", params.company_slug);
-            let data = audit_data(&rows);
+            let meta =
+                output::json::meta("audit.log", params.company_slug).with_pagination(pagination);
+            let data = audit_data(db, &rows)?;
             let rendered = serde_json::json!({ "ok": true, "meta": meta, "data": data });
             let json = serde_json::to_string(&rendered)
                 .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
@@ -86,7 +85,7 @@ fn run_log(
         OutputFormat::Table => {
             if rows.is_empty() {
                 if !cli.verbosity.quiet {
-                    eprintln!("[ok] no audit entries");
+                    print_count(rows.len(), &pagination);
                 }
                 return Ok(());
             }
@@ -106,7 +105,7 @@ fn run_log(
                 );
             }
             if !cli.verbosity.quiet {
-                eprintln!("[ok] {} audit entries", rows.len());
+                print_count(rows.len(), &pagination);
             }
         }
     }
@@ -133,34 +132,56 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn print_count(returned: usize, pagination: &output::json::Pagination) {
+    if pagination.has_more {
+        eprintln!(
+            "[ok] showing {returned} of {} audit entries (use --limit/--offset)",
+            pagination.total
+        );
+    } else if returned == 0 {
+        eprintln!("[ok] no audit entries");
+    } else {
+        eprintln!("[ok] {returned} audit entries");
+    }
+}
+
 /// Read the audit trail without writing to stdout.
 ///
 /// # Errors
 ///
 /// Returns database errors if the audit trail cannot be read.
 pub fn execute_json(db: &Db, sub: &AuditCommand) -> Result<serde_json::Value, CliError> {
-    let AuditCommand::Log {
-        company,
-        entity,
-        action,
-        limit,
-    } = sub;
-    let rows = list_audit(
-        db.conn(),
-        &ListAuditParams {
-            company_slug: company.as_deref(),
-            entity: entity.map(crate::cli::AuditEntityArg::as_str),
-            action: action.map(crate::cli::AuditActionArg::as_str),
-            limit: (*limit).max(0),
-        },
-    )?;
-    Ok(serde_json::Value::Array(audit_data(&rows)))
+    let rows = list_audit(db.conn(), &list_params(sub))?;
+    Ok(serde_json::Value::Array(audit_data(db, &rows)?))
 }
 
-fn audit_data(rows: &[crate::db::AuditLogRow]) -> Vec<serde_json::Value> {
+/// Build pagination metadata for a previously read audit page.
+///
+/// # Errors
+///
+/// Returns database errors if matching audit rows cannot be counted.
+pub fn pagination(
+    db: &Db,
+    sub: &AuditCommand,
+    returned: usize,
+) -> Result<output::json::Pagination, CliError> {
+    let params = list_params(sub);
+    Ok(output::json::Pagination::new(
+        params.limit,
+        params.offset,
+        returned,
+        count_audit(db.conn(), &params)?,
+    ))
+}
+
+fn audit_data(
+    db: &Db,
+    rows: &[crate::db::AuditLogRow],
+) -> Result<Vec<serde_json::Value>, CliError> {
     rows.iter()
         .map(|r| {
-            serde_json::json!({
+            let currency = snapshot_currency(db, r)?;
+            Ok(serde_json::json!({
                 "id": r.id,
                 "changed_at": r.changed_at,
                 "actor": r.actor,
@@ -170,9 +191,63 @@ fn audit_data(rows: &[crate::db::AuditLogRow]) -> Vec<serde_json::Value> {
                 "action": r.action,
                 "before": r.before,
                 "after": r.after,
+                "before_display": display_snapshot(r.before.as_deref(), currency),
+                "after_display": display_snapshot(r.after.as_deref(), currency),
                 "prev_hash": r.prev_hash,
                 "row_hash": r.row_hash,
-            })
+            }))
         })
         .collect()
+}
+
+fn display_snapshot(raw: Option<&str>, currency: Option<Currency>) -> serde_json::Value {
+    raw.and_then(|raw| serde_json::from_str(raw).ok())
+        .map_or(serde_json::Value::Null, |value| {
+            output::json::with_amount_displays(value, currency)
+        })
+}
+
+fn snapshot_currency(db: &Db, row: &crate::db::AuditLogRow) -> Result<Option<Currency>, CliError> {
+    for raw in [&row.after, &row.before].into_iter().flatten() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw)
+            && let Some(code) = value.get("currency").and_then(serde_json::Value::as_str)
+            && let Ok(currency) = Currency::from_code(code)
+        {
+            return Ok(Some(currency));
+        }
+    }
+    // Entry and transaction financial fields are immutable, so a lookup is
+    // safe for snapshots recorded before currency was included. Mutable or
+    // deleted budget rows cannot safely identify a historical currency.
+    let sql = match row.entity.as_str() {
+        "entry" => {
+            "SELECT t.currency FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE e.id = ?1 AND e.company_slug = ?2"
+        }
+        "transaction" => "SELECT currency FROM transactions WHERE id = ?1 AND company_slug = ?2",
+        _ => return Ok(None),
+    };
+    let code: Option<String> = db
+        .conn()
+        .query_row(
+            sql,
+            rusqlite::params![row.entity_id, row.company_slug],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(code.and_then(|code| Currency::from_code(&code).ok()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_snapshot;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn legacy_snapshots_with_unknown_currency_keep_minor_units_without_guessing() {
+        assert_eq!(
+            display_snapshot(Some(r#"{"amount": 1234}"#), None),
+            json!({"amount":1234, "amount_display":null})
+        );
+        assert_eq!(display_snapshot(None, None), Value::Null);
+    }
 }

@@ -23,8 +23,8 @@ pub use attachments::{
 };
 pub use audit::{
     Actor, AuditLogRow, ClearAction, ClearOutcome, ClearRequest, EntryStatus, ListAuditParams,
-    atomically, clear_entry, correlate_partner, delete_account, delete_budget, delete_company,
-    list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
+    atomically, clear_entry, correlate_partner, count_audit, delete_account, delete_budget,
+    delete_company, list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
 };
 pub use budgets::{
     BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,

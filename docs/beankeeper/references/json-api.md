@@ -63,7 +63,38 @@ The `companies` array contains the exported companies with their accounts and tr
 
 ## Amount Conventions
 
-**All amounts in JSON are raw integers in minor units.** To convert to display format:
+Monetary fields retain their **raw integer minor units** and add a sibling named
+`<field>_display` containing a fixed-point decimal string in major units, without
+grouping separators or currency symbols. For example:
+
+```json
+{"currency":"USD", "amount":180000, "amount_display":"1800.00"}
+```
+
+The same rule covers transaction entries and clearings, OFX import rows, budget
+amounts, every report balance and total, and period/comparison values. An
+`amounts` array gets an `amounts_display` array with the same order. Signs and
+trailing zeros follow the currency, including JPY (0 decimals) and BHD/KWD (3).
+No floating-point conversion is used. IDs, counts, ages and percentages do not
+get monetary companions; user metadata is unchanged. Schema examples below
+omit some display companions for readability.
+
+Currency comes from the object or its enclosing transaction/report. Standard
+statements that omit currency in their payload now include `meta.currency`.
+An absent monetary value has a null display. When the currency cannot be
+established, the display is also null: this includes historical budget audit
+snapshots without currency, account totals without a currency, and the existing
+aggregate minor-unit total of a mixed-currency clearing batch. Individual items
+in such a batch still carry currency and correct decimal strings. No default
+scale is assumed for these ambiguous values.
+
+Audit `before`/`after` strings stay byte-for-byte unchanged, preserving their
+hashes. Additive `before_display`/`after_display` objects contain parsed snapshots
+with monetary display siblings (null if the snapshot is absent or unparseable).
+New budget audit snapshots include currency, including deletion records.
+
+Standalone exports retain their versioned file format. To convert the original
+integers yourself:
 
 ```
 display_amount = json_amount / (10 ^ currency_minor_units)
@@ -76,6 +107,27 @@ display_amount = json_amount / (10 ^ currency_minor_units)
 | JPY | 0 | 250,000 |
 | MXN | 2 | $2,500.00 |
 | BHD | 3 | 250.000 |
+
+## Pagination
+
+`txn list` (except `--count`) and `audit log` preserve `data` arrays and add:
+
+```json
+{"meta":{"pagination":{"limit":50,"offset":0,"returned":50,"total":57,"has_more":true}}}
+```
+
+`total` counts all rows matching the current filters before pagination.
+`has_more` means `offset + returned < total`, including an empty page requested
+with limit zero. Use a positive limit and advance the offset by `returned` while
+`has_more` is true. Negative transaction limits retain SQLite’s unlimited
+semantics; audit limits and offsets are clamped at zero. Negative transaction
+offsets act as zero. A page ending exactly at the total has `has_more: false`.
+Concurrent ledger changes can affect later pages. Table mode prints truncation
+notices to stderr unless `--quiet` is set.
+
+MCP `txn_list` and `audit_log` use the same fields in the tool result’s
+`_meta.pagination`, preserving their array payloads in text/structured content.
+MCP monetary display fields are identical to the CLI data payload.
 
 ## Response Schemas by Command
 
@@ -1232,7 +1284,7 @@ derived `status` and total `cleared_amount`; `after` also carries `op`
 
 1. **Check `ok` first**: If `false`, read `error.code` and `error.message` to decide next steps
 2. **Use `meta.command`** to confirm the response matches the expected command
-3. **Convert amounts**: Divide by `10^minor_units` for the currency (2 for USD/EUR/MXN, 0 for JPY, 3 for BHD)
+3. **Present amounts**: Use `<field>_display` for decimal major units; retain integer fields for exact arithmetic. Check pagination before treating a list as complete.
 4. **Handle null fields**: `metadata`, `reference`, `memo`, `notes`, `description` can be null
 5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Databases created before schema v9 are migrated to this form automatically on open.
 6. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout

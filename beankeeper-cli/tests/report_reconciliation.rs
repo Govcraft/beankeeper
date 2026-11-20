@@ -341,21 +341,28 @@ fn json_shape() {
             "account",
             "as_of",
             "book_balance",
+            "book_balance_display",
             "cleared_balance",
+            "cleared_balance_display",
             "currency",
             "difference",
+            "difference_display",
             "group_by_metadata",
             "groups",
             "metadata_filters",
             "partially_cleared_count",
             "reconciled",
             "reconciled_balance",
+            "reconciled_balance_display",
             "statement",
             "statement_balance",
+            "statement_balance_display",
             "total_cleared_balance",
+            "total_cleared_balance_display",
             "uncleared_count",
             "uncleared_entries",
             "uncleared_total",
+            "uncleared_total_display",
         ]
     );
     assert_eq!(data["account"]["code"], "1000");
@@ -376,7 +383,9 @@ fn json_shape() {
         entry_keys,
         vec![
             "amount",
+            "amount_display",
             "cleared_amount",
+            "cleared_amount_display",
             "clearings",
             "date",
             "description",
@@ -386,10 +395,14 @@ fn json_shape() {
             "metadata",
             "partially_cleared",
             "reconciled_amount",
+            "reconciled_amount_display",
             "reference",
             "remaining_amount",
+            "remaining_amount_display",
             "signed_amount",
+            "signed_amount_display",
             "signed_remaining",
+            "signed_remaining_display",
             "transaction_id",
         ]
     );
@@ -400,6 +413,9 @@ fn json_shape() {
     assert!(first["metadata"].is_null());
     assert_eq!(first["direction"], "debit");
     assert_eq!(int(first, "amount"), 25_050);
+    assert_eq!(first["amount_display"], "250.50");
+    assert_eq!(first["cleared_amount_display"], "0.00");
+    assert!(data["difference_display"].is_null());
 }
 
 #[test]
