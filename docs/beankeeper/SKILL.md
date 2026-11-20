@@ -1,9 +1,9 @@
 ---
 name: beankeeper
-version: 0.24.0
+version: 0.25.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
-  via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
+  via the `bk` CLI or MCP server. Use when the user asks to "record a transaction", "post an entry",
   "check a balance", "generate a report", "create a company", "set up accounts",
   "import bank statements", "set a budget", "compare budget vs actual",
   "reconcile entries", "verify the ledger", "export data", "attach a receipt",
@@ -13,7 +13,7 @@ description: >
 
 # Beankeeper (`bk`) -- Double-Entry Accounting CLI
 
-Beankeeper is a double-entry accounting system operated through the `bk` CLI or its local MCP server. It stores data in a local SQLite database (optionally encrypted via SQLCipher). All output supports three formats: human-readable tables, machine-readable JSON, and CSV.
+Beankeeper is a double-entry accounting system operated through the `bk` CLI or its MCP server. It stores data in a local SQLite database (optionally encrypted via SQLCipher). All output supports three formats: human-readable tables, machine-readable JSON, and CSV.
 
 ## Core Concepts
 
@@ -139,7 +139,8 @@ as `policy_change`; repeated state is a no-op. Missing tokens are `UNAUTHORIZED`
 
 Admin does not imply other grants; post does not imply reverse. Issue explicit
 unions. Bare `ledger` is rejected, and narrower descendant grants cannot cover
-parent operations. Omit a token only when enforcement is off. Tokens remain
+parent operations. CLI and stdio may omit tokens when enforcement is off; HTTP
+always requires a verified token. Tokens remain
 bearer credentials without private-key possession or write signatures. The root
 stays in the encrypted DB and full backups. Root recovery/rotation and signed
 writes remain outside this feature. `init` rejects supplied tokens; an admin
@@ -148,11 +149,12 @@ existing encrypted ledger must be readable with its current passphrase.
 `init --demo` honors the named actor. Back up before upgrading to schema v18:
 old audit hashes are preserved, but only new binaries can append v3 audit rows.
 
-For MCP, supply the token in the server's environment or startup arguments. It
-is per session and reverified on every tool call, so expiry/revocation takes
-effect without a restart. Enforcement filters discovery by startup grants and
-checks grants/policy on every call. Restart after policy changes to refresh the
-tool list. `--read-only` hides all writes including `txn_reconcile` regardless of
+For stdio MCP, supply the process token in the server's environment or startup
+arguments. It is reverified on every tool call, so expiry/revocation takes effect
+without a restart. Enforcement filters discovery by startup grants; restart stdio
+after policy changes to refresh the tool list. HTTP accepts per-request bearer
+headers and filters discovery by current credentials and policy. Both transports
+check grants/policy on every call. `--read-only` hides all writes including `txn_reconcile` regardless of
 grants. Keep token values out of tool arguments. See the
 [key and agent command reference](references/commands.md#agent-identity).
 
@@ -164,6 +166,19 @@ as `bk --db /absolute/path/books.db mcp serve` against an existing ledger. Add
 `BEANKEEPER_PASSPHRASE_CMD`, `--passphrase-file`, or a descriptor other than stdin;
 never include a passphrase in tool arguments. The database and secret are fixed
 for that server process.
+
+For a shared Streamable HTTP endpoint, start `bk mcp serve --http`, optionally
+with `--bind 127.0.0.1:PORT` (default `127.0.0.1:8750`). The endpoint is `/mcp`;
+the actual bound address is printed to stderr. Every request requires a verified
+`Authorization: Bearer <agent token>`, even when ledger enforcement is off.
+`--agent-token` / `BK_AGENT_TOKEN` supplies a fallback only for absent headers.
+Explicit invalid credentials never fall back and return HTTP 401 `UNAUTHORIZED`.
+With enforcement on, discovery filters the current caller's grants; insufficient
+grants return `FORBIDDEN`. Credentials and policy are rechecked per call, including
+expiry and revocations. `--read-only` always removes writes. Non-loopback binds
+require `--allow-remote`, which serves plaintext HTTP without TLS and is not a
+hosted-tier implementation. Browser Origin headers are rejected. Prefer per-request
+tokens for multiple agents; do not put credentials in tool arguments or URLs.
 
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
@@ -192,7 +207,7 @@ attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 
 | Command | Purpose |
 |---------|---------|
-| `bk mcp serve` | Serve the local ledger over MCP stdio (`--read-only` omits writes) |
+| `bk mcp serve` | Serve MCP stdio, or authenticated HTTP with `--http`; `--read-only` omits writes |
 | `bk init` | Create a new database (`--demo` for sample data, `--encrypt` for passphrase) |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/delete` | Manage chart of accounts |

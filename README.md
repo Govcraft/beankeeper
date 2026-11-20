@@ -59,9 +59,10 @@ These protections detect tampering against the stored chain; they are not signat
 an attestation. Supply it with `--agent-token` or `BK_AGENT_TOKEN` to record its
 verified `agent_uri` and `token_jti` on new postings and audit rows. `txn show`,
 `audit log --agent URI`, and JSON `meta.agent` expose attribution; `agent list`
-and `agent revoke URI_OR_JTI` manage issued tokens. MCP accepts one token per
-session and rechecks it on every call. Invalid, expired or revoked supplied
-tokens return `UNAUTHORIZED` (exit 6).
+and `agent revoke URI_OR_JTI` manage issued tokens. Stdio MCP uses one process
+token; HTTP accepts a bearer token per request and always requires verification.
+Both recheck every call. Invalid, expired or revoked supplied tokens return
+`UNAUTHORIZED` (exit 6 for CLI, HTTP 401 at the HTTP boundary).
 
 Enforcement defaults to off. CLI 0.24.0 adds `bk policy show` and
 `bk policy set --enforce on|off`. Bootstrap by issuing a token with
@@ -80,8 +81,9 @@ all reads and mutations require tokens. Missing credentials return `UNAUTHORIZED
 | `ledger/admin` | Company/account writes, key init, agent issue/revoke, policy set, backup/restore |
 
 Grants are siblings: admin does not imply posting, and post does not imply
-reverse. Issue the union needed; bare `ledger` grants are rejected. MCP filters
-tools by startup grants and rechecks every call; `--read-only` remains a ceiling.
+reverse. Issue the union needed; bare `ledger` grants are rejected. Stdio MCP
+filters tools by startup grants; HTTP filters discovery per request. Both recheck
+every call, and `--read-only` remains a ceiling.
 Tokens are bearer credentials without proof of private-key possession or signed
 writes. Back up before schema v18 upgrades: existing hashes remain intact, but
 older binaries cannot append the new v3 audit format. `init --force` requires an
@@ -394,9 +396,60 @@ Supply the same explicit `reference` on retries to return the existing reversal
 with `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed;
 existing clearings stay on the original and reversal entries start uncleared.
 
-This local server has no HTTP transport or authentication. Ledger initialization,
-company creation/deletion, account deletion, import, export, and attachments remain
-CLI operations. See the [MCP command reference](docs/beankeeper/references/commands.md#mcp).
+Ledger initialization, company creation/deletion, account deletion, import,
+export, and attachments remain CLI operations. See the [MCP command reference](docs/beankeeper/references/commands.md#mcp).
+
+### Streamable HTTP
+
+Start a shared server over the same ledger tools:
+
+```bash
+bk --db /absolute/path/books.db --passphrase-file /secure/passphrase mcp serve --http
+# Choose an address or let the OS select a free port:
+bk --db /absolute/path/books.db mcp serve --http --bind 127.0.0.1:0 --read-only
+```
+
+The default endpoint is `http://127.0.0.1:8750/mcp`. The actual bound endpoint is
+printed to stderr; stdout stays empty. Without `--http`, stdio remains the default.
+Initialize an encrypted ledger and its trust root with `bk key init`, then issue
+agent tokens as described in [agent identity](docs/agent-identity.md).
+
+Every HTTP request requires a verified `agent://` token in
+`Authorization: Bearer <token>`, even when ledger enforcement is off. In Cursor's
+`mcp.json`, configure the endpoint and a token from the client's environment:
+
+```json
+{
+  "mcpServers": {
+    "bk": {
+      "url": "http://127.0.0.1:8750/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:BK_AGENT_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+See [Cursor's MCP configuration reference](https://cursor.com/docs/mcp) for
+configuration locations and environment substitution. The token is issued by
+this ledger, not an OAuth provider; OAuth discovery is not implemented.
+
+Prefer per-request headers when agents share a server. A process-level
+`--agent-token` or `BK_AGENT_TOKEN` is a fallback only when the Authorization header
+is absent. An invalid or malformed explicit header never falls back. Missing,
+expired, revoked, and untrusted tokens return HTTP 401 with `UNAUTHORIZED`.
+When `bk policy set --enforce on` is active, tool discovery reflects the requesting
+token's grants and calls without the required capability return `FORBIDDEN`.
+Policy and credentials are rechecked for every call; MCP session IDs confer no
+permissions. `--read-only` always hides all write tools, even for broader tokens.
+
+Non-loopback binds require `--allow-remote`. This serves **plaintext HTTP without
+TLS** and is not a hosted-tier implementation. TLS, authentication gateways, and
+hosted discovery are outside scope. Loopback binds validate Host headers; specific
+remote binds also allow their bound IP, while explicitly permitted wildcard binds
+accept any Host. Requests with browser Origin headers are rejected. Use an MCP
+client that sends bearer headers without a browser Origin.
 
 ## Demo Mode
 
