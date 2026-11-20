@@ -96,3 +96,14 @@ records too. Root private keys, complete tokens and generated agent private keys
 are excluded from snapshots. Token revocation/expiry leaves old hashes valid.
 The token signature attests claims; Phase 1 has no signatures over ledger writes
 or proof of agent private-key possession. See [agent identity](agent-identity.md).
+
+## Posted annotation edits
+
+Schema v15 adds `metadata_set` and `metadata_unset` audit actions. Its atomic
+audit-table rebuild verifies the chain before and after migration and preserves
+all historical hashes, IDs, timestamps, identity fields, indexes, and protections.
+`txn meta set/unset` changes only transaction metadata, with one whole-object
+before/after record per changed batch in the same savepoint. No-op requests do
+not append history. The four built-in relationship keys (`correlate`, `reverses`,
+`reversed_by`, `applies_to`) cannot be edited by these commands. Financial data
+and creation snapshots are unchanged; the new rows extend the existing chain.

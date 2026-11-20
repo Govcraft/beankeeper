@@ -74,6 +74,7 @@ an explicit `company` argument, regardless of the CLI's default company.
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
+| `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: ["key=value", ...]`, unset takes `keys: ["key", ...]`; values are strings; reserved relationship keys are rejected |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
 | `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
@@ -279,6 +280,37 @@ bk --company acme txn list --count   # Count only, no rows
 - `--direction {debit|credit}`: Filter entry direction
 - `--limit N` (default: 50), `--offset N` (default: 0): Pagination. JSON includes `meta.pagination` with filtered totals and `has_more`; table output signals truncation on stderr unless quiet.
 - `--count`: Return count only
+
+### `bk txn meta set/unset`
+
+```sh
+bk --company acme txn meta set 42 status=disputed dispute_id=D-42
+bk --company acme txn meta set --reference CHARGE-42 status=resolved
+bk --company acme txn meta unset 42 status dispute_id
+bk audit log --action metadata_set
+```
+
+`set` adds or replaces top-level string values, matching `txn post --meta`:
+`qty=3` stores `"3"`, `paid=true` stores `"true"`, and `note=` stores an empty
+string. Split on the first `=`. Select by transaction ID or trimmed `--reference`
+in the selected company. Unknown transactions return `NOT_FOUND`. Empty keys,
+keys containing a double quote, duplicate keys, and the relationship keys
+`correlate`, `reverses`, `reversed_by`, and `applies_to` are rejected. Set custom
+settlement `--link-key` values at post time and treat them as relationships too.
+
+Each changed batch writes one `metadata_set` or `metadata_unset` audit row with
+whole-object `before`/`after` snapshots and the resolved actor, atomically with
+the edit. An absent metadata object is represented as `{}` in the snapshots;
+removing its last key leaves `{}`. Setting an identical string or removing an
+absent key is a no-op with no audit row. Other keys and numeric precision survive.
+Dates, entries, amounts, currency, references, and creation attribution stay
+unchanged. Tagging the original charge preserves its age and payment matching
+in `report aging --filter-metadata status=disputed`.
+
+JSON envelopes use `txn.meta.set` / `txn.meta.unset` and return
+`data: {"id": 42, "metadata": "{...}", "changed": true}`. `metadata` is the stored
+JSON text, or `null` for a no-op on a transaction without metadata. Table mode
+prints the transaction ID and resulting metadata. Use `txn show` to inspect it.
 
 ### `bk txn show ID`
 
@@ -983,6 +1015,7 @@ snapshots. The recorded operations are:
 | Action | Recorded when |
 |--------|---------------|
 | `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, reconciled_date, statement, status of the affected rows). Skips record nothing |
+| `metadata_set`, `metadata_unset` | `bk txn meta set/unset` changes annotations; whole-object snapshots, one row per changed batch, no row for no-ops |
 | `reverse` | `bk txn reverse` posts and links a reversal |
 | `correlate` | `bk txn post --correlate` links a partner transaction |
 | `budget_set` | `bk budget set` creates or revises a budget (prior amount captured) |
@@ -1006,7 +1039,7 @@ bk audit log --json                                # full before/after snapshots
 **Flags:**
 - `--company SLUG`: Restrict to one company
 - `--entity KIND`: One of `entry`, `transaction`, `budget`, `account`, `company`
-- `--action KIND`: One of `status-change`, `correlate`, `reverse`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
+- `--action KIND`: One of `metadata_set`, `metadata_unset`, `status-change`, `correlate`, `reverse`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
 - `--limit N` (default: 50), `--offset N` (default: 0)
 
 JSON keeps the row array and adds `meta.pagination` (`limit`, `offset`, `returned`,

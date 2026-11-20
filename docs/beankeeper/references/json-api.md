@@ -190,6 +190,22 @@ When `--on-conflict skip` and reference already exists:
 }
 ```
 
+### `txn meta set/unset`
+
+Envelopes use `txn.meta.set` and `txn.meta.unset`. Both return:
+
+```json
+{"id": 42, "metadata": "{\"status\":\"disputed\"}", "changed": true}
+```
+
+`metadata` is the whole stored JSON object as text, matching `txn show`/`list`.
+A no-op returns `changed: false`, preserves the stored text (including null),
+and appends no audit row. A changed batch appends one `metadata_set` or
+`metadata_unset` audit row with whole-object snapshots. No prior metadata is
+represented by `{}` in snapshots. Removing the last key stores `{}`.
+Values are strings. Reserved relationship keys fail with `VALIDATION`;
+unknown company-scoped IDs or references fail with `NOT_FOUND`.
+
 ### `txn reverse` (alias `txn void`)
 
 Uses the same `data` shape as `txn post`, with `meta.command` equal to
