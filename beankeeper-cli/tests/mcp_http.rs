@@ -648,3 +648,213 @@ fn http_remote_wildcard_bind_works_only_with_explicit_opt_in() -> TestResult {
     );
     server.finish(&[reader])
 }
+
+fn embedded_request(
+    client: &Client,
+    endpoint: &str,
+    session: Option<&str>,
+    token: Option<&str>,
+    method: &str,
+    params: Value,
+) -> TestResult<Response> {
+    let mut body = json!({"jsonrpc":"2.0", "id":1, "method":method});
+    body["params"] = params;
+    let mut request = client
+        .post(endpoint)
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2025-11-25")
+        .json(&body);
+    if let Some(session) = session {
+        request = request.header("Mcp-Session-Id", session);
+    }
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    Ok(request.send()?)
+}
+
+fn exercise_embedded_router(read_only: bool) -> TestResult {
+    use axum::{Router, routing::get};
+    use beankeeper_cli::cli::Cli;
+    use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router};
+    use clap::Parser;
+
+    let ledger = Ledger::new()?;
+    ledger.enforce()?;
+    let writer = token(&ledger.writer)?;
+    let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
+    cli.db.clone_from(&ledger.path);
+    cli.passphrase.passphrase_file = Some(ledger.secret.clone());
+    cli.agent_token = Some(writer.into());
+    let config = StreamableHttpServerConfig::default().enforce_origin_validation();
+    let cancellation = config.cancellation_token.clone();
+    // Construction works before entering a runtime and does not bind a socket.
+    let app = Router::new()
+        .route("/health", get(|| async { "host is healthy" }))
+        .merge(http_router(&cli, read_only, config)?);
+    // The passphrase is no longer needed by requests after construction.
+    std::fs::remove_file(&ledger.secret)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))?;
+    let base = format!("http://{}", listener.local_addr()?);
+    let endpoint = format!("{base}/mcp");
+    let shutdown = cancellation.clone();
+    let server = runtime.spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+    });
+    let client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    // MCP authentication must not leak onto the host's sibling routes.
+    assert_eq!(
+        client.get(format!("{base}/health")).send()?.text()?,
+        "host is healthy"
+    );
+    verify_embedded_router(&client, &endpoint, &ledger, read_only)?;
+    cancellation.cancel();
+    runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), server).await })???;
+    Ok(())
+}
+
+fn initialize_embedded_router(client: &Client, endpoint: &str) -> TestResult<String> {
+    let response = embedded_request(
+        client,
+        endpoint,
+        None,
+        None,
+        "initialize",
+        json!({
+            "protocolVersion":"2025-11-25", "capabilities":{},
+            "clientInfo":{"name":"Embedded Client","version":"1.0"}
+        }),
+    )?;
+    assert!(response.status().is_success());
+    let session = response
+        .headers()
+        .get("Mcp-Session-Id")
+        .ok_or("session")?
+        .to_str()?
+        .to_owned();
+    assert_eq!(rpc(response)?["result"]["serverInfo"]["name"], "beankeeper");
+    assert!(
+        client
+            .post(endpoint)
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", &session)
+            .json(&json!({"jsonrpc":"2.0", "method":"notifications/initialized"}))
+            .send()?
+            .status()
+            .is_success()
+    );
+    Ok(session)
+}
+
+fn verify_embedded_router(
+    client: &Client,
+    endpoint: &str,
+    ledger: &Ledger,
+    read_only: bool,
+) -> TestResult {
+    let reader = token(&ledger.reader)?;
+    let session = initialize_embedded_router(client, endpoint)?;
+    let request = |credential, method, params| {
+        embedded_request(client, endpoint, Some(&session), credential, method, params)
+    };
+    for (credential, can_post) in [(None, !read_only), (Some(reader), false)] {
+        let response = rpc(request(credential, "tools/list", json!({}))?)?;
+        let tools = response["result"]["tools"].as_array().ok_or("tools")?;
+        assert_eq!(
+            tools.iter().any(|tool| tool["name"] == "txn_post"),
+            can_post
+        );
+    }
+    let denied = rpc(request(
+        Some(reader),
+        "tools/call",
+        json!({
+            "name":"txn_post", "arguments":posting("embedded-denied")
+        }),
+    )?)?;
+    if read_only {
+        assert!(denied.get("error").is_some() || denied["result"]["isError"] == true);
+    } else {
+        assert_eq!(payload(&denied)?["code"], "FORBIDDEN");
+    }
+    let posted = rpc(request(
+        None,
+        "tools/call",
+        json!({
+            "name":"txn_post", "arguments":posting("embedded-post")
+        }),
+    )?)?;
+    if read_only {
+        assert!(posted.get("error").is_some() || posted["result"]["isError"] == true);
+    } else {
+        assert_eq!(payload(&posted)?["created"], true);
+    }
+    let db = ledger.db()?;
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, i64::from(!read_only));
+    db::audit::verify_hash_chain(db.conn())?;
+    db::audit::verify_creations(db.conn())?;
+    assert_eq!(
+        request(Some("invalid-token"), "tools/list", json!({}))?.status(),
+        401
+    );
+    identity::revoke(
+        db.conn(),
+        &Actor::new("owner"),
+        ledger.writer["token_jti"].as_str().ok_or("jti")?,
+    )?;
+    // The process fallback is checked again even in an established session.
+    assert_eq!(request(None, "tools/list", json!({}))?.status(), 401);
+    let read = rpc(request(
+        Some(reader),
+        "tools/call",
+        json!({
+            "name":"company_list", "arguments":{}
+        }),
+    )?)?;
+    assert_eq!(payload(&read)?[0]["slug"], "acme");
+    Ok(())
+}
+
+#[test]
+fn embedded_http_router_preserves_authentication_and_capabilities() -> TestResult {
+    exercise_embedded_router(false)
+}
+
+#[test]
+fn embedded_http_router_preserves_read_only_ceiling() -> TestResult {
+    exercise_embedded_router(true)
+}
+
+#[test]
+fn embedded_http_router_reports_startup_errors_without_creating_a_ledger() -> TestResult {
+    use beankeeper_cli::cli::Cli;
+    use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router};
+    use clap::Parser;
+
+    let ledger = Ledger::new()?;
+    let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
+    cli.db.clone_from(&ledger.path);
+    cli.passphrase.passphrase_file = Some(ledger.secret.with_file_name("missing-passphrase"));
+    assert!(http_router(&cli, false, StreamableHttpServerConfig::default()).is_err());
+    cli.passphrase.passphrase_file = Some(ledger.secret.clone());
+    cli.db = ledger.path.with_file_name("missing.db");
+    assert!(matches!(
+        http_router(&cli, false, StreamableHttpServerConfig::default()),
+        Err(beankeeper_cli::error::CliError::NotFound(_))
+    ));
+    assert!(!cli.db.exists());
+    Ok(())
+}
