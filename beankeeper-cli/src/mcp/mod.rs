@@ -22,6 +22,10 @@ use crate::error::CliError;
 
 const WRITE_TOOLS: &[&str] = &[
     "account_create",
+    "security_create",
+    "security_price",
+    "investment_buy",
+    "investment_sell",
     "txn_post",
     "txn_reverse",
     "txn_meta_set",
@@ -156,6 +160,8 @@ fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliE
         args.push(format!("--company={company}"));
     }
     let positional: &[&str] = match tool {
+        "security_create" | "security_price" | "investment_buy" | "investment_sell"
+        | "investment_lots" => &["symbol"],
         "company_show" => &["slug"],
         "account_show" => &["code"],
         "account_create" => &["code", "name"],
@@ -319,6 +325,12 @@ fn execute_operation(
     let cli = operation_cli(tool, &mut input)?;
     let company = cli.company.as_deref().unwrap_or_default();
     match &cli.command {
+        Command::Security(args) => {
+            commands::investment::execute_security(db, company, &args.command, actor)
+        }
+        Command::Investment(args) => {
+            commands::investment::execute_investment(db, company, &args.command, actor)
+        }
         Command::Company(sub) => commands::company::execute_json(db, sub),
         Command::Account(args) => {
             commands::account::execute_json_with_actor(db, company, &args.command, actor)
@@ -358,6 +370,75 @@ fn execute_operation(
 
 #[tool_router]
 impl LedgerServer {
+    #[tool(description = "Create a company-scoped security with a fixed quotation currency.")]
+    async fn security_create(
+        &self,
+        Parameters(input): Parameters<inputs::SecurityCreate>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("security_create", input, context).await
+    }
+
+    #[tool(description = "List company securities.")]
+    async fn security_list(
+        &self,
+        Parameters(input): Parameters<inputs::CompanyScope>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("security_list", input, context).await
+    }
+
+    #[tool(description = "Record a dated price per whole share in major currency units.")]
+    async fn security_price(
+        &self,
+        Parameters(input): Parameters<inputs::SecurityPrice>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("security_price", input, context).await
+    }
+
+    #[tool(
+        description = "Acquire an exact share quantity and post total acquisition cost against cash. A duplicate reference fails atomically."
+    )]
+    async fn investment_buy(
+        &self,
+        Parameters(input): Parameters<inputs::InvestmentBuy>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("investment_buy", input, context).await
+    }
+
+    #[tool(
+        description = "Sell shares with FIFO by default, LIFO, or one specific lot; post proceeds, basis relief and realized gain or loss atomically."
+    )]
+    async fn investment_sell(
+        &self,
+        Parameters(input): Parameters<inputs::InvestmentSell>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("investment_sell", input, context).await
+    }
+
+    #[tool(description = "List acquisition lots with remaining share quantities and cost basis.")]
+    async fn investment_lots(
+        &self,
+        Parameters(input): Parameters<inputs::InvestmentLots>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("investment_lots", input, context).await
+    }
+
+    #[tool(
+        description = "Value holdings at the latest price on or before as_of without posting unrealized gains. Monetary results use minor units."
+    )]
+    async fn investment_holdings(
+        &self,
+        Parameters(input): Parameters<inputs::InvestmentHoldings>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("investment_holdings", input, context).await
+    }
+
     #[tool(description = "List companies in the ledger.")]
     async fn company_list(
         &self,
@@ -619,6 +700,81 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn investment_read_only_router_omits_mutations() -> Result<(), CliError> {
+        let server = LedgerServer::new(Db::open_in_memory()?, true);
+        let tools = server.tool_router.list_all();
+        for name in [
+            "security_create",
+            "security_price",
+            "investment_buy",
+            "investment_sell",
+        ] {
+            assert!(!tools.iter().any(|tool| tool.name == name));
+        }
+        for name in ["security_list", "investment_lots", "investment_holdings"] {
+            assert!(tools.iter().any(|tool| tool.name == name));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn investment_tools_share_trade_valuation_and_actor_behavior() -> Result<(), CliError> {
+        let db = Db::open_in_memory()?;
+        crate::db::companies::create_company(db.conn(), "acme", "Acme", None)?;
+        for (code, kind) in [("1000", "asset"), ("1200", "asset"), ("4000", "revenue")] {
+            crate::db::accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+        }
+        let actor = client_actor(Some("Investment Client"));
+        let call = |tool, mut input: Value| {
+            input["company"] = json!("acme");
+            execute_operation(&db, tool, input, &actor).map(|(data, _)| data)
+        };
+        call(
+            "security_create",
+            json!({"symbol":"TEST", "name":"Test security", "currency":"USD"}),
+        )?;
+        assert_eq!(
+            call("security_list", json!({}))?.as_array().map(Vec::len),
+            Some(1)
+        );
+        let bought = call(
+            "investment_buy",
+            json!({"symbol":"TEST", "quantity":"1.5", "cost":"15.00", "date":"2026-01-01", "asset":"1200", "cash":"1000", "reference":"buy-test"}),
+        )?;
+        assert_eq!(bought["cost_basis"], 1500);
+        call(
+            "security_price",
+            json!({"symbol":"TEST", "date":"2026-01-02", "price":"12.00"}),
+        )?;
+        let sold = call(
+            "investment_sell",
+            json!({"symbol":"TEST", "quantity":"0.5", "proceeds":"7.00", "date":"2026-01-03", "asset":"1200", "cash":"1000", "gain":"4000", "reference":"sell-test"}),
+        )?;
+        assert_eq!(sold["cost_basis"], 500);
+        assert_eq!(sold["realized_gain"], 200);
+        let holdings = call("investment_holdings", json!({"as_of":"2026-01-03"}))?;
+        assert_eq!(holdings[0]["quantity"], "1");
+        assert_eq!(holdings[0]["cost_basis"], 1000);
+        assert_eq!(holdings[0]["market_value"], 1200);
+        assert_eq!(holdings[0]["unrealized_gain"], 200);
+        assert_eq!(
+            call("investment_lots", json!({"symbol":"TEST"}))?
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        let posted_by: String = db.conn().query_row(
+            "SELECT posted_by FROM transactions WHERE reference = 'sell-test'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(posted_by, "mcp:investment-client");
+        crate::db::audit::verify_hash_chain(db.conn())?;
+        crate::db::audit::verify_creations(db.conn())?;
+        Ok(())
+    }
 
     #[test]
     fn actor_names_are_bounded_and_sanitized() {

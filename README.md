@@ -234,6 +234,38 @@ referenced by retained templates cannot be deleted. Schedule creation,
 cancellation, and progress are audited under entity `schedule`, with actions
 `create`, `schedule_cancel`, and `schedule_run`.
 
+## Securities and investment lots
+
+Track exact share quantities, acquisition lots, dated prices, and cost basis
+alongside the monetary ledger. Buys and sells create balanced, audited postings
+and lot records atomically. Sales use FIFO by default, with LIFO and specific-lot
+selection available.
+
+```sh
+bk --company acme security create ABC --name 'ABC shares' --currency USD
+bk --company acme investment buy ABC --quantity 1.5 --cost 150.00 \
+  --date 2026-01-02 --asset 1200 --cash 1010 --reference broker-buy-001
+bk --company acme investment sell ABC --quantity 0.5 --proceeds 60.00 \
+  --date 2026-02-02 --asset 1200 --cash 1010 --gain 4100
+bk --company acme security price ABC --date 2026-02-02 --price 120.00
+bk --company acme investment holdings --as-of 2026-02-02 --json
+```
+
+Create the investment/cash asset accounts and gain revenue account first.
+Quantities support eight decimal places. Costs, proceeds, and prices use major
+currency units on input; JSON retains integer minor units with `_display`
+companions. Partial sales round basis half-up and conserve residual cost.
+Holdings report latest price, market value, and unrealized gain/loss without
+posting them. Missing prices produce null valuations. Use `investment lots ABC`
+to inspect remaining quantities and basis, or `--method specific --lot LOT_ID`
+on a sale to select one lot.
+
+Record trades in date order for each security and investment account. Investment
+trades cannot use generic `txn reverse`; lot-aware corrections are follow-up
+work. MCP provides all seven security/investment operations and omits writes in
+read-only mode. See [investment lots](docs/investments.md) for setup, rounding,
+historical reports, audit behavior, and phase-one limits.
+
 ## Connect an AI assistant through MCP
 
 `bk mcp serve` exposes an existing ledger over the Model Context Protocol using

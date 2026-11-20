@@ -1229,3 +1229,21 @@ key. `init` rejects supplied tokens before modifying files; initialize the new
 ledger and root without one. Root keys travel with full encrypted DB backups,
 not accounting exports. There is no recovery or rotation command in this phase.
 See [identity setup and limits](../../agent-identity.md).
+
+## Investment lots
+
+`security create SYMBOL --name NAME [--currency USD]`, `security list`, and
+`security price SYMBOL --date DATE --price AMOUNT` maintain company-scoped
+securities and append-only prices. `investment buy SYMBOL --quantity Q --cost C
+--date DATE --asset ACCOUNT --cash ACCOUNT [--reference KEY]` creates a purchase
+lot. `investment sell SYMBOL --quantity Q --proceeds P --date DATE --asset ACCOUNT
+--cash ACCOUNT --gain REVENUE_ACCOUNT [--method fifo|lifo|specific] [--lot LOT_ID]
+[--reference KEY]` relieves lots and records gain/loss in one transaction.
+`investment lots SYMBOL` includes original and remaining basis/quantities;
+`investment holdings [--as-of DATE]` reports valuations without postings.
+
+All commands require a company and support table/JSON/CSV output. MCP mirrors
+them as `security_create`, `security_list`, `security_price`, `investment_buy`,
+`investment_sell`, `investment_lots`, and `investment_holdings`. The three reads
+remain available with `mcp serve --read-only`. See the [full investment guide](../../investments.md)
+for account setup, exact quantities, rounding, date ordering, and phase-one limits.

@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::core::{RecurrenceError, TransactionError};
+use crate::core::{InvestmentError, RecurrenceError, TransactionError};
 use crate::loan::LoanError;
 use crate::types::{
     AccountCodeError, AccountTypeError, AmountError, CurrencyError, DebitCreditError,
@@ -18,6 +18,8 @@ use crate::types::{
 pub enum BeanError {
     /// An error from loan calculation or term validation.
     Loan(LoanError),
+    /// An error validating investments or calculating their cost basis.
+    Investment(InvestmentError),
     /// An error from monetary amount operations.
     Amount(AmountError),
     /// An error calculating or parsing a scheduled recurrence.
@@ -48,6 +50,7 @@ impl fmt::Display for BeanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Loan(e) => write!(f, "{e}"),
+            Self::Investment(e) => write!(f, "{e}"),
             Self::Amount(e) => write!(f, "{e}"),
             Self::Recurrence(e) => write!(f, "{e}"),
             Self::Currency(e) => write!(f, "{e}"),
@@ -68,6 +71,7 @@ impl std::error::Error for BeanError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Loan(e) => Some(e),
+            Self::Investment(e) => Some(e),
             Self::Amount(e) => Some(e),
             Self::Recurrence(e) => Some(e),
             Self::Currency(e) => Some(e),
@@ -81,6 +85,12 @@ impl std::error::Error for BeanError {
             Self::Transaction(e) => Some(e),
             Self::IdempotencyKey(e) => Some(e),
         }
+    }
+}
+
+impl From<InvestmentError> for BeanError {
+    fn from(err: InvestmentError) -> Self {
+        Self::Investment(err)
     }
 }
 
@@ -165,6 +175,18 @@ impl From<IdempotencyKeyError> for BeanError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn investment_error_preserves_source_and_message() {
+        use std::error::Error;
+        let err: BeanError = InvestmentError::InsufficientQuantity.into();
+        assert!(matches!(
+            err,
+            BeanError::Investment(InvestmentError::InsufficientQuantity)
+        ));
+        assert_eq!(err.to_string(), "insufficient shares for disposal");
+        assert!(err.source().is_some());
+    }
 
     #[test]
     fn recurrence_error_preserves_source_and_message() {

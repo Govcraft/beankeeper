@@ -401,3 +401,79 @@ pub(super) enum TrendMetricArg {
     Spending,
     NetWorth,
 }
+
+/// Inputs for a company-scoped read.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CompanyScope {
+    pub company: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SecurityCreate {
+    pub company: String,
+    pub symbol: String,
+    pub name: String,
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SecurityPrice {
+    pub company: String,
+    pub symbol: String,
+    pub date: String,
+    pub price: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InvestmentBuy {
+    pub company: String,
+    pub symbol: String,
+    pub quantity: String,
+    pub cost: String,
+    pub date: String,
+    pub asset: String,
+    pub cash: String,
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum LotMethodArg {
+    Fifo,
+    Lifo,
+    Specific,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InvestmentSell {
+    pub company: String,
+    pub symbol: String,
+    pub quantity: String,
+    pub proceeds: String,
+    pub date: String,
+    pub asset: String,
+    pub cash: String,
+    pub gain: String,
+    pub method: Option<LotMethodArg>,
+    pub lot: Option<String>,
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InvestmentLots {
+    pub company: String,
+    pub symbol: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InvestmentHoldings {
+    pub company: String,
+    pub as_of: Option<String>,
+}

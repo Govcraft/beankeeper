@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 16;
+const CURRENT_VERSION: i64 = 17;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -104,6 +104,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 16 {
         apply_v16(conn)?;
+    }
+
+    if version < 17 {
+        apply_v17(conn)?;
     }
 
     debug_assert_eq!(
@@ -856,9 +860,189 @@ fn apply_v16(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
+/// Add append-only investment records, preserving all historical audit bytes.
+fn apply_v17(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(conn)?;
+        conn.execute_batch(
+            "CREATE TABLE securities (
+                company_slug TEXT NOT NULL REFERENCES companies(slug),
+                symbol TEXT NOT NULL,
+                name TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                PRIMARY KEY(company_slug, symbol)
+            );
+            CREATE TABLE security_prices (
+                id TEXT PRIMARY KEY NOT NULL,
+                company_slug TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                date TEXT NOT NULL,
+                price INTEGER NOT NULL CHECK(price >= 0),
+                UNIQUE(company_slug, symbol, date),
+                FOREIGN KEY(company_slug, symbol) REFERENCES securities(company_slug, symbol)
+            );
+            CREATE TABLE investment_lots (
+                id TEXT PRIMARY KEY NOT NULL,
+                company_slug TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                quantity TEXT NOT NULL,
+                cost_basis INTEGER NOT NULL CHECK(cost_basis > 0),
+                acquired_date TEXT NOT NULL,
+                transaction_id INTEGER NOT NULL UNIQUE REFERENCES transactions(id),
+                UNIQUE(id, company_slug),
+                FOREIGN KEY(company_slug, symbol) REFERENCES securities(company_slug, symbol),
+                FOREIGN KEY(company_slug, asset) REFERENCES accounts(company_slug, code)
+            );
+            CREATE INDEX idx_investment_lots_position ON investment_lots(company_slug, symbol, asset, acquired_date, id);
+            CREATE TABLE lot_reliefs (
+                id TEXT PRIMARY KEY NOT NULL,
+                company_slug TEXT NOT NULL,
+                lot_id TEXT NOT NULL,
+                quantity TEXT NOT NULL,
+                cost_basis INTEGER NOT NULL CHECK(cost_basis >= 0),
+                date TEXT NOT NULL,
+                transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+                UNIQUE(lot_id, transaction_id),
+                FOREIGN KEY(lot_id, company_slug) REFERENCES investment_lots(id, company_slug)
+            );
+            CREATE INDEX idx_lot_reliefs_lot ON lot_reliefs(lot_id, date);
+            "
+        )?;
+        extend_investment_audit(conn)?;
+        for (table, conflict) in [
+            (
+                "securities",
+                "company_slug = NEW.company_slug AND symbol = NEW.symbol",
+            ),
+            (
+                "security_prices",
+                "id = NEW.id OR (company_slug = NEW.company_slug AND symbol = NEW.symbol AND date = NEW.date)",
+            ),
+            (
+                "investment_lots",
+                "id = NEW.id OR transaction_id = NEW.transaction_id",
+            ),
+            (
+                "lot_reliefs",
+                "id = NEW.id OR (lot_id = NEW.lot_id AND transaction_id = NEW.transaction_id)",
+            ),
+        ] {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER protect_{table}_update BEFORE UPDATE ON {table}
+                 BEGIN SELECT RAISE(ABORT, 'investment records are immutable'); END;
+                 CREATE TRIGGER protect_{table}_delete BEFORE DELETE ON {table}
+                 BEGIN SELECT RAISE(ABORT, 'investment records cannot be deleted'); END;
+                 CREATE TRIGGER protect_{table}_insert BEFORE INSERT ON {table}
+                 WHEN EXISTS(SELECT 1 FROM {table} WHERE {conflict})
+                 BEGIN SELECT RAISE(ABORT, 'investment records cannot be replaced'); END;"
+            ))?;
+        }
+        conn.execute("INSERT INTO schema_version (version) VALUES (17)", [])?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
+fn extend_investment_audit(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "CREATE TABLE audit_log_v17 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule','schedule','security','lot','price')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset','schedule_cancel','schedule_run')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 2 CHECK(hash_version IN (1,2)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v17 SELECT * FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v17 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 2
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v17_preserves_hashes_triggers_and_rolls_back_failed_migration() -> Result<(), CliError> {
+        let conn = v12_connection()?;
+        seed_v12_creation(&conn)?;
+        apply_v13(&conn)?;
+        apply_v14(&conn)?;
+        apply_v15(&conn)?;
+        apply_v16(&conn)?;
+        let before: Vec<(i64, String, String)> = {
+            let mut stmt =
+                conn.prepare("SELECT id, prev_hash, row_hash FROM audit_log ORDER BY id")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        // Fail after creating the investment tables, while rebuilding auditing.
+        conn.execute_batch("CREATE TABLE audit_log_v17 (collision TEXT)")?;
+        assert!(apply_v17(&conn).is_err());
+        assert_eq!(get_schema_version(&conn)?, 16);
+        let tables: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('securities','security_prices','investment_lots','lot_reliefs')",
+            [], |r| r.get(0),
+        )?;
+        assert_eq!(tables, 0);
+        assert!(conn.execute("DELETE FROM audit_log", []).is_err());
+        conn.execute_batch("DROP TABLE audit_log_v17")?;
+        apply_v17(&conn)?;
+        let after: Vec<(i64, String, String)> = {
+            let mut stmt =
+                conn.prepare("SELECT id, prev_hash, row_hash FROM audit_log ORDER BY id")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        assert_eq!(before, after);
+        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_creations(&conn)?;
+        for sql in [
+            "DELETE FROM audit_log",
+            "UPDATE audit_log SET actor = 'tampered'",
+            "DELETE FROM entries",
+            "UPDATE entries SET amount = 42",
+            "DELETE FROM transactions",
+            "UPDATE transactions SET description = 'tampered'",
+        ] {
+            assert!(conn.execute(sql, []).is_err(), "unprotected: {sql}");
+        }
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, 17);
+        Ok(())
+    }
 
     #[test]
     fn v16_preserves_hashes_and_rolls_back_failed_migration() -> Result<(), CliError> {

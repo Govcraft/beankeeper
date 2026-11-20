@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.19.0
+version: 0.20.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -43,6 +43,39 @@ Each changed batch records whole-object snapshots under `metadata_set` or
 (or null for a no-op on an unannotated transaction). Removing the last key
 leaves `{}`. Dates and financial fields stay unchanged, so tagging an original
 AR charge preserves its age under `report aging --filter-metadata status=disputed`.
+
+## Securities and investment lots
+
+Use `security create SYMBOL --name NAME --currency USD` to register a
+company-scoped symbol, and `security list` to inspect it. Before trading, create
+distinct investment and cash asset accounts plus a revenue account for gains.
+`investment buy SYMBOL --quantity 1.5 --cost 150.00 --date 2026-01-02
+--asset 1200 --cash 1010 --reference broker-buy-001` posts a purchase and creates
+a lot atomically. `investment sell SYMBOL --quantity 0.5 --proceeds 60.00
+--date 2026-02-02 --asset 1200 --cash 1010 --gain 4100` relieves FIFO lots and
+posts cash, basis relief, and realized gain/loss. Losses debit the gain account.
+
+Use `--method lifo`, or `--method specific --lot LOT_ID` for one explicit lot.
+`investment lots SYMBOL` returns original/remaining quantity and basis.
+Quantities are exact positive decimal strings, up to eight decimal places.
+Costs include fees; proceeds are net of fees. Money and per-whole-share prices
+use currency-native major units on input and minor units in JSON, with `_display`
+companions. Partial basis and valuations round half-up; final disposal conserves
+remaining basis. Duplicate references reject the whole trade. Record trades in
+date order per symbol/account. Generic `txn reverse` rejects investment trades.
+
+`security price SYMBOL --date 2026-02-02 --price 120.00` appends an immutable
+price observation. `investment holdings --as-of 2026-02-02` reports each
+symbol/account position and its latest price at the cutoff, market value, and
+unrealized gain/loss without postings. The date defaults to today; missing prices
+produce null valuations. Price dates are unique per security; zero is allowed.
+
+MCP equivalents are `security_create`, `security_list`, `security_price`,
+`investment_buy`, `investment_sell`, `investment_lots`, and `investment_holdings`.
+Pass `company`; use string quantities/amounts and optional `method`, `lot`,
+`reference`, and `as_of`. Read-only mode omits the four writes. Corrections,
+corporate actions, wash sales, and tax forms are follow-ups. Keep database backups;
+ledger export excludes investment tables. See [investment documentation](../investments.md).
 
 ## Agent Integration
 

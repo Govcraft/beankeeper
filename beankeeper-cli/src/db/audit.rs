@@ -164,6 +164,9 @@ impl Actor {
 /// constraint on `audit_log`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditEntity {
+    Security,
+    Lot,
+    Price,
     Schedule,
     Rule,
     Entry,
@@ -178,6 +181,9 @@ enum AuditEntity {
 impl AuditEntity {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Security => "security",
+            Self::Lot => "lot",
+            Self::Price => "price",
             Self::Schedule => "schedule",
             Self::Rule => "rule",
             Self::Entry => "entry",
@@ -525,6 +531,9 @@ pub(crate) fn record_insert(
     data: &serde_json::Value,
 ) -> Result<(), CliError> {
     let (entity, action) = match entity {
+        "security" => (AuditEntity::Security, AuditAction::Create),
+        "lot" => (AuditEntity::Lot, AuditAction::Create),
+        "price" => (AuditEntity::Price, AuditAction::Create),
         "schedule" => (AuditEntity::Schedule, AuditAction::Create),
         "rule" => (AuditEntity::Rule, AuditAction::Create),
         "company" => (AuditEntity::Company, AuditAction::Create),
@@ -1145,6 +1154,7 @@ pub fn reverse_transaction(
 
     in_savepoint(conn, "sp_reverse", || {
         let (original, entries) = get_transaction(conn, p.company_slug, p.id)?;
+        reject_investment_reversal(conn, p.id)?;
         let mut original_metadata: serde_json::Value = original
             .metadata
             .as_deref()
@@ -1650,6 +1660,16 @@ pub fn delete_account(
 pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<(), CliError> {
     in_savepoint(conn, "sp_company_delete", || {
         let row: CompanyRow = super::companies::get_company(conn, slug)?;
+        let securities: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM securities WHERE company_slug = ?1)",
+            [slug],
+            |row| row.get(0),
+        )?;
+        if securities {
+            return Err(CliError::Validation(format!(
+                "company '{slug}' cannot be deleted: retained securities reference it"
+            )));
+        }
 
         let schedules: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schedules WHERE company_slug = ?1",
@@ -1985,6 +2005,27 @@ fn edited_metadata(
         }
     }
     Ok((after, changed))
+}
+
+/// Reserve the writer before reading available lots, preventing concurrent relief.
+pub(crate) fn lock_investment_writer(conn: &Connection) -> Result<(), CliError> {
+    conn.execute("UPDATE securities SET name = name WHERE 0", [])?;
+    Ok(())
+}
+
+fn reject_investment_reversal(conn: &Connection, id: i64) -> Result<(), CliError> {
+    let investment: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM investment_lots WHERE transaction_id = ?1)
+         OR EXISTS(SELECT 1 FROM lot_reliefs WHERE transaction_id = ?1)",
+        [id],
+        |row| row.get(0),
+    )?;
+    if investment {
+        return Err(CliError::Validation(
+            "investment trades cannot use txn reverse: a monetary reversal would not restore lot quantities; trade corrections are not supported yet".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

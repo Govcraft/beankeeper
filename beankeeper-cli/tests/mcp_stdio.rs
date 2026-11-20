@@ -199,6 +199,13 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
     let listed_tools = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed_tools)?;
     let expected: BTreeSet<_> = [
+        "security_create",
+        "security_list",
+        "security_price",
+        "investment_buy",
+        "investment_sell",
+        "investment_lots",
+        "investment_holdings",
         "company_list",
         "company_show",
         "account_list",
@@ -596,8 +603,12 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 11);
+    assert_eq!(names.len(), 14);
     for name in [
+        "security_create",
+        "security_price",
+        "investment_buy",
+        "investment_sell",
         "account_create",
         "txn_post",
         "txn_reverse",
@@ -1062,6 +1073,236 @@ fn historical_trends_over_stdio_match_cli_payloads() -> TestResult {
         assert!(output.status.success());
         let cli: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(report, cli["data"]);
+    }
+    Ok(())
+}
+
+#[test]
+fn investment_tools_post_exact_trades_and_match_cli_valuations() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "account",
+            "create",
+            "1200",
+            "Investments",
+            "--type",
+            "asset",
+        ])
+        .assert()
+        .success();
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    client.success(
+        "security_create",
+        &json!({"company":"acme", "symbol":"TEST", "name":"Test shares", "currency":"BHD"}),
+    )?;
+    let securities = client.success("security_list", &json!({"company":"acme"}))?;
+    assert_eq!(securities[0]["symbol"], "TEST");
+    let bought = client.success("investment_buy", &json!({"company":"acme", "symbol":"TEST", "quantity":"1.5", "cost":"15.123", "date":"2026-01-01", "asset":"1200", "cash":"1000", "reference":"investment-buy"}))?;
+    assert_eq!(bought["cost_basis"], 15123);
+    assert_eq!(bought["cost_basis_display"], "15.123");
+    let lot = bought["lot_id"].as_str().ok_or("missing lot ID")?;
+    let observed = client.success(
+        "security_price",
+        &json!({"company":"acme", "symbol":"TEST", "date":"2026-01-02", "price":"12.345"}),
+    )?;
+    assert_eq!(observed["price_display"], "12.345");
+    let sold = client.success("investment_sell", &json!({"company":"acme", "symbol":"TEST", "quantity":"0.5", "proceeds":"7.000", "date":"2026-01-03", "asset":"1200", "cash":"1000", "gain":"4000", "method":"specific", "lot":lot, "reference":"investment-sell"}))?;
+    assert_eq!(sold["cost_basis"], 5041);
+    assert_eq!(sold["realized_gain"], 1959);
+    assert_eq!(sold["realized_gain_display"], "1.959");
+    let lots = client.success(
+        "investment_lots",
+        &json!({"company":"acme", "symbol":"TEST"}),
+    )?;
+    assert_eq!(lots[0]["remaining_quantity"], "1");
+    assert_eq!(lots[0]["remaining_cost_basis_display"], "10.082");
+    let holdings = client.success(
+        "investment_holdings",
+        &json!({"company":"acme", "as_of":"2026-01-03"}),
+    )?;
+    assert_eq!(holdings[0]["market_value_display"], "12.345");
+    assert_eq!(holdings[0]["unrealized_gain_display"], "2.263");
+    let output = bk(&path)?
+        .args([
+            "--json",
+            "--company",
+            "acme",
+            "investment",
+            "holdings",
+            "--as-of",
+            "2026-01-03",
+        ])
+        .output()?;
+    assert!(output.status.success());
+    let cli: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(cli["data"], holdings);
+    let transaction = client.success(
+        "txn_show",
+        &json!({"company":"acme", "id":sold["transaction_id"]}),
+    )?;
+    assert_eq!(transaction[0]["posted_by"], "mcp:codex-test-client");
+    client.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
+fn investment_cli_outputs_currency_decimals_and_honors_quiet() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed_investment_cli(&path)?;
+    let csv = bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "--format",
+            "csv",
+            "investment",
+            "holdings",
+            "--as-of",
+            "2026-01-02",
+        ])
+        .output()?;
+    assert!(csv.status.success());
+    let csv = String::from_utf8(csv.stdout)?;
+    assert!(csv.contains("symbol,asset,currency,quantity,cost_basis"));
+    assert!(csv.contains("TEST,1200,BHD,1.5,15.123"));
+    assert!(csv.contains("12.345,18.518,3.395"));
+    let table = bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "investment",
+            "holdings",
+            "--as-of",
+            "2026-01-02",
+        ])
+        .output()?;
+    assert!(table.status.success());
+    let table = String::from_utf8(table.stdout)?;
+    assert!(table.contains("15.123"));
+    assert!(table.contains("18.518"));
+    let quiet = bk(&path)?
+        .args(["--company", "acme", "--quiet", "security", "list"])
+        .output()?;
+    assert!(quiet.status.success());
+    assert_eq!(quiet.stdout, [] as [u8; 0]);
+    assert_eq!(quiet.stderr, [] as [u8; 0]);
+    let output = bk(&path)?
+        .args([
+            "--quiet",
+            "--json",
+            "investment",
+            "holdings",
+            "--company",
+            "acme",
+            "--as-of",
+            "2026-01-02",
+        ])
+        .output()?;
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(json["meta"]["company"], "acme");
+    assert_eq!(json["meta"]["command"], "investment.holdings");
+    assert_eq!(json["data"][0]["market_value_display"], "18.518");
+    let output = bk(&path)?
+        .args([
+            "--json",
+            "--company",
+            "acme",
+            "txn",
+            "list",
+            "--reference",
+            "trimmed-buy",
+        ])
+        .output()?;
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(json["data"].as_array().map(Vec::len), Some(1));
+    bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "investment",
+            "buy",
+            "TEST",
+            "--quantity",
+            "1",
+            "--cost",
+            "10",
+            "--date",
+            "2026-01-03",
+            "--asset",
+            "1200",
+            "--cash",
+            "1000",
+            "--reference",
+            "  ",
+        ])
+        .assert()
+        .failure();
+    Ok(())
+}
+
+fn seed_investment_cli(path: &Path) -> TestResult {
+    seed(path)?;
+    for args in [
+        vec![
+            "account",
+            "create",
+            "1200",
+            "Investments",
+            "--type",
+            "asset",
+        ],
+        vec![
+            "security",
+            "create",
+            "TEST",
+            "--name",
+            "Test shares",
+            "--currency",
+            "BHD",
+        ],
+        vec![
+            "investment",
+            "buy",
+            "TEST",
+            "--quantity",
+            "1.5",
+            "--cost",
+            "15.123",
+            "--date",
+            "2026-01-01",
+            "--asset",
+            "1200",
+            "--cash",
+            "1000",
+            "--reference",
+            "  trimmed-buy  ",
+        ],
+        vec![
+            "security",
+            "price",
+            "TEST",
+            "--date",
+            "2026-01-02",
+            "--price",
+            "12.345",
+        ],
+    ] {
+        bk(path)?
+            .args(["--company", "acme"])
+            .args(args)
+            .assert()
+            .success();
     }
     Ok(())
 }
