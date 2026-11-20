@@ -204,6 +204,7 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "account_show",
         "account_create",
         "txn_post",
+        "txn_reverse",
         "txn_list",
         "txn_show",
         "report",
@@ -341,6 +342,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     for name in [
         "account_create",
         "txn_post",
+        "txn_reverse",
         "txn_clear",
         "budget_set",
         "budget_delete",
@@ -352,6 +354,105 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(response.get("error").is_some() || response["result"]["isError"] == true);
     let transactions = client.success("txn_list", &json!({"company":"acme"}))?;
     assert_eq!(transactions.as_array().map(Vec::len), Some(0));
+    Ok(())
+}
+
+#[test]
+fn reversal_mirrors_entries_and_retries_with_the_mcp_actor() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let posted = client.success("txn_post", &posting("sale-to-reverse"))?;
+    let show = json!({"company":"acme", "id":posted["id"]});
+    let before = client.success("txn_show", &show)?;
+    let arguments = json!({"company":"acme", "id":posted["id"],
+        "date":"2026-03-02", "description":"Correct the sale", "reference":"void-sale"});
+    let created = client.success("txn_reverse", &arguments)?;
+    assert_eq!(created["created"], true);
+    assert_eq!(created["skipped"], false);
+    let retry = client.success("txn_reverse", &arguments)?;
+    assert_eq!(retry["created"], false);
+    assert_eq!(retry["skipped"], true);
+    assert_eq!(retry["existing_id"], created["id"]);
+    let original = client.success("txn_show", &show)?;
+    let reversal = client.success("txn_show", &json!({"company":"acme", "id":created["id"]}))?;
+    assert_eq!(original[0]["entries"], before[0]["entries"]);
+    let original_meta: Value = serde_json::from_str(
+        original[0]["metadata"]
+            .as_str()
+            .ok_or("missing original metadata")?,
+    )?;
+    let reversal_meta: Value = serde_json::from_str(
+        reversal[0]["metadata"]
+            .as_str()
+            .ok_or("missing reversal metadata")?,
+    )?;
+    assert_eq!(original_meta["reversed_by"], created["id"]);
+    assert_eq!(reversal_meta["reverses"], posted["id"]);
+    assert_eq!(reversal[0]["reference"], "void-sale");
+    assert_eq!(reversal[0]["date"], "2026-03-02");
+    assert_eq!(reversal[0]["description"], "Correct the sale");
+    let entries = before[0]["entries"]
+        .as_array()
+        .ok_or("missing original entries")?;
+    let reversed = reversal[0]["entries"]
+        .as_array()
+        .ok_or("missing reversal entries")?;
+    assert_eq!(entries.len(), reversed.len());
+    for (old, new) in entries.iter().zip(reversed) {
+        for key in ["account_code", "amount", "memo", "tax_category"] {
+            assert_eq!(new[key], old[key]);
+        }
+        assert_ne!(new["direction"], old["direction"]);
+        assert_eq!(new["status"], "uncleared");
+        assert_eq!(new["cleared_amount"], 0);
+    }
+    let transactions = client.success("txn_list", &json!({"company":"acme"}))?;
+    assert_eq!(transactions.as_array().map(Vec::len), Some(2));
+    let audit = client.success("audit_log", &json!({"company":"acme", "action":"reverse"}))?;
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+    assert_eq!(audit[0]["actor"], "mcp:codex-test-client");
+    assert_eq!(audit[0]["entity_id"], posted["id"].to_string());
+    assert!(client.success("verify", &json!({}))?.is_object());
+    Ok(())
+}
+
+#[test]
+fn read_only_rejects_reversal_without_changing_the_original() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut writer = Client::spawn(command)?;
+    writer.initialize()?;
+    let posted = writer.success("txn_post", &posting("read-only-reversal"))?;
+    drop(writer);
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    assert!(!tool_names(&listed)?.contains("txn_reverse"));
+    let show = json!({"company":"acme", "id":posted["id"]});
+    let before = client.success("txn_show", &show)?;
+    let response = client.call(
+        "txn_reverse",
+        &json!({"company":"acme",
+        "id":posted["id"], "date":"2026-03-02", "reference":"forbidden-reversal"}),
+    )?;
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(client.success("txn_show", &show)?, before);
+    let transactions = client.success("txn_list", &json!({"company":"acme"}))?;
+    assert_eq!(transactions.as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        client.success("audit_log", &json!({"action":"reverse"}))?,
+        json!([])
+    );
     Ok(())
 }
 

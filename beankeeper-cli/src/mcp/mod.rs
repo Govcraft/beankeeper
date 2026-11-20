@@ -23,6 +23,7 @@ use crate::error::CliError;
 const WRITE_TOOLS: &[&str] = &[
     "account_create",
     "txn_post",
+    "txn_reverse",
     "budget_set",
     "budget_delete",
     "txn_clear",
@@ -138,7 +139,7 @@ fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliE
         "company_show" => &["slug"],
         "account_show" => &["code"],
         "account_create" => &["code", "name"],
-        "txn_show" => &["id"],
+        "txn_show" | "txn_reverse" => &["id"],
         "txn_clear" => &["transaction_id"],
         "budget_set" | "budget_delete" => &["account"],
         _ => &[],
@@ -350,6 +351,17 @@ impl LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         self.execute("txn_post", input, context).await
+    }
+
+    #[tool(
+        description = "Reverse a transaction with a linked mirror posting. Pass the same explicit reference on retries to return the existing reversal. Reconciled transactions cannot be reversed; existing clearings stay on the original."
+    )]
+    async fn txn_reverse(
+        &self,
+        Parameters(input): Parameters<inputs::TxnReverse>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("txn_reverse", input, context).await
     }
 
     #[tool(description = "List or count transactions using the CLI filters and pagination.")]

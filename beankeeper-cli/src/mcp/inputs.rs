@@ -57,6 +57,7 @@ pub(super) enum AuditEntityArg {
 #[serde(rename_all = "kebab-case")]
 pub(super) enum AuditActionArg {
     StatusChange,
+    Reverse,
     Correlate,
     BudgetSet,
     BudgetDelete,
@@ -136,6 +137,18 @@ pub(super) struct TxnList {
     pub direction: Option<DirectionArg>,
     #[serde(default)]
     pub count: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TxnReverse {
+    pub company: String,
+    pub id: i64,
+    /// YYYY-MM-DD, on or after the original transaction date; defaults to today.
+    pub date: Option<String>,
+    pub description: Option<String>,
+    /// Pass the same explicit reference for safe retries.
+    pub reference: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

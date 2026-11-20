@@ -69,36 +69,12 @@ pub fn run(
 
 /// Execute an atomic reversal and report its new or existing transaction ID.
 fn run_reverse(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
-    let TxnCommand::Reverse {
-        id,
-        date,
-        description,
-        reference,
-    } = sub
-    else {
+    let TxnCommand::Reverse { id, .. } = sub else {
         return Err(CliError::General("expected txn reverse subcommand".into()));
     };
     let format = resolve_format(None, cli);
-    let date = date
-        .clone()
-        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
-    let reference = reference
-        .as_deref()
-        .map(normalize_reference)
-        .transpose()
-        .map_err(|e| CliError::Validation(e.to_string()))?;
     let actor = db::Actor::resolve(cli.actor.as_deref());
-    let result = db::audit::reverse_transaction(
-        db_handle.conn(),
-        &db::audit::ReverseTransactionParams {
-            company_slug: company,
-            id: *id,
-            date: &date,
-            description: description.as_deref(),
-            reference: reference.as_deref(),
-            actor: &actor,
-        },
-    )?;
+    let result = execute_reverse(db_handle, company, sub, &actor)?;
     if format == OutputFormat::Json {
         println!(
             "{}",
@@ -119,6 +95,43 @@ fn run_reverse(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Re
         }
     }
     Ok(())
+}
+
+/// Execute an atomic reversal with an explicit audit actor.
+fn execute_reverse(
+    db_handle: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    actor: &db::Actor,
+) -> Result<transactions::PostResult, CliError> {
+    let TxnCommand::Reverse {
+        id,
+        date,
+        description,
+        reference,
+    } = sub
+    else {
+        return Err(CliError::General("expected txn reverse subcommand".into()));
+    };
+    let date = date
+        .clone()
+        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    let reference = reference
+        .as_deref()
+        .map(normalize_reference)
+        .transpose()
+        .map_err(|e| CliError::Validation(e.to_string()))?;
+    db::audit::reverse_transaction(
+        db_handle.conn(),
+        &db::audit::ReverseTransactionParams {
+            company_slug: company,
+            id: *id,
+            date: &date,
+            description: description.as_deref(),
+            reference: reference.as_deref(),
+            actor,
+        },
+    )
 }
 
 /// Execute a supported transaction operation without writing to stdout.
@@ -162,7 +175,12 @@ pub fn execute_json(
         TxnCommand::Clear { .. } => {
             return super::txn_clear::execute_json(db_handle, company, sub, actor, None);
         }
-        TxnCommand::Reverse { .. } | TxnCommand::Import { .. } | TxnCommand::Attach { .. } => {
+        TxnCommand::Reverse { .. } => {
+            let result = execute_reverse(db_handle, company, sub, actor)?;
+            let meta = output::json::meta("txn.reverse", Some(company));
+            out = output::json::render_post_result(result, meta)?.into_bytes();
+        }
+        TxnCommand::Import { .. } | TxnCommand::Attach { .. } => {
             return Err(CliError::Usage(
                 "transaction operation is not available over MCP".into(),
             ));

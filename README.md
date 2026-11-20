@@ -168,7 +168,7 @@ never tool arguments. Append `"--read-only"` to `args` to register only read too
 mutation tools are absent and cannot be called.
 
 The server provides `company_list`, `company_show`, `account_list`, `account_show`,
-`account_create`, `txn_post`, `txn_list`, `txn_show`, `report`, `budget_list`,
+`account_create`, `txn_post`, `txn_reverse`, `txn_list`, `txn_show`, `report`, `budget_list`,
 `budget_set`, `budget_delete`, `txn_clear`, `txn_reconcile`, `verify`, and `audit_log`.
 Company-scoped tools require a `company` argument. `report` takes a `kind` and its
 options, with all ten CLI report kinds available. Tool schemas describe the
@@ -195,6 +195,12 @@ available as JSON text content and, where the negotiated MCP protocol permits th
 payload's shape, `structuredContent`. Tool failures set `isError: true` with
 `{code, message}`. Audited writes use `mcp:<client name>` from the MCP handshake,
 with a sanitized name or `mcp:unknown`. Creation auditing is unchanged.
+
+Call `txn_reverse` with `company` and the original transaction `id`; `date`,
+`description`, and `reference` are optional. It creates a linked mirror posting.
+Supply the same explicit `reference` on retries to return the existing reversal
+with `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed;
+existing clearings stay on the original and reversal entries start uncleared.
 
 This local server has no HTTP transport or authentication. Ledger initialization,
 company creation/deletion, account deletion, import, export, and attachments remain

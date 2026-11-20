@@ -70,6 +70,7 @@ an explicit `company` argument, regardless of the CLI's default company.
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
+| `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
 | `report` | `company`, `kind`, and that report's CLI options in snake_case |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
@@ -84,6 +85,15 @@ an explicit `company` argument, regardless of the CLI's default company.
 `error` preserves duplicate rejection, and `upsert` preserves the CLI's current
 unsupported-strategy error.
 
+`txn_reverse` creates a linked mirror posting with the CLI reversal rules. Its
+`date` defaults to today and must be on or after the original date. Description
+defaults to `Reversal of #ID: ORIGINAL DESCRIPTION`; reference defaults to
+`reversal-of-ID`. Safe retries require the same **explicit** `reference`, returning
+`{created: false, skipped: true, existing_id}`. A first reversal returns
+`{created: true, skipped: false, id}`. Reconciled originals cannot be reversed;
+existing clearings stay on the original and reversal entries start uncleared.
+Use `audit_log` with `action: "reverse"` to inspect the audit record.
+
 `txn_clear.batch` contains `{reference, amount?}` rows, where `amount` is an optional decimal
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
 not exposed to tools. `report.kind` accepts `trial-balance`, `balance`,
@@ -91,8 +101,8 @@ not exposed to tools. `report.kind` accepts `trial-balance`, `balance`,
 `cash-flow`, `aging`, or `reconciliation`, including their period/comparison and
 metadata options.
 
-Read-only mode removes `account_create`, `txn_post`, `budget_set`, `budget_delete`,
-and `txn_clear` from the router. Audited writes use `mcp:<sanitized client name>`
+Read-only mode removes `account_create`, `txn_post`, `txn_reverse`, `budget_set`,
+`budget_delete`, and `txn_clear` from the router. Audited writes use `mcp:<sanitized client name>`
 from `initialize.clientInfo.name`, falling back to `mcp:unknown`.
 
 Results match the CLI JSON `data` payload. JSON text content is always included;
