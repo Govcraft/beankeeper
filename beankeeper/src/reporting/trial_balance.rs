@@ -150,7 +150,7 @@ mod tests {
         assert_eq!(revenues.len(), 1);
 
         let liabilities = tb.accounts_by_type(AccountType::Liability);
-        assert!(liabilities.is_empty());
+        assert_eq!(liabilities, Vec::<&AccountBalance>::new());
     }
 
     #[test]

@@ -43,7 +43,7 @@ fn missing_database_is_not_found_for_all_command_families_without_creating_files
             .code(5)
             .get_output()
             .clone();
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, Vec::<u8>::new());
         let envelope: serde_json::Value = serde_json::from_slice(&output.stderr)?;
         assert_eq!(envelope["error"]["code"], "NOT_FOUND");
         let message = envelope["error"]["message"]

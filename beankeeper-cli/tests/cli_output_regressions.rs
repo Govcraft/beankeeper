@@ -216,7 +216,7 @@ fn posting_validation_formats_amounts_in_the_input_currency() {
                 ]);
                 let output = run(&db, &args);
                 assert_eq!(output.status.code(), Some(3));
-                assert!(output.stdout.is_empty());
+                assert_eq!(output.stdout, Vec::<u8>::new());
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if json {
                     let error: serde_json::Value = serde_json::from_str(&stderr)

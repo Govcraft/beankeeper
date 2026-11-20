@@ -43,7 +43,7 @@ fn unknown_company_is_not_found_for_every_scoped_command_family() -> TestResult 
             .code(5)
             .get_output()
             .clone();
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, Vec::<u8>::new());
         let envelope: serde_json::Value = serde_json::from_slice(&output.stderr)?;
         assert_eq!(envelope["error"]["code"], "NOT_FOUND");
         assert_eq!(envelope["error"]["message"], "company 'missing' not found");

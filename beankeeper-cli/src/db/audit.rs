@@ -1179,7 +1179,7 @@ mod tests {
         // An empty explicit name is ignored; env may or may not be set, but the
         // resolved name is never empty.
         let actor = Actor::resolve(Some("   "));
-        assert!(!actor.name().is_empty());
+        assert_ne!(actor.name(), "");
     }
 
     #[test]

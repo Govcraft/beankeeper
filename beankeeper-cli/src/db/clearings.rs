@@ -723,6 +723,6 @@ mod tests {
         let existing = [c(1, 30, Some("S1"), Cleared), c(2, 20, None, Cleared)];
         assert_eq!(plan_unclear(&existing, None), vec![1, 2]);
         assert_eq!(plan_unclear(&existing, Some("S1")), vec![1]);
-        assert!(plan_unclear(&existing, Some("S9")).is_empty());
+        assert_eq!(plan_unclear(&existing, Some("S9")), Vec::<i64>::new());
     }
 }
