@@ -9,6 +9,7 @@ pub mod import_ofx;
 pub mod init;
 pub mod investment;
 pub mod loan;
+pub mod policy;
 pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;
@@ -54,6 +55,10 @@ pub fn command_name(cmd: &Command) -> &'static str {
             crate::cli::RuleCommand::Delete { .. } => "rule.delete",
         },
         Command::Mcp(_) => "mcp.serve",
+        Command::Policy(sub) => match sub {
+            crate::cli::PolicyCommand::Show => "policy.show",
+            crate::cli::PolicyCommand::Set { .. } => "policy.set",
+        },
         Command::Key(_) => "key.init",
         Command::Agent(sub) => match sub {
             crate::cli::AgentCommand::Issue { .. } => "agent.issue",
@@ -120,13 +125,16 @@ pub fn command_name(cmd: &Command) -> &'static str {
 ///
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
-    if cli.agent_token.is_some()
-        && !matches!(cli.command, Command::Mcp(_) | Command::Restore { .. })
-    {
-        if matches!(cli.command, Command::Init { .. }) {
-            return Err(CliError::Unauthorized("initialization creates a new trust boundary; omit --agent-token and initialize its key afterward".into()));
+    if !matches!(cli.command, Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. }) {
+        // Preserve standalone loan calculation without an existing ledger.
+        let standalone = matches!(&cli.command, Command::Loan(args) if matches!(args.command, crate::cli::LoanCommand::Schedule(_)))
+            && !cli.db.try_exists()?
+            && cli.agent_token.is_none();
+        if !standalone {
+            cli.open_db()?;
         }
-        cli.open_db()?;
+    } else if cli.agent_token.is_some() && matches!(cli.command, Command::Init { .. }) {
+        return Err(CliError::Unauthorized("initialization creates a new trust boundary; omit --agent-token and initialize its key afterward".into()));
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
@@ -146,6 +154,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             rule::run(cli, &company, &args.command)
         }
         Command::Key(_) | Command::Agent(_) => agent::run(cli),
+        Command::Policy(command) => policy::run(cli, command),
         Command::Mcp(crate::cli::McpCommand::Serve { read_only }) => {
             crate::mcp::serve(cli, *read_only)
         }

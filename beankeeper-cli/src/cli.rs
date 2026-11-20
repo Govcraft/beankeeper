@@ -134,9 +134,17 @@ impl Cli {
 
     pub(crate) fn verify_agent(&self, db: &crate::db::Db) -> Result<(), CliError> {
         if let Some(token) = &self.agent_token {
+            // Retain verified attribution even when capability authorization fails.
             let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
             let _ = self.verified_agent.set(identity);
         }
+        crate::identity::authorize(
+            db.conn(),
+            self.agent_token.as_ref().map(ExposeSecret::expose_secret),
+            crate::capability::Capability::for_operation(crate::commands::command_name(
+                &self.command,
+            ))?,
+        )?;
         Ok(())
     }
 
@@ -202,7 +210,7 @@ pub enum AgentCommand {
         /// `TypeID` prefix (lowercase letters and underscores).
         #[arg(long)]
         name: String,
-        /// Recorded grants. Phase 1 does not enforce permissions.
+        /// Explicit grants checked when this ledger enables enforcement.
         #[arg(long, value_delimiter = ',', default_value = "ledger/read,ledger/post")]
         caps: Vec<String>,
         /// Token lifetime, positive and at most 30d.
@@ -223,6 +231,33 @@ pub enum AgentCommand {
     List,
     /// Revoke a token ID, or every current token for an agent URI.
     Revoke { target: String },
+}
+
+/// Ledger capability enforcement commands.
+#[derive(Subcommand, Debug)]
+pub enum PolicyCommand {
+    /// Show the current policy.
+    Show,
+    /// Change enforcement; requires ledger/admin once enforcement is on.
+    Set {
+        #[arg(long, value_enum)]
+        enforce: EnforcementArg,
+    },
+}
+
+/// Requested enforcement state.
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum EnforcementArg {
+    On,
+    Off,
+}
+
+impl EnforcementArg {
+    /// Whether capability enforcement is enabled.
+    #[must_use]
+    pub fn enabled(self) -> bool {
+        matches!(self, Self::On)
+    }
 }
 
 /// Top-level commands.
@@ -292,6 +327,10 @@ EXAMPLES:\n  \
     /// Issue, list and revoke optional agent identities.
     #[command(subcommand)]
     Agent(AgentCommand),
+
+    /// Inspect or change capability enforcement for this ledger.
+    #[command(subcommand)]
+    Policy(PolicyCommand),
 
     /// Check ledger integrity.
     #[command(after_help = "\
@@ -780,6 +819,7 @@ pub enum AuditCommand {
 /// Entity-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEntityArg {
+    Policy,
     Schedule,
     Rule,
     Entry,
@@ -796,6 +836,7 @@ impl AuditEntityArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Policy => "policy",
             Self::Schedule => "schedule",
             Self::Rule => "rule",
             Self::Entry => "entry",
@@ -812,6 +853,8 @@ impl AuditEntityArg {
 /// Action-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditActionArg {
+    #[value(name = "policy_change", alias = "policy-change")]
+    PolicyChange,
     ScheduleCancel,
     ScheduleRun,
     #[value(name = "metadata_set", alias = "metadata-set")]
@@ -838,6 +881,7 @@ impl AuditActionArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::PolicyChange => "policy_change",
             Self::MetadataSet => "metadata_set",
             Self::MetadataUnset => "metadata_unset",
             Self::ScheduleCancel => "schedule_cancel",
