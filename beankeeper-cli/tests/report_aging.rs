@@ -448,15 +448,20 @@ fn group_by_metadata_including_non_json() {
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(
         lines[0],
-        "counterparty,Current,1-30,31-60,61-90,90+,total_open,unapplied_credit,net"
+        "row_type,account,counterparty,Current,1-30,31-60,61-90,90+,total_open,\
+         unapplied_credit,net"
     );
     assert!(
-        lines.iter().any(|l| l.starts_with("(unassigned),")),
+        lines
+            .iter()
+            .any(|l| l.starts_with("counterparty,1100,(unassigned),")),
         "{csv}"
     );
+    // A single grouped account has no subtotal row: the total is the subtotal.
+    assert!(!lines.iter().any(|l| l.starts_with("account,")), "{csv}");
     assert_eq!(
         lines.last().copied(),
-        Some("TOTAL,0,14000,0,0,10000,24000,0,24000")
+        Some("total,,,0,14000,0,0,10000,24000,0,24000")
     );
 }
 
@@ -471,8 +476,18 @@ fn json_shape() {
     assert_eq!(r["meta"]["company"], CO);
 
     let data = &r["data"];
-    assert_eq!(data["account"]["code"], "1100");
-    assert_eq!(data["account"]["type"], "asset");
+    let accounts = data["accounts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("accounts"));
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0]["code"], "1100");
+    assert_eq!(accounts[0]["type"], "asset");
+    assert_eq!(accounts[0]["totals"], data["totals"]);
+    assert_eq!(accounts[0]["groups"], data["groups"]);
+    assert_eq!(accounts[0]["account_balance"], data["account_balance"]);
+    assert_eq!(data["include_children"], false);
+    assert_eq!(data["group_across_accounts"], false);
+    assert_eq!(data["metadata_filters"], serde_json::json!([]));
     assert_eq!(data["as_of"], AS_OF);
     assert_eq!(data["currency"], "USD");
     assert!(data["group_by"].is_null());
@@ -503,6 +518,7 @@ fn json_shape() {
         assert!(!g[key].is_null(), "group is missing {key}");
     }
     let item = &g["open_items"][0];
+    assert_eq!(item["account"], "1100");
     for key in [
         "transaction_id",
         "date",
@@ -832,10 +848,13 @@ fn net_credit_account_is_obvious_in_all_formats() {
 
     let csv = l.aging_text("csv", &args);
     let lines: Vec<&str> = csv.lines().collect();
-    assert!(lines.contains(&"Globex,0,0,0,0,0,0,15000,-15000"), "{csv}");
+    assert!(
+        lines.contains(&"counterparty,1100,Globex,0,0,0,0,0,0,15000,-15000"),
+        "{csv}"
+    );
     assert_eq!(
         lines.last().copied(),
-        Some("TOTAL,0,7000,0,0,0,7000,15000,-8000")
+        Some("total,,,0,7000,0,0,0,7000,15000,-8000")
     );
 
     let table = l.aging_text("table", &args);
@@ -882,30 +901,27 @@ fn detail_lists_open_items_in_table_csv_and_json() {
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(
         lines[0],
-        "row_type,counterparty,transaction_id,date,reference,description,age_days,bucket,\
+        "row_type,account,counterparty,transaction_id,date,reference,description,age_days,bucket,\
          original_amount,open_amount,Current,1-30,31-60,61-90,90+,total_open,\
          unapplied_credit,net"
     );
     let item_101 = format!(
-        "item,Globex,{id_101},2026-01-01,INV-101,INV-101,180,90+,40000,30000,,,,,30000,30000,,"
+        "item,1100,Globex,{id_101},2026-01-01,INV-101,INV-101,180,90+,40000,30000,,,,,30000,30000,,"
     );
     let item_ini =
-        format!("item,Initech,{id_ini},2026-06-20,,txn,10,1-30,7000,7000,,7000,,,,7000,,");
+        format!("item,1100,Initech,{id_ini},2026-06-20,,txn,10,1-30,7000,7000,,7000,,,,7000,,");
     assert_eq!(lines[1], item_101);
-    assert!(lines[2].starts_with("item,Globex,"), "{csv}");
+    assert!(lines[2].starts_with("item,1100,Globex,"), "{csv}");
     assert_eq!(
         lines[3],
-        "counterparty,Globex,,,,,,,,,0,30000,0,0,30000,60000,0,60000"
+        "counterparty,1100,Globex,,,,,,,,,0,30000,0,0,30000,60000,0,60000"
     );
     assert_eq!(lines[4], item_ini);
     assert_eq!(
         lines[5],
-        "counterparty,Initech,,,,,,,,,0,7000,0,0,0,7000,0,7000"
+        "counterparty,1100,Initech,,,,,,,,,0,7000,0,0,0,7000,0,7000"
     );
-    assert_eq!(
-        lines[6],
-        "total,TOTAL,,,,,,,,,0,37000,0,0,30000,67000,0,67000"
-    );
+    assert_eq!(lines[6], "total,,,,,,,,,,,0,37000,0,0,30000,67000,0,67000");
     assert_eq!(lines.len(), 7);
 }
 
@@ -999,4 +1015,455 @@ fn payable_specific_identification() {
         bucket_amounts(&fifo["data"]["totals"]["buckets"]),
         vec![0, 0, 8_000, 0, 12_000]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Several accounts (issue #29)
+// ---------------------------------------------------------------------------
+
+/// A ledger with receivable sub-ledgers 1110 (east) and 1120 (west) under the
+/// 1100 control account, holding charges, payments (one linked across
+/// accounts), an overpayment and a charge after `AS_OF`.
+fn sub_ledgers() -> Ledger {
+    let l = Ledger::new();
+    for (code, name) in [("1110", "AR East"), ("1120", "AR West")] {
+        l.ok(&[
+            "--company",
+            CO,
+            "account",
+            "create",
+            code,
+            name,
+            "--type",
+            "asset",
+        ]);
+    }
+    l.post_ref("2026-01-10", "1100", "4000", "40", "INV-C1", Some(GLOBEX));
+    l.post_ref("2026-02-01", "1110", "4000", "400", "INV-E1", Some(GLOBEX));
+    l.post_ref("2026-05-20", "1110", "4000", "300", "INV-E2", Some(INITECH));
+    l.post_ref("2026-03-15", "1120", "4000", "250", "INV-W1", Some(INITECH));
+    l.post_ref("2026-06-25", "1120", "4000", "80", "INV-W2", Some(GLOBEX));
+    // Partial FIFO payment on the east ledger.
+    l.post("2026-06-01", "1000", "1110", "150", Some(GLOBEX));
+    // A west payment linked to the west invoice.
+    l.post(
+        "2026-06-10",
+        "1000",
+        "1120",
+        "100",
+        Some(r#"{"customer":"Initech","applies_to":"INV-W1"}"#),
+    );
+    // A west payment linked to an *east* invoice: not honoured.
+    l.post(
+        "2026-06-12",
+        "1000",
+        "1120",
+        "30",
+        Some(r#"{"customer":"Globex","applies_to":"INV-E1"}"#),
+    );
+    // Overpayment on the control account.
+    l.post("2026-06-15", "1000", "1100", "60", Some(GLOBEX));
+    // After AS_OF: ignored.
+    l.post("2026-07-05", "1000", "1110", "500", Some(GLOBEX));
+    l
+}
+
+const SUB_LEDGERS: [&str; 3] = ["1100", "1110", "1120"];
+
+fn account_args<'a>(codes: &[&'a str]) -> Vec<&'a str> {
+    codes.iter().flat_map(|c| ["--account", c]).collect()
+}
+
+fn totals_tuple(v: &Value) -> (Vec<i64>, i64, i64, i64) {
+    (
+        bucket_amounts(&v["buckets"]),
+        int(&v["total_open"]),
+        int(&v["unapplied_credit"]),
+        int(&v["net"]),
+    )
+}
+
+/// Element-wise sum of single-account totals.
+fn summed(single: &[(Vec<i64>, i64, i64, i64)]) -> (Vec<i64>, i64, i64, i64) {
+    let n = single.first().map_or(0, |s| s.0.len());
+    let mut buckets = vec![0; n];
+    let (mut open, mut unapplied, mut net) = (0, 0, 0);
+    for (b, o, u, t) in single {
+        for (acc, v) in buckets.iter_mut().zip(b) {
+            *acc += v;
+        }
+        open += o;
+        unapplied += u;
+        net += t;
+    }
+    (buckets, open, unapplied, net)
+}
+
+#[test]
+fn multi_account_totals_equal_sum_of_single_runs() {
+    let l = sub_ledgers();
+    let variants: [(&str, &[&str]); 6] = [
+        (AS_OF, &[]),
+        (AS_OF, &["--method", "specific"]),
+        (AS_OF, &["--group-by", "customer"]),
+        (
+            AS_OF,
+            &["--group-by", "customer", "--method", "specific", "--detail"],
+        ),
+        ("2026-03-31", &[]),
+        (
+            "2026-03-31",
+            &["--group-by", "customer", "--group-across-accounts"],
+        ),
+    ];
+    for (as_of, extra) in variants {
+        let mut args = account_args(&SUB_LEDGERS);
+        args.extend_from_slice(extra);
+        let combined = aging_at(&l, as_of, &args);
+        let data = &combined["data"];
+
+        let mut singles = Vec::new();
+        let mut balance = 0;
+        for (i, code) in SUB_LEDGERS.iter().enumerate() {
+            let mut one = vec!["--account", code];
+            one.extend_from_slice(extra);
+            let single = aging_at(&l, as_of, &one);
+            singles.push(totals_tuple(&single["data"]["totals"]));
+            balance += int(&single["data"]["account_balance"]);
+            // Each section equals the single-account run.
+            let section = &data["accounts"][i];
+            assert_eq!(section["code"], *code, "{extra:?}");
+            assert_eq!(
+                section["totals"], single["data"]["totals"],
+                "{extra:?} {code}"
+            );
+            assert_eq!(
+                section["groups"], single["data"]["groups"],
+                "{extra:?} {code}"
+            );
+            assert_eq!(
+                section["unmatched_links"].as_array().map(Vec::len),
+                single["data"]["unmatched_links"].as_array().map(Vec::len),
+                "{extra:?} {code}"
+            );
+        }
+        assert_eq!(totals_tuple(&data["totals"]), summed(&singles), "{extra:?}");
+        assert_eq!(int(&data["account_balance"]), balance, "{extra:?}");
+
+        // The combined groups add up to the same totals.
+        let groups = data["groups"]
+            .as_array()
+            .unwrap_or_else(|| panic!("groups"));
+        let open: i64 = groups.iter().map(|g| int(&g["total_open"])).sum();
+        assert_eq!(open, int(&data["totals"]["total_open"]), "{extra:?}");
+    }
+}
+
+#[test]
+fn multi_account_ties_to_balances_and_ignores_later_entries() {
+    let l = sub_ledgers();
+    let r = l.aging(&account_args(&SUB_LEDGERS));
+    let balance: i64 = SUB_LEDGERS.iter().map(|c| l.normal_balance(c, true)).sum();
+    let totals = &r["data"]["totals"];
+    assert_eq!(
+        int(&totals["total_open"]) - int(&totals["unapplied_credit"]),
+        balance
+    );
+    assert_eq!(int(&r["data"]["account_balance"]), balance);
+    // East: 400 + 300 - 150 (the 500 payment is after AS_OF).
+    assert_eq!(
+        int(&r["data"]["accounts"][1]["totals"]["total_open"]),
+        55_000
+    );
+}
+
+#[test]
+fn include_children_rolls_up_by_code_prefix() {
+    let l = sub_ledgers();
+    let rollup = l.aging(&["--account", "1100", "--include-children"]);
+    let codes: Vec<&str> = rollup["data"]["accounts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("accounts"))
+        .iter()
+        .map(|a| a["code"].as_str().unwrap_or_default())
+        .collect();
+    // 1100 -> prefix "11": never 1000 (cash) or 2000.
+    assert_eq!(codes, SUB_LEDGERS);
+    assert_eq!(rollup["data"]["include_children"], true);
+    let explicit = l.aging(&account_args(&SUB_LEDGERS));
+    assert_eq!(rollup["data"]["totals"], explicit["data"]["totals"]);
+    assert_eq!(rollup["data"]["groups"], explicit["data"]["groups"]);
+
+    // A leaf with --include-children is just itself; duplicates collapse.
+    let leaf = l.aging(&[
+        "--account",
+        "1110",
+        "--account",
+        "1110",
+        "--include-children",
+    ]);
+    assert_eq!(leaf["data"]["accounts"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn mixing_receivables_and_payables_is_rejected() {
+    let l = sub_ledgers();
+    let out = l.run(&[
+        "--company",
+        CO,
+        "report",
+        "aging",
+        "--account",
+        "1110",
+        "--account",
+        "2000",
+    ]);
+    assert!(!out.ok);
+    assert!(
+        out.stderr
+            .contains("cannot age asset account 1110 and liability account 2000"),
+        "{}",
+        out.stderr
+    );
+    // A non-AR/AP account is rejected even when other accounts are valid.
+    let out = l.run(&[
+        "--company",
+        CO,
+        "report",
+        "aging",
+        "--account",
+        "1110",
+        "--account",
+        "4000",
+    ]);
+    assert!(!out.ok);
+    assert!(out.stderr.contains("revenue account"), "{}", out.stderr);
+    // An unknown account is not found.
+    let out = l.run(&["--company", CO, "report", "aging", "--account", "1999"]);
+    assert!(!out.ok);
+    assert!(out.stderr.contains("not found"), "{}", out.stderr);
+}
+
+#[test]
+fn specific_links_resolve_within_one_account() {
+    let l = sub_ledgers();
+    let mut args = account_args(&SUB_LEDGERS);
+    args.extend(["--method", "specific"]);
+    let r = l.aging(&args);
+    let links = r["data"]["unmatched_links"]
+        .as_array()
+        .unwrap_or_else(|| panic!("links"));
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0]["account"], "1120");
+    assert_eq!(links[0]["link"], "INV-E1");
+    assert_eq!(links[0]["reason"], "other_account");
+    // The east invoice keeps its FIFO-settled amount: only the east payment
+    // touched it.
+    let east = &r["data"]["accounts"][1]["groups"][0]["open_items"];
+    assert_eq!(
+        open_items_of(east),
+        items(&[("INV-E1", 25_000), ("INV-E2", 30_000)])
+    );
+    // The linked west payment settled its own invoice; the unhonoured one
+    // went FIFO on the west ledger (oldest first: INV-W1).
+    let west = &r["data"]["accounts"][2]["groups"][0]["open_items"];
+    assert_eq!(
+        open_items_of(west),
+        items(&[("INV-W1", 12_000), ("INV-W2", 8_000)])
+    );
+
+    // Alone, the same link is "not on this account".
+    let single = l.aging(&["--account", "1120", "--method", "specific"]);
+    assert_eq!(
+        single["data"]["unmatched_links"][0]["reason"],
+        "not_on_account"
+    );
+}
+
+fn open_items_of(items: &Value) -> Vec<(String, i64)> {
+    open_items(&serde_json::json!({ "open_items": items }))
+}
+
+#[test]
+fn grouping_within_and_across_accounts_in_csv() {
+    let l = sub_ledgers();
+    let mut args = account_args(&["1110", "1120"]);
+    args.extend(["--group-by", "customer"]);
+    let csv = l.aging_text("csv", &args);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "row_type,account,counterparty,Current,1-30,31-60,61-90,90+,total_open,\
+             unapplied_credit,net",
+            "counterparty,1110,Globex,0,0,0,0,25000,25000,0,25000",
+            "counterparty,1110,Initech,0,0,30000,0,0,30000,0,30000",
+            "account,1110,,0,0,30000,0,25000,55000,0,55000",
+            // The west Globex payment predates INV-W2: it was unapplied
+            // credit until INV-W2 consumed it.
+            "counterparty,1120,Globex,0,5000,0,0,0,5000,0,5000",
+            "counterparty,1120,Initech,0,0,0,0,15000,15000,0,15000",
+            "account,1120,,0,5000,0,0,15000,20000,0,20000",
+            "total,,,0,5000,30000,0,40000,75000,0,75000",
+        ],
+        "{csv}"
+    );
+
+    args.push("--group-across-accounts");
+    let csv = l.aging_text("csv", &args);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(
+        lines[1..],
+        [
+            "counterparty,,Globex,0,5000,0,0,25000,30000,0,30000",
+            "counterparty,,Initech,0,0,30000,0,15000,45000,0,45000",
+            "account,1110,,0,0,30000,0,25000,55000,0,55000",
+            "account,1120,,0,5000,0,0,15000,20000,0,20000",
+            "total,,,0,5000,30000,0,40000,75000,0,75000",
+        ],
+        "{csv}"
+    );
+
+    // --group-across-accounts needs --group-by.
+    let out = l.run(&[
+        "--company",
+        CO,
+        "report",
+        "aging",
+        "--account",
+        "1110",
+        "--group-across-accounts",
+    ]);
+    assert!(!out.ok);
+}
+
+#[test]
+fn multi_account_detail_names_the_account() {
+    let l = sub_ledgers();
+    let mut args = account_args(&["1110", "1120"]);
+    args.extend(["--group-by", "customer", "--detail"]);
+    let table = l.aging_text("table", &args);
+    for needle in [
+        "Receivables Aging -- 2 accounts (1110, 1120)",
+        "Open items -- 1110 / Globex",
+        "Open items -- 1120 / Initech",
+        "Subtotal",
+        "Combined balance of 2 accounts",
+    ] {
+        assert!(table.contains(needle), "missing {needle}: {table}");
+    }
+    let csv = l.aging_text("csv", &args);
+    assert!(
+        csv.lines()
+            .any(|l| l.starts_with("item,1120,Initech,") && l.contains(",INV-W1,")),
+        "{csv}"
+    );
+    // JSON items name their account in both views.
+    let r = l.aging(&args);
+    assert_eq!(
+        r["data"]["accounts"][1]["groups"][1]["open_items"][0]["account"],
+        "1120"
+    );
+    let combined_initech = &r["data"]["groups"][1];
+    assert_eq!(combined_initech["counterparty"], "Initech");
+    let accounts: Vec<&str> = combined_initech["open_items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("items"))
+        .iter()
+        .map(|i| i["account"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(accounts, ["1120", "1110"]);
+}
+
+// ---------------------------------------------------------------------------
+// Metadata filter (issue #30)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn filter_shows_disputed_items_at_original_age_net_of_payments() {
+    let l = Ledger::new();
+    let disputed = r#"{"customer":"Globex","status":"disputed"}"#;
+    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-1", Some(disputed)); // 180 days
+    l.post_ref("2026-05-15", "1100", "4000", "300", "INV-2", Some(GLOBEX)); // 46 days
+    l.post_ref("2026-06-20", "1100", "4000", "200", "INV-3", Some(disputed)); // 10 days
+    // Payments carry no status: they still settle the disputed charges.
+    l.post(
+        "2026-06-22",
+        "1000",
+        "1100",
+        "150",
+        Some(r#"{"customer":"Globex","applies_to":"INV-3"}"#),
+    );
+    l.post("2026-06-25", "1000", "1100", "50", Some(GLOBEX));
+
+    let fifo = l.aging(&["--account", "1100", "--filter-metadata", "status=disputed"]);
+    let data = &fifo["data"];
+    assert_eq!(
+        data["metadata_filters"],
+        serde_json::json!([{"key": "status", "value": "disputed"}])
+    );
+    // FIFO: 200 paid against INV-1 (the oldest); INV-3 untouched.
+    assert_eq!(
+        open_items(&data["groups"][0]),
+        items(&[("INV-1", 20_000), ("INV-3", 20_000)])
+    );
+    let item = &data["groups"][0]["open_items"][0];
+    assert_eq!(int(&item["age_days"]), 180);
+    assert_eq!(item["bucket"], "90+");
+    assert_eq!(int(&data["totals"]["total_open"]), 40_000);
+    assert_eq!(int(&data["totals"]["unapplied_credit"]), 0);
+    // The account balance is unfiltered.
+    assert_eq!(int(&data["account_balance"]), 70_000);
+
+    // Specific: the linked payment settles INV-3, the rest goes FIFO to INV-1.
+    let specific = l.aging(&[
+        "--account",
+        "1100",
+        "--method",
+        "specific",
+        "--filter-metadata",
+        "status=disputed",
+    ]);
+    assert_eq!(
+        open_items(&specific["data"]["groups"][0]),
+        items(&[("INV-1", 35_000), ("INV-3", 5_000)])
+    );
+
+    // Filters are AND-ed; nothing matches -> no groups, zero totals.
+    let none = l.aging(&[
+        "--account",
+        "1100",
+        "--filter-metadata",
+        "status=disputed",
+        "--filter-metadata",
+        "customer=Initech",
+    ]);
+    assert_eq!(none["data"]["groups"].as_array().map(Vec::len), Some(0));
+    assert_eq!(int(&none["data"]["totals"]["total_open"]), 0);
+
+    let table = l.aging_text(
+        "table",
+        &["--account", "1100", "--filter-metadata", "status=disputed"],
+    );
+    assert!(
+        table.contains("Metadata filter: status=disputed"),
+        "{table}"
+    );
+    assert!(
+        table.contains("Account balance (unfiltered): 700.00"),
+        "{table}"
+    );
+
+    let bad = l.run(&[
+        "--company",
+        CO,
+        "report",
+        "aging",
+        "--account",
+        "1100",
+        "--filter-metadata",
+        "status",
+    ]);
+    assert!(!bad.ok);
+    assert!(bad.stderr.contains("expected KEY=VALUE"), "{}", bad.stderr);
 }

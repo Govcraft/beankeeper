@@ -8,6 +8,7 @@ pub mod clearings;
 pub mod companies;
 pub mod connection;
 pub mod metadata;
+pub mod metadata_filter;
 pub mod schema;
 pub mod transactions;
 
@@ -58,7 +59,7 @@ pub struct CompanyRow {
 }
 
 /// A row from the `accounts` table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRow {
     pub company_slug: String,
     pub code: String,

@@ -3,7 +3,7 @@
 //! # Model and assumptions
 //!
 //! The ledger has **no invoice or due-date model**. The aging report therefore
-//! works from the raw entries posted to a single account:
+//! works from the raw entries posted to each aged account:
 //!
 //! - For an **asset** account (receivables) a transaction whose net effect on
 //!   the account is a debit is a *charge*; a net credit is a *settlement*.
@@ -37,22 +37,43 @@
 //! leniently as JSON; when it is an object holding a string or number under
 //! `key` that value is the counterparty, otherwise the counterparty is
 //! [`UNASSIGNED`]. Matching runs independently per counterparty.
+//!
+//! # Several accounts (issue #29)
+//!
+//! `--account` is repeatable, and `--include-children` adds every account
+//! whose code starts with an account's [`child_prefix`] (its code minus
+//! trailing zeros). Every selected account is aged on its own, exactly as in a
+//! single-account run, so the combined totals are the sums of the
+//! single-account totals and a settlement link never resolves to another
+//! account (it is reported as [`UnmatchedReason::OtherAccount`]). All
+//! accounts must share one [`AgingKind`] ([`common_kind`]). The
+//! [`MultiAgingReport`] keeps the per-account reports and also merges each
+//! counterparty's groups across accounts ([`combine`]).
+//!
+//! # Metadata filter (issue #30)
+//!
+//! With `--filter-metadata`, matching still runs on every movement; only then
+//! are the open items restricted to charges whose metadata matches
+//! ([`restrict_to_charges`]). A filtered charge therefore keeps its original
+//! age and shows what is still open after every settlement applied to it.
+//! Unapplied credit cannot be attributed to a charge and is not shown.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use beankeeper::types::Currency;
 use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::cli::{AgingMethodArg, Cli, OutputFormat, ReportCommand};
 use crate::db;
 use crate::db::connection::Db;
+use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
 
@@ -69,8 +90,10 @@ const ALL_LABEL: &str = "(all)";
 /// Options for `bk report aging`.
 #[derive(Debug, Clone, Copy)]
 pub struct AgingOptions<'a> {
-    /// Account code to age.
-    pub account: &'a str,
+    /// Account codes to age (at least one).
+    pub accounts: &'a [String],
+    /// Also age every child of each account (see [`child_prefix`]).
+    pub include_children: bool,
     /// As-of date (`YYYY-MM-DD`); defaults to today.
     pub as_of: Option<&'a str>,
     /// Comma-separated ascending bucket bounds in days.
@@ -85,6 +108,10 @@ pub struct AgingOptions<'a> {
     pub link_key: Option<&'a str>,
     /// List individual open charges in table and CSV output.
     pub detail: bool,
+    /// Combine counterparty rows across accounts in table and CSV output.
+    pub group_across_accounts: bool,
+    /// `KEY=VALUE` filters selecting which open charges are shown.
+    pub filter_metadata: &'a [String],
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +286,9 @@ pub enum UnmatchedReason {
     AfterAsOf,
     /// The charge belongs to a different counterparty group.
     OtherCounterparty,
+    /// The charge is on another of the selected accounts; links resolve
+    /// within one account only.
+    OtherAccount,
     /// The link value has an unsupported type.
     Invalid,
 }
@@ -272,6 +302,9 @@ impl UnmatchedReason {
             Self::ChargeAfterSettlement => "that charge is dated after the settlement",
             Self::AfterAsOf => "that transaction is dated after the as-of date",
             Self::OtherCounterparty => "that charge belongs to another counterparty",
+            Self::OtherAccount => {
+                "that charge is on another selected account (links resolve within one account)"
+            }
             Self::Invalid => {
                 "the link must be a reference string, a transaction id, or an array of these"
             }
@@ -293,6 +326,8 @@ pub struct UnmatchedLink {
     pub reason: UnmatchedReason,
     /// The settlement's counterparty (filled in by [`build_report`]).
     pub counterparty: Option<String>,
+    /// The aged account the settlement is on (filled in per account).
+    pub account: Option<String>,
 }
 
 /// Result of matching settlements to charges.
@@ -496,6 +531,7 @@ fn unmatched(
         target,
         reason,
         counterparty: None,
+        account: None,
     }
 }
 
@@ -818,6 +854,233 @@ fn classify_cross_group(
 }
 
 // ---------------------------------------------------------------------------
+// Several accounts and metadata filter (issues #29, #30)
+// ---------------------------------------------------------------------------
+
+/// The code prefix shared by an account's children: the code minus trailing
+/// zeros (`1200` -> `12`, `1210` -> `121`). `None` when nothing is left
+/// (`0`, `000`).
+#[must_use]
+pub fn child_prefix(code: &str) -> Option<&str> {
+    let prefix = code.trim_end_matches('0');
+    (!prefix.is_empty()).then_some(prefix)
+}
+
+/// The accounts to age: each requested code and, with `include_children`,
+/// every code in `all_codes` starting with its [`child_prefix`].
+/// Deduplicated and sorted by code.
+///
+/// # Errors
+///
+/// Returns [`CliError::Validation`] when `include_children` is set for a code
+/// with no prefix (all zeros), which would select every account.
+pub fn select_accounts(
+    requested: &[String],
+    all_codes: &[&str],
+    include_children: bool,
+) -> Result<Vec<String>, CliError> {
+    let mut selected = BTreeSet::new();
+    for code in requested {
+        selected.insert(code.clone());
+        if include_children {
+            let prefix = child_prefix(code).ok_or_else(|| {
+                CliError::Validation(format!(
+                    "--include-children: account code '{code}' has no prefix to match \
+                     children on (it is all zeros)"
+                ))
+            })?;
+            selected.extend(
+                all_codes
+                    .iter()
+                    .filter(|c| c.starts_with(prefix))
+                    .map(ToString::to_string),
+            );
+        }
+    }
+    Ok(selected.into_iter().collect())
+}
+
+/// The aging kind shared by every selected account.
+///
+/// # Errors
+///
+/// Returns [`CliError::Validation`] for an account that is neither an asset
+/// nor a liability, and for a mix of the two (they age opposite sides).
+pub fn common_kind(accounts: &[db::AccountRow]) -> Result<AgingKind, CliError> {
+    let mut kinds: Vec<(AgingKind, &str)> = Vec::with_capacity(accounts.len());
+    for a in accounts {
+        let kind = AgingKind::from_account_type(&a.account_type).ok_or_else(|| {
+            CliError::Validation(format!(
+                "account {} is a {} account; aging supports only asset (receivable) \
+                 and liability (payable) accounts",
+                a.code, a.account_type
+            ))
+        })?;
+        kinds.push((kind, &a.code));
+    }
+    let receivable = kinds.iter().find(|(k, _)| *k == AgingKind::Receivable);
+    let payable = kinds.iter().find(|(k, _)| *k == AgingKind::Payable);
+    match (receivable, payable) {
+        (Some((_, asset)), Some((_, liability))) => Err(CliError::Validation(format!(
+            "cannot age asset account {asset} and liability account {liability} in one run: \
+             receivables age debits and payables age credits; run them separately"
+        ))),
+        (Some(_), None) => Ok(AgingKind::Receivable),
+        (None, Some(_)) => Ok(AgingKind::Payable),
+        (None, None) => Err(CliError::Validation(
+            "no account to age: pass --account".to_string(),
+        )),
+    }
+}
+
+/// Restrict a report to the open items whose charge transaction id passes
+/// `keep` (the charges matching `--filter-metadata`).
+///
+/// Matching already ran on every movement, so the kept items carry their
+/// original age and the amount still open after settlements. Unapplied
+/// credit cannot be attributed to a charge and is dropped, as are groups
+/// left without items. `account_balance` and `unmatched_links` are kept.
+pub fn restrict_to_charges(report: &mut AgingReport, keep: impl Fn(i64) -> bool) {
+    let n = report.buckets.len();
+    for g in &mut report.groups {
+        g.items.retain(|a| keep(a.item.transaction_id));
+        g.bucket_totals = vec![0; n];
+        for a in &g.items {
+            if let Some(total) = g.bucket_totals.get_mut(a.bucket) {
+                *total += a.item.open;
+            }
+        }
+        g.total_open = g.items.iter().map(|a| a.item.open).sum();
+        g.unapplied_credit = 0;
+    }
+    report.groups.retain(|g| !g.items.is_empty());
+    report.bucket_totals = vec![0; n];
+    for g in &report.groups {
+        for (total, v) in report.bucket_totals.iter_mut().zip(&g.bucket_totals) {
+            *total += v;
+        }
+    }
+    report.total_open = report.groups.iter().map(|g| g.total_open).sum();
+    report.unapplied_credit = 0;
+}
+
+/// One account's aging inside a multi-account report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountAging {
+    pub account: db::AccountRow,
+    pub report: AgingReport,
+}
+
+/// A counterparty's aging combined across accounts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombinedGroup {
+    pub counterparty: Option<String>,
+    /// `(account code, item)`, ordered by date then transaction id.
+    pub items: Vec<(String, AgedItem)>,
+    pub bucket_totals: Vec<i64>,
+    pub total_open: i64,
+    pub unapplied_credit: i64,
+}
+
+impl CombinedGroup {
+    /// `total_open - unapplied_credit`; negative means a net credit.
+    #[must_use]
+    pub fn net(&self) -> i64 {
+        self.total_open - self.unapplied_credit
+    }
+}
+
+/// The aging of one or more accounts of the same kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiAgingReport {
+    pub kind: AgingKind,
+    pub method: MatchMethod,
+    pub buckets: Vec<Bucket>,
+    /// Per-account reports, ordered by account code.
+    pub accounts: Vec<AccountAging>,
+    /// Counterparty groups combined across accounts.
+    pub groups: Vec<CombinedGroup>,
+    pub bucket_totals: Vec<i64>,
+    pub total_open: i64,
+    pub unapplied_credit: i64,
+    /// Sum of the accounts' balances (normal direction) as of the date.
+    pub account_balance: i64,
+    /// Every account's unmatched links, ordered by settlement date then id.
+    pub unmatched_links: Vec<UnmatchedLink>,
+}
+
+impl MultiAgingReport {
+    /// `total_open - unapplied_credit`.
+    #[must_use]
+    pub fn net(&self) -> i64 {
+        self.total_open - self.unapplied_credit
+    }
+}
+
+/// Combine per-account reports: totals are the sums of the accounts' totals,
+/// and each counterparty's groups are merged across accounts.
+#[must_use]
+pub fn combine(
+    kind: AgingKind,
+    method: MatchMethod,
+    buckets: Vec<Bucket>,
+    accounts: Vec<AccountAging>,
+) -> MultiAgingReport {
+    let n = buckets.len();
+    let mut bucket_totals = vec![0i64; n];
+    let mut by_group: BTreeMap<Option<String>, CombinedGroup> = BTreeMap::new();
+    let mut unmatched_links = Vec::new();
+    for a in &accounts {
+        for (total, v) in bucket_totals.iter_mut().zip(&a.report.bucket_totals) {
+            *total += v;
+        }
+        for g in &a.report.groups {
+            let c = by_group
+                .entry(g.counterparty.clone())
+                .or_insert_with(|| CombinedGroup {
+                    counterparty: g.counterparty.clone(),
+                    items: Vec::new(),
+                    bucket_totals: vec![0; n],
+                    total_open: 0,
+                    unapplied_credit: 0,
+                });
+            c.items.extend(
+                g.items
+                    .iter()
+                    .map(|item| (a.account.code.clone(), item.clone())),
+            );
+            for (total, v) in c.bucket_totals.iter_mut().zip(&g.bucket_totals) {
+                *total += v;
+            }
+            c.total_open += g.total_open;
+            c.unapplied_credit += g.unapplied_credit;
+        }
+        unmatched_links.extend(a.report.unmatched_links.iter().cloned());
+    }
+    let groups = by_group
+        .into_values()
+        .map(|mut g| {
+            g.items
+                .sort_by_key(|(_, a)| (a.item.date, a.item.transaction_id));
+            g
+        })
+        .collect();
+    unmatched_links.sort_by_key(|u| (u.settlement_date, u.settlement_transaction_id));
+    MultiAgingReport {
+        kind,
+        method,
+        buckets,
+        total_open: accounts.iter().map(|a| a.report.total_open).sum(),
+        unapplied_credit: accounts.iter().map(|a| a.report.unapplied_credit).sum(),
+        account_balance: accounts.iter().map(|a| a.report.account_balance).sum(),
+        bucket_totals,
+        groups,
+        accounts,
+        unmatched_links,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Database access
 // ---------------------------------------------------------------------------
 
@@ -830,6 +1093,8 @@ struct TxnTotals {
     metadata: Option<String>,
     debit_total: i64,
     credit_total: i64,
+    /// Whether the metadata matches `--filter-metadata` (always with none).
+    matches_filter: bool,
 }
 
 /// Load per-transaction totals for the account, dated on or before `as_of`.
@@ -837,21 +1102,30 @@ fn load_account_transactions(
     conn: &Connection,
     company: &str,
     account: &str,
-    currency: &str,
-    as_of: &str,
+    scope: &AgingScope<'_>,
 ) -> Result<Vec<TxnTotals>, CliError> {
-    let mut stmt = conn.prepare(
+    let filter = metadata_filter::sql_predicate("t.metadata", scope.filters, 5);
+    let mut stmt = conn.prepare(&format!(
         "SELECT t.id, t.date, t.description, t.reference, t.metadata, \
             COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
-            COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
+            COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0), \
+            {} \
          FROM entries e \
          JOIN transactions t ON t.id = e.transaction_id \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 \
            AND t.currency = ?3 AND t.date <= ?4 \
          GROUP BY t.id \
          ORDER BY t.date, t.id",
-    )?;
-    let rows = stmt.query_map(params![company, account, currency, as_of], |row| {
+        filter.sql
+    ))?;
+    let mut values = vec![
+        company.to_string(),
+        account.to_string(),
+        scope.currency.code().to_string(),
+        scope.as_of_str.clone(),
+    ];
+    values.extend(filter.params);
+    let rows = stmt.query_map(params_from_iter(values), |row| {
         Ok(TxnTotals {
             id: row.get(0)?,
             date: row.get(1)?,
@@ -860,20 +1134,51 @@ fn load_account_transactions(
             metadata: row.get(4)?,
             debit_total: row.get(5)?,
             credit_total: row.get(6)?,
+            matches_filter: row.get(7)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
 }
 
+/// The id of the company transaction a link points at, if any.
+fn find_link_target(
+    conn: &Connection,
+    company: &str,
+    target: &LinkTarget,
+) -> Result<Option<i64>, CliError> {
+    if let LinkTarget::Reference(r) = target {
+        let id = conn
+            .query_row(
+                "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
+                params![company, r],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if id.is_some() {
+            return Ok(id);
+        }
+    }
+    let Some(fallback) = target.fallback_id() else {
+        return Ok(None);
+    };
+    conn.query_row(
+        "SELECT id FROM transactions WHERE company_slug = ?1 AND id = ?2",
+        params![company, fallback],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(CliError::from)
+}
+
 /// Re-classify links still `NotFound` after matching using the whole
-/// company's transactions: a transaction that exists but is not loaded is
-/// either on this account and currency but dated after `as_of`, or not on
-/// this account/currency at all.
+/// company's transactions: a transaction that exists but is not loaded is on
+/// this account and currency but dated after `as_of`, on another selected
+/// account, or not on any selected account at all.
 fn classify_with_db(
     conn: &Connection,
     company: &str,
     account: &str,
-    currency: &str,
+    scope: &AgingScope<'_>,
     unmatched: &mut [UnmatchedLink],
 ) -> Result<(), CliError> {
     for u in unmatched
@@ -881,42 +1186,57 @@ fn classify_with_db(
         .filter(|u| u.reason == UnmatchedReason::NotFound)
     {
         let Some(target) = &u.target else { continue };
-        let mut id: Option<i64> = None;
-        if let LinkTarget::Reference(r) = target {
-            id = conn
-                .query_row(
-                    "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
-                    params![company, r],
-                    |row| row.get(0),
-                )
-                .optional()?;
-        }
-        if id.is_none()
-            && let Some(fallback) = target.fallback_id()
-        {
-            id = conn
-                .query_row(
-                    "SELECT id FROM transactions WHERE company_slug = ?1 AND id = ?2",
-                    params![company, fallback],
-                    |row| row.get(0),
-                )
-                .optional()?;
-        }
-        let Some(id) = id else { continue };
-        let on_account: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM entries e JOIN transactions t ON t.id = e.transaction_id \
-             WHERE e.transaction_id = ?1 AND e.company_slug = ?2 AND e.account_code = ?3 \
-               AND t.currency = ?4)",
-            params![id, company, account, currency],
-            |row| row.get(0),
+        let Some(id) = find_link_target(conn, company, target)? else {
+            continue;
+        };
+        let mut stmt = conn.prepare_cached(
+            "SELECT DISTINCT e.account_code FROM entries e \
+             JOIN transactions t ON t.id = e.transaction_id \
+             WHERE e.transaction_id = ?1 AND e.company_slug = ?2 AND t.currency = ?3",
         )?;
-        u.reason = if on_account {
+        let on: Vec<String> = stmt
+            .query_map(params![id, company, scope.currency.code()], |row| {
+                row.get(0)
+            })?
+            .collect::<Result<_, _>>()?;
+        u.reason = if on.iter().any(|c| c == account) {
             UnmatchedReason::AfterAsOf
+        } else if on.iter().any(|c| scope.selected.contains(c)) {
+            UnmatchedReason::OtherAccount
         } else {
             UnmatchedReason::NotOnAccount
         };
     }
     Ok(())
+}
+
+/// Resolve the requested codes (plus children) to account rows.
+fn resolve_accounts(
+    conn: &Connection,
+    company: &str,
+    requested: &[String],
+    include_children: bool,
+) -> Result<Vec<db::AccountRow>, CliError> {
+    for code in requested {
+        db::get_account(conn, company, code)?;
+    }
+    let all = if include_children {
+        db::list_accounts(
+            conn,
+            &db::ListAccountParams {
+                company_slug: company,
+                type_filter: None,
+                name_filter: None,
+            },
+        )?
+    } else {
+        Vec::new()
+    };
+    let all_codes: Vec<&str> = all.iter().map(|a| a.code.as_str()).collect();
+    select_accounts(requested, &all_codes, include_children)?
+        .iter()
+        .map(|code| db::get_account(conn, company, code))
+        .collect()
 }
 
 /// Resolve the report currency via the shared report resolver
@@ -954,6 +1274,7 @@ pub fn run_command(
 ) -> Result<(), CliError> {
     let ReportCommand::Aging {
         account,
+        include_children,
         as_of,
         buckets,
         group_by_metadata,
@@ -961,6 +1282,8 @@ pub fn run_command(
         method,
         link_key,
         detail,
+        group_across_accounts,
+        filter_metadata,
     } = sub
     else {
         return Err(CliError::General(
@@ -968,7 +1291,8 @@ pub fn run_command(
         ));
     };
     let opts = AgingOptions {
-        account,
+        accounts: account,
+        include_children: *include_children,
         as_of: as_of.as_deref(),
         buckets,
         group_by_metadata: group_by_metadata.as_deref(),
@@ -976,17 +1300,91 @@ pub fn run_command(
         method: (*method).into(),
         link_key: link_key.as_deref(),
         detail: *detail,
+        group_across_accounts: *group_across_accounts,
+        filter_metadata,
     };
     run(cli, db, company, &opts, format, use_color)
+}
+
+/// Everything shared by the per-account aging runs.
+struct AgingScope<'a> {
+    kind: AgingKind,
+    as_of: NaiveDate,
+    as_of_str: String,
+    currency: Currency,
+    buckets: Vec<Bucket>,
+    method: MatchMethod,
+    group_by: Option<&'a str>,
+    link_key: Option<&'a str>,
+    filters: &'a [MetadataFilter],
+    /// Codes of every selected account.
+    selected: &'a [String],
+}
+
+/// Age one account: load, match, filter, and classify unmatched links.
+fn age_account(
+    conn: &Connection,
+    company: &str,
+    account: db::AccountRow,
+    scope: &AgingScope<'_>,
+) -> Result<AccountAging, CliError> {
+    let rows = load_account_transactions(conn, company, &account.code, scope)?;
+    let mut keep = HashSet::new();
+    let mut grouped = Vec::with_capacity(rows.len());
+    for r in rows {
+        let date = NaiveDate::parse_from_str(&r.date, "%Y-%m-%d").map_err(|e| {
+            CliError::Database(format!(
+                "transaction {} has an invalid date '{}': {e}",
+                r.id, r.date
+            ))
+        })?;
+        if r.matches_filter {
+            keep.insert(r.id);
+        }
+        let key = scope
+            .group_by
+            .map(|k| counterparty_from_metadata(r.metadata.as_deref(), k));
+        let links = scope.link_key.map_or(LinkSpec::None, |k| {
+            parse_link_spec(r.metadata.as_deref(), k)
+        });
+        grouped.push((
+            key,
+            Movement {
+                transaction_id: r.id,
+                date,
+                description: r.description,
+                reference: r.reference,
+                amount: scope.kind.charge_amount(r.debit_total, r.credit_total),
+                links,
+            },
+        ));
+    }
+
+    let mut report = build_report(grouped, scope.as_of, scope.buckets.clone(), scope.method);
+    if !scope.filters.is_empty() {
+        restrict_to_charges(&mut report, |id| keep.contains(&id));
+    }
+    classify_with_db(
+        conn,
+        company,
+        &account.code,
+        scope,
+        &mut report.unmatched_links,
+    )?;
+    for u in &mut report.unmatched_links {
+        u.account = Some(account.code.clone());
+    }
+    Ok(AccountAging { account, report })
 }
 
 /// Execute `bk report aging`.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Validation`] for a non-asset/liability account, a bad
-/// date, bucket spec, link key or currency (or an ambiguous currency), and
-/// [`CliError::NotFound`] when the account does not exist.
+/// Returns [`CliError::Validation`] for a non-asset/liability account, a mix
+/// of asset and liability accounts, a bad date, bucket spec, link key,
+/// metadata filter or currency (or an ambiguous currency), and
+/// [`CliError::NotFound`] when an account does not exist.
 pub fn run(
     cli: &Cli,
     db: &Db,
@@ -999,72 +1397,43 @@ pub fn run(
         Some(d) => parse_date(d, "--as-of date")?,
         None => chrono::Local::now().date_naive(),
     };
-    let as_of_str = as_of.format("%Y-%m-%d").to_string();
     let buckets = build_buckets(&parse_buckets(opts.buckets)?);
-    let link_key = resolve_link_key(opts)?;
+    let link_key = resolve_link_key(opts.method, opts.link_key)?;
+    let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
 
-    let account = db::get_account(db.conn(), company, opts.account)?;
-    let kind = AgingKind::from_account_type(&account.account_type).ok_or_else(|| {
-        CliError::Validation(format!(
-            "account {} is a {} account; aging supports only asset (receivable) \
-             and liability (payable) accounts",
-            account.code, account.account_type
-        ))
-    })?;
+    let accounts = resolve_accounts(db.conn(), company, opts.accounts, opts.include_children)?;
+    let kind = common_kind(&accounts)?;
     let currency = resolve_currency(db.conn(), company, opts.currency)?;
+    let selected: Vec<String> = accounts.iter().map(|a| a.code.clone()).collect();
 
-    let rows = load_account_transactions(
-        db.conn(),
-        company,
-        &account.code,
-        currency.code(),
-        &as_of_str,
-    )?;
-
-    let mut grouped = Vec::with_capacity(rows.len());
-    for r in rows {
-        let date = NaiveDate::parse_from_str(&r.date, "%Y-%m-%d").map_err(|e| {
-            CliError::Database(format!(
-                "transaction {} has an invalid date '{}': {e}",
-                r.id, r.date
-            ))
-        })?;
-        let key = opts
-            .group_by_metadata
-            .map(|k| counterparty_from_metadata(r.metadata.as_deref(), k));
-        let links = link_key.map_or(LinkSpec::None, |k| {
-            parse_link_spec(r.metadata.as_deref(), k)
-        });
-        grouped.push((
-            key,
-            Movement {
-                transaction_id: r.id,
-                date,
-                description: r.description,
-                reference: r.reference,
-                amount: kind.charge_amount(r.debit_total, r.credit_total),
-                links,
-            },
-        ));
-    }
-
-    let mut report = build_report(grouped, as_of, buckets, opts.method);
-    classify_with_db(
-        db.conn(),
-        company,
-        &account.code,
-        currency.code(),
-        &mut report.unmatched_links,
-    )?;
+    let scope = AgingScope {
+        kind,
+        as_of,
+        as_of_str: as_of.format("%Y-%m-%d").to_string(),
+        currency,
+        buckets,
+        method: opts.method,
+        group_by: opts.group_by_metadata,
+        link_key,
+        filters: &filters,
+        selected: &selected,
+    };
+    let per_account = accounts
+        .into_iter()
+        .map(|a| age_account(db.conn(), company, a, &scope))
+        .collect::<Result<Vec<_>, _>>()?;
+    let report = combine(kind, opts.method, scope.buckets.clone(), per_account);
 
     let ctx = RenderContext {
-        account: &account,
         kind,
-        as_of: &as_of_str,
+        as_of: &scope.as_of_str,
         currency,
         group_by: opts.group_by_metadata,
         link_key,
         detail: opts.detail,
+        across: opts.group_across_accounts,
+        include_children: opts.include_children,
+        filters: &filters,
     };
 
     match format {
@@ -1075,17 +1444,21 @@ pub fn run(
 
     if !cli.verbosity.quiet {
         for u in &report.unmatched_links {
-            eprintln!("[warn] {}", describe_unmatched(u, &ctx));
+            eprintln!("[warn] {}", describe_unmatched(u, &report, &ctx));
         }
-        eprintln!("[ok] aging report generated for account {}", account.code);
+        eprintln!(
+            "[ok] aging report generated for account{} {}",
+            if selected.len() == 1 { "" } else { "s" },
+            selected.join(", ")
+        );
     }
     Ok(())
 }
 
 /// The link key in effect: `--link-key` (or the default) with the specific
 /// method, `None` with FIFO.
-fn resolve_link_key<'a>(opts: &AgingOptions<'a>) -> Result<Option<&'a str>, CliError> {
-    match (opts.method, opts.link_key) {
+fn resolve_link_key(method: MatchMethod, link_key: Option<&str>) -> Result<Option<&str>, CliError> {
+    match (method, link_key) {
         (MatchMethod::Fifo, Some(_)) => Err(CliError::Validation(
             "--link-key only applies with --method specific".to_string(),
         )),
@@ -1098,17 +1471,144 @@ fn resolve_link_key<'a>(opts: &AgingOptions<'a>) -> Result<Option<&'a str>, CliE
 }
 
 // ---------------------------------------------------------------------------
+// Summary rows (shared by table and CSV)
+// ---------------------------------------------------------------------------
+
+/// What a summary row totals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    /// One counterparty (within an account, or across accounts).
+    Counterparty,
+    /// One account: its only row when ungrouped, else its subtotal.
+    Account,
+    /// The grand total.
+    Total,
+}
+
+impl RowKind {
+    fn csv(self) -> &'static str {
+        match self {
+            Self::Counterparty => "counterparty",
+            Self::Account => "account",
+            Self::Total => "total",
+        }
+    }
+}
+
+/// One line of the summary, with the open items it totals (`--detail`).
+struct SummaryRow<'a> {
+    kind: RowKind,
+    account: Option<&'a db::AccountRow>,
+    /// Counterparty label (grouped reports only).
+    counterparty: Option<&'a str>,
+    bucket_totals: &'a [i64],
+    total_open: i64,
+    unapplied_credit: i64,
+    /// `(account code, item)` for leaf rows; empty for subtotals.
+    items: Vec<(&'a str, &'a AgedItem)>,
+}
+
+impl SummaryRow<'_> {
+    fn net(&self) -> i64 {
+        self.total_open - self.unapplied_credit
+    }
+}
+
+fn account_row(a: &AccountAging, with_items: bool) -> SummaryRow<'_> {
+    SummaryRow {
+        kind: RowKind::Account,
+        account: Some(&a.account),
+        counterparty: None,
+        bucket_totals: &a.report.bucket_totals,
+        total_open: a.report.total_open,
+        unapplied_credit: a.report.unapplied_credit,
+        items: if with_items {
+            a.report
+                .groups
+                .iter()
+                .flat_map(|g| g.items.iter().map(|i| (a.account.code.as_str(), i)))
+                .collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// The summary rows, in display order:
+///
+/// - ungrouped: one `Account` row per account (carrying its items);
+/// - grouped: per account, its `Counterparty` rows then (with several
+///   accounts) an `Account` subtotal; with `across`, the combined
+///   `Counterparty` rows first, then (with several accounts) the `Account`
+///   subtotals;
+///
+/// and finally the `Total` row.
+fn summary_rows<'a>(r: &'a MultiAgingReport, ctx: &RenderContext<'_>) -> Vec<SummaryRow<'a>> {
+    let multi = r.accounts.len() > 1;
+    let mut rows = Vec::new();
+    if ctx.group_by.is_none() {
+        rows.extend(r.accounts.iter().map(|a| account_row(a, true)));
+    } else if ctx.across {
+        rows.extend(r.groups.iter().map(|g| SummaryRow {
+            kind: RowKind::Counterparty,
+            account: None,
+            counterparty: Some(g.counterparty.as_deref().unwrap_or(ALL_LABEL)),
+            bucket_totals: &g.bucket_totals,
+            total_open: g.total_open,
+            unapplied_credit: g.unapplied_credit,
+            items: g.items.iter().map(|(c, i)| (c.as_str(), i)).collect(),
+        }));
+        if multi {
+            rows.extend(r.accounts.iter().map(|a| account_row(a, false)));
+        }
+    } else {
+        for a in &r.accounts {
+            rows.extend(a.report.groups.iter().map(|g| {
+                SummaryRow {
+                    kind: RowKind::Counterparty,
+                    account: Some(&a.account),
+                    counterparty: Some(group_label(g)),
+                    bucket_totals: &g.bucket_totals,
+                    total_open: g.total_open,
+                    unapplied_credit: g.unapplied_credit,
+                    items: g
+                        .items
+                        .iter()
+                        .map(|i| (a.account.code.as_str(), i))
+                        .collect(),
+                }
+            }));
+            if multi {
+                rows.push(account_row(a, false));
+            }
+        }
+    }
+    rows.push(SummaryRow {
+        kind: RowKind::Total,
+        account: None,
+        counterparty: None,
+        bucket_totals: &r.bucket_totals,
+        total_open: r.total_open,
+        unapplied_credit: r.unapplied_credit,
+        items: Vec::new(),
+    });
+    rows
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
 struct RenderContext<'a> {
-    account: &'a db::AccountRow,
     kind: AgingKind,
     as_of: &'a str,
     currency: Currency,
     group_by: Option<&'a str>,
     link_key: Option<&'a str>,
     detail: bool,
+    across: bool,
+    include_children: bool,
+    filters: &'a [MetadataFilter],
 }
 
 /// Note printed with the table explaining the aging basis.
@@ -1128,13 +1628,18 @@ fn basis_note(method: MatchMethod, link_key: Option<&str>) -> String {
 }
 
 /// One-line description of an unmatched link (warnings and table output).
-fn describe_unmatched(u: &UnmatchedLink, ctx: &RenderContext<'_>) -> String {
+fn describe_unmatched(u: &UnmatchedLink, r: &MultiAgingReport, ctx: &RenderContext<'_>) -> String {
+    let account = u
+        .account
+        .as_deref()
+        .filter(|_| r.accounts.len() > 1)
+        .map_or_else(String::new, |a| format!("{a}, "));
     let who = u
         .counterparty
         .as_deref()
         .map_or_else(String::new, |c| format!(", {c}"));
     format!(
-        "settlement txn {} ({}{who}, {}): link {}={} ignored -- {}; applied FIFO",
+        "settlement txn {} ({account}{}{who}, {}): link {}={} ignored -- {}; applied FIFO",
         u.settlement_transaction_id,
         u.settlement_date.format("%Y-%m-%d"),
         format_amount(u.settlement_amount, ctx.currency.minor_units()),
@@ -1205,166 +1710,270 @@ fn right(text: String) -> Cell {
     Cell::new(text).set_alignment(CellAlignment::Right)
 }
 
-fn render_summary_table(report: &AgingReport, ctx: &RenderContext<'_>, use_color: bool) -> Table {
+/// Whether the summary table needs an Account column: always without
+/// grouping (the account is the row), and with several accounts.
+fn shows_account_column(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> bool {
+    ctx.group_by.is_none() || r.accounts.len() > 1
+}
+
+/// The label columns of a summary row (Account and/or Counterparty).
+fn label_cells(row: &SummaryRow<'_>, account_col: bool, grouped: bool) -> Vec<String> {
+    let account = match (row.kind, row.account) {
+        (RowKind::Total, _) => "Total".to_string(),
+        (RowKind::Account, Some(a)) if !grouped => format!("{} {}", a.code, a.name),
+        (_, Some(a)) => a.code.clone(),
+        (_, None) => String::new(),
+    };
+    let counterparty = match row.kind {
+        RowKind::Counterparty => row.counterparty.unwrap_or_default().to_string(),
+        RowKind::Account => "Subtotal".to_string(),
+        RowKind::Total if account_col => String::new(),
+        RowKind::Total => "Total".to_string(),
+    };
+    match (account_col, grouped) {
+        (true, true) => vec![account, counterparty],
+        (true, false) => vec![account],
+        (false, _) => vec![counterparty],
+    }
+}
+
+fn render_summary_table(
+    r: &MultiAgingReport,
+    rows: &[SummaryRow<'_>],
+    ctx: &RenderContext<'_>,
+    use_color: bool,
+) -> Table {
     let bold = anstyle::Style::new().bold();
     let mu = ctx.currency.minor_units();
+    let account_col = shows_account_column(r, ctx);
     let mut table = new_table();
 
-    let first_header = ctx
-        .group_by
-        .map_or_else(|| "Account".to_string(), |k| format!("Counterparty ({k})"));
-    let mut header = vec![Cell::new(styled(&first_header, bold, use_color))];
-    for b in &report.buckets {
-        header.push(Cell::new(styled(&b.label, bold, use_color)));
+    let mut header = Vec::new();
+    if account_col {
+        header.push("Account".to_string());
     }
-    for h in ["Total Open", "Unapplied Credit", "Net"] {
-        header.push(Cell::new(styled(h, bold, use_color)));
+    if let Some(k) = ctx.group_by {
+        header.push(format!("Counterparty ({k})"));
     }
-    table.set_header(header);
-
-    for g in &report.groups {
-        let mut row = vec![Cell::new(group_label(g))];
-        row.extend(g.bucket_totals.iter().map(|&v| right(format_amount(v, mu))));
-        row.push(right(format_amount(g.total_open, mu)));
-        row.push(right(format_amount(g.unapplied_credit, mu)));
-        row.push(right(format_net(g.net(), mu)));
-        table.add_row(row);
-    }
-
-    let bold_amount = |text: String| right(styled(&text, bold, use_color));
-    let mut total_row = vec![Cell::new(styled("Total", bold, use_color))];
-    total_row.extend(
-        report
-            .bucket_totals
+    header.extend(r.buckets.iter().map(|b| b.label.clone()));
+    header.extend(["Total Open", "Unapplied Credit", "Net"].map(str::to_string));
+    table.set_header(
+        header
             .iter()
-            .map(|&v| bold_amount(format_amount(v, mu))),
+            .map(|h| Cell::new(styled(h, bold, use_color)))
+            .collect::<Vec<_>>(),
     );
-    total_row.push(bold_amount(format_amount(report.total_open, mu)));
-    total_row.push(bold_amount(format_amount(report.unapplied_credit, mu)));
-    total_row.push(bold_amount(format_net(report.net(), mu)));
-    table.add_row(total_row);
+
+    for row in rows {
+        let emphasis = row.kind != RowKind::Counterparty && ctx.group_by.is_some()
+            || row.kind == RowKind::Total;
+        let cell = |text: String| {
+            if emphasis {
+                styled(&text, bold, use_color)
+            } else {
+                text
+            }
+        };
+        let mut cells: Vec<Cell> = label_cells(row, account_col, ctx.group_by.is_some())
+            .into_iter()
+            .map(|t| Cell::new(cell(t)))
+            .collect();
+        cells.extend(
+            row.bucket_totals
+                .iter()
+                .map(|&v| right(cell(format_amount(v, mu)))),
+        );
+        cells.push(right(cell(format_amount(row.total_open, mu))));
+        cells.push(right(cell(format_amount(row.unapplied_credit, mu))));
+        cells.push(right(cell(format_net(row.net(), mu))));
+        table.add_row(cells);
+    }
     table
 }
 
-/// Per-counterparty open-item tables for `--detail`.
-fn render_detail(report: &AgingReport, ctx: &RenderContext<'_>, use_color: bool) -> Vec<String> {
+/// Title of a leaf row's open-item table; the account is named only when
+/// several accounts are aged.
+fn detail_title(row: &SummaryRow<'_>, multi: bool) -> String {
+    match (row.account, row.counterparty) {
+        (Some(a), Some(c)) if multi => format!("{} / {c}", a.code),
+        (Some(a), None) => format!("{} {}", a.code, a.name),
+        (_, Some(c)) => c.to_string(),
+        (None, None) => ALL_LABEL.to_string(),
+    }
+}
+
+/// Open-item tables for `--detail`, one per leaf row.
+fn render_detail(
+    r: &MultiAgingReport,
+    rows: &[SummaryRow<'_>],
+    ctx: &RenderContext<'_>,
+    use_color: bool,
+) -> Vec<String> {
     let bold = anstyle::Style::new().bold();
     let mu = ctx.currency.minor_units();
+    let multi = r.accounts.len() > 1;
+    let leaf = if ctx.group_by.is_some() {
+        RowKind::Counterparty
+    } else {
+        RowKind::Account
+    };
     let mut lines = Vec::new();
-    for g in &report.groups {
+    for row in rows.iter().filter(|row| row.kind == leaf) {
         lines.push(String::new());
         lines.push(styled(
-            &format!("Open items -- {}", group_label(g)),
+            &format!("Open items -- {}", detail_title(row, multi)),
             bold,
             use_color,
         ));
-        if g.items.is_empty() {
+        if row.items.is_empty() {
             lines.push("  (no open items)".to_string());
         } else {
             let mut table = new_table();
+            let mut header = Vec::new();
+            if multi {
+                header.push("Account");
+            }
+            header.extend([
+                "Date",
+                "Txn",
+                "Reference",
+                "Description",
+                "Age",
+                "Bucket",
+                "Original",
+                "Open",
+            ]);
             table.set_header(
-                [
-                    "Date",
-                    "Txn",
-                    "Reference",
-                    "Description",
-                    "Age",
-                    "Bucket",
-                    "Original",
-                    "Open",
-                ]
-                .map(|h| Cell::new(styled(h, bold, use_color))),
+                header
+                    .into_iter()
+                    .map(|h| Cell::new(styled(h, bold, use_color)))
+                    .collect::<Vec<_>>(),
             );
-            for a in &g.items {
-                table.add_row(vec![
+            for (code, a) in &row.items {
+                let mut cells = Vec::new();
+                if multi {
+                    cells.push(Cell::new(code));
+                }
+                cells.extend([
                     Cell::new(a.item.date.format("%Y-%m-%d")),
                     right(a.item.transaction_id.to_string()),
                     Cell::new(a.item.reference.as_deref().unwrap_or("")),
                     Cell::new(&a.item.description),
                     right(a.age_days.to_string()),
-                    Cell::new(
-                        report
-                            .buckets
-                            .get(a.bucket)
-                            .map_or("", |b| b.label.as_str()),
-                    ),
+                    Cell::new(bucket_label(&r.buckets, a.bucket)),
                     right(format_amount(a.item.original, mu)),
                     right(format_amount(a.item.open, mu)),
                 ]);
+                table.add_row(cells);
             }
             lines.push(table.to_string());
         }
-        if g.unapplied_credit > 0 {
+        if row.unapplied_credit > 0 {
             lines.push(format!(
                 "  Unapplied credit: {} (net {})",
-                format_amount(g.unapplied_credit, mu),
-                format_net(g.net(), mu)
+                format_amount(row.unapplied_credit, mu),
+                format_net(row.net(), mu)
             ));
         }
     }
     lines
 }
 
-fn render_table(report: &AgingReport, ctx: &RenderContext<'_>, use_color: bool) -> String {
-    let bold = anstyle::Style::new().bold();
+/// Report title: the account, or the number and codes of the accounts.
+fn title(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> String {
+    let accounts = match r.accounts.as_slice() {
+        [one] => format!("{} {}", one.account.code, one.account.name),
+        many => format!(
+            "{} accounts ({})",
+            many.len(),
+            many.iter()
+                .map(|a| a.account.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!(
+        "{} -- {accounts} as of {} ({})",
+        ctx.kind.title(),
+        ctx.as_of,
+        ctx.currency.code()
+    )
+}
+
+/// The closing lines: tie-out to the balance (or the filter caveat), basis,
+/// and the net-credit note.
+fn footer(r: &MultiAgingReport, ctx: &RenderContext<'_>, use_color: bool) -> Vec<String> {
     let dim = anstyle::Style::new().dimmed();
     let mu = ctx.currency.minor_units();
+    let balance_label = if r.accounts.len() > 1 {
+        format!("Combined balance of {} accounts", r.accounts.len())
+    } else {
+        "Account balance".to_string()
+    };
+    let mut lines = vec![String::new()];
+    if ctx.filters.is_empty() {
+        lines.push(format!(
+            "{balance_label}: {} = total open {} - unapplied credit {}",
+            format_net(r.account_balance, mu),
+            format_amount(r.total_open, mu),
+            format_amount(r.unapplied_credit, mu),
+        ));
+    } else {
+        lines.push(format!(
+            "{balance_label} (unfiltered): {}",
+            format_net(r.account_balance, mu)
+        ));
+        lines.push(styled(
+            "Filtered: only open charges whose metadata matches are shown, net of every \
+             settlement applied to them; unapplied credit is not shown.",
+            dim,
+            use_color,
+        ));
+    }
+    lines.push(styled(&basis_note(r.method, ctx.link_key), dim, use_color));
+    let net_credit = r
+        .accounts
+        .iter()
+        .flat_map(|a| &a.report.groups)
+        .any(|g| g.net() < 0);
+    if net_credit {
+        lines.push(styled(ctx.kind.net_credit_note(), dim, use_color));
+    }
+    lines
+}
 
-    let mut lines = Vec::new();
-    lines.push(styled(
-        &format!(
-            "{} -- {} {} as of {} ({})",
-            ctx.kind.title(),
-            ctx.account.code,
-            ctx.account.name,
-            ctx.as_of,
-            ctx.currency.code()
-        ),
-        bold,
-        use_color,
-    ));
+fn render_table(r: &MultiAgingReport, ctx: &RenderContext<'_>, use_color: bool) -> String {
+    let bold = anstyle::Style::new().bold();
+    let rows = summary_rows(r, ctx);
+
+    let mut lines = vec![styled(&title(r, ctx), bold, use_color)];
+    if !ctx.filters.is_empty() {
+        lines.push(format!(
+            "Metadata filter: {}",
+            metadata_filter::describe(ctx.filters)
+        ));
+    }
     lines.push(String::new());
-    lines.push(render_summary_table(report, ctx, use_color).to_string());
+    lines.push(render_summary_table(r, &rows, ctx, use_color).to_string());
 
     if ctx.detail {
-        lines.extend(render_detail(report, ctx, use_color));
+        lines.extend(render_detail(r, &rows, ctx, use_color));
     }
 
-    if !report.unmatched_links.is_empty() {
+    if !r.unmatched_links.is_empty() {
         lines.push(String::new());
         lines.push(styled(
             "Unmatched links (settled FIFO instead):",
             bold,
             use_color,
         ));
-        for u in &report.unmatched_links {
-            lines.push(format!("  {}", describe_unmatched(u, ctx)));
+        for u in &r.unmatched_links {
+            lines.push(format!("  {}", describe_unmatched(u, r, ctx)));
         }
     }
 
-    lines.push(String::new());
-    lines.push(format!(
-        "Account balance: {} = total open {} - unapplied credit {}",
-        format_net(report.account_balance, mu),
-        format_amount(report.total_open, mu),
-        format_amount(report.unapplied_credit, mu),
-    ));
-    lines.push(styled(
-        &basis_note(report.method, ctx.link_key),
-        dim,
-        use_color,
-    ));
-    if report.groups.iter().any(|g| g.net() < 0) {
-        lines.push(styled(ctx.kind.net_credit_note(), dim, use_color));
-    }
+    lines.extend(footer(r, ctx, use_color));
     lines.join("\n")
-}
-
-#[derive(Serialize)]
-struct AccountJson<'a> {
-    code: &'a str,
-    name: &'a str,
-    r#type: &'a str,
 }
 
 #[derive(Serialize)]
@@ -1375,6 +1984,7 @@ struct BucketAmountJson<'a> {
 
 #[derive(Serialize)]
 struct OpenItemJson<'a> {
+    account: &'a str,
     transaction_id: i64,
     date: String,
     reference: Option<&'a str>,
@@ -1407,6 +2017,7 @@ struct TotalsJson<'a> {
 
 #[derive(Serialize)]
 struct UnmatchedLinkJson<'a> {
+    account: Option<&'a str>,
     settlement_transaction_id: i64,
     settlement_date: String,
     settlement_amount: i64,
@@ -1417,16 +2028,30 @@ struct UnmatchedLinkJson<'a> {
 }
 
 #[derive(Serialize)]
+struct AccountAgingJson<'a> {
+    code: &'a str,
+    name: &'a str,
+    r#type: &'a str,
+    groups: Vec<GroupJson<'a>>,
+    totals: TotalsJson<'a>,
+    account_balance: i64,
+    unmatched_links: Vec<UnmatchedLinkJson<'a>>,
+}
+
+#[derive(Serialize)]
 struct AgingJson<'a> {
-    account: AccountJson<'a>,
     kind: AgingKind,
     as_of: &'a str,
     currency: &'a str,
+    include_children: bool,
     group_by: Option<&'a str>,
+    group_across_accounts: bool,
+    metadata_filters: &'a [MetadataFilter],
     method: MatchMethod,
     link_key: Option<&'a str>,
     basis: &'static str,
     buckets: &'a [Bucket],
+    accounts: Vec<AccountAgingJson<'a>>,
     groups: Vec<GroupJson<'a>>,
     totals: TotalsJson<'a>,
     account_balance: i64,
@@ -1444,46 +2069,45 @@ fn bucket_amounts<'a>(buckets: &'a [Bucket], amounts: &[i64]) -> Vec<BucketAmoun
         .collect()
 }
 
-fn bucket_label(report: &AgingReport, index: usize) -> &str {
-    report.buckets.get(index).map_or("", |b| b.label.as_str())
+fn bucket_label(buckets: &[Bucket], index: usize) -> &str {
+    buckets.get(index).map_or("", |b| b.label.as_str())
 }
 
-fn render_json(
-    report: &AgingReport,
-    ctx: &RenderContext<'_>,
-    company: &str,
-) -> Result<String, CliError> {
-    let groups = report
-        .groups
-        .iter()
-        .map(|g| GroupJson {
-            counterparty: g.counterparty.as_deref(),
-            buckets: bucket_amounts(&report.buckets, &g.bucket_totals),
-            total_open: g.total_open,
-            unapplied_credit: g.unapplied_credit,
-            net: g.net(),
-            net_credit: g.net() < 0,
-            open_items: g
-                .items
-                .iter()
-                .map(|a| OpenItemJson {
-                    transaction_id: a.item.transaction_id,
-                    date: a.item.date.format("%Y-%m-%d").to_string(),
-                    reference: a.item.reference.as_deref(),
-                    description: &a.item.description,
-                    age_days: a.age_days,
-                    bucket: bucket_label(report, a.bucket),
-                    original_amount: a.item.original,
-                    open_amount: a.item.open,
-                })
-                .collect(),
-        })
-        .collect();
+fn item_json<'a>(buckets: &'a [Bucket], account: &'a str, a: &'a AgedItem) -> OpenItemJson<'a> {
+    OpenItemJson {
+        account,
+        transaction_id: a.item.transaction_id,
+        date: a.item.date.format("%Y-%m-%d").to_string(),
+        reference: a.item.reference.as_deref(),
+        description: &a.item.description,
+        age_days: a.age_days,
+        bucket: bucket_label(buckets, a.bucket),
+        original_amount: a.item.original,
+        open_amount: a.item.open,
+    }
+}
 
-    let unmatched_links = report
-        .unmatched_links
+fn totals_json<'a>(
+    buckets: &'a [Bucket],
+    bucket_totals: &[i64],
+    total_open: i64,
+    unapplied_credit: i64,
+) -> TotalsJson<'a> {
+    let net = total_open - unapplied_credit;
+    TotalsJson {
+        buckets: bucket_amounts(buckets, bucket_totals),
+        total_open,
+        unapplied_credit,
+        net,
+        net_credit: net < 0,
+    }
+}
+
+fn unmatched_json(links: &[UnmatchedLink]) -> Vec<UnmatchedLinkJson<'_>> {
+    links
         .iter()
         .map(|u| UnmatchedLinkJson {
+            account: u.account.as_deref(),
             settlement_transaction_id: u.settlement_transaction_id,
             settlement_date: u.settlement_date.format("%Y-%m-%d").to_string(),
             settlement_amount: u.settlement_amount,
@@ -1492,32 +2116,89 @@ fn render_json(
             reason: u.reason,
             fallback: "fifo",
         })
+        .collect()
+}
+
+fn account_json<'a>(buckets: &'a [Bucket], a: &'a AccountAging) -> AccountAgingJson<'a> {
+    let r = &a.report;
+    let code = a.account.code.as_str();
+    AccountAgingJson {
+        code,
+        name: &a.account.name,
+        r#type: &a.account.account_type,
+        groups: r
+            .groups
+            .iter()
+            .map(|g| {
+                let t = totals_json(buckets, &g.bucket_totals, g.total_open, g.unapplied_credit);
+                GroupJson {
+                    counterparty: g.counterparty.as_deref(),
+                    buckets: t.buckets,
+                    total_open: t.total_open,
+                    unapplied_credit: t.unapplied_credit,
+                    net: t.net,
+                    net_credit: t.net_credit,
+                    open_items: g
+                        .items
+                        .iter()
+                        .map(|i| item_json(buckets, code, i))
+                        .collect(),
+                }
+            })
+            .collect(),
+        totals: totals_json(buckets, &r.bucket_totals, r.total_open, r.unapplied_credit),
+        account_balance: r.account_balance,
+        unmatched_links: unmatched_json(&r.unmatched_links),
+    }
+}
+
+/// JSON output: per-account sections (`accounts[]`), the counterparty groups
+/// combined across accounts (`groups[]`), and combined `totals`. Amounts are
+/// minor units; every open item names its `account`.
+fn render_json(
+    r: &MultiAgingReport,
+    ctx: &RenderContext<'_>,
+    company: &str,
+) -> Result<String, CliError> {
+    let b = &r.buckets;
+    let groups = r
+        .groups
+        .iter()
+        .map(|g| {
+            let t = totals_json(b, &g.bucket_totals, g.total_open, g.unapplied_credit);
+            GroupJson {
+                counterparty: g.counterparty.as_deref(),
+                buckets: t.buckets,
+                total_open: t.total_open,
+                unapplied_credit: t.unapplied_credit,
+                net: t.net,
+                net_credit: t.net_credit,
+                open_items: g
+                    .items
+                    .iter()
+                    .map(|(code, i)| item_json(b, code, i))
+                    .collect(),
+            }
+        })
         .collect();
 
     let data = AgingJson {
-        account: AccountJson {
-            code: &ctx.account.code,
-            name: &ctx.account.name,
-            r#type: &ctx.account.account_type,
-        },
         kind: ctx.kind,
         as_of: ctx.as_of,
         currency: ctx.currency.code(),
+        include_children: ctx.include_children,
         group_by: ctx.group_by,
-        method: report.method,
+        group_across_accounts: ctx.across,
+        metadata_filters: ctx.filters,
+        method: r.method,
         link_key: ctx.link_key,
-        basis: report.method.basis(),
-        buckets: &report.buckets,
+        basis: r.method.basis(),
+        buckets: b,
+        accounts: r.accounts.iter().map(|a| account_json(b, a)).collect(),
         groups,
-        totals: TotalsJson {
-            buckets: bucket_amounts(&report.buckets, &report.bucket_totals),
-            total_open: report.total_open,
-            unapplied_credit: report.unapplied_credit,
-            net: report.net(),
-            net_credit: report.net() < 0,
-        },
-        account_balance: report.account_balance,
-        unmatched_links,
+        totals: totals_json(b, &r.bucket_totals, r.total_open, r.unapplied_credit),
+        account_balance: r.account_balance,
+        unmatched_links: unmatched_json(&r.unmatched_links),
     };
 
     let env = output::json::Envelope {
@@ -1530,8 +2211,7 @@ fn render_json(
         .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
 }
 
-#[allow(clippy::needless_pass_by_value)] // used as a `map_err` callback
-fn csv_error(e: csv::Error) -> CliError {
+fn csv_error(e: &csv::Error) -> CliError {
     CliError::General(format!("CSV serialization failed: {e}"))
 }
 
@@ -1543,124 +2223,84 @@ fn csv_finish(wtr: csv::Writer<Vec<u8>>) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV output is not valid UTF-8: {e}")))
 }
 
+/// Item columns of the detail CSV.
+const ITEM_COLUMNS: [&str; 8] = [
+    "transaction_id",
+    "date",
+    "reference",
+    "description",
+    "age_days",
+    "bucket",
+    "original_amount",
+    "open_amount",
+];
+
 /// CSV output. Amounts are in minor units; `net` is negative for a net credit.
 ///
-/// Summary (default): one row per group plus a `TOTAL` row with columns
-/// `counterparty, <buckets...>, total_open, unapplied_credit, net`.
-///
-/// Detail (`--detail`): a `row_type` column first; `item` rows (one per open
-/// charge, its open amount in its bucket column), then a `counterparty`
-/// summary row per group, then a `total` row.
-fn render_csv(report: &AgingReport, ctx: &RenderContext<'_>) -> Result<String, CliError> {
+/// Columns: `row_type, account, counterparty`, (with `--detail`) the
+/// [`ITEM_COLUMNS`], then `<buckets...>, total_open, unapplied_credit, net`.
+/// Rows follow the summary order (see [`summary_rows`]): `row_type` is
+/// `counterparty`, `account` (an account's only row when ungrouped, else its
+/// subtotal; subtotals appear only with several accounts) or `total`. With
+/// `--detail`, `item` rows (one per open charge, its open amount in its
+/// bucket column) precede the row that totals them.
+fn render_csv(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> Result<String, CliError> {
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    let n = r.buckets.len();
+    let item_cols = if ctx.detail { ITEM_COLUMNS.len() } else { 0 };
+
+    let mut header = vec!["row_type", "account", "counterparty"];
     if ctx.detail {
-        return render_csv_detail(report);
+        header.extend(ITEM_COLUMNS);
     }
-    let mut wtr = csv::Writer::from_writer(Vec::new());
+    header.extend(r.buckets.iter().map(|b| b.label.as_str()));
+    header.extend(["total_open", "unapplied_credit", "net"]);
+    wtr.write_record(&header).map_err(|e| csv_error(&e))?;
 
-    let mut header = vec!["counterparty".to_string()];
-    header.extend(report.buckets.iter().map(|b| b.label.clone()));
-    header.extend(["total_open", "unapplied_credit", "net"].map(str::to_string));
-    wtr.write_record(&header).map_err(csv_error)?;
-
-    let mut write_row = |label: &str, amounts: &[i64], open: i64, unapplied: i64| {
-        let mut rec = vec![label.to_string()];
-        rec.extend(amounts.iter().map(ToString::to_string));
-        rec.push(open.to_string());
-        rec.push(unapplied.to_string());
-        rec.push((open - unapplied).to_string());
-        wtr.write_record(&rec)
+    let leaf = if ctx.group_by.is_some() {
+        RowKind::Counterparty
+    } else {
+        RowKind::Account
     };
-    for g in &report.groups {
-        write_row(
-            group_label(g),
-            &g.bucket_totals,
-            g.total_open,
-            g.unapplied_credit,
-        )
-        .map_err(csv_error)?;
-    }
-    write_row(
-        "TOTAL",
-        &report.bucket_totals,
-        report.total_open,
-        report.unapplied_credit,
-    )
-    .map_err(csv_error)?;
-    csv_finish(wtr)
-}
-
-/// Detail CSV (see [`render_csv`]).
-fn render_csv_detail(report: &AgingReport) -> Result<String, CliError> {
-    const ITEM_COLUMNS: [&str; 8] = [
-        "transaction_id",
-        "date",
-        "reference",
-        "description",
-        "age_days",
-        "bucket",
-        "original_amount",
-        "open_amount",
-    ];
-    let mut wtr = csv::Writer::from_writer(Vec::new());
-    let n = report.buckets.len();
-
-    let mut header = vec!["row_type".to_string(), "counterparty".to_string()];
-    header.extend(ITEM_COLUMNS.map(str::to_string));
-    header.extend(report.buckets.iter().map(|b| b.label.clone()));
-    header.extend(["total_open", "unapplied_credit", "net"].map(str::to_string));
-    wtr.write_record(&header).map_err(csv_error)?;
-
-    let summary = |row_type: &str, label: &str, amounts: &[i64], open: i64, unapplied: i64| {
-        let mut rec = vec![row_type.to_string(), label.to_string()];
-        rec.extend(std::iter::repeat_n(String::new(), ITEM_COLUMNS.len()));
-        rec.extend(amounts.iter().map(ToString::to_string));
-        rec.push(open.to_string());
-        rec.push(unapplied.to_string());
-        rec.push((open - unapplied).to_string());
-        rec
-    };
-
-    for g in &report.groups {
-        for a in &g.items {
-            let mut rec = vec![
-                "item".to_string(),
-                group_label(g).to_string(),
-                a.item.transaction_id.to_string(),
-                a.item.date.format("%Y-%m-%d").to_string(),
-                a.item.reference.clone().unwrap_or_default(),
-                a.item.description.clone(),
-                a.age_days.to_string(),
-                bucket_label(report, a.bucket).to_string(),
-                a.item.original.to_string(),
-                a.item.open.to_string(),
-            ];
-            rec.extend((0..n).map(|i| {
-                if i == a.bucket {
-                    a.item.open.to_string()
-                } else {
-                    String::new()
-                }
-            }));
-            rec.extend([a.item.open.to_string(), String::new(), String::new()]);
-            wtr.write_record(&rec).map_err(csv_error)?;
+    for row in summary_rows(r, ctx) {
+        if ctx.detail && row.kind == leaf {
+            for (code, a) in &row.items {
+                let mut rec = vec![
+                    "item".to_string(),
+                    (*code).to_string(),
+                    row.counterparty.unwrap_or_default().to_string(),
+                    a.item.transaction_id.to_string(),
+                    a.item.date.format("%Y-%m-%d").to_string(),
+                    a.item.reference.clone().unwrap_or_default(),
+                    a.item.description.clone(),
+                    a.age_days.to_string(),
+                    bucket_label(&r.buckets, a.bucket).to_string(),
+                    a.item.original.to_string(),
+                    a.item.open.to_string(),
+                ];
+                rec.extend((0..n).map(|i| {
+                    if i == a.bucket {
+                        a.item.open.to_string()
+                    } else {
+                        String::new()
+                    }
+                }));
+                rec.extend([a.item.open.to_string(), String::new(), String::new()]);
+                wtr.write_record(&rec).map_err(|e| csv_error(&e))?;
+            }
         }
-        let rec = summary(
-            "counterparty",
-            group_label(g),
-            &g.bucket_totals,
-            g.total_open,
-            g.unapplied_credit,
-        );
-        wtr.write_record(&rec).map_err(csv_error)?;
+        let mut rec = vec![
+            row.kind.csv().to_string(),
+            row.account.map(|a| a.code.clone()).unwrap_or_default(),
+            row.counterparty.unwrap_or_default().to_string(),
+        ];
+        rec.extend(std::iter::repeat_n(String::new(), item_cols));
+        rec.extend(row.bucket_totals.iter().map(ToString::to_string));
+        rec.push(row.total_open.to_string());
+        rec.push(row.unapplied_credit.to_string());
+        rec.push(row.net().to_string());
+        wtr.write_record(&rec).map_err(|e| csv_error(&e))?;
     }
-    let rec = summary(
-        "total",
-        "TOTAL",
-        &report.bucket_totals,
-        report.total_open,
-        report.unapplied_credit,
-    );
-    wtr.write_record(&rec).map_err(csv_error)?;
     csv_finish(wtr)
 }
 
@@ -2199,30 +2839,17 @@ mod tests {
 
     #[test]
     fn link_key_resolution() {
-        let opts = |method, link_key| AgingOptions {
-            account: "1100",
-            as_of: None,
-            buckets: "30",
-            group_by_metadata: None,
-            currency: None,
-            method,
-            link_key,
-            detail: false,
-        };
+        assert_eq!(resolve_link_key(MatchMethod::Fifo, None).ok(), Some(None));
+        assert!(resolve_link_key(MatchMethod::Fifo, Some("x")).is_err());
         assert_eq!(
-            resolve_link_key(&opts(MatchMethod::Fifo, None)).ok(),
-            Some(None)
-        );
-        assert!(resolve_link_key(&opts(MatchMethod::Fifo, Some("x"))).is_err());
-        assert_eq!(
-            resolve_link_key(&opts(MatchMethod::Specific, None)).ok(),
+            resolve_link_key(MatchMethod::Specific, None).ok(),
             Some(Some(DEFAULT_LINK_KEY))
         );
         assert_eq!(
-            resolve_link_key(&opts(MatchMethod::Specific, Some("invoice"))).ok(),
+            resolve_link_key(MatchMethod::Specific, Some("invoice")).ok(),
             Some(Some("invoice"))
         );
-        assert!(resolve_link_key(&opts(MatchMethod::Specific, Some(" "))).is_err());
+        assert!(resolve_link_key(MatchMethod::Specific, Some(" ")).is_err());
     }
 
     #[test]
@@ -2273,5 +2900,160 @@ mod tests {
             resolve_currency(conn, "c", Some("ZZZ")),
             Err(CliError::Validation(_))
         ));
+    }
+
+    fn account(code: &str, ty: &str) -> db::AccountRow {
+        db::AccountRow {
+            company_slug: "c".to_string(),
+            code: code.to_string(),
+            name: format!("Account {code}"),
+            account_type: ty.to_string(),
+            created_at: String::new(),
+            default_tax_category: None,
+        }
+    }
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn child_prefix_strips_trailing_zeros() {
+        assert_eq!(child_prefix("1200"), Some("12"));
+        assert_eq!(child_prefix("1210"), Some("121"));
+        assert_eq!(child_prefix("1201"), Some("1201"));
+        assert_eq!(child_prefix("AR"), Some("AR"));
+        assert_eq!(child_prefix("1000"), Some("1"));
+        assert_eq!(child_prefix("0"), None);
+        assert_eq!(child_prefix("000"), None);
+    }
+
+    #[test]
+    fn select_accounts_expands_children_and_dedupes() {
+        let all = ["1000", "1200", "1210", "1220", "1300", "2000", "12000"];
+        let pick = |req: &[&str], children| select_accounts(&strings(req), &all, children);
+        assert_eq!(
+            pick(&["1220", "1210"], false).ok(),
+            Some(strings(&["1210", "1220"]))
+        );
+        assert_eq!(
+            pick(&["1200"], true).ok(),
+            Some(strings(&["1200", "12000", "1210", "1220"]))
+        );
+        // Children of a leaf: itself only (and longer codes under it).
+        assert_eq!(pick(&["1210", "1210"], true).ok(), Some(strings(&["1210"])));
+        // Without --include-children the code is kept even if not in `all`.
+        assert_eq!(pick(&["9999"], false).ok(), Some(strings(&["9999"])));
+        assert!(matches!(
+            pick(&["0000"], true),
+            Err(CliError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn common_kind_rejects_mixes_and_non_ar_ap() {
+        let asset = account("1100", "asset");
+        let asset2 = account("1200", "asset");
+        let liability = account("2000", "liability");
+        assert_eq!(
+            common_kind(&[asset.clone(), asset2]).ok(),
+            Some(AgingKind::Receivable)
+        );
+        assert_eq!(
+            common_kind(std::slice::from_ref(&liability)).ok(),
+            Some(AgingKind::Payable)
+        );
+        let mixed = common_kind(&[asset.clone(), liability]);
+        assert!(
+            matches!(&mixed, Err(CliError::Validation(m)) if m.contains("1100") && m.contains("2000")),
+            "{mixed:?}"
+        );
+        assert!(matches!(
+            common_kind(&[asset, account("4000", "revenue")]),
+            Err(CliError::Validation(_))
+        ));
+        assert!(common_kind(&[]).is_err());
+    }
+
+    #[test]
+    fn restrict_keeps_matching_charges_after_matching() {
+        let as_of = d("2026-06-30");
+        let grouped = vec![
+            (Some("A".to_string()), mv(1, "2026-01-01", 400)), // 180 days
+            (Some("A".to_string()), mv(2, "2026-06-20", 200)), // 10 days
+            (Some("B".to_string()), mv(3, "2026-06-01", 100)),
+            (Some("A".to_string()), mv(4, "2026-06-25", -150)), // FIFO -> 1
+            (Some("C".to_string()), mv(5, "2026-06-25", -70)),  // credit only
+        ];
+        let mut r = build_report(grouped, as_of, default_buckets(), MatchMethod::Fifo);
+        assert_eq!(r.unapplied_credit, 70);
+        restrict_to_charges(&mut r, |id| id == 1 || id == 5);
+
+        // Only charge 1 survives: still 180 days old, net of the payment.
+        assert_eq!(r.groups.len(), 1);
+        assert_eq!(r.groups[0].counterparty.as_deref(), Some("A"));
+        assert_eq!(r.groups[0].items.len(), 1);
+        assert_eq!(r.groups[0].items[0].age_days, 180);
+        assert_eq!(r.groups[0].items[0].item.open, 250);
+        assert_eq!(r.groups[0].bucket_totals, vec![0, 0, 0, 0, 250]);
+        assert_eq!(r.bucket_totals, vec![0, 0, 0, 0, 250]);
+        assert_eq!(r.total_open, 250);
+        // Unapplied credit is not attributable to a charge.
+        assert_eq!(r.unapplied_credit, 0);
+        assert_eq!(r.account_balance, 480);
+    }
+
+    #[test]
+    fn combine_sums_accounts_and_merges_counterparties() {
+        let as_of = d("2026-06-30");
+        let east = build_report(
+            vec![
+                (Some("A".to_string()), mv(1, "2026-06-30", 100)),
+                (Some("B".to_string()), mv(2, "2026-01-01", 50)),
+            ],
+            as_of,
+            default_buckets(),
+            MatchMethod::Fifo,
+        );
+        let west = build_report(
+            vec![
+                (Some("A".to_string()), mv(3, "2026-06-10", 30)),
+                (Some("A".to_string()), mv(4, "2026-06-20", -40)),
+            ],
+            as_of,
+            default_buckets(),
+            MatchMethod::Fifo,
+        );
+        let accounts = vec![
+            AccountAging {
+                account: account("1110", "asset"),
+                report: east.clone(),
+            },
+            AccountAging {
+                account: account("1120", "asset"),
+                report: west.clone(),
+            },
+        ];
+        let r = combine(
+            AgingKind::Receivable,
+            MatchMethod::Fifo,
+            default_buckets(),
+            accounts,
+        );
+        assert_eq!(r.total_open, east.total_open + west.total_open);
+        assert_eq!(r.unapplied_credit, 10);
+        assert_eq!(r.account_balance, 140);
+        assert_eq!(r.net(), r.account_balance);
+        assert_eq!(r.bucket_totals, vec![100, 0, 0, 0, 50]);
+
+        let a = &r.groups[0];
+        assert_eq!(a.counterparty.as_deref(), Some("A"));
+        assert_eq!(a.total_open, 100);
+        assert_eq!(a.unapplied_credit, 10);
+        assert_eq!(a.net(), 90);
+        let codes: Vec<&str> = a.items.iter().map(|(c, _)| c.as_str()).collect();
+        assert_eq!(codes, ["1110"]);
+        assert_eq!(r.groups[1].counterparty.as_deref(), Some("B"));
+        assert_eq!(r.groups[1].items[0].0, "1110");
     }
 }

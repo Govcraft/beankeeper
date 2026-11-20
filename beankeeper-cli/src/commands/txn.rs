@@ -196,7 +196,7 @@ fn run_list_or_count(
     lp.currency_filter = currency.as_deref();
     lp.reference_filter = reference.as_deref();
     lp.metadata_like = metadata.as_deref();
-    let meta_eq = db::metadata::parse_meta_args(meta)?;
+    let meta_eq = db::metadata_filter::parse_filters(meta)?;
     lp.meta_eq = &meta_eq;
     lp.tax_category_filter = tax_category.as_deref();
     lp.direction_filter = dir_str;

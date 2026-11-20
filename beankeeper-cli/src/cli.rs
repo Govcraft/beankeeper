@@ -799,8 +799,8 @@ EXAMPLES:\n  \
     Find large transactions:\n    \
     $ bk --company acme txn list --amount-gt 10000\n\
     \n  \
-    Exact match on a metadata key (repeatable, AND-ed):\n    \
-    $ bk --company acme txn list --meta vendor=AWS --meta project=apollo\n\
+    Exact match on a metadata key (repeatable, AND-ed; --meta is an alias):\n    \
+    $ bk --company acme txn list --filter-metadata vendor=AWS --filter-metadata project=apollo\n\
     \n  \
     Count matching transactions without listing them:\n    \
     $ bk --company acme txn list --from 2025-01-01 --count\n\
@@ -858,10 +858,15 @@ EXAMPLES:\n  \
         #[arg(long)]
         metadata: Option<String>,
 
-        /// Exact match on a top-level metadata key, as `key=value` (repeatable,
+        /// Exact match on a top-level metadata key, as `KEY=VALUE` (repeatable,
         /// AND-ed). Matches JSON strings exactly, and numbers/booleans by their
-        /// JSON text (`qty=3` matches `{"qty":3}`).
-        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        /// JSON text (`qty=3` matches `{"qty":3}`). `--meta` is an alias.
+        #[arg(
+            long = "filter-metadata",
+            visible_alias = "meta",
+            value_name = "KEY=VALUE",
+            num_args = 1
+        )]
         meta: Vec<String>,
 
         /// Filter by tax category on entries.
@@ -1245,6 +1250,12 @@ EXAMPLES:\n  \
         /// Currency code. Defaults to the company's only transaction currency.
         #[arg(long)]
         currency: Option<String>,
+
+        /// Only include entries whose transaction metadata has KEY equal to
+        /// VALUE (same rule as `txn list`). Repeatable; AND-ed. The opening
+        /// and running balances count matching entries only.
+        #[arg(long = "filter-metadata", value_name = "KEY=VALUE", num_args = 1)]
+        filter_metadata: Vec<String>,
     },
 
     /// Compare budgeted amounts to actual spending/revenue.
@@ -1293,7 +1304,7 @@ EXAMPLES:\n  \
         include_unbudgeted: bool,
     },
 
-    /// Receivables / payables aging for one asset or liability account.
+    /// Receivables / payables aging for asset or liability accounts.
     ///
     /// The ledger has no invoice or due-date model: each transaction that
     /// increases the account (net) is a charge, each one that decreases it is
@@ -1328,6 +1339,23 @@ AS-OF:\n  \
     Only transactions dated on or before --as-of count, so rerunning for a past\n  \
     period end gives the same answer after later-dated payments are posted.\n\
 \n\
+SEVERAL ACCOUNTS:\n  \
+    Repeat --account to age several sub-ledgers in one run, or add\n  \
+    --include-children to roll a control account up with its children: every\n  \
+    account whose code starts with the parent's code minus trailing zeros\n  \
+    (1200 -> 12xx, 1210 -> 1210x). Each account is matched on its own, so a\n  \
+    settlement never pays a charge on another account (a link to one is listed\n  \
+    under unmatched links), and the totals equal the sum of single-account\n  \
+    runs. All accounts must be receivables (asset) or all payables (liability).\n  \
+    With --group-by, counterparties are grouped within each account; add\n  \
+    --group-across-accounts to combine a counterparty's rows across accounts.\n\
+\n\
+METADATA FILTER:\n  \
+    --filter-metadata KEY=VALUE (repeatable, AND-ed; same rule as txn list)\n  \
+    restricts the report to open charges whose metadata matches. Matching runs\n  \
+    on every entry first, so a filtered charge keeps its original age and shows\n  \
+    what is still open after its payments. Unapplied credit is not shown.\n\
+\n\
 EXAMPLES:\n  \
     Receivables aging as of today:\n    \
     $ bk --company acme report aging --account 1100\n\
@@ -1338,6 +1366,13 @@ EXAMPLES:\n  \
     Per customer, with each open invoice listed:\n    \
     $ bk --company acme report aging --account 1100 --group-by customer --detail\n\
     \n  \
+    Two receivable sub-ledgers, or a control account and its children:\n    \
+    $ bk --company acme report aging --account 1210 --account 1220\n    \
+    $ bk --company acme report aging --account 1200 --include-children\n\
+    \n  \
+    Disputed receivables only (at their original age):\n    \
+    $ bk --company acme report aging --account 1100 --filter-metadata status=disputed\n\
+    \n  \
     Payments linked to invoices via -m '{\"applies_to\":\"INV-101\"}':\n    \
     $ bk --company acme report aging --account 1100 --method specific\n\
     \n  \
@@ -1345,9 +1380,15 @@ EXAMPLES:\n  \
     $ bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer\
 ")]
     Aging {
-        /// Asset (receivable) or liability (payable) account code.
+        /// Asset (receivable) or liability (payable) account code
+        /// (repeatable).
+        #[arg(long, required = true, num_args = 1)]
+        account: Vec<String>,
+
+        /// Also age every child of each --account: accounts whose code
+        /// starts with the account's code minus trailing zeros.
         #[arg(long)]
-        account: String,
+        include_children: bool,
 
         /// As-of date (YYYY-MM-DD, inclusive). Defaults to today. Charges and
         /// settlements dated after it are ignored.
@@ -1380,6 +1421,18 @@ EXAMPLES:\n  \
         /// and CSV; JSON always includes them).
         #[arg(long)]
         detail: bool,
+
+        /// With several accounts and --group-by, combine each counterparty's
+        /// rows across accounts in table and CSV output (JSON always has both
+        /// views). Matching still runs per account.
+        #[arg(long, requires = "group_by_metadata")]
+        group_across_accounts: bool,
+
+        /// Only show open charges whose transaction metadata has KEY equal to
+        /// VALUE (repeatable; AND-ed). Settlements are applied before
+        /// filtering.
+        #[arg(long = "filter-metadata", value_name = "KEY=VALUE", num_args = 1)]
+        filter_metadata: Vec<String>,
     },
 
     /// Reconcile an account against a bank/card statement using entry
@@ -1417,8 +1470,8 @@ EXAMPLES:\n  \
         statement: Option<String>,
 
         /// Only include entries whose transaction metadata has KEY equal to
-        /// VALUE (top-level key, compared as strings). Repeatable; AND-ed.
-        #[arg(long = "filter-metadata", value_name = "KEY=VALUE")]
+        /// VALUE (same rule as `txn list`). Repeatable; AND-ed.
+        #[arg(long = "filter-metadata", value_name = "KEY=VALUE", num_args = 1)]
         filter_metadata: Vec<String>,
 
         /// Group outstanding items by this top-level metadata key, with

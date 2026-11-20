@@ -29,12 +29,13 @@ use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params_from_iter};
 use serde::Serialize;
 
 use crate::cli::{Cli, OutputFormat};
 use crate::db;
 use crate::db::connection::Db;
+use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
 use crate::output::json::Meta;
@@ -49,6 +50,8 @@ pub struct LedgerOptions<'a> {
     pub to: Option<&'a str>,
     /// Currency to report in; resolved from the company's data when `None`.
     pub currency: Option<&'a str>,
+    /// `KEY=VALUE` metadata filters (AND-ed); see [`metadata_filter`].
+    pub filter_metadata: &'a [String],
 }
 
 /// One entry line of an account statement.
@@ -90,6 +93,9 @@ pub struct LedgerReport {
     pub currency: String,
     pub from: Option<String>,
     pub to: Option<String>,
+    /// Active metadata filters; when non-empty, opening and running balances
+    /// count matching entries only.
+    pub metadata_filters: Vec<MetadataFilter>,
     pub accounts: Vec<LedgerAccount>,
 }
 
@@ -111,6 +117,7 @@ pub fn run_command(
         from,
         to,
         currency,
+        filter_metadata,
     } = sub
     else {
         return Err(CliError::General(
@@ -122,6 +129,7 @@ pub fn run_command(
         from: from.as_deref(),
         to: to.as_deref(),
         currency: currency.as_deref(),
+        filter_metadata,
     };
     run(cli, db, company, &opts, format, use_color)
 }
@@ -191,6 +199,7 @@ pub fn build_report(
     }
 
     let currency = resolve_ledger_currency(conn, company, opts.currency)?;
+    let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
 
     let explicit = !opts.accounts.is_empty();
     let accounts: Vec<db::AccountRow> = if explicit {
@@ -212,7 +221,13 @@ pub fn build_report(
 
     let mut out = Vec::new();
     for acct in accounts {
-        let statement = account_statement(conn, company, &acct, &currency, opts.from, opts.to)?;
+        let scope = StatementScope {
+            currency: &currency,
+            from: opts.from,
+            to: opts.to,
+            filters: &filters,
+        };
+        let statement = account_statement(conn, company, &acct, &scope)?;
         // Without an explicit --account list, only include accounts with
         // activity: entries in the period or a non-zero opening balance.
         if explicit || !statement.entries.is_empty() || statement.opening_balance != 0 {
@@ -224,6 +239,7 @@ pub fn build_report(
         currency,
         from: opts.from.map(str::to_string),
         to: opts.to.map(str::to_string),
+        metadata_filters: filters,
         accounts: out,
     })
 }
@@ -257,15 +273,45 @@ fn signed(debit_normal: bool, debit: i64, credit: i64) -> i64 {
     }
 }
 
+/// Bind `base` as `?1..?n` followed by the filter's parameters (`?n+1..`).
+fn with_filter_params(
+    mut base: Vec<Option<String>>,
+    filter: &metadata_filter::SqlPredicate,
+) -> Vec<Option<String>> {
+    base.extend(filter.params.iter().cloned().map(Some));
+    base
+}
+
+/// What a statement covers: currency, period and metadata filters.
+struct StatementScope<'a> {
+    currency: &'a str,
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+    filters: &'a [MetadataFilter],
+}
+
 /// Build the statement for a single account.
 fn account_statement(
     conn: &Connection,
     company: &str,
     acct: &db::AccountRow,
-    currency: &str,
-    from: Option<&str>,
-    to: Option<&str>,
+    scope: &StatementScope<'_>,
 ) -> Result<LedgerAccount, CliError> {
+    let StatementScope {
+        currency,
+        from,
+        to,
+        filters,
+    } = *scope;
+    // `?1..?4`: company, account, currency, and a date.
+    let base = |date: Option<&str>| {
+        vec![
+            Some(company.to_string()),
+            Some(acct.code.clone()),
+            Some(currency.to_string()),
+            date.map(str::to_string),
+        ]
+    };
     let debit_normal = acct
         .account_type
         .parse::<AccountType>()
@@ -273,14 +319,18 @@ fn account_statement(
 
     let opening_balance = match from {
         Some(f) => {
+            let filter = metadata_filter::sql_predicate("t.metadata", filters, 5);
             let (dr, cr): (i64, i64) = conn.query_row(
-                "SELECT \
-                   COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
-                   COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
-                 FROM entries e JOIN transactions t ON t.id = e.transaction_id \
-                 WHERE e.company_slug = ?1 AND e.account_code = ?2 \
-                   AND t.currency = ?3 AND t.date < ?4",
-                params![company, acct.code, currency, f],
+                &format!(
+                    "SELECT \
+                       COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
+                       COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
+                     FROM entries e JOIN transactions t ON t.id = e.transaction_id \
+                     WHERE e.company_slug = ?1 AND e.account_code = ?2 \
+                       AND t.currency = ?3 AND t.date < ?4 AND {}",
+                    filter.sql
+                ),
+                params_from_iter(with_filter_params(base(Some(f)), &filter)),
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             signed(debit_normal, dr, cr)
@@ -288,14 +338,20 @@ fn account_statement(
         None => 0,
     };
 
-    let mut stmt = conn.prepare(
+    let filter = metadata_filter::sql_predicate("t.metadata", filters, 6);
+    let mut stmt = conn.prepare(&format!(
         "SELECT t.date, t.id, e.id, t.description, t.reference, e.memo, e.direction, e.amount \
          FROM entries e JOIN transactions t ON t.id = e.transaction_id \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3 \
-           AND (?4 IS NULL OR t.date >= ?4) AND (?5 IS NULL OR t.date <= ?5) \
+           AND (?4 IS NULL OR t.date >= ?4) AND (?5 IS NULL OR t.date <= ?5) AND {} \
          ORDER BY t.date, t.id, e.id",
-    )?;
-    let raw = stmt.query_map(params![company, acct.code, currency, from, to], |row| {
+        filter.sql
+    ))?;
+    // `?5` (`--to`) is always bound, even when `None`.
+    let mut values = base(from);
+    values.push(to.map(str::to_string));
+    let values = with_filter_params(values, &filter);
+    let raw = stmt.query_map(params_from_iter(values), |row| {
         let direction: String = row.get(6)?;
         let amount: i64 = row.get(7)?;
         let (debit, credit) = if direction == "debit" {
@@ -545,6 +601,12 @@ pub fn render_table(report: &LedgerReport, decimals: u8, use_color: bool) -> Str
         bold,
         use_color,
     )];
+    if !report.metadata_filters.is_empty() {
+        lines.push(format!(
+            "Metadata filter: {} (opening and running balances count matching entries only)",
+            metadata_filter::describe(&report.metadata_filters)
+        ));
+    }
 
     if report.accounts.is_empty() {
         lines.push(String::new());
