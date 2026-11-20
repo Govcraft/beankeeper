@@ -76,7 +76,7 @@ an explicit `company` argument, regardless of the CLI's default company.
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
 | `txn_reconcile`, `verify` | No arguments; both read-only |
-| `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`; rows include `prev_hash` and `row_hash` |
+| `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`, `offset`; rows include `prev_hash` and `row_hash` |
 
 `txn_post.debits` and `.credits` contain `{account, amount, memo?}` objects.
 `amount` is a decimal string in major units. `meta` is a string-to-string map;
@@ -93,6 +93,10 @@ defaults to `Reversal of #ID: ORIGINAL DESCRIPTION`; reference defaults to
 `{created: true, skipped: false, id}`. Reconciled originals cannot be reversed;
 existing clearings stay on the original and reversal entries start uncleared.
 Use `audit_log` with `action: "reverse"` to inspect the audit record.
+
+MCP monetary results include the same `_display` companions as CLI JSON.
+`txn_list` and `audit_log` expose pagination in the tool result’s `_meta.pagination`
+while retaining their data arrays.
 
 `txn_clear.batch` contains `{reference, amount?}` rows, where `amount` is an optional decimal
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
@@ -270,7 +274,7 @@ bk --company acme txn list --count   # Count only, no rows
 - `--filter-metadata KEY=VALUE` (alias `--meta`; repeatable, AND-ed): Exact match on a top-level metadata key. JSON strings match exactly (case-sensitive; `KEY=` matches an empty string); numbers and booleans match by their JSON text as stored (`qty=3` matches `{"qty":3}` but not `{"qty":3.0}`; `paid=true` matches `{"paid":true}`); `null`, arrays, objects, missing keys and non-JSON metadata never match. Free text from `-m` is matched with `--filter-metadata memo=TEXT`. This is the same rule as on `report ledger`, `report reconciliation` and `report aging`.
 - `--tax-category CAT`: Filter by tax category
 - `--direction {debit|credit}`: Filter entry direction
-- `--limit N` (default: 50), `--offset N` (default: 0): Pagination
+- `--limit N` (default: 50), `--offset N` (default: 0): Pagination. JSON includes `meta.pagination` with filtered totals and `has_more`; table output signals truncation on stderr unless quiet.
 - `--count`: Return count only
 
 ### `bk txn show ID`
@@ -461,7 +465,11 @@ call), `entry_amount`, `cleared_amount`, `remaining_amount`, `previous_status`,
 with `--status reconciled`, else null), `statement`. A batch returns
 `account`, `status`, `cleared_date`, `reconciled_date`, `statement`, `count`, `cleared_count`,
 `skipped_count`, `cleared_total`, and `cleared`/`skipped` arrays of those items
-(each with its input `line`). Amounts are minor units. With `--format csv`,
+(each with its input `line`). Amounts retain integer minor units and add decimal
+`_display` companions. Each item includes `currency` and `partially_cleared`,
+while existing status values stay unchanged. Human messages use currency units
+and describe partial clears as `partially cleared`. A batch spanning currencies
+has null `currency` and `cleared_total_display` for its aggregate. With `--format csv`,
 one row per entry: `line,reference,transaction_id,entry_id,action,amount,cleared_amount,remaining_amount,entry_status,cleared_date,statement,skip_reason`.
 The table format prints one `[ok]`/`[skip]` line per entry.
 
@@ -948,7 +956,7 @@ all by default).
 bk audit log                                      # 50 most recent changes
 bk audit log --company acme                        # one company
 bk audit log --entity entry                        # clearance/reconciliation history
-bk audit log --action company_delete --limit 100   # last 100 company deletions
+bk audit log --action company-delete --limit 100   # last 100 company deletions
 bk audit log --json                                # full before/after snapshots
 ```
 
@@ -956,4 +964,11 @@ bk audit log --json                                # full before/after snapshots
 - `--company SLUG`: Restrict to one company
 - `--entity KIND`: One of `entry`, `transaction`, `budget`, `account`, `company`
 - `--action KIND`: One of `status-change`, `correlate`, `reverse`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
-- `--limit N` (default: 50)
+- `--limit N` (default: 50), `--offset N` (default: 0)
+
+JSON keeps the row array and adds `meta.pagination` (`limit`, `offset`, `returned`,
+`total`, `has_more`). Table mode signals more rows on stderr unless quiet.
+Continue with `--offset`; the total uses the same company/entity/action filters.
+Audit JSON also includes parsed `before_display` and `after_display` snapshots
+with decimal monetary companions; original snapshot strings and hashes remain
+unchanged. See [amount conventions](json-api.md#amount-conventions).

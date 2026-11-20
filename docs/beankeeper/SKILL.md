@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.13.0
+version: 0.13.1
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -45,7 +45,8 @@ Errors return `"ok": false` with an `"error"` object containing `"code"` and `"m
 `bk export --output-format json` writes a standalone `{"beankeeper_export": {"version": 1, "companies": [...]}}` object, even with `--json`. It has no `ok`, `meta`, or `data` wrapper. Read exported companies with `jq '.beankeeper_export.companies'`.
 
 Key conventions for agents:
-- Amounts in JSON are **raw integers in minor units** (e.g. `250000` = $2,500.00 for USD with 2 decimal places)
+- Monetary JSON fields keep **integer minor units** and add `<field>_display` decimal strings in major units, such as `amount: 250000` with `amount_display: "2500.00"` for USD. Use the display companion when presenting amounts. A null display means the value or currency scale is unknown; never assume USD.
+- `txn list` and `audit log` default to 50 rows. Check `meta.pagination.has_more` and advance `--offset` by the returned row count until false; keep the same filters and a positive limit. The data remains an array. `txn list --count` stays a count-only response.
 - Set `BEANKEEPER_DB` and `BEANKEEPER_COMPANY` env vars to avoid repeating `--db` and `--company` on every call
 - Use `--quiet` to suppress stderr status messages
 - Use `--reference` + `--on-conflict skip` for idempotent transaction posting
@@ -73,7 +74,9 @@ for that server process.
 Successful results contain the CLI JSON **data payload**, without its envelope.
 Read JSON text content, or `structuredContent` when present. The SDK uses JSON text
 for array payloads on protocol versions that require structured content to be an
-object. Amounts in results remain integer minor units. Errors set `isError: true`
+object. Monetary fields include decimal-string `_display` companions alongside
+integer minor units. Read pagination from the tool result’s `_meta.pagination`
+for `txn_list` and `audit_log`; both accept `limit` and `offset`. Errors set `isError: true`
 and return `{code, message}` with the CLI's existing error codes. Audited mutations
 record `mcp:<sanitized client name>`; current creation-auditing behavior is unchanged.
 
@@ -314,6 +317,10 @@ bk --company acme report reconciliation --account 1200 --statement STMT-03 --sta
 bk --company acme report reconciliation --account 1200 --group-by-metadata carrier \
   --filter-metadata region=west
 ```
+
+Clearing output uses currency units and describes partial clears as `partially cleared`.
+JSON retains existing status values and adds `partially_cleared` and each item’s
+`currency`. Mixed-currency batch totals have a null currency and display companion.
 
 `--to` is point-in-time: clearings count as cleared when cleared on or before it,
 and as reconciled only when also reconciled on or before it (`--status reconciled

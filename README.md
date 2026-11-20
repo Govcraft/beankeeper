@@ -31,6 +31,13 @@ JSON command responses use the same envelope, except for successful `export` out
 { "ok": false, "meta": { "command": "txn.post", "company": "acme", "timestamp": "..." }, "error": { "code": "NOT_FOUND", "message": "..." } }
 ```
 
+Monetary JSON fields retain integer minor units and add decimal-string companions,
+for example `"amount": 180000, "amount_display": "1800.00"` for USD.
+`txn list` and `audit log` keep their data arrays and expose
+`meta.pagination` with filtered totals and `has_more`; table mode warns on stderr
+when more rows exist. Continue with `--offset` and `--limit`. MCP tools expose
+the same amounts and put pagination in the tool result’s `_meta.pagination`.
+
 Named error codes (`NOT_FOUND`, `VALIDATION`, `DATABASE`, etc.), `meta.command` in dot notation, consistent field presence. The agent can handle `bk` output reliably without parsing human-readable text or guessing at shapes.
 
 A successful `bk export --output-format json` writes a standalone `{"beankeeper_export": {"version": 1, "companies": [...]}}` object, without `ok`, `meta`, or `data`, even with `--json`. Read its companies with `jq '.beankeeper_export.companies'`.
