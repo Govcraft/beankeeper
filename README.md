@@ -242,20 +242,13 @@ unchanged until release prep; see the [contributor convention](docs/RELEASE.md#a
 yay -S bk-bin
 ```
 
-**Cargo binstall (after the CLI is published to crates.io)**:
+The CLI (package `beankeeper-cli`, executable `bk`) is distributed only as
+GitHub Release binaries, through `install.sh`, AUR, or a manual download. It is
+not published to crates.io, so `cargo install beankeeper-cli` and
+`cargo binstall beankeeper-cli` are not available; build from Git instead.
+Only the `beankeeper` library is published on crates.io.
 
-```sh
-cargo binstall beankeeper-cli
-```
-
-The package is `beankeeper-cli`; the executable is `bk`. As of 2026-11-20,
-only the `beankeeper` library (0.7.0) is published on crates.io. The CLI's
-first crates.io publication and trusted-publisher setup are pending, so
-`cargo binstall beankeeper-cli` and `cargo install beankeeper-cli` are not yet
-available. Binstall needs the published CLI crate's metadata and matching
-GitHub release assets. See the [CLI bootstrap procedure](docs/RELEASE.md#bootstrap-the-cli-once).
-
-**From source (available now, builds from `main`)**:
+**From source (builds from `main`)**:
 
 ```sh
 cargo install --git https://github.com/Govcraft/beankeeper beankeeper-cli

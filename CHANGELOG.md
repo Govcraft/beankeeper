@@ -36,6 +36,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Changed
 
+- The CLI is no longer published to crates.io (`publish = false`); it ships only
+  as GitHub Release binaries through `install.sh`, AUR, or manual download. The
+  release workflow publishes only the `beankeeper` library, and `cargo binstall`
+  metadata was removed.
 - Feature and docs PRs keep crate and skill versions unchanged and collect notes
   here. Tagged release preflight now requires a matching dated changelog section;
   versions are assigned once during release preparation.

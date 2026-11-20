@@ -1,7 +1,6 @@
-"""Check the source packages and binstall contract without publishing or downloading."""
+"""Check the source packages and crates.io publishing scope without publishing or downloading."""
 
 from pathlib import Path
-import re
 import subprocess
 import tomllib
 import unittest
@@ -53,30 +52,13 @@ class PublishMetadataTests(unittest.TestCase):
                     self.assertEqual((ROOT / crate / license_name).read_bytes(), (ROOT / license_name).read_bytes())
                 self.assertFalse(any(path.startswith((".github/", "scripts/", "target/")) for path in files))
 
-    def test_binstall_matches_release_assets_for_every_target(self):
-        package = manifest("beankeeper-cli")["package"]
-        metadata = package["metadata"]["binstall"]
+    def test_only_the_library_is_published_to_crates_io(self):
+        self.assertIs(manifest("beankeeper-cli")["package"]["publish"], False)
+        self.assertNotIn("publish", manifest("beankeeper")["package"])
+        self.assertNotIn("metadata", manifest("beankeeper-cli")["package"])
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        targets = re.findall(r"- target: (\S+)", workflow)
-        self.assertTrue(targets)
-        archive_pattern = re.search(r'ARCHIVE_NAME="([^"]+)"', workflow).group(1)
-        tag_pattern = re.search(r'- "(beankeeper-cli-v\*)"', workflow).group(1)
-        self.assertEqual(metadata["pkg-fmt"], "tgz")
-        for target in targets:
-            with self.subTest(target=target):
-                values = {
-                    "repo": package["repository"], "version": package["version"],
-                    "target": target, "bin": "bk", "binary-ext": "",
-                }
-                def render(template):
-                    return re.sub(r"\{\s*([\w-]+)\s*\}", lambda match: values[match.group(1)], template)
-
-                archive = archive_pattern.replace("${VERSION}", values["version"]).replace("${TARGET}", target)
-                tag = tag_pattern.replace("*", values["version"])
-                self.assertIn('tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"', workflow)
-                self.assertIn('cp "target/${TARGET}/release/${BIN_NAME}" "staging/${ARCHIVE_NAME}/"', workflow)
-                self.assertEqual(render(metadata["pkg-url"]), f'{values["repo"]}/releases/download/{tag}/{archive}.tar.gz')
-                self.assertEqual(render(metadata["bin-dir"]), f"{archive}/bk")
+        self.assertIn("python3 -B scripts/publish_crate.py beankeeper\n", workflow)
+        self.assertNotIn("publish_crate.py beankeeper-cli", workflow)
 
 
 if __name__ == "__main__":

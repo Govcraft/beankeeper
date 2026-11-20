@@ -57,7 +57,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Cargo stages workspace dependencies locally, so this also verifies the
-      # CLI before the matching library version has been published to crates.io.
-      - name: Dry-run library and CLI publishing in dependency order
+      # Only the library is publishable; Cargo skips beankeeper-cli (publish = false).
+      - name: Dry-run library publishing
         run: cargo publish --dry-run --workspace --locked
