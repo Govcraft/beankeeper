@@ -91,3 +91,69 @@ fn budget_tables_honor_color_policy_for_all_render_paths() {
         }
     }
 }
+
+#[test]
+fn list_counts_appear_only_on_stderr_and_quiet_suppresses_them() {
+    let (_dir, db) = setup();
+    success(&run(
+        &db,
+        &[
+            "--company",
+            "acme",
+            "txn",
+            "post",
+            "-d",
+            "Rent",
+            "--debit",
+            "5000:100",
+            "--credit",
+            "1000:100",
+        ],
+    ));
+    success(&run(
+        &db,
+        &[
+            "--company",
+            "acme",
+            "budget",
+            "set",
+            "5000",
+            "--year",
+            "2026",
+            "--month",
+            "1",
+            "--amount",
+            "100",
+        ],
+    ));
+    let cases: &[(&[&str], &str)] = &[
+        (&["company", "list"], "1 company"),
+        (&["--company", "acme", "account", "list"], "2 accounts"),
+        (
+            &["--company", "acme", "account", "list", "--with-balances"],
+            "2 accounts",
+        ),
+        (&["--company", "acme", "txn", "list"], "1 transaction"),
+        (
+            &["--company", "acme", "budget", "list", "--year", "2026"],
+            "1 budget entr",
+        ),
+    ];
+    for (args, count) in cases {
+        let output = run(&db, args);
+        success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stdout.contains(count),
+            "stdout should only contain table data: {stdout}"
+        );
+        assert_eq!(stderr.matches(count).count(), 1, "{stderr}");
+        let mut quiet_args = vec!["-q"];
+        quiet_args.extend_from_slice(args);
+        let quiet = run(&db, &quiet_args);
+        success(&quiet);
+        assert_eq!(quiet.stdout, output.stdout);
+        assert!(quiet.stderr.is_empty(), "quiet stderr: {:?}", quiet.stderr);
+    }
+}
