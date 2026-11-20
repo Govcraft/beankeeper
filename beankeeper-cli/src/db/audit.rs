@@ -192,6 +192,8 @@ impl AuditEntity {
 /// The kind of change recorded. Maps to the `action` CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditAction {
+    MetadataSet,
+    MetadataUnset,
     RuleDelete,
     Create,
     StatusChange,
@@ -210,6 +212,8 @@ enum AuditAction {
 impl AuditAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::MetadataSet => "metadata_set",
+            Self::MetadataUnset => "metadata_unset",
             Self::RuleDelete => "rule_delete",
             Self::Create => "create",
             Self::StatusChange => "status_change",
@@ -1780,6 +1784,130 @@ pub fn list_audit(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), read_audit_row)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
+}
+
+/// Company-scoped lookup for an annotation edit.
+#[derive(Debug, Clone, Copy)]
+pub enum MetadataTarget<'a> {
+    /// An existing transaction ID.
+    Id(i64),
+    /// An existing transaction reference.
+    Reference(&'a str),
+}
+
+/// Result of an annotation edit, including whether an audit row was written.
+#[derive(Debug, serde::Serialize)]
+pub struct MetadataResult {
+    /// The selected transaction ID.
+    pub id: i64,
+    /// Whole stored object as JSON text, or absent metadata on a no-op.
+    pub metadata: Option<String>,
+    /// Whether metadata changed and an audit record was appended.
+    pub changed: bool,
+}
+
+/// Edits transaction annotations and records one whole-object before/after row.
+/// No-op requests leave storage and audit history unchanged. Financial fields
+/// and ledger relationships cannot be edited through this API.
+///
+/// # Errors
+/// Returns validation errors for invalid edits, not-found for an unknown target
+/// in this company, or a database error. The write and audit append are atomic.
+pub fn edit_metadata(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    target: MetadataTarget<'_>,
+    edit: &metadata::MetadataEdit,
+) -> Result<MetadataResult, CliError> {
+    edit.validate()?;
+    in_savepoint(conn, "sp_metadata", || {
+        let (predicate, value): (&str, &dyn rusqlite::ToSql) = match &target {
+            MetadataTarget::Id(id) => ("id", id),
+            MetadataTarget::Reference(reference) => ("reference", reference),
+        };
+        let (id, before): (i64, Option<String>) = conn.query_row(
+            &format!("SELECT id, metadata FROM transactions WHERE company_slug = ?1 AND {predicate} = ?2"),
+            params![company, value],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?.ok_or_else(|| CliError::NotFound(format!("transaction {target:?} not found in company '{company}'")))?;
+        let (after, changed) = edited_metadata(conn, before.as_deref(), edit)?;
+        if changed {
+            conn.execute(
+                "UPDATE transactions SET metadata = ?1 WHERE company_slug = ?2 AND id = ?3",
+                params![after, company, id],
+            )?;
+            record(
+                conn,
+                actor,
+                AuditChange {
+                    company_slug: Some(company),
+                    entity: AuditEntity::Transaction,
+                    entity_id: &id.to_string(),
+                    action: match edit {
+                        metadata::MetadataEdit::Set(_) => AuditAction::MetadataSet,
+                        metadata::MetadataEdit::Unset(_) => AuditAction::MetadataUnset,
+                    },
+                    snapshots: (Some(before.as_deref().unwrap_or("{}")), Some(&after)),
+                },
+            )?;
+        }
+        Ok(MetadataResult {
+            id,
+            metadata: if changed { Some(after) } else { before },
+            changed,
+        })
+    })
+}
+
+// SQLite's JSON editor preserves untouched number lexemes, unlike a round trip
+// through serde_json::Value. All paths and values are bound, never interpolated.
+fn edited_metadata(
+    conn: &Connection,
+    before: Option<&str>,
+    edit: &metadata::MetadataEdit,
+) -> Result<(String, bool), CliError> {
+    let mut after = before
+        .and_then(metadata::normalize)
+        .unwrap_or_else(|| "{}".into());
+    let mut changed = false;
+    let pairs: Vec<(&str, Option<&str>)> = match edit {
+        metadata::MetadataEdit::Set(pairs) => pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), Some(value.as_str())))
+            .collect(),
+        metadata::MetadataEdit::Unset(keys) => {
+            keys.iter().map(|key| (key.as_str(), None)).collect()
+        }
+    };
+    for (key, value) in pairs {
+        let path = format!("$.{}", serde_json::Value::String(key.into()));
+        let present: Option<String> =
+            conn.query_row("SELECT json_type(?1, ?2)", params![after, path], |row| {
+                row.get(0)
+            })?;
+        if let Some(value) = value {
+            let same: bool = conn.query_row(
+                "SELECT json_type(?1, ?2) = 'text' AND json_extract(?1, ?2) = ?3",
+                params![after, path, value],
+                |row| Ok(row.get::<_, Option<bool>>(0)?.unwrap_or(false)),
+            )?;
+            if !same {
+                after = conn.query_row(
+                    "SELECT json_set(?1, ?2, ?3)",
+                    params![after, path, value],
+                    |row| row.get(0),
+                )?;
+                changed = true;
+            }
+        } else if present.is_some() {
+            after = conn.query_row("SELECT json_remove(?1, ?2)", params![after, path], |row| {
+                row.get(0)
+            })?;
+            changed = true;
+        }
+    }
+    Ok((after, changed))
 }
 
 #[cfg(test)]

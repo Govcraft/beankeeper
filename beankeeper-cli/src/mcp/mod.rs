@@ -24,6 +24,8 @@ const WRITE_TOOLS: &[&str] = &[
     "account_create",
     "txn_post",
     "txn_reverse",
+    "txn_meta_set",
+    "txn_meta_unset",
     "budget_set",
     "budget_delete",
     "txn_clear",
@@ -158,6 +160,8 @@ fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliE
         "account_show" => &["code"],
         "account_create" => &["code", "name"],
         "txn_show" | "txn_reverse" => &["id"],
+        "txn_meta_set" => &["id", "values"],
+        "txn_meta_unset" => &["id", "keys"],
         "txn_clear" => &["transaction_id"],
         "budget_set" | "budget_delete" => &["account"],
         _ => &[],
@@ -169,6 +173,8 @@ fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliE
             .and_then(|v| v.as_str().map(str::to_owned))
             .ok_or_else(|| CliError::Usage("report kind is required".into()))?;
         args.push(kind);
+    } else if let Some(action) = tool.strip_prefix("txn_meta_") {
+        args.extend(["txn".into(), "meta".into(), action.into()]);
     } else if let Some((group, action)) = tool.split_once('_') {
         args.extend([group.into(), action.into()]);
     } else {
@@ -192,7 +198,11 @@ fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliE
         .iter()
         .filter_map(|key| input.remove(*key))
         .filter(|v| !v.is_null())
-        .map(|v| scalar(&v))
+        .flat_map(|value| match value {
+            Value::Array(values) => values,
+            value => vec![value],
+        })
+        .map(|value| scalar(&value))
         .collect::<Result<_, _>>()?;
     if !positions.is_empty() {
         args.push("--".into());
@@ -274,6 +284,15 @@ fn execute_operation(
     };
     if tool == "txn_post" {
         prepare_post(&mut input)?;
+    }
+    if tool.starts_with("txn_meta_") {
+        let has_id = input.get("id").is_some_and(|value| !value.is_null());
+        let has_reference = input.get("reference").is_some_and(|value| !value.is_null());
+        if has_id == has_reference {
+            return Err(CliError::Usage(
+                "provide exactly one transaction ID or reference".into(),
+            ));
+        }
     }
     let batch = input
         .remove("batch")
@@ -387,7 +406,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Post balanced debits and credits in decimal major units. Always pass reference and on_conflict=skip for safe retries. The existing CLI conflict rules apply; upsert is currently unsupported."
+        description = "Post balanced debits and credits in decimal major units. Always pass reference and on_conflict=skip for safe retries. Conflict strategies are error or skip. Use txn_meta_set/unset to annotate existing postings."
     )]
     async fn txn_post(
         &self,
@@ -406,6 +425,28 @@ impl LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         self.execute("txn_reverse", input, context).await
+    }
+
+    #[tool(
+        description = "Add or replace transaction annotations as key=value strings. Provide company and exactly one of id or reference. Relationship keys are reserved. No-op retries write no audit row."
+    )]
+    async fn txn_meta_set(
+        &self,
+        Parameters(input): Parameters<inputs::TxnMetaSet>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("txn_meta_set", input, context).await
+    }
+
+    #[tool(
+        description = "Remove transaction annotation keys. Provide company and exactly one of id or reference. Relationship keys are reserved; absent keys are a no-op."
+    )]
+    async fn txn_meta_unset(
+        &self,
+        Parameters(input): Parameters<inputs::TxnMetaUnset>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("txn_meta_unset", input, context).await
     }
 
     #[tool(description = "List or count transactions using the CLI filters and pagination.")]

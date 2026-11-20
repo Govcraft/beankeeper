@@ -18,6 +18,7 @@ pub mod rule;
 pub mod txn;
 pub mod txn_clear;
 pub mod txn_import;
+pub mod txn_meta;
 pub mod verify;
 
 use crate::cli::{
@@ -67,6 +68,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             BudgetCommand::Delete { .. } => "budget.delete",
         },
         Command::Txn(args) => match args.command.as_ref() {
+            TxnCommand::Meta(sub) => sub.command_name(),
             TxnCommand::Post { .. } => "txn.post",
             TxnCommand::List { .. } => "txn.list",
             TxnCommand::Show { .. } => "txn.show",

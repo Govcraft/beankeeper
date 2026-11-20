@@ -191,7 +191,7 @@ never tool arguments. Append `"--read-only"` to `args` to register only read too
 mutation tools are absent and cannot be called.
 
 The server provides `company_list`, `company_show`, `account_list`, `account_show`,
-`account_create`, `txn_post`, `txn_reverse`, `txn_list`, `txn_show`, `report`, `budget_list`,
+`account_create`, `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_list`, `txn_show`, `report`, `budget_list`,
 `budget_set`, `budget_delete`, `txn_clear`, `txn_reconcile`, `verify`, and `audit_log`.
 Company-scoped tools require a `company` argument. `report` takes a `kind` and its
 options, with all ten CLI report kinds available. Tool schemas describe the
@@ -211,13 +211,18 @@ accepted arguments. For example, `txn_post` takes:
 ```
 
 Always supply a stable `reference` and `on_conflict: "skip"` for safe retries.
-The CLI's default `error` strategy rejects duplicates; its existing `upsert`
-strategy remains unsupported. Inputs use decimal major-unit strings, and results
+The CLI's default `error` strategy rejects duplicates. Only `error` and `skip`
+are accepted conflict strategies. Inputs use decimal major-unit strings, and results
 use the same data payload and integer minor units as `bk --json`. Results are
 available as JSON text content and, where the negotiated MCP protocol permits the
 payload's shape, `structuredContent`. Tool failures set `isError: true` with
 `{code, message}`. Audited writes use `mcp:<client name>` from the MCP handshake,
 with a sanitized name or `mcp:unknown`. Creation auditing is unchanged.
+
+Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and a
+`values` array such as `["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset`
+takes the same selector and a `keys` array. They share the CLI validation and
+audit behavior and are absent in read-only mode.
 
 Call `txn_reverse` with `company` and the original transaction `id`; `date`,
 `description`, and `reference` are optional. It creates a linked mirror posting.
@@ -343,7 +348,38 @@ If skipped, `id` is null and `existing_id` is provided:
 }
 ```
 
-References are stored verbatim after trimming surrounding whitespace; empty or whitespace-only references are rejected. The same reference can be used in different companies. Transactions without `--reference` have no reference-based deduplication. `--on-conflict upsert` is not implemented.
+References are stored verbatim after trimming surrounding whitespace; empty or whitespace-only references are rejected. The same reference can be used in different companies. Transactions without `--reference` have no reference-based deduplication. `--on-conflict` accepts only `error` or `skip`. Annotate existing postings with `txn meta set/unset`.
+
+### Annotate a posted transaction
+
+```sh
+bk --company personal txn meta set 42 status=disputed dispute_id=D-42
+bk --company personal txn meta set --reference CHARGE-42 status=resolved
+bk --company personal txn meta unset 42 status dispute_id
+bk audit log --action metadata_set
+```
+
+`set` adds or replaces top-level string values, matching `txn post --meta`:
+`qty=3` stores `"3"`, `paid=true` stores `"true"`, and `note=` stores an empty
+string. Split on the first `=`. Select by transaction ID or trimmed `--reference`
+in the selected company. Unknown transactions return `NOT_FOUND`. Empty keys,
+keys containing a double quote, duplicate keys, and the relationship keys
+`correlate`, `reverses`, `reversed_by`, and `applies_to` are rejected. Set custom
+settlement `--link-key` values at post time and treat them as relationships too.
+
+Each changed batch writes one `metadata_set` or `metadata_unset` audit row with
+whole-object `before`/`after` snapshots and the resolved actor, atomically with
+the edit. An absent metadata object is represented as `{}` in the snapshots;
+removing its last key leaves `{}`. Setting an identical string or removing an
+absent key is a no-op with no audit row. Other keys and numeric precision survive.
+Dates, entries, amounts, currency, references, and creation attribution stay
+unchanged. Tagging the original charge preserves its age and payment matching
+in `report aging --filter-metadata status=disputed`.
+
+JSON envelopes use `txn.meta.set` / `txn.meta.unset` and return
+`data: {"id": 42, "metadata": "{...}", "changed": true}`. `metadata` is the stored
+JSON text, or `null` for a no-op on a transaction without metadata. Table mode
+prints the transaction ID and resulting metadata. Use `txn show` to inspect it.
 
 ### Reverse a mistaken transaction
 
@@ -443,7 +479,7 @@ rejected. This bulk posting schema differs from the full-database export schema.
 fails with no new transactions or entries committed. `--dry-run` exercises the
 same posting and duplicate checks, including duplicates inside the batch, then
 rolls everything back. `--on-conflict skip` is the default; `error` rejects the
-entire batch on a duplicate. `upsert` is unsupported.
+entire batch on a duplicate. Only `skip` and `error` are accepted.
 
 References are trimmed and stored verbatim, with uniqueness scoped to the
 company. CSV uses its `reference` column automatically (or `--reference-col`);

@@ -228,6 +228,52 @@ pub fn with_correlate(metadata: Option<&str>, partner_id: i64) -> Result<String,
     }
 }
 
+/// A batch of top-level transaction annotation edits. Set values are strings.
+#[derive(Debug, Clone)]
+pub enum MetadataEdit {
+    /// Add or replace keys.
+    Set(Vec<(String, String)>),
+    /// Remove keys, ignoring keys that are absent.
+    Unset(Vec<String>),
+}
+
+impl MetadataEdit {
+    /// Validates the entire edit before any data is changed.
+    ///
+    /// # Errors
+    /// Returns a validation error for an empty edit, invalid or repeated keys,
+    /// or a relationship key owned by another ledger operation.
+    pub fn validate(&self) -> Result<(), CliError> {
+        let keys: Vec<&str> = match self {
+            Self::Set(pairs) => pairs.iter().map(|(key, _)| key.as_str()).collect(),
+            Self::Unset(keys) => keys.iter().map(String::as_str).collect(),
+        };
+        if keys.is_empty() {
+            return Err(CliError::Validation(
+                "at least one metadata key is required".into(),
+            ));
+        }
+        for (index, key) in keys.iter().enumerate() {
+            if key.is_empty() || key.contains('"') {
+                return Err(CliError::Validation(
+                    "metadata keys must be non-empty and must not contain '\"'".into(),
+                ));
+            }
+            if ["correlate", "reverses", "reversed_by", "applies_to"].contains(key) {
+                return Err(CliError::Validation(format!(
+                    "metadata key '{key}' is reserved for ledger relationships"
+                )));
+            }
+            if keys[..index].contains(key) {
+                return Err(CliError::Validation(format!(
+                    "duplicate metadata key '{key}'"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

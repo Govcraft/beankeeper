@@ -464,6 +464,10 @@ impl AuditEntityArg {
 /// Action-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditActionArg {
+    #[value(name = "metadata_set", alias = "metadata-set")]
+    MetadataSet,
+    #[value(name = "metadata_unset", alias = "metadata-unset")]
+    MetadataUnset,
     RuleDelete,
     Create,
     StatusChange,
@@ -484,6 +488,8 @@ impl AuditActionArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::MetadataSet => "metadata_set",
+            Self::MetadataUnset => "metadata_unset",
             Self::RuleDelete => "rule_delete",
             Self::Create => "create",
             Self::StatusChange => "status_change",
@@ -896,6 +902,9 @@ EXAMPLES:\n  \
     $ bk txn reconcile\
 ")]
 pub enum TxnCommand {
+    /// Annotate a posted transaction without changing financial fields.
+    #[command(subcommand)]
+    Meta(TxnMetaCommand),
     /// Record a new balanced journal entry.
     #[command(after_help = "\
 EXAMPLES:\n  \
@@ -1873,6 +1882,43 @@ pub enum AgingMethodArg {
     Specific,
 }
 
+/// Metadata annotations on a posted transaction. Values are strings, as with `--meta`.
+#[derive(Subcommand, Debug)]
+pub enum TxnMetaCommand {
+    /// Add or replace top-level annotation keys (relationship keys are reserved).
+    #[command(override_usage = "bk txn meta set <ID|--reference REF> <KEY=VALUE>...")]
+    Set {
+        /// Transaction reference within the selected company, instead of an ID.
+        #[arg(long, short = 'r')]
+        reference: Option<String>,
+        /// Transaction ID followed by key=value pairs, or just pairs with --reference.
+        /// Values are strings and may be empty or contain '='.
+        #[arg(required = true, num_args = 1..)]
+        values: Vec<String>,
+    },
+    /// Remove top-level annotation keys. Missing keys are a no-op.
+    #[command(override_usage = "bk txn meta unset <ID|--reference REF> <KEY>...")]
+    Unset {
+        /// Transaction reference within the selected company, instead of an ID.
+        #[arg(long, short = 'r')]
+        reference: Option<String>,
+        /// Transaction ID followed by keys, or just keys with --reference.
+        #[arg(required = true, num_args = 1..)]
+        keys: Vec<String>,
+    },
+}
+
+impl TxnMetaCommand {
+    /// JSON envelope command identifier.
+    #[must_use]
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Self::Set { .. } => "txn.meta.set",
+            Self::Unset { .. } => "txn.meta.unset",
+        }
+    }
+}
+
 /// Conflict resolution strategy for duplicate references.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OnConflictArg {
@@ -1881,8 +1927,6 @@ pub enum OnConflictArg {
     Error,
     /// Skip the transaction silently on duplicate reference.
     Skip,
-    /// Update the existing transaction (not yet implemented).
-    Upsert,
 }
 
 /// Resolve the effective output format.

@@ -30,6 +30,7 @@ pub fn run(
     let format = resolve_format(None, cli);
 
     match sub {
+        TxnCommand::Meta(sub) => super::txn_meta::run(cli, &db_handle, company, sub),
         TxnCommand::Post { .. } => {
             let actor = cli.principal();
             let result = execute_post(&db_handle, company, sub, &actor)?;
@@ -168,6 +169,10 @@ pub fn execute_json_with_pagination(
     }
     let mut out = Vec::new();
     match sub {
+        TxnCommand::Meta(sub) => {
+            return super::txn_meta::execute_json(db_handle, company, sub, actor)
+                .map(|data| (data, None));
+        }
         TxnCommand::Post { .. } => {
             let result = execute_post(db_handle, company, sub, actor)?;
             let meta = cli.meta("txn.post", Some(company));
@@ -489,7 +494,7 @@ pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, 
 /// # Errors
 ///
 /// Returns an error message if the reference is empty or whitespace-only.
-fn normalize_reference(input: &str) -> Result<String, &'static str> {
+pub(super) fn normalize_reference(input: &str) -> Result<String, &'static str> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("reference must not be empty");
@@ -642,7 +647,6 @@ fn conflict_strategy(arg: crate::cli::OnConflictArg) -> transactions::ConflictSt
     match arg {
         crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
         crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
-        crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
     }
 }
 
