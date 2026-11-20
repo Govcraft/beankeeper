@@ -195,10 +195,13 @@ also match the release before announcing the AUR update.
 
 Without `cosign`, the installer warns that only SHA-256 is checked and continues.
 It does not automatically run `gh attestation verify`; use the manual check below.
-With `cosign`, any bundle download or verification failure is fatal, including
-for historical releases that predate signing. An incompatible cosign version
-also fails verification; use current cosign 3.x. There is no automatic downgrade
-to checksum-only after a verification failure.
+With `cosign`, a missing bundle (HTTP 404) produces a clear warning that the
+release predates Sigstore signing and falls back to SHA-256 for that artifact.
+This keeps historical releases, including `beankeeper-cli-v0.23.0`, installable.
+Any bundle that is present must still pass verification, even if the other bundle
+is missing. Other download errors and all verification failures remain fatal.
+An incompatible cosign version also fails verification; use current cosign 3.x.
+There is no automatic downgrade to checksum-only after a verification failure.
 
 ## Sigstore verification contract
 
@@ -264,7 +267,9 @@ cosign verify-blob "$ARCHIVE" --bundle "${ARCHIVE}.sigstore" \
 
 An updater must use the exact identity for its selected version, verify both
 bundles and the archive's matching SHA-256 entry, and only then extract and replace
-the executable. Reject missing bundles, altered bytes, wrong identity/issuer,
+the executable. The installer warns and uses SHA-256 for bundles missing with
+HTTP 404 to support releases predating signing; it still verifies any present
+bundle. Reject other download errors, altered bytes, wrong identity/issuer,
 and failed verification without replacing the installed binary. Keep Sigstore's
 default transparency-log and certificate checks enabled. Update channel selection
 and rollback policy remain D9's responsibility.
@@ -290,9 +295,10 @@ python3 -B -m unittest discover -s scripts/tests -v
 These tests execute the workflow's signing loop with stubbed cosign over four
 archive fixtures and a checksum file, check permissions, attestation subjects,
 and release uploads, and exercise `install.sh` with and without cosign. They
-check wrong tags, repositories, workflows, issuers, missing or invalid bundles,
-tampered files, and SHA-256 failures before extraction or installation. They
-require no signing identity, network service, or production tag. CI and release
+check wrong tags, repositories, workflows, issuers, the missing-bundle HTTP 404
+fallback, fatal download errors, invalid bundles, tampered files, and SHA-256
+failures before extraction or installation. They require no signing identity,
+network service, or production tag. CI and release
 preflight run the same tests. Real OIDC issuance and attestation upload are
 validated by the next intentional release run.
 

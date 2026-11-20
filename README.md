@@ -205,9 +205,10 @@ SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directo
 with `BK_INSTALL=~/.local/bin` or pin a published CLI release with
 `BK_VERSION=X.Y.Z`. When `cosign` is on `PATH`, the installer also verifies the
 archive and checksum file against their Sigstore bundles before extraction.
-Missing bundles or failed verification stop installation. Without `cosign`,
+Missing bundles (HTTP 404) warn that the release predates signing and fall back
+to SHA-256; other download errors or failed verification stop installation.
+Any present bundle must still verify. Without `cosign`,
 installation checks SHA-256 and warns that authenticity was not verified.
-Older releases predating signing have no bundles and fail with `cosign` present.
 
 New releases attach `<artifact>.sigstore` for every archive and for
 `checksums-sha256.txt`, plus GitHub build provenance attestations. To verify a

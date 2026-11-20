@@ -102,8 +102,15 @@ verify_signatures() {
     IDENTITY="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/beankeeper-cli-v${VERSION}"
     for ARTIFACT in "$ARCHIVE" checksums-sha256.txt; do
         info "verifying Sigstore bundle for ${ARTIFACT}..."
-        curl -fsSL "${URL%/*}/${ARTIFACT}.sigstore" -o "${TMPDIR}/${ARTIFACT}.sigstore" \
-            || fatal "could not download Sigstore bundle for ${ARTIFACT}"
+        if BUNDLE_STATUS="$(curl -fsSL "${URL%/*}/${ARTIFACT}.sigstore" \
+            -o "${TMPDIR}/${ARTIFACT}.sigstore" -w '%{http_code}')"; then
+            :
+        elif [ "$BUNDLE_STATUS" = 404 ]; then
+            warn "Sigstore bundle missing for ${ARTIFACT} (HTTP 404): this release predates Sigstore signing; only the SHA-256 checksum will be checked for this artifact; release authenticity is not verified"
+            continue
+        else
+            fatal "could not download Sigstore bundle for ${ARTIFACT}"
+        fi
         cosign verify-blob \
             --bundle "${TMPDIR}/${ARTIFACT}.sigstore" \
             --certificate-identity "$IDENTITY" \

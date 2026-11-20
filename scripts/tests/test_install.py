@@ -52,8 +52,12 @@ assert url.startswith("https://github.com/Govcraft/beankeeper/releases/download/
 name = url.rsplit("/", 1)[1]
 source = Path(os.environ["TEST_ASSETS"]) / name
 if not source.is_file():
+    if "%{http_code}" in args:
+        print(os.environ.get("TEST_MISSING_HTTP_STATUS", "404"), end="")
     sys.exit(22)
 shutil.copyfile(source, args[args.index("-o") + 1])
+if "%{http_code}" in args:
+    print("200", end="")
 ''')
         for command in ("tar", "install"):
             self.stub(command, f"os.execv({shutil.which(command)!r}, [{command!r}, *sys.argv[1:]])")
@@ -152,13 +156,57 @@ assert bundle["digest"] == hashlib.sha256(Path(args[-1]).read_bytes()).hexdigest
         self.run_install()
         self.assertEqual(len(self.calls("cosign")), 2)
 
-    def test_missing_bundle_stops_installation(self):
+    def test_missing_bundle_warns_and_falls_back_to_checksum(self):
         self.with_cosign()
         for name in (ARCHIVE, "checksums-sha256.txt"):
             with self.subTest(artifact=name):
+                self.log.write_text("")
                 self.write_bundles()
                 (self.assets / f"{name}.sigstore").unlink()
-                self.run_install(error="could not download Sigstore bundle")
+                result = self.run_install()
+                self.assertIn(f"Sigstore bundle missing for {name} (HTTP 404)", result.stderr)
+                self.assertIn("this release predates Sigstore signing", result.stderr)
+                self.assertIn("only the SHA-256 checksum will be checked", result.stderr)
+                self.assertIn("release authenticity is not verified", result.stderr)
+                self.assertEqual(
+                    [Path(call[-1]).name for call in self.calls("cosign")],
+                    [artifact for artifact in (ARCHIVE, "checksums-sha256.txt") if artifact != name],
+                )
+
+    def test_unsigned_latest_release_installs_with_cosign(self):
+        self.with_cosign()
+        self.env.pop("BK_VERSION")
+        for name in (ARCHIVE, "checksums-sha256.txt"):
+            (self.assets / f"{name}.sigstore").unlink()
+        result = self.run_install()
+        self.assertEqual(result.stderr.count("this release predates Sigstore signing"), 2)
+        self.assertFalse(self.calls("cosign"))
+
+    def test_missing_bundle_still_requires_matching_checksum(self):
+        self.with_cosign()
+        (self.assets / "checksums-sha256.txt").write_text(f"{'0' * 64}  {ARCHIVE}\n")
+        for name in (ARCHIVE, "checksums-sha256.txt"):
+            (self.assets / f"{name}.sigstore").unlink()
+        self.run_install(error="checksum mismatch")
+
+    def test_missing_bundle_does_not_skip_verification_of_existing_bundle(self):
+        self.with_cosign()
+        for missing, invalid in ((ARCHIVE, "checksums-sha256.txt"), ("checksums-sha256.txt", ARCHIVE)):
+            with self.subTest(missing=missing):
+                self.write_bundles()
+                (self.assets / f"{missing}.sigstore").unlink()
+                (self.assets / f"{invalid}.sigstore").write_text("invalid bundle")
+                self.run_install(error=f"Sigstore verification failed for {invalid}")
+
+    def test_bundle_download_errors_other_than_404_stop_installation(self):
+        self.with_cosign()
+        (self.assets / f"{ARCHIVE}.sigstore").unlink()
+        for status in ("403", "500", "000"):
+            with self.subTest(status=status):
+                self.env["TEST_MISSING_HTTP_STATUS"] = status
+                result = self.run_install(error="could not download Sigstore bundle")
+                self.assertNotIn("this release predates Sigstore signing", result.stderr)
+                self.assertFalse(self.calls("cosign"))
 
     def test_rejects_wrong_identity_tag_repository_workflow_or_issuer(self):
         self.with_cosign()

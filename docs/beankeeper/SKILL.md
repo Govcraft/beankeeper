@@ -17,8 +17,9 @@ Beankeeper is a double-entry accounting system operated through the `bk` CLI or 
 
 For binary installation, `install.sh` verifies the archive and checksum file's
 Sigstore bundles when `cosign` is on `PATH`, before extraction or installation.
-Missing bundles or failed verification stop installation. Without cosign it
-warns and verifies SHA-256 only. Older unsigned releases fail with cosign present.
+Missing bundles (HTTP 404) warn that the release predates signing and fall back
+to SHA-256. Present bundles must verify; other download errors and verification
+failures stop installation. Without cosign it warns and verifies SHA-256 only.
 See the [release verification contract](../RELEASE.md#sigstore-verification-contract)
 for artifact/bundle names, exact release-tag identity, issuer, and manual
 `cosign verify-blob` / `gh attestation verify` commands. Sigstore signing does
