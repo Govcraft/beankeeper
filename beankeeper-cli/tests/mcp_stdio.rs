@@ -1306,3 +1306,85 @@ fn seed_investment_cli(path: &Path) -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn tax_reports_over_stdio_match_cli_and_advertise_threshold() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "txn",
+            "post",
+            "-d",
+            "Tax example",
+            "--date",
+            "2026-01-01",
+            "--debit",
+            "1000:700",
+            "--credit",
+            "4000:700",
+            "--tax",
+            "4000=sched-c:1",
+            "--meta",
+            "payee=Jordan Key",
+            "--meta",
+            "tin=001-02-0003",
+        ])
+        .assert()
+        .success();
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let schema = listed["result"]["tools"]
+        .as_array()
+        .ok_or("tools")?
+        .iter()
+        .find(|tool| tool["name"] == "report")
+        .ok_or("report tool")?["inputSchema"]
+        .to_string();
+    for name in ["schedule-c", "1099", "threshold"] {
+        assert!(schema.contains(name), "{schema}");
+    }
+    for kind in ["schedule-c", "1099"] {
+        let mut input = json!({"company":"acme", "kind":kind, "to":"2026-12-31"});
+        let mut args = vec![
+            "--json",
+            "--company",
+            "acme",
+            "report",
+            kind,
+            "--to",
+            "2026-12-31",
+        ];
+        if kind == "1099" {
+            input["threshold"] = "700.00".into();
+            args.extend(["--threshold", "700.00"]);
+        }
+        let actual = client.success("report", &input)?;
+        let output = bk(&path)?.args(args).output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cli: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(actual, cli["data"]);
+        if kind == "1099" {
+            assert_eq!(actual["vendors"][0]["total"], 70_000);
+            assert_eq!(actual["vendors"][0]["tin"], "001-02-0003");
+        } else {
+            assert_eq!(actual["lines"][0]["net"], 70_000);
+        }
+    }
+    let rejected = client.call(
+        "report",
+        &json!({"company":"acme", "kind":"1099", "threshold":"-1"}),
+    )?;
+    assert_eq!(rejected["result"]["isError"], true);
+    Ok(())
+}

@@ -164,7 +164,15 @@ impl Cli {
     /// Returns whether JSON output mode is active.
     #[must_use]
     pub fn is_json(&self) -> bool {
-        self.output.json || self.output.format == Some(OutputFormat::Json)
+        let command_format = match &self.command {
+            Command::Report(args) => match &args.command {
+                ReportCommand::ScheduleC(args) => args.output_format,
+                ReportCommand::Vendor1099(args) => args.period.output_format,
+                _ => None,
+            },
+            _ => None,
+        };
+        resolve_format(command_format, self) == OutputFormat::Json
     }
 }
 
@@ -1809,6 +1817,13 @@ EXAMPLES:\n  \
         #[arg(long)]
         currency: Option<String>,
     },
+
+    /// Summarise Schedule C tags, including unmapped and untagged activity.
+    ScheduleC(crate::commands::report_tax::TaxArgs),
+
+    /// Summarise vendor payments from payee metadata (not a filed form).
+    #[command(name = "1099", alias = "1099-nec")]
+    Vendor1099(crate::commands::report_tax::VendorArgs),
 
     /// General ledger / account statement with running balances.
     #[command(after_help = "\

@@ -88,6 +88,7 @@ fn monetary_field(key: &str) -> bool {
             | "credit_total"
             | "total_debits"
             | "total_credits"
+            | "threshold"
             | "total"
             | "budget"
             | "actual"

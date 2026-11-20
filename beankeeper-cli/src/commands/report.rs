@@ -16,7 +16,14 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
     let db = cli.open_db()?;
     let mut stdout = std::io::stdout().lock();
     let mut output = ReportOutput {
-        format: resolve_format(None, cli),
+        format: resolve_format(
+            match sub {
+                ReportCommand::ScheduleC(args) => args.output_format,
+                ReportCommand::Vendor1099(args) => args.period.output_format,
+                _ => None,
+            },
+            cli,
+        ),
         use_color: output::should_use_color(cli.verbosity.no_color),
         writer: &mut stdout,
     };
@@ -77,6 +84,9 @@ fn run_to(
     }
 
     match sub {
+        ReportCommand::ScheduleC(_) | ReportCommand::Vendor1099(_) => {
+            super::report_tax::run_to(cli, db, company, sub, output)
+        }
         ReportCommand::Trend(args) => super::report_trend::run_to(cli, db, company, args, output),
         ReportCommand::TrialBalance { .. }
         | ReportCommand::Balance { .. }
