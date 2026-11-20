@@ -429,6 +429,9 @@ fn insert_transaction(
                 reference: prepared.reference.clone(),
             })
         }
+        Err(error @ (CliError::Forbidden(_) | CliError::Unauthorized(_))) => {
+            TransactionOutcome::Denied(error)
+        }
         Err(e) => TransactionOutcome::Failed(FailedTransaction {
             date: prepared.date.clone(),
             description: prepared.description.clone(),
@@ -440,6 +443,7 @@ fn insert_transaction(
 }
 
 enum TransactionOutcome {
+    Denied(CliError),
     Imported(ImportedTransaction),
     Skipped(SkippedTransaction),
     Failed(FailedTransaction),
@@ -470,7 +474,7 @@ fn process_transactions(
     ctx: &StatementContext<'_>,
     txn_list: &ofx_rs::aggregates::TransactionList,
     result: &mut ImportResult,
-) {
+) -> Result<(), CliError> {
     for txn in txn_list.transactions() {
         let prepared = match prepare_transaction(
             txn,
@@ -502,11 +506,13 @@ fn process_transactions(
         };
 
         match post_one(ctx, &prepared) {
+            TransactionOutcome::Denied(error) => return Err(error),
             TransactionOutcome::Imported(t) => result.imported.push(t),
             TransactionOutcome::Skipped(t) => result.skipped.push(t),
             TransactionOutcome::Failed(t) => result.errors.push(t),
         }
     }
+    Ok(())
 }
 
 /// Validate a currency code from OFX against beankeeper's currency table.
@@ -597,7 +603,7 @@ pub fn run_import_ofx(
                     verbose,
                 };
                 if let Some(txn_list) = stmt.transaction_list() {
-                    process_transactions(&ctx, txn_list, &mut result);
+                    process_transactions(&ctx, txn_list, &mut result)?;
                 }
             }
         }
@@ -624,7 +630,7 @@ pub fn run_import_ofx(
                     verbose,
                 };
                 if let Some(txn_list) = stmt.transaction_list() {
-                    process_transactions(&ctx, txn_list, &mut result);
+                    process_transactions(&ctx, txn_list, &mut result)?;
                 }
             }
         }
@@ -651,7 +657,7 @@ pub fn run_import_ofx(
                     verbose,
                 };
                 if let Some(txn_list) = stmt.transaction_list() {
-                    process_transactions(&ctx, txn_list, &mut result);
+                    process_transactions(&ctx, txn_list, &mut result)?;
                 }
             }
         }

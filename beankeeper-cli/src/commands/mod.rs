@@ -62,6 +62,11 @@ pub fn command_name(cmd: &Command) -> &'static str {
         Command::Key(_) => "key.init",
         Command::Agent(sub) => match sub {
             crate::cli::AgentCommand::Issue { .. } => "agent.issue",
+            crate::cli::AgentCommand::Limit(sub) => match sub {
+                crate::cli::AgentLimitCommand::Set { .. } => "agent.limit.set",
+                crate::cli::AgentLimitCommand::Show { .. } => "agent.limit.show",
+                crate::cli::AgentLimitCommand::Clear { .. } => "agent.limit.clear",
+            },
             crate::cli::AgentCommand::List => "agent.list",
             crate::cli::AgentCommand::Revoke { .. } => "agent.revoke",
         },
@@ -90,6 +95,10 @@ pub fn command_name(cmd: &Command) -> &'static str {
         Command::Txn(args) => match args.command.as_ref() {
             TxnCommand::Meta(sub) => sub.command_name(),
             TxnCommand::Post { .. } => "txn.post",
+            TxnCommand::Propose { .. } => "txn.propose",
+            TxnCommand::Proposals { .. } => "txn.proposals",
+            TxnCommand::Approve { .. } => "txn.approve",
+            TxnCommand::Reject { .. } => "txn.reject",
             TxnCommand::List { .. } => "txn.list",
             TxnCommand::Show { .. } => "txn.show",
             TxnCommand::Reverse { .. } => "txn.reverse",
