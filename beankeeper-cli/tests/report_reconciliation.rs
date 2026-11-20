@@ -417,6 +417,7 @@ fn csv_output_has_entries_then_summary() {
         "--statement-balance",
         "700",
     ]);
+    let today = chrono::Local::now().date_naive();
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(
         lines[0],
@@ -429,15 +430,21 @@ fn csv_output_has_entries_then_summary() {
         "{csv}"
     );
     assert!(
-        csv.contains("summary,,,,,book_balance,86050,,,USD,,"),
+        csv.contains(&format!("summary,,,{today},,book_balance,86050,,,USD,,")),
         "{csv}"
     );
     assert!(
-        csv.contains("summary,,,,,cleared_balance,70000,,,USD,,"),
+        csv.contains(&format!("summary,,,{today},,cleared_balance,70000,,,USD,,")),
         "{csv}"
     );
-    assert!(csv.contains("summary,,,,,difference,0,,,USD,,"), "{csv}");
-    assert!(csv.contains("summary,,,,,reconciled,1,,,USD,,"), "{csv}");
+    assert!(
+        csv.contains(&format!("summary,,,{today},,difference,0,,,USD,,")),
+        "{csv}"
+    );
+    assert!(
+        csv.contains(&format!("summary,,,{today},,reconciled,1,,,USD,,")),
+        "{csv}"
+    );
 }
 
 #[test]
