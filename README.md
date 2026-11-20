@@ -194,7 +194,7 @@ The server provides `company_list`, `company_show`, `account_list`, `account_sho
 `account_create`, `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_list`, `txn_show`, `report`, `budget_list`,
 `budget_set`, `budget_delete`, `txn_clear`, `txn_reconcile`, `verify`, and `audit_log`.
 Company-scoped tools require a `company` argument. `report` takes a `kind` and its
-options, with all ten CLI report kinds available. Tool schemas describe the
+options, with all eleven CLI report kinds available. Tool schemas describe the
 accepted arguments. For example, `txn_post` takes:
 
 ```json
@@ -716,6 +716,38 @@ Batches are atomic (all lines or none) and report what was cleared and what was 
 Reconciling records a **reconciled date**: with `--status reconciled`, `--date` (default today) is the day the clearings were locked in. Promoting a statement's clearings keeps their cleared date and sets the reconciled date (it may not be before the cleared date); a clearing created directly as reconciled gets the same cleared and reconciled date. Reconciled clearings are locked: `--status cleared` on them is an error. To redo one, remove it with `--status uncleared` (plus `--statement`), then clear it again.
 
 An entry's status is derived from its clearings: `cleared` once fully cleared, `reconciled` once fully cleared by reconciled clearings, `uncleared` otherwise (including partially cleared items). Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field. `bk txn show` also lists each entry's id, cleared and remaining amounts, and individual clearings (amount, cleared date, reconciled date, statement, status).
+
+### Historical Trends
+
+Track monthly spending by category or net worth across time:
+
+```sh
+bk --company personal report trend --metric spending --from 2026-01-01 --to 2026-12-31
+bk --company personal report trend --metric net-worth --from 2026-01-01 --to 2026-12-31
+bk --company personal --format csv report trend --metric spending --period quarter --to 2026-12-31
+```
+
+`--period month|quarter|year` defaults to `month`. Dates are inclusive; `--to`
+defaults to today and `--from` to January 1 of the end date's year. Calendar
+periods include inactive periods and clip their first and last boundaries to
+these dates. Reports support up to 120 periods.
+
+Spending categories are expense accounts, with debits minus credits in each
+period, followed by Total Spending. Refunds reduce spending and can make it
+negative. This measures booked expenses, including unpaid expenses, rather than
+cash payments. All expense accounts appear, including those with zero activity.
+Net worth shows Total Assets, Total Liabilities, and Net Worth (assets minus
+liabilities) at each period end. These balances include all earlier history,
+even entries before `--from`; inactive periods carry balances forward. Values
+reflect ledger book values. Period-end balances are not summed across time.
+
+Use `--currency CODE` for a company with multiple transaction currencies; otherwise
+the currency is inferred, with USD for an empty company. Table output presents
+major units. JSON (`report.trend`) provides date-labelled `columns` and `series`
+with integer minor-unit `amounts` and decimal-string `amounts_display`. CSV has
+`code,name,<period labels>` columns and integer minor-unit amounts. The MCP
+`report` tool accepts `kind: "trend"` with the same metric, dates, period and
+currency options.
 
 ### Period-over-Period Reports
 
