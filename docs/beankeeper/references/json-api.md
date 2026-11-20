@@ -1026,6 +1026,8 @@ Two receivable accounts grouped by customer, filtered to disputed charges (the s
 
 ### `txn import`
 
+OFX success responses use the following shape:
+
 ```json
 {
   "data": {
@@ -1054,6 +1056,34 @@ Two receivable accounts grouped by customer, filtered to disputed charges (the s
   }
 }
 ```
+
+CSV/JSON responses retain `dry_run`, `imported`, `skipped`, `errors`, and
+`transactions`. Each transaction outcome includes `date`, `description`,
+`reference`, and `status` (`imported`/`skipped`). Newly posted outcomes include
+`id`; dry runs and skipped outcomes omit it. CSV/JSON outcomes omit OFX's
+`amount` and `reason` fields because JSON journals can contain split entries.
+Use `txn show` to retrieve the posted entries and amounts.
+
+```json
+{
+  "ok": true,
+  "meta": {"command": "txn.import", "company": "acme", "timestamp": "2026-03-15T00:00:00Z"},
+  "data": {
+    "dry_run": false,
+    "imported": 1,
+    "skipped": 0,
+    "errors": 0,
+    "transactions": [
+      {"id": 50, "date": "2026-03-15", "description": "Office supplies", "reference": "receipt-1001", "status": "imported"}
+    ]
+  }
+}
+```
+
+CSV/JSON batch failures return the standard error envelope on stderr and no
+success data. Nothing in the batch is committed. The success `errors` count
+is therefore always zero. See [commands.md](commands.md#bk-txn-import) for the
+JSON input schema, exact major-unit amounts, column mappings, and hash references.
 
 ### `audit log`
 

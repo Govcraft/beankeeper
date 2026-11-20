@@ -189,10 +189,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
             )
         }
         crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => {
-            Err(CliError::Unimplemented(format!(
-                "{effective_format:?} import is not supported; only OFX/QFX import is \
-                 currently available. CSV and JSON support is planned."
-            )))
+            super::txn_import::run(cli, db_handle, company, sub, effective_format)
         }
     }
 }

@@ -945,7 +945,6 @@ EXAMPLES:\n  \
         file: Option<String>,
 
         /// Input format. Auto-detected from file extension when omitted.
-        /// Only `ofx` is currently supported; `csv` and `json` are planned.
         #[arg(
             id = "import_format",
             long = "input-format",
@@ -964,11 +963,15 @@ EXAMPLES:\n  \
         #[arg(long)]
         dry_run: bool,
 
-        /// Bank/asset account code (required for OFX import).
+        /// CSV column mappings, sign convention, and default currency.
+        #[command(flatten)]
+        options: crate::commands::txn_import::ImportOptions,
+
+        /// Bank/asset account code (required for OFX and CSV import).
         #[arg(long)]
         account: Option<String>,
 
-        /// Suspense/clearing contra account code (required for OFX import).
+        /// Suspense/clearing contra account code (required for OFX and CSV import).
         #[arg(long)]
         suspense: Option<String>,
 
@@ -1567,9 +1570,9 @@ pub enum ExportFormat {
 /// Import-specific input format.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFormat {
-    /// CSV input (planned; not yet supported).
+    /// CSV bank statement with date, description, and signed amount columns.
     Csv,
-    /// JSON input (planned; not yet supported).
+    /// JSON array of transactions with balanced entries.
     Json,
     /// OFX / QFX bank statement.
     Ofx,

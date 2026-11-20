@@ -62,7 +62,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk txn list` | Search and filter transactions |
 | `bk txn reverse ID` | Post a linked mirror transaction (alias `void`); reject reconciled originals |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
-| `bk txn import` | Import OFX/CSV/JSON bank statements |
+| `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
 | `bk txn clear` | Clear entries (in full or in part) against a statement, by id, by reference, or in an atomic batch; mark reconciled |
 | `bk txn attach` | Link documents (receipts, invoices) to transactions |
 | `bk txn reconcile` | Find orphaned intercompany correlations |
@@ -146,7 +146,35 @@ the reversal date. Clear or reconcile them explicitly when appropriate.
 bk --company acme txn import \
   --file statement.ofx --account 1000 --suspense 9000 \
   --on-conflict skip
+
+bk --company acme txn import \
+  --file statement.csv --account 1000 --suspense 9000 --dry-run
+
+cat journals.json | bk --json --company acme txn import --input-format json
 ```
+
+CSV defaults to `date,description,amount[,reference]`. Amounts are signed major
+units; positive means inflow unless `--positive-amount outflow` is set. Map
+headers with `--date-col`, `--description-col`, `--amount-col`, `--reference-col`,
+and parse dates with `--date-format` (default `%Y-%m-%d`). Set `--currency` when
+needed (otherwise `BEANKEEPER_CURRENCY`, then USD).
+
+JSON is an array of `{date, description, entries, currency?, reference?,
+metadata?}`. Each entry needs `account_code`, `direction` (`debit`/`credit`), and
+`amount`, with optional `memo` and `tax_category`. Amounts are positive major
+units; use decimal strings (e.g. `"12.34"`), or integer numbers for whole major
+units. Fractional JSON numbers are rejected. Metadata must be an object. JSON
+uses its own accounts and balanced entries; it does not need bank flags.
+
+CSV/JSON batches commit atomically. `--dry-run` posts inside a rolled-back
+transaction, checking intra-batch duplicates too. Default `--on-conflict skip`
+skips duplicates; `error` rolls back the batch. `upsert` is unsupported.
+Missing references use a normalized row hash plus an occurrence ordinal,
+starting at 1 for each distinct content in the batch. Identical unreferenced
+rows are all posted; re-importing the same or an overlapping file skips matching
+occurrences and posts only additional ones. Duplicate explicit references still
+skip or error according to `--on-conflict`.
+See [commands.md](references/commands.md) for the full import contract.
 
 ### Generate reports
 
