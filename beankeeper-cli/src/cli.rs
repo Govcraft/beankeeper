@@ -286,6 +286,7 @@ impl AuditEntityArg {
 /// Action-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditActionArg {
+    Create,
     StatusChange,
     Correlate,
     Reverse,
@@ -300,6 +301,7 @@ impl AuditActionArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Create => "create",
             Self::StatusChange => "status_change",
             Self::Correlate => "correlate",
             Self::Reverse => "reverse",

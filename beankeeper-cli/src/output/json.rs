@@ -111,6 +111,7 @@ pub struct TransactionJson {
     description: String,
     metadata: Option<String>,
     reference: Option<String>,
+    posted_by: Option<String>,
     currency: String,
     date: String,
     entries: Vec<EntryJson>,
@@ -194,6 +195,7 @@ struct TransactionWithAttachmentsJson {
     description: String,
     metadata: Option<String>,
     reference: Option<String>,
+    posted_by: Option<String>,
     currency: String,
     date: String,
     entries: Vec<EntryJson>,
@@ -310,6 +312,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                 description: txn.description.clone(),
                 metadata: txn.metadata.clone(),
                 reference: txn.reference.clone(),
+                posted_by: txn.posted_by.clone(),
                 currency: txn.currency.clone(),
                 date: txn.date.clone(),
                 entries,
@@ -376,6 +379,7 @@ pub fn render_transactions_with_attachments<
                 description: txn.description.clone(),
                 metadata: txn.metadata.clone(),
                 reference: txn.reference.clone(),
+                posted_by: txn.posted_by.clone(),
                 currency: txn.currency.clone(),
                 date: txn.date.clone(),
                 entries,
@@ -958,6 +962,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            posted_by: None,
             reference: None,
         }];
         let mut map = HashMap::new();
@@ -1007,6 +1012,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            posted_by: None,
             reference: None,
         }];
         let json = render_transactions(&txns, &HashMap::new(), test_meta("txn.list", Some("acme")))

@@ -25,38 +25,46 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
         eprintln!("[ok] Schema version: {version}");
     }
 
-    // Foreign key integrity check
-    let fk_errors: Vec<String> = {
-        let mut stmt = db.conn().prepare("PRAGMA foreign_key_check")?;
-        let rows = stmt.query_map([], |row| {
-            let table: String = row.get(0)?;
-            let rowid: i64 = row.get(1)?;
-            Ok(format!("{table} row {rowid}"))
-        })?;
-        let mut errs = Vec::new();
-        for row in rows {
-            errs.push(row?);
+    crate::db::audit::atomically(db.conn(), || {
+        crate::db::audit::verify_hash_chain(db.conn())?;
+        crate::db::verification::verify_accounting(db.conn())?;
+        crate::db::audit::verify_creations(db.conn())?;
+
+        // Foreign key integrity check
+        let fk_errors: Vec<String> = {
+            let mut stmt = db.conn().prepare("PRAGMA foreign_key_check")?;
+            let rows = stmt.query_map([], |row| {
+                let table: String = row.get(0)?;
+                let rowid: i64 = row.get(1)?;
+                Ok(format!("{table} row {rowid}"))
+            })?;
+            let mut errs = Vec::new();
+            for row in rows {
+                errs.push(row?);
+            }
+            errs
+        };
+
+        if !fk_errors.is_empty() {
+            return Err(CliError::Database(format!(
+                "foreign key violations: {}",
+                fk_errors.join(", ")
+            )));
         }
-        errs
-    };
 
-    if !fk_errors.is_empty() {
-        return Err(CliError::Database(format!(
-            "foreign key violations: {}",
-            fk_errors.join(", ")
-        )));
-    }
+        // SQLite integrity check
+        let integrity: String = db
+            .conn()
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
 
-    // SQLite integrity check
-    let integrity: String = db
-        .conn()
-        .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            return Err(CliError::Database(format!(
+                "integrity check failed: {integrity}"
+            )));
+        }
 
-    if integrity != "ok" {
-        return Err(CliError::Database(format!(
-            "integrity check failed: {integrity}"
-        )));
-    }
+        Ok(())
+    })?;
 
     if cli.is_json() {
         let meta = crate::output::json::meta("verify", None);

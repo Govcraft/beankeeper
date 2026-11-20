@@ -72,6 +72,8 @@ fn run_log(
                         "action": r.action,
                         "before": r.before,
                         "after": r.after,
+                        "prev_hash": r.prev_hash,
+                        "row_hash": r.row_hash,
                     })
                 })
                 .collect();

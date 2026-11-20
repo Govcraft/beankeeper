@@ -44,8 +44,7 @@ pub struct PostTransactionParams<'a> {
     pub reference: Option<&'a str>,
     /// How to handle duplicate references.
     pub on_conflict: ConflictStrategy,
-    /// The principal recorded against any audited side effect (e.g. correlating
-    /// a partner transaction).
+    /// The principal recorded on creation and any audited side effects.
     pub actor: &'a Actor,
 }
 
@@ -146,15 +145,16 @@ fn post_transaction_inner(
     let effective_metadata = build_metadata(p.metadata, p.correlate)?;
 
     conn.execute(
-        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             p.company_slug,
             p.description,
             effective_metadata,
             p.currency,
             p.date,
-            p.reference
+            p.reference,
+            p.actor.name()
         ],
     )?;
 
@@ -191,6 +191,8 @@ fn post_transaction_inner(
     if let Some(partner_id) = p.correlate {
         audit::correlate_partner(conn, p.actor, p.company_slug, txn_id, partner_id)?;
     }
+
+    audit::record_creation(conn, p.actor, p.company_slug, txn_id)?;
 
     Ok(PostResult::Created(txn_id))
 }
@@ -401,7 +403,7 @@ pub fn list_transactions(
 
     let mut sql = format!(
         "SELECT DISTINCT t.id, t.company_slug, t.description, \
-         t.metadata, t.currency, t.date, t.posted_at, t.reference \
+         t.metadata, t.currency, t.date, t.posted_at, t.reference, t.posted_by \
          {where_clause}"
     );
 
@@ -428,6 +430,7 @@ pub fn list_transactions(
             date: row.get(5)?,
             posted_at: row.get(6)?,
             reference: row.get(7)?,
+            posted_by: row.get(8)?,
         })
     })?;
 
@@ -471,7 +474,7 @@ pub fn get_transaction(
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
     let mut stmt = conn.prepare(
-        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference \
+        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by \
          FROM transactions \
          WHERE company_slug = ?1 AND id = ?2",
     )?;
@@ -486,6 +489,7 @@ pub fn get_transaction(
             date: row.get(5)?,
             posted_at: row.get(6)?,
             reference: row.get(7)?,
+            posted_by: row.get(8)?,
         })
     })?;
 

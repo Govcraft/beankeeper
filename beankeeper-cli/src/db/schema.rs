@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 11;
+const CURRENT_VERSION: i64 = 12;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -84,6 +84,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 11 {
         apply_v11(conn)?;
+    }
+
+    if version < 12 {
+        apply_v12(conn)?;
     }
 
     debug_assert_eq!(
@@ -489,9 +493,145 @@ fn apply_v11(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
+/// Establishes a chain over historical records without inventing their actors.
+/// All schema changes, backfill, and protections commit together.
+fn apply_v12(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.execute_batch(
+            "ALTER TABLE transactions ADD COLUMN posted_by TEXT;
+            CREATE TABLE audit_log_v12 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64)
+            );
+            INSERT INTO audit_log_v12
+                SELECT *, printf('%064d', 0), printf('%064d', 0) FROM audit_log ORDER BY id;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v12 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);"
+        )?;
+        super::audit::backfill_hash_chain(conn)?;
+        conn.execute_batch(
+            "CREATE TRIGGER protect_transactions_insert BEFORE INSERT ON transactions
+            WHEN EXISTS(SELECT 1 FROM transactions WHERE id = NEW.id
+                OR (company_slug = NEW.company_slug AND reference = NEW.reference))
+            BEGIN SELECT RAISE(ABORT, 'posted transactions cannot be replaced'); END;
+            CREATE TRIGGER protect_entries_insert BEFORE INSERT ON entries
+            WHEN EXISTS(SELECT 1 FROM entries WHERE id = NEW.id)
+            BEGIN SELECT RAISE(ABORT, 'posted entries cannot be replaced'); END;
+            CREATE TRIGGER protect_transactions_update BEFORE UPDATE ON transactions
+            WHEN NEW.id IS NOT OLD.id OR NEW.company_slug IS NOT OLD.company_slug
+              OR NEW.description IS NOT OLD.description OR NEW.currency IS NOT OLD.currency
+              OR NEW.date IS NOT OLD.date OR NEW.posted_at IS NOT OLD.posted_at
+              OR NEW.reference IS NOT OLD.reference OR NEW.posted_by IS NOT OLD.posted_by
+            BEGIN SELECT RAISE(ABORT, 'posted transaction fields are immutable'); END;
+            CREATE TRIGGER protect_transactions_delete BEFORE DELETE ON transactions
+            BEGIN SELECT RAISE(ABORT, 'posted transactions cannot be deleted'); END;
+            CREATE TRIGGER protect_entries_update BEFORE UPDATE ON entries
+            WHEN NEW.id IS NOT OLD.id OR NEW.transaction_id IS NOT OLD.transaction_id
+              OR NEW.account_code IS NOT OLD.account_code OR NEW.company_slug IS NOT OLD.company_slug
+              OR NEW.direction IS NOT OLD.direction OR NEW.amount IS NOT OLD.amount
+              OR NEW.memo IS NOT OLD.memo OR NEW.tax_category IS NOT OLD.tax_category
+            BEGIN SELECT RAISE(ABORT, 'posted entry fields are immutable'); END;
+            CREATE TRIGGER protect_entries_delete BEFORE DELETE ON entries
+            BEGIN SELECT RAISE(ABORT, 'posted entries cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+            INSERT INTO schema_version (version) VALUES (12);"
+        )?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v12_preserves_history_and_backfills_a_stable_chain() -> Result<(), CliError> {
+        let conn = open_conn();
+        for migration in [
+            apply_v1, apply_v2, apply_v3, apply_v4, apply_v5, apply_v6, apply_v7, apply_v8,
+            apply_v9, apply_v10, apply_v11,
+        ] {
+            migration(&conn)?;
+        }
+        conn.execute_batch(
+            "INSERT INTO companies (slug, name) VALUES ('legacy', 'Legacy');
+             INSERT INTO transactions (company_slug, description, date)
+                 VALUES ('legacy', 'Old posting', '2026-01-01');
+             INSERT INTO audit_log (id, changed_at, actor, company_slug, entity, entity_id, action, before, after)
+                 VALUES (7, '2026-01-02 03:04:05', 'old-actor', NULL, 'company', 'legacy', 'company_delete', NULL, ''),
+                        (42, '2026-02-03 04:05:06', 'José', 'legacy', 'budget', '3', 'budget_set', '{}', '{\"amount\":20}');"
+        )?;
+        let query = "SELECT json_group_array(json_array(id, changed_at, actor, company_slug,
+            entity, entity_id, action, before, after)) FROM (SELECT * FROM audit_log ORDER BY id)";
+        let before: String = conn.query_row(query, [], |r| r.get(0))?;
+        apply_v12(&conn)?;
+        let after: String = conn.query_row(query, [], |r| r.get(0))?;
+        assert_eq!(before, after);
+        super::super::audit::verify_hash_chain(&conn)?;
+        let first_hash: String =
+            conn.query_row("SELECT row_hash FROM audit_log WHERE id = 7", [], |r| {
+                r.get(0)
+            })?;
+        // Independent SHA-256 vector for the documented compact JSON tuple.
+        assert_eq!(
+            first_hash,
+            "ac0f25e546c34445cb6be81db3e9e8d9778b74a9646e848a73ca58fd178a7f75"
+        );
+        let hash: String =
+            conn.query_row("SELECT row_hash FROM audit_log WHERE id = 42", [], |r| {
+                r.get(0)
+            })?;
+        ensure_schema(&conn)?;
+        let reopened_hash: String =
+            conn.query_row("SELECT row_hash FROM audit_log WHERE id = 42", [], |r| {
+                r.get(0)
+            })?;
+        assert_eq!(hash, reopened_hash);
+        let poster: Option<String> =
+            conn.query_row("SELECT posted_by FROM transactions", [], |r| r.get(0))?;
+        assert_eq!(poster, None);
+        assert_eq!(get_schema_version(&conn)?, 12);
+        Ok(())
+    }
+
+    #[test]
+    fn v12_migration_failure_rolls_back_schema_changes() -> Result<(), CliError> {
+        let conn = open_conn();
+        for migration in [
+            apply_v1, apply_v2, apply_v3, apply_v4, apply_v5, apply_v6, apply_v7, apply_v8,
+            apply_v9, apply_v10, apply_v11,
+        ] {
+            migration(&conn)?;
+        }
+        conn.execute_batch("CREATE TABLE audit_log_v12 (collision TEXT);")?;
+        assert!(apply_v12(&conn).is_err());
+        assert_eq!(get_schema_version(&conn)?, 11);
+        assert!(conn.prepare("SELECT posted_by FROM transactions").is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
 
     /// `(entry_id, company_slug, amount, cleared_date, statement_ref, status,
     /// reconciled_date)`.

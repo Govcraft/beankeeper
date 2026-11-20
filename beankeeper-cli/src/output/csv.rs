@@ -494,6 +494,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            posted_by: None,
             reference: None,
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();
@@ -510,6 +511,7 @@ mod tests {
             currency: "USD".into(),
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
+            posted_by: None,
             reference: None,
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();
