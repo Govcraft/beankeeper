@@ -9,8 +9,10 @@ source and installed versions drift.
 The tag must be `beankeeper-cli-vX.Y.Z`, with `X.Y.Z` exactly equal to
 `[package].version` in `beankeeper-cli/Cargo.toml`. Only stable three-component
 versions are supported by this procedure. The library version is independent.
-Library tags (`beankeeper-vX.Y.Z`) and crates.io publishing belong to
-[#44](https://github.com/Govcraft/beankeeper/issues/44), outside this procedure.
+Use `beankeeper-vX.Y.Z` for library tags and `beankeeper-cli-vX.Y.Z` for CLI
+tags going forward; do not create new bare `vX.Y.Z` tags or rewrite historical
+tags. Library tags do not trigger the binary release workflow. See
+[crates.io publishing](#cratesio-publishing) below for the separate registry steps.
 
 **The PR for #75 does not push a production tag.** After it merges, the maintainer
 or PM cuts the catch-up release using the CLI version at that time. The examples
@@ -139,3 +141,71 @@ checks the installed version. Its PATH warning is expected for a temporary
 directory; execute the explicit paths shown above. Remove the temporary
 directories afterward. Confirm the AUR package's `pkgver` and Linux checksums
 also match the release before announcing the AUR update.
+
+## crates.io publishing
+
+Both `beankeeper` (the public accounting library) and `beankeeper-cli` (the `bk`
+executable) are prepared for crates.io. Publishing remains a separate maintainer
+or PM action after the preparation PR merges. CI never uploads packages, creates
+tags, or requires a crates.io token. This preparation does not mean that the
+current versions have already been published.
+
+Keep the CLI's `beankeeper` dependency's `version` equal to the library's package
+version, while retaining its `path` for local development. The crates have
+independent versions; do not copy the CLI version into the library dependency.
+Each manifest explicitly includes sources, tests, the shared README, and both
+license texts. The license symlinks point to the repository's canonical files;
+Cargo flattens them into regular files in the source archives.
+
+On a clean release commit, use current stable Rust and run:
+
+```sh
+python3 -B -m unittest discover -s scripts/tests -v
+cargo package -p beankeeper --list
+cargo package -p beankeeper-cli --list
+cargo publish --dry-run --workspace --locked
+```
+
+The last command packages and builds both crates in dependency order without
+uploading. Cargo stages the library archive in a temporary local registry so the
+CLI is verified even before the matching library version exists on crates.io.
+This is the same check CI runs. Do not replace it with `--no-verify`, a path
+patch, or a check that ignores failures. It needs network access for the registry
+index and dependencies, but no publishing credential.
+
+For the actual release, the maintainer or PM must have crates.io publishing
+access to both package names. **Publish the library first**, then wait until its
+version is available in the crates.io index. The versions below reflect the
+current manifests; reread them at release time.
+
+```sh
+# Maintainer/PM only, after merge and successful dry-run checks:
+cargo publish -p beankeeper --locked
+cargo info beankeeper@0.7.0 --registry crates-io
+cargo publish -p beankeeper-cli --dry-run --locked
+cargo publish -p beankeeper-cli --locked
+```
+
+If the library version is already published, confirm that it is the intended
+dependency and skip its upload. Published versions are immutable; do not bump a
+version merely to retry a failed CLI upload. A CLI-only dry run requires the
+matching library in the registry because Cargo removes the local dependency
+path when packaging. The workspace dry run above avoids this prerequisite for
+preparation and CI, while still compiling the packaged code.
+
+After both crates are published, verify a source install in a temporary root:
+
+```sh
+install_dir=$(mktemp -d)
+cargo install beankeeper-cli --version 0.21.0 --locked --root "$install_dir"
+"$install_dir/bin/bk" --version
+```
+
+Remove that temporary root afterward. For a binary install, first complete the
+GitHub CLI release procedure above, then use `cargo binstall beankeeper-cli
+--version 0.21.0`. The package name is `beankeeper-cli`; it installs the executable
+`bk`. Its manifest's binstall templates point at
+`beankeeper-cli-vX.Y.Z/bk-X.Y.Z-TARGET.tar.gz`, with `bk` inside the
+`bk-X.Y.Z-TARGET/` directory. These names match the four Linux GNU and macOS
+targets in `release.yml`. Versions without matching GitHub assets cannot use
+this download path; the source installation remains available after publishing.
