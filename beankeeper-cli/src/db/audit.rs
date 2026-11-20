@@ -158,6 +158,7 @@ impl AuditEntity {
 enum AuditAction {
     StatusChange,
     Correlate,
+    Reverse,
     BudgetSet,
     BudgetDelete,
     AccountDelete,
@@ -169,6 +170,7 @@ impl AuditAction {
         match self {
             Self::StatusChange => "status_change",
             Self::Correlate => "correlate",
+            Self::Reverse => "reverse",
             Self::BudgetSet => "budget_set",
             Self::BudgetDelete => "budget_delete",
             Self::AccountDelete => "account_delete",
@@ -702,6 +704,205 @@ pub fn correlate_partner(
 
         Ok(())
     })
+}
+
+/// Inputs for an atomic, audited reversal of a transaction in one company.
+pub struct ReverseTransactionParams<'a> {
+    pub company_slug: &'a str,
+    pub id: i64,
+    pub date: &'a str,
+    pub description: Option<&'a str>,
+    /// An explicit reference also permits retrying the same reversal.
+    pub reference: Option<&'a str>,
+    pub actor: &'a Actor,
+}
+
+/// Creates an opposite posting, links both transactions, and records the action.
+///
+/// Existing entries and clearings stay intact; new entries start uncleared.
+/// Only the reversal link is copied into the new transaction's metadata.
+///
+/// # Errors
+///
+/// Rejects missing/already reversed originals, reconciled clearings, invalid
+/// dates or postings, duplicate references, and database failures. Every write
+/// is rolled back together on failure.
+pub fn reverse_transaction(
+    conn: &Connection,
+    p: &ReverseTransactionParams<'_>,
+) -> Result<super::transactions::PostResult, CliError> {
+    use super::transactions::{
+        PostResult, PostTransactionParams, get_transaction, post_transaction,
+    };
+
+    in_savepoint(conn, "sp_reverse", || {
+        let (original, entries) = get_transaction(conn, p.company_slug, p.id)?;
+        let mut original_metadata: serde_json::Value = original
+            .metadata
+            .as_deref()
+            .and_then(metadata::normalize)
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(result) = existing_reversal(conn, p, &original_metadata)? {
+            return Ok(result);
+        }
+        let date = validate_reversal(conn, p, &original.date)?;
+        let description = p.description.map_or_else(
+            || format!("Reversal of #{}: {}", p.id, original.description),
+            str::to_string,
+        );
+        let entries = reversal_entries(conn, &original, &entries, date)?;
+        let reference = p
+            .reference
+            .map_or_else(|| format!("reversal-of-{}", p.id), str::to_string);
+        let reversal_metadata = serde_json::json!({"reverses": p.id}).to_string();
+        let result = post_transaction(
+            conn,
+            &PostTransactionParams {
+                company_slug: p.company_slug,
+                description: &description,
+                metadata: Some(&reversal_metadata),
+                currency: &original.currency,
+                date: &date.to_string(),
+                entries: &entries,
+                correlate: None,
+                reference: Some(&reference),
+                on_conflict: super::transactions::ConflictStrategy::Error,
+                actor: p.actor,
+            },
+        )?;
+        let PostResult::Created(reversal_id) = result else {
+            return Err(CliError::General(
+                "reversal was unexpectedly skipped".into(),
+            ));
+        };
+        original_metadata["reversed_by"] = serde_json::json!(reversal_id);
+        let updated = original_metadata.to_string();
+        conn.execute(
+            "UPDATE transactions SET metadata = ?1 WHERE id = ?2 AND company_slug = ?3",
+            params![updated, p.id, p.company_slug],
+        )?;
+        record(
+            conn,
+            p.actor,
+            Some(p.company_slug),
+            AuditEntity::Transaction,
+            &p.id.to_string(),
+            AuditAction::Reverse,
+            Some(&snapshot(
+                &serde_json::json!({"metadata": original.metadata}),
+            )),
+            Some(&snapshot(
+                &serde_json::json!({"metadata": updated, "reversed_by": reversal_id, "reference": reference}),
+            )),
+        )?;
+        Ok(result)
+    })
+}
+
+/// Only a matching explicit reference can reuse the existing linked reversal.
+fn existing_reversal(
+    conn: &Connection,
+    p: &ReverseTransactionParams<'_>,
+    original_metadata: &serde_json::Value,
+) -> Result<Option<super::transactions::PostResult>, CliError> {
+    use super::transactions::{PostResult, get_transaction};
+    if let Some(reversal_id) = original_metadata
+        .get("reversed_by")
+        .filter(|v| !v.is_null())
+    {
+        if let (Some(id), Some(reference)) = (reversal_id.as_i64(), p.reference) {
+            let (reversal, _) = get_transaction(conn, p.company_slug, id)?;
+            let reverse_meta: Option<serde_json::Value> = reversal
+                .metadata
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok());
+            if reversal.reference.as_deref() == Some(reference)
+                && reverse_meta
+                    .as_ref()
+                    .and_then(|v| v.get("reverses"))
+                    .and_then(serde_json::Value::as_i64)
+                    == Some(p.id)
+            {
+                return Ok(Some(PostResult::Skipped(id)));
+            }
+        }
+        return Err(CliError::Validation(format!(
+            "transaction #{} is already reversed by #{reversal_id}",
+            p.id
+        )));
+    }
+    Ok(None)
+}
+
+/// Check dates and individual clearings, including partial reconciliations.
+fn validate_reversal(
+    conn: &Connection,
+    p: &ReverseTransactionParams<'_>,
+    original_date: &str,
+) -> Result<chrono::NaiveDate, CliError> {
+    let date = chrono::NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
+        .map_err(|e| CliError::Validation(format!("invalid date '{}': {e}", p.date)))?;
+    let original_date = chrono::NaiveDate::parse_from_str(original_date, "%Y-%m-%d")
+        .map_err(|e| CliError::Validation(format!("invalid original date: {e}")))?;
+    if date < original_date {
+        return Err(CliError::Validation(
+            "reversal date must be on or after the original transaction date".into(),
+        ));
+    }
+    let reconciled: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM entries e LEFT JOIN entry_clearings c ON c.entry_id = e.id \
+             WHERE e.transaction_id = ?1 AND (e.status = 'reconciled' OR c.status = 'reconciled'))",
+        params![p.id],
+        |row| row.get(0),
+    )?;
+    if reconciled {
+        return Err(CliError::Validation(format!(
+            "transaction #{} has reconciled clearings and cannot be reversed",
+            p.id
+        )));
+    }
+    Ok(date)
+}
+
+/// Build mirror entries and validate the entire posting with the library.
+fn reversal_entries(
+    conn: &Connection,
+    original: &super::TransactionRow,
+    entries: &[super::EntryRow],
+    date: chrono::NaiveDate,
+) -> Result<Vec<super::transactions::PostEntryParams>, CliError> {
+    use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
+    let currency = Currency::from_code(&original.currency)
+        .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
+    let mut journal = beankeeper::core::JournalEntry::new(date, "Reversal");
+    let mut reversed = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let (direction, direction_name) = match entry.direction.as_str() {
+            "debit" => (DebitOrCredit::Credit, "credit"),
+            "credit" => (DebitOrCredit::Debit, "debit"),
+            other => {
+                return Err(CliError::Validation(format!(
+                    "invalid entry direction '{other}'"
+                )));
+            }
+        };
+        let row = super::accounts::get_account(conn, &original.company_slug, &entry.account_code)?;
+        journal = journal.entry(Entry::new(
+            super::accounts::row_to_account(&row)?,
+            Money::from_minor(i128::from(entry.amount), currency),
+            direction,
+        )?);
+        reversed.push(super::transactions::PostEntryParams {
+            account_code: entry.account_code.clone(),
+            direction: direction_name.into(),
+            amount: entry.amount,
+            memo: entry.memo.clone(),
+            tax_category: entry.tax_category.clone(),
+        });
+    }
+    journal.post()?;
+    Ok(reversed)
 }
 
 /// Upserts a single month's budget, recording the prior amount (if any).

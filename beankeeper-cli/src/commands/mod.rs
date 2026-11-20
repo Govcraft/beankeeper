@@ -55,6 +55,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             TxnCommand::Post { .. } => "txn.post",
             TxnCommand::List { .. } => "txn.list",
             TxnCommand::Show { .. } => "txn.show",
+            TxnCommand::Reverse { .. } => "txn.reverse",
             TxnCommand::Import { .. } => "txn.import",
             TxnCommand::Attach { .. } => "txn.attach",
             TxnCommand::Clear { .. } => "txn.clear",

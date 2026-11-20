@@ -288,6 +288,7 @@ impl AuditEntityArg {
 pub enum AuditActionArg {
     StatusChange,
     Correlate,
+    Reverse,
     BudgetSet,
     BudgetDelete,
     AccountDelete,
@@ -301,6 +302,7 @@ impl AuditActionArg {
         match self {
             Self::StatusChange => "status_change",
             Self::Correlate => "correlate",
+            Self::Reverse => "reverse",
             Self::BudgetSet => "budget_set",
             Self::BudgetDelete => "budget_delete",
             Self::AccountDelete => "account_delete",
@@ -901,6 +903,25 @@ EXAMPLES:\n  \
     Show {
         /// Transaction ID.
         id: i64,
+    },
+
+    /// Reverse a transaction with a linked mirror posting (alias: void).
+    #[command(
+        visible_alias = "void",
+        after_help = "EXAMPLES:\n  bk --company acme txn reverse 42\n  bk --company acme txn reverse 42 --date 2026-11-19 --reference VOID-42\n\nReconciled originals cannot be reversed. Existing clearings stay on the original;\nnew entries start uncleared. Retry with the same explicit --reference to skip."
+    )]
+    Reverse {
+        /// Transaction ID in the selected company.
+        id: i64,
+        /// Reversal date (YYYY-MM-DD), on or after the original. Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        /// Description. Defaults to "Reversal of #ID: ORIGINAL DESCRIPTION".
+        #[arg(short, long)]
+        description: Option<String>,
+        /// Idempotency reference. Defaults to reversal-of-ID.
+        #[arg(short, long)]
+        reference: Option<String>,
     },
 
     /// Import transactions from file or stdin.
