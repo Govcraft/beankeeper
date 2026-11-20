@@ -57,8 +57,8 @@ pub mod prelude {
     pub use chrono::NaiveDate;
 
     pub use crate::core::{
-        Frequency, JournalEntry, Ledger, RecurrenceError, Transaction, TransactionError,
-        occurrence_date,
+        Frequency, InvestmentError, JournalEntry, Ledger, LotMethod, Quantity, RecurrenceError,
+        Transaction, TransactionError, allocate_cost, market_value, occurrence_date,
     };
     pub use crate::error::BeanError;
     pub use crate::loan::{
