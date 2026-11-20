@@ -1,0 +1,633 @@
+//! Phase 1 identity lifecycle and attribution through the real CLI.
+
+use std::error::Error;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+use agent_uri::AgentUri;
+use agent_uri_attestation::{AttestationClaims, Denylist, Issuer, SigningKey, Verifier};
+use assert_cmd::cargo::CommandCargoExt;
+use beankeeper_cli::db::{self, Actor, Db};
+use beankeeper_cli::identity;
+use chrono::Utc;
+use secrecy::SecretString;
+use serde_json::{Value, json};
+use tempfile::{TempDir, tempdir};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+struct Ledger {
+    dir: TempDir,
+    path: PathBuf,
+    passphrase_file: PathBuf,
+    db: Db,
+}
+
+impl Ledger {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("books.db");
+        let passphrase_file = dir.path().join("passphrase");
+        std::fs::write(&passphrase_file, "test-only-passphrase")?;
+        let passphrase: SecretString = "test-only-passphrase".into();
+        let db = Db::open(&path, Some(&passphrase))?;
+        db::create_company(db.conn(), "acme", "Acme", None)?;
+        db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
+        db::create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)?;
+        Ok(Self {
+            dir,
+            path,
+            passphrase_file,
+            db,
+        })
+    }
+
+    fn command(&self) -> Result<Command, Box<dyn Error>> {
+        let mut cmd = Command::cargo_bin("bk")?;
+        cmd.arg("--db")
+            .arg(&self.path)
+            .arg("--passphrase-file")
+            .arg(&self.passphrase_file)
+            .args(["--json", "--company", "acme", "--actor", "host-process"]);
+        for var in [
+            "BK_AGENT_TOKEN",
+            "BK_ACTOR",
+            "BEANKEEPER_PASSPHRASE_CMD",
+            "BEANKEEPER_COMPANY",
+            "BEANKEEPER_CURRENCY",
+        ] {
+            cmd.env_remove(var);
+        }
+        Ok(cmd)
+    }
+
+    fn run(&self, args: &[&str], token: Option<&str>) -> Result<Value, Box<dyn Error>> {
+        let mut cmd = self.command()?;
+        if let Some(token) = token {
+            cmd.args(["--agent-token", token]);
+        }
+        success(&cmd.args(args).output()?)
+    }
+
+    fn issue(&self) -> Result<Value, Box<dyn Error>> {
+        self.run(&["key", "init"], None)?;
+        Ok(self.run(
+            &["agent", "issue", "--name", "claude", "--generate-key"],
+            None,
+        )?["data"]
+            .clone())
+    }
+
+    fn post(&self, reference: &str, token: Option<&str>) -> Result<Value, Box<dyn Error>> {
+        self.run(
+            &[
+                "txn",
+                "post",
+                "-d",
+                "Sale",
+                "--date",
+                "2026-01-01",
+                "--debit",
+                "1000:10",
+                "--credit",
+                "4000:10",
+                "--reference",
+                reference,
+            ],
+            token,
+        )
+    }
+
+    fn count(&self, table: &str) -> Result<i64, rusqlite::Error> {
+        self.db
+            .conn()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+    }
+}
+
+fn success(output: &Output) -> Result<Value, Box<dyn Error>> {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, Box<dyn Error>> {
+    value[key]
+        .as_str()
+        .ok_or_else(|| format!("missing {key}").into())
+}
+
+fn unauthorized(output: &Output) -> TestResult {
+    assert_eq!(
+        output.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stderr)?;
+    assert_eq!(value["error"]["code"], "UNAUTHORIZED");
+    assert!(
+        !value["meta"]
+            .as_object()
+            .ok_or("missing meta")?
+            .contains_key("agent")
+    );
+    Ok(())
+}
+
+#[test]
+fn key_and_token_lifecycle_binds_supplied_key_and_never_lists_secrets() -> TestResult {
+    let ledger = Ledger::new()?;
+    let root = ledger.run(&["key", "init"], None)?["data"].clone();
+    assert!(text(&root, "trust_root")?.ends_with(".bk.local"));
+    let key = SigningKey::generate();
+    let issued = ledger.run(
+        &[
+            "agent",
+            "issue",
+            "--name",
+            "bookkeeper",
+            "--public-key",
+            &key.verifying_key().to_base64(),
+            "--caps",
+            "ledger/read,ledger/reverse,ledger/admin",
+            "--ttl",
+            "2h",
+        ],
+        None,
+    )?["data"]
+        .clone();
+    assert!(issued.get("private_key").is_none());
+    let token = text(&issued, "token")?;
+    let uri = AgentUri::parse(text(&issued, "agent_uri")?)?;
+    let mut verifier = Verifier::new().with_revocation(Denylist::new());
+    verifier.add_trusted_root(
+        text(&root, "trust_root")?,
+        agent_uri_attestation::VerifyingKey::from_base64(text(&root, "public_key")?)?,
+    );
+    let claims = verifier.verify_for_uri(token, &uri)?;
+    assert_eq!(claims.agent_verifying_key()?, key.verifying_key());
+    assert_eq!(identity::verify(ledger.db.conn(), token)?.jti(), claims.jti);
+    let listed = ledger.run(&["agent", "list"], None)?;
+    assert_eq!(listed["data"][0]["token_jti"], issued["token_jti"]);
+    assert!(!listed.to_string().contains(token));
+    assert!(!listed.to_string().contains("private_key"));
+    let repeated = ledger.command()?.args(["key", "init"]).output()?;
+    assert_eq!(repeated.status.code(), Some(3));
+    assert_eq!(ledger.count("identity_root")?, 1);
+    assert_eq!(ledger.count("audit_log")?, 2);
+    ledger.run(&["verify"], None)?;
+    Ok(())
+}
+
+#[test]
+fn tokenless_behavior_and_explicit_flag_over_environment_remain_compatible() -> TestResult {
+    let ledger = Ledger::new()?;
+    let token = ledger.issue()?;
+    let uri = text(&token, "agent_uri")?;
+    let posted = ledger.post("named", None)?;
+    assert!(posted["meta"].get("agent").is_none());
+    let original = ledger.run(&["txn", "show", "1"], None)?;
+    assert_eq!(original["data"][0]["posted_by"], "host-process");
+    assert!(original["data"][0]["agent_uri"].is_null());
+    let env = ledger
+        .command()?
+        .env("BK_AGENT_TOKEN", text(&token, "token")?)
+        .args(["txn", "show", "1"])
+        .output()?;
+    assert_eq!(success(&env)?["meta"]["agent"], uri);
+    let flag = ledger
+        .command()?
+        .env("BK_AGENT_TOKEN", "invalid-env-token")
+        .args(["--agent-token", text(&token, "token")?, "agent", "list"])
+        .output()?;
+    assert_eq!(success(&flag)?["meta"]["agent"], uri);
+    let debug = format!(
+        "{:?}",
+        <beankeeper_cli::cli::Cli as clap::Parser>::try_parse_from([
+            "bk",
+            "--agent-token",
+            "do-not-print",
+            "verify"
+        ])?
+    );
+    assert!(!debug.contains("do-not-print"));
+    Ok(())
+}
+
+#[test]
+fn bad_foreign_expired_future_and_revoked_tokens_fail_before_writes() -> TestResult {
+    let ledger = Ledger::new()?;
+    let issued = ledger.issue()?;
+    let token = text(&issued, "token")?;
+    let other = Ledger::new()?;
+    other.run(&["key", "init"], None)?;
+    let expired = dated_token(&ledger, &issued, -7200)?;
+    let future = dated_token(&ledger, &issued, 7200)?;
+    let mut tampered = token.to_owned();
+    tampered.replace_range(15..16, if &token[15..16] == "A" { "B" } else { "A" });
+    for invalid in ["", "invalid", &expired, &future, &tampered] {
+        unauthorized(
+            &ledger
+                .command()?
+                .args([
+                    "--agent-token",
+                    invalid,
+                    "txn",
+                    "post",
+                    "-d",
+                    "Bad",
+                    "--debit",
+                    "1000:10",
+                    "--credit",
+                    "4000:10",
+                ])
+                .output()?,
+        )?;
+    }
+    unauthorized(
+        &other
+            .command()?
+            .args(["--agent-token", token, "company", "create", "bad", "Bad"])
+            .output()?,
+    )?;
+    assert_eq!(other.count("companies")?, 1);
+    assert_eq!(ledger.count("transactions")?, 0);
+    let before = ledger.count("audit_log")?;
+    let revoked = ledger.run(&["agent", "revoke", text(&issued, "token_jti")?], None)?;
+    assert_eq!(revoked["data"]["revoked"], 1);
+    assert_eq!(
+        ledger.run(&["agent", "revoke", text(&issued, "agent_uri")?], None)?["data"]["revoked"],
+        0
+    );
+    unauthorized(
+        &ledger
+            .command()?
+            .env("BK_AGENT_TOKEN", token)
+            .arg("verify")
+            .output()?,
+    )?;
+    assert_eq!(ledger.count("audit_log")?, before + 1);
+    // Reads still work without a token after revocation.
+    ledger.run(&["verify"], None)?;
+    Ok(())
+}
+
+fn dated_token(ledger: &Ledger, issued: &Value, seconds: i64) -> Result<String, Box<dyn Error>> {
+    let seed: [u8; 32] =
+        ledger
+            .db
+            .conn()
+            .query_row("SELECT private_key FROM identity_root", [], |r| r.get(0))?;
+    let root: String =
+        ledger
+            .db
+            .conn()
+            .query_row("SELECT trust_root FROM identity_root", [], |r| r.get(0))?;
+    let authority = Issuer::new(
+        &root,
+        SigningKey::from_bytes(&seed)?,
+        std::time::Duration::from_secs(3600),
+    );
+    let claims = AttestationClaims::builder()
+        .jti(text(issued, "token_jti")?)
+        .agent_uri(text(issued, "agent_uri")?)
+        .agent_key(&agent_uri_attestation::VerifyingKey::from_base64(text(
+            issued,
+            "agent_key",
+        )?)?)
+        .capabilities(vec!["ledger/post".into()])
+        .issuer(&root)
+        .ttl(std::time::Duration::from_secs(3600))
+        .build_at(Utc::now() + chrono::Duration::seconds(seconds))?;
+    Ok(authority.issue_claims(&claims)?)
+}
+
+#[test]
+fn posts_imports_reversals_and_mutations_all_record_verified_claims() -> TestResult {
+    let ledger = Ledger::new()?;
+    let issued = ledger.issue()?;
+    let token = text(&issued, "token")?;
+    ledger.post("sale", Some(token))?;
+    let imported = ledger.dir.path().join("batch.json");
+    std::fs::write(&imported, json!([{"date":"2026-01-02", "description":"Import", "reference":"json-row", "entries":[{"account_code":"1000", "direction":"debit", "amount":"12"},{"account_code":"4000", "direction":"credit", "amount":"12"}]}]).to_string())?;
+    ledger.run(
+        &[
+            "txn",
+            "import",
+            "--file",
+            imported.to_str().ok_or("path")?,
+            "--input-format",
+            "json",
+        ],
+        Some(token),
+    )?;
+    ledger.run(
+        &["txn", "reverse", "1", "--date", "2026-01-03"],
+        Some(token),
+    )?;
+    bank_imports(&ledger, token)?;
+    mutation_commands(&ledger, token)?;
+    let rows = ledger.run(
+        &[
+            "audit",
+            "log",
+            "--agent",
+            text(&issued, "agent_uri")?,
+            "--limit",
+            "100",
+        ],
+        None,
+    )?;
+    let rows = rows["data"].as_array().ok_or("audit rows")?;
+    for row in rows {
+        assert_eq!(row["agent_uri"], issued["agent_uri"]);
+        assert_eq!(row["token_jti"], issued["token_jti"]);
+        assert_eq!(row["actor"], "host-process");
+        assert_eq!(row["hash_version"], 2);
+    }
+    for action in [
+        "create",
+        "reverse",
+        "status_change",
+        "budget_set",
+        "budget_delete",
+        "account_delete",
+        "company_delete",
+        "attach",
+        "token_issue",
+        "token_revoke",
+    ] {
+        assert!(
+            rows.iter().any(|r| r["action"] == action),
+            "missing {action}"
+        );
+    }
+    let txns = ledger.run(&["txn", "list"], Some(token))?;
+    assert_eq!(txns["meta"]["agent"], issued["agent_uri"]);
+    for txn in txns["data"].as_array().ok_or("transaction rows")? {
+        assert_eq!(txn["agent_uri"], issued["agent_uri"]);
+        assert_eq!(txn["token_jti"], issued["token_jti"]);
+    }
+    ledger.run(&["verify"], None)?;
+    Ok(())
+}
+
+fn bank_imports(ledger: &Ledger, token: &str) -> TestResult {
+    let csv = "date,description,amount\n2026-01-01,CSV sale,1\n";
+    let ofx = "OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\nSECURITY:NONE\nENCODING:USASCII\nCHARSET:1252\nCOMPRESSION:NONE\nOLDFILEUID:NONE\nNEWFILEUID:NONE\n\n<OFX><SIGNONMSGSRSV1><SONRS><STATUS><CODE>0<SEVERITY>INFO</STATUS><DTSERVER>20260101<LANGUAGE>ENG</SONRS></SIGNONMSGSRSV1><BANKMSGSRSV1><STMTTRNRS><TRNUID>1<STATUS><CODE>0<SEVERITY>INFO</STATUS><STMTRS><CURDEF>USD<BANKACCTFROM><BANKID>123<ACCTID>456<ACCTTYPE>CHECKING</BANKACCTFROM><BANKTRANLIST><DTSTART>20260101<DTEND>20260131<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20260101<TRNAMT>1.00<FITID>ACTOR-TEST<NAME>OFX sale</STMTTRN></BANKTRANLIST><LEDGERBAL><BALAMT>1.00<DTASOF>20260131</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
+    for (format, content) in [("csv", csv), ("ofx", ofx)] {
+        let path = ledger.dir.path().join(format!("import.{format}"));
+        std::fs::write(&path, content)?;
+        ledger.run(
+            &[
+                "txn",
+                "import",
+                "--file",
+                path.to_str().ok_or("path")?,
+                "--account",
+                "1000",
+                "--suspense",
+                "4000",
+            ],
+            Some(token),
+        )?;
+    }
+    Ok(())
+}
+
+fn mutation_commands(ledger: &Ledger, token: &str) -> TestResult {
+    for args in [
+        vec!["company", "create", "temporary", "Temporary"],
+        vec!["company", "delete", "temporary", "--force"],
+        vec!["account", "create", "5000", "Costs", "--type", "expense"],
+        vec![
+            "budget", "set", "5000", "--year", "2026", "--month", "1", "--amount", "100",
+        ],
+        vec![
+            "budget", "delete", "5000", "--year", "2026", "--month", "1", "--force",
+        ],
+        vec!["account", "delete", "5000", "--force"],
+        vec![
+            "txn",
+            "clear",
+            "1",
+            "--entry",
+            "1",
+            "--date",
+            "2026-01-02",
+            "--statement",
+            "S1",
+        ],
+    ] {
+        let result = ledger.run(&args, Some(token))?;
+        assert!(result["meta"]["agent"].is_string(), "{result}");
+    }
+    let file = ledger.dir.path().join("receipt.txt");
+    std::fs::write(&file, "Receipt")?;
+    ledger.run(
+        &[
+            "txn",
+            "attach",
+            "1",
+            file.to_str().ok_or("path")?,
+            "--type",
+            "receipt",
+        ],
+        Some(token),
+    )?;
+    let issued = ledger.run(
+        &["agent", "issue", "--name", "secondary", "--generate-key"],
+        Some(token),
+    )?;
+    ledger.run(
+        &["agent", "revoke", text(&issued["data"], "agent_uri")?],
+        Some(token),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn identity_is_immutable_and_hash_chain_detects_changes_after_trigger_bypass() -> TestResult {
+    let ledger = Ledger::new()?;
+    let issued = ledger.issue()?;
+    ledger.post("sale", Some(text(&issued, "token")?))?;
+    for field in ["agent_uri", "token_jti"] {
+        assert!(
+            ledger
+                .db
+                .conn()
+                .execute(&format!("UPDATE transactions SET {field} = 'forged'"), [])
+                .is_err()
+        );
+        assert!(
+            ledger
+                .db
+                .conn()
+                .execute(&format!("UPDATE audit_log SET {field} = 'forged'"), [])
+                .is_err()
+        );
+    }
+    ledger.db.conn().execute_batch(
+        "DROP TRIGGER protect_transaction_identity; UPDATE transactions SET token_jti = 'forged'",
+    )?;
+    let failed = ledger.command()?.arg("verify").output()?;
+    assert_eq!(failed.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("creation audit record"));
+    let other = Ledger::new()?;
+    other.issue()?;
+    other.db.conn().execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET agent_uri = 'forged', token_jti = 'forged' WHERE id = 1")?;
+    let failed = other.command()?.arg("verify").output()?;
+    assert_eq!(failed.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("hash chain broken at row #1"));
+    Ok(())
+}
+
+#[test]
+fn invalid_issuance_and_audit_failure_leave_no_partial_registry_records() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.run(&["key", "init"], None)?;
+    for args in [
+        vec!["agent", "issue", "--name", "Bad Prefix!", "--generate-key"],
+        vec![
+            "agent",
+            "issue",
+            "--name",
+            "valid",
+            "--public-key",
+            "invalid",
+        ],
+        vec![
+            "agent",
+            "issue",
+            "--name",
+            "valid",
+            "--generate-key",
+            "--caps",
+            "outside/post",
+        ],
+        vec![
+            "agent",
+            "issue",
+            "--name",
+            "valid",
+            "--generate-key",
+            "--ttl",
+            "0h",
+        ],
+    ] {
+        assert_eq!(
+            ledger.command()?.args(args).output()?.status.code(),
+            Some(3)
+        );
+    }
+    ledger.db.conn().execute_batch("CREATE TRIGGER reject_issue BEFORE INSERT ON audit_log WHEN NEW.action = 'token_issue' BEGIN SELECT RAISE(ABORT, 'test failure'); END")?;
+    assert_eq!(
+        ledger
+            .command()?
+            .args(["agent", "issue", "--name", "valid", "--generate-key"])
+            .output()?
+            .status
+            .code(),
+        Some(4)
+    );
+    assert_eq!(ledger.count("agent_tokens")?, 0);
+    assert_eq!(ledger.count("audit_log")?, 1);
+    ledger.run(&["verify"], None)?;
+    Ok(())
+}
+
+#[test]
+fn ttl_validation_has_exact_positive_bounds_and_encryption_is_required_for_keys() -> TestResult {
+    for input in [
+        "",
+        "0h",
+        "31d",
+        "8",
+        "1w",
+        "-1h",
+        "18446744073709551615d",
+        "é",
+    ] {
+        assert!(identity::parse_ttl(input).is_err(), "{input}");
+    }
+    assert_eq!(identity::parse_ttl("30d")?.as_secs(), 30 * 86400);
+    let db = Db::open_in_memory()?;
+    assert!(matches!(
+        identity::init_root(db.conn(), &Actor::new("test")),
+        Err(beankeeper_cli::error::CliError::Validation(_))
+    ));
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM identity_root", [], |r| r
+                .get::<_, i64>(0))?,
+        0
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn token_preflight_reads_a_one_shot_passphrase_descriptor_only_once() -> TestResult {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let ledger = Ledger::new()?;
+    let issued = ledger.issue()?;
+    let mut child = ledger
+        .command()?
+        .args([
+            "--passphrase-fd",
+            "0",
+            "verify",
+            "--agent-token",
+            text(&issued, "token")?,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut input = child.stdin.take().ok_or("missing stdin")?;
+    input.write_all(b"test-only-passphrase\n")?;
+    drop(input);
+    let result = success(&child.wait_with_output()?)?;
+    assert_eq!(result["meta"]["agent"], issued["agent_uri"]);
+    Ok(())
+}
+
+#[test]
+fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestResult {
+    let ledger = Ledger::new()?;
+    let issued = ledger.issue()?;
+    let rejected = ledger
+        .command()?
+        .args(["--agent-token", text(&issued, "token")?, "init", "--force"])
+        .output()?;
+    assert_eq!(rejected.status.code(), Some(6));
+    assert_eq!(ledger.count("identity_root")?, 1);
+    ledger.run(&["verify"], None)?;
+    let path = ledger.dir.path().join("demo.db");
+    let output = Command::cargo_bin("bk")?
+        .arg("--db")
+        .arg(&path)
+        .env_remove("BK_AGENT_TOKEN")
+        .env_remove("BEANKEEPER_PASSPHRASE_CMD")
+        .args(["--actor", "demo-host", "init", "--demo"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let db = Db::open_existing(&path, None)?;
+    let wrong: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM transactions WHERE posted_by IS NOT 'demo-host'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(wrong, 0);
+    Ok(())
+}
