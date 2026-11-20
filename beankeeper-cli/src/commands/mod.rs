@@ -14,6 +14,7 @@ mod report_dates;
 pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;
+pub mod rule;
 pub mod txn;
 pub mod txn_clear;
 pub mod txn_import;
@@ -33,6 +34,11 @@ pub fn command_name(cmd: &Command) -> &'static str {
         return id;
     }
     match cmd {
+        Command::Rule(args) => match &args.command {
+            crate::cli::RuleCommand::Create { .. } => "rule.create",
+            crate::cli::RuleCommand::List => "rule.list",
+            crate::cli::RuleCommand::Delete { .. } => "rule.delete",
+        },
         Command::Mcp(_) => "mcp.serve",
         Command::Key(_) => "key.init",
         Command::Agent(sub) => match sub {
@@ -102,6 +108,10 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Rule(args) => {
+            let company = require_company(cli)?;
+            rule::run(cli, &company, &args.command)
+        }
         Command::Key(_) | Command::Agent(_) => agent::run(cli),
         Command::Mcp(crate::cli::McpCommand::Serve { read_only }) => {
             crate::mcp::serve(cli, *read_only)

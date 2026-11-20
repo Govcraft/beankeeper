@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 13;
+const CURRENT_VERSION: i64 = 14;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -92,6 +92,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 13 {
         apply_v13(conn)?;
+    }
+
+    if version < 14 {
+        apply_v14(conn)?;
     }
 
     debug_assert_eq!(
@@ -653,9 +657,133 @@ fn apply_v13(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
+/// Add bank categorization rules without changing any historical audit hash.
+fn apply_v14(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(conn)?;
+        conn.execute_batch(
+            "CREATE TABLE categorization_rules (
+                id TEXT PRIMARY KEY NOT NULL,
+                company_slug TEXT NOT NULL REFERENCES companies(slug),
+                contains TEXT NOT NULL CHECK(length(trim(contains)) > 0),
+                account_code TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (company_slug, account_code) REFERENCES accounts(company_slug, code)
+            );
+            CREATE INDEX idx_rules_company_priority
+                ON categorization_rules(company_slug, priority DESC, id ASC);
+            CREATE TABLE audit_log_v14 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 2 CHECK(hash_version IN (1,2)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v14 SELECT * FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v14 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 2
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+            INSERT INTO schema_version (version) VALUES (14);"
+        )?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v14_preserves_history_and_extends_the_chain_with_rules() -> Result<(), CliError> {
+        use super::super::{Actor, audit, rules};
+        let conn = v12_connection()?;
+        seed_v12_creation(&conn)?;
+        apply_v13(&conn)?;
+        audit::record_identity(
+            &conn,
+            &Actor::new("v13"),
+            "token_revoke",
+            "test",
+            &serde_json::json!({}),
+        )?;
+        let hashes = |conn: &Connection| -> Result<Vec<String>, CliError> {
+            let mut stmt = conn.prepare("SELECT row_hash FROM audit_log ORDER BY id")?;
+            Ok(stmt
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?)
+        };
+        let before = hashes(&conn)?;
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, 14);
+        assert_eq!(hashes(&conn)?, before);
+        let rule = rules::create_rule(
+            &conn,
+            &Actor::new("v14"),
+            "legacy",
+            "sale".parse()?,
+            "4000",
+            0,
+        )?;
+        audit::delete_rule(&conn, &Actor::new("v14"), "legacy", &rule.id)?;
+        assert_eq!(&hashes(&conn)?[..2], before.as_slice());
+        audit::verify_hash_chain(&conn)?;
+        audit::verify_creations(&conn)?;
+        assert!(conn.execute("DELETE FROM audit_log", []).is_err());
+        assert!(
+            conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
+                .is_err()
+        );
+        ensure_schema(&conn)?;
+        assert_eq!(hashes(&conn)?.len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn v14_rejects_corrupt_history_and_rolls_back_failed_migrations() -> Result<(), CliError> {
+        for corrupt in [false, true] {
+            let conn = v12_connection()?;
+            seed_v12_creation(&conn)?;
+            apply_v13(&conn)?;
+            if corrupt {
+                conn.execute_batch("DROP TRIGGER protect_audit_delete; DELETE FROM audit_log;")?;
+            } else {
+                conn.execute_batch("CREATE TABLE audit_log_v14 (collision TEXT);")?;
+            }
+            assert!(apply_v14(&conn).is_err());
+            assert_eq!(get_schema_version(&conn)?, 13);
+            assert!(conn.prepare("SELECT * FROM categorization_rules").is_err());
+        }
+        Ok(())
+    }
 
     fn v12_connection() -> Result<Connection, CliError> {
         let conn = open_conn();
@@ -803,7 +931,7 @@ mod tests {
         let poster: Option<String> =
             conn.query_row("SELECT posted_by FROM transactions", [], |r| r.get(0))?;
         assert_eq!(poster, None);
-        assert_eq!(get_schema_version(&conn)?, 13);
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         Ok(())
     }
 

@@ -393,6 +393,103 @@ struct ImportOutcome {
     status: &'static str,
 }
 
+struct ImportContext<'a> {
+    db: &'a Db,
+    company: &'a str,
+    actor: &'a db::Actor,
+    format: ImportFormat,
+    rules: &'a [db::rules::Rule],
+    bank: Option<&'a str>,
+    suspense: Option<&'a str>,
+    strategy: transactions::ConflictStrategy,
+    dry_run: bool,
+}
+
+fn post_import(
+    ctx: &ImportContext<'_>,
+    mut prepared: PreparedTransaction,
+    occurrences: &mut HashMap<String, usize>,
+) -> Result<ImportOutcome, CliError> {
+    let reference = row_reference(&prepared, ctx.format, occurrences)?;
+    // Skip source duplicates before consulting rules that may have changed.
+    if ctx.format == ImportFormat::Csv
+        && ctx.strategy == transactions::ConflictStrategy::Skip
+        && transactions::reference_exists(ctx.db.conn(), ctx.company, &reference)?
+    {
+        // Preserve source validation while ignoring changed categorization.
+        validate_posting(ctx.db, ctx.company, &mut prepared)?;
+        return Ok(ImportOutcome {
+            id: None,
+            date: prepared.date.to_string(),
+            description: prepared.description,
+            reference,
+            status: "skipped",
+        });
+    }
+    // Source identity must not depend on mutable categorization rules.
+    if ctx.format == ImportFormat::Csv {
+        categorize_csv(&mut prepared, ctx.rules, ctx.bank, ctx.suspense)?;
+    }
+    let entries = validate_posting(ctx.db, ctx.company, &mut prepared)?;
+    let params = transactions::PostTransactionParams {
+        company_slug: ctx.company,
+        description: &prepared.description,
+        metadata: prepared.metadata.as_deref(),
+        currency: &prepared.currency,
+        date: &prepared.date.to_string(),
+        entries: &entries,
+        correlate: None,
+        reference: Some(&reference),
+        on_conflict: ctx.strategy,
+        actor: ctx.actor,
+    };
+    let (id, status) = match transactions::post_transaction(ctx.db.conn(), &params)? {
+        transactions::PostResult::Created(id) => ((!ctx.dry_run).then_some(id), "imported"),
+        transactions::PostResult::Skipped(_) => (None, "skipped"),
+    };
+    Ok(ImportOutcome {
+        id,
+        date: prepared.date.to_string(),
+        description: prepared.description,
+        reference,
+        status,
+    })
+}
+
+fn load_csv_rules(
+    db: &Db,
+    company: &str,
+    format: ImportFormat,
+    bank: Option<&str>,
+    suspense: Option<&str>,
+) -> Result<Vec<db::rules::Rule>, CliError> {
+    if format != ImportFormat::Csv {
+        return Ok(Vec::new());
+    }
+    for code in [bank, suspense].into_iter().flatten() {
+        accounts::get_account(db.conn(), company, code)
+            .map_err(|error| invalid(format!("CSV account validation: {error}")))?;
+    }
+    db::rules::list_rules(db.conn(), company)
+}
+
+fn categorize_csv(
+    prepared: &mut PreparedTransaction,
+    rules: &[db::rules::Rule],
+    bank: Option<&str>,
+    suspense: Option<&str>,
+) -> Result<(), CliError> {
+    let bank = bank.ok_or_else(|| invalid("missing bank account"))?;
+    let fallback = suspense.ok_or_else(|| invalid("missing suspense account"))?;
+    let contra = db::rules::contra_account(rules, &prepared.description, bank, fallback)?;
+    for entry in &mut prepared.entries {
+        if entry.account_code == fallback {
+            entry.account_code = contra.to_string();
+        }
+    }
+    Ok(())
+}
+
 /// Run the CSV/JSON importer, committing the entire batch or rolling it back.
 ///
 /// # Errors
@@ -444,6 +541,7 @@ pub fn run(
     )?;
     let actor = cli.principal();
     let transaction = db.conn().unchecked_transaction()?;
+    let rules = load_csv_rules(db, company, format, account.as_deref(), suspense.as_deref())?;
     let mut result = BatchResult {
         dry_run: *dry_run,
         imported: 0,
@@ -452,41 +550,25 @@ pub fn run(
         transactions: Vec::new(),
     };
     let mut occurrences = HashMap::new();
-    for (index, mut prepared) in prepared.into_iter().enumerate() {
-        let outcome = (|| {
-            let reference = row_reference(&prepared, format, &mut occurrences)?;
-            let entries = validate_posting(db, company, &mut prepared)?;
-            let params = transactions::PostTransactionParams {
-                company_slug: company,
-                description: &prepared.description,
-                metadata: prepared.metadata.as_deref(),
-                currency: &prepared.currency,
-                date: &prepared.date.to_string(),
-                entries: &entries,
-                correlate: None,
-                reference: Some(&reference),
-                on_conflict: strategy,
-                actor: &actor,
-            };
-            let (id, status) = match transactions::post_transaction(&transaction, &params)? {
-                transactions::PostResult::Created(id) => {
-                    result.imported += 1;
-                    ((!dry_run).then_some(id), "imported")
-                }
-                transactions::PostResult::Skipped(_) => {
-                    result.skipped += 1;
-                    (None, "skipped")
-                }
-            };
-            Ok(ImportOutcome {
-                id,
-                date: prepared.date.to_string(),
-                description: prepared.description,
-                reference,
-                status,
-            })
-        })()
-        .map_err(|error: CliError| invalid(format!("import transaction {}: {error}", index + 1)))?;
+    let ctx = ImportContext {
+        db,
+        company,
+        actor: &actor,
+        format,
+        rules: &rules,
+        bank: account.as_deref(),
+        suspense: suspense.as_deref(),
+        strategy,
+        dry_run: *dry_run,
+    };
+    for (index, prepared) in prepared.into_iter().enumerate() {
+        let outcome = post_import(&ctx, prepared, &mut occurrences)
+            .map_err(|error| invalid(format!("import transaction {}: {error}", index + 1)))?;
+        if outcome.status == "imported" {
+            result.imported += 1;
+        } else {
+            result.skipped += 1;
+        }
         result.transactions.push(outcome);
     }
     // Render before committing, so a serialization failure cannot hide a commit.

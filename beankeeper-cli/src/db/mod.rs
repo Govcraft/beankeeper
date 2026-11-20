@@ -9,6 +9,7 @@ pub mod companies;
 pub mod connection;
 pub mod metadata;
 pub mod metadata_filter;
+pub mod rules;
 pub mod schema;
 pub mod transactions;
 pub mod verification;

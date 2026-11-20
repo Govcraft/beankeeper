@@ -933,6 +933,46 @@ bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31 --currency 
 - Opening cash = cash balance before `--from`; closing cash = cash balance through `--to`, computed independently. `opening + net change = closing` is checked and a mismatch is flagged (`[!!] MISMATCH` in the table, `reconciled: false` in JSON).
 - CSV columns: `row_type,section,code,name,account_type,amount` with `row_type` `line`, `subtotal` or `summary` (amounts in minor units).
 
+## Categorization rules
+
+`bk rule` manages company-scoped mappings applied automatically during CSV and
+OFX/QFX bank imports. Supply `--company` or `BEANKEEPER_COMPANY`.
+
+```bash
+bk --company acme rule create --contains Starbucks --account 5000 --priority 10
+bk --company acme rule list --json
+bk --company acme rule list --format csv
+bk --company acme rule delete <RULE_ID> --force
+```
+
+- `create --contains TEXT --account CODE [--priority INTEGER]`: stores a rule
+  with a `rule_...` TypeID. The pattern is trimmed, must be nonempty, and is
+  normalized using Unicode lowercase. The destination account must exist in
+  this company. Priority defaults to `0`; negative values are supported.
+- `list`: returns rules in evaluation order, highest priority first, then
+  ascending rule ID. JSON `data` is an array of `{id, company_slug, contains,
+  account_code, priority}` objects; `create` returns a one-element array.
+- `delete ID [--force]`: removes only this company's rule. Prompts on interactive
+  stdin unless forced. JSON `data` is `{deleted: ID}`. Delete and recreate a rule
+  to revise its mapping. Unknown IDs return `NOT_FOUND` (exit 5).
+
+Matching lowercases the entire imported description and finds a literal
+substring; `%`, `_`, and regex characters are ordinary text. CSV uses its mapped
+description column. OFX combines `NAME` and `MEMO`. The first match selects the
+contra account, preserving the bank account, direction, amount, currency, and
+source reference. Both inflows and outflows are eligible. Unmatched rows use the
+required `--suspense` account. A rule selecting the bank itself causes an import
+validation error (CSV rolls back the batch; OFX records a per-row error).
+Account tax defaults are inherited by the actual selected entries.
+
+Rules apply to dry runs. JSON journal batches remain explicit and ignore rules.
+Generated CSV references are computed before categorization, so adding or
+removing rules does not duplicate existing transactions. Previously posted
+transactions remain unchanged. Creation and deletion are atomic with audit
+snapshots (`--entity rule`, `--action create` / `--action rule-delete`). An
+account cannot be deleted while a rule references it. No rule MCP tools are
+exposed; use these CLI commands to manage rules.
+
 ## Audit
 
 The ledger is append-only: posted transactions are never edited or deleted
