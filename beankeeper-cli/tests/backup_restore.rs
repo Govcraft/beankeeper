@@ -174,7 +174,7 @@ fn round_trip(encrypted: bool) -> TestResult {
     let snapshot = success(&snapshot_output)?;
     assert_eq!(snapshot["meta"]["command"], "backup");
     assert_eq!(snapshot["data"]["encrypted"], encrypted);
-    assert_eq!(snapshot["data"]["schema_version"], 17);
+    assert_eq!(snapshot["data"]["schema_version"], 18);
     assert!(snapshot["data"]["bytes"].as_u64().ok_or("missing bytes")? > 0);
     assert_eq!(
         std::fs::read(&backup)?.starts_with(b"SQLite format 3\0"),
@@ -300,7 +300,7 @@ fn invalid_inputs_never_publish_or_replace_a_destination() -> TestResult {
     let forged = dir.path().join("forged.db");
     let conn = rusqlite::Connection::open(&forged)?;
     conn.execute_batch(
-        "CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (17)",
+        "CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (18)",
     )?;
     drop(conn);
     let mut truncated = std::fs::read(&valid)?;
@@ -522,7 +522,7 @@ fn restore_rejects_unsupported_schema_without_migration_or_modifying_input() -> 
     let dir = tempdir()?;
     let source = dir.path().join("source.db");
     let destination = dir.path().join("destination.db");
-    for version in [16, 18] {
+    for version in [17, 19] {
         let conn = rusqlite::Connection::open(&source)?;
         conn.execute_batch(
             "DROP TABLE IF EXISTS schema_version; CREATE TABLE schema_version (version INTEGER)",
@@ -570,5 +570,37 @@ fn restore_accepts_db_after_subcommand_and_one_shot_passphrase_source() -> TestR
         .assert()
         .success();
     data(&destination, Some(&key), &["verify"])?;
+    Ok(())
+}
+
+#[test]
+fn restore_cannot_replace_an_enforced_destination_with_an_unenforced_snapshot() -> TestResult {
+    let dir = tempdir()?;
+    let source = dir.path().join("source.db");
+    let destination = dir.path().join("destination.db");
+    let snapshot = dir.path().join("snapshot.db");
+    data(&source, None, &["init"])?;
+    bk(&source, None)?
+        .args(["backup", "--output"])
+        .arg(&snapshot)
+        .assert()
+        .success();
+    let db = Db::open(&destination, None)?;
+    beankeeper_cli::db::audit::set_policy(
+        db.conn(),
+        &beankeeper_cli::db::Actor::new("owner"),
+        true,
+    )?;
+    drop(db);
+    let original = std::fs::read(&destination)?;
+    bk(&destination, None)?
+        .args(["restore", "--force", "--input"])
+        .arg(&snapshot)
+        .assert()
+        .code(6)
+        .stderr(predicates::str::contains(
+            "cannot overwrite an enforced ledger",
+        ));
+    assert_eq!(std::fs::read(&destination)?, original);
     Ok(())
 }

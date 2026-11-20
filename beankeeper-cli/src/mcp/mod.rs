@@ -12,34 +12,15 @@ use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use secrecy::ExposeSecret;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
+use crate::capability::Capability;
 use crate::cli::{Cli, Command};
 use crate::commands;
 use crate::db::{Actor, connection::Db};
 use crate::error::CliError;
-
-const WRITE_TOOLS: &[&str] = &[
-    "account_create",
-    "security_create",
-    "security_price",
-    "investment_buy",
-    "investment_sell",
-    "txn_post",
-    "txn_reverse",
-    "txn_meta_set",
-    "txn_meta_unset",
-    "budget_set",
-    "budget_delete",
-    "txn_clear",
-];
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Capability {
-    Read,
-    Write,
-}
 
 /// A ledger tool router, independent of the transport used to serve it.
 #[derive(Clone)]
@@ -55,15 +36,12 @@ impl LedgerServer {
     /// Read-only routers do not register mutation tools at all.
     #[must_use]
     pub fn new(db: Db, read_only: bool) -> Self {
-        let capabilities = if read_only {
-            vec![Capability::Read]
-        } else {
-            vec![Capability::Read, Capability::Write]
-        };
         let mut tool_router = Self::tool_router();
-        if !capabilities.contains(&Capability::Write) {
-            for name in WRITE_TOOLS {
-                tool_router.remove_route(name);
+        if read_only {
+            for tool in tool_router.list_all() {
+                if Capability::for_operation(&tool.name).ok() != Some(Capability::Read) {
+                    tool_router.remove_route(&tool.name);
+                }
             }
         }
         Self {
@@ -96,13 +74,20 @@ impl LedgerServer {
             let db = db
                 .lock()
                 .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
-            let actor = if let Some(token) = token {
-                use secrecy::ExposeSecret;
-                actor.with_identity(crate::identity::verify(db.conn(), token.expose_secret())?)
-            } else {
-                actor
-            };
-            execute_operation(&db, tool, input, &actor)
+            // One snapshot covers authorization and execution, including policy
+            // changes made by another process while this session is running.
+            crate::db::audit::atomically(db.conn(), || {
+                let identity = crate::identity::authorize(
+                    db.conn(),
+                    token.as_ref().map(ExposeSecret::expose_secret),
+                    Capability::for_operation(tool)?,
+                )?;
+                let actor = match identity {
+                    Some(identity) => actor.with_identity(identity),
+                    None => actor,
+                };
+                execute_operation(&db, tool, input, &actor)
+            })
         })
         .await;
         match result {
@@ -674,11 +659,25 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
     )?;
     let db = Db::open_existing(&cli.db, passphrase.as_ref())?;
     drop(passphrase);
-    if let Some(token) = &cli.agent_token {
-        use secrecy::ExposeSecret;
-        crate::identity::verify(db.conn(), token.expose_secret())?;
+    let identity = if let Some(token) = &cli.agent_token {
+        Some(crate::identity::verify(db.conn(), token.expose_secret())?)
+    } else {
+        None
+    };
+    let enforce = crate::db::policy::get(db.conn())?.enforce;
+    if enforce && identity.is_none() {
+        return Err(CliError::Unauthorized(
+            "ledger enforcement requires an agent token".into(),
+        ));
     }
     let mut server = LedgerServer::new(db, read_only);
+    if enforce && let Some(identity) = identity {
+        for tool in server.tool_router.list_all() {
+            if !identity.allows(Capability::for_operation(&tool.name)?)? {
+                server.tool_router.remove_route(&tool.name);
+            }
+        }
+    }
     server.agent_token.clone_from(&cli.agent_token);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -700,6 +699,15 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_mcp_tool_has_an_explicit_requirement() -> Result<(), CliError> {
+        let server = LedgerServer::new(Db::open_in_memory()?, false);
+        for tool in server.tool_router.list_all() {
+            Capability::for_operation(&tool.name)?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn investment_read_only_router_omits_mutations() -> Result<(), CliError> {

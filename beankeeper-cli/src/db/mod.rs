@@ -10,6 +10,7 @@ pub mod connection;
 pub mod investments;
 pub mod metadata;
 pub mod metadata_filter;
+pub mod policy;
 pub mod rules;
 pub mod schedules;
 pub mod schema;

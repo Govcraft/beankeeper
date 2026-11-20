@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = 17;
+pub(crate) const CURRENT_VERSION: i64 = 18;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -41,6 +41,12 @@ pub fn get_schema_version(conn: &Connection) -> Result<i64, CliError> {
 /// Returns `CliError::Sqlite` on database errors.
 pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     let version = get_schema_version(conn)?;
+
+    if version > CURRENT_VERSION {
+        return Err(CliError::Database(format!(
+            "schema version {version} requires a newer bk binary"
+        )));
+    }
 
     if version == 0 {
         apply_v1(conn)?;
@@ -108,6 +114,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 17 {
         apply_v17(conn)?;
+    }
+
+    if version < 18 {
+        apply_v18(conn)?;
     }
 
     debug_assert_eq!(
@@ -990,9 +1000,192 @@ fn extend_investment_audit(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Enable explicit grants without changing historical audit hashes or snapshots.
+fn apply_v18(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(conn)?;
+        extend_policy_audit(conn)?;
+        conn.execute_batch(
+            "CREATE TABLE ledger_policy (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                enforce INTEGER NOT NULL CHECK(enforce IN (0, 1)),
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO ledger_policy VALUES (1, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+            CREATE TRIGGER protect_policy_delete BEFORE DELETE ON ledger_policy
+            BEGIN SELECT RAISE(ABORT, 'ledger policy cannot be deleted'); END;
+            CREATE TRIGGER protect_policy_insert BEFORE INSERT ON ledger_policy
+            WHEN EXISTS(SELECT 1 FROM ledger_policy)
+            BEGIN SELECT RAISE(ABORT, 'ledger policy cannot be replaced'); END;
+            CREATE TRIGGER protect_policy_update BEFORE UPDATE ON ledger_policy
+            WHEN NEW.singleton IS NOT OLD.singleton
+              OR NOT EXISTS (
+                  SELECT 1 FROM audit_log
+                  WHERE id = (SELECT MAX(id) FROM audit_log)
+                    AND entity = 'policy' AND entity_id = '1' AND action = 'policy_change'
+                    AND json_extract(before, '$.enforce') IS OLD.enforce
+                    AND json_extract(before, '$.updated_at') IS OLD.updated_at
+                    AND json_extract(after, '$.enforce') IS NEW.enforce
+                    AND json_extract(after, '$.updated_at') IS NEW.updated_at
+              )
+            BEGIN SELECT RAISE(ABORT, 'ledger policy change requires an audit record'); END;",
+        )?;
+        conn.execute("INSERT INTO schema_version (version) VALUES (18)", [])?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
+fn extend_policy_audit(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "CREATE TABLE audit_log_v18 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule','schedule','security','lot','price','policy')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset','schedule_cancel','schedule_run','policy_change')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 3 CHECK(hash_version IN (1,2,3)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v18 SELECT * FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v18 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 3
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn v17_connection() -> Result<Connection, CliError> {
+        let conn = v12_connection()?;
+        seed_v12_creation(&conn)?;
+        for migration in [apply_v13, apply_v14, apply_v15, apply_v16, apply_v17] {
+            migration(&conn)?;
+        }
+        super::super::audit::record_identity(
+            &conn,
+            &super::super::Actor::new("v17"),
+            "token_revoke",
+            "legacy",
+            &serde_json::json!({}),
+        )?;
+        Ok(conn)
+    }
+
+    #[test]
+    fn v18_preserves_mixed_history_and_blocks_old_writers() -> Result<(), CliError> {
+        let conn = v17_connection()?;
+        let hashes = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
+            let mut statement =
+                conn.prepare("SELECT hash_version, row_hash, after FROM audit_log ORDER BY id")?;
+            Ok(statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?)
+        };
+        let before = hashes(&conn)?;
+        assert_eq!(before.iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2]);
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, 18);
+        assert_eq!(hashes(&conn)?, before);
+        assert!(!super::super::policy::get(&conn)?.enforce);
+        // Simulate the explicit v2 insert emitted by a v17 binary.
+        let result = conn.execute("INSERT INTO audit_log (id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
+            SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 2 FROM audit_log ORDER BY id DESC LIMIT 1", []);
+        assert!(result.is_err());
+        super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
+        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(3));
+        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_creations(&conn)?;
+        for sql in [
+            "DELETE FROM audit_log",
+            "UPDATE audit_log SET actor = 'tampered'",
+            "DELETE FROM ledger_policy",
+            "UPDATE ledger_policy SET enforce = 0",
+        ] {
+            assert!(conn.execute(sql, []).is_err(), "unprotected: {sql}");
+        }
+        let indexes: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'audit_log'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(indexes, 4);
+        ensure_schema(&conn)?;
+        assert!(super::super::policy::get(&conn)?.enforce);
+        Ok(())
+    }
+
+    #[test]
+    fn v18_rejects_corruption_and_rolls_back_a_failed_rebuild() -> Result<(), CliError> {
+        for corruption in ["collision", "hash", "tail"] {
+            let conn = v17_connection()?;
+            match corruption {
+                "hash" => conn.execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET actor = 'tampered' WHERE id = 1")?,
+                "tail" => conn.execute_batch("DROP TRIGGER protect_audit_delete; DELETE FROM audit_log WHERE id = 2")?,
+                _ => conn.execute_batch("CREATE TABLE ledger_policy (collision TEXT)")?,
+            }
+            assert!(apply_v18(&conn).is_err());
+            assert_eq!(get_schema_version(&conn)?, 17);
+            assert!(conn.prepare("SELECT * FROM audit_log_v18").is_err());
+            if corruption == "collision" {
+                // Rebuild had already run before the collision; its trigger change rolls back.
+                super::super::audit::record_identity(
+                    &conn,
+                    &super::super::Actor::new("v17"),
+                    "token_revoke",
+                    "still-v17",
+                    &serde_json::json!({}),
+                )?;
+                conn.execute_batch("DROP TABLE ledger_policy")?;
+                apply_v18(&conn)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_v18_defaults_off_without_inventing_policy_history() -> Result<(), CliError> {
+        let conn = open_conn();
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, 18);
+        assert!(!super::super::policy::get(&conn)?.enforce);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
+        Ok(())
+    }
 
     #[test]
     fn v17_preserves_hashes_triggers_and_rolls_back_failed_migration() -> Result<(), CliError> {
@@ -1040,7 +1233,7 @@ mod tests {
             assert!(conn.execute(sql, []).is_err(), "unprotected: {sql}");
         }
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, 17);
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         Ok(())
     }
 

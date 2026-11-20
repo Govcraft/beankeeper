@@ -6,6 +6,32 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.24.0] - Unreleased
+
+### Added
+
+- Per-ledger capability enforcement through `bk policy show` and
+  `bk policy set --enforce on|off`, defaulting to off. Once enabled, CLI and MCP
+  require valid tokens and explicit read/post/reverse/reconcile/budget/admin
+  grants. Missing credentials return `UNAUTHORIZED` (exit 6); insufficient
+  grants return `FORBIDDEN` (exit 7). Policy changes are audited.
+  ([#72](https://github.com/Govcraft/beankeeper/issues/72))
+
+### Changed
+
+- MCP discovery reflects startup grants, with live policy and capability checks
+  on every call. Bare `ledger` grants are rejected. Forced initialization cannot
+  overwrite an enforced or unreadable ledger. Backup and restore require
+  `ledger/admin` when source enforcement is on; restore also requires destination
+  enforcement to be disabled before replacement.
+- Schema v18 preserves historical audit hashes and adds default-off policy
+  storage. New v3 audit records block older binaries from appending, including
+  when enforcement is off. Back up the full database before upgrading.
+
+### Fixed
+
+- MCP `--read-only` now hides `txn_reconcile` along with all other write tools.
+
 ## [0.23.0] - Unreleased
 
 ### Added

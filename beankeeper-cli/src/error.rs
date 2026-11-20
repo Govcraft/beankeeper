@@ -8,6 +8,8 @@ pub enum CliError {
     Usage(String),
     /// Invalid, expired, or revoked agent token. Exit code 6.
     Unauthorized(String),
+    /// Verified token lacks the required capability. Exit code 7.
+    Forbidden(String),
     /// Validation error (unbalanced transaction, invalid account). Exit code 3.
     Validation(String),
     /// Database error (I/O, corruption). Exit code 4.
@@ -36,6 +38,7 @@ impl CliError {
             Self::Database(_) | Self::Sqlite(_) => 4,
             Self::NotFound(_) => 5,
             Self::Unauthorized(_) => 6,
+            Self::Forbidden(_) => 7,
             Self::General(_) | Self::Io(_) => 1,
         }
     }
@@ -50,6 +53,7 @@ impl CliError {
             Self::Database(_) | Self::Sqlite(_) => "DATABASE",
             Self::NotFound(_) => "NOT_FOUND",
             Self::Unauthorized(_) => "UNAUTHORIZED",
+            Self::Forbidden(_) => "FORBIDDEN",
             Self::Io(_) => "IO",
             Self::General(_) => "GENERAL",
         }
@@ -101,6 +105,7 @@ impl fmt::Display for CliError {
         match self {
             Self::Usage(msg)
             | Self::Unauthorized(msg)
+            | Self::Forbidden(msg)
             | Self::Validation(msg)
             | Self::Database(msg)
             | Self::NotFound(msg)
@@ -121,6 +126,7 @@ impl std::error::Error for CliError {
             Self::Io(e) => Some(e),
             Self::Usage(_)
             | Self::Unauthorized(_)
+            | Self::Forbidden(_)
             | Self::Validation(_)
             | Self::Database(_)
             | Self::NotFound(_)
@@ -170,6 +176,9 @@ mod tests {
         assert_eq!(CliError::Validation("unbalanced".into()).exit_code(), 3);
         assert_eq!(CliError::Database("corrupt".into()).exit_code(), 4);
         assert_eq!(CliError::NotFound("missing".into()).exit_code(), 5);
+        let forbidden = CliError::Forbidden("requires ledger/post".into());
+        assert_eq!(forbidden.exit_code(), 7);
+        assert_eq!(forbidden.error_code(), "FORBIDDEN");
         assert_eq!(CliError::General("oops".into()).exit_code(), 1);
         assert_eq!(
             CliError::Io(io::Error::new(io::ErrorKind::NotFound, "gone")).exit_code(),

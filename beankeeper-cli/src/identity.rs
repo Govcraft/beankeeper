@@ -1,17 +1,18 @@
-//! Optional local agent attestations. Phase 1 verifies claims, not write signatures.
+//! Local bearer attestations and optional per-ledger capability enforcement.
 
 use std::str::FromStr;
 use std::time::Duration;
 
-use agent_uri::{AgentId, AgentUri};
+use agent_uri::{AgentId, AgentUri, CapabilityPath};
 use agent_uri_attestation::{
-    AttestationClaims, Denylist, Issuer, SigningKey, Verifier, VerifyingKey,
+    AttestationClaims, AttestationError, Denylist, Issuer, SigningKey, Verifier, VerifyingKey,
 };
 use mti::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 use secrecy::{ExposeSecret, SecretBox};
 use serde_json::{Value, json};
 
+use crate::capability::Capability;
 use crate::db::Actor;
 use crate::error::CliError;
 
@@ -20,6 +21,7 @@ use crate::error::CliError;
 pub struct VerifiedAgent {
     uri: String,
     jti: MagicTypeId,
+    capabilities: Vec<String>,
 }
 
 impl VerifiedAgent {
@@ -34,6 +36,25 @@ impl VerifiedAgent {
     pub fn jti(&self) -> &str {
         self.jti.as_str()
     }
+
+    /// Explicit grants from the signed claims, never the mutable registry JSON.
+    #[must_use]
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
+    }
+
+    /// Whether the signed grants cover this leaf capability.
+    ///
+    /// # Errors
+    /// Returns a validation error if an internal capability path is invalid.
+    pub fn allows(&self, capability: Capability) -> Result<bool, CliError> {
+        let path = CapabilityPath::parse(capability.path())
+            .map_err(|error| CliError::Validation(error.to_string()))?;
+        Ok(agent_uri_attestation::capability_covers(
+            &self.capabilities,
+            &path,
+        ))
+    }
 }
 
 fn unauthorized() -> CliError {
@@ -45,6 +66,34 @@ fn unauthorized() -> CliError {
 /// # Errors
 /// Returns `UNAUTHORIZED` for rejected tokens and database errors on storage failure.
 pub fn verify(conn: &Connection, token: &str) -> Result<VerifiedAgent, CliError> {
+    verify_required(conn, token, None)
+}
+
+/// Verify optional credentials and enforce the current ledger policy.
+///
+/// # Errors
+/// Returns `UNAUTHORIZED` for missing or rejected credentials, `FORBIDDEN` for
+/// an insufficient grant, or database errors for invalid policy/storage state.
+pub fn authorize(
+    conn: &Connection,
+    token: Option<&str>,
+    required: Capability,
+) -> Result<Option<VerifiedAgent>, CliError> {
+    let enforce = crate::db::policy::get(conn)?.enforce;
+    match token {
+        Some(token) => verify_required(conn, token, enforce.then_some(required)).map(Some),
+        None if enforce => Err(CliError::Unauthorized(
+            "ledger enforcement requires an agent token".into(),
+        )),
+        None => Ok(None),
+    }
+}
+
+fn verify_required(
+    conn: &Connection,
+    token: &str,
+    required: Option<Capability>,
+) -> Result<VerifiedAgent, CliError> {
     let root: Option<(String, String)> = conn
         .query_row(
             "SELECT trust_root, public_key FROM identity_root WHERE singleton = 1",
@@ -75,9 +124,30 @@ pub fn verify(conn: &Connection, token: &str) -> Result<VerifiedAgent, CliError>
     if !registered {
         return Err(unauthorized());
     }
+    if claims
+        .capabilities
+        .iter()
+        .any(|capability| capability == "ledger")
+    {
+        return Err(unauthorized());
+    }
+    if let Some(required) = required {
+        let path = CapabilityPath::parse(required.path())
+            .map_err(|error| CliError::Validation(error.to_string()))?;
+        verifier
+            .verify_for_capability(token, &uri, &path)
+            .map_err(|error| match error {
+                AttestationError::InsufficientCapabilities { .. } => CliError::Forbidden(format!(
+                    "operation requires capability {}",
+                    required.path()
+                )),
+                _ => unauthorized(),
+            })?;
+    }
     Ok(VerifiedAgent {
         uri: uri.to_string(),
         jti: MagicTypeId::from_str(&claims.jti).map_err(|_| unauthorized())?,
+        capabilities: claims.capabilities,
     })
 }
 
@@ -124,7 +194,7 @@ pub fn init_root(conn: &Connection, actor: &Actor) -> Result<Value, CliError> {
     })
 }
 
-/// Validated token issuance inputs. Capabilities describe grants for future enforcement.
+/// Validated token issuance inputs with explicit ledger capability grants.
 pub struct IssueRequest<'a> {
     pub name: &'a str,
     pub capabilities: &'a [String],
@@ -142,6 +212,15 @@ pub fn issue(
     actor: &Actor,
     request: &IssueRequest<'_>,
 ) -> Result<Value, CliError> {
+    if request
+        .capabilities
+        .iter()
+        .any(|capability| capability == "ledger")
+    {
+        return Err(CliError::Validation(
+            "bare ledger capability is not allowed; issue explicit ledger/* grants".into(),
+        ));
+    }
     if request.public_key.is_some() == request.generate_key {
         return Err(CliError::Usage(
             "supply --public-key BASE64 or --generate-key".into(),

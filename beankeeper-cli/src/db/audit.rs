@@ -164,6 +164,7 @@ impl Actor {
 /// constraint on `audit_log`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditEntity {
+    Policy,
     Security,
     Lot,
     Price,
@@ -181,6 +182,7 @@ enum AuditEntity {
 impl AuditEntity {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Policy => "policy",
             Self::Security => "security",
             Self::Lot => "lot",
             Self::Price => "price",
@@ -200,6 +202,7 @@ impl AuditEntity {
 /// The kind of change recorded. Maps to the `action` CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditAction {
+    PolicyChange,
     ScheduleRun,
     ScheduleCancel,
     MetadataSet,
@@ -222,6 +225,7 @@ enum AuditAction {
 impl AuditAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::PolicyChange => "policy_change",
             Self::ScheduleRun => "schedule_run",
             Self::ScheduleCancel => "schedule_cancel",
             Self::MetadataSet => "metadata_set",
@@ -270,10 +274,10 @@ pub(super) const GENESIS_HASH: &str =
 /// Snapshots are hashed as their stored UTF-8 strings, without reformatting JSON.
 fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
     let mut fields = vec![
-        serde_json::json!(if row.hash_version == 1 {
-            "beankeeper.audit.v1"
-        } else {
-            "beankeeper.audit.v2"
+        serde_json::json!(match row.hash_version {
+            1 => "beankeeper.audit.v1",
+            2 => "beankeeper.audit.v2",
+            _ => "beankeeper.audit.v3",
         }),
         serde_json::json!(row.id),
         serde_json::json!(row.changed_at),
@@ -287,7 +291,7 @@ fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
     ];
     match row.hash_version {
         1 if row.agent_uri.is_none() && row.token_jti.is_none() => {}
-        2 => {
+        2 | 3 => {
             fields.push(serde_json::json!(row.agent_uri));
             fields.push(serde_json::json!(row.token_jti));
         }
@@ -466,7 +470,11 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         row_hash: String::new(),
         agent_uri: actor.agent_uri().map(str::to_owned),
         token_jti: actor.token_jti().map(str::to_owned),
-        hash_version: 2,
+        hash_version: if super::schema::get_schema_version(conn)? >= 18 {
+            3
+        } else {
+            2
+        },
     };
     let hash = row_hash(&row)?;
     conn.execute(
@@ -486,6 +494,48 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         ],
     )?;
     Ok(())
+}
+
+/// Change policy and append its before/after record in the same savepoint.
+/// Repeating the same state is a no-op.
+///
+/// # Errors
+/// Returns policy integrity or database errors; failures roll back both writes.
+pub fn set_policy(
+    conn: &Connection,
+    actor: &Actor,
+    enforce: bool,
+) -> Result<super::policy::LedgerPolicy, CliError> {
+    atomically(conn, || {
+        let before = super::policy::get(conn)?;
+        if before.enforce == enforce {
+            return Ok(before);
+        }
+        let after = super::policy::LedgerPolicy {
+            enforce,
+            updated_at: conn.query_row(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+                [],
+                |row| row.get(0),
+            )?,
+        };
+        record(
+            conn,
+            actor,
+            AuditChange {
+                company_slug: None,
+                entity: AuditEntity::Policy,
+                entity_id: "1",
+                action: AuditAction::PolicyChange,
+                snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
+            },
+        )?;
+        conn.execute(
+            "UPDATE ledger_policy SET enforce = ?1, updated_at = ?2 WHERE singleton = 1",
+            params![after.enforce, after.updated_at],
+        )?;
+        Ok(after)
+    })
 }
 
 /// Record a key or token management event without persisting secrets.
@@ -578,7 +628,7 @@ fn posting_snapshot(
         "currency": txn.currency, "date": txn.date, "posted_at": txn.posted_at,
         "reference": txn.reference, "posted_by": txn.posted_by, "entries": entries,
     });
-    if hash_version == 2 {
+    if hash_version >= 2 {
         result["agent_uri"] = serde_json::json!(txn.agent_uri);
         result["token_jti"] = serde_json::json!(txn.token_jti);
     }

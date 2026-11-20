@@ -64,6 +64,18 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
     let version = super::verify::verify(&snapshot)?;
     let encrypted = is_encrypted(&snapshot);
     drop(snapshot);
+    if cli.db.try_exists()? {
+        // Inspect a private copy: even read-only SQLite connections can create
+        // WAL sidecars on the original destination and prevent publication.
+        // The destination has its own trust boundary, independent of the snapshot.
+        let mut destination_copy = NamedTempFile::new_in(directory.path())?;
+        std::io::copy(&mut File::open(&cli.db)?, destination_copy.as_file_mut())?;
+        let existing = Db::open_snapshot(destination_copy.path(), cli.resolve_passphrase()?)
+            .or_else(|error| Db::open_snapshot(destination_copy.path(), None).map_err(|_| error))?;
+        if crate::db::policy::get(existing.conn())?.enforce {
+            return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before restore".into()));
+        }
+    }
     publish(staged, input, &cli.db, force)?;
     report(cli, "restore", &cli.db, version, encrypted)
 }

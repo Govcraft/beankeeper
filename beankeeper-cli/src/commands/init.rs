@@ -53,6 +53,14 @@ pub fn run(
     };
 
     if db_path.exists() && force {
+        // A plaintext source can be replaced with an encrypted destination.
+        // An unreadable encrypted source must fail closed, never be erased.
+        let existing = Db::open_existing(db_path, passphrase.as_ref())
+            .or_else(|error| Db::open_existing(db_path, None).map_err(|_| error))?;
+        if crate::db::policy::get(existing.conn())?.enforce {
+            return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before initialization".into()));
+        }
+        drop(existing);
         std::fs::remove_file(db_path)?;
     }
 

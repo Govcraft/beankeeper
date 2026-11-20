@@ -37,6 +37,7 @@ pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
 
     crate::db::audit::atomically(db.conn(), || {
         crate::db::audit::verify_hash_chain(db.conn())?;
+        crate::db::policy::get(db.conn())?;
         crate::db::verification::verify_accounting(db.conn())?;
         crate::db::audit::verify_creations(db.conn())?;
 

@@ -52,6 +52,7 @@ pub(super) enum ReconciliationModeArg {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum AuditEntityArg {
+    Policy,
     Entry,
     Transaction,
     Budget,
@@ -62,6 +63,8 @@ pub(super) enum AuditEntityArg {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum AuditActionArg {
+    #[serde(rename = "policy_change")]
+    PolicyChange,
     #[serde(rename = "metadata_set")]
     MetadataSet,
     #[serde(rename = "metadata_unset")]

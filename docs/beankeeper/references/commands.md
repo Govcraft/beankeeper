@@ -5,7 +5,9 @@ All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--
 `--actor NAME` sets the principal recorded in the audit trail for any mutating command (see [Audit](#audit)). It falls back to the `BK_ACTOR` environment variable, then the OS user, then `"cli"`.
 `--agent-token TOKEN` / `BK_AGENT_TOKEN` optionally records verified local identity;
 invalid, expired or revoked supplied tokens return `UNAUTHORIZED` (exit 6).
-No token is required, and capabilities are not enforced in Phase 1.
+Tokens are optional while enforcement is off (the default). With enforcement on,
+missing credentials return `UNAUTHORIZED` and insufficient grants return
+`FORBIDDEN` (exit 7). See [capability policy](#capability-policy).
 
 
 ## Database
@@ -39,8 +41,12 @@ Omit the passphrase option for unencrypted ledgers. `backup --output` and
 even when `BEANKEEPER_DB` is configured. Global `--company` is ignored.
 JSON success envelopes report `path`, `bytes`, `schema_version`, and `encrypted`.
 
-Existing destinations require `--force`. Close all connections to a destination
-before replacing it; SQLite `-wal`, `-shm`, or `-journal` files cause rejection.
+When enforcement is on, backup and restore require `ledger/admin` on the source
+ledger or snapshot. Existing destinations require `--force` and must be readable
+with the supplied passphrase (or unencrypted), at the current schema, and have
+enforcement off. Disable destination enforcement with its own admin token before
+restoring. Close all connections to a destination before replacing it; SQLite
+`-wal`, `-shm`, or `-journal` files cause rejection.
 Source and destination must differ, including symlink and hard-link aliases.
 Destinations must be regular files or new paths. Failed verification leaves an
 existing destination untouched and removes temporary files. On Unix, published
@@ -1303,7 +1309,7 @@ unchanged. See [amount conventions](json-api.md#amount-conventions).
   issue an attestation for the supplied Ed25519 public key. `--generate-key`
   replaces `--public-key` and prints the agent private seed once as hex.
   Names are lowercase TypeID prefixes. The URI path is `ledger`, allowing sibling
-  grants. Capabilities default to `ledger/read,ledger/post` and must be under
+  grants. Bare `ledger` is rejected. Capabilities default to `ledger/read,ledger/post` and must be under
   `ledger`. TTL accepts positive `s`, `m`, `h`, `d` values, maximum `30d`.
 - `bk agent list`: list public claims and nullable `revoked_at`, without tokens
   or private keys.
@@ -1315,16 +1321,17 @@ All support `--json`. Issue data includes `agent_uri`, `token_jti`, `agent_key`,
 `capabilities`, `issued_at`, `expires_at`, `token`, plus `private_key` only when
 requested. JSON envelopes add `meta.agent` when a valid token is supplied.
 `txn show`/`list` and audit rows expose nullable `agent_uri`/`token_jti`;
-audit rows also expose `hash_version` (1 for historical rows, 2 for new rows).
+audit rows also expose `hash_version` (1 for historical rows, 2 for preserved identity rows, 3 for new rows).
 Audit filters also support entities `key`, `agent` and actions `create`,
 `key-init`, `token-issue`, `token-revoke`, `attach` (JSON uses underscores).
 
 `bk mcp serve` accepts the global token flag/environment variable per process.
 Startup and every call verify it, including live revocations. Tool arguments do
-not accept tokens. With no token, named actors work as before.
+not accept tokens. While enforcement is off, tokenless named actors work as before.
 
-Phase 1 does not enforce permissions or prove possession of the agent private
-key. `init` rejects supplied tokens before modifying files; initialize the new
+Tokens remain bearer credentials without proof of agent private-key possession.
+Capability checks apply when this ledger enables enforcement. `init` rejects
+supplied tokens before modifying files; initialize the new
 ledger and root without one. Root keys travel with full encrypted DB backups,
 not accounting exports. There is no recovery or rotation command in this phase.
 See [identity setup and limits](../../agent-identity.md).
@@ -1346,3 +1353,48 @@ them as `security_create`, `security_list`, `security_price`, `investment_buy`,
 `investment_sell`, `investment_lots`, and `investment_holdings`. The three reads
 remain available with `mcp serve --read-only`. See the [full investment guide](../../investments.md)
 for account setup, exact quantities, rounding, date ordering, and phase-one limits.
+
+
+## Capability policy
+
+```sh
+bk policy show
+bk policy set --enforce on
+bk --agent-token "$ADMIN_TOKEN" policy set --enforce off
+```
+
+Enforcement defaults off, including for upgraded ledgers. Before enabling, issue
+and save a token with `ledger/read,ledger/admin`. A named actor can enable while
+off; afterward all ledger commands require tokens and policy changes require
+`ledger/admin`. `policy show` requires `ledger/read`. JSON data is
+`{"enforce": true, "updated_at": "<UTC timestamp>"}`. Changes append atomic
+`policy_change` before/after audit snapshots, filterable with
+`audit log --entity policy --action policy_change`. Repeating a state is a no-op.
+
+| Required capability | Commands |
+| --- | --- |
+| `ledger/read` | List/show, report, export, verify, audit log, agent list, policy show, loan schedule |
+| `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/delete |
+| `ledger/reverse` | txn reverse |
+| `ledger/reconcile` | txn clear/reconcile |
+| `ledger/budget` | budget set/delete |
+| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, policy set, backup/restore |
+
+Matching uses leaf requirements and path segments. Neither `ledger/admin` nor
+`ledger/post` grants sibling capabilities; issue their explicit union when
+needed. Bare `ledger` grants are rejected at issuance and acceptance. A missing
+or rejected token produces `UNAUTHORIZED` (exit 6). A verified token lacking the
+required grant produces `FORBIDDEN` (exit 7), naming that grant without secrets.
+
+New-ledger `init` rejects supplied tokens. To overwrite an enforced ledger,
+first disable enforcement with an admin token; `init --force` checks the actual
+`--path`/`--db` destination with the existing passphrase. Unreadable ledgers are
+not overwritten. `loan schedule` without an existing database remains a
+standalone calculation; otherwise it follows the read policy.
+
+MCP filters tools by token grants at startup and rechecks policy and grants on
+every call. `--read-only` removes all writes, including `txn_reconcile`, even
+with broader grants. Restart MCP to refresh discovery after a policy change.
+Back up before the schema v18 migration: v1/v2 audit hashes are preserved, but
+new v3 audit rows block older binaries from appending, even with enforcement off.
+See [identity setup and limits](../../agent-identity.md).

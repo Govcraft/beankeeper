@@ -5,6 +5,7 @@
 //! that public items do not trigger dead-code warnings during incremental
 //! development.
 
+pub mod capability;
 pub mod cli;
 pub mod commands;
 pub mod db;
