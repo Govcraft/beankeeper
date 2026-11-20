@@ -230,6 +230,87 @@ If skipped, `id` is null and `existing_id` is provided:
 
 References are hashed into deterministic `txnref_`-prefixed keys. Transactions without `--reference` are unrestricted.
 
+### CSV Bank Statement and JSON Bulk Import
+
+`bk txn import` accepts CSV, JSON, OFX, and QFX files. File extensions select
+the input format automatically. For stdin, set `--input-format csv|json|ofx`;
+`--file -` and an omitted `--file` both read stdin. The legacy local `--format`
+alias still selects the input format. Use global `--json` for JSON responses.
+
+CSV imports require existing `--account` and `--suspense` accounts. The default
+headers are `date,description,amount`, with an optional `reference` column:
+
+```csv
+date,description,amount,reference
+2026-03-15,"Coffee, shop",-12.34,bank-1001
+2026-03-16,Customer deposit,250.00,bank-1002
+```
+
+```sh
+bk --company personal txn import --file checking.csv --account 1000 --suspense 9000
+
+# Map bank-specific headers, dates, currency, and positive amounts as spending
+bk --company personal txn import --file card.csv --account 2000 --suspense 9000 \
+  --date-col Posted --description-col Payee --amount-col Value --reference-col ID \
+  --date-format '%m/%d/%Y' --positive-amount outflow --currency USD --dry-run
+```
+
+Amounts are signed **major currency units**, without currency symbols or
+thousands separators. Positive amounts default to inflows (debit bank, credit
+suspense); negative amounts are outflows. `--positive-amount outflow` reverses
+that convention. Currency defaults to `--currency`, then `BEANKEEPER_CURRENCY`,
+then USD. Zero amounts, excess precision, missing accounts, invalid dates, and
+missing or duplicate headers are rejected. CSV descriptions support standard
+quoting, including commas and newlines.
+
+JSON bulk imports accept an array of transactions. Each object supplies its
+own balanced entries, so `--account` and `--suspense` are unnecessary:
+
+```json
+[
+  {
+    "date": "2026-03-15",
+    "description": "Office supplies",
+    "currency": "USD",
+    "reference": "receipt-1001",
+    "metadata": {"vendor": "Stationer"},
+    "entries": [
+      {"account_code": "5000", "direction": "debit", "amount": "12.34", "memo": "Paper", "tax_category": "supplies"},
+      {"account_code": "1000", "direction": "credit", "amount": "12.34"}
+    ]
+  }
+]
+```
+
+```sh
+bk --company acme txn import --file journals.json
+cat journals.json | bk --json --company acme txn import --input-format json --dry-run
+```
+
+`date`, `description`, and `entries` are required. `currency` overrides the
+command's default. Entry amounts are positive major units, just like `txn post`.
+Use strings for decimal amounts to preserve exact precision; integer JSON
+numbers also mean major units (`10` means ten dollars in USD). Fractional JSON
+numbers are rejected. Entry directions are `debit` or `credit`; optional `memo`
+and `tax_category` values are preserved, with account tax defaults applied when
+omitted. Metadata must be an object. Unknown transaction and entry fields are
+rejected. This bulk posting schema differs from the full-database export schema.
+
+**CSV and JSON batches are atomic.** Any parse, validation, or posting error
+fails with no new transactions or entries committed. `--dry-run` exercises the
+same posting and duplicate checks, including duplicates inside the batch, then
+rolls everything back. `--on-conflict skip` is the default; `error` rejects the
+entire batch on a duplicate. `upsert` is unsupported.
+
+References are trimmed and stored verbatim, with uniqueness scoped to the
+company. CSV uses its `reference` column automatically (or `--reference-col`);
+blank CSV references and missing/null JSON references use a deterministic
+`csv:sha256:...` or `json:sha256:...` hash of normalized posting data, including
+accounts and currency. File names and row positions do not affect the hash.
+Identical rows without references deduplicate, including within one file.
+Supply distinct explicit references for legitimate transactions with identical
+contents. Explicit blank JSON references are rejected.
+
 ### OFX / QFX Bank Statement Import
 
 Import transactions from bank and credit card statements exported in OFX format. Each OFX transaction becomes a balanced double-entry against a user-specified bank account and suspense/clearing account:

@@ -230,10 +230,71 @@ cat data.ofx | bk --company acme txn import \
 **Flags:**
 - `--file PATH`: Input file (use `-` for stdin)
 - `--input-format {ofx|csv|json}`: Auto-detected from extension if omitted; `--format` remains a hidden compatibility alias
-- `--account CODE`: Bank/asset account (required for OFX)
-- `--suspense CODE`: Contra account for unclassified entries (required for OFX)
+- `--account CODE`: Bank/asset account (required for OFX and CSV)
+- `--suspense CODE`: Contra account for unclassified entries (required for OFX and CSV; CSV requires a different account from `--account`)
 - `--dry-run`: Validate without persisting
 - `--on-conflict {error|skip}` (default: skip)
+- `--currency CODE`: CSV/JSON default currency (`BEANKEEPER_CURRENCY`, then USD); JSON transactions may override it
+- `--date-col NAME`, `--description-col NAME`, `--amount-col NAME`: CSV headers (defaults: `date`, `description`, `amount`)
+- `--reference-col NAME`: CSV reference header (default: use `reference` if present); an explicit header name must exist
+- `--date-format FORMAT`: CSV strftime date format (default: `%Y-%m-%d`)
+- `--positive-amount {inflow|outflow}`: CSV sign convention (default: inflow)
+
+CSV example (`--account 1000 --suspense 9000`):
+
+```csv
+date,description,amount,reference
+2026-03-15,"Coffee, shop",-12.34,bank-1001
+2026-03-16,Deposit,100.00,bank-1002
+```
+
+Positive inflows debit the bank and credit suspense; negative amounts reverse
+the pair. `--positive-amount outflow` reverses the sign convention. CSV amounts
+are exact major units without currency symbols or thousands separators.
+Descriptions support CSV quoting. Invalid dates, zero amounts, excess
+currency precision, missing accounts, and missing/duplicate headers fail validation.
+
+JSON input is a bulk journal array, independent of the full-database export:
+
+```json
+[
+  {
+    "date": "2026-03-15",
+    "description": "Office supplies",
+    "reference": "receipt-1001",
+    "currency": "USD",
+    "metadata": {"vendor": "Stationer"},
+    "entries": [
+      {"account_code": "5000", "direction": "debit", "amount": "12.34", "memo": "Paper", "tax_category": "supplies"},
+      {"account_code": "1000", "direction": "credit", "amount": "12.34"}
+    ]
+  }
+]
+```
+
+Transaction `date` (`YYYY-MM-DD`), `description`, and `entries` are required.
+`currency`, `reference`, and object `metadata` are optional. Entries require
+`account_code`, `direction` (`debit`/`credit`), and positive `amount`; `memo` and
+`tax_category` are optional. Account tax defaults apply when a category is
+omitted. All entries share the transaction currency and must balance through
+the same journal validation as `txn post`. JSON decimal amounts must be
+strings; integer numbers are accepted as whole **major units**. Fractional
+JSON numbers and unknown fields are rejected. JSON needs no bank/suspense flags.
+
+CSV/JSON imports are atomic, including `--on-conflict error`: one bad row or
+posting rolls back the entire batch. Errors return a validation envelope and
+exit 3, with no success summary. `--dry-run` uses the same posting path and
+rolls back, so duplicate checks include rows earlier in the batch. `upsert` is
+unsupported (usage error, exit 2).
+
+Explicit references are trimmed, stored verbatim, and scoped to the company.
+CSV blank/missing references and JSON missing/null references get a
+`csv:sha256:...` or `json:sha256:...` reference derived from normalized posting
+data, including accounts, currency, date, description, entries, and metadata.
+The file name and row position are excluded. Identical rows deduplicate;
+give distinct explicit references to distinct transactions with identical
+contents. Explicit blank JSON references are rejected. Re-import skips
+duplicates by default, including duplicates within a batch.
 
 ### `bk txn clear`
 
