@@ -87,6 +87,18 @@ pub struct Occurrence {
     pub transaction_id: Option<i64>,
 }
 
+/// Maximum occurrences in one company run without an explicit override.
+pub const DEFAULT_RUN_LIMIT: usize = 1_000;
+
+/// Preview and safety controls for one company-scoped run.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunOptions {
+    /// Preview every due occurrence without applying the posting limit.
+    pub dry_run: bool,
+    /// Explicitly permit posting more than [`DEFAULT_RUN_LIMIT`] occurrences.
+    pub allow_large_run: bool,
+}
+
 /// Create a balanced, validated template and an audit snapshot atomically.
 ///
 /// # Errors
@@ -362,6 +374,7 @@ pub fn cancel_schedule(
 ///
 /// Acquires the writer before reading progress, preventing two runners from
 /// consuming the same occurrence. All due postings and progress commit together.
+/// Real runs exceeding [`DEFAULT_RUN_LIMIT`] are rejected before posting.
 ///
 /// # Errors
 /// Returns validation, posting, recurrence-overflow or auditing errors; rolls back
@@ -373,15 +386,55 @@ pub fn run_due(
     through: NaiveDate,
     dry_run: bool,
 ) -> Result<Vec<Occurrence>, CliError> {
+    run_due_with_options(
+        conn,
+        actor,
+        company,
+        through,
+        RunOptions {
+            dry_run,
+            ..RunOptions::default()
+        },
+    )
+}
+
+/// Run due occurrences with an explicit large-run override or preview mode.
+///
+/// The limit covers all pending templates in the company. Preflight and posting
+/// share the writer reservation, so concurrent runners cannot change progress
+/// between the limit check and posting. Preview mode is always unrestricted.
+///
+/// # Errors
+/// Returns validation, posting, recurrence-overflow or auditing errors; rolls back
+/// all postings and template progress on failure.
+pub fn run_due_with_options(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    through: NaiveDate,
+    options: RunOptions,
+) -> Result<Vec<Occurrence>, CliError> {
     audit::atomically(conn, || {
-        if !dry_run {
+        if !options.dry_run {
             audit::lock_schedule_writer(conn)?;
         }
+        let schedules: Vec<_> = list_schedules(conn, company)?
+            .into_iter()
+            .filter(|schedule| schedule.status == "pending")
+            .collect();
+        if !options.dry_run && !options.allow_large_run {
+            enforce_run_limit(&schedules, through)?;
+        }
         let mut occurrences = Vec::new();
-        for schedule in list_schedules(conn, company)? {
-            if schedule.status == "pending" {
-                execute_schedule(conn, actor, &schedule, through, dry_run, &mut occurrences)?;
-            }
+        for schedule in &schedules {
+            execute_schedule(
+                conn,
+                actor,
+                schedule,
+                through,
+                options.dry_run,
+                &mut occurrences,
+            )?;
         }
         occurrences.sort_by(|a, b| {
             a.date
@@ -390,6 +443,47 @@ pub fn run_due(
         });
         Ok(occurrences)
     })
+}
+
+fn enforce_run_limit(schedules: &[Schedule], through: NaiveDate) -> Result<(), CliError> {
+    let mut count = 0;
+    for before in schedules {
+        let mut after = before.clone();
+        let frequency = after
+            .frequency
+            .parse::<Frequency>()
+            .map_err(|e| CliError::Database(e.to_string()))?;
+        while after.next_due.is_some_and(|date| date <= through) {
+            count += 1;
+            if count > DEFAULT_RUN_LIMIT {
+                return Err(CliError::Validation(format!(
+                    "schedule run exceeds the limit of {DEFAULT_RUN_LIMIT} occurrences; \
+                     use --dry-run to inspect the count, choose an earlier --through date, \
+                     or pass --allow-large-run to post all due occurrences"
+                )));
+            }
+            advance_schedule(&mut after, frequency)?;
+        }
+    }
+    Ok(())
+}
+
+fn advance_schedule(schedule: &mut Schedule, frequency: Frequency) -> Result<(), CliError> {
+    schedule.occurrence_index = schedule
+        .occurrence_index
+        .checked_add(1)
+        .ok_or_else(|| CliError::Validation("schedule occurrence counter overflow".into()))?;
+    schedule.next_due =
+        match occurrence_date(schedule.start_date, frequency, schedule.occurrence_index) {
+            Ok(next) => next.filter(|date| schedule.end_date.is_none_or(|end| *date <= end)),
+            // An overflowing future occurrence is beyond every finite end date.
+            Err(RecurrenceError::DateOverflow) if schedule.end_date.is_some() => None,
+            Err(error) => return Err(CliError::Validation(error.to_string())),
+        };
+    if schedule.next_due.is_none() {
+        schedule.status = "completed".into();
+    }
+    Ok(())
 }
 
 fn execute_schedule(
@@ -443,20 +537,7 @@ fn execute_schedule(
             date,
             transaction_id,
         });
-        after.occurrence_index = after
-            .occurrence_index
-            .checked_add(1)
-            .ok_or_else(|| CliError::Validation("schedule occurrence counter overflow".into()))?;
-        after.next_due = match occurrence_date(after.start_date, frequency, after.occurrence_index)
-        {
-            Ok(next) => next.filter(|date| after.end_date.is_none_or(|end| *date <= end)),
-            // An overflowing future occurrence is beyond every finite end date.
-            Err(RecurrenceError::DateOverflow) if after.end_date.is_some() => None,
-            Err(error) => return Err(CliError::Validation(error.to_string())),
-        };
-        if after.next_due.is_none() {
-            after.status = "completed".into();
-        }
+        advance_schedule(&mut after, frequency)?;
     }
     if !dry_run && before.occurrence_index != after.occurrence_index {
         audit::change_schedule(conn, actor, before, &after, "schedule_run")?;
