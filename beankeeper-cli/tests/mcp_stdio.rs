@@ -462,7 +462,7 @@ fn startup_missing_database_and_stdin_passphrase_fail_without_protocol_output() 
     let path = dir.path().join("missing.db");
     let output = bk(&path)?.args(["--json", "mcp", "serve"]).output()?;
     assert_eq!(output.status.code(), Some(5));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     assert!(!path.exists());
     let error: Value = serde_json::from_slice(&output.stderr)?;
     assert_eq!(error["error"]["code"], "NOT_FOUND");
@@ -470,7 +470,7 @@ fn startup_missing_database_and_stdin_passphrase_fail_without_protocol_output() 
         .args(["--passphrase-fd", "0", "mcp", "serve"])
         .output()?;
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     Ok(())
 }
 
@@ -514,7 +514,7 @@ fn encrypted_startup_accepts_file_and_command_and_rejects_wrong_key() -> TestRes
         .args(["--json", "mcp", "serve"])
         .output()?;
     assert_eq!(output.status.code(), Some(4));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr)?;
     // SQLCipher may log authentication diagnostics before the CLI envelope.
     // Only stdout is the MCP channel; these stderr diagnostics are allowed.
@@ -600,7 +600,10 @@ fn clearing_batches_and_remaining_tools_use_the_shared_ledger() -> TestResult {
             .iter()
             .all(|row| row["actor"] == "mcp:codex-test-client")
     );
-    assert!(!audit.as_array().ok_or("missing audit rows")?.is_empty());
+    assert_ne!(
+        audit.as_array().ok_or("missing audit rows")?.as_slice(),
+        [] as [Value; 0]
+    );
     client.success("txn_reconcile", &json!({}))?;
     Ok(())
 }
