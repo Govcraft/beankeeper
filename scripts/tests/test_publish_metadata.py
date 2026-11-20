@@ -15,6 +15,13 @@ def manifest(crate):
 
 
 class PublishMetadataTests(unittest.TestCase):
+    def test_workflows_fetch_dependencies_before_offline_packaging_tests(self):
+        for workflow_name in ("ci.yml", "release.yml"):
+            with self.subTest(workflow=workflow_name):
+                workflow = (ROOT / ".github/workflows" / workflow_name).read_text()
+                test_command = "python3 -B -m unittest discover -s scripts/tests -v"
+                self.assertLess(workflow.index("cargo fetch --locked"), workflow.index(test_command))
+
     def test_cli_dependency_matches_local_library(self):
         dependency = manifest("beankeeper-cli")["dependencies"]["beankeeper"]
         self.assertEqual(dependency["version"], manifest("beankeeper")["package"]["version"])
