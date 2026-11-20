@@ -91,7 +91,16 @@ impl LedgerServer {
         })
         .await;
         match result {
-            Ok(Ok(data)) => CallToolResult::structured(data),
+            Ok(Ok((data, pagination))) => {
+                let mut result = CallToolResult::structured(data);
+                if let Some(pagination) = pagination {
+                    result.meta = Some(rmcp::model::MetaObject(serde_json::Map::from_iter([(
+                        "pagination".into(),
+                        pagination,
+                    )])));
+                }
+                result
+            }
             Ok(Err(error)) => tool_error(&error),
             Err(_) => tool_error(&CliError::General(
                 "ledger operation did not complete".into(),
@@ -245,7 +254,12 @@ fn prepare_post(input: &mut Map<String, Value>) -> Result<(), CliError> {
     Ok(())
 }
 
-fn execute_operation(db: &Db, tool: &str, input: Value, actor: &Actor) -> Result<Value, CliError> {
+fn execute_operation(
+    db: &Db,
+    tool: &str,
+    input: Value,
+    actor: &Actor,
+) -> Result<(Value, Option<Value>), CliError> {
     let Value::Object(mut input) = input else {
         return Err(CliError::Usage("tool arguments must be an object".into()));
     };
@@ -282,15 +296,34 @@ fn execute_operation(db: &Db, tool: &str, input: Value, actor: &Actor) -> Result
         Command::Txn(args) if tool == "txn_clear" => {
             commands::txn_clear::execute_json(db, company, &args.command, actor, batch.as_deref())
         }
-        Command::Txn(args) => commands::txn::execute_json(&cli, db, company, &args.command, actor),
+        Command::Txn(args) => {
+            return commands::txn::execute_json_with_pagination(
+                &cli,
+                db,
+                company,
+                &args.command,
+                actor,
+            );
+        }
         Command::Report(args) => commands::report::execute_json(&cli, db, company, &args.command),
         Command::Budget(args) => commands::budget::execute_json(db, company, &args.command, actor),
-        Command::Audit(args) => commands::audit::execute_json(db, &args.command),
+        Command::Audit(args) => {
+            let data = commands::audit::execute_json(db, &args.command)?;
+            let pagination = commands::audit::pagination(
+                db,
+                &args.command,
+                data.as_array().map_or(0, Vec::len),
+            )?;
+            let pagination = serde_json::to_value(pagination)
+                .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
+            return Ok((data, Some(pagination)));
+        }
         Command::Verify => commands::verify::execute_json(db),
         _ => Err(CliError::Usage(
             "operation is not available over MCP".into(),
         )),
     }
+    .map(|data| (data, None))
 }
 
 #[tool_router]
@@ -482,7 +515,7 @@ impl ServerHandler for LedgerServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("beankeeper", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Amounts in inputs use decimal major-unit strings; amounts in results use integer minor units. Always pass a reference to txn_post, and on_conflict=skip for safe retries. Company is required for company-scoped tools. Never pass database paths or secrets to tools.")
+            .with_instructions("Amounts in inputs use decimal major-unit strings; amounts in results retain integer minor units and add decimal-string _display companions. txn_list and audit_log return pagination in result _meta.pagination. Always pass a reference to txn_post, and on_conflict=skip for safe retries. Company is required for company-scoped tools. Never pass database paths or secrets to tools.")
     }
 }
 

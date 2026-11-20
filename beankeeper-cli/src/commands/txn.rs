@@ -150,6 +150,24 @@ pub fn execute_json(
     sub: &TxnCommand,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
+    execute_json_with_pagination(cli, db_handle, company, sub, actor).map(|(data, _)| data)
+}
+
+/// Execute a transaction operation and retain its optional pagination metadata.
+///
+/// MCP callers can attach the pagination to their result metadata while keeping
+/// the transaction data array unchanged.
+///
+/// # Errors
+///
+/// Returns the same errors as [`execute_json`].
+pub fn execute_json_with_pagination(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    actor: &db::Actor,
+) -> Result<(serde_json::Value, Option<serde_json::Value>), CliError> {
     if !matches!(sub, TxnCommand::Reconcile) {
         db::get_company(db_handle.conn(), company)?;
     }
@@ -173,7 +191,8 @@ pub fn execute_json(
         }
         TxnCommand::Reconcile => run_reconcile(db_handle, OutputFormat::Json, false, &mut out)?,
         TxnCommand::Clear { .. } => {
-            return super::txn_clear::execute_json(db_handle, company, sub, actor, None);
+            return super::txn_clear::execute_json(db_handle, company, sub, actor, None)
+                .map(|data| (data, None));
         }
         TxnCommand::Reverse { .. } => {
             let result = execute_reverse(db_handle, company, sub, actor)?;
@@ -188,7 +207,10 @@ pub fn execute_json(
     }
     let envelope: serde_json::Value = serde_json::from_slice(&out)
         .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))?;
-    Ok(envelope["data"].clone())
+    Ok((
+        envelope["data"].clone(),
+        envelope["meta"].get("pagination").cloned(),
+    ))
 }
 
 /// Execute the `txn import` subcommand.
@@ -709,6 +731,8 @@ fn run_list(
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
     let rows = transactions::list_transactions(db_handle.conn(), params)?;
+    let total = transactions::count_transactions(db_handle.conn(), params)?;
+    let pagination = output::json::Pagination::new(params.limit, params.offset, rows.len(), total);
 
     match format {
         OutputFormat::Table => {
@@ -722,7 +746,8 @@ fn run_list(
                 let entries = transactions::get_entries_for_transaction(db_handle.conn(), txn.id)?;
                 entries_map.insert(txn.id, entries);
             }
-            let meta = output::json::meta("txn.list", Some(params.company_slug));
+            let meta = output::json::meta("txn.list", Some(params.company_slug))
+                .with_pagination(pagination.clone());
             let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
             writeln!(out, "{rendered}")?;
         }
@@ -734,14 +759,18 @@ fn run_list(
 
     if !cli.verbosity.quiet {
         let count = rows.len();
-        eprintln!(
-            "{count} {noun}",
-            noun = if count == 1 {
-                "transaction"
-            } else {
-                "transactions"
-            }
-        );
+        if format == OutputFormat::Table && pagination.has_more {
+            eprintln!("showing {count} of {total} transactions (use --limit/--offset)");
+        } else {
+            eprintln!(
+                "{count} {noun}",
+                noun = if count == 1 {
+                    "transaction"
+                } else {
+                    "transactions"
+                }
+            );
+        }
     }
 
     Ok(())

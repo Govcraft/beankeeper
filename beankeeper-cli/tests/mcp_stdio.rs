@@ -264,6 +264,85 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
 }
 
 #[test]
+fn tools_preserve_data_arrays_and_expose_pagination_and_currency_displays() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    for currency in ["USD", "JPY", "BHD"] {
+        let mut input = posting(currency);
+        input["currency"] = json!(currency);
+        input["debits"][0]["amount"] = json!("1800");
+        input["credits"][0]["amount"] = json!("1800");
+        client.success("txn_post", &input)?;
+        let result = client.call("txn_list", &json!({"company":"acme", "reference":currency}))?;
+        assert_eq!(result["result"]["_meta"]["pagination"]["total"], 1);
+        assert_eq!(result["result"]["_meta"]["pagination"]["has_more"], false);
+        let expected = match currency {
+            "JPY" => "1800",
+            "BHD" => "1800.000",
+            _ => "1800.00",
+        };
+        assert_eq!(
+            payload(&result)?[0]["entries"][0]["amount_display"],
+            expected
+        );
+        let report = client.success(
+            "report",
+            &json!({"company":"acme", "kind":"trial-balance", "currency":currency}),
+        )?;
+        assert_eq!(report["total_debits_display"], expected);
+    }
+    for tool in ["txn_list", "audit_log"] {
+        for (limit, offset, returned, has_more) in [
+            (4, 0, 3, false),
+            (3, 0, 3, false),
+            (2, 0, 2, true),
+            (2, 2, 1, false),
+            (2, 5, 0, false),
+        ] {
+            let mut args = json!({"company":"acme", "limit":limit, "offset":offset});
+            if tool == "audit_log" {
+                args["action"] = json!("create");
+            }
+            let response = client.call(tool, &args)?;
+            assert_ne!(response["result"]["isError"], true, "{response}");
+            assert_eq!(
+                response["result"]["_meta"]["pagination"],
+                json!({"limit":limit, "offset":offset, "returned":returned, "total":3, "has_more":has_more})
+            );
+            let data = payload(&response)?;
+            assert_eq!(
+                data.as_array().map(Vec::len),
+                usize::try_from(returned).ok()
+            );
+            if tool == "audit_log" && returned > 0 {
+                assert!(data[0]["after"].is_string());
+                assert!(data[0]["after_display"]["entries"][0]["amount_display"].is_string());
+            }
+        }
+    }
+    let cleared = client.success(
+        "txn_clear",
+        &json!({"company":"acme", "reference":"BHD", "account":"1000",
+        "amount":"1.234", "date":"2026-03-02", "statement":"S1"}),
+    )?;
+    assert_eq!(cleared["amount"], 1234);
+    assert_eq!(cleared["amount_display"], "1.234");
+    assert_eq!(cleared["partially_cleared"], true);
+    let budget = client.success(
+        "budget_set",
+        &json!({"company":"acme", "account":"1000", "currency":"BHD",
+        "year":2026, "month":3, "amount":"12.345"}),
+    )?;
+    assert_eq!(budget[0]["amount_display"], "12.345");
+    Ok(())
+}
+
+#[test]
 fn tool_errors_preserve_codes_and_audited_writes_attribute_the_client() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");

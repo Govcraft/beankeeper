@@ -271,6 +271,10 @@ pub enum AuditCommand {
         /// Maximum number of rows to show.
         #[arg(long, default_value_t = 50)]
         limit: i64,
+
+        /// Number of matching rows to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
     },
 }
 
