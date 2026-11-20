@@ -203,7 +203,35 @@ Installs the latest **GitHub release**, which can lag behind `main`. The script
 detects your OS and architecture, downloads the right binary, verifies the
 SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory
 with `BK_INSTALL=~/.local/bin` or pin a published CLI release with
-`BK_VERSION=X.Y.Z`. See the [changelog](CHANGELOG.md) for user-visible changes
+`BK_VERSION=X.Y.Z`. When `cosign` is on `PATH`, the installer also verifies the
+archive and checksum file against their Sigstore bundles before extraction.
+Missing bundles (HTTP 404) warn that the release predates signing and fall back
+to SHA-256; other download errors or failed verification stop installation.
+Any present bundle must still verify. Without `cosign`,
+installation checks SHA-256 and warns that authenticity was not verified.
+
+New releases attach `<artifact>.sigstore` for every archive and for
+`checksums-sha256.txt`, plus GitHub build provenance attestations. To verify a
+download manually, set `VERSION` to the published version and `ARTIFACT` to the
+downloaded archive (or `checksums-sha256.txt`), with its adjacent bundle:
+
+```sh
+VERSION=X.Y.Z
+ARTIFACT="bk-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+cosign verify-blob "$ARTIFACT" --bundle "${ARTIFACT}.sigstore" \
+  --certificate-identity-regexp '^https://github\.com/Govcraft/beankeeper/\.github/workflows/release\.yml@refs/tags/beankeeper-cli-v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify "$ARTIFACT" --repo Govcraft/beankeeper \
+  --signer-workflow Govcraft/beankeeper/.github/workflows/release.yml \
+  --source-ref "refs/tags/beankeeper-cli-v${VERSION}"
+```
+
+For automatic updates, require the **exact version's identity**, as the installer
+does. The [verification contract](docs/RELEASE.md#sigstore-verification-contract)
+includes download commands and that stricter check. Sigstore keyless signing
+does not replace Apple notarization or Windows Authenticode.
+
+See the [changelog](CHANGELOG.md) for user-visible changes
 and the [release procedure](docs/RELEASE.md) for cutting and verifying a release.
 Contributors add notes under `[Unreleased]` and leave crate and skill versions
 unchanged until release prep; see the [contributor convention](docs/RELEASE.md#agent--contributor-convention).
