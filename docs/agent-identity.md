@@ -173,8 +173,8 @@ initialize the new root afterward. `init --demo` honors `--actor`/`BK_ACTOR`.
 
 ## MCP sessions
 
-Launch `bk --agent-token TOKEN mcp serve`, or set `BK_AGENT_TOKEN` in the MCP
-server environment. There is one token per server process, with no per-tool
+For stdio, launch `bk --agent-token TOKEN mcp serve`, or set `BK_AGENT_TOKEN` in
+the MCP server environment. There is one token per server process, with no per-tool
 credential argument. Startup verifies it before starting the protocol; each
 call rechecks expiry and revocations against the database. Revoking a token in
 another CLI process takes effect on the next call without restarting MCP.
@@ -187,6 +187,32 @@ policy change: calls then fail with `UNAUTHORIZED` or `FORBIDDEN` as appropriate
 Tool lists reflect startup permissions; restart the server after policy changes
 to refresh discovery. `--read-only` remains a process ceiling and removes every
 write tool, including `txn_reconcile`, even with broader token grants.
+
+For Streamable HTTP, launch `bk mcp serve --http`, defaulting to
+`http://127.0.0.1:8750/mcp`. Each request must provide a verified token through
+`Authorization: Bearer <token>`, including initialize, notifications, GET, and
+DELETE. HTTP always requires verification even when ledger enforcement is off.
+The process can start without a token so multiple agents can connect with their
+own credentials. `--agent-token` / `BK_AGENT_TOKEN` is used only when a request
+has no Authorization header; invalid explicit headers are rejected rather than
+falling back. HTTP does not bind permissions to an MCP session ID.
+
+Missing, malformed, expired, revoked, and untrusted credentials return HTTP 401
+with `{code: "UNAUTHORIZED", message}` and `WWW-Authenticate: Bearer`. There is no
+OAuth flow or discovery. Tool calls recheck validity and current policy inside
+the same database transaction as execution. With enforcement on, insufficient
+grants produce the usual MCP `FORBIDDEN` tool error. HTTP `tools/list` reflects
+the current requesting token and current policy, so agents with different grants
+can share a server. Audited writes retain `mcp:<client>` plus the verified URI and
+token ID of the request that made the call. `--read-only` is still a process ceiling.
+
+`--bind` accepts an IP address and port, including port 0. Non-loopback addresses
+require `--allow-remote`. This is plaintext HTTP without TLS, not a hosted-tier
+implementation. Passphrases remain startup-only; HTTP accepts descriptor 0 because
+stdin is not its transport. Browser Origin headers are rejected, and loopback Host
+validation is enabled. Specific remote binds also accept the bound IP; explicitly
+allowed wildcard binds accept any Host. See the
+[HTTP client configuration](../README.md#streamable-http).
 
 ## Migration and integrity
 

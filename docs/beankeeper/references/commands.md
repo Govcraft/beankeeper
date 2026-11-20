@@ -170,10 +170,12 @@ cancellation, and progress are audited under entity `schedule`, with actions
 
 ## MCP
 
-### `bk mcp serve [--read-only]`
+### `bk mcp serve [--read-only] [--http [--bind ADDRESS] [--allow-remote]]`
 
-Serve an existing database over MCP stdio. Stdout contains only JSON-RPC;
-diagnostics go to stderr. No subprocess invocation of `bk` is used for tools.
+Serve an existing database over MCP stdio by default, or authenticated Streamable
+HTTP at `/mcp` with `--http`. Stdout contains only JSON-RPC in stdio mode and stays
+empty in HTTP mode; diagnostics go to stderr. No subprocess invocation of `bk`
+is used for tools.
 
 ```bash
 bk --db /absolute/path/books.db mcp serve
@@ -184,9 +186,31 @@ BEANKEEPER_PASSPHRASE_CMD='secret-tool lookup service beankeeper ledger books' b
 
 Database and passphrase sources are resolved once at startup. `BEANKEEPER_DB`
 works as usual. Missing databases and wrong passphrases are startup failures.
-Passphrase file descriptor 0 is rejected because stdin carries MCP requests.
+Passphrase file descriptor 0 is rejected in stdio mode because stdin carries MCP
+requests; HTTP can use it for startup passphrase resolution.
 Passphrases and database paths are never tool inputs. Company-scoped tools require
 an explicit `company` argument, regardless of the CLI's default company.
+
+HTTP defaults to `127.0.0.1:8750`; `--bind 127.0.0.1:0` selects a free port.
+The bound endpoint is printed to stderr. `--bind` and `--allow-remote` require
+`--http`. Non-loopback addresses require `--allow-remote`, which serves plaintext
+HTTP without TLS and does not implement a hosted tier.
+
+Every HTTP request must supply `Authorization: Bearer <agent token>` or use the
+process-level `--agent-token` / `BK_AGENT_TOKEN` fallback. Explicit headers take
+precedence, including invalid headers. Verification is mandatory even with policy
+enforcement off; missing, expired, revoked, malformed, or untrusted credentials
+return HTTP 401 with `{code: "UNAUTHORIZED", message}`. The HTTP 401 challenge is
+`WWW-Authenticate: Bearer`; OAuth and discovery are not implemented. With enforcement
+on, `tools/list` filters the current request's grants, and a direct call without the
+required grant returns an MCP tool error with `code: "FORBIDDEN"`. Session IDs never
+replace authentication. Policy and credentials are rechecked on each tool call.
+`--read-only` removes writes independently of credentials.
+
+Loopback binds validate Host headers; specific remote binds additionally accept
+the bound IP. Remote wildcard binds accept any Host. Browser Origin headers are
+rejected. See the [HTTP client example](../../../README.md#streamable-http) and
+[identity details](../../agent-identity.md#mcp-sessions).
 
 | Tool | Arguments / behavior |
 |------|----------------------|
@@ -1326,8 +1350,10 @@ Audit filters also support entities `key`, `agent` and actions `create`,
 `key-init`, `token-issue`, `token-revoke`, `attach` (JSON uses underscores).
 
 `bk mcp serve` accepts the global token flag/environment variable per process.
-Startup and every call verify it, including live revocations. Tool arguments do
-not accept tokens. While enforcement is off, tokenless named actors work as before.
+Stdio verifies it at startup and on every call, including live revocations. HTTP
+uses it only when the request has no Authorization header; every HTTP request
+requires a verified token even with enforcement off. Tool arguments do not accept
+tokens. While enforcement is off, CLI and stdio still accept tokenless named actors.
 
 Tokens remain bearer credentials without proof of agent private-key possession.
 Capability checks apply when this ledger enables enforcement. `init` rejects
@@ -1392,9 +1418,9 @@ first disable enforcement with an admin token; `init --force` checks the actual
 not overwritten. `loan schedule` without an existing database remains a
 standalone calculation; otherwise it follows the read policy.
 
-MCP filters tools by token grants at startup and rechecks policy and grants on
-every call. `--read-only` removes all writes, including `txn_reconcile`, even
-with broader grants. Restart MCP to refresh discovery after a policy change.
+Stdio MCP filters tools by token grants at startup; HTTP filters discovery by
+the current request's token and policy. Both recheck policy and grants on every call. `--read-only` removes all writes, including `txn_reconcile`, even
+with broader grants. Restart stdio MCP to refresh discovery after a policy change.
 Back up before the schema v18 migration: v1/v2 audit hashes are preserved, but
 new v3 audit rows block older binaries from appending, even with enforcement off.
 See [identity setup and limits](../../agent-identity.md).

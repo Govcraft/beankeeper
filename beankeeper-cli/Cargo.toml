@@ -1,6 +1,6 @@
 [package]
 name = "beankeeper-cli"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Command-line interface for beankeeper double-entry accounting"
@@ -24,6 +24,7 @@ agent-uri = "0.6.0"
 agent-uri-attestation = "0.8.2"
 anstream = "1.0.0"
 anstyle = "1.0.14"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 beankeeper = { version = "0.7.0", path = "../beankeeper" }
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.0", features = ["derive", "env"] }
@@ -31,7 +32,7 @@ comfy-table = { version = "7.2.2", features = ["custom_styling"] }
 csv = "1.4.0"
 mti = "1.1.2"
 ofx-rs = "0.2.0"
-rmcp = { version = "3.11.0", default-features = false, features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.11.0", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 rpassword = "7.4.0"
 rusqlite = { version = "0.39.0", features = ["bundled-sqlcipher-vendored-openssl"] }
 rust_decimal = "1.40.0"
@@ -43,7 +44,7 @@ sha2 = { version = "0.10.9", default-features = false }
 strsim = "0.11.1"
 tempfile = "3.27.0"
 time = "0.3.45"
-tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "signal"] }
 
 [lints]
 workspace = true
@@ -51,3 +52,4 @@ workspace = true
 [dev-dependencies]
 assert_cmd = "2.2.0"
 predicates = "3.1.4"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json"] }
