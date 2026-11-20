@@ -585,6 +585,16 @@ existing ledger and resolves the passphrase synchronously without prompting;
 request credentials and capability checks work as described above. See the
 factory's Rustdoc for a complete hosting example.
 
+Hosts that also open a read-only `Db::open_snapshot` can resolve the passphrase
+once with `beankeeper_cli::passphrase::resolve_passphrase`, then pass
+`passphrase.as_ref()` to both the snapshot and
+`beankeeper_cli::mcp::http_router_with_passphrase(&cli, passphrase.as_ref(), read_only, config)?`.
+Use `None` for an unencrypted ledger. This factory ignores CLI passphrase sources
+and `BEANKEEPER_PASSPHRASE_CMD`, borrows the secret only during construction, and
+keeps the same MCP authentication. It works across platforms without a file
+descriptor bridge or plaintext passphrase file. Drop the secret after opening
+both connections. See its Rustdoc for an example.
+
 ## Demo Mode
 
 Create sample books for three companies and explore the walkthrough below:
