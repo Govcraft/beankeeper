@@ -342,6 +342,10 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
              VALUES ('acme', 'legacy', 'open:1000', '2026-01-01'); \
              INSERT INTO transactions (company_slug, description, metadata, date) \
              VALUES ('acme', 'legacy-num', '42', '2026-01-01'); \
+             DROP TABLE lot_reliefs;
+             DROP TABLE investment_lots;
+             DROP TABLE security_prices;
+             DROP TABLE securities;
              DELETE FROM schema_version WHERE version >= 9;",
         )
         .unwrap_or_else(|e| panic!("rewind: {e}"));
