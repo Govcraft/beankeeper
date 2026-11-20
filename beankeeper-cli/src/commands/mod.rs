@@ -94,7 +94,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
 
         Command::Verify => verify::run(cli),
 
-        Command::Export { format, output } => export::run(cli, *format, output.as_deref()),
+        Command::Export { format, output, .. } => export::run(cli, *format, output.as_deref()),
 
         Command::Company(sub) => company::run(cli, sub),
 

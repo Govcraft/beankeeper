@@ -59,11 +59,7 @@ pub struct Cli {
 #[derive(Args, Debug)]
 pub struct FormatOptions {
     /// Output format.
-    ///
-    /// Defined at the top level only (not `global`) so it does not collide with
-    /// the subcommand-local `--format` options on `export`/`import`, which carry
-    /// their own value enums.
-    #[arg(long, value_enum)]
+    #[arg(long, global = true, value_enum)]
     pub format: Option<OutputFormat>,
 
     /// Shorthand for --format json.
@@ -158,18 +154,29 @@ EXAMPLES:\n  \
     #[command(after_help = "\
 EXAMPLES:\n  \
     Export all data as JSON to stdout:\n    \
-    $ bk export --format json\n\
+    $ bk export --output-format json\n\
     \n  \
     Export to a CSV file:\n    \
-    $ bk export --format csv --output backup.csv\n\
+    $ bk export --output-format csv --output backup.csv\n\
     \n  \
     Pipe JSON export to another tool:\n    \
-    $ bk export --format json | jq '.data'\
+    $ bk export --output-format json | jq '.data'\
 ")]
     Export {
         /// Output format for export.
-        #[arg(id = "export_format", long = "format", value_enum)]
+        #[arg(
+            id = "export_format",
+            long = "output-format",
+            alias = "format",
+            value_enum
+        )]
         format: Option<ExportFormat>,
+
+        // Shadow the global output id with the same type under a different long
+        // name, reserving the legacy --format alias for the exported file.
+        /// Output format for command responses.
+        #[arg(id = "format", long = "response-format", hide = true, value_enum)]
+        response_format: Option<OutputFormat>,
 
         /// Output file path (default: stdout).
         #[arg(long)]
@@ -904,7 +911,7 @@ EXAMPLES:\n  \
     $ bk --company acme txn import --file statement.ofx --account 1000 --suspense 9000 --on-conflict error\n\
     \n  \
     Import OFX from stdin with explicit format:\n    \
-    $ cat statement.ofx | bk --company acme txn import --file - --format ofx --account 1000 --suspense 9000\
+    $ cat statement.ofx | bk --company acme txn import --file - --input-format ofx --account 1000 --suspense 9000\
 ")]
     Import {
         /// Input file path. Use `-` for stdin.
@@ -913,8 +920,19 @@ EXAMPLES:\n  \
 
         /// Input format. Auto-detected from file extension when omitted.
         /// Only `ofx` is currently supported; `csv` and `json` are planned.
-        #[arg(id = "import_format", long = "format", value_enum)]
+        #[arg(
+            id = "import_format",
+            long = "input-format",
+            alias = "format",
+            value_enum
+        )]
         format: Option<ImportFormat>,
+
+        // Keep the propagated output value typed independently from the input
+        // format; --format remains a compatibility alias for --input-format.
+        /// Output format for command responses.
+        #[arg(id = "format", long = "response-format", hide = true, value_enum)]
+        response_format: Option<OutputFormat>,
 
         /// Validate without persisting.
         #[arg(long)]

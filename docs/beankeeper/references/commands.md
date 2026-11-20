@@ -1,6 +1,6 @@
 # Command Reference
 
-All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`.
+All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
 
 `--actor NAME` sets the principal recorded in the audit trail for any mutating command (see [Audit](#audit)). It falls back to the `BK_ACTOR` environment variable, then the OS user, then `"cli"`.
 
@@ -32,9 +32,15 @@ bk --json verify   # Returns { "data": { "schema_version": 7, "status": "healthy
 Export all data as JSON or CSV.
 
 ```bash
-bk export --format json                # JSON to stdout
-bk export --format csv --output backup.csv  # CSV to file
+bk export --output-format json                # JSON to stdout
+bk export --output-format csv --output backup.csv  # CSV to file
 ```
+
+`--output-format {json|csv}` selects the export file format. The legacy local
+`export --format` spelling remains supported as a hidden alias. For import and
+export commands, place general response `--format` before the subcommand (or use
+`--json`) so it is distinct from the local file format. For example,
+`bk --format json txn import --input-format ofx --file statement.ofx --account 1000 --suspense 9000`.
 
 ## Companies
 
@@ -218,12 +224,12 @@ bk --company acme txn import \
   --file statement.ofx --account 1000 --suspense 9000 --dry-run
 
 cat data.ofx | bk --company acme txn import \
-  --file - --format ofx --account 1000 --suspense 9000
+  --file - --input-format ofx --account 1000 --suspense 9000
 ```
 
 **Flags:**
 - `--file PATH`: Input file (use `-` for stdin)
-- `--format {ofx|csv|json}`: Auto-detected from extension if omitted
+- `--input-format {ofx|csv|json}`: Auto-detected from extension if omitted; `--format` remains a hidden compatibility alias
 - `--account CODE`: Bank/asset account (required for OFX)
 - `--suspense CODE`: Contra account for unclassified entries (required for OFX)
 - `--dry-run`: Validate without persisting

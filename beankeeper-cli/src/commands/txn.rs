@@ -96,6 +96,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
         account,
         suspense,
         on_conflict,
+        ..
     } = sub
     else {
         return Err(CliError::General("expected txn import subcommand".into()));
@@ -107,7 +108,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
             Some(path) if path != "-" => crate::commands::import_ofx::detect_format(path)?,
             _ => {
                 return Err(CliError::Usage(
-                    "cannot detect format from stdin; specify --format".into(),
+                    "cannot detect format from stdin; specify --input-format".into(),
                 ));
             }
         },
