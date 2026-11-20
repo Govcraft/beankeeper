@@ -4,6 +4,7 @@
 //! validated by `JournalEntry::post` and persisted through `post_transaction`.
 //! Dry runs exercise that same path inside a transaction that is rolled back.
 
+use std::collections::HashMap;
 use std::io::Read;
 
 use beankeeper::core::JournalEntry;
@@ -351,7 +352,11 @@ fn validate_posting(
     Ok(entries)
 }
 
-fn row_reference(prepared: &PreparedTransaction, format: ImportFormat) -> Result<String, CliError> {
+fn row_reference(
+    prepared: &PreparedTransaction,
+    format: ImportFormat,
+    occurrences: &mut HashMap<String, usize>,
+) -> Result<String, CliError> {
     if let Some(reference) = &prepared.reference {
         return Ok(reference.clone());
     }
@@ -361,7 +366,12 @@ fn row_reference(prepared: &PreparedTransaction, format: ImportFormat) -> Result
     } else {
         "json"
     };
-    Ok(format!("{prefix}:sha256:{:x}", Sha256::digest(bytes)))
+    let hash = format!("{prefix}:sha256:{:x}", Sha256::digest(bytes));
+    // Count only unreferenced rows with the same normalized content, so unrelated
+    // rows and explicit references cannot shift ordinals on overlapping imports.
+    let ordinal = occurrences.entry(hash.clone()).or_default();
+    *ordinal += 1;
+    Ok(format!("{hash}:{ordinal}"))
 }
 
 #[derive(Serialize)]
@@ -441,9 +451,10 @@ pub fn run(
         errors: 0,
         transactions: Vec::new(),
     };
+    let mut occurrences = HashMap::new();
     for (index, mut prepared) in prepared.into_iter().enumerate() {
         let outcome = (|| {
-            let reference = row_reference(&prepared, format)?;
+            let reference = row_reference(&prepared, format, &mut occurrences)?;
             let entries = validate_posting(db, company, &mut prepared)?;
             let params = transactions::PostTransactionParams {
                 company_slug: company,

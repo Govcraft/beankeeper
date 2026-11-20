@@ -244,7 +244,51 @@ fn json_posts_split_entries_metadata_memos_and_tax_categories() -> TestResult {
 }
 
 #[test]
-fn hashes_deduplicate_within_batches_and_on_reimport_for_both_formats() -> TestResult {
+fn identical_unreferenced_rows_are_all_imported_for_both_formats() -> TestResult {
+    for (name, input, flags) in [
+        (
+            "rows.csv",
+            "date,description,amount\n2026-01-01,Receipt,10\n2026-01-01,Receipt,10\n".into(),
+            BANK_FLAGS,
+        ),
+        (
+            "rows.json",
+            json!([journal(None), journal(None)]).to_string(),
+            &[][..],
+        ),
+    ] {
+        let ledger = Ledger::new()?;
+        let mut dry_run_flags = flags.to_vec();
+        dry_run_flags.push("--dry-run");
+        let preview = success(&ledger.import(name, &input, &dry_run_flags)?)?;
+        assert_eq!(preview["imported"], 2);
+        assert_eq!(preview["skipped"], 0);
+        assert_eq!(ledger.count("transactions")?, 0);
+        let first = success(&ledger.import(name, &input, flags)?)?;
+        assert_eq!(first["imported"], 2);
+        assert_eq!(first["skipped"], 0);
+        for index in 0..2 {
+            assert_eq!(
+                preview["transactions"][index]["reference"],
+                first["transactions"][index]["reference"]
+            );
+        }
+        assert_ne!(
+            first["transactions"][0]["reference"],
+            first["transactions"][1]["reference"]
+        );
+        assert!(
+            first["transactions"][0]["reference"]
+                .as_str()
+                .is_some_and(|value| value.contains(":sha256:"))
+        );
+        assert_eq!(ledger.count("transactions")?, 2);
+    }
+    Ok(())
+}
+
+#[test]
+fn reimporting_identical_unreferenced_rows_skips_all_for_both_formats() -> TestResult {
     for (name, input, flags) in [
         (
             "rows.csv",
@@ -259,17 +303,47 @@ fn hashes_deduplicate_within_batches_and_on_reimport_for_both_formats() -> TestR
     ] {
         let ledger = Ledger::new()?;
         let first = success(&ledger.import(name, &input, flags)?)?;
-        assert_eq!(first["imported"], 1);
-        assert_eq!(first["skipped"], 1);
-        assert!(
-            first["transactions"][0]["reference"]
-                .as_str()
-                .is_some_and(|value| value.contains(":sha256:"))
-        );
+        assert_eq!(first["imported"], 2);
         let again = success(&ledger.import(name, &input, flags)?)?;
         assert_eq!(again["imported"], 0);
         assert_eq!(again["skipped"], 2);
-        assert_eq!(ledger.count("transactions")?, 1);
+        for index in 0..2 {
+            assert_eq!(
+                first["transactions"][index]["reference"],
+                again["transactions"][index]["reference"]
+            );
+        }
+        assert_eq!(ledger.count("transactions")?, 2);
+    }
+    Ok(())
+}
+
+#[test]
+fn overlapping_batch_imports_only_additional_identical_row_for_both_formats() -> TestResult {
+    for (name, later_name, initial, later, flags) in [
+        (
+            "rows.csv",
+            "later.csv",
+            "date,description,amount\n2026-01-01,Receipt,10\n2026-01-01,Receipt,10.00\n".into(),
+            "date,description,amount\n2026-01-01,Receipt,10.00\n2026-01-01,Receipt,10\n2026-01-01,Receipt,10.0\n".into(),
+            BANK_FLAGS,
+        ),
+        (
+            "rows.json",
+            "later.json",
+            json!([journal(None), journal(None)]).to_string(),
+            json!([journal(None), journal(None), journal(None)]).to_string(),
+            &[][..],
+        ),
+    ] {
+        let ledger = Ledger::new()?;
+        let first = success(&ledger.import(name, &initial, flags)?)?;
+        assert_eq!(first["imported"], 2);
+        let overlap = success(&ledger.import(later_name, &later, flags)?)?;
+        assert_eq!(overlap["imported"], 1);
+        assert_eq!(overlap["skipped"], 2);
+        assert_eq!(overlap["transactions"][2]["status"], "imported");
+        assert_eq!(ledger.count("transactions")?, 3);
     }
     Ok(())
 }
@@ -279,12 +353,12 @@ fn dry_runs_validate_batch_duplicates_without_persisting_any_rows() -> TestResul
     for (name, input, mut flags) in [
         (
             "rows.csv",
-            "date,description,amount\n2026-01-01,Receipt,10\n2026-01-01,Receipt,10\n".into(),
+            "date,description,amount,reference\n2026-01-01,Receipt,10,duplicate\n2026-01-01,Receipt,10,duplicate\n".into(),
             BANK_FLAGS.to_vec(),
         ),
         (
             "rows.json",
-            json!([journal(None), journal(None)]).to_string(),
+            json!([journal(Some("duplicate")), journal(Some("duplicate"))]).to_string(),
             vec![],
         ),
     ] {
