@@ -5,8 +5,10 @@
 
 pub mod journal_entry;
 pub mod ledger;
+pub mod recurrence;
 pub mod transaction;
 
 pub use journal_entry::JournalEntry;
 pub use ledger::Ledger;
+pub use recurrence::{Frequency, RecurrenceError, occurrence_date};
 pub use transaction::{Transaction, TransactionError};

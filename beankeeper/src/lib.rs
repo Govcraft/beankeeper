@@ -55,7 +55,10 @@ pub mod types;
 pub mod prelude {
     pub use chrono::NaiveDate;
 
-    pub use crate::core::{JournalEntry, Ledger, Transaction, TransactionError};
+    pub use crate::core::{
+        Frequency, JournalEntry, Ledger, RecurrenceError, Transaction, TransactionError,
+        occurrence_date,
+    };
     pub use crate::error::BeanError;
     pub use crate::reporting::{AccountBalance, TrialBalance};
     pub use crate::types::{
