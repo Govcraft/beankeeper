@@ -24,6 +24,7 @@ pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError
         false,
     )?;
     let db = Db::open(&cli.db, pp.as_ref())?;
+    crate::db::companies::get_company(db.conn(), company)?;
     let format = resolve_format(None, cli);
 
     match sub {

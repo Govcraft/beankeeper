@@ -28,6 +28,9 @@ pub fn run(
         false,
     )?;
     let db_handle = Db::open(&cli.db, pp.as_ref())?;
+    if !matches!(sub, TxnCommand::Reconcile) {
+        crate::db::companies::get_company(db_handle.conn(), company)?;
+    }
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 

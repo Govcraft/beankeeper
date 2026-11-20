@@ -19,6 +19,7 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
         false,
     )?;
     let db = Db::open(&cli.db, pp.as_ref())?;
+    crate::db::companies::get_company(db.conn(), company)?;
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
