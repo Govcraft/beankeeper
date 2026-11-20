@@ -5,6 +5,7 @@ use super::currency::Currency;
 
 /// Error type for monetary operations involving currency.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum MoneyError {
     /// An operation was attempted between two different currencies.
@@ -56,6 +57,7 @@ impl std::error::Error for MoneyError {}
 /// assert_eq!(total, Money::usd(800));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Money {
     amount: Amount,
     currency: Currency,

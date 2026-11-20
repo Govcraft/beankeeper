@@ -3,6 +3,7 @@ use core::str::FromStr;
 
 /// Error type for currency operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum CurrencyError {
     /// The provided string is not exactly 3 uppercase ASCII letters.
@@ -44,6 +45,7 @@ impl std::error::Error for CurrencyError {}
 /// assert_eq!(jpy.minor_units(), 0);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Currency {
     code: [u8; 3],
     minor_units: u8,

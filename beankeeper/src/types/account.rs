@@ -23,6 +23,7 @@ use super::debit_credit::DebitOrCredit;
 /// assert_eq!(cash.account_type(), AccountType::Asset);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Account {
     code: AccountCode,
     name: String,

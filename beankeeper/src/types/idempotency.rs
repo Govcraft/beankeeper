@@ -26,6 +26,7 @@ const PREFIX: &str = "txnref_";
 /// assert_eq!(key.as_str(), key2.as_str());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IdempotencyKey {
     value: String,
 }
@@ -71,6 +72,7 @@ impl fmt::Display for IdempotencyKey {
 
 /// Errors that can occur when creating an [`IdempotencyKey`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum IdempotencyKeyError {
     /// The reference string was empty or contained only whitespace.

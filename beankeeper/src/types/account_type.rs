@@ -5,6 +5,7 @@ use super::debit_credit::DebitOrCredit;
 
 /// Error type for parsing [`AccountType`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum AccountTypeError {
     /// The provided string does not match any account type name.
@@ -38,6 +39,7 @@ impl std::error::Error for AccountTypeError {}
 ///  (Debit normal)       (Credit normal)
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum AccountType {
     /// Resources owned. Normal balance: Debit.

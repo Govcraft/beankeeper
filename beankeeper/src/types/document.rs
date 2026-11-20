@@ -7,6 +7,7 @@ use chrono::NaiveDateTime;
 
 /// The kind of source document attached to a transaction or entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum DocumentType {
     /// A receipt for a purchase or payment.
@@ -35,6 +36,7 @@ impl fmt::Display for DocumentType {
 
 /// Error type for parsing a [`DocumentType`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum DocumentTypeError {
     /// The string did not match any known document type.
@@ -79,6 +81,7 @@ impl FromStr for DocumentType {
 
 /// Error type for constructing a [`SourceDocument`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum SourceDocumentError {
     /// The URI was empty.
@@ -118,6 +121,7 @@ impl std::error::Error for SourceDocumentError {}
 /// assert!(doc.hash().is_none());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceDocument {
     uri: String,
     document_type: DocumentType,

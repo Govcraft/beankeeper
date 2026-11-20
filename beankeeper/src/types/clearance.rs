@@ -6,6 +6,7 @@ use std::str::FromStr;
 /// This tracks whether an entry has been verified against an external
 /// statement (e.g., bank reconciliation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum ClearanceStatus {
     /// The entry has not been verified (default).
@@ -37,6 +38,7 @@ impl fmt::Display for ClearanceStatus {
 
 /// Error type when parsing a clearance status fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParseClearanceError(String);
 
 impl fmt::Display for ParseClearanceError {

@@ -3,6 +3,7 @@ use core::str::FromStr;
 
 /// Error type for [`AccountCode`] validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum AccountCodeError {
     /// The account code string was empty.
@@ -53,6 +54,7 @@ impl std::error::Error for AccountCodeError {}
 /// assert!(parent.is_parent_of(&child));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AccountCode(String);
 
 impl AccountCode {
