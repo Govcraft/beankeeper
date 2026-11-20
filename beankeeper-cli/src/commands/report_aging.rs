@@ -361,13 +361,13 @@ fn sorted_movements(movements: &[Movement]) -> Vec<&Movement> {
 }
 
 /// Lookup of link targets among a set of movements.
-struct TargetIndex {
+pub(super) struct TargetIndex {
     by_reference: HashMap<String, usize>,
     by_id: HashMap<i64, usize>,
 }
 
 impl TargetIndex {
-    fn new<'a>(movements: impl IntoIterator<Item = &'a Movement>) -> Self {
+    pub(super) fn new<'a>(movements: impl IntoIterator<Item = &'a Movement>) -> Self {
         let mut by_reference = HashMap::new();
         let mut by_id = HashMap::new();
         for (i, m) in movements.into_iter().enumerate() {
@@ -393,6 +393,24 @@ impl TargetIndex {
         target
             .fallback_id()
             .and_then(|id| self.by_id.get(&id).copied())
+    }
+
+    /// Resolve a specific link without applying a settlement or FIFO fallback.
+    pub(super) fn resolve(
+        &self,
+        target: &LinkTarget,
+        settlement: &Movement,
+        movements: &[&Movement],
+    ) -> Result<usize, UnmatchedReason> {
+        let i = self.find(target).ok_or(UnmatchedReason::NotFound)?;
+        let charge = movements.get(i).ok_or(UnmatchedReason::NotFound)?;
+        if charge.amount <= 0 {
+            Err(UnmatchedReason::NotACharge)
+        } else if charge.date > settlement.date {
+            Err(UnmatchedReason::ChargeAfterSettlement)
+        } else {
+            Ok(i)
+        }
     }
 }
 
@@ -432,7 +450,7 @@ impl<'a> Matcher<'a> {
             };
             match m.amount.cmp(&0) {
                 Ordering::Greater => self.charge(m),
-                Ordering::Less => self.settle(m, pos),
+                Ordering::Less => self.settle(m),
                 Ordering::Equal => {}
             }
         }
@@ -457,10 +475,10 @@ impl<'a> Matcher<'a> {
         });
     }
 
-    fn settle(&mut self, m: &Movement, pos: usize) {
+    fn settle(&mut self, m: &Movement) {
         let mut payment = m.amount.saturating_neg();
         if self.index.is_some() {
-            payment = self.apply_links(m, pos, payment);
+            payment = self.apply_links(m, payment);
         }
         while payment > 0 {
             let Some(c) = self.charges.get_mut(self.fifo_start) else {
@@ -477,7 +495,7 @@ impl<'a> Matcher<'a> {
     }
 
     /// Apply `payment` to the settlement's linked charges; returns the excess.
-    fn apply_links(&mut self, m: &Movement, pos: usize, mut payment: i64) -> i64 {
+    fn apply_links(&mut self, m: &Movement, mut payment: i64) -> i64 {
         let targets = match &m.links {
             LinkSpec::None => return payment,
             LinkSpec::Invalid(raw) => {
@@ -488,12 +506,16 @@ impl<'a> Matcher<'a> {
             LinkSpec::Targets(targets) => targets,
         };
         for target in targets {
-            let found = self.index.as_ref().and_then(|ix| ix.find(target));
-            let reason = match found.and_then(|i| self.sorted.get(i).map(|t| (i, *t))) {
-                None => Some(UnmatchedReason::NotFound),
-                Some((_, t)) if t.amount <= 0 => Some(UnmatchedReason::NotACharge),
-                Some((i, _)) if i > pos => Some(UnmatchedReason::ChargeAfterSettlement),
-                Some((_, t)) => {
+            let found = self
+                .index
+                .as_ref()
+                .map_or(Err(UnmatchedReason::NotFound), |ix| {
+                    ix.resolve(target, m, &self.sorted)
+                });
+            let reason = match found {
+                Err(reason) => Some(reason),
+                Ok(i) => {
+                    let t = self.sorted[i];
                     let charge = self
                         .charge_pos
                         .get(&t.transaction_id)
@@ -1141,7 +1163,7 @@ fn load_account_transactions(
 }
 
 /// The id of the company transaction a link points at, if any.
-fn find_link_target(
+pub(super) fn find_link_target(
     conn: &Connection,
     company: &str,
     target: &LinkTarget,

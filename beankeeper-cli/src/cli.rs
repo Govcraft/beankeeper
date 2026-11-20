@@ -1479,8 +1479,7 @@ EXAMPLES:\n  \
         filter_metadata: Vec<String>,
     },
 
-    /// Reconcile an account against a bank/card statement using entry
-    /// clearance status (book vs. cleared vs. reconciled balances).
+    /// Reconcile bank balances or AR/AP statement settlements.
     #[command(after_help = "\
 EXAMPLES:\n  \
     Book, cleared, and reconciled balances for the checking account:\n    \
@@ -1490,9 +1489,21 @@ EXAMPLES:\n  \
     $ bk --company acme report reconciliation --account 1000 --to 2026-03-31 --statement-balance 1234.56\n\
     \n  \
     Credit card (credit-normal) in a specific currency:\n    \
-    $ bk --company acme report reconciliation --account 2100 --currency USD\
+    $ bk --company acme report reconciliation --account 2100 --currency USD\n\n\
+    AR/AP statement payments, with short pays kept on their original charges:\n    \
+    $ bk --company acme report reconciliation --mode settlement --account 1210 --statement S1 --statement-balance 1620\n\n\
+    Settlement mode requires --statement and an asset or liability account.\n  \
+    Link credits with transaction metadata applies_to (or --link-key KEY).\
 ")]
     Reconciliation {
+        /// Bank balances (default) or statement-scoped AR/AP settlements.
+        #[arg(long, value_enum, default_value_t = ReconciliationMode::Bank)]
+        mode: ReconciliationMode,
+
+        /// Settlement link metadata key (settlement mode only; default `applies_to`).
+        #[arg(long, value_name = "KEY")]
+        link_key: Option<String>,
+
         /// Account code to reconcile.
         #[arg(long)]
         account: String,
@@ -1503,8 +1514,8 @@ EXAMPLES:\n  \
         #[arg(long)]
         to: Option<String>,
 
-        /// Statement ending balance in major units (e.g. 1234.56), on the
-        /// account's normal side.
+        /// Statement amount in major units (e.g. 1234.56): bank ending balance
+        /// or, in settlement mode, net payments against expected charges.
         #[arg(long, allow_hyphen_values = true)]
         statement_balance: Option<String>,
 
@@ -1814,4 +1825,14 @@ mod tests {
         let cli = Cli::parse_from(["bk", "verify"]);
         assert!(!cli.is_json());
     }
+}
+
+/// Interpretation of a reconciliation statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Default)]
+pub enum ReconciliationMode {
+    /// Compare net cleared entries with a bank statement ending balance.
+    #[default]
+    Bank,
+    /// Compare charge clearings with an AR/AP statement's net payments.
+    Settlement,
 }

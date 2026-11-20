@@ -53,6 +53,7 @@ These protections detect tampering against the stored chain; they are not signat
 - **Encryption at rest** -- SQLCipher baked in from the start, not bolted on
 - **Intercompany linking** -- mirror transactions across entities stay paired through bidirectional correlation IDs; `bk txn reconcile` catches orphans
 - **Receivables / payables aging** -- `bk report aging --account <code>` buckets open charges on asset (AR) or liability (AP) accounts into Current / 1-30 / 31-60 / 61-90 / 90+ days, FIFO or matched to specific invoices, optionally per customer or vendor from JSON metadata, with an open-item `--detail` view. Several sub-ledgers (or a control account and its children) age in one run, and `--filter-metadata status=disputed` shows a tagged slice at its original age
+- **Statement settlement reconciliation** -- `bk report reconciliation --mode settlement --account <AR/AP code> --statement <id> --statement-balance <net>` compares charge applications with carrier or vendor payments, preserves original short-pay dates, and lists linked payments, overpayments, and unmatched credits separately. Bank mode remains the default
 - **Budgeting and variance analysis** -- set monthly or annual spending/revenue targets per account, then run `bk report budget-variance` to see where actuals land relative to the plan
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.

@@ -393,3 +393,33 @@ bk txn list --from 2026-03-01
 bk report trial-balance
 bk budget list --year 2026
 ```
+
+### Close a carrier commission statement with a short pay
+
+Use settlement mode for payments against expected commissions. In an existing
+agency ledger with Cash 1000, Commission AR 1210 and Revenue 4000:
+
+```sh
+bk --company agency txn post -d 'Expected P1 October' --date 2026-10-01 \
+  --debit 1210:1800 --credit 4000:1800 --reference P1-2026-10 \
+  --meta policy=P1
+bk --company agency txn post -d 'S1 payment P1' --date 2026-10-25 \
+  --debit 1000:1620 --credit 1210:1620 --reference PAY-S1-P1 \
+  --meta applies_to=P1-2026-10
+bk --company agency txn clear --reference P1-2026-10 --account 1210 \
+  --amount 1620 --date 2026-10-31 --statement S1
+bk --company agency --json report reconciliation --mode settlement \
+  --account 1210 --statement S1 --statement-balance 1620 --to 2026-10-31
+```
+
+The statement comparison is reconciled (`difference: 0`), while the original
+October 1 charge remains open for $180, aged 30 days. The linked $1,620 payment
+appears in `applied_settlements`, regardless of whether its entry was cleared.
+Clear payment entries too if useful; they do not net away charge applications.
+Inspect `charges[].short_pay` and `charges[].overpay` as well as `reconciled`.
+Unlinked or unusably linked credits appear in `unmatched_settlements` with
+reasons and never reduce open charges through FIFO. Charge reversals reduce
+expected commissions and appear separately as negative charges. Use `--link-key`
+for another metadata key. Filters and grouping select original charge metadata.
+The account-wide explanations include all statements through `--to`; the
+comparison uses only this statement's charge clearings. Bank mode is the default.
