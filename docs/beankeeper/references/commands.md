@@ -219,19 +219,32 @@ the bound IP. Remote wildcard binds accept any Host. Browser Origin headers are
 rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 [identity details](../../agent-identity.md#mcp-sessions).
 
+### Available tools
+
 | Tool | Arguments / behavior |
 |------|----------------------|
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
+| `txn_propose` | Same posting arguments as `txn_post`; requires a verified proposer, reserves the reference and waits for approval without posting |
+| `txn_proposals` | `company`, optional `include_rejected` (includes all resolved statuses); visibility follows identity and grants |
+| `txn_approve`, `txn_reject` | `company`, proposal `id`; reject accepts optional `reason`; approval posts atomically, rejection also serves proposer withdrawal |
 | `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: ["key=value", ...]`, unset takes `keys: ["key", ...]`; values are strings; reserved relationship keys are rejected |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
 | `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
-| `txn_reconcile`, `verify` | No arguments; both read-only |
+| `txn_reconcile` | No arguments; checks orphaned intercompany links without changing data; requires `ledger/reconcile` under enforcement and is omitted by `--read-only` |
+| `verify` | No arguments; verifies ledger integrity |
+| `security_create` | `company`, `symbol`, `name`, optional `currency` (default USD) |
+| `security_list` | `company`; list registered securities |
+| `security_price` | `company`, `symbol`, `date`, decimal major-unit `price` per whole share |
+| `investment_buy` | `company`, `symbol`, decimal-string `quantity` and `cost`, `date`, `asset`, `cash`, optional `reference` |
+| `investment_sell` | `company`, `symbol`, decimal-string `quantity` and `proceeds`, `date`, `asset`, `cash`, `gain`; optional `method` (`fifo` default, `lifo`, `specific`), `lot`, `reference` |
+| `investment_lots` | `company`, `symbol`; inspect original/remaining quantity and cost basis |
+| `investment_holdings` | `company`, optional `as_of` (default today); value positions at the latest price on or before the cutoff without posting |
 | `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`, `offset`; rows include `prev_hash` and `row_hash` |
 
 `txn_post.debits` and `.credits` contain `{account, amount, memo?}` objects.
@@ -255,14 +268,29 @@ while retaining their data arrays.
 
 `txn_clear.batch` contains `{reference, amount?}` rows, where `amount` is an optional decimal
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
-not exposed to tools. `report.kind` accepts `trial-balance`, `balance`,
-`income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `ledger`, `budget-variance`,
-`cash-flow`, `aging`, or `reconciliation`, including their period/comparison and
-metadata options.
+not exposed to tools.
 
-Read-only mode removes `account_create`, `txn_post`, `txn_reverse`, `budget_set`,
-`budget_delete`, and `txn_clear` from the router. Audited writes use `mcp:<sanitized client name>`
-from `initialize.clientInfo.name`, falling back to `mcp:unknown`.
+### Report kinds
+
+`report.kind` accepts `trial-balance`, `balance`,
+`income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `ledger`, `budget-variance`,
+`cash-flow`, `aging`, `reconciliation`, or `trend`, including their period/comparison and
+metadata options. These are the 13 canonical CLI report kinds; `1099-nec` is an
+alias for `1099`.
+
+### Read-only tools
+
+Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
+`txn_reject`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
+`txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
+`investment_sell`, `budget_set`, and `budget_delete` from the router.
+It retains `txn_proposals`, `security_list`, `investment_lots`,
+`investment_holdings` and the other tools requiring `ledger/read`.
+Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
+excludes it from read-only discovery and calls. Capability enforcement may
+further restrict discovery: stdio filters at startup and HTTP per request.
+Audited writes use `mcp:<sanitized client name>` from `initialize.clientInfo.name`,
+falling back to `mcp:unknown`.
 
 Results match the CLI JSON `data` payload. JSON text content is always included;
 `structuredContent` is also supplied when its shape is supported by the negotiated

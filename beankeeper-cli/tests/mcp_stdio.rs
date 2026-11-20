@@ -187,6 +187,174 @@ fn tool_names(response: &Value) -> Result<BTreeSet<&str>, Box<dyn Error>> {
         .collect()
 }
 
+// Read repository docs at test time so crates.io packaging does not depend on
+// files outside the CLI package. These guards run in the workspace CI suite.
+fn repository_doc(path: &str) -> Result<String, Box<dyn Error>> {
+    Ok(std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(path),
+    )?)
+}
+
+fn doc_section<'a>(document: &'a str, heading: &str) -> &'a str {
+    let (_, rest) = document.split_once(heading).unwrap_or_default();
+    rest.split("\n## ")
+        .next()
+        .unwrap_or_default()
+        .split("\n### ")
+        .next()
+        .unwrap_or_default()
+}
+
+fn inline_codes(text: &str) -> BTreeSet<&str> {
+    text.split('`').skip(1).step_by(2).collect()
+}
+
+fn catalog_names(section: &str) -> BTreeSet<&str> {
+    section
+        .lines()
+        .filter(|line| line.starts_with('|'))
+        .filter_map(|line| line.split('|').nth(1))
+        .flat_map(inline_codes)
+        .collect()
+}
+
+fn cli_report_kinds() -> Result<BTreeSet<String>, Box<dyn Error>> {
+    use clap::CommandFactory;
+
+    let cli = beankeeper_cli::cli::Cli::command();
+    Ok(cli
+        .find_subcommand("report")
+        .ok_or("missing report command")?
+        .get_subcommands()
+        .map(|command| command.get_name().to_owned())
+        .collect())
+}
+
+fn schema_report_kinds(schema: &Value, kinds: &mut BTreeSet<String>) {
+    if let Some(kind) = schema
+        .pointer("/properties/kind/const")
+        .and_then(Value::as_str)
+    {
+        kinds.insert(kind.to_owned());
+    }
+    match schema {
+        Value::Object(fields) => {
+            for value in fields.values() {
+                schema_report_kinds(value, kinds);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                schema_report_kinds(value, kinds);
+            }
+        }
+        _ => (),
+    }
+}
+
+#[test]
+fn documented_mcp_catalog_reports_and_read_only_exclusions_match_discovery() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let registered = tool_names(&listed)?;
+    for path in ["README.md", "docs/beankeeper/references/commands.md"] {
+        let document = repository_doc(path)?;
+        assert_eq!(
+            catalog_names(doc_section(&document, "### Available tools\n")),
+            registered,
+            "{path}: tool catalog differs from MCP discovery",
+        );
+    }
+
+    let cli_kinds = cli_report_kinds()?;
+    let report = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "report")
+        .ok_or("missing report tool")?;
+    let mut schema_kinds = BTreeSet::new();
+    schema_report_kinds(&report["inputSchema"], &mut schema_kinds);
+    assert_eq!(schema_kinds, cli_kinds, "MCP and CLI report kinds differ");
+    let reference = repository_doc("docs/beankeeper/references/commands.md")?;
+    let report_section = doc_section(&reference, "### Report kinds\n");
+    let (kind_list, _) = report_section
+        .split_once("including")
+        .ok_or("missing report-kind list")?;
+    let documented: BTreeSet<_> = inline_codes(kind_list)
+        .into_iter()
+        .filter(|name| *name != "report.kind")
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(documented, cli_kinds, "documented report kinds differ");
+    assert!(
+        repository_doc("README.md")?.contains(&format!("all {} CLI report kinds", cli_kinds.len()))
+    );
+
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut reader = Client::spawn(command)?;
+    reader.initialize()?;
+    let read_only = reader.request("tools/list", &json!({}))?;
+    let retained = tool_names(&read_only)?;
+    let excluded: BTreeSet<_> = registered.difference(&retained).copied().collect();
+    let section = doc_section(&reference, "### Read-only tools\n");
+    let (removed, _) = section
+        .split_once("from the router.")
+        .ok_or("missing read-only exclusion list")?;
+    assert_eq!(
+        inline_codes(removed),
+        excluded,
+        "documented read-only exclusions differ"
+    );
+    Ok(())
+}
+
+fn cli_leaf_paths(command: &clap::Command, prefix: &str) -> BTreeSet<String> {
+    command
+        .get_subcommands()
+        .flat_map(|child| {
+            let path = format!("{prefix} {}", child.get_name());
+            if child.has_subcommands() {
+                cli_leaf_paths(child, &path)
+            } else {
+                BTreeSet::from([path])
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn skill_command_overview_covers_every_canonical_cli_operation() -> TestResult {
+    use clap::CommandFactory;
+
+    let skill = repository_doc("docs/beankeeper/SKILL.md")?;
+    let section = doc_section(&skill, "## Command Overview\n");
+    let documented: BTreeSet<String> = catalog_names(section)
+        .into_iter()
+        .flat_map(|code| {
+            let (prefix, verbs) = code.rsplit_once(' ').unwrap_or((code, ""));
+            verbs.split('/').map(move |verb| format!("{prefix} {verb}"))
+        })
+        .collect();
+    let required = cli_leaf_paths(&beankeeper_cli::cli::Cli::command(), "bk");
+    for path in required {
+        assert!(
+            documented
+                .iter()
+                .any(|code| code == &path || code.starts_with(&format!("{path} "))),
+            "SKILL command overview omits {path}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
     let dir = tempdir()?;
