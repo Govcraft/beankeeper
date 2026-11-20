@@ -555,7 +555,7 @@ pub fn run_import_ofx(
 ) -> Result<(), CliError> {
     let conn = db_handle.conn();
     let verbose = cli.verbosity.verbose;
-    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
+    let actor = cli.principal();
     let format = crate::cli::resolve_format(None, cli);
 
     let conflict_strategy = match on_conflict {
@@ -684,7 +684,7 @@ fn render_result(
     let error_count = result.errors.len();
 
     if format == crate::cli::OutputFormat::Json {
-        let meta = json::meta("txn.import", Some(company));
+        let meta = cli.meta("txn.import", Some(company));
         let json_str = json::render_import_result(result, dry_run, meta)?;
         println!("{json_str}");
     } else {

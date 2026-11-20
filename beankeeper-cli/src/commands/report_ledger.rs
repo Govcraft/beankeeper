@@ -191,7 +191,7 @@ pub(crate) fn run_to(
             render_table(&report, minor_units, output.use_color)
         )?,
         OutputFormat::Json => {
-            let meta = output::json::meta("report.ledger", Some(company));
+            let meta = cli.meta("report.ledger", Some(company));
             writeln!(output.writer, "{}", render_json(&report, meta)?)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report)?)?,

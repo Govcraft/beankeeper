@@ -286,7 +286,7 @@ fn render(
             writeln!(output.writer, "{}", render_table(report, output.use_color))?;
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("report.reconciliation", Some(company));
+            let meta = cli.meta("report.reconciliation", Some(company));
             writeln!(output.writer, "{}", render_json(report, meta)?)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,

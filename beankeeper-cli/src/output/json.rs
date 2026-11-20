@@ -32,6 +32,8 @@ use crate::error::CliError;
 pub struct Meta {
     pub command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub company: Option<String>,
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +127,7 @@ pub struct EnvelopeError {
 pub fn meta(command: &str, company: Option<&str>) -> Meta {
     Meta {
         command: command.to_string(),
+        agent: None,
         company: company.map(str::to_string),
         timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         pagination: None,
@@ -137,6 +140,7 @@ pub fn meta(command: &str, company: Option<&str>) -> Meta {
 pub fn meta_with_timestamp(command: &str, company: Option<&str>, timestamp: String) -> Meta {
     Meta {
         command: command.to_string(),
+        agent: None,
         company: company.map(str::to_string),
         timestamp,
         pagination: None,
@@ -183,6 +187,8 @@ pub struct TransactionJson {
     metadata: Option<String>,
     reference: Option<String>,
     posted_by: Option<String>,
+    agent_uri: Option<String>,
+    token_jti: Option<String>,
     currency: String,
     date: String,
     entries: Vec<EntryJson>,
@@ -267,6 +273,8 @@ struct TransactionWithAttachmentsJson {
     metadata: Option<String>,
     reference: Option<String>,
     posted_by: Option<String>,
+    agent_uri: Option<String>,
+    token_jti: Option<String>,
     currency: String,
     date: String,
     entries: Vec<EntryJson>,
@@ -384,6 +392,8 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                 metadata: txn.metadata.clone(),
                 reference: txn.reference.clone(),
                 posted_by: txn.posted_by.clone(),
+                agent_uri: txn.agent_uri.clone(),
+                token_jti: txn.token_jti.clone(),
                 currency: txn.currency.clone(),
                 date: txn.date.clone(),
                 entries,
@@ -451,6 +461,8 @@ pub fn render_transactions_with_attachments<
                 metadata: txn.metadata.clone(),
                 reference: txn.reference.clone(),
                 posted_by: txn.posted_by.clone(),
+                agent_uri: txn.agent_uri.clone(),
+                token_jti: txn.token_jti.clone(),
                 currency: txn.currency.clone(),
                 date: txn.date.clone(),
                 entries,
@@ -1038,6 +1050,8 @@ mod tests {
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
+            agent_uri: None,
+            token_jti: None,
             reference: None,
         }];
         let mut map = HashMap::new();
@@ -1088,6 +1102,8 @@ mod tests {
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
+            agent_uri: None,
+            token_jti: None,
             reference: None,
         }];
         let json = render_transactions(&txns, &HashMap::new(), test_meta("txn.list", Some("acme")))

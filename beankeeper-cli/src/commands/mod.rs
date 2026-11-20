@@ -1,4 +1,5 @@
 pub mod account;
+pub mod agent;
 pub mod audit;
 pub mod budget;
 pub mod company;
@@ -33,6 +34,12 @@ pub fn command_name(cmd: &Command) -> &'static str {
     }
     match cmd {
         Command::Mcp(_) => "mcp.serve",
+        Command::Key(_) => "key.init",
+        Command::Agent(sub) => match sub {
+            crate::cli::AgentCommand::Issue { .. } => "agent.issue",
+            crate::cli::AgentCommand::List => "agent.list",
+            crate::cli::AgentCommand::Revoke { .. } => "agent.revoke",
+        },
         Command::Init { .. } => "init",
         Command::Verify => "verify",
         Command::Export { .. } => "export",
@@ -87,7 +94,15 @@ pub fn command_name(cmd: &Command) -> &'static str {
 ///
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+    if cli.agent_token.is_some() && !matches!(cli.command, Command::Mcp(_)) {
+        if matches!(cli.command, Command::Init { .. }) {
+            return Err(CliError::Unauthorized("initialization creates a new trust boundary; omit --agent-token and initialize its key afterward".into()));
+        }
+        cli.open_db()?;
+    }
+    let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Key(_) | Command::Agent(_) => agent::run(cli),
         Command::Mcp(crate::cli::McpCommand::Serve { read_only }) => {
             crate::mcp::serve(cli, *read_only)
         }

@@ -91,13 +91,19 @@ impl std::fmt::Display for EntryStatus {
 /// environment variable (set by the Emergent exec-handler), the operating
 /// system user (`USER` / `USERNAME`), or the fallback `"cli"`.
 #[derive(Debug, Clone)]
-pub struct Actor(String);
+pub struct Actor {
+    name: String,
+    identity: Option<crate::identity::VerifiedAgent>,
+}
 
 impl Actor {
     /// Constructs an actor with an explicit name.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
+        Self {
+            name: name.into(),
+            identity: None,
+        }
     }
 
     /// Resolves the effective actor from an optional explicit name, then the
@@ -105,25 +111,48 @@ impl Actor {
     #[must_use]
     pub fn resolve(explicit: Option<&str>) -> Self {
         if let Some(name) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
-            return Self(name.to_string());
+            return Self::new(name);
         }
 
         for var in ["BK_ACTOR", "USER", "USERNAME"] {
             if let Ok(val) = std::env::var(var) {
                 let trimmed = val.trim();
                 if !trimmed.is_empty() {
-                    return Self(trimmed.to_string());
+                    return Self::new(trimmed);
                 }
             }
         }
 
-        Self("cli".to_string())
+        Self::new("cli")
+    }
+
+    /// Attaches an identity verified against this ledger's trust root.
+    #[must_use]
+    pub fn with_identity(mut self, identity: crate::identity::VerifiedAgent) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// Verified agent URI, if supplied.
+    #[must_use]
+    pub fn agent_uri(&self) -> Option<&str> {
+        self.identity
+            .as_ref()
+            .map(crate::identity::VerifiedAgent::uri)
+    }
+
+    /// Verified token identifier, if supplied.
+    #[must_use]
+    pub fn token_jti(&self) -> Option<&str> {
+        self.identity
+            .as_ref()
+            .map(crate::identity::VerifiedAgent::jti)
     }
 
     /// Returns the actor's name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.0
+        &self.name
     }
 }
 
@@ -140,6 +169,8 @@ enum AuditEntity {
     Budget,
     Account,
     Company,
+    Key,
+    Agent,
 }
 
 impl AuditEntity {
@@ -150,6 +181,8 @@ impl AuditEntity {
             Self::Budget => "budget",
             Self::Account => "account",
             Self::Company => "company",
+            Self::Key => "key",
+            Self::Agent => "agent",
         }
     }
 }
@@ -165,6 +198,10 @@ enum AuditAction {
     BudgetDelete,
     AccountDelete,
     CompanyDelete,
+    KeyInit,
+    TokenIssue,
+    TokenRevoke,
+    Attach,
 }
 
 impl AuditAction {
@@ -178,6 +215,10 @@ impl AuditAction {
             Self::BudgetDelete => "budget_delete",
             Self::AccountDelete => "account_delete",
             Self::CompanyDelete => "company_delete",
+            Self::KeyInit => "key_init",
+            Self::TokenIssue => "token_issue",
+            Self::TokenRevoke => "token_revoke",
+            Self::Attach => "attach",
         }
     }
 }
@@ -196,6 +237,9 @@ pub struct AuditLogRow {
     pub after: Option<String>,
     pub prev_hash: String,
     pub row_hash: String,
+    pub agent_uri: Option<String>,
+    pub token_jti: Option<String>,
+    pub hash_version: i64,
 }
 
 /// The predecessor of the first row in a version 1 audit chain.
@@ -205,26 +249,44 @@ pub(super) const GENESIS_HASH: &str =
 /// Versioned, ordered JSON tuple: field boundaries and nulls are unambiguous.
 /// Snapshots are hashed as their stored UTF-8 strings, without reformatting JSON.
 fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
-    let canonical = serde_json::to_vec(&(
-        "beankeeper.audit.v1",
-        row.id,
-        &row.changed_at,
-        &row.actor,
-        &row.company_slug,
-        &row.entity,
-        &row.entity_id,
-        &row.action,
-        &row.before,
-        &row.after,
-    ))
-    .map_err(|e| CliError::Database(format!("cannot encode audit row: {e}")))?;
+    let mut fields = vec![
+        serde_json::json!(if row.hash_version == 1 {
+            "beankeeper.audit.v1"
+        } else {
+            "beankeeper.audit.v2"
+        }),
+        serde_json::json!(row.id),
+        serde_json::json!(row.changed_at),
+        serde_json::json!(row.actor),
+        serde_json::json!(row.company_slug),
+        serde_json::json!(row.entity),
+        serde_json::json!(row.entity_id),
+        serde_json::json!(row.action),
+        serde_json::json!(row.before),
+        serde_json::json!(row.after),
+    ];
+    match row.hash_version {
+        1 if row.agent_uri.is_none() && row.token_jti.is_none() => {}
+        2 => {
+            fields.push(serde_json::json!(row.agent_uri));
+            fields.push(serde_json::json!(row.token_jti));
+        }
+        _ => {
+            return Err(CliError::Database(format!(
+                "invalid audit hash version at row #{}",
+                row.id
+            )));
+        }
+    }
+    let canonical = serde_json::to_vec(&fields)
+        .map_err(|e| CliError::Database(format!("cannot encode audit row: {e}")))?;
     let mut hasher = Sha256::new();
     hasher.update(row.prev_hash.as_bytes());
     hasher.update(canonical);
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn read_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
+fn read_v1_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
     Ok(AuditLogRow {
         id: row.get(0)?,
         changed_at: row.get(1)?,
@@ -237,17 +299,30 @@ fn read_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
         after: row.get(8)?,
         prev_hash: row.get(9)?,
         row_hash: row.get(10)?,
+        agent_uri: None,
+        token_jti: None,
+        hash_version: 1,
     })
 }
 
-const AUDIT_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash";
+fn read_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
+    let mut result = read_v1_audit_row(row)?;
+    result.agent_uri = row.get(11)?;
+    result.token_jti = row.get(12)?;
+    result.hash_version = row.get(13)?;
+    Ok(result)
+}
+
+const AUDIT_V1_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash";
+
+const AUDIT_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash, agent_uri, token_jti, hash_version";
 
 /// Called only by the v12 migration, before append-only triggers are installed.
 pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {AUDIT_COLUMNS} FROM audit_log ORDER BY id"
+        "SELECT {AUDIT_V1_COLUMNS} FROM audit_log ORDER BY id"
     ))?;
-    let rows = stmt.query_map([], read_audit_row)?;
+    let rows = stmt.query_map([], read_v1_audit_row)?;
     let mut previous = GENESIS_HASH.to_string();
     for row in rows {
         let mut row = row?;
@@ -268,9 +343,12 @@ pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
 /// # Errors
 /// Returns a database error for altered, missing, or unlinked audit records.
 pub fn verify_hash_chain(conn: &Connection) -> Result<(), CliError> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {AUDIT_COLUMNS} FROM audit_log ORDER BY id"
-    ))?;
+    let columns = if super::schema::get_schema_version(conn)? < 13 {
+        format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1")
+    } else {
+        AUDIT_COLUMNS.to_string()
+    };
+    let mut stmt = conn.prepare(&format!("SELECT {columns} FROM audit_log ORDER BY id"))?;
     let rows = stmt.query_map([], read_audit_row)?;
     let mut previous = GENESIS_HASH.to_string();
     let mut last_id = 0;
@@ -366,12 +444,15 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         after: snapshots.1.map(str::to_string),
         prev_hash,
         row_hash: String::new(),
+        agent_uri: actor.agent_uri().map(str::to_owned),
+        token_jti: actor.token_jti().map(str::to_owned),
+        hash_version: 2,
     };
     let hash = row_hash(&row)?;
     conn.execute(
         "INSERT INTO audit_log \
-         (id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         (id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash, agent_uri, token_jti, hash_version) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             row.id, row.changed_at,
             actor.name(),
@@ -381,10 +462,71 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
             action.as_str(),
             snapshots.0,
             snapshots.1,
-            row.prev_hash, hash,
+            row.prev_hash, hash, row.agent_uri, row.token_jti, row.hash_version,
         ],
     )?;
     Ok(())
+}
+
+/// Record a key or token management event without persisting secrets.
+///
+/// # Errors
+/// Returns database errors if the append fails.
+pub(crate) fn record_identity(
+    conn: &Connection,
+    actor: &Actor,
+    action: &str,
+    id: &str,
+    data: &serde_json::Value,
+) -> Result<(), CliError> {
+    let (entity, action) = match action {
+        "key_init" => (AuditEntity::Key, AuditAction::KeyInit),
+        "token_issue" => (AuditEntity::Agent, AuditAction::TokenIssue),
+        "token_revoke" => (AuditEntity::Agent, AuditAction::TokenRevoke),
+        _ => return Err(CliError::Validation("invalid identity event".into())),
+    };
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: None,
+            entity,
+            entity_id: id,
+            action,
+            snapshots: (None, Some(&data.to_string())),
+        },
+    )
+}
+
+/// Append creation/attachment attribution within the caller's savepoint.
+///
+/// # Errors
+/// Returns database errors if the append fails.
+pub(crate) fn record_insert(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    entity: &str,
+    id: &str,
+    data: &serde_json::Value,
+) -> Result<(), CliError> {
+    let (entity, action) = match entity {
+        "company" => (AuditEntity::Company, AuditAction::Create),
+        "account" => (AuditEntity::Account, AuditAction::Create),
+        "attachment" => (AuditEntity::Transaction, AuditAction::Attach),
+        _ => return Err(CliError::Validation("invalid creation event".into())),
+    };
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: Some(company),
+            entity,
+            entity_id: id,
+            action,
+            snapshots: (None, Some(&data.to_string())),
+        },
+    )
 }
 
 /// Serializes a snapshot value to a JSON string for the `before`/`after`
@@ -398,6 +540,7 @@ fn posting_snapshot(
     conn: &Connection,
     company: &str,
     id: i64,
+    hash_version: i64,
 ) -> Result<serde_json::Value, CliError> {
     let (txn, entries) = super::transactions::get_transaction(conn, company, id)?;
     let entries: Vec<_> = entries.iter().map(|entry| serde_json::json!({
@@ -405,11 +548,16 @@ fn posting_snapshot(
         "direction": entry.direction, "amount": entry.amount,
         "memo": entry.memo, "tax_category": entry.tax_category,
     })).collect();
-    Ok(serde_json::json!({
+    let mut result = serde_json::json!({
         "id": txn.id, "company_slug": txn.company_slug, "description": txn.description,
         "currency": txn.currency, "date": txn.date, "posted_at": txn.posted_at,
         "reference": txn.reference, "posted_by": txn.posted_by, "entries": entries,
-    }))
+    });
+    if hash_version == 2 {
+        result["agent_uri"] = serde_json::json!(txn.agent_uri);
+        result["token_jti"] = serde_json::json!(txn.token_jti);
+    }
+    Ok(result)
 }
 
 /// Records creation inside the posting savepoint, including every entry.
@@ -419,7 +567,7 @@ pub(super) fn record_creation(
     company: &str,
     id: i64,
 ) -> Result<(), CliError> {
-    let posting = posting_snapshot(conn, company, id)?;
+    let posting = posting_snapshot(conn, company, id, 2)?;
     record(
         conn,
         actor,
@@ -440,7 +588,7 @@ pub(super) fn record_creation(
 /// Returns a database error if an audited posting is changed or unrecorded.
 pub fn verify_creations(conn: &Connection) -> Result<(), CliError> {
     let mut stmt = conn.prepare(
-        "SELECT id, company_slug FROM transactions WHERE posted_by IS NOT NULL
+        "SELECT id, company_slug FROM transactions WHERE posted_by IS NOT NULL OR agent_uri IS NOT NULL OR token_jti IS NOT NULL
          UNION SELECT CAST(entity_id AS INTEGER), company_slug FROM audit_log
              WHERE entity = 'transaction' AND action = 'create'
          ORDER BY 1",
@@ -449,23 +597,34 @@ pub fn verify_creations(conn: &Connection) -> Result<(), CliError> {
     for txn in txns {
         let (id, company) = txn?;
         let mut creates = conn.prepare(
-            "SELECT actor, after FROM audit_log WHERE entity = 'transaction' AND action = 'create'
+            "SELECT actor, after, hash_version, agent_uri, token_jti FROM audit_log WHERE entity = 'transaction' AND action = 'create'
              AND entity_id = ?1 AND company_slug = ?2 ORDER BY id",
         )?;
         let mut rows = creates.query(params![id.to_string(), company])?;
-        let expected = posting_snapshot(conn, &company, id).map_err(|e| {
-            CliError::Database(format!(
-                "transaction #{id} missing for creation audit record: {e}"
-            ))
-        })?;
         let valid = if let Some(row) = rows.next()? {
             let actor: String = row.get(0)?;
             let after: String = row.get(1)?;
+            let hash_version: i64 = row.get(2)?;
+            let agent: Option<String> = row.get(3)?;
+            let jti: Option<String> = row.get(4)?;
+            let expected = posting_snapshot(conn, &company, id, hash_version).map_err(|e| {
+                CliError::Database(format!(
+                    "transaction #{id} missing for creation audit record: {e}"
+                ))
+            })?;
+            let identity_matches = if hash_version == 1 {
+                let (txn, _) = super::transactions::get_transaction(conn, &company, id)?;
+                txn.agent_uri.is_none() && txn.token_jti.is_none()
+            } else {
+                expected["agent_uri"] == serde_json::json!(agent)
+                    && expected["token_jti"] == serde_json::json!(jti)
+            };
             serde_json::from_str::<serde_json::Value>(&after)
                 .ok()
                 .as_ref()
                 == Some(&expected)
                 && expected["posted_by"].as_str() == Some(actor.as_str())
+                && identity_matches
                 && rows.next()?.is_none()
         } else {
             false
@@ -1511,6 +1670,7 @@ pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<()
 
 /// Filters and pagination for [`list_audit`].
 pub struct ListAuditParams<'a> {
+    pub agent_uri: Option<&'a str>,
     pub company_slug: Option<&'a str>,
     pub entity: Option<&'a str>,
     pub action: Option<&'a str>,
@@ -1524,6 +1684,7 @@ fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::V
     let mut sql = String::from(" FROM audit_log WHERE 1 = 1");
     let mut values = Vec::new();
     for (column, value) in [
+        ("agent_uri", params.agent_uri),
         ("company_slug", params.company_slug),
         ("entity", params.entity),
         ("action", params.action),

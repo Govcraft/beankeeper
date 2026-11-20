@@ -5,7 +5,6 @@ use crate::db::connection::Db;
 use crate::db::{self, accounts};
 use crate::error::CliError;
 use crate::output;
-use crate::passphrase;
 
 /// Run a `bk account` subcommand.
 ///
@@ -13,12 +12,7 @@ use crate::passphrase;
 ///
 /// Returns [`CliError`] if the subcommand fails.
 pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliError> {
-    let pp = passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db = Db::open_existing(&cli.db, pp.as_ref())?;
+    let db = cli.open_db()?;
     crate::db::companies::get_company(db.conn(), company)?;
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
@@ -26,13 +20,13 @@ pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliErro
     if let AccountCommand::Delete { code, force } = sub {
         return run_delete(cli, &db, company, code, *force, format);
     }
-    let result = compute(&db, company, sub)?;
+    let result = compute(&db, company, sub, &cli.principal())?;
     match &result {
         AccountData::Rows(rows) => {
-            render_accounts(rows, operation(sub), company, format, use_color)?;
+            render_accounts(rows, operation(sub), company, format, use_color, cli)?;
         }
         AccountData::Balances(rows) => {
-            render_accounts_with_balances(rows, company, format, use_color)?;
+            render_accounts_with_balances(rows, company, format, use_color, cli)?;
         }
     }
     if !cli.verbosity.quiet {
@@ -69,7 +63,12 @@ fn operation(sub: &AccountCommand) -> &'static str {
     }
 }
 
-fn compute(db: &Db, company: &str, sub: &AccountCommand) -> Result<AccountData, CliError> {
+fn compute(
+    db: &Db,
+    company: &str,
+    sub: &AccountCommand,
+    actor: &db::Actor,
+) -> Result<AccountData, CliError> {
     db::companies::get_company(db.conn(), company)?;
     match sub {
         AccountCommand::Create {
@@ -79,14 +78,25 @@ fn compute(db: &Db, company: &str, sub: &AccountCommand) -> Result<AccountData, 
             default_tax_category,
         } => {
             let account_type = format!("{account_type:?}").to_lowercase();
-            let row = accounts::create_account(
-                db.conn(),
-                company,
-                code,
-                name,
-                &account_type,
-                default_tax_category.as_deref(),
-            )?;
+            let row = db::audit::atomically(db.conn(), || {
+                let row = accounts::create_account(
+                    db.conn(),
+                    company,
+                    code,
+                    name,
+                    &account_type,
+                    default_tax_category.as_deref(),
+                )?;
+                db::audit::record_insert(
+                    db.conn(),
+                    actor,
+                    company,
+                    "account",
+                    code,
+                    &serde_json::json!({"code": row.code, "name": row.name, "type": row.account_type, "company_slug": row.company_slug, "default_tax_category": row.default_tax_category, "created_at": row.created_at}),
+                )?;
+                Ok(row)
+            })?;
             Ok(AccountData::Rows(vec![row]))
         }
         AccountCommand::List {
@@ -128,18 +138,31 @@ fn compute(db: &Db, company: &str, sub: &AccountCommand) -> Result<AccountData, 
     }
 }
 
-/// Execute an account operation without writing to stdout.
+/// Execute an account operation with the default named principal.
 ///
 /// # Errors
-///
-/// Returns the same validation and database errors as the CLI.
+/// Returns validation or database errors.
 pub fn execute_json(
     db: &Db,
     company: &str,
     sub: &AccountCommand,
 ) -> Result<serde_json::Value, CliError> {
+    execute_json_with_actor(db, company, sub, &db::Actor::new("cli"))
+}
+
+/// Execute an account operation without writing to stdout.
+///
+/// # Errors
+///
+/// Returns the same validation and database errors as the CLI.
+pub fn execute_json_with_actor(
+    db: &Db,
+    company: &str,
+    sub: &AccountCommand,
+    actor: &db::Actor,
+) -> Result<serde_json::Value, CliError> {
     let meta = output::json::meta(operation(sub), Some(company));
-    let rendered = match compute(db, company, sub)? {
+    let rendered = match compute(db, company, sub, actor)? {
         AccountData::Rows(rows) => output::json::render_accounts(&rows, meta)?,
         AccountData::Balances(rows) => output::json::render_accounts_with_balances(&rows, meta)?,
     };
@@ -169,10 +192,10 @@ fn run_delete(
             return Ok(());
         }
     }
-    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
+    let actor = cli.principal();
     crate::db::delete_account(db.conn(), &actor, company, code)?;
     if format == OutputFormat::Json {
-        let meta = output::json::meta("account.delete", Some(company));
+        let meta = cli.meta("account.delete", Some(company));
         let rendered = output::json::render_deleted(code, meta)?;
         println!("{rendered}");
     }
@@ -189,6 +212,7 @@ fn render_accounts(
     company: &str,
     format: OutputFormat,
     use_color: bool,
+    cli: &Cli,
 ) -> Result<(), CliError> {
     match format {
         OutputFormat::Table => {
@@ -196,7 +220,7 @@ fn render_accounts(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let meta = output::json::meta(command, Some(company));
+            let meta = cli.meta(command, Some(company));
             let rendered = output::json::render_accounts(rows, meta)?;
             println!("{rendered}");
         }
@@ -214,6 +238,7 @@ fn render_accounts_with_balances(
     company: &str,
     format: OutputFormat,
     use_color: bool,
+    cli: &Cli,
 ) -> Result<(), CliError> {
     match format {
         OutputFormat::Table => {
@@ -221,7 +246,7 @@ fn render_accounts_with_balances(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("account.list", Some(company));
+            let meta = cli.meta("account.list", Some(company));
             let rendered = output::json::render_accounts_with_balances(rows, meta)?;
             println!("{rendered}");
         }

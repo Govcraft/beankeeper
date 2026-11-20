@@ -328,7 +328,7 @@ fn run(
         }
         OutputFormat::Json => {
             let id = mode_command_id(req.kind, req.layout);
-            let meta = output::json::meta(id, Some(company));
+            let meta = cli.meta(id, Some(company));
             writeln!(
                 output.writer,
                 "{}",

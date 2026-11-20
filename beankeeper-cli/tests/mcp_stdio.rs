@@ -22,6 +22,7 @@ fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
         "BEANKEEPER_COMPANY",
         "BEANKEEPER_CURRENCY",
         "BK_ACTOR",
+        "BK_AGENT_TOKEN",
     ] {
         command.env_remove(name);
     }
@@ -438,10 +439,12 @@ fn mcp_writes_have_chained_audit_records_and_pass_cli_verification() -> TestResu
     let reversed = client.success("txn_reverse", &reversal_args)?;
     let audit = client.success("audit_log", &json!({}))?;
     let rows = audit.as_array().ok_or("missing audit rows")?;
-    assert_eq!(rows.len(), 6, "{audit}");
+    assert_eq!(rows.len(), 10, "{audit}");
     let mut previous = "0".repeat(64);
     for row in rows.iter().rev() {
-        assert_eq!(row["actor"], "mcp:codex-test-client");
+        if row["id"].as_i64().is_some_and(|id| id > 3) {
+            assert_eq!(row["actor"], "mcp:codex-test-client");
+        }
         assert_eq!(row["prev_hash"], previous);
         let hash = row["row_hash"].as_str().ok_or("missing row hash")?;
         assert_eq!(hash.len(), 64);
@@ -449,7 +452,7 @@ fn mcp_writes_have_chained_audit_records_and_pass_cli_verification() -> TestResu
         previous = hash.to_owned();
     }
     let creations = client.success("audit_log", &json!({"action":"create"}))?;
-    assert_eq!(creations.as_array().map(Vec::len), Some(2));
+    assert_eq!(creations.as_array().map(Vec::len), Some(6));
     for id in [&posted["id"], &reversed["id"]] {
         let shown = client.success("txn_show", &json!({"company":"acme", "id":id}))?;
         assert_eq!(shown[0]["posted_by"], "mcp:codex-test-client");
@@ -857,5 +860,106 @@ fn clearing_batches_and_remaining_tools_use_the_shared_ledger() -> TestResult {
         [] as [Value; 0]
     );
     client.success("txn_reconcile", &json!({}))?;
+    Ok(())
+}
+
+/// Build an encrypted server ledger and an optional identity without shell credentials.
+fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn Error>> {
+    use beankeeper_cli::db::{self, Actor, Db};
+    use beankeeper_cli::identity::{self, IssueRequest};
+
+    std::fs::write(passphrase_file, "mcp-test-passphrase")?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = Db::open(path, Some(&passphrase))?;
+    db::create_company(db.conn(), "acme", "Acme", None)?;
+    db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
+    db::create_account(db.conn(), "acme", "4000", "Sales", "revenue", None)?;
+    identity::init_root(db.conn(), &Actor::new("owner"))?;
+    Ok(identity::issue(
+        db.conn(),
+        &Actor::new("owner"),
+        &IssueRequest {
+            name: "mcp_agent",
+            capabilities: &["ledger/read".into()],
+            ttl: Duration::from_secs(3600),
+            public_key: None,
+            generate_key: true,
+        },
+    )?)
+}
+
+#[test]
+fn session_identity_is_recorded_and_live_revocation_blocks_the_next_tool_call() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("identity.db");
+    let passphrase_file = dir.path().join("passphrase");
+    let issued = identity_ledger(&path, &passphrase_file)?;
+    let token = issued["token"].as_str().ok_or("missing token")?;
+    let agent = issued["agent_uri"].as_str().ok_or("missing agent URI")?;
+    let mut command = bk(&path)?;
+    command
+        .arg("--passphrase-file")
+        .arg(&passphrase_file)
+        .env("BK_AGENT_TOKEN", token)
+        .args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    // A read-only grant still allows writes: enforcement is outside Phase 1.
+    let posted = client.success("txn_post", &posting("attested-mcp"))?;
+    let shown = client.success("txn_show", &json!({"company":"acme", "id":posted["id"]}))?;
+    assert_eq!(shown[0]["agent_uri"], agent);
+    assert_eq!(shown[0]["token_jti"], issued["token_jti"]);
+    assert_eq!(shown[0]["posted_by"], "mcp:codex-test-client");
+    let audit = client.success("audit_log", &json!({"agent":agent}))?;
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+    assert_eq!(audit[0]["agent_uri"], agent);
+    assert_eq!(audit[0]["token_jti"], issued["token_jti"]);
+    bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_file)
+        .args(["agent", "revoke", agent])
+        .assert()
+        .success();
+    let rejected = client.request(
+        "tools/call",
+        &json!({"name":"txn_post", "arguments":posting("revoked-mcp")}),
+    )?;
+    assert_eq!(rejected["result"]["isError"], true);
+    let payload: Value = serde_json::from_str(
+        rejected["result"]["content"][0]["text"]
+            .as_str()
+            .ok_or("missing error text")?,
+    )?;
+    assert_eq!(payload["code"], "UNAUTHORIZED");
+    bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_file)
+        .arg("verify")
+        .assert()
+        .success();
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = beankeeper_cli::db::Db::open_existing(&path, Some(&passphrase))?;
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))?;
+    assert_eq!(count, 1);
+    Ok(())
+}
+
+#[test]
+fn invalid_session_token_fails_before_mcp_protocol_starts() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("identity.db");
+    let passphrase_file = dir.path().join("passphrase");
+    identity_ledger(&path, &passphrase_file)?;
+    let output = bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_file)
+        .args(["--json", "--agent-token", "invalid", "mcp", "serve"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(6));
+    assert!(output.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&output.stderr)?;
+    assert_eq!(error["error"]["code"], "UNAUTHORIZED");
     Ok(())
 }

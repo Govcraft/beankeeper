@@ -20,6 +20,7 @@ fn main() -> ExitCode {
     match commands::dispatch(&cli, meta.clone()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
             e.report(json_mode, meta);
             ExitCode::from(e.exit_code())
         }

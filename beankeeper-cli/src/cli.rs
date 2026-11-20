@@ -1,6 +1,8 @@
+use std::cell::OnceCell;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::CliError;
 
@@ -38,6 +40,16 @@ pub struct Cli {
     /// then `"cli"`.
     #[arg(long, global = true, env = "BK_ACTOR")]
     pub actor: Option<String>,
+
+    /// Optional local agent attestation (also `BK_AGENT_TOKEN`).
+    #[arg(long, global = true, env = "BK_AGENT_TOKEN", hide_env_values = true,
+        value_parser = |value: &str| Ok::<_, std::convert::Infallible>(SecretString::from(value)))]
+    pub agent_token: Option<SecretString>,
+
+    #[arg(skip)]
+    resolved_passphrase: OnceCell<Option<SecretString>>,
+    #[arg(skip)]
+    verified_agent: OnceCell<crate::identity::VerifiedAgent>,
 
     /// Output format options.
     #[command(flatten)]
@@ -96,6 +108,52 @@ pub struct PassphraseOptions {
 }
 
 impl Cli {
+    /// Opens an existing ledger, verifying any supplied token before use.
+    /// Passphrases (including one-shot file descriptors) are resolved only once.
+    ///
+    /// # Errors
+    /// Returns passphrase, database or unauthorized errors.
+    pub fn open_db(&self) -> Result<crate::db::Db, CliError> {
+        if self.resolved_passphrase.get().is_none() {
+            let passphrase = crate::passphrase::resolve_passphrase(
+                self.passphrase.passphrase_fd,
+                self.passphrase.passphrase_file.as_deref(),
+                false,
+            )?;
+            let _ = self.resolved_passphrase.set(passphrase);
+        }
+        let db = crate::db::Db::open_existing(
+            &self.db,
+            self.resolved_passphrase.get().and_then(Option::as_ref),
+        )?;
+        if let Some(token) = &self.agent_token {
+            let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
+            let _ = self.verified_agent.set(identity);
+        }
+        Ok(db)
+    }
+
+    /// Principal for this command, retaining the named actor for compatibility.
+    #[must_use]
+    pub fn principal(&self) -> crate::db::Actor {
+        let actor = crate::db::Actor::resolve(self.actor.as_deref());
+        match self.verified_agent.get() {
+            Some(identity) => actor.with_identity(identity.clone()),
+            None => actor,
+        }
+    }
+
+    /// JSON metadata with the verified URI, if a token was supplied.
+    #[must_use]
+    pub fn meta(&self, command: &str, company: Option<&str>) -> crate::output::json::Meta {
+        let mut meta = crate::output::json::meta(command, company);
+        meta.agent = self
+            .verified_agent
+            .get()
+            .map(|identity| identity.uri().to_owned());
+        meta
+    }
+
     /// Returns whether JSON output mode is active.
     #[must_use]
     pub fn is_json(&self) -> bool {
@@ -112,6 +170,44 @@ pub enum McpCommand {
         #[arg(long)]
         read_only: bool,
     },
+}
+
+/// Local trust root commands.
+#[derive(Subcommand, Debug)]
+pub enum KeyCommand {
+    /// Create a root key inside an encrypted ledger (once).
+    Init,
+}
+
+/// Agent token registry commands.
+#[derive(Subcommand, Debug)]
+pub enum AgentCommand {
+    /// Mint a short-lived attestation under this ledger's root.
+    Issue {
+        /// `TypeID` prefix (lowercase letters and underscores).
+        #[arg(long)]
+        name: String,
+        /// Recorded grants. Phase 1 does not enforce permissions.
+        #[arg(long, value_delimiter = ',', default_value = "ledger/read,ledger/post")]
+        caps: Vec<String>,
+        /// Token lifetime, positive and at most 30d.
+        #[arg(long, default_value = "8h")]
+        ttl: String,
+        /// Agent's Ed25519 public key, encoded as standard base64.
+        #[arg(
+            long,
+            required_unless_present = "generate_key",
+            conflicts_with = "generate_key"
+        )]
+        public_key: Option<String>,
+        /// Generate a local keypair; print the private seed once as hex.
+        #[arg(long)]
+        generate_key: bool,
+    },
+    /// List issued claims and revocations, without tokens or private keys.
+    List,
+    /// Revoke a token ID, or every current token for an agent URI.
+    Revoke { target: String },
 }
 
 /// Top-level commands.
@@ -153,6 +249,14 @@ EXAMPLES:\n  \
         #[arg(long)]
         demo: bool,
     },
+
+    /// Manage the ledger's local trust root.
+    #[command(subcommand)]
+    Key(KeyCommand),
+
+    /// Issue, list and revoke optional agent identities.
+    #[command(subcommand)]
+    Agent(AgentCommand),
 
     /// Check ledger integrity.
     #[command(after_help = "\
@@ -260,6 +364,10 @@ pub enum AuditCommand {
         #[arg(long)]
         company: Option<String>,
 
+        /// Restrict to one verified agent URI.
+        #[arg(long)]
+        agent: Option<String>,
+
         /// Restrict to one entity kind (entry, transaction, budget, account, company).
         #[arg(long, value_enum)]
         entity: Option<AuditEntityArg>,
@@ -286,6 +394,8 @@ pub enum AuditEntityArg {
     Budget,
     Account,
     Company,
+    Key,
+    Agent,
 }
 
 impl AuditEntityArg {
@@ -298,6 +408,8 @@ impl AuditEntityArg {
             Self::Budget => "budget",
             Self::Account => "account",
             Self::Company => "company",
+            Self::Key => "key",
+            Self::Agent => "agent",
         }
     }
 }
@@ -313,6 +425,10 @@ pub enum AuditActionArg {
     BudgetDelete,
     AccountDelete,
     CompanyDelete,
+    KeyInit,
+    TokenIssue,
+    TokenRevoke,
+    Attach,
 }
 
 impl AuditActionArg {
@@ -328,6 +444,10 @@ impl AuditActionArg {
             Self::BudgetDelete => "budget_delete",
             Self::AccountDelete => "account_delete",
             Self::CompanyDelete => "company_delete",
+            Self::KeyInit => "key_init",
+            Self::TokenIssue => "token_issue",
+            Self::TokenRevoke => "token_revoke",
+            Self::Attach => "attach",
         }
     }
 }

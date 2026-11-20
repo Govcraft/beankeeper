@@ -50,11 +50,11 @@ pub fn run(
         } => Some(parse_batch(&read_input(path)?)?),
         _ => None,
     };
-    let actor = Actor::resolve(cli.actor.as_deref());
+    let actor = cli.principal();
     let result = compute(db_handle, company, sub, &actor, batch.as_deref())?;
     let ctx = result.context(db_handle, company, actor);
     let format = resolve_format(None, cli);
-    let meta = meta.unwrap_or_else(|| output::json::meta("txn.clear", Some(company)));
+    let meta = meta.unwrap_or_else(|| cli.meta("txn.clear", Some(company)));
     if let Some(account) = &result.account {
         render_batch(cli, &ctx, account, &result.items, format, meta)
     } else {

@@ -201,6 +201,7 @@ pub(super) struct BudgetDelete {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AuditLog {
+    pub agent: Option<String>,
     pub company: Option<String>,
     pub entity: Option<AuditEntityArg>,
     pub action: Option<AuditActionArg>,

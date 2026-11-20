@@ -6,7 +6,6 @@ use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output;
-use crate::passphrase;
 
 /// Run the `bk export` command.
 ///
@@ -21,12 +20,7 @@ pub fn run(
     format: Option<ExportFormat>,
     output_path: Option<&Path>,
 ) -> Result<(), CliError> {
-    let pp = passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db = Db::open_existing(&cli.db, pp.as_ref())?;
+    let db = cli.open_db()?;
 
     let export_format = format.unwrap_or(ExportFormat::Json);
 

@@ -40,6 +40,7 @@ enum Capability {
 pub struct LedgerServer {
     db: Arc<Mutex<Db>>,
     tool_router: ToolRouter<Self>,
+    agent_token: Option<secrecy::SecretString>,
 }
 
 impl LedgerServer {
@@ -62,6 +63,7 @@ impl LedgerServer {
         Self {
             db: Arc::new(Mutex::new(db)),
             tool_router,
+            agent_token: None,
         }
     }
 
@@ -83,10 +85,17 @@ impl LedgerServer {
             Err(error) => return tool_error(&CliError::General(error.to_string())),
         };
         let db = self.db.clone();
+        let token = self.agent_token.clone();
         let result = tokio::task::spawn_blocking(move || {
             let db = db
                 .lock()
                 .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
+            let actor = if let Some(token) = token {
+                use secrecy::ExposeSecret;
+                actor.with_identity(crate::identity::verify(db.conn(), token.expose_secret())?)
+            } else {
+                actor
+            };
             execute_operation(&db, tool, input, &actor)
         })
         .await;
@@ -292,7 +301,9 @@ fn execute_operation(
     let company = cli.company.as_deref().unwrap_or_default();
     match &cli.command {
         Command::Company(sub) => commands::company::execute_json(db, sub),
-        Command::Account(args) => commands::account::execute_json(db, company, &args.command),
+        Command::Account(args) => {
+            commands::account::execute_json_with_actor(db, company, &args.command, actor)
+        }
         Command::Txn(args) if tool == "txn_clear" => {
             commands::txn_clear::execute_json(db, company, &args.command, actor, batch.as_deref())
         }
@@ -541,12 +552,18 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
     )?;
     let db = Db::open_existing(&cli.db, passphrase.as_ref())?;
     drop(passphrase);
+    if let Some(token) = &cli.agent_token {
+        use secrecy::ExposeSecret;
+        crate::identity::verify(db.conn(), token.expose_secret())?;
+    }
+    let mut server = LedgerServer::new(db, read_only);
+    server.agent_token.clone_from(&cli.agent_token);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let service = LedgerServer::new(db, read_only)
+        let service = server
             .serve(rmcp::transport::stdio())
             .await
             .map_err(|error| CliError::General(format!("MCP startup failed: {error}")))?;

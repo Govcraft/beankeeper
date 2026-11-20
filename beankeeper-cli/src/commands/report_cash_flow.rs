@@ -247,7 +247,7 @@ pub(crate) fn run_to(
             render_table(&statement, minor_units, output.use_color)
         )?,
         OutputFormat::Json => {
-            let meta = output::json::meta("report.cash-flow", Some(company));
+            let meta = cli.meta("report.cash-flow", Some(company));
             let env = output::json::Envelope {
                 ok: true,
                 meta,

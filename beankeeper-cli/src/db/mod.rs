@@ -83,6 +83,8 @@ pub struct TransactionRow {
     pub reference: Option<String>,
     /// Unknown for transactions predating creation auditing.
     pub posted_by: Option<String>,
+    pub agent_uri: Option<String>,
+    pub token_jti: Option<String>,
 }
 
 /// A row from the `entries` table.

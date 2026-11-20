@@ -145,8 +145,8 @@ fn post_transaction_inner(
     let effective_metadata = build_metadata(p.metadata, p.correlate)?;
 
     conn.execute(
-        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by, agent_uri, token_jti) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             p.company_slug,
             p.description,
@@ -154,7 +154,9 @@ fn post_transaction_inner(
             p.currency,
             p.date,
             p.reference,
-            p.actor.name()
+            p.actor.name(),
+            p.actor.agent_uri(),
+            p.actor.token_jti()
         ],
     )?;
 
@@ -403,7 +405,7 @@ pub fn list_transactions(
 
     let mut sql = format!(
         "SELECT DISTINCT t.id, t.company_slug, t.description, \
-         t.metadata, t.currency, t.date, t.posted_at, t.reference, t.posted_by \
+         t.metadata, t.currency, t.date, t.posted_at, t.reference, t.posted_by, t.agent_uri, t.token_jti \
          {where_clause}"
     );
 
@@ -431,6 +433,8 @@ pub fn list_transactions(
             posted_at: row.get(6)?,
             reference: row.get(7)?,
             posted_by: row.get(8)?,
+            agent_uri: row.get(9)?,
+            token_jti: row.get(10)?,
         })
     })?;
 
@@ -474,7 +478,7 @@ pub fn get_transaction(
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
     let mut stmt = conn.prepare(
-        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by \
+        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti \
          FROM transactions \
          WHERE company_slug = ?1 AND id = ?2",
     )?;
@@ -490,6 +494,8 @@ pub fn get_transaction(
             posted_at: row.get(6)?,
             reference: row.get(7)?,
             posted_by: row.get(8)?,
+            agent_uri: row.get(9)?,
+            token_jti: row.get(10)?,
         })
     })?;
 
