@@ -16,6 +16,7 @@ pub mod report_periods;
 pub mod report_reconciliation;
 pub mod report_trend;
 pub mod rule;
+pub mod schedule;
 pub mod txn;
 pub mod txn_clear;
 pub mod txn_import;
@@ -36,6 +37,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
         return id;
     }
     match cmd {
+        Command::Schedule(args) => args.command.command_name(),
         Command::Rule(args) => match &args.command {
             crate::cli::RuleCommand::Create { .. } => "rule.create",
             crate::cli::RuleCommand::List => "rule.list",
@@ -112,6 +114,10 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Schedule(args) => {
+            let company = require_company(cli)?;
+            schedule::run(cli, &company, &args.command)
+        }
         Command::Rule(args) => {
             let company = require_company(cli)?;
             rule::run(cli, &company, &args.command)
