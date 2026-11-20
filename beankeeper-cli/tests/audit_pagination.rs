@@ -142,6 +142,14 @@ fn audit_pagination_counts_filtered_rows_at_below_and_above_limit() -> TestResul
 #[test]
 fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
     let ledger = Ledger::new()?;
+    let expected_ids = ledger
+        .db
+        .conn()
+        .prepare(
+            "SELECT id FROM audit_log WHERE company_slug = 'acme' AND entity = 'transaction' ORDER BY id DESC",
+        )?
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     for (limit, offset, returned, has_more) in [
         (1, 1, 1, true),
         (1, 2, 1, false),
@@ -155,6 +163,8 @@ fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
             "log",
             "--company",
             "acme",
+            "--entity",
+            "transaction",
             "--limit",
             &limit.to_string(),
             "--offset",
@@ -163,7 +173,10 @@ fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
         let value: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(value["data"].as_array().map(Vec::len), Some(returned));
         if returned > 0 {
-            assert_eq!(value["data"][0]["id"], 3 - offset);
+            assert_eq!(
+                value["data"][0]["id"],
+                expected_ids[usize::try_from(offset)?]
+            );
         }
         assert_eq!(
             value["meta"]["pagination"],
@@ -180,9 +193,18 @@ fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
 #[test]
 fn audit_snapshot_companions_preserve_original_strings_and_hashes() -> TestResult {
     let ledger = Ledger::new()?;
-    let output = ledger.run(&["--json", "audit", "log", "--company", "acme"])?;
+    let output = ledger.run(&[
+        "--json",
+        "audit",
+        "log",
+        "--company",
+        "acme",
+        "--entity",
+        "transaction",
+    ])?;
     let value: Value = serde_json::from_slice(&output.stdout)?;
     let rows = value["data"].as_array().ok_or("audit array")?;
+    assert_eq!(rows.len(), 3);
     for (row, expected) in rows.iter().zip(["1.234", "1234", "12.34"]) {
         let raw: String = ledger.db.conn().query_row(
             "SELECT after FROM audit_log WHERE id = ?1",
@@ -201,7 +223,7 @@ fn audit_snapshot_companions_preserve_original_strings_and_hashes() -> TestResul
         .db
         .conn()
         .query_row(
-            "SELECT COUNT(*) FROM audit_log WHERE length(row_hash) = 64",
+            "SELECT COUNT(*) FROM audit_log WHERE entity = 'transaction' AND action = 'create' AND length(row_hash) = 64",
             [],
             |row| row.get::<_, i64>(0),
         )

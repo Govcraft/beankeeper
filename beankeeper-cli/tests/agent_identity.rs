@@ -219,6 +219,75 @@ fn tokenless_behavior_and_explicit_flag_over_environment_remain_compatible() -> 
 }
 
 #[test]
+fn identity_metadata_preserves_pagination_and_currency_displays() -> TestResult {
+    let ledger = Ledger::new()?;
+    let issued = ledger.issue()?;
+    let token = text(&issued, "token")?;
+    let uri = text(&issued, "agent_uri")?;
+    ledger.post("named", None)?;
+    ledger.post("agent-first", Some(token))?;
+    ledger.post("agent-second", Some(token))?;
+
+    let mut previous_id = Value::Null;
+    for offset in [0, 1] {
+        let page = ledger.run(
+            &[
+                "audit",
+                "log",
+                "--agent",
+                uri,
+                "--entity",
+                "transaction",
+                "--action",
+                "create",
+                "--limit",
+                "1",
+                "--offset",
+                &offset.to_string(),
+            ],
+            Some(token),
+        )?;
+        assert_eq!(page["meta"]["agent"], uri);
+        assert_eq!(
+            page["meta"]["pagination"],
+            json!({"limit":1,"offset":offset,"returned":1,"total":2,"has_more":offset == 0})
+        );
+        assert_eq!(page["data"].as_array().map(Vec::len), Some(1));
+        let row = &page["data"][0];
+        assert_ne!(row["id"], previous_id);
+        previous_id = row["id"].clone();
+        assert_eq!(row["agent_uri"], uri);
+        assert_eq!(row["token_jti"], issued["token_jti"]);
+        assert!(row["after"].is_string());
+        assert_eq!(row["after_display"]["entries"][0]["amount"], 1000);
+        assert_eq!(
+            row["after_display"]["entries"][0]["amount_display"],
+            "10.00"
+        );
+    }
+
+    let txns = ledger.run(
+        &["txn", "list", "--limit", "1", "--offset", "1"],
+        Some(token),
+    )?;
+    assert_eq!(txns["meta"]["agent"], uri);
+    assert_eq!(
+        txns["meta"]["pagination"],
+        json!({"limit":1,"offset":1,"returned":1,"total":3,"has_more":true})
+    );
+    assert_eq!(txns["data"][0]["entries"][0]["amount_display"], "10.00");
+
+    let report = ledger.run(
+        &["report", "trial-balance", "--currency", "USD"],
+        Some(token),
+    )?;
+    assert_eq!(report["meta"]["agent"], uri);
+    assert_eq!(report["meta"]["currency"], "USD");
+    assert_eq!(report["data"]["total_debits_display"], "30.00");
+    Ok(())
+}
+
+#[test]
 fn bad_foreign_expired_future_and_revoked_tokens_fail_before_writes() -> TestResult {
     let ledger = Ledger::new()?;
     let issued = ledger.issue()?;

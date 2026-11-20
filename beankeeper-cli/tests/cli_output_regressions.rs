@@ -154,7 +154,12 @@ fn list_counts_appear_only_on_stderr_and_quiet_suppresses_them() {
         let quiet = run(&db, &quiet_args);
         success(&quiet);
         assert_eq!(quiet.stdout, output.stdout);
-        assert!(quiet.stderr.is_empty(), "quiet stderr: {:?}", quiet.stderr);
+        assert_eq!(
+            quiet.stderr,
+            Vec::<u8>::new(),
+            "quiet stderr: {:?}",
+            quiet.stderr
+        );
     }
 }
 

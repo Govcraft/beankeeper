@@ -754,7 +754,8 @@ fn run_list(
                 let entries = transactions::get_entries_for_transaction(db_handle.conn(), txn.id)?;
                 entries_map.insert(txn.id, entries);
             }
-            let meta = cli.meta("txn.list", Some(params.company_slug))
+            let meta = cli
+                .meta("txn.list", Some(params.company_slug))
                 .with_pagination(pagination.clone());
             let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
             writeln!(out, "{rendered}")?;

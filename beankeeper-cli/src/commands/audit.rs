@@ -55,8 +55,9 @@ fn run_log(
 
     match format {
         OutputFormat::Json => {
-            let meta =
-                cli.meta("audit.log", params.company_slug).with_pagination(pagination);
+            let meta = cli
+                .meta("audit.log", params.company_slug)
+                .with_pagination(pagination);
             let data = audit_data(db, &rows)?;
             let rendered = serde_json::json!({ "ok": true, "meta": meta, "data": data });
             let json = serde_json::to_string(&rendered)

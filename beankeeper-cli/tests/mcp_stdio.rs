@@ -308,6 +308,7 @@ fn tools_preserve_data_arrays_and_expose_pagination_and_currency_displays() -> T
             let mut args = json!({"company":"acme", "limit":limit, "offset":offset});
             if tool == "audit_log" {
                 args["action"] = json!("create");
+                args["entity"] = json!("transaction");
             }
             let response = client.call(tool, &args)?;
             assert_ne!(response["result"]["isError"], true, "{response}");
@@ -958,7 +959,7 @@ fn invalid_session_token_fails_before_mcp_protocol_starts() -> TestResult {
         .args(["--json", "--agent-token", "invalid", "mcp", "serve"])
         .output()?;
     assert_eq!(output.status.code(), Some(6));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     let error: Value = serde_json::from_slice(&output.stderr)?;
     assert_eq!(error["error"]["code"], "UNAUTHORIZED");
     Ok(())
