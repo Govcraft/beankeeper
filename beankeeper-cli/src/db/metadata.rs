@@ -191,6 +191,12 @@ pub fn build_post_metadata(
             "--meta key '{key}' is reserved; use --correlate to link transactions"
         )));
     }
+    super::proposals::reject_reserved_metadata(metadata)?;
+    if meta.iter().any(|(key, _)| key == "proposal_id") {
+        return Err(CliError::Validation(
+            "metadata key 'proposal_id' is reserved for approvals".into(),
+        ));
+    }
     let base = metadata.and_then(normalize);
     if meta.is_empty() {
         return Ok(base);
@@ -259,7 +265,15 @@ impl MetadataEdit {
                     "metadata keys must be non-empty and must not contain '\"'".into(),
                 ));
             }
-            if ["correlate", "reverses", "reversed_by", "applies_to"].contains(key) {
+            if [
+                "correlate",
+                "reverses",
+                "reversed_by",
+                "applies_to",
+                "proposal_id",
+            ]
+            .contains(key)
+            {
                 return Err(CliError::Validation(format!(
                     "metadata key '{key}' is reserved for ledger relationships"
                 )));
