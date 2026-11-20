@@ -157,3 +157,81 @@ fn list_counts_appear_only_on_stderr_and_quiet_suppresses_them() {
         assert!(quiet.stderr.is_empty(), "quiet stderr: {:?}", quiet.stderr);
     }
 }
+
+#[test]
+fn posting_validation_formats_amounts_in_the_input_currency() {
+    let (_dir, db) = setup();
+    for (currency, hundred, ninety_nine, difference, negative, zero) in [
+        ("USD", "100.00", "99.00", "1.00", "-100.00", "0.00"),
+        ("JPY", "100", "99", "1", "-100", "0"),
+        ("BHD", "100.000", "99.000", "1.000", "-100.000", "0.000"),
+    ] {
+        for (debit, credit, message) in [
+            (
+                "5000:100",
+                "1000:99",
+                format!(
+                    "transaction is unbalanced: debits={hundred} {currency}, credits={ninety_nine} {currency} (difference {difference} {currency})"
+                ),
+            ),
+            (
+                "5000:99",
+                "1000:100",
+                format!(
+                    "transaction is unbalanced: debits={ninety_nine} {currency}, credits={hundred} {currency} (difference {difference} {currency})"
+                ),
+            ),
+            (
+                "5000:-100",
+                "1000:100",
+                format!("entry amount must be positive, got {negative} {currency}"),
+            ),
+            (
+                "5000:100",
+                "1000:-100:credit memo",
+                format!("entry amount must be positive, got {negative} {currency}"),
+            ),
+            (
+                "5000:0",
+                "1000:0",
+                format!("entry amount must be positive, got {zero} {currency}"),
+            ),
+        ] {
+            for json in [false, true] {
+                let mut args = vec!["--company", "acme"];
+                if json {
+                    args.push("--json");
+                }
+                args.extend([
+                    "txn",
+                    "post",
+                    "-d",
+                    "Invalid",
+                    "--currency",
+                    currency,
+                    "--debit",
+                    debit,
+                    "--credit",
+                    credit,
+                ]);
+                let output = run(&db, &args);
+                assert_eq!(output.status.code(), Some(3));
+                assert!(output.stdout.is_empty());
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if json {
+                    let error: serde_json::Value = serde_json::from_str(&stderr)
+                        .unwrap_or_else(|e| panic!("JSON error: {e}: {stderr}"));
+                    assert_eq!(error["error"]["code"], "VALIDATION");
+                    assert_eq!(error["error"]["message"], message);
+                } else {
+                    assert_eq!(stderr.trim(), format!("error: {message}"));
+                }
+            }
+        }
+    }
+    let output = run(&db, &["--company", "acme", "--json", "txn", "list"]);
+    success(&output);
+    let list: serde_json::Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("JSON list: {e}"));
+    assert!(list["data"].as_array().is_some_and(Vec::is_empty), "{list}");
+}
