@@ -29,8 +29,22 @@ bk key init
 database. It requires SQLCipher encryption and refuses to overwrite an existing
 key. The private root stays in the encrypted database; output contains only
 `kid`, `trust_root` and `public_key`. Full database backups carry the root and
-registry. Accounting exports do not include them. There is no recovery flow;
-keep the ledger and passphrase backed up.
+registry. Use the supported snapshot commands with the original passphrase:
+
+```sh
+bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup
+bk restore --input ledger.bk-backup --db restored.db --passphrase-file /secure/books.key
+```
+
+Backup includes committed WAL writes even while the source is open. Restore
+verifies the complete snapshot before publishing it, including the audit chain.
+The restored root and registry accept the same unexpired, unrevoked tokens.
+A supplied agent token is checked against the snapshot being restored, not an
+existing destination. Replacing a destination requires `--force` and all its
+connections must be closed. Accounting exports exclude the root and registry.
+Keep the passphrase separately: these commands cannot recover a lost key.
+External receipt files need a separate backup; see
+[backup and restore](../README.md#backup-and-restore).
 
 Normally the agent or its host generates its own Ed25519 keypair and supplies
 the standard-base64 public key:
