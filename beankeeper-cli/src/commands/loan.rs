@@ -1,0 +1,243 @@
+//! Stateless monthly loan calculator and audited payment helper.
+
+use beankeeper::loan::{AmortizationSchedule, AnnualRate, LoanPayment, LoanTerm, LoanTerms};
+use beankeeper::types::{Amount, Currency};
+use serde::Serialize;
+
+use crate::cli::{
+    Cli, LoanCalculationArgs, LoanCommand, LoanPayArgs, OutputFormat, TxnCommand, require_company,
+    resolve_format,
+};
+use crate::error::CliError;
+use crate::output::json;
+
+#[derive(Serialize)]
+struct PaymentData {
+    number: u32,
+    payment: i64,
+    principal: i64,
+    interest: i64,
+    balance: i64,
+}
+
+impl TryFrom<&LoanPayment> for PaymentData {
+    type Error = CliError;
+
+    fn try_from(row: &LoanPayment) -> Result<Self, Self::Error> {
+        Ok(Self {
+            number: row.number,
+            payment: minor(row.payment)?,
+            principal: minor(row.principal)?,
+            interest: minor(row.interest)?,
+            balance: minor(row.balance)?,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct ScheduleData {
+    currency: String,
+    principal: i64,
+    annual_rate: String,
+    months: u32,
+    regular_payment: i64,
+    total_interest: i64,
+    total_paid: i64,
+    payments: Vec<PaymentData>,
+}
+
+fn validation(error: impl std::fmt::Display) -> CliError {
+    CliError::Validation(error.to_string())
+}
+
+fn minor(amount: Amount) -> Result<i64, CliError> {
+    i64::try_from(amount.minor_units()).map_err(|_| {
+        CliError::Validation("loan payment or total exceeds the CLI's i64 minor-unit range".into())
+    })
+}
+
+fn calculate(args: &LoanCalculationArgs) -> Result<(Currency, ScheduleData), CliError> {
+    let currency = Currency::from_code(&args.currency).map_err(validation)?;
+    let principal = super::txn::parse_amount_to_minor(&args.principal, currency)?;
+    let rate: AnnualRate = args.rate.parse().map_err(validation)?;
+    let term = LoanTerm::new(args.months).map_err(validation)?;
+    let terms =
+        LoanTerms::new(Amount::new(i128::from(principal)), rate, term).map_err(validation)?;
+    let AmortizationSchedule {
+        regular_payment,
+        total_interest,
+        total_paid,
+        payments,
+        ..
+    } = terms.schedule().map_err(validation)?;
+    Ok((
+        currency,
+        ScheduleData {
+            currency: currency.to_string(),
+            principal,
+            annual_rate: rate.to_string(),
+            months: args.months,
+            regular_payment: minor(regular_payment)?,
+            total_interest: minor(total_interest)?,
+            total_paid: minor(total_paid)?,
+            payments: payments
+                .iter()
+                .map(PaymentData::try_from)
+                .collect::<Result<_, _>>()?,
+        },
+    ))
+}
+
+/// Run the database-free calculator or a company-scoped audited payment.
+///
+/// # Errors
+/// Rejects invalid terms, missing/mistyped accounts, payment numbers outside the
+/// generated schedule, invalid dates/references, or failed audited postings.
+pub fn run(cli: &Cli, command: &LoanCommand) -> Result<(), CliError> {
+    match command {
+        LoanCommand::Schedule(args) => {
+            let (currency, schedule) = calculate(args)?;
+            if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {
+                return Ok(());
+            }
+            match resolve_format(None, cli) {
+                OutputFormat::Json => println!(
+                    "{}",
+                    json::envelope_ok(cli.meta("loan.schedule", None), &schedule,)?
+                ),
+                OutputFormat::Csv => print_csv(&schedule.payments)?,
+                OutputFormat::Table => {
+                    println!(
+                        "Monthly payment: {} {currency}; total interest: {}; total paid: {}",
+                        display(schedule.regular_payment, currency),
+                        display(schedule.total_interest, currency),
+                        display(schedule.total_paid, currency)
+                    );
+                    print_table(&schedule.payments, currency);
+                }
+            }
+            Ok(())
+        }
+        LoanCommand::Pay(args) => pay(cli, args),
+    }
+}
+
+fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
+    let (currency, schedule) = calculate(&args.terms)?;
+    let row = schedule
+        .payments
+        .iter()
+        .find(|row| row.number == args.payment_number)
+        .ok_or_else(|| {
+            CliError::Validation(format!(
+                "payment number must be from 1 to {} for these terms",
+                schedule.payments.len()
+            ))
+        })?;
+    let company = require_company(cli)?;
+    let db = cli.open_db()?;
+    crate::db::get_company(db.conn(), &company)?;
+    for (code, expected) in [
+        (&args.liability, "liability"),
+        (&args.interest_account, "expense"),
+        (&args.paying_account, "asset"),
+    ] {
+        let account = crate::db::accounts::get_account(db.conn(), &company, code)?;
+        if account.account_type != expected {
+            return Err(CliError::Validation(format!(
+                "loan account '{code}' must have type {expected}, found {}",
+                account.account_type
+            )));
+        }
+    }
+    let mut debit = Vec::new();
+    for (code, amount) in [
+        (&args.liability, row.principal),
+        (&args.interest_account, row.interest),
+    ] {
+        if amount > 0 {
+            debit.push(format!("{code}:{}", display(amount, currency)));
+        }
+    }
+    let post = TxnCommand::Post {
+        description: format!("Loan payment {} ({})", row.number, args.reference.trim()),
+        debit,
+        credit: vec![format!(
+            "{}:{}",
+            args.paying_account,
+            display(row.payment, currency)
+        )],
+        metadata: None,
+        meta: Vec::new(),
+        currency: currency.to_string(),
+        date: Some(args.date.clone()),
+        correlate: None,
+        reference: Some(args.reference.clone()),
+        on_conflict: args.on_conflict,
+        tax: Vec::new(),
+    };
+    let result = super::txn::execute_json(cli, &db, &company, &post, &cli.principal())?;
+    // On a skipped reference the existing transaction may have different terms;
+    // return only its identity/status, never claim that it contains this split.
+    if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {
+        return Ok(());
+    }
+    let (id, status) = if result["skipped"].as_bool() == Some(true) {
+        (&result["existing_id"], "skipped")
+    } else {
+        (&result["id"], "created")
+    };
+    match resolve_format(None, cli) {
+        OutputFormat::Json => println!(
+            "{}",
+            json::envelope_ok(cli.meta("loan.pay", Some(&company)), &result,)?
+        ),
+        OutputFormat::Table => println!("{status} transaction #{id}"),
+        OutputFormat::Csv => {
+            let mut writer = csv::Writer::from_writer(std::io::stdout());
+            writer
+                .write_record(["id", "status"])
+                .map_err(|error| CliError::General(error.to_string()))?;
+            writer
+                .write_record([id.to_string(), status.to_owned()])
+                .map_err(|error| CliError::General(error.to_string()))?;
+            writer.flush()?;
+        }
+    }
+    Ok(())
+}
+
+fn display(amount: i64, currency: Currency) -> String {
+    Amount::new(i128::from(amount)).format_decimal(currency.minor_units())
+}
+
+fn print_csv(rows: &[PaymentData]) -> Result<(), CliError> {
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(std::io::stdout());
+    writer
+        .write_record(["number", "payment", "principal", "interest", "balance"])
+        .map_err(|error| CliError::General(error.to_string()))?;
+    for row in rows {
+        writer
+            .serialize(row)
+            .map_err(|error| CliError::General(error.to_string()))?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn print_table(rows: &[PaymentData], currency: Currency) {
+    let mut table = comfy_table::Table::new();
+    table.set_header(["Payment #", "Payment", "Principal", "Interest", "Balance"]);
+    for row in rows {
+        table.add_row([
+            row.number.to_string(),
+            display(row.payment, currency),
+            display(row.principal, currency),
+            display(row.interest, currency),
+            display(row.balance, currency),
+        ]);
+    }
+    println!("{table}");
+}

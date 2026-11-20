@@ -48,6 +48,7 @@
 
 pub mod core;
 pub mod error;
+pub mod loan;
 pub mod reporting;
 pub mod types;
 
@@ -60,6 +61,9 @@ pub mod prelude {
         occurrence_date,
     };
     pub use crate::error::BeanError;
+    pub use crate::loan::{
+        AmortizationSchedule, AnnualRate, LoanError, LoanPayment, LoanTerm, LoanTerms,
+    };
     pub use crate::reporting::{AccountBalance, TrialBalance};
     pub use crate::types::{
         Account, AccountCode, AccountCodeError, AccountType, AccountTypeError, Amount, AmountError,
