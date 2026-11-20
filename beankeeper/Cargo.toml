@@ -9,6 +9,8 @@ license = "MIT OR Apache-2.0"
 keywords = ["accounting", "double-entry", "bookkeeping", "finance", "ledger"]
 repository = "https://github.com/Govcraft/beankeeper"
 categories = ["finance"]
+readme = "../README.md"
+include = ["/src/**", "/tests/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [dependencies]
 chrono = { version = "0.4.44", default-features = false }
