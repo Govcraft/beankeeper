@@ -77,3 +77,42 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     }
     Ok(())
 }
+
+#[test]
+fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("books.db");
+    let db = Db::open(&path, None)?;
+    companies::create_company(db.conn(), "acme", "Acme", None)?;
+    for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
+        accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+    }
+    beankeeper_cli::db::audit::change_period(
+        db.conn(),
+        &beankeeper_cli::db::Actor::new("owner"),
+        "acme",
+        Some(beankeeper_cli::db::periods::parse_date("2026-01-31")?),
+        None,
+    )?;
+    let before: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+    let file = dir.path().join("closed.ofx");
+    std::fs::write(&file, statement("USD", "12.34"))?;
+    let data = import(&path, &file, &[])?;
+    assert_eq!(data["transactions"][0]["status"], "error");
+    assert!(
+        data["transactions"][0]["reason"]
+            .as_str()
+            .is_some_and(|message| message.contains("closed period")),
+        "{data}"
+    );
+    let state: (i64, i64) = db.conn().query_row(
+        "SELECT (SELECT COUNT(*) FROM transactions), (SELECT COUNT(*) FROM audit_log)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(state, (0, before));
+    beankeeper_cli::commands::verify::execute_json(&db)?;
+    Ok(())
+}

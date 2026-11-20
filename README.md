@@ -92,6 +92,28 @@ older binaries cannot append the new v3 audit format. `init --force` requires an
 admin to disable enforcement first. See
 [agent identity setup, capability map, and limits](docs/agent-identity.md).
 
+### Period close and locking
+
+```bash
+bk --company acme period close --through 2026-01-31
+bk --company acme --json period list
+bk --company acme period reopen --reason "Correct a missing January receipt"
+```
+
+Companies close independently. The inclusive cutoff blocks new postings on or
+before that date, across currencies and all posting paths, including imports,
+schedules, loans, investments, reversals, and proposal approval. Rejected approvals
+stay pending. A close may advance the cutoff; reopening clears it with a required
+reason. Close/reopen require `ledger/admin` under enforcement, and list requires
+`ledger/read`. CLI and MCP share these rules; `period_close`, `period_reopen`, and
+`period_list` expose them to agents.
+
+Schema v20 preserves historical hashes, policy, and proposals. Back up before
+upgrading: new audit records use version 4, which prevents older binaries from
+appending. Close/reopen events record the actor and before/after state; `verify`
+checks cutoff integrity. See [period commands](docs/beankeeper/references/commands.md#period-close-and-locking)
+for output fields, history, and retry behavior.
+
 ### Spend limits and approval gates
 
 CLI 0.26.0 adds per-agent, per-company spend limits and pending proposals:
@@ -419,6 +441,7 @@ mutation tools are absent and cannot be called.
 
 | Tools | Purpose |
 | --- | --- |
+| `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `company_list`, `company_show` | Inspect companies |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |
 | `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Post, reverse and annotate transactions |

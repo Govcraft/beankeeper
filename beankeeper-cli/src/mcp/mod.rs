@@ -368,6 +368,10 @@ fn execute_operation(
                 .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
             return Ok((data, Some(pagination)));
         }
+        Command::Period(command) => {
+            serde_json::to_value(commands::period::execute(db, company, command, actor)?)
+                .map_err(|error| CliError::General(error.to_string()))
+        }
         Command::Verify => commands::verify::execute_json(db),
         _ => Err(CliError::Usage(
             "operation is not available over MCP".into(),
@@ -660,6 +664,39 @@ impl LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         self.execute("txn_reconcile", input, context).await
+    }
+
+    #[tool(
+        description = "Close a company through an inclusive date, rejecting new postings on or before it. Requires ledger/admin when enforcement is on."
+    )]
+    async fn period_close(
+        &self,
+        Parameters(input): Parameters<inputs::PeriodClose>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("period_close", input, context).await
+    }
+
+    #[tool(
+        description = "Explicitly reopen all closed dates for a company with a required reason. Requires ledger/admin when enforcement is on."
+    )]
+    async fn period_reopen(
+        &self,
+        Parameters(input): Parameters<inputs::PeriodReopen>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("period_reopen", input, context).await
+    }
+
+    #[tool(
+        description = "List a company's current posting cutoff and last close/reopen attribution."
+    )]
+    async fn period_list(
+        &self,
+        Parameters(input): Parameters<inputs::CompanyScope>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("period_list", input, context).await
     }
 
     #[tool(description = "Verify ledger integrity.")]

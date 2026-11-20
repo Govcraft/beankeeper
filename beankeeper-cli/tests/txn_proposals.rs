@@ -710,3 +710,57 @@ fn proposal_resolution_is_company_scoped_and_rejections_cannot_be_approved() -> 
     ledger.run("acme", &["verify"], Some(&approver.token))?;
     Ok(())
 }
+
+#[test]
+fn period_lock_blocks_approval_atomically_and_reopen_requires_admin() -> TestResult {
+    let ledger = Ledger::new()?;
+    let proposer = ledger.issue(&["ledger/propose"])?;
+    let approver = ledger.issue(&["ledger/approve", "ledger/read"])?;
+    let admin = ledger.issue(&["ledger/admin", "ledger/read"])?;
+    let proposal = ledger.propose(&proposer, "closed-receipt")?;
+    let id = id(&proposal)?;
+    ledger.run(
+        "acme",
+        &["policy", "set", "--enforce", "on"],
+        Some(&admin.token),
+    )?;
+    let close = ["period", "close", "--through", "2026-01-31"];
+    let reopen = ["period", "reopen", "--reason", "Missing receipt correction"];
+    error_code(
+        &ledger.call("acme", &close, Some(&approver.token))?,
+        "FORBIDDEN",
+        7,
+    )?;
+    ledger.run("acme", &close, Some(&admin.token))?;
+    let history = ledger.count("audit_log")?;
+    error_code(
+        &ledger.call("acme", &["txn", "approve", id], Some(&approver.token))?,
+        "VALIDATION",
+        3,
+    )?;
+    assert_eq!(ledger.count("transactions")?, 0);
+    assert_eq!(ledger.count("entries")?, 0);
+    assert_eq!(ledger.count("audit_log")?, history);
+    let pending = beankeeper_cli::db::proposals::get(ledger.db.conn(), "acme", id)?;
+    assert_eq!(pending.status, "pending");
+    error_code(
+        &ledger.call("acme", &reopen, Some(&approver.token))?,
+        "FORBIDDEN",
+        7,
+    )?;
+    error_code(&ledger.call("acme", &reopen, None)?, "UNAUTHORIZED", 6)?;
+    ledger.run("acme", &reopen, Some(&admin.token))?;
+    let reopened = ledger.run("acme", &["period", "list"], Some(&admin.token))?;
+    assert_eq!(reopened[0]["reason"], "Missing receipt correction");
+    ledger.run("acme", &["txn", "approve", id], Some(&approver.token))?;
+    assert_eq!(ledger.count("transactions")?, 1);
+    ledger.run("acme", &["verify"], Some(&approver.token))?;
+    let attribution: (Option<String>, Option<String>) = ledger.db.conn().query_row(
+        "SELECT agent_uri, token_jti FROM audit_log WHERE action = 'period_reopen'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(attribution.0.as_deref(), Some(admin.uri.as_str()));
+    assert!(attribution.1.is_some());
+    Ok(())
+}

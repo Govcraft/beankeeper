@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = 19;
+pub(crate) const CURRENT_VERSION: i64 = 20;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -122,6 +122,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 19 {
         apply_v19(conn)?;
+    }
+
+    if version < 20 {
+        apply_v20(conn)?;
     }
 
     debug_assert_eq!(
@@ -1216,9 +1220,251 @@ fn extend_proposal_audit(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Add company cutoffs without rewriting historical hashes or audit snapshots.
+fn apply_v20(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(conn)?;
+        // These triggers reference the audit table while it is being rebuilt.
+        let triggers: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'
+             AND name IN ('protect_policy_update', 'protect_proposal_resolution')",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        for (name, _) in &triggers {
+            conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
+        }
+        extend_period_audit(conn)?;
+        for (_, sql) in &triggers {
+            conn.execute_batch(sql)?;
+        }
+        conn.execute_batch(
+            "CREATE TABLE period_locks (
+                company_slug TEXT PRIMARY KEY NOT NULL REFERENCES companies(slug),
+                closed_through TEXT,
+                changed_at TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                reason TEXT,
+                CHECK(closed_through IS NULL OR
+                    (length(closed_through) = 10 AND date(closed_through, '+0 days') IS closed_through)),
+                CHECK(closed_through IS NOT NULL OR (reason IS NOT NULL AND length(trim(reason)) > 0))
+            );
+            CREATE TRIGGER protect_period_delete BEFORE DELETE ON period_locks
+            BEGIN SELECT RAISE(ABORT, 'period history cannot be deleted'); END;
+            CREATE TRIGGER protect_period_insert BEFORE INSERT ON period_locks
+            WHEN EXISTS(SELECT 1 FROM period_locks WHERE company_slug = NEW.company_slug)
+              OR NEW.closed_through IS NULL
+              OR NOT EXISTS (
+                SELECT 1 FROM audit_log WHERE id = (SELECT MAX(id) FROM audit_log)
+                  AND entity = 'period' AND entity_id = NEW.company_slug
+                  AND company_slug = NEW.company_slug AND action = 'period_close'
+                  AND before IS NULL
+                  AND json_extract(after, '$.company_slug') IS NEW.company_slug
+                  AND json_extract(after, '$.closed_through') IS NEW.closed_through
+                  AND json_extract(after, '$.changed_at') IS NEW.changed_at
+                  AND json_extract(after, '$.actor') IS NEW.actor
+                  AND json_extract(after, '$.reason') IS NEW.reason
+            )
+            BEGIN SELECT RAISE(ABORT, 'period close requires an audit snapshot'); END;
+            CREATE TRIGGER protect_period_update BEFORE UPDATE ON period_locks
+            WHEN NEW.company_slug IS NOT OLD.company_slug
+              OR NOT EXISTS (
+                SELECT 1 FROM audit_log WHERE id = (SELECT MAX(id) FROM audit_log)
+                  AND entity = 'period' AND entity_id = NEW.company_slug
+                  AND company_slug = NEW.company_slug
+                  AND action = CASE WHEN NEW.closed_through IS NULL THEN 'period_reopen' ELSE 'period_close' END
+                  AND json_extract(before, '$.company_slug') IS OLD.company_slug
+                  AND json_extract(before, '$.closed_through') IS OLD.closed_through
+                  AND json_extract(before, '$.changed_at') IS OLD.changed_at
+                  AND json_extract(before, '$.actor') IS OLD.actor
+                  AND json_extract(before, '$.reason') IS OLD.reason
+                  AND json_extract(after, '$.company_slug') IS NEW.company_slug
+                  AND json_extract(after, '$.closed_through') IS NEW.closed_through
+                  AND json_extract(after, '$.changed_at') IS NEW.changed_at
+                  AND json_extract(after, '$.actor') IS NEW.actor
+                  AND json_extract(after, '$.reason') IS NEW.reason
+            )
+            BEGIN SELECT RAISE(ABORT, 'period change requires an audit snapshot'); END;
+            CREATE TRIGGER protect_period_post BEFORE INSERT ON transactions
+            WHEN EXISTS(SELECT 1 FROM period_locks
+                WHERE company_slug = NEW.company_slug AND date(NEW.date) <= closed_through)
+            BEGIN SELECT RAISE(ABORT, 'transaction date is in a closed period'); END;
+            INSERT INTO schema_version(version) VALUES (20);",
+        )?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
+fn extend_period_audit(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "CREATE TABLE audit_log_v20 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule','schedule','security','lot','price','policy','proposal','spend_limit','period')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset','schedule_cancel','schedule_run','policy_change','proposal_approve','proposal_reject','limit_set','period_close','period_reopen')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 4 CHECK(hash_version IN (1,2,3,4)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v20 SELECT * FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v20 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 4
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v20_preserves_v19_policy_proposals_and_mixed_hashes() -> Result<(), CliError> {
+        use super::super::{Actor, audit, periods, proposals, verification};
+        use mti::prelude::*;
+        let conn = v17_connection()?;
+        apply_v18(&conn)?;
+        apply_v19(&conn)?;
+        let owner = Actor::new("owner");
+        let id = "proposal".create_type_id::<V7>().to_string();
+        let payload = proposals::PostingPayload {
+            description: "Review".into(),
+            metadata: None,
+            currency: "USD".into(),
+            date: "2026-01-01".into(),
+            entries: Vec::new(),
+            correlate: None,
+            reference: None,
+            on_conflict: super::super::ConflictStrategy::Error,
+        };
+        conn.execute(
+            "INSERT INTO txn_proposals(id, company_slug, status, payload, debit_total, currency, proposer_uri, proposer_jti)
+             VALUES (?1, 'legacy', 'pending', ?2, 100, 'USD', 'proposer', 'jti')",
+            params![id, serde_json::to_string(&payload).map_err(|e| CliError::General(e.to_string()))?],
+        )?;
+        audit::reject_proposal(&conn, &owner, "legacy", &id, Some("v19 review"))?;
+        audit::set_policy(&conn, &owner, true)?;
+        let history = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
+            Ok(conn
+                .prepare(
+                    "SELECT hash_version, row_hash, COALESCE(after, '') FROM audit_log ORDER BY id",
+                )?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?)
+        };
+        let before = history(&conn)?;
+        assert_eq!(
+            before.iter().map(|row| row.0).collect::<Vec<_>>(),
+            [1, 2, 3, 3]
+        );
+        // Exercise the normal file-open migration and complete verify path too.
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("v19.db");
+        conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
+        let migrated = super::super::Db::open_existing(&path, None)?;
+        assert_eq!(get_schema_version(migrated.conn())?, 20);
+        assert_eq!(history(migrated.conn())?, before);
+        crate::commands::verify::execute_json(&migrated)?;
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, 20);
+        assert_eq!(history(&conn)?, before);
+        assert!(super::super::policy::get(&conn)?.enforce);
+        assert_eq!(
+            proposals::get(&conn, "legacy", &id)?.reason.as_deref(),
+            Some("v19 review")
+        );
+        proposals::verify_resolutions(&conn)?;
+        // The existing policy and proposal protection triggers survive rebuilding audit_log.
+        assert!(
+            conn.execute("UPDATE ledger_policy SET enforce = 0", [])
+                .is_err()
+        );
+        assert!(
+            conn.execute(
+                "UPDATE txn_proposals SET reason = 'forged' WHERE id = ?1",
+                [&id]
+            )
+            .is_err()
+        );
+        for hash_version in [2, 3] {
+            assert!(conn.execute(
+                "INSERT INTO audit_log(id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
+                 SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, ?1
+                 FROM audit_log ORDER BY id DESC LIMIT 1", [hash_version],
+            ).is_err());
+        }
+        audit::set_policy(&conn, &owner, false)?;
+        audit::change_period(
+            &conn,
+            &owner,
+            "legacy",
+            Some(periods::parse_date("2026-01-31")?),
+            None,
+        )?;
+        assert!(periods::check_posting(&conn, "legacy", "2026-01-31").is_err());
+        audit::verify_hash_chain(&conn)?;
+        audit::verify_creations(&conn)?;
+        verification::verify_accounting(&conn)?;
+        periods::verify(&conn)?;
+        assert_eq!(history(&conn)?.last().map(|row| row.0), Some(4));
+        ensure_schema(&conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn v20_migration_rolls_back_corrupt_history_and_schema_collisions() -> Result<(), CliError> {
+        for corruption in ["collision", "hash", "tail"] {
+            let conn = v17_connection()?;
+            apply_v18(&conn)?;
+            apply_v19(&conn)?;
+            match corruption {
+                "hash" => conn.execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET actor = 'tampered' WHERE id = 1")?,
+                "tail" => conn.execute_batch("DROP TRIGGER protect_audit_delete; DELETE FROM audit_log WHERE id = 2")?,
+                _ => conn.execute_batch("CREATE TABLE period_locks (collision TEXT)")?,
+            }
+            assert!(apply_v20(&conn).is_err());
+            assert_eq!(get_schema_version(&conn)?, 19);
+            assert!(conn.prepare("SELECT * FROM audit_log_v20").is_err());
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('protect_policy_update', 'protect_proposal_resolution')", [], |row| row.get(0),
+            )?;
+            assert_eq!(count, 2);
+            if corruption == "collision" {
+                super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
+                super::super::audit::verify_hash_chain(&conn)?;
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn v19_preserves_v18_policy_history_and_posted_hashes() -> Result<(), CliError> {
@@ -1308,7 +1554,7 @@ mod tests {
             SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 2 FROM audit_log ORDER BY id DESC LIMIT 1", []);
         assert!(result.is_err());
         super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
-        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(3));
+        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(4));
         super::super::audit::verify_hash_chain(&conn)?;
         super::super::audit::verify_creations(&conn)?;
         for sql in [

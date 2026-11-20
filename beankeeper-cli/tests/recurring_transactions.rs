@@ -605,3 +605,47 @@ fn dry_run_counts_include_empty_runs_and_respect_quiet_in_all_formats() -> TestR
     }
     Ok(())
 }
+
+#[test]
+fn closed_period_run_leaves_the_schedule_due_until_explicit_reopen() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.create(
+        "acme",
+        "2026-01-31",
+        ("5000:12.50", "1000:12.50"),
+        &["--frequency", "monthly"],
+    )?;
+    let before = ledger.run("acme", &["schedule", "list"])?;
+    ledger.run("acme", &["period", "close", "--through", "2026-01-31"])?;
+    let history = ledger.count("audit_log")?;
+    let output = ledger
+        .command()?
+        .args([
+            "--json",
+            "--company",
+            "acme",
+            "schedule",
+            "run",
+            "--through",
+            "2026-01-31",
+        ])
+        .output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("closed period"));
+    assert_eq!(ledger.count("transactions")?, 0);
+    assert_eq!(ledger.count("audit_log")?, history);
+    assert_eq!(ledger.run("acme", &["schedule", "list"])?, before);
+    ledger.run(
+        "acme",
+        &["period", "reopen", "--reason", "Post missing rent"],
+    )?;
+    ledger.run("acme", &["schedule", "run", "--through", "2026-01-31"])?;
+    assert_eq!(ledger.count("transactions")?, 1);
+    ledger.run("acme", &["verify"])?;
+    Ok(())
+}

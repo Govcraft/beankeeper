@@ -38,7 +38,8 @@ impl Capability {
     pub fn for_operation(operation: &str) -> Result<Self, CliError> {
         let operation = operation.replace('_', ".");
         match operation.as_str() {
-            "company.list"
+            "period.list"
+            | "company.list"
             | "company.show"
             | "account.list"
             | "account.show"
@@ -86,9 +87,10 @@ impl Capability {
             "txn.reverse" => Ok(Self::Reverse),
             "txn.clear" | "txn.reconcile" => Ok(Self::Reconcile),
             "budget.set" | "budget.delete" => Ok(Self::Budget),
-            "company.create" | "company.delete" | "account.create" | "account.delete"
-            | "key.init" | "agent.issue" | "agent.revoke" | "policy.set" | "init" | "backup"
-            | "restore" | "agent.limit.set" | "agent.limit.clear" => Ok(Self::Admin),
+            "period.close" | "period.reopen" | "company.create" | "company.delete"
+            | "account.create" | "account.delete" | "key.init" | "agent.issue" | "agent.revoke"
+            | "policy.set" | "init" | "backup" | "restore" | "agent.limit.set"
+            | "agent.limit.clear" => Ok(Self::Admin),
             _ => Err(CliError::Usage(
                 "operation has no capability mapping".into(),
             )),
