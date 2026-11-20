@@ -85,10 +85,10 @@ impl LedgerServer {
             // One snapshot covers authorization and execution, including policy
             // changes made by another process while this session is running.
             crate::db::audit::atomically(db.conn(), || {
-                let identity = crate::identity::authorize(
+                let identity = crate::identity::authorize_operation(
                     db.conn(),
                     token.as_ref().map(ExposeSecret::expose_secret),
-                    Capability::for_operation(tool)?,
+                    tool,
                 )?;
                 let actor = match identity {
                     Some(identity) => actor.with_identity(identity),
@@ -173,7 +173,7 @@ fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliE
         "company_show" => &["slug"],
         "account_show" => &["code"],
         "account_create" => &["code", "name"],
-        "txn_show" | "txn_reverse" => &["id"],
+        "txn_show" | "txn_reverse" | "txn_approve" | "txn_reject" => &["id"],
         "txn_meta_set" => &["id", "values"],
         "txn_meta_unset" => &["id", "keys"],
         "txn_clear" => &["transaction_id"],
@@ -296,7 +296,7 @@ fn execute_operation(
     let Value::Object(mut input) = input else {
         return Err(CliError::Usage("tool arguments must be an object".into()));
     };
-    if tool == "txn_post" {
+    if matches!(tool, "txn_post" | "txn_propose") {
         prepare_post(&mut input)?;
     }
     if tool.starts_with("txn_meta_") {
@@ -506,6 +506,50 @@ impl LedgerServer {
     }
 
     #[tool(
+        description = "Propose balanced debits and credits for approval without posting them. Uses the same major-unit amounts and posting flags as txn_post. Requires a verified proposer identity and ledger/propose when enforcement is enabled. Pending references are reserved."
+    )]
+    async fn txn_propose(
+        &self,
+        Parameters(input): Parameters<inputs::TxnPost>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("txn_propose", input, context).await
+    }
+
+    #[tool(
+        description = "List visible pending transaction proposals. Under enforcement, proposers see their own; approvers and administrators see all. include_rejected also includes approved, rejected and withdrawn proposals."
+    )]
+    async fn txn_proposals(
+        &self,
+        Parameters(input): Parameters<inputs::TxnProposals>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("txn_proposals", input, context).await
+    }
+
+    #[tool(
+        description = "Approve a pending proposal and atomically post it through the audited transaction path. Requires ledger/approve when enforcement is enabled. Approval can exceed the proposer's spend limits and is attributed to the approver."
+    )]
+    async fn txn_approve(
+        &self,
+        Parameters(input): Parameters<inputs::TxnApprove>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("txn_approve", input, context).await
+    }
+
+    #[tool(
+        description = "Reject a pending proposal with an optional reason. ledger/propose can withdraw the caller's own proposal; ledger/approve can reject any proposal. Resolved proposals cannot be resolved again."
+    )]
+    async fn txn_reject(
+        &self,
+        Parameters(input): Parameters<inputs::TxnReject>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute("txn_reject", input, context).await
+    }
+
+    #[tool(
         description = "Reverse a transaction with a linked mirror posting. Pass the same explicit reference on retries to return the existing reversal. Reconciled transactions cannot be reversed; existing clearings stay on the original."
     )]
     async fn txn_reverse(
@@ -684,7 +728,7 @@ impl ServerHandler for LedgerServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("beankeeper", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Amounts in inputs use decimal major-unit strings; amounts in results retain integer minor units and add decimal-string _display companions. txn_list and audit_log return pagination in result _meta.pagination. Always pass a reference to txn_post, and on_conflict=skip for safe retries. Company is required for company-scoped tools. Never pass database paths or secrets to tools.")
+            .with_instructions("Amounts in inputs use decimal major-unit strings; amounts in results retain integer minor units and add decimal-string _display companions. txn_list and audit_log return pagination in result _meta.pagination. Always pass a reference to txn_post, and on_conflict=skip for safe retries. Direct posts enforce per-agent spend limits. Use txn_propose to request approval when a post exceeds a limit; txn_approve requires its own grant and posts as the approver. Pending proposals are outside the ledger until approved. Company is required for company-scoped tools. Never pass database paths or secrets to tools.")
     }
 }
 
@@ -724,7 +768,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
     let mut server = LedgerServer::new(db, read_only);
     if enforce && let Some(identity) = identity {
         for tool in server.tool_router.list_all() {
-            if !identity.allows(Capability::for_operation(&tool.name)?)? {
+            if !identity.allows_operation(&tool.name)? {
                 server.tool_router.remove_route(&tool.name);
             }
         }
@@ -756,6 +800,24 @@ mod tests {
         let server = LedgerServer::new(Db::open_in_memory()?, false);
         for tool in server.tool_router.list_all() {
             Capability::for_operation(&tool.name)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proposal_tools_respect_read_only_router_and_input_boundaries() -> Result<(), CliError> {
+        let server = LedgerServer::new(Db::open_in_memory()?, true);
+        let tools = server.tool_router.list_all();
+        assert!(tools.iter().any(|tool| tool.name == "txn_proposals"));
+        for name in ["txn_propose", "txn_approve", "txn_reject"] {
+            assert!(!tools.iter().any(|tool| tool.name == name));
+        }
+        for input in [
+            json!({"company":"acme", "id":"proposal_123", "agent_token":"secret"}),
+            json!({"company":"acme", "id":"proposal_123", "db":"other.db"}),
+        ] {
+            assert!(serde_json::from_value::<inputs::TxnApprove>(input.clone()).is_err());
+            assert!(serde_json::from_value::<inputs::TxnReject>(input).is_err());
         }
         Ok(())
     }
