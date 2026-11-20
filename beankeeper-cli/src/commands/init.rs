@@ -32,26 +32,29 @@ pub fn run(
         )));
     }
 
+    let configured_passphrase = passphrase::resolve_passphrase(
+        cli.passphrase.passphrase_fd,
+        cli.passphrase.passphrase_file.as_deref(),
+        false,
+    )?;
+    let passphrase = match configured_passphrase {
+        Some(passphrase) => Some(passphrase),
+        None if encrypt => {
+            if !std::io::stdin().is_terminal() {
+                return Err(CliError::Usage(
+                    "cannot prompt for passphrase: stdin is not a terminal; \
+                     use --passphrase-file or --passphrase-fd instead"
+                        .into(),
+                ));
+            }
+            Some(passphrase::prompt_new_passphrase()?)
+        }
+        None => None,
+    };
+
     if db_path.exists() && force {
         std::fs::remove_file(db_path)?;
     }
-
-    let passphrase = if encrypt {
-        if !std::io::stdin().is_terminal() {
-            return Err(CliError::Usage(
-                "cannot prompt for passphrase: stdin is not a terminal; \
-                 use --passphrase-file or --passphrase-fd instead"
-                    .into(),
-            ));
-        }
-        Some(passphrase::prompt_new_passphrase()?)
-    } else {
-        passphrase::resolve_passphrase(
-            cli.passphrase.passphrase_fd,
-            cli.passphrase.passphrase_file.as_deref(),
-            false,
-        )?
-    };
 
     let db = Db::open(db_path, passphrase.as_ref())?;
 
