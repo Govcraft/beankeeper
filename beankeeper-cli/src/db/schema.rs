@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 15;
+const CURRENT_VERSION: i64 = 16;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -100,6 +100,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 15 {
         apply_v15(conn)?;
+    }
+
+    if version < 16 {
+        apply_v16(conn)?;
     }
 
     debug_assert_eq!(
@@ -773,9 +777,123 @@ fn apply_v15(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
+/// Store pending schedules and extend auditing without changing historical hashes.
+fn apply_v16(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(conn)?;
+        conn.execute_batch(
+            "CREATE TABLE schedules (
+                id TEXT PRIMARY KEY NOT NULL,
+                company_slug TEXT NOT NULL REFERENCES companies(slug),
+                description TEXT NOT NULL CHECK(length(trim(description)) > 0),
+                currency TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                frequency TEXT NOT NULL CHECK(frequency IN ('once','daily','weekly','monthly','yearly')),
+                end_date TEXT,
+                metadata TEXT,
+                occurrence_index INTEGER NOT NULL DEFAULT 0 CHECK(occurrence_index >= 0),
+                next_due TEXT,
+                status TEXT NOT NULL CHECK(status IN ('pending','completed','cancelled')),
+                UNIQUE(id, company_slug)
+            );
+            CREATE INDEX idx_schedules_due ON schedules(company_slug, status, next_due);
+            CREATE TABLE schedule_entries (
+                schedule_id TEXT NOT NULL,
+                company_slug TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                account_code TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('debit','credit')),
+                amount INTEGER NOT NULL CHECK(amount > 0),
+                memo TEXT,
+                tax_category TEXT,
+                PRIMARY KEY(schedule_id, position),
+                FOREIGN KEY(schedule_id, company_slug) REFERENCES schedules(id, company_slug),
+                FOREIGN KEY(company_slug, account_code) REFERENCES accounts(company_slug, code)
+            );
+            CREATE TABLE audit_log_v16 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule','schedule')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset','schedule_cancel','schedule_run')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 2 CHECK(hash_version IN (1,2)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v16 SELECT * FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v16 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 2
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+            INSERT INTO schema_version (version) VALUES (16);"
+        )?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v16_preserves_hashes_and_rolls_back_failed_migration() -> Result<(), CliError> {
+        let conn = v12_connection()?;
+        seed_v12_creation(&conn)?;
+        apply_v13(&conn)?;
+        apply_v14(&conn)?;
+        apply_v15(&conn)?;
+        let historical: String = conn.query_row(
+            "SELECT row_hash FROM audit_log ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        conn.execute_batch("CREATE TABLE schedules (collision TEXT)")?;
+        assert!(apply_v16(&conn).is_err());
+        assert_eq!(get_schema_version(&conn)?, 15);
+        conn.execute_batch("DROP TABLE schedules")?;
+        apply_v16(&conn)?;
+        let retained: String = conn.query_row(
+            "SELECT row_hash FROM audit_log ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(historical, retained);
+        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_creations(&conn)?;
+        assert!(conn.execute("DELETE FROM audit_log", []).is_err());
+        assert!(
+            conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
+                .is_err()
+        );
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        Ok(())
+    }
 
     #[test]
     fn v15_preserves_history_and_metadata_edits_extend_the_chain() -> Result<(), CliError> {
@@ -821,7 +939,7 @@ mod tests {
                 .is_err()
         );
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, 15);
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         Ok(())
     }
 

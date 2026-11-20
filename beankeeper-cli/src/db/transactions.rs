@@ -22,7 +22,7 @@ pub(crate) fn reference_exists(
 }
 
 /// A single entry to be posted as part of a transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PostEntryParams {
     pub account_code: String,
     pub direction: String,

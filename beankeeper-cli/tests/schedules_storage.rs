@@ -1,0 +1,312 @@
+//! Schedule validation, atomic posting and audit preservation.
+
+use beankeeper::core::Frequency;
+use beankeeper_cli::{
+    db::{
+        Actor, Db, PostEntryParams, accounts, audit, companies,
+        schedules::{self, CreateScheduleParams},
+    },
+    error::CliError,
+};
+use chrono::NaiveDate;
+
+type TestResult = Result<(), CliError>;
+
+fn date(value: &str) -> Result<NaiveDate, CliError> {
+    value
+        .parse()
+        .map_err(|error| CliError::Validation(format!("{error}")))
+}
+
+fn fixture() -> Result<Db, CliError> {
+    let db = Db::open_in_memory()?;
+    companies::create_company(db.conn(), "acme", "Acme", None)?;
+    for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+        accounts::create_account(db.conn(), "acme", code, code, kind, Some("default-tax"))?;
+    }
+    Ok(db)
+}
+
+fn template() -> Result<CreateScheduleParams, CliError> {
+    Ok(CreateScheduleParams {
+        description: "Monthly rent".into(),
+        currency: "USD".into(),
+        start_date: date("2026-01-31")?,
+        frequency: Frequency::Monthly,
+        end_date: Some(date("2026-03-31")?),
+        metadata: Some("{\"vendor\":\"landlord\"}".into()),
+        entries: [("5000", "debit"), ("1000", "credit")]
+            .into_iter()
+            .map(|(account, direction)| PostEntryParams {
+                account_code: account.into(),
+                direction: direction.into(),
+                amount: 125_000,
+                memo: Some("rent memo".into()),
+                tax_category: None,
+            })
+            .collect(),
+    })
+}
+
+#[test]
+fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-test");
+    let mut cases = Vec::new();
+    let mut invalid = template()?;
+    invalid.entries[0].amount = 1;
+    cases.push(invalid);
+    let mut invalid = template()?;
+    invalid.entries[0].amount = 0;
+    cases.push(invalid);
+    let mut invalid = template()?;
+    invalid.entries[0].direction = "invalid".into();
+    cases.push(invalid);
+    let mut invalid = template()?;
+    invalid.entries[0].account_code = "missing".into();
+    cases.push(invalid);
+    let mut invalid = template()?;
+    invalid.currency = "BAD".into();
+    cases.push(invalid);
+    let mut invalid = template()?;
+    invalid.description = "  ".into();
+    cases.push(invalid);
+    let mut invalid = template()?;
+    invalid.end_date = Some(date("2025-01-01")?);
+    cases.push(invalid);
+    let mut invalid = template()?;
+    invalid.entries.push(invalid.entries[0].clone());
+    invalid.entries[0].amount = i64::MAX;
+    cases.push(invalid);
+    for invalid in cases {
+        assert!(schedules::create_schedule(db.conn(), &actor, "acme", &invalid).is_err());
+    }
+    assert!(schedules::list_schedules(db.conn(), "acme")?.is_empty());
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
+fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-test");
+    let schedule = schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
+    assert_eq!(
+        schedule.entries[0].tax_category.as_deref(),
+        Some("default-tax")
+    );
+    let preview = schedules::run_due(db.conn(), &actor, "acme", date("2026-03-31")?, true)?;
+    assert_eq!(preview.len(), 3);
+    assert!(
+        preview
+            .iter()
+            .all(|occurrence| occurrence.transaction_id.is_none())
+    );
+    assert_eq!(
+        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        Some(date("2026-01-31")?)
+    );
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+    assert_eq!(count, 1);
+    let posted = schedules::run_due(db.conn(), &actor, "acme", date("2026-03-31")?, false)?;
+    assert_eq!(
+        posted
+            .iter()
+            .map(|item| item.date.to_string())
+            .collect::<Vec<_>>(),
+        ["2026-01-31", "2026-02-28", "2026-03-31"]
+    );
+    assert!(
+        posted
+            .iter()
+            .all(|occurrence| occurrence.transaction_id.is_some())
+    );
+    let completed = &schedules::list_schedules(db.conn(), "acme")?[0];
+    assert_eq!(completed.status, "completed");
+    assert_eq!(completed.next_due, None);
+    assert!(schedules::run_due(db.conn(), &actor, "acme", date("2027-01-01")?, false)?.is_empty());
+    audit::verify_hash_chain(db.conn())?;
+    audit::verify_creations(db.conn())?;
+    assert!(audit::delete_account(db.conn(), &actor, "acme", "1000").is_err());
+    Ok(())
+}
+
+#[test]
+fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-test");
+    schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
+    db.conn().execute_batch(
+        "CREATE TRIGGER fail_schedule_audit BEFORE INSERT ON audit_log
+         WHEN NEW.action = 'schedule_run' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;",
+    )?;
+    assert!(schedules::run_due(db.conn(), &actor, "acme", date("2026-03-31")?, false).is_err());
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    assert_eq!(
+        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        Some(date("2026-01-31")?)
+    );
+    let audit_count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+    assert_eq!(audit_count, 1);
+    audit::verify_hash_chain(db.conn())?;
+    Ok(())
+}
+
+#[test]
+fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-test");
+    schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
+    db.conn().execute_batch(
+        "CREATE TRIGGER fail_second_post BEFORE INSERT ON transactions
+         WHEN NEW.date = '2026-02-28' BEGIN SELECT RAISE(ABORT, 'posting unavailable'); END;",
+    )?;
+    assert!(schedules::run_due(db.conn(), &actor, "acme", date("2026-03-31")?, false).is_err());
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    assert_eq!(
+        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        Some(date("2026-01-31")?)
+    );
+    audit::verify_hash_chain(db.conn())?;
+    Ok(())
+}
+
+#[test]
+fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-test");
+    companies::create_company(db.conn(), "other", "Other", None)?;
+    let schedule = schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
+    assert!(schedules::list_schedules(db.conn(), "other")?.is_empty());
+    assert!(schedules::cancel_schedule(db.conn(), &actor, "other", &schedule.id).is_err());
+    let posted = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-31")?, false)?;
+    assert_eq!(posted.len(), 1);
+    let cancelled = schedules::cancel_schedule(db.conn(), &actor, "acme", &schedule.id)?;
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.next_due, None);
+    schedules::cancel_schedule(db.conn(), &actor, "acme", &schedule.id)?;
+    assert!(schedules::run_due(db.conn(), &actor, "acme", date("2027-01-01")?, false)?.is_empty());
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, 1);
+    let count: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'schedule_cancel'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 1);
+    assert!(audit::delete_company(db.conn(), &actor, "acme").is_err());
+    audit::verify_hash_chain(db.conn())?;
+    Ok(())
+}
+
+#[test]
+fn invalid_persisted_template_is_rejected_before_posting() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-test");
+    schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
+    db.conn().execute(
+        "UPDATE schedule_entries SET amount = 1 WHERE direction = 'debit'",
+        [],
+    )?;
+    assert!(schedules::run_due(db.conn(), &actor, "acme", date("2026-03-31")?, false).is_err());
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    assert_eq!(
+        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        Some(date("2026-01-31")?)
+    );
+    Ok(())
+}
+
+#[test]
+fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Barrier};
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("concurrent.db");
+    let db = Db::open(&path, None)?;
+    companies::create_company(db.conn(), "acme", "Acme", None)?;
+    for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+        accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+    }
+    schedules::create_schedule(db.conn(), &Actor::new("creator"), "acme", &template()?)?;
+    drop(db);
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = (0..2)
+        .map(|index| {
+            let barrier = Arc::clone(&barrier);
+            let path = path.clone();
+            std::thread::spawn(move || -> Result<usize, CliError> {
+                let db = Db::open_existing(&path, None)?;
+                db.conn().busy_timeout(std::time::Duration::from_secs(10))?;
+                barrier.wait();
+                Ok(schedules::run_due(
+                    db.conn(),
+                    &Actor::new(format!("runner-{index}")),
+                    "acme",
+                    date("2026-03-31")?,
+                    false,
+                )?
+                .len())
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut posted = 0;
+    for handle in handles {
+        posted += handle.join().map_err(|_| "runner panicked")??;
+    }
+    assert_eq!(posted, 3);
+    let db = Db::open_existing(&path, None)?;
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, 3);
+    audit::verify_hash_chain(db.conn())?;
+    audit::verify_creations(db.conn())?;
+    Ok(())
+}
+
+#[test]
+fn finite_schedules_complete_at_the_supported_date_boundary() -> TestResult {
+    let preceding_day = NaiveDate::MAX
+        .pred_opt()
+        .ok_or_else(|| CliError::Validation("missing preceding date".into()))?;
+    for (frequency, start_date) in [
+        (Frequency::Weekly, preceding_day),
+        (Frequency::Daily, NaiveDate::MAX),
+    ] {
+        let db = fixture()?;
+        let actor = Actor::new("schedule-boundary-test");
+        let mut params = template()?;
+        params.start_date = start_date;
+        params.end_date = Some(NaiveDate::MAX);
+        params.frequency = frequency;
+        schedules::create_schedule(db.conn(), &actor, "acme", &params)?;
+        let posted = schedules::run_due(db.conn(), &actor, "acme", NaiveDate::MAX, false)?;
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].date, start_date);
+        let completed = &schedules::list_schedules(db.conn(), "acme")?[0];
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.next_due, None);
+        assert!(schedules::run_due(db.conn(), &actor, "acme", NaiveDate::MAX, false)?.is_empty());
+        audit::verify_hash_chain(db.conn())?;
+        audit::verify_creations(db.conn())?;
+    }
+    Ok(())
+}
