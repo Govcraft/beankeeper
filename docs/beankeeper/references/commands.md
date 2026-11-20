@@ -643,6 +643,35 @@ bk --company acme report balance-sheet
 bk --company acme report balance-sheet --to 2026-03-31
 ```
 
+### `bk report trend`
+
+Historical trends with one column per calendar period.
+
+```bash
+bk --company acme report trend --metric spending --from 2026-01-01 --to 2026-12-31
+bk --company acme report trend --metric net-worth --period quarter --to 2026-12-31
+```
+
+- `--metric spending|net-worth` is required. Spending shows each expense
+  account's debits minus credits in each period, including zero accounts and
+  refunds, plus Total Spending. Categories are account codes and names.
+- Net worth shows Total Assets, Total Liabilities and Net Worth at each period
+  end, including history before `--from`. Assets are debits minus credits;
+  liabilities are credits minus debits; net worth is assets minus liabilities.
+  These are book values. No cross-period total is calculated.
+- `--period month|quarter|year` defaults to month, with at most 120 periods.
+- `--from DATE`, `--to DATE` are inclusive. End defaults to today; start defaults
+  to January 1 of the end year. First and last periods are clipped; empty
+  periods remain present. Invalid or reversed dates fail with `VALIDATION`.
+- `--currency CODE` selects a single currency. Without it, infer the company's
+  only transaction currency, use USD for an empty company, or fail if ambiguous.
+- Table cells use major units. JSON command ID is `report.trend`; `data` includes
+  `metric`, `period`, `from`, `to`, `currency`, `columns` (`label/from/to`), and
+  `series` (`code`, `name`, `amounts`, `amounts_display`). Summary series have
+  `code: null`; arrays align with columns. CSV uses `code,name,<period labels>`
+  with integer minor-unit amounts, blank summary codes, and proper CSV quoting.
+- MCP `report` accepts `kind: "trend"`, `metric`, and the same optional fields.
+
 ### `bk report tax-summary`
 
 Entries grouped by tax category.

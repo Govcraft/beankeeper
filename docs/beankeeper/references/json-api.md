@@ -130,6 +130,35 @@ MCP `txn_list` and `audit_log` use the same fields in the tool result’s
 `_meta.pagination`, preserving their array payloads in text/structured content.
 MCP monetary display fields are identical to the CLI data payload.
 
+## Historical trend payload
+
+`report trend` uses command ID `report.trend`. For example:
+
+```json
+{
+  "data": {
+    "metric": "spending",
+    "period": "month",
+    "from": "2026-01-01",
+    "to": "2026-02-28",
+    "currency": "USD",
+    "columns": [
+      {"label": "2026-01", "from": "2026-01-01", "to": "2026-01-31"},
+      {"label": "2026-02", "from": "2026-02-01", "to": "2026-02-28"}
+    ],
+    "series": [
+      {"code": "5000", "name": "Rent", "amounts": [10000, 0], "amounts_display": ["100.00", "0.00"]},
+      {"code": null, "name": "Total Spending", "amounts": [10000, 0], "amounts_display": ["100.00", "0.00"]}
+    ]
+  }
+}
+```
+
+`metric: "net-worth"` returns Total Assets, Total Liabilities, and Net Worth
+series with null codes and cumulative period-end balances. `amounts` and
+`amounts_display` align with `columns`; no sum across time is emitted. Dates
+are inclusive. MCP returns this same data payload.
+
 ## Response Schemas by Command
 
 ### `company list`

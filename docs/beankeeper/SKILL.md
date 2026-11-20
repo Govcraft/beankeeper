@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.16.0
+version: 0.17.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -438,6 +438,27 @@ expected commissions and appear separately as negative charges. Use `--link-key`
 for another metadata key. Filters and grouping select original charge metadata.
 The account-wide explanations include all statements through `--to`; the
 comparison uses only this statement's charge clearings. Bank mode is the default.
+
+### Historical trends
+
+```bash
+bk --company acme report trend --metric spending --from 2026-01-01 --to 2026-12-31
+bk --company acme report trend --metric net-worth --from 2026-01-01 --to 2026-12-31
+```
+
+Use `--period month|quarter|year` (default month). `--to` defaults to today and
+`--from` to January 1 of the end year; dates are inclusive and partial periods
+are clipped. Maximum 120 periods. Spending categories are expense accounts:
+net debits per period, including refunds and zero-activity accounts, plus Total
+Spending. Net worth is cumulative assets minus liabilities at each period end,
+including history before `--from`. Empty periods preserve zero activity or
+carry balances forward. Net worth uses book values, and spending means booked
+expenses rather than cash payments. Select `--currency CODE` for multi-currency
+companies. JSON uses `columns` with `label/from/to` and `series` with `code/name`,
+`amounts` (minor units), and `amounts_display` (major units). CSV is
+`code,name,<period labels>` with minor-unit integers. No sum of period-end
+balances is emitted. MCP `report` accepts `kind: "trend"`, required `metric`
+(`spending` or `net-worth`), and optional `from`, `to`, `period`, `currency`.
 
 ### Budgeting
 

@@ -77,6 +77,7 @@ fn run_to(
     }
 
     match sub {
+        ReportCommand::Trend(args) => super::report_trend::run_to(cli, db, company, args, output),
         ReportCommand::TrialBalance { .. }
         | ReportCommand::Balance { .. }
         | ReportCommand::IncomeStatement { .. }

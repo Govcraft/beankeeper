@@ -14,6 +14,7 @@ mod report_dates;
 pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;
+pub mod report_trend;
 pub mod rule;
 pub mod txn;
 pub mod txn_clear;
@@ -89,6 +90,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             ReportCommand::Aging { .. } => "report.aging",
             ReportCommand::Reconciliation { .. } => "report.reconciliation",
             ReportCommand::CashFlow(_) => "report.cash-flow",
+            ReportCommand::Trend(_) => "report.trend",
         },
         Command::Audit(args) => match &args.command {
             AuditCommand::Log { .. } => "audit.log",

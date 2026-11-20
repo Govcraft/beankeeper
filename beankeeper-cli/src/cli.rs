@@ -1309,6 +1309,9 @@ EXAMPLES:\n  \
     $ bk --company acme report income-statement --from 2025-01-01 --to 2025-12-31\
 ")]
 pub enum ReportCommand {
+    /// Track spending by category or cumulative net worth across calendar periods.
+    Trend(crate::commands::report_trend::TrendArgs),
+
     /// Generate a trial balance.
     #[command(after_help = "\
 EXAMPLES:\n  \

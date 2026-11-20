@@ -641,6 +641,8 @@ mod tests {
             json!({"kind":"balance", "account":"1000"}),
             json!({"kind":"income-statement"}),
             json!({"kind":"balance-sheet"}),
+            json!({"kind":"trend", "metric":"spending"}),
+            json!({"kind":"trend", "metric":"net-worth", "period":"quarter"}),
             json!({"kind":"tax-summary"}),
             json!({"kind":"ledger", "account":["1000"]}),
             json!({"kind":"budget-variance", "year":2026, "account_type":"asset"}),
