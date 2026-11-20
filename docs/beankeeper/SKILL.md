@@ -15,6 +15,15 @@ description: >
 
 Beankeeper is a double-entry accounting system operated through the `bk` CLI or its MCP server. It stores data in a local SQLite database (optionally encrypted via SQLCipher). All output supports three formats: human-readable tables, machine-readable JSON, and CSV.
 
+For binary installation, `install.sh` verifies the archive and checksum file's
+Sigstore bundles when `cosign` is on `PATH`, before extraction or installation.
+Missing bundles or failed verification stop installation. Without cosign it
+warns and verifies SHA-256 only. Older unsigned releases fail with cosign present.
+See the [release verification contract](../RELEASE.md#sigstore-verification-contract)
+for artifact/bundle names, exact release-tag identity, issuer, and manual
+`cosign verify-blob` / `gh attestation verify` commands. Sigstore signing does
+not replace Apple notarization or Windows Authenticode.
+
 ## Core Concepts
 
 - **Double-entry**: Postings are validated at runtime before saving. Unbalanced or mixed-currency entries are rejected; the library's `Transaction` type can only be constructed through `JournalEntry::post()` after validation.

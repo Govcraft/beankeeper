@@ -137,8 +137,11 @@ a new version and tag.
 3. Each archive is `bk-X.Y.Z-TARGET.tar.gz`, containing a directory of the same
    name with `bk`, `README.md`, `LICENSE-MIT`, and `LICENSE-APACHE`.
 4. The release job collects the four archives, computes `checksums-sha256.txt`,
-   and creates the GitHub release with generated notes. Edit those notes to link
-   to the curated changelog at the release tag.
+   signs each of those five files with cosign keyless signing, and records GitHub
+   SLSA build provenance attestations for them. It creates the GitHub release
+   with the five files and their five `.sigstore` bundles only after signing and
+   attestation succeed. Edit the generated notes to link to the curated changelog
+   at the release tag.
 5. The AUR job downloads the published checksums, updates `PKGBUILD` and
    `.SRCINFO` for `bk-bin`, and pushes to AUR over SSH.
 
@@ -164,8 +167,9 @@ automatic fallback or alternate credential. Do not retag to retry AUR.
 
 ## Verify what users install
 
-Check that the release has all four archives and its checksum file, and that it
-is designated the latest stable GitHub release. Verify both the default and
+Check that the release has all four archives, its checksum file, and five
+Sigstore bundles, and that it is designated the latest stable GitHub release.
+Verify signatures and provenance as described below. Verify both the default and
 pinned installer paths in separate temporary directories so an existing `bk`
 installation does not affect the result:
 
@@ -181,11 +185,116 @@ BK_INSTALL="$pinned_dir" BK_VERSION=0.27.0 sh install.sh
 
 Immediately after this release becomes latest, both should print `bk 0.27.0`.
 `BK_VERSION` is the bare CLI version, without `v` or the tag prefix. The installer
-downloads from `beankeeper-cli-v${VERSION}`, verifies SHA-256, installs `bk`, and
-checks the installed version. Its PATH warning is expected for a temporary
+downloads from `beankeeper-cli-v${VERSION}` and, when `cosign` is on `PATH`, verifies
+both the archive and checksum file against their bundles using the exact tag's
+certificate identity and GitHub's OIDC issuer. It then verifies SHA-256, installs
+`bk`, and checks the installed version. Its PATH warning is expected for a temporary
 directory; execute the explicit paths shown above. Remove the temporary
 directories afterward. Confirm the AUR package's `pkgver` and Linux checksums
 also match the release before announcing the AUR update.
+
+Without `cosign`, the installer warns that only SHA-256 is checked and continues.
+It does not automatically run `gh attestation verify`; use the manual check below.
+With `cosign`, any bundle download or verification failure is fatal, including
+for historical releases that predate signing. An incompatible cosign version
+also fails verification; use current cosign 3.x. There is no automatic downgrade
+to checksum-only after a verification failure.
+
+## Sigstore verification contract
+
+This contract is shared by `install.sh` and the future `bk self-update` (D9).
+It applies to releases cut with the signing workflow; older releases, including
+`beankeeper-cli-v0.23.0`, have no bundles or attestations from this change.
+
+| Field | Contract |
+| --- | --- |
+| Release tag | `beankeeper-cli-vX.Y.Z` |
+| Download base | `https://github.com/Govcraft/beankeeper/releases/download/beankeeper-cli-vX.Y.Z/` |
+| Archive | `bk-X.Y.Z-TARGET.tar.gz`, using the four targets in `release.yml` |
+| Checksum file | `checksums-sha256.txt`, SHA-256 plus two spaces plus archive basename per line |
+| Bundle | Append `.sigstore` to the full artifact basename, including extensions |
+| Archive bundle example | `bk-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sigstore` |
+| Checksum bundle | `checksums-sha256.txt.sigstore` |
+| Certificate identity | `https://github.com/Govcraft/beankeeper/.github/workflows/release.yml@refs/tags/beankeeper-cli-vX.Y.Z` |
+| OIDC issuer | `https://token.actions.githubusercontent.com` |
+
+Bundles use the Sigstore JSON bundle format emitted by cosign 3.x `sign-blob
+--bundle`, containing the signature, certificate, and transparency-log verification
+material. The `.sigstore` suffix is intentional. Bundles are verification material
+and are not recursively signed or listed in the checksum manifest. GitHub
+attestations cover the four archives and checksum file and are stored through
+the repository's attestations API. They identify this release workflow and source
+commit; this does not claim a particular SLSA assurance level or reproducible builds.
+
+Download and verify a release in an empty working directory. Replace `X.Y.Z` and
+the target with the published version and desired platform:
+
+```sh
+VERSION=X.Y.Z
+TARGET=x86_64-unknown-linux-gnu
+TAG="beankeeper-cli-v${VERSION}"
+ARCHIVE="bk-${VERSION}-${TARGET}.tar.gz"
+BASE="https://github.com/Govcraft/beankeeper/releases/download/${TAG}"
+IDENTITY="https://github.com/Govcraft/beankeeper/.github/workflows/release.yml@refs/tags/${TAG}"
+
+for ARTIFACT in "$ARCHIVE" checksums-sha256.txt; do
+  curl -fsSLO "${BASE}/${ARTIFACT}"
+  curl -fsSLO "${BASE}/${ARTIFACT}.sigstore"
+  cosign verify-blob "$ARTIFACT" --bundle "${ARTIFACT}.sigstore" \
+    --certificate-identity "$IDENTITY" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com || exit 1
+  gh attestation verify "$ARTIFACT" --repo Govcraft/beankeeper \
+    --signer-workflow Govcraft/beankeeper/.github/workflows/release.yml \
+    --source-ref "refs/tags/${TAG}" || exit 1
+done
+
+# Linux; on macOS use shasum -a 256 -c instead of sha256sum -c.
+awk -v archive="$ARCHIVE" '$2 == archive' checksums-sha256.txt | sha256sum -c -
+```
+
+For an inspection that accepts any stable CLI release tag, the anchored identity
+regexp below restricts certificates to this repository's release workflow. It
+does not bind the certificate to the version in the local filename:
+
+```sh
+cosign verify-blob "$ARCHIVE" --bundle "${ARCHIVE}.sigstore" \
+  --certificate-identity-regexp '^https://github\.com/Govcraft/beankeeper/\.github/workflows/release\.yml@refs/tags/beankeeper-cli-v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+An updater must use the exact identity for its selected version, verify both
+bundles and the archive's matching SHA-256 entry, and only then extract and replace
+the executable. Reject missing bundles, altered bytes, wrong identity/issuer,
+and failed verification without replacing the installed binary. Keep Sigstore's
+default transparency-log and certificate checks enabled. Update channel selection
+and rollback policy remain D9's responsibility.
+
+Signing and attestation permissions are scoped to the release job:
+`id-token: write`, `attestations: write`, and `contents: write`. The existing
+crates.io job retains its own OIDC permission. GitHub OIDC supplies an ephemeral
+signing identity; no stored signing key, Apple credentials, or Azure secrets are
+needed for this feature.
+Sigstore keyless signing does **not** replace Apple notarization or Windows
+Authenticode, which remain separate platform-signing work (D11).
+See [Sigstore blob signing](https://docs.sigstore.dev/cosign/signing/signing_with_blobs/)
+and [GitHub CLI attestation verification](https://cli.github.com/manual/gh_attestation_verify).
+
+## Test signing changes without a release
+
+Do not push a production tag to test wiring. Run the offline tests instead:
+
+```sh
+python3 -B -m unittest discover -s scripts/tests -v
+```
+
+These tests execute the workflow's signing loop with stubbed cosign over four
+archive fixtures and a checksum file, check permissions, attestation subjects,
+and release uploads, and exercise `install.sh` with and without cosign. They
+check wrong tags, repositories, workflows, issuers, missing or invalid bundles,
+tampered files, and SHA-256 failures before extraction or installation. They
+require no signing identity, network service, or production tag. CI and release
+preflight run the same tests. Real OIDC issuance and attestation upload are
+validated by the next intentional release run.
 
 ## crates.io publishing
 

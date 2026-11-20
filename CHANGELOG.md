@@ -18,6 +18,11 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   transport configuration and control cancellation; the CLI keeps its existing
   credential, capability, read-only and bind behavior.
   ([#106](https://github.com/Govcraft/beankeeper/issues/106))
+- Release archives and `checksums-sha256.txt` receive Sigstore keyless signing
+  bundles (`<artifact>.sigstore`) and GitHub build provenance attestations.
+  The installer verifies both bundles when cosign is available and stops on
+  verification failures; without cosign it warns and checks SHA-256 only.
+  ([#103](https://github.com/Govcraft/beankeeper/issues/103))
 
 ### Changed
 
