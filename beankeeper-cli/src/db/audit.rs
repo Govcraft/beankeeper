@@ -149,6 +149,12 @@ impl Actor {
             .map(crate::identity::VerifiedAgent::jti)
     }
 
+    /// Verified signed identity attached to this operation.
+    #[must_use]
+    pub fn identity(&self) -> Option<&crate::identity::VerifiedAgent> {
+        self.identity.as_ref()
+    }
+
     /// Returns the actor's name.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -164,6 +170,8 @@ impl Actor {
 /// constraint on `audit_log`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditEntity {
+    Proposal,
+    SpendLimit,
     Policy,
     Security,
     Lot,
@@ -182,6 +190,8 @@ enum AuditEntity {
 impl AuditEntity {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Proposal => "proposal",
+            Self::SpendLimit => "spend_limit",
             Self::Policy => "policy",
             Self::Security => "security",
             Self::Lot => "lot",
@@ -202,6 +212,9 @@ impl AuditEntity {
 /// The kind of change recorded. Maps to the `action` CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditAction {
+    ProposalApprove,
+    ProposalReject,
+    LimitSet,
     PolicyChange,
     ScheduleRun,
     ScheduleCancel,
@@ -225,6 +238,9 @@ enum AuditAction {
 impl AuditAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::ProposalApprove => "proposal_approve",
+            Self::ProposalReject => "proposal_reject",
+            Self::LimitSet => "limit_set",
             Self::PolicyChange => "policy_change",
             Self::ScheduleRun => "schedule_run",
             Self::ScheduleCancel => "schedule_cancel",
@@ -536,6 +552,250 @@ pub fn set_policy(
         )?;
         Ok(after)
     })
+}
+
+/// Set one currency's limits with a before/after audit record.
+///
+/// # Errors
+/// Returns authorization, validation, integrity or storage errors.
+pub fn set_spend_limit(
+    conn: &Connection,
+    actor: &Actor,
+    limit: &super::spend_limits::SpendLimit,
+) -> Result<super::spend_limits::SpendLimit, CliError> {
+    atomically(conn, || {
+        require_capability(conn, actor, crate::capability::Capability::Admin)?;
+        agent_uri::AgentUri::parse(&limit.agent_uri)
+            .map_err(|error| CliError::Validation(error.to_string()))?;
+        beankeeper::types::Currency::from_code(&limit.currency)
+            .map_err(|error| CliError::Validation(error.to_string()))?;
+        if limit.max_post.is_none() && limit.daily_limit.is_none()
+            || limit.max_post.is_some_and(|amount| amount < 0)
+            || limit.daily_limit.is_some_and(|amount| amount < 0)
+        {
+            return Err(CliError::Validation(
+                "provide at least one nonnegative spend limit".into(),
+            ));
+        }
+        super::companies::get_company(conn, &limit.company_slug)?;
+        let before = super::spend_limits::list(conn, &limit.agent_uri, Some(&limit.company_slug))?
+            .into_iter()
+            .find(|row| row.currency == limit.currency);
+        conn.execute(
+            "INSERT INTO agent_spend_limits(agent_uri, company_slug, currency, max_post, daily_limit)
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(agent_uri, company_slug, currency)
+             DO UPDATE SET max_post = excluded.max_post, daily_limit = excluded.daily_limit",
+            params![limit.agent_uri, limit.company_slug, limit.currency, limit.max_post, limit.daily_limit],
+        )?;
+        record(
+            conn,
+            actor,
+            AuditChange {
+                company_slug: Some(&limit.company_slug),
+                entity: AuditEntity::SpendLimit,
+                entity_id: &limit.agent_uri,
+                action: AuditAction::LimitSet,
+                snapshots: (
+                    before.as_ref().map(snapshot).as_deref(),
+                    Some(&snapshot(limit)),
+                ),
+            },
+        )?;
+        Ok(limit.clone())
+    })
+}
+
+/// Clear all the URI's currency buckets in the requested company scope.
+///
+/// # Errors
+/// Returns authorization, integrity or storage errors.
+pub fn clear_spend_limits(
+    conn: &Connection,
+    actor: &Actor,
+    uri: &str,
+    company: Option<&str>,
+) -> Result<usize, CliError> {
+    atomically(conn, || {
+        require_capability(conn, actor, crate::capability::Capability::Admin)?;
+        let before = super::spend_limits::list(conn, uri, company)?;
+        for limit in &before {
+            conn.execute("DELETE FROM agent_spend_limits WHERE agent_uri = ?1 AND company_slug = ?2 AND currency = ?3",
+                params![uri, limit.company_slug, limit.currency])?;
+            record(
+                conn,
+                actor,
+                AuditChange {
+                    company_slug: Some(&limit.company_slug),
+                    entity: AuditEntity::SpendLimit,
+                    entity_id: uri,
+                    action: AuditAction::LimitSet,
+                    snapshots: (Some(&snapshot(limit)), None),
+                },
+            )?;
+        }
+        Ok(before.len())
+    })
+}
+
+pub(super) fn require_capability(
+    conn: &Connection,
+    actor: &Actor,
+    required: crate::capability::Capability,
+) -> Result<(), CliError> {
+    if !super::policy::get(conn)?.enforce {
+        return Ok(());
+    }
+    let identity = actor.identity().ok_or_else(|| {
+        CliError::Unauthorized("ledger enforcement requires an agent token".into())
+    })?;
+    if !identity.allows(required)? {
+        return Err(CliError::Forbidden(format!(
+            "operation requires capability {}",
+            required.path()
+        )));
+    }
+    Ok(())
+}
+
+/// Approve exactly once, posting and recording the frozen proposer request atomically.
+/// The approver may override the proposer bucket; the approved amount still consumes it.
+///
+/// # Errors
+/// Rejects insufficient grants, resolved/missing proposals and invalid postings.
+pub fn approve_proposal(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    id: &str,
+) -> Result<super::proposals::Proposal, CliError> {
+    atomically(conn, || {
+        require_capability(conn, actor, crate::capability::Capability::Approve)?;
+        let before = pending_proposal(conn, company, id)?;
+        let mut payload = before.payload.clone();
+        super::proposals::validate_posting(conn, &payload.params(company, actor))?;
+        let mut metadata: serde_json::Value = payload
+            .metadata
+            .as_deref()
+            .and_then(metadata::normalize)
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        metadata["proposal_id"] = serde_json::json!(id);
+        payload.metadata = Some(metadata.to_string());
+        let result = super::transactions::post_with_approval(
+            conn,
+            &payload.params(company, actor),
+            Some(&before),
+        )?;
+        let transaction_id = match result {
+            super::transactions::PostResult::Created(id) => id,
+            super::transactions::PostResult::Skipped(_) => {
+                return Err(CliError::Validation(
+                    "proposal reference was already posted; withdraw this proposal".into(),
+                ));
+            }
+        };
+        let mut after = resolved_proposal(conn, actor, &before, "approved")?;
+        after.transaction_id = Some(transaction_id);
+        record(
+            conn,
+            actor,
+            AuditChange {
+                company_slug: Some(company),
+                entity: AuditEntity::Proposal,
+                entity_id: id,
+                action: AuditAction::ProposalApprove,
+                snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
+            },
+        )?;
+        conn.execute(
+            "UPDATE txn_proposals SET status = 'approved', resolved_at = ?1,
+                resolved_by_uri = ?2, resolved_by_jti = ?3, transaction_id = ?4 WHERE id = ?5 AND status = 'pending'",
+            params![after.resolved_at, actor.agent_uri(), actor.token_jti(), transaction_id, id],
+        )?;
+        Ok(after)
+    })
+}
+
+/// Withdraw an owned pending request, or reject another request with an approval grant.
+///
+/// # Errors
+/// Returns authorization, lookup, validation or storage errors.
+pub fn reject_proposal(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    id: &str,
+    reason: Option<&str>,
+) -> Result<super::proposals::Proposal, CliError> {
+    atomically(conn, || {
+        let before = pending_proposal(conn, company, id)?;
+        let own = actor.agent_uri() == Some(before.proposer_uri.as_str());
+        let can_approve = actor
+            .identity()
+            .map(|identity| identity.allows(crate::capability::Capability::Approve))
+            .transpose()?
+            .unwrap_or(false);
+        let required = if own && !can_approve {
+            crate::capability::Capability::Propose
+        } else {
+            crate::capability::Capability::Approve
+        };
+        require_capability(conn, actor, required)?;
+        let status = if own { "withdrawn" } else { "rejected" };
+        let mut after = resolved_proposal(conn, actor, &before, status)?;
+        after.reason = reason.map(str::to_owned);
+        record(
+            conn,
+            actor,
+            AuditChange {
+                company_slug: Some(company),
+                entity: AuditEntity::Proposal,
+                entity_id: id,
+                action: AuditAction::ProposalReject,
+                snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
+            },
+        )?;
+        conn.execute(
+            "UPDATE txn_proposals SET status = ?1, resolved_at = ?2,
+                resolved_by_uri = ?3, resolved_by_jti = ?4, reason = ?5 WHERE id = ?6 AND status = 'pending'",
+            params![status, after.resolved_at, actor.agent_uri(), actor.token_jti(), reason, id],
+        )?;
+        Ok(after)
+    })
+}
+
+fn resolved_proposal(
+    conn: &Connection,
+    actor: &Actor,
+    before: &super::proposals::Proposal,
+    status: &str,
+) -> Result<super::proposals::Proposal, CliError> {
+    let mut after = before.clone();
+    after.status = status.into();
+    after.resolved_at = Some(conn.query_row(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        [],
+        |row| row.get(0),
+    )?);
+    after.resolved_by_uri = actor.agent_uri().map(str::to_owned);
+    after.resolved_by_jti = actor.token_jti().map(str::to_owned);
+    Ok(after)
+}
+
+fn pending_proposal(
+    conn: &Connection,
+    company: &str,
+    id: &str,
+) -> Result<super::proposals::Proposal, CliError> {
+    super::proposals::verify_resolutions(conn)?;
+    let proposal = super::proposals::get(conn, company, id)?;
+    if proposal.status != "pending" {
+        return Err(CliError::Validation(format!(
+            "proposal '{id}' is already {}",
+            proposal.status
+        )));
+    }
+    Ok(proposal)
 }
 
 /// Record a key or token management event without persisting secrets.
@@ -1729,6 +1989,18 @@ pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<()
         if schedules > 0 {
             return Err(CliError::Validation(format!(
                 "company '{slug}' cannot be deleted: retained schedule templates reference it"
+            )));
+        }
+
+        let retained: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM txn_proposals WHERE company_slug = ?1)
+             OR EXISTS(SELECT 1 FROM agent_spend_limits WHERE company_slug = ?1)",
+            [slug],
+            |row| row.get(0),
+        )?;
+        if retained {
+            return Err(CliError::Validation(format!(
+                "company '{slug}' cannot be deleted: retained proposals or spend limits reference it"
             )));
         }
 

@@ -75,10 +75,12 @@ all reads and mutations require tokens. Missing credentials return `UNAUTHORIZED
 | --- | --- |
 | `ledger/read` | Lists, shows, reports, export, verify, audit, agent list, policy show, loan schedule |
 | `ledger/post` | Posting/import/attachments/annotations, investment trades, security writes, loan pay, schedule writes, rule writes |
+| `ledger/propose` | Propose, list and withdraw owned pending requests |
+| `ledger/approve` | List all proposals, approve or reject |
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | Company/account writes, key init, agent issue/revoke, policy set, backup/restore |
+| `ledger/admin` | Company/account writes, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
 
 Grants are siblings: admin does not imply posting, and post does not imply
 reverse. Issue the union needed; bare `ledger` grants are rejected. Stdio MCP
@@ -89,6 +91,38 @@ writes. Back up before schema v18 upgrades: existing hashes remain intact, but
 older binaries cannot append the new v3 audit format. `init --force` requires an
 admin to disable enforcement first. See
 [agent identity setup, capability map, and limits](docs/agent-identity.md).
+
+### Spend limits and approval gates
+
+CLI 0.26.0 adds per-agent, per-company spend limits and pending proposals:
+
+```sh
+bk agent limit set "$AGENT_URI" --company acme --currency USD --max-post 500 --daily-limit 2000
+bk --agent-token "$POSTER_TOKEN" --company acme txn propose \
+  -d "Equipment purchase" --debit 5000:750 --credit 1000:750 --reference equipment-001
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn proposals
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn approve PROPOSAL_ID
+```
+
+`ledger/propose` permits proposals and withdrawal of owned pending requests;
+`ledger/approve` permits approval and rejection. These are sibling grants, so
+posting and administration do not imply approval. A proposal requires a verified
+token, reserves its reference, and stays outside posted transactions and their
+audit chain until resolution. Approval posts atomically with the approver's
+identity and a reserved `proposal_id` metadata link; its audit record preserves
+the proposer and the reviewed payload.
+
+Limits measure total debits, including split entries, and apply through the
+shared posting path, including imports, loans, investments and schedules.
+All tokens for an agent URI share each company/currency bucket. Daily totals use
+the transaction date, so backdated and future-dated posts use those dates' buckets.
+Approval may exceed the proposer's limits, while consuming the proposer's bucket.
+With no limits configured there is no amount cap; once any currency limit exists
+for an agent/company, unconfigured currencies are forbidden. Set/clear requires
+`ledger/admin` when enforcement is on. Configured limits apply to verified agents
+even when enforcement is off; named actors without tokens have no agent bucket.
+See [spend limits and proposals](docs/agent-identity.md#spend-limits-and-proposals)
+for setup, permissions and schema v19 migration behavior.
 
 ### Everything else
 
@@ -1184,7 +1218,7 @@ CLI version first. A lost
 passphrase cannot be recovered. Keep the backup and passphrase separately.
 
 The snapshot includes all database tables: accounting, identity root, token
-registry, audit history, budgets, rules, schedules, investments, and attachment
+registry, audit history, budgets, rules, schedules, investments, spend limits, proposals, and attachment
 records. Receipt and document **files** are stored outside SQLite in the
 `attachments/` directory beside the source database. Back up that directory
 separately and preserve the paths referenced by attachment records when moving

@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.25.0
+version: 0.26.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -34,7 +34,7 @@ Use `bk --company acme txn meta set 42 status=disputed dispute_id=D-42` or
 `txn meta set --reference CHARGE-42 status=disputed`. Remove annotations with
 `txn meta unset 42 status dispute_id` or select by `--reference`.
 Values are strings, including numbers and booleans, as with `txn post --meta`.
-Do not edit `correlate`, `reverses`, `reversed_by`, or `applies_to`: those keys
+Do not edit `correlate`, `reverses`, `reversed_by`, `proposal_id`, or `applies_to`: those keys
 are reserved for ledger relationships. Set custom settlement link keys at post
 time and treat them as relationships too. Duplicate keys are rejected.
 Each changed batch records whole-object snapshots under `metadata_set` or
@@ -43,6 +43,36 @@ Each changed batch records whole-object snapshots under `metadata_set` or
 (or null for a no-op on an unannotated transaction). Removing the last key
 leaves `{}`. Dates and financial fields stay unchanged, so tagging an original
 AR charge preserves its age under `report aging --filter-metadata status=disputed`.
+
+## Spend limits and approval
+
+`bk agent limit set URI --company acme --currency USD --max-post 500 --daily-limit 2000`
+sets optional per-post and transaction-date limits, measured by total debits.
+Use `agent limit show URI [--company acme]` to inspect and `agent limit clear URI
+[--company acme]` to remove all currencies in scope. Set/clear requires
+`ledger/admin` under enforcement; configured limits apply to verified identities
+even with enforcement off. All tokens for one URI share usage. With any limit
+for an agent/company, other currencies require matching rows; no limits means no
+amount cap. Named actors without a token have no URI bucket.
+
+On a spend `FORBIDDEN` response, use `txn propose` with the same posting flags
+if authorized for `ledger/propose`. A verified token is always required to
+propose. Proposals freeze accounts, tax defaults and payload, reserve their
+reference and create no posted transaction or audit row. `txn proposals` lists
+pending requests; `--include-rejected` includes all resolved statuses. Read/propose
+grants see owned requests; approve/admin grants see all under enforcement.
+
+A reviewer with `ledger/approve` runs `txn approve PROPOSAL_ID` or `txn reject
+PROPOSAL_ID --reason TEXT`. A proposer can `txn withdraw PROPOSAL_ID` (alias of
+reject) for an owned pending request. Approval may exceed the proposer's cap,
+posts with the approver's identity, consumes the proposer's date/currency bucket,
+and records the complete proposal in `proposal_approve` audit snapshots. The
+transaction metadata key `proposal_id` is reserved. Rejection/withdrawal is
+audited as `proposal_reject`; resolved proposals cannot be approved again.
+Posting/admin grants do not imply propose/approve. MCP equivalents are
+`txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject`; read-only mode retains
+only listing. Schema v19 preserves prior policy and audit hashes. See
+[identity, setup and limit semantics](../agent-identity.md#spend-limits-and-proposals).
 
 ## Securities and investment lots
 
@@ -132,10 +162,12 @@ as `policy_change`; repeated state is a no-op. Missing tokens are `UNAUTHORIZED`
 | --- | --- |
 | `ledger/read` | List/show/report/export/verify/audit, agent list, policy show, loan schedule |
 | `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule mutations |
+| `ledger/propose` | Propose, list/withdraw owned pending requests |
+| `ledger/approve` | List all requests, approve, reject |
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | Company/account create/delete, key init, agent issue/revoke, policy set, backup/restore |
+| `ledger/admin` | Company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
 
 Admin does not imply other grants; post does not imply reverse. Issue explicit
 unions. Bare `ledger` is rejected, and narrower descendant grants cannot cover

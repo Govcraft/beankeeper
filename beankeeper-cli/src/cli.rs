@@ -138,12 +138,10 @@ impl Cli {
             let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
             let _ = self.verified_agent.set(identity);
         }
-        crate::identity::authorize(
+        crate::identity::authorize_operation(
             db.conn(),
             self.agent_token.as_ref().map(ExposeSecret::expose_secret),
-            crate::capability::Capability::for_operation(crate::commands::command_name(
-                &self.command,
-            ))?,
+            crate::commands::command_name(&self.command),
         )?;
         Ok(())
     }
@@ -214,6 +212,9 @@ pub enum KeyCommand {
 /// Agent token registry commands.
 #[derive(Subcommand, Debug)]
 pub enum AgentCommand {
+    /// Manage per-agent, per-company spend limits.
+    #[command(subcommand)]
+    Limit(AgentLimitCommand),
     /// Mint a short-lived attestation under this ledger's root.
     Issue {
         /// `TypeID` prefix (lowercase letters and underscores).
@@ -240,6 +241,35 @@ pub enum AgentCommand {
     List,
     /// Revoke a token ID, or every current token for an agent URI.
     Revoke { target: String },
+}
+
+/// Spend policy configuration. Amounts use the selected currency's major units.
+#[derive(Subcommand, Debug)]
+pub enum AgentLimitCommand {
+    /// Set the limits for one agent, company and currency.
+    Set {
+        agent_uri: String,
+        #[arg(long)]
+        company: Option<String>,
+        #[arg(long)]
+        currency: String,
+        #[arg(long)]
+        max_post: Option<String>,
+        #[arg(long)]
+        daily_limit: Option<String>,
+    },
+    /// Show the agent's limits, optionally scoped to one company.
+    Show {
+        agent_uri: String,
+        #[arg(long)]
+        company: Option<String>,
+    },
+    /// Clear all currency limits for the agent, optionally in one company.
+    Clear {
+        agent_uri: String,
+        #[arg(long)]
+        company: Option<String>,
+    },
 }
 
 /// Ledger capability enforcement commands.
@@ -828,6 +858,9 @@ pub enum AuditCommand {
 /// Entity-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEntityArg {
+    Proposal,
+    #[value(name = "spend_limit", alias = "spend-limit")]
+    SpendLimit,
     Policy,
     Schedule,
     Rule,
@@ -845,6 +878,8 @@ impl AuditEntityArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Proposal => "proposal",
+            Self::SpendLimit => "spend_limit",
             Self::Policy => "policy",
             Self::Schedule => "schedule",
             Self::Rule => "rule",
@@ -862,6 +897,12 @@ impl AuditEntityArg {
 /// Action-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditActionArg {
+    #[value(name = "proposal_approve", alias = "proposal-approve")]
+    ProposalApprove,
+    #[value(name = "proposal_reject", alias = "proposal-reject")]
+    ProposalReject,
+    #[value(name = "limit_set", alias = "limit-set")]
+    LimitSet,
     #[value(name = "policy_change", alias = "policy-change")]
     PolicyChange,
     ScheduleCancel,
@@ -890,6 +931,9 @@ impl AuditActionArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::ProposalApprove => "proposal_approve",
+            Self::ProposalReject => "proposal_reject",
+            Self::LimitSet => "limit_set",
             Self::PolicyChange => "policy_change",
             Self::MetadataSet => "metadata_set",
             Self::MetadataUnset => "metadata_unset",
@@ -1393,6 +1437,73 @@ EXAMPLES:\n  \
         /// Entries without a --tax flag inherit the account's `default_tax_category`.
         #[arg(long = "tax", num_args = 1)]
         tax: Vec<String>,
+    },
+
+    /// Store a balanced posting for approval without posting it. Requires a verified agent.
+    Propose {
+        /// Transaction description.
+        #[arg(short = 'd', long = "description")]
+        description: String,
+
+        /// Debit entry as `account_code:amount` (repeatable).
+        #[arg(long, required = true, num_args = 1)]
+        debit: Vec<String>,
+
+        /// Credit entry as `account_code:amount` (repeatable).
+        #[arg(long, required = true, num_args = 1)]
+        credit: Vec<String>,
+
+        /// Free-text memo or a JSON object. Text (and non-object JSON) is
+        /// stored as `{"memo": ...}`; a JSON object is stored unchanged.
+        #[arg(short = 'm', long)]
+        metadata: Option<String>,
+
+        /// Set a top-level metadata key as `key=value` (repeatable). Values are
+        /// stored as JSON strings and merged with `-m`. Duplicate keys are an
+        /// error; `correlate` is reserved (use --correlate).
+        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+        meta: Vec<String>,
+
+        /// Currency code.
+        #[arg(long, default_value = "USD")]
+        currency: String,
+
+        /// Transaction date (YYYY-MM-DD). Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+
+        /// Correlate with an existing transaction in another company (intercompany linking).
+        #[arg(long)]
+        correlate: Option<i64>,
+
+        /// Idempotency key -- rejects duplicate posts with the same reference per company.
+        #[arg(short = 'r', long)]
+        reference: Option<String>,
+
+        /// Conflict resolution strategy for duplicate references.
+        #[arg(long, value_enum, default_value_t = OnConflictArg::Error)]
+        on_conflict: OnConflictArg,
+
+        /// Tax category for specific entries. Format: `account_code=category` (repeatable).
+        /// Entries without a --tax flag inherit the account's `default_tax_category`.
+        #[arg(long = "tax", num_args = 1)]
+        tax: Vec<String>,
+    },
+
+    /// List pending proposals visible to the caller.
+    Proposals {
+        /// Also include approved, rejected and withdrawn proposals.
+        #[arg(long)]
+        include_rejected: bool,
+    },
+    /// Approve a pending proposal and atomically post it.
+    Approve { id: String },
+    /// Reject a proposal, or withdraw your own pending proposal.
+    #[command(alias = "withdraw")]
+    Reject {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
     },
 
     /// List and search transactions.

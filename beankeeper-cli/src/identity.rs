@@ -43,6 +43,23 @@ impl VerifiedAgent {
         &self.capabilities
     }
 
+    /// Whether these signed grants allow a CLI operation or MCP tool.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown operation or invalid capability.
+    pub fn allows_operation(&self, operation: &str) -> Result<bool, CliError> {
+        match operation.replace('_', ".").as_str() {
+            "txn.proposals" => Ok(self.allows(Capability::Read)?
+                || self.allows(Capability::Propose)?
+                || self.allows(Capability::Approve)?
+                || self.allows(Capability::Admin)?),
+            "txn.reject" => {
+                Ok(self.allows(Capability::Propose)? || self.allows(Capability::Approve)?)
+            }
+            _ => self.allows(Capability::for_operation(operation)?),
+        }
+    }
+
     /// Whether the signed grants cover this leaf capability.
     ///
     /// # Errors
@@ -87,6 +104,45 @@ pub fn authorize(
         )),
         None => Ok(None),
     }
+}
+
+/// Authorize an operation, including the alternate proposal list/withdraw grants.
+///
+/// # Errors
+/// Returns unauthorized, forbidden, policy integrity or database errors.
+pub fn authorize_operation(
+    conn: &Connection,
+    token: Option<&str>,
+    operation: &str,
+) -> Result<Option<VerifiedAgent>, CliError> {
+    let required = Capability::for_operation(operation)?;
+    let special = matches!(
+        operation.replace('_', ".").as_str(),
+        "txn.proposals" | "txn.reject"
+    );
+    if !special {
+        return authorize(conn, token, required);
+    }
+    let enforce = crate::db::policy::get(conn)?.enforce;
+    let identity = match token {
+        Some(token) => Some(verify(conn, token)?),
+        None if enforce => {
+            return Err(CliError::Unauthorized(
+                "ledger enforcement requires an agent token".into(),
+            ));
+        }
+        None => None,
+    };
+    if enforce
+        && let Some(identity) = &identity
+        && !identity.allows_operation(operation)?
+    {
+        return Err(CliError::Forbidden(format!(
+            "operation requires capability {} or ledger/approve",
+            required.path()
+        )));
+    }
+    Ok(identity)
 }
 
 fn verify_required(

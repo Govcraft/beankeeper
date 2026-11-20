@@ -4,6 +4,8 @@ Beankeeper records a verified `agent://` identity alongside the named actor on
 ledger writes. Since CLI 0.24.0, each ledger can enforce the token's explicit
 capability grants. Enforcement defaults to off for new and upgraded ledgers:
 tokens remain optional and grants do not restrict commands until enabled.
+`txn propose` always needs a verified token to establish ownership. Configured
+spend limits apply to verified agents even when enforcement is off.
 An explicitly supplied token must always verify, including on reads. Missing
 credentials when enforcement is on, or invalid, expired, foreign, or revoked
 tokens, return `UNAUTHORIZED` (exit 6). A verified token missing the required
@@ -110,18 +112,20 @@ setting the same value again is a no-op. `policy show` returns JSON data with
 
 | Required grant | Commands and corresponding MCP tools |
 | --- | --- |
-| `ledger/read` | List/show commands, reports, export, verify, audit log, agent list, policy show, loan schedule |
+| `ledger/read` | List/show commands, reports, export, verify, audit log, agent list, agent limit show, policy show, loan schedule, list owned proposals |
 | `ledger/post` | txn post/import/attach, txn meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/delete |
+| `ledger/propose` | txn propose, list owned proposals, withdraw owned pending proposals |
+| `ledger/approve` | List all proposals, txn approve, txn reject |
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear, txn reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, policy set, backup/restore |
+| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
 
 Matching is hierarchical and respects path segments. The required path is the
 leaf shown above, so a narrower `ledger/post/example` grant cannot authorize
 `txn post`. `ledger/post` and `ledger/reverse` are siblings: neither grants the
 other. `ledger/admin` grants administration only. To authorize all operations,
-issue the union `ledger/read,ledger/post,ledger/reverse,ledger/reconcile,ledger/budget,ledger/admin`.
+issue the union `ledger/read,ledger/post,ledger/propose,ledger/approve,ledger/reverse,ledger/reconcile,ledger/budget,ledger/admin`.
 The current schedule API has `cancel`, which requires `ledger/post`; there is
 no update command.
 
@@ -132,6 +136,87 @@ existing encrypted ledger requires its current passphrase so its policy can be
 checked; an unreadable ledger is never erased. A standalone `loan schedule`
 calculation still works without a database; with an existing ledger, it follows
 that ledger's read policy.
+
+## Spend limits and proposals
+
+Issue a poster `ledger/post,ledger/propose,ledger/read` and a reviewer
+`ledger/approve,ledger/read`. Administration and posting never imply approval.
+Limits attach to the full agent URI, shared across all its live tokens, and are
+scoped by company and currency:
+
+```sh
+bk agent limit set "$AGENT_URI" --company acme --currency USD --max-post 500 --daily-limit 2000
+bk agent limit show "$AGENT_URI"
+bk agent limit show "$AGENT_URI" --company acme
+bk agent limit clear "$AGENT_URI" --company acme
+```
+
+Setting replaces that currency's optional caps; provide at least one. Amounts
+are nonnegative major-unit decimals in the selected currency. Zero forbids
+positive postings. Omitted caps are unlimited. Different currencies have separate
+rows: once any limit exists for a URI/company, postings in a currency without a
+matching row return `FORBIDDEN`. With no rows the agent has no amount cap.
+`clear` removes all currency rows in its company scope, or all companies if
+`--company` and `BEANKEEPER_COMPANY` are absent. Set/clear require `ledger/admin`
+when enforcement is on and append `limit_set` snapshots; show requires
+`ledger/read`. With enforcement off a named actor can configure limits.
+
+A posting is measured by its total debits, equal to its total credits, including
+split entries. The daily cap sums amounts already posted for that agent, company,
+currency and transaction `date`, including approved proposals. Dates are stored
+canonically as YYYY-MM-DD. These are transaction-date buckets, not a rolling
+24-hour or wall-clock spending cap: backdated and future-dated postings use the
+specified date's bucket. Proposed amounts consume nothing. Approval may exceed
+limits but charges the proposer's bucket, preserving the approver's posting
+identity. Clearing or resetting limits does not erase posted usage. Direct
+posting, reversals, CSV/JSON/OFX imports, loan payments, investment trades and
+schedule execution share the check inside the posting savepoint. Denied postings
+return `FORBIDDEN` (exit 7), with a suggestion to propose. CSV/JSON imports roll
+back their batch on denial; OFX stops on authorization denial and retains earlier
+successful rows. Limits apply to supplied verified identities even when
+capability enforcement is off. A named actor without a token has no URI bucket.
+
+```sh
+bk --agent-token "$POSTER_TOKEN" --company acme txn propose \
+  -d "Equipment" --debit 5000:750 --credit 1000:750 --reference equipment-001
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn proposals
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn approve PROPOSAL_ID
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn reject PROPOSAL_ID --reason "Requote first"
+bk --agent-token "$POSTER_TOKEN" --company acme txn withdraw PROPOSAL_ID
+```
+
+`propose` accepts the posting flags, validates accounts and balance, freezes tax
+defaults and the complete payload, and returns a `proposal_...` TypeID. Debit
+totals must fit SQLite's signed 64-bit minor-unit range; there is no additional
+proposal amount cap. Pending proposals create neither transactions nor audit
+rows, and `verify` continues to pass. Their payload and ownership cannot be
+edited through supported APIs. Pending references are unique within a company
+and block direct postings until approval or withdrawal/rejection. An already
+posted reference returns `VALIDATION`, or a skipped result with the existing
+transaction ID under `--on-conflict skip`. A pending-reference conflict always
+returns `VALIDATION`; use `txn proposals` to find the existing request.
+
+When enforcement is on, `ledger/propose` can list and withdraw owned proposals;
+`ledger/read` can list owned proposals. `ledger/approve` and `ledger/admin` can
+list all, but only `ledger/approve` can approve or reject someone else's request.
+A proposer with `ledger/propose` can withdraw an owned request with `reject` or
+its `withdraw` alias. Without enforcement a named actor can list and resolve all
+proposals; creation still requires a verified token. `--include-rejected` also
+lists all resolved statuses: approved, rejected and withdrawn.
+
+Approval revalidates the frozen posting and atomically creates its transaction,
+stores approver attribution, adds the reserved `proposal_id` metadata key, and
+appends a `proposal_approve` audit row containing the proposer URI/JTI and full
+before/after proposal. Rejection/withdrawal appends `proposal_reject` and releases
+the reference. Resolved proposals cannot be changed or approved again. Custom
+metadata cannot set, remove or overwrite `proposal_id`. CLI proposal output is
+reviewable JSON text, with the ordinary envelope under `--json`; JSON retains
+minor-unit amounts and adds display strings.
+
+MCP exposes `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` on the
+shared ledger router. They use the same validation, live grants, ownership and
+limits as CLI. `--read-only` exposes only proposal listing. Limit configuration
+remains a CLI operation.
 
 ## Use and inspect
 
@@ -228,3 +313,15 @@ checks transaction identity and current policy against their audit snapshots.
 Policy deletion, replacement, and unaudited updates are rejected. Back up the
 full database before upgrading: older binaries cannot append after schema v18,
 even while enforcement is off. See [audit integrity](audit-integrity.md).
+
+`verify` also checks spend limits and resolved proposals against their immutable
+audit snapshots, including removed limit rows. Unconfigured or unaudited limit
+state fails closed during posting. Proposal insert/update triggers require pending
+creation and an audited resolution.
+
+Schema v19 adds `txn_proposals` and `agent_spend_limits`, plus resolution and
+limit audit events. Migration verifies the chain before and after the atomic
+rebuild and preserves existing policy, hashes and snapshots. New events retain
+the v3 hash format. Pending proposals are outside the audit chain until resolution;
+posted financial history keeps the existing immutability protections. Back up
+before upgrading; binaries supporting only v18 refuse the newer schema.

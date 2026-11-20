@@ -7,6 +7,8 @@ use crate::error::CliError;
 pub enum Capability {
     Read,
     Post,
+    Propose,
+    Approve,
     Reverse,
     Reconcile,
     Budget,
@@ -19,6 +21,8 @@ impl Capability {
     pub fn path(self) -> &'static str {
         match self {
             Self::Read => "ledger/read",
+            Self::Propose => "ledger/propose",
+            Self::Approve => "ledger/approve",
             Self::Post => "ledger/post",
             Self::Reverse => "ledger/reverse",
             Self::Reconcile => "ledger/reconcile",
@@ -50,6 +54,8 @@ impl Capability {
             | "export"
             | "verify"
             | "audit.log"
+            | "txn.proposals"
+            | "agent.limit.show"
             | "agent.list"
             | "policy.show"
             | "report"
@@ -75,12 +81,14 @@ impl Capability {
             | "investment.buy" | "investment.sell" | "security.create" | "security.price"
             | "loan.pay" | "schedule.create" | "schedule.cancel" | "schedule.run"
             | "rule.create" | "rule.delete" => Ok(Self::Post),
+            "txn.propose" | "txn.reject" => Ok(Self::Propose),
+            "txn.approve" => Ok(Self::Approve),
             "txn.reverse" => Ok(Self::Reverse),
             "txn.clear" | "txn.reconcile" => Ok(Self::Reconcile),
             "budget.set" | "budget.delete" => Ok(Self::Budget),
             "company.create" | "company.delete" | "account.create" | "account.delete"
             | "key.init" | "agent.issue" | "agent.revoke" | "policy.set" | "init" | "backup"
-            | "restore" => Ok(Self::Admin),
+            | "restore" | "agent.limit.set" | "agent.limit.clear" => Ok(Self::Admin),
             _ => Err(CliError::Usage(
                 "operation has no capability mapping".into(),
             )),

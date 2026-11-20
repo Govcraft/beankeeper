@@ -556,8 +556,16 @@ pub fn run(
         dry_run: *dry_run,
     };
     for (index, prepared) in prepared.into_iter().enumerate() {
-        let outcome = post_import(&ctx, prepared, &mut occurrences)
-            .map_err(|error| invalid(format!("import transaction {}: {error}", index + 1)))?;
+        let outcome =
+            post_import(&ctx, prepared, &mut occurrences).map_err(|error| match error {
+                CliError::Forbidden(message) => {
+                    CliError::Forbidden(format!("import transaction {}: {message}", index + 1))
+                }
+                CliError::Unauthorized(message) => {
+                    CliError::Unauthorized(format!("import transaction {}: {message}", index + 1))
+                }
+                other => invalid(format!("import transaction {}: {other}", index + 1)),
+            })?;
         if outcome.status == "imported" {
             result.imported += 1;
         } else {

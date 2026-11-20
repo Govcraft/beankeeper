@@ -11,9 +11,11 @@ pub mod investments;
 pub mod metadata;
 pub mod metadata_filter;
 pub mod policy;
+pub mod proposals;
 pub mod rules;
 pub mod schedules;
 pub mod schema;
+pub mod spend_limits;
 pub mod transactions;
 pub mod verification;
 

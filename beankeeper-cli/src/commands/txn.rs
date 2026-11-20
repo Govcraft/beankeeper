@@ -30,6 +30,34 @@ pub fn run(
     let format = resolve_format(None, cli);
 
     match sub {
+        TxnCommand::Propose { .. }
+        | TxnCommand::Proposals { .. }
+        | TxnCommand::Approve { .. }
+        | TxnCommand::Reject { .. } => {
+            let data = db::audit::atomically(db_handle.conn(), || {
+                use secrecy::ExposeSecret;
+                crate::identity::authorize_operation(
+                    db_handle.conn(),
+                    cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
+                    super::command_name(&cli.command),
+                )?;
+                execute_proposal(&db_handle, company, sub, &cli.principal())
+            })?;
+            let data = crate::output::json::with_amount_displays(data, None);
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::json!({"ok":true, "meta":cli.meta(super::command_name(&cli.command), Some(company)), "data":data})
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&data)
+                        .map_err(|error| CliError::General(error.to_string()))?
+                );
+            }
+            Ok(())
+        }
         TxnCommand::Meta(sub) => super::txn_meta::run(cli, &db_handle, company, sub),
         TxnCommand::Post { .. } => {
             let actor = cli.principal();
@@ -169,6 +197,13 @@ pub fn execute_json_with_pagination(
     }
     let mut out = Vec::new();
     match sub {
+        TxnCommand::Propose { .. }
+        | TxnCommand::Proposals { .. }
+        | TxnCommand::Approve { .. }
+        | TxnCommand::Reject { .. } => {
+            return execute_proposal(db_handle, company, sub, actor)
+                .map(|data| (crate::output::json::with_amount_displays(data, None), None));
+        }
         TxnCommand::Meta(sub) => {
             return super::txn_meta::execute_json(db_handle, company, sub, actor)
                 .map(|data| (data, None));
@@ -529,14 +564,59 @@ fn validate_journal(journal: JournalEntry, currency: Currency) -> Result<(), Cli
     }
 }
 
-/// Execute the `txn post` subcommand.
+/// Execute a proposal operation through the shared CLI/MCP implementation.
+fn execute_proposal(
+    db: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    actor: &db::Actor,
+) -> Result<serde_json::Value, CliError> {
+    let value =
+        match sub {
+            TxnCommand::Propose { .. } => {
+                return with_post_params(db, company, sub, actor, |params| {
+                    db::proposals::create(db.conn(), params)
+                });
+            }
+            TxnCommand::Proposals { include_rejected } => serde_json::to_value(
+                db::proposals::list(db.conn(), company, actor, *include_rejected)?,
+            ),
+            TxnCommand::Approve { id } => {
+                serde_json::to_value(db::audit::approve_proposal(db.conn(), actor, company, id)?)
+            }
+            TxnCommand::Reject { id, reason } => serde_json::to_value(db::audit::reject_proposal(
+                db.conn(),
+                actor,
+                company,
+                id,
+                reason.as_deref(),
+            )?),
+            _ => return Err(CliError::Usage("expected a proposal operation".into())),
+        };
+    value.map_err(|error| CliError::General(error.to_string()))
+}
+
+/// Execute the validated normal posting path.
 fn execute_post(
-    db_handle: &Db,
+    db: &Db,
     company: &str,
     sub: &TxnCommand,
     actor: &db::Actor,
 ) -> Result<transactions::PostResult, CliError> {
-    let TxnCommand::Post {
+    with_post_params(db, company, sub, actor, |params| {
+        transactions::post_transaction(db.conn(), params)
+    })
+}
+
+/// Execute the `txn post` subcommand.
+fn with_post_params<T>(
+    db_handle: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    actor: &db::Actor,
+    action: impl FnOnce(&transactions::PostTransactionParams<'_>) -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    let (TxnCommand::Post {
         description,
         debit: debit_args,
         credit: credit_args,
@@ -548,7 +628,20 @@ fn execute_post(
         reference,
         on_conflict,
         tax: tax_args,
-    } = sub
+    }
+    | TxnCommand::Propose {
+        description,
+        debit: debit_args,
+        credit: credit_args,
+        metadata,
+        meta: meta_args,
+        currency: currency_code,
+        date,
+        correlate,
+        reference,
+        on_conflict,
+        tax: tax_args,
+    }) = sub
     else {
         return Err(CliError::General("expected txn post subcommand".into()));
     };
@@ -634,7 +727,7 @@ fn execute_post(
         actor,
     };
 
-    transactions::post_transaction(db_handle.conn(), &params)
+    action(&params)
 }
 fn parse_entries(
     args: &[String],

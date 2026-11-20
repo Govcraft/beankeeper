@@ -22,7 +22,7 @@ pub(crate) fn reference_exists(
 }
 
 /// A single entry to be posted as part of a transaction.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PostEntryParams {
     pub account_code: String,
     pub direction: String,
@@ -32,7 +32,7 @@ pub struct PostEntryParams {
 }
 
 /// Conflict resolution strategy for duplicate references.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ConflictStrategy {
     /// Return an error on duplicate reference (default).
     #[default]
@@ -105,11 +105,19 @@ pub fn post_transaction(
         ));
     }
 
+    post_with_approval(conn, params, None)
+}
+
+pub(super) fn post_with_approval(
+    conn: &Connection,
+    params: &PostTransactionParams<'_>,
+    approval: Option<&super::proposals::Proposal>,
+) -> Result<PostResult, CliError> {
     // Use a savepoint so we can roll back on error without affecting
     // any outer transaction.
     conn.execute_batch("SAVEPOINT post_txn")?;
 
-    let result = post_transaction_inner(conn, params);
+    let result = post_transaction_inner(conn, params, approval);
 
     match &result {
         Ok(_) => conn.execute_batch("RELEASE post_txn")?,
@@ -122,6 +130,7 @@ pub fn post_transaction(
 fn post_transaction_inner(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
+    approval: Option<&super::proposals::Proposal>,
 ) -> Result<PostResult, CliError> {
     // Check for duplicate reference before inserting.
     if let Some(ref_str) = p.reference {
@@ -147,6 +156,18 @@ fn post_transaction_inner(
         }
     }
 
+    if approval.is_none() {
+        super::proposals::reject_reserved_metadata(p.metadata)?;
+        if let Some(reference) = p.reference {
+            super::proposals::check_reference(conn, p.company_slug, reference)?;
+        }
+        super::spend_limits::check(conn, p)?;
+    }
+
+    let date = chrono::NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
+        .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?
+        .to_string();
+
     // Build the metadata string, merging --correlate and --metadata if both present.
     let effective_metadata = build_metadata(p.metadata, p.correlate)?;
 
@@ -158,7 +179,7 @@ fn post_transaction_inner(
             p.description,
             effective_metadata,
             p.currency,
-            p.date,
+            date,
             p.reference,
             p.actor.name(),
             p.actor.agent_uri(),

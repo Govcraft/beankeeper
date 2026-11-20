@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = 18;
+pub(crate) const CURRENT_VERSION: i64 = 19;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -118,6 +118,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 18 {
         apply_v18(conn)?;
+    }
+
+    if version < 19 {
+        apply_v19(conn)?;
     }
 
     debug_assert_eq!(
@@ -1082,9 +1086,190 @@ fn extend_policy_audit(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Add pending proposals and spend buckets, preserving the complete v18 audit chain.
+fn apply_v19(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(conn)?;
+        // Temporarily remove the trigger that references the rebuilt audit table.
+        let policy_trigger: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'protect_policy_update'",
+            [], |row| row.get(0),
+        )?;
+        conn.execute_batch("DROP TRIGGER protect_policy_update")?;
+        extend_proposal_audit(conn)?;
+        conn.execute_batch(&policy_trigger)?;
+        conn.execute_batch(
+            "CREATE TABLE txn_proposals (
+                id TEXT PRIMARY KEY NOT NULL,
+                company_slug TEXT NOT NULL REFERENCES companies(slug),
+                status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','withdrawn')),
+                payload TEXT NOT NULL CHECK(json_valid(payload)),
+                reference TEXT,
+                debit_total INTEGER NOT NULL CHECK(debit_total > 0),
+                currency TEXT NOT NULL,
+                proposer_uri TEXT NOT NULL,
+                proposer_jti TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                resolved_at TEXT,
+                resolved_by_uri TEXT,
+                resolved_by_jti TEXT,
+                transaction_id INTEGER UNIQUE REFERENCES transactions(id),
+                reason TEXT,
+                CHECK((resolved_by_uri IS NULL) = (resolved_by_jti IS NULL)),
+                CHECK((status = 'pending') = (resolved_at IS NULL)),
+                CHECK((status = 'approved') = (transaction_id IS NOT NULL))
+            );
+            CREATE UNIQUE INDEX idx_proposals_open_reference
+                ON txn_proposals(company_slug, reference)
+                WHERE reference IS NOT NULL AND status = 'pending';
+            CREATE INDEX idx_proposals_company ON txn_proposals(company_slug, status);
+            CREATE TRIGGER protect_proposal_payload BEFORE UPDATE ON txn_proposals
+            WHEN NEW.id IS NOT OLD.id OR NEW.company_slug IS NOT OLD.company_slug
+              OR NEW.payload IS NOT OLD.payload OR NEW.reference IS NOT OLD.reference
+              OR NEW.debit_total IS NOT OLD.debit_total OR NEW.currency IS NOT OLD.currency
+              OR NEW.proposer_uri IS NOT OLD.proposer_uri OR NEW.proposer_jti IS NOT OLD.proposer_jti
+              OR NEW.created_at IS NOT OLD.created_at OR OLD.status != 'pending'
+            BEGIN SELECT RAISE(ABORT, 'proposal payload and resolved proposals are immutable'); END;
+            CREATE TRIGGER protect_proposal_insert BEFORE INSERT ON txn_proposals
+            WHEN NEW.status != 'pending' OR NEW.resolved_at IS NOT NULL
+              OR NEW.resolved_by_uri IS NOT NULL OR NEW.resolved_by_jti IS NOT NULL
+              OR NEW.transaction_id IS NOT NULL OR NEW.reason IS NOT NULL
+              OR EXISTS(SELECT 1 FROM txn_proposals WHERE id = NEW.id)
+            BEGIN SELECT RAISE(ABORT, 'proposals must start pending and cannot be replaced'); END;
+            CREATE TRIGGER protect_proposal_resolution BEFORE UPDATE ON txn_proposals
+            WHEN NOT EXISTS (
+                SELECT 1 FROM audit_log
+                WHERE id = (SELECT MAX(id) FROM audit_log) AND entity = 'proposal'
+                  AND company_slug = NEW.company_slug AND entity_id = NEW.id
+                  AND action = CASE WHEN NEW.status = 'approved' THEN 'proposal_approve' ELSE 'proposal_reject' END
+                  AND json_extract(before, '$.status') = OLD.status
+                  AND json_extract(after, '$.id') = NEW.id
+                  AND json_extract(after, '$.status') = NEW.status
+                  AND json_extract(after, '$.resolved_at') IS NEW.resolved_at
+                  AND json_extract(after, '$.resolved_by_uri') IS NEW.resolved_by_uri
+                  AND json_extract(after, '$.resolved_by_jti') IS NEW.resolved_by_jti
+                  AND json_extract(after, '$.transaction_id') IS NEW.transaction_id
+                  AND json_extract(after, '$.reason') IS NEW.reason
+            )
+            BEGIN SELECT RAISE(ABORT, 'proposal resolution requires an audit snapshot'); END;
+            CREATE TRIGGER protect_proposal_delete BEFORE DELETE ON txn_proposals
+            BEGIN SELECT RAISE(ABORT, 'proposals cannot be deleted'); END;
+            CREATE TABLE agent_spend_limits (
+                agent_uri TEXT NOT NULL,
+                company_slug TEXT NOT NULL REFERENCES companies(slug),
+                currency TEXT NOT NULL,
+                max_post INTEGER CHECK(max_post >= 0),
+                daily_limit INTEGER CHECK(daily_limit >= 0),
+                CHECK(max_post IS NOT NULL OR daily_limit IS NOT NULL),
+                PRIMARY KEY(agent_uri, company_slug, currency)
+            );
+            INSERT INTO schema_version(version) VALUES (19);",
+        )?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
+fn extend_proposal_audit(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "CREATE TABLE audit_log_v19 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule','schedule','security','lot','price','policy','proposal','spend_limit')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset','schedule_cancel','schedule_run','policy_change','proposal_approve','proposal_reject','limit_set')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 3 CHECK(hash_version IN (1,2,3)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v19 SELECT * FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v19 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 3
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v19_preserves_v18_policy_history_and_posted_hashes() -> Result<(), CliError> {
+        let conn = v17_connection()?;
+        apply_v18(&conn)?;
+        let owner = super::super::Actor::new("owner");
+        super::super::audit::set_policy(&conn, &owner, true)?;
+        let history = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
+            Ok(conn
+                .prepare("SELECT id, row_hash, COALESCE(after, '') FROM audit_log ORDER BY id")?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?)
+        };
+        let before = history(&conn)?;
+        apply_v19(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, 19);
+        assert_eq!(history(&conn)?, before);
+        assert!(super::super::policy::get(&conn)?.enforce);
+        super::super::audit::set_policy(&conn, &owner, false)?;
+        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_creations(&conn)?;
+        assert_eq!(
+            super::super::spend_limits::list(&conn, "unconfigured", None)?,
+            Vec::new()
+        );
+        ensure_schema(&conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn v19_rebuild_is_atomic_and_rejects_corrupt_v18_history() -> Result<(), CliError> {
+        for corruption in ["collision", "hash", "tail"] {
+            let conn = v17_connection()?;
+            apply_v18(&conn)?;
+            match corruption {
+                "hash" => conn.execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET actor = 'tampered' WHERE id = 1")?,
+                "tail" => conn.execute_batch("DROP TRIGGER protect_audit_delete; DELETE FROM audit_log WHERE id = 2")?,
+                _ => conn.execute_batch("CREATE TABLE agent_spend_limits (collision TEXT)")?,
+            }
+            assert!(apply_v19(&conn).is_err());
+            assert_eq!(get_schema_version(&conn)?, 18);
+            assert!(conn.prepare("SELECT * FROM txn_proposals").is_err());
+            assert!(conn.prepare("SELECT * FROM audit_log_v19").is_err());
+            if corruption == "collision" {
+                super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
+                assert!(super::super::policy::get(&conn)?.enforce);
+                super::super::audit::verify_hash_chain(&conn)?;
+            }
+        }
+        Ok(())
+    }
 
     fn v17_connection() -> Result<Connection, CliError> {
         let conn = v12_connection()?;
@@ -1115,7 +1300,7 @@ mod tests {
         let before = hashes(&conn)?;
         assert_eq!(before.iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2]);
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, 18);
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
         assert!(!super::super::policy::get(&conn)?.enforce);
         // Simulate the explicit v2 insert emitted by a v17 binary.
@@ -1174,10 +1359,10 @@ mod tests {
     }
 
     #[test]
-    fn fresh_v18_defaults_off_without_inventing_policy_history() -> Result<(), CliError> {
+    fn fresh_schema_defaults_off_without_inventing_policy_history() -> Result<(), CliError> {
         let conn = open_conn();
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, 18);
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         assert!(!super::super::policy::get(&conn)?.enforce);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row

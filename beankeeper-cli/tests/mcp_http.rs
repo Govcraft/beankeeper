@@ -394,6 +394,89 @@ fn http_enforces_current_request_capabilities_and_policy() -> TestResult {
 }
 
 #[test]
+fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult {
+    let ledger = Ledger::new()?;
+    let db = ledger.db()?;
+    let issue = |name: &str, grant: &str| {
+        identity::issue(
+            db.conn(),
+            &Actor::new("owner"),
+            &IssueRequest {
+                name,
+                capabilities: &[grant.into()],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    };
+    let proposer = issue("http_proposer", "ledger/propose")?;
+    let approver = issue("http_approver", "ledger/approve")?;
+    let proposer_token = token(&proposer)?;
+    let approver_token = token(&approver)?;
+    ledger.enforce()?;
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(proposer_token), "Proposal Client")?;
+    for (credential, expected) in [
+        (
+            proposer_token,
+            vec!["txn_proposals", "txn_propose", "txn_reject"],
+        ),
+        (
+            approver_token,
+            vec!["txn_proposals", "txn_approve", "txn_reject"],
+        ),
+        (token(&ledger.reader)?, vec!["txn_proposals"]),
+    ] {
+        let tools = server.tools(Some(credential))?;
+        for name in ["txn_proposals", "txn_propose", "txn_approve", "txn_reject"] {
+            assert_eq!(
+                tools.iter().any(|tool| tool == name),
+                expected.contains(&name)
+            );
+        }
+    }
+    let request = payload(&server.call(
+        "txn_propose",
+        posting("http-proposal"),
+        Some(proposer_token),
+    )?)?;
+    assert_eq!(request["status"], "pending");
+    let pending = payload(&server.call(
+        "txn_proposals",
+        json!({"company":"acme"}),
+        Some(approver_token),
+    )?)?;
+    assert_eq!(pending[0]["id"], request["id"]);
+    let resolution = payload(&server.call(
+        "txn_approve",
+        json!({"company":"acme", "id":request["id"]}),
+        Some(approver_token),
+    )?)?;
+    assert_eq!(resolution["status"], "approved");
+    let rejected = payload(&server.call(
+        "txn_propose",
+        posting("http-rejected-proposal"),
+        Some(proposer_token),
+    )?)?;
+    let rejected = payload(&server.call(
+        "txn_reject",
+        json!({"company":"acme", "id":rejected["id"], "reason":"Requote"}),
+        Some(approver_token),
+    )?)?;
+    assert_eq!(rejected["status"], "rejected");
+    let posted_by: String = db.conn().query_row(
+        "SELECT agent_uri FROM transactions WHERE reference = 'http-proposal'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(posted_by, approver["agent_uri"]);
+    db::audit::verify_hash_chain(db.conn())?;
+    db::audit::verify_creations(db.conn())?;
+    server.finish(&[proposer_token, approver_token])
+}
+
+#[test]
 fn http_read_only_is_a_ceiling_and_explicit_headers_override_fallback() -> TestResult {
     let ledger = Ledger::new()?;
     ledger.enforce()?;

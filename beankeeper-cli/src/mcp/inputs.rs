@@ -269,6 +269,29 @@ pub(super) struct TxnPost {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub(super) struct TxnProposals {
+    pub company: String,
+    #[serde(default)]
+    pub include_rejected: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TxnApprove {
+    pub company: String,
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TxnReject {
+    pub company: String,
+    pub id: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TxnClear {
     pub company: String,
     pub transaction_id: Option<i64>,

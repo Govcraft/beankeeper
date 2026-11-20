@@ -212,6 +212,10 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "account_show",
         "account_create",
         "txn_post",
+        "txn_propose",
+        "txn_proposals",
+        "txn_approve",
+        "txn_reject",
         "txn_reverse",
         "txn_meta_set",
         "txn_meta_unset",
@@ -603,7 +607,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 13);
+    assert_eq!(names.len(), 14);
     for name in [
         "security_create",
         "security_price",
@@ -611,6 +615,9 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "investment_sell",
         "account_create",
         "txn_post",
+        "txn_propose",
+        "txn_approve",
+        "txn_reject",
         "txn_reverse",
         "txn_meta_set",
         "txn_meta_unset",
@@ -1410,6 +1417,157 @@ fn identity_client(
     Ok(client)
 }
 
+fn proposal_identity(
+    db: &beankeeper_cli::db::Db,
+    name: &str,
+    capabilities: &[&str],
+) -> Result<Value, Box<dyn Error>> {
+    use beankeeper_cli::identity::{self, IssueRequest};
+    Ok(identity::issue(
+        db.conn(),
+        &beankeeper_cli::db::Actor::new("owner"),
+        &IssueRequest {
+            name,
+            capabilities: &capabilities
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ttl: Duration::from_secs(3600),
+            public_key: None,
+            generate_key: true,
+        },
+    )?)
+}
+
+#[test]
+fn proposal_tools_filter_grants_and_post_approved_requests_with_reviewer_identity() -> TestResult {
+    use beankeeper_cli::db::{self, Actor, Db};
+    let dir = tempdir()?;
+    let path = dir.path().join("proposals.db");
+    let passphrase_file = dir.path().join("passphrase");
+    identity_ledger(&path, &passphrase_file)?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = Db::open_existing(&path, Some(&passphrase))?;
+    let requester = proposal_identity(&db, "requester", &["ledger/read", "ledger/propose"])?;
+    let reviewer = proposal_identity(&db, "reviewer", &["ledger/read", "ledger/approve"])?;
+    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    let mut agent = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
+    let listed = agent.request("tools/list", &json!({}))?;
+    let names = tool_names(&listed)?;
+    assert!(names.contains("txn_propose"));
+    assert!(names.contains("txn_reject"));
+    assert!(names.contains("txn_proposals"));
+    assert!(!names.contains("txn_approve"));
+    assert!(!names.contains("txn_post"));
+    let proposed = agent.success("txn_propose", &posting("proposal-approved"))?;
+    assert_eq!(proposed["status"], "pending");
+    assert_eq!(
+        agent.success("txn_list", &json!({"company":"acme"}))?,
+        json!([])
+    );
+    let mut review_client =
+        identity_client(&path, &passphrase_file, reviewer["token"].as_str(), false)?;
+    let pending = review_client.success("txn_proposals", &json!({"company":"acme"}))?;
+    assert_eq!(pending[0]["id"], proposed["id"]);
+    let approved = review_client.success(
+        "txn_approve",
+        &json!({"company":"acme", "id":proposed["id"]}),
+    )?;
+    assert_eq!(approved["status"], "approved");
+    let transactions = review_client.success(
+        "txn_list",
+        &json!({"company":"acme", "reference":"proposal-approved"}),
+    )?;
+    assert_eq!(transactions[0]["agent_uri"], reviewer["agent_uri"]);
+    let metadata: Value = serde_json::from_str(
+        transactions[0]["metadata"]
+            .as_str()
+            .ok_or("transaction metadata")?,
+    )?;
+    assert_eq!(metadata["proposal_id"], proposed["id"]);
+    let repeated = review_client.call(
+        "txn_approve",
+        &json!({"company":"acme", "id":proposed["id"]}),
+    )?;
+    assert_eq!(payload(&repeated)?["code"], "VALIDATION");
+    let withdrawn = agent.success("txn_propose", &posting("proposal-withdrawn"))?;
+    let rejected = agent.success(
+        "txn_reject",
+        &json!({"company":"acme", "id":withdrawn["id"], "reason":"superseded"}),
+    )?;
+    assert_eq!(rejected["status"], "withdrawn");
+    let rejected = agent.success(
+        "txn_proposals",
+        &json!({"company":"acme", "include_rejected":true}),
+    )?;
+    assert!(
+        rejected
+            .as_array()
+            .ok_or("proposals")?
+            .iter()
+            .any(|row| row["id"] == withdrawn["id"])
+    );
+    review_client.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
+fn mcp_posting_checks_spend_limits_while_proposals_use_the_approval_gate() -> TestResult {
+    use beankeeper_cli::db::{self, Actor, Db};
+    let dir = tempdir()?;
+    let path = dir.path().join("limits.db");
+    let passphrase_file = dir.path().join("passphrase");
+    identity_ledger(&path, &passphrase_file)?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = Db::open_existing(&path, Some(&passphrase))?;
+    let requester = proposal_identity(
+        &db,
+        "limited",
+        &["ledger/read", "ledger/post", "ledger/propose"],
+    )?;
+    bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_file)
+        .args([
+            "agent",
+            "limit",
+            "set",
+            requester["agent_uri"].as_str().ok_or("agent URI")?,
+            "--company",
+            "acme",
+            "--currency",
+            "USD",
+            "--max-post",
+            "10.00",
+        ])
+        .assert()
+        .success();
+    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    let mut writer = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
+    let rejected = writer.call("txn_post", &posting("over-limit"))?;
+    assert_eq!(rejected["result"]["isError"], true);
+    assert_eq!(payload(&rejected)?["code"], "FORBIDDEN");
+    let proposed = writer.success("txn_propose", &posting("over-limit"))?;
+    assert_eq!(proposed["status"], "pending");
+    assert_eq!(
+        writer.success("txn_list", &json!({"company":"acme"}))?,
+        json!([])
+    );
+    let mut reader = identity_client(&path, &passphrase_file, requester["token"].as_str(), true)?;
+    let listed = reader.request("tools/list", &json!({}))?;
+    let names = tool_names(&listed)?;
+    assert!(names.contains("txn_proposals"));
+    for name in ["txn_propose", "txn_approve", "txn_reject", "txn_post"] {
+        assert!(!names.contains(name));
+        let denied = reader.call(name, &posting("read-only"))?;
+        assert!(denied.get("error").is_some() || denied["result"]["isError"] == true);
+    }
+    let visible = reader.success("txn_proposals", &json!({"company":"acme"}))?;
+    assert_eq!(visible[0]["id"], proposed["id"]);
+    writer.success("verify", &json!({}))?;
+    Ok(())
+}
+
 #[test]
 fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     use beankeeper_cli::db::{self, Actor, Db};
@@ -1424,7 +1582,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 13);
+    assert_eq!(names.len(), 14);
     for name in names {
         assert_eq!(
             beankeeper_cli::capability::Capability::for_operation(name)?,
@@ -1473,6 +1631,21 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
     db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
     for (name, input, capability) in [
         ("txn_post", posting("forbidden"), "ledger/post"),
+        (
+            "txn_propose",
+            posting("forbidden-proposal"),
+            "ledger/propose",
+        ),
+        (
+            "txn_approve",
+            json!({"company":"acme", "id":"proposal_absent"}),
+            "ledger/approve",
+        ),
+        (
+            "txn_reject",
+            json!({"company":"acme", "id":"proposal_absent"}),
+            "ledger/propose",
+        ),
         ("txn_reconcile", json!({}), "ledger/reconcile"),
         (
             "account_create",
@@ -1551,7 +1724,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     assert_eq!(shown[0]["agent_uri"], issued["agent_uri"]);
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
-    assert_eq!(tool_names(&listed)?.len(), 13);
+    assert_eq!(tool_names(&listed)?.len(), 14);
     assert!(!tool_names(&listed)?.contains("txn_post"));
     writer.success("verify", &json!({}))?;
     Ok(())
