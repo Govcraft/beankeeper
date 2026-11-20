@@ -77,7 +77,7 @@ For the complete JSON envelope specification, see [`references/json-api.md`](ref
 | `bk report budget-variance` | Budget vs actual comparison |
 | `bk report ledger` | General ledger / account statement with running balances |
 | `bk report aging` | Receivables/payables aging buckets (FIFO or specific invoice matching, by transaction date) |
-| `bk report reconciliation` | Book vs cleared vs reconciled balance for one account (point in time, per statement), outstanding and partially cleared items, statement difference, metadata filter/grouping |
+| `bk report reconciliation` | Bank balances by default; `--mode settlement --statement ID` compares AR/AP charge applications with statement net, listing short pays, overpays and linked/unmatched credits. Supports metadata filters/grouping |
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
@@ -295,6 +295,36 @@ with `--status uncleared`, then clear again. Outstanding items carry `reference`
 in [`references/workflows.md`](references/workflows.md).
 
 `report cash-flow` treats asset accounts named like `cash`/`bank`/`checking`/`savings` as cash unless you pass `--cash-account CODE` (repeatable); see [`references/commands.md`](references/commands.md#bk-report-cash-flow).
+
+### Close a carrier commission statement with a short pay
+
+Use settlement mode for payments against expected commissions. In an existing
+agency ledger with Cash 1000, Commission AR 1210 and Revenue 4000:
+
+```sh
+bk --company agency txn post -d 'Expected P1 October' --date 2026-10-01 \
+  --debit 1210:1800 --credit 4000:1800 --reference P1-2026-10 \
+  --meta policy=P1
+bk --company agency txn post -d 'S1 payment P1' --date 2026-10-25 \
+  --debit 1000:1620 --credit 1210:1620 --reference PAY-S1-P1 \
+  --meta applies_to=P1-2026-10
+bk --company agency txn clear --reference P1-2026-10 --account 1210 \
+  --amount 1620 --date 2026-10-31 --statement S1
+bk --company agency --json report reconciliation --mode settlement \
+  --account 1210 --statement S1 --statement-balance 1620 --to 2026-10-31
+```
+
+The statement comparison is reconciled (`difference: 0`), while the original
+October 1 charge remains open for $180, aged 30 days. The linked $1,620 payment
+appears in `applied_settlements`, regardless of whether its entry was cleared.
+Clear payment entries too if useful; they do not net away charge applications.
+Inspect `charges[].short_pay` and `charges[].overpay` as well as `reconciled`.
+Unlinked or unusably linked credits appear in `unmatched_settlements` with
+reasons and never reduce open charges through FIFO. Charge reversals reduce
+expected commissions and appear separately as negative charges. Use `--link-key`
+for another metadata key. Filters and grouping select original charge metadata.
+The account-wide explanations include all statements through `--to`; the
+comparison uses only this statement's charge clearings. Bank mode is the default.
 
 ### Budgeting
 

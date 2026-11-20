@@ -763,6 +763,72 @@ it (`book_balance`, `cleared_balance`, `total_cleared_balance`,
 `difference`, and `reconciled` (`1`/`0`) when a statement balance is given).
 Amounts are signed minor units.
 
+#### AR/AP statement settlement mode
+
+Use `--mode settlement` for carrier commissions or vendor settlement statements.
+The default `--mode bank` keeps the bank behavior above. Settlement mode requires
+`--statement` and an asset (AR) or liability (AP) account. `--statement-balance`
+is the statement's **net payments**, rather than a bank ending balance.
+`--link-key KEY` changes the payment link key from `applies_to` (settlement only).
+
+```sh
+bk --company agency report reconciliation --mode settlement --account 1210 \
+  --statement S1 --statement-balance 1620 --to 2026-10-31
+```
+
+Entries are netted per transaction on the selected account and currency, as in
+aging. Debits are charges for AR, credits for AP. `cleared_balance` sums only
+charge clearings on this statement, plus signed charge-reversal clearings.
+Clearing the payment entry cannot cancel that total.
+`difference = statement_balance - cleared_balance`; `reconciled` means this
+comparison is zero, even when short pays remain open. Overpayments and duplicate
+lines above the charge applications leave a difference when included in the
+statement net.
+
+Payment links use aging's specific-identification syntax and resolution rules:
+reference strings first, then transaction ids (JSON integers or numeric strings,
+optionally prefixed with `#`), or arrays in link order. Links must name a charge
+on the same account/currency, dated no later than the payment and `--to`.
+Settlement mode does not apply unmatched payments or excess FIFO to unrelated
+charges. Missing/invalid links and unusable targets are listed with reasons in
+`unmatched_settlements`; partially usable arrays retain their reasons in
+`applied_settlements`. Unmatched credits are never open charges.
+
+For each charge, `expected` is the original net charge minus `txn reverse`
+charge reversals through `--to`. `applied_this_statement` is its charge clearing
+on the selected statement. `applied_total` is the greater of all charge clearings
+(net of charge-reversal clearings) and linked payment allocations through `--to`,
+so posting a payment and clearing its charge do not count twice. `remaining` is
+`max(expected - applied_total, 0)`. `short_pay` is that remainder for a charge
+with application on this statement; `overpay = max(applied_total - expected, 0)`.
+For arrays, payments fill linked charges in order; excess stays on the last valid
+charge and is shown explicitly. Separate duplicate postings remain visible;
+posting retries with the same reference still use normal idempotency.
+
+Open charges keep their original reference, date, metadata and `age_days`.
+Charge reversals appear in `negative_charges`, dated and statement-scoped to
+the reversal itself. Reversing a payment creates a new positive charge, as in
+aging. Matching runs before metadata filtering. Filters select charges by their
+metadata, and linked payments follow them even if payment metadata lacks the
+filter key. Groups subtotal open charges using original metadata. Unmatched
+credits use their own metadata for filtering. Charge and payment explanations
+cover the account through `--to`, including other statements; only
+`applied_this_statement` and the comparison are statement-scoped.
+
+The JSON envelope, common fields and 12 CSV columns remain. `uncleared_entries`
+contains only open charges; `uncleared_total` sums their remaining amounts. The
+bank-only `book_balance - total_cleared_balance` invariant does not apply.
+`book_balance` remains the filtered ledger balance; clearing balances contain
+charge-side clearings. JSON adds `mode`, `link_key`, `charges`, `negative_charges`,
+`applied_settlements`, and `unmatched_settlements` only in settlement mode.
+CSV adds `charge`, `negative_charge`, `applied_settlement`, and
+`unmatched_settlement` rows alongside `entry`, `group` and `summary` rows.
+For charge rows, `amount` is expected, `cleared_amount` is applied this statement,
+and `remaining_amount` is remaining. For settlement rows, `amount` is the
+positive credit and `remaining_amount` its excess; reasons are appended to
+`description`. Table output includes charges, applied settlements and unmatched
+settlements sections.
+
 ### `bk report cash-flow`
 
 Cash flow statement for a period using the direct method.

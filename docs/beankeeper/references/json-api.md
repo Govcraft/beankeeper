@@ -634,6 +634,104 @@ the member `entry_ids`.
 }
 ```
 
+#### `report reconciliation --mode settlement`
+
+The common fields and envelope above remain; bank mode adds no new keys.
+Settlement mode requires `--statement` and an asset/liability account. Its
+`cleared_balance` counts charge clearings on that statement, plus negative
+charge-reversal clearings, irrespective of payment-entry clearance.
+`difference = statement_balance - cleared_balance`; `reconciled` is a statement
+comparison, not a claim that no short pays remain. Both are `null` without
+`--statement-balance`.
+
+Additional top-level `data` keys:
+
+| Key | Meaning |
+|-----|---------|
+| `mode` | `"settlement"` |
+| `link_key` | Effective payment link metadata key, default `"applies_to"` |
+| `charges` | All selected net charges, ordered by date/id, including fully applied ones |
+| `negative_charges` | Charge reversals, with signed negative expected/statement amounts |
+| `applied_settlements` | Credits with at least one usable same-account/currency charge link |
+| `unmatched_settlements` | Credits without a usable link, with reasons; never applied FIFO |
+
+Charges have `entry_id` (representative entry for a net transaction),
+`transaction_id`, `date`, `reference`, `description`, `metadata`, `group`,
+`expected`, `applied_this_statement`, `applied_total`, `reconciled_this_statement`,
+`remaining`, `short_pay`,
+`overpay`, and `age_days` (effective `--to` minus original charge date).
+Amounts are minor units. Charge reversals reduce the original charge's
+`expected`; their separate negative rows retain the reversal date and statement
+application. `applied_total` uses the greater of linked payment allocations and
+charge clearings across statements, without adding the two representations.
+`remaining = max(expected - applied_total, 0)`;
+`overpay = max(applied_total - expected, 0)`. `short_pay` is remaining for a charge
+with a positive application on this statement, otherwise zero.
+
+Settlement rows have `entry_id`, `transaction_id`, `date`, `reference`,
+`description`, `metadata`, positive `amount`, `charge_transaction_ids` in link
+order, `excess`, and `reasons`. Reasons use aging's snake-case vocabulary:
+`not_found`, `not_on_account`, `not_a_charge`, `charge_after_settlement`,
+`after_as_of`, `invalid`, plus `missing_link`. Links can be references, ids,
+or arrays, with the same reference-first resolution as aging. Arrays allocate
+in order; excess remains on the last valid charge and is counted in its overpay.
+Partially usable arrays appear in `applied_settlements` with their reasons.
+
+`uncleared_entries` retains the existing item shape but contains only open net
+charges. `amount`/`signed_amount` are effective expected amounts,
+`cleared_amount` is effective total application, `remaining_amount` and
+`signed_remaining` are the open remainder. `clearings` lists the representative
+entry's actual clearings, which can differ from linked payment allocations.
+`uncleared_total` sums open charge remainders. The bank balance invariant does
+not apply in this mode. Filters select charge metadata after linking; linked
+credits follow selected charges and unmatched credits use their own metadata.
+Groups subtotal open charges. Explanations cover the account through `--to`;
+only statement application and comparison are scoped to `--statement`.
+
+For the $1,800 expected commission and $1,620 payment example (excerpt):
+
+```json
+{
+  "data": {
+    "mode": "settlement",
+    "link_key": "applies_to",
+    "statement": "S1",
+    "statement_balance": 162000,
+    "cleared_balance": 162000,
+    "difference": 0,
+    "reconciled": true,
+    "uncleared_total": 18000,
+    "uncleared_count": 1,
+    "charges": [{
+      "reference": "P1-2026-10",
+      "date": "2026-10-01",
+      "expected": 180000,
+      "applied_this_statement": 162000,
+      "applied_total": 162000,
+      "remaining": 18000,
+      "short_pay": 18000,
+      "overpay": 0,
+      "age_days": 30
+    }],
+    "negative_charges": [],
+    "applied_settlements": [{
+      "reference": "PAY-S1-P1",
+      "amount": 162000,
+      "charge_transaction_ids": [1],
+      "excess": 0,
+      "reasons": []
+    }],
+    "unmatched_settlements": []
+  }
+}
+```
+
+CSV keeps the bank header and common row types, adding `charge`,
+`negative_charge`, `applied_settlement`, and `unmatched_settlement`.
+Charge `amount`/`cleared_amount`/`remaining_amount` mean
+expected/applied-this-statement/remaining. Settlement `amount` is its positive
+credit and `remaining_amount` its excess; `description` includes any reasons.
+
 ### `budget list`
 
 ```json
