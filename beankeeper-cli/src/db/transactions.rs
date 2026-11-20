@@ -8,6 +8,19 @@ use super::metadata_filter;
 use super::{EntryRow, TransactionRow};
 use crate::error::CliError;
 
+/// Check source identity before applying mutable import categorization rules.
+pub(crate) fn reference_exists(
+    conn: &Connection,
+    company: &str,
+    reference: &str,
+) -> Result<bool, CliError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM transactions WHERE company_slug = ?1 AND reference = ?2)",
+        params![company, reference],
+        |row| row.get(0),
+    )?)
+}
+
 /// A single entry to be posted as part of a transaction.
 #[derive(Debug, Clone)]
 pub struct PostEntryParams {

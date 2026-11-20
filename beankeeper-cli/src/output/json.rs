@@ -149,7 +149,7 @@ pub fn meta_with_timestamp(command: &str, company: Option<&str>, timestamp: Stri
 }
 
 /// Serialise a success envelope.
-pub(super) fn envelope_ok<T: Serialize>(meta: Meta, data: T) -> Result<String, CliError> {
+pub(crate) fn envelope_ok<T: Serialize>(meta: Meta, data: T) -> Result<String, CliError> {
     let env = Envelope {
         ok: true,
         meta,

@@ -326,11 +326,56 @@ EXAMPLES:\n  \
     /// Set and manage budgets.
     Budget(BudgetArgs),
 
+    /// Manage automatic bank import categorization.
+    Rule(RuleArgs),
+
     /// Generate financial reports.
     Report(ReportArgs),
 
     /// Inspect the audit trail of ledger mutations.
     Audit(AuditArgs),
+}
+
+/// Arguments for company-scoped categorization rules.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "EXAMPLES:\n  bk --company acme rule create --contains Starbucks --account 5000 --priority 10\n  bk --company acme rule list --json\n  bk --company acme rule delete <RULE_ID> --force\n\nRules apply to future CSV/OFX imports. Higher priority wins; ties use ascending rule ID."
+)]
+pub struct RuleArgs {
+    #[command(subcommand)]
+    pub command: RuleCommand,
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Literal description rules applied to CSV and OFX bank imports.
+#[derive(Subcommand, Debug)]
+pub enum RuleCommand {
+    /// Create a case-insensitive description-contains rule.
+    Create {
+        /// Nonempty literal substring to find in the imported description.
+        #[arg(long)]
+        contains: crate::db::rules::DescriptionPattern,
+        /// Destination account replacing suspense on matching bank rows.
+        #[arg(long)]
+        account: String,
+        /// Higher priority wins; ties use ascending rule ID.
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        priority: i32,
+    },
+    /// List rules in evaluation order.
+    List,
+    /// Delete a rule. Existing postings remain unchanged.
+    Delete {
+        /// Rule `TypeID` returned by create/list.
+        id: crate::db::rules::RuleId,
+        /// Skip interactive confirmation.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Arguments for audit commands.
@@ -389,6 +434,7 @@ pub enum AuditCommand {
 /// Entity-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEntityArg {
+    Rule,
     Entry,
     Transaction,
     Budget,
@@ -403,6 +449,7 @@ impl AuditEntityArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Rule => "rule",
             Self::Entry => "entry",
             Self::Transaction => "transaction",
             Self::Budget => "budget",
@@ -417,6 +464,7 @@ impl AuditEntityArg {
 /// Action-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditActionArg {
+    RuleDelete,
     Create,
     StatusChange,
     Correlate,
@@ -436,6 +484,7 @@ impl AuditActionArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::RuleDelete => "rule_delete",
             Self::Create => "create",
             Self::StatusChange => "status_change",
             Self::Correlate => "correlate",
@@ -1861,6 +1910,7 @@ pub fn resolve_format(command_format: Option<OutputFormat>, cli: &Cli) -> Output
 /// `BEANKEEPER_COMPANY` env var is set.
 pub fn require_company(cli: &Cli) -> Result<String, CliError> {
     let cmd_company = match &cli.command {
+        Command::Rule(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),
         Command::Budget(args) => args.company.as_ref(),

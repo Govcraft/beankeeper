@@ -7,7 +7,6 @@ use std::fmt;
 use std::io::Read;
 
 use beankeeper::types::Currency;
-use rusqlite::params;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
@@ -228,26 +227,6 @@ fn build_metadata_json(ofx_type: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Database helper
-// ---------------------------------------------------------------------------
-
-/// Check if a reference already exists for a company.
-fn reference_exists(
-    conn: &rusqlite::Connection,
-    company: &str,
-    reference: &str,
-) -> Result<bool, CliError> {
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM transactions WHERE company_slug = ?1 AND reference = ?2",
-            params![company, reference],
-            |row| row.get(0),
-        )
-        .map_err(CliError::Sqlite)?;
-    Ok(exists)
-}
-
-// ---------------------------------------------------------------------------
 // Single-transaction processing
 // ---------------------------------------------------------------------------
 
@@ -302,6 +281,19 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
         return outcome;
     }
 
+    let entries = match build_entries(ctx, prepared) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return TransactionOutcome::Failed(FailedTransaction {
+                date: prepared.date.clone(),
+                description: prepared.description.clone(),
+                amount_minor: prepared.amount_minor,
+                currency: prepared.currency.clone(),
+                error: error.to_string(),
+            });
+        }
+    };
+
     if ctx.dry_run {
         return TransactionOutcome::Imported(ImportedTransaction {
             id: 0,
@@ -313,7 +305,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
         });
     }
 
-    insert_transaction(ctx, prepared)
+    insert_transaction(ctx, prepared, &entries)
 }
 
 /// Resolve a pre-existing duplicate reference into an early [`TransactionOutcome`].
@@ -327,7 +319,7 @@ fn check_conflict(
     prepared: &PreparedTransaction,
     conflict_strategy: transactions::ConflictStrategy,
 ) -> Option<TransactionOutcome> {
-    match reference_exists(conn, company, &prepared.reference) {
+    match transactions::reference_exists(conn, company, &prepared.reference) {
         Ok(true) => Some(match conflict_strategy {
             transactions::ConflictStrategy::Error => {
                 TransactionOutcome::Failed(FailedTransaction {
@@ -368,43 +360,57 @@ fn check_conflict(
     }
 }
 
-/// Build the balanced double-entry pair and post the prepared transaction.
-fn insert_transaction(
+/// Resolve the contra account and build the balanced double-entry pair.
+fn build_entries(
     ctx: &StatementContext<'_>,
     prepared: &PreparedTransaction,
-) -> TransactionOutcome {
-    // Build balanced entries: inflow = debit bank, credit suspense;
-    // outflow = debit suspense, credit bank.
+) -> Result<Vec<transactions::PostEntryParams>, CliError> {
+    let contra = crate::db::rules::contra_account(
+        ctx.rules,
+        &prepared.description,
+        ctx.account_code,
+        ctx.suspense_code,
+    )?;
+    // Preserve the bank side and route the contra side through the selected account.
     let (debit_code, credit_code) = if prepared.is_inflow {
-        (ctx.account_code, ctx.suspense_code)
+        (ctx.account_code, contra)
     } else {
-        (ctx.suspense_code, ctx.account_code)
+        (contra, ctx.account_code)
     };
 
-    let entries = vec![
+    Ok(vec![
         transactions::PostEntryParams {
             account_code: debit_code.to_string(),
             direction: "debit".to_string(),
             amount: prepared.amount_minor,
             memo: None,
-            tax_category: None,
+            tax_category: accounts::get_account(ctx.conn, ctx.company, debit_code)?
+                .default_tax_category,
         },
         transactions::PostEntryParams {
             account_code: credit_code.to_string(),
             direction: "credit".to_string(),
             amount: prepared.amount_minor,
             memo: None,
-            tax_category: None,
+            tax_category: accounts::get_account(ctx.conn, ctx.company, credit_code)?
+                .default_tax_category,
         },
-    ];
+    ])
+}
 
+/// Persist the validated bank/contra pair through the audited posting path.
+fn insert_transaction(
+    ctx: &StatementContext<'_>,
+    prepared: &PreparedTransaction,
+    entries: &[transactions::PostEntryParams],
+) -> TransactionOutcome {
     let params = transactions::PostTransactionParams {
         company_slug: ctx.company,
         description: &prepared.description,
         metadata: Some(&prepared.metadata),
         currency: &prepared.currency,
         date: &prepared.date,
-        entries: &entries,
+        entries,
         correlate: None,
         reference: Some(&prepared.reference),
         on_conflict: ctx.conflict_strategy,
@@ -454,6 +460,7 @@ enum TransactionOutcome {
 
 /// Context for processing a statement's transactions.
 struct StatementContext<'a> {
+    rules: &'a [crate::db::rules::Rule],
     actor: &'a crate::db::Actor,
     conn: &'a rusqlite::Connection,
     company: &'a str,
@@ -556,6 +563,7 @@ pub fn run_import_ofx(
     let conn = db_handle.conn();
     let verbose = cli.verbosity.verbose;
     let actor = cli.principal();
+    let rules = crate::db::rules::list_rules(conn, company)?;
     let format = crate::cli::resolve_format(None, cli);
 
     let conflict_strategy = match on_conflict {
@@ -564,14 +572,7 @@ pub fn run_import_ofx(
         crate::cli::OnConflictArg::Upsert => transactions::ConflictStrategy::Upsert,
     };
 
-    for code in [account_code, suspense_code] {
-        if !accounts::account_exists(conn, company, code)? {
-            return Err(OfxImportError::AccountNotFound {
-                code: code.to_string(),
-            }
-            .into());
-        }
-    }
+    validate_accounts(conn, company, account_code, suspense_code)?;
 
     // Read and parse OFX.
     let content = read_input(file)?;
@@ -592,6 +593,7 @@ pub fn run_import_ofx(
                 let (currency_code, minor_units) =
                     validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
+                    rules: &rules,
                     actor: &actor,
                     conn,
                     company,
@@ -618,6 +620,7 @@ pub fn run_import_ofx(
                 let (currency_code, minor_units) =
                     validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
+                    rules: &rules,
                     actor: &actor,
                     conn,
                     company,
@@ -644,6 +647,7 @@ pub fn run_import_ofx(
                 let (currency_code, minor_units) =
                     validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
+                    rules: &rules,
                     actor: &actor,
                     conn,
                     company,
@@ -665,6 +669,23 @@ pub fn run_import_ofx(
 
     // Render output.
     render_result(&result, cli, company, dry_run, format)?;
+    Ok(())
+}
+
+fn validate_accounts(
+    conn: &rusqlite::Connection,
+    company: &str,
+    bank: &str,
+    suspense: &str,
+) -> Result<(), CliError> {
+    for code in [bank, suspense] {
+        if !accounts::account_exists(conn, company, code)? {
+            return Err(OfxImportError::AccountNotFound {
+                code: code.to_string(),
+            }
+            .into());
+        }
+    }
     Ok(())
 }
 
