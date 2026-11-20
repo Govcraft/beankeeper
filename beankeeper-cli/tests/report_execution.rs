@@ -56,6 +56,16 @@ const CASES: &[&[&str]] = &[
     ],
     &["balance-sheet", "--to", "2099-12-31"],
     &["tax-summary", "--from", "2000-01-01", "--to", "2099-12-31"],
+    &["schedule-c", "--from", "2000-01-01", "--to", "2099-12-31"],
+    &[
+        "1099",
+        "--from",
+        "2000-01-01",
+        "--to",
+        "2099-12-31",
+        "--threshold",
+        "0",
+    ],
     &[
         "ledger",
         "--account",
@@ -115,6 +125,10 @@ fn in_process_reports_match_every_cli_report_payload() -> TestResult {
     for args in CASES {
         let mut argv = vec!["bk", "--company", "acme-consulting", "--quiet", "report"];
         argv.extend_from_slice(args);
+        if matches!(args[0], "schedule-c" | "1099") {
+            // The in-process API must retain its JSON sink despite CLI options.
+            argv.extend_from_slice(&["--output-format", "csv"]);
+        }
         // Deliberately omit --json: this API always selects its own JSON sink.
         let cli = Cli::try_parse_from(&argv)?;
         let BkCommand::Report(report_args) = &cli.command else {
