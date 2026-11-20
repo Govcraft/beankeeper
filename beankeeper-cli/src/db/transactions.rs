@@ -168,6 +168,8 @@ fn post_transaction_inner(
         .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?
         .to_string();
 
+    super::periods::check_posting(conn, p.company_slug, &date)?;
+
     // Build the metadata string, merging --correlate and --metadata if both present.
     let effective_metadata = build_metadata(p.metadata, p.correlate)?;
 

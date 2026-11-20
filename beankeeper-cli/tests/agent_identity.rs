@@ -477,7 +477,7 @@ fn posts_imports_reversals_and_mutations_all_record_verified_claims() -> TestRes
         assert_eq!(row["agent_uri"], issued["agent_uri"]);
         assert_eq!(row["token_jti"], issued["token_jti"]);
         assert_eq!(row["actor"], "host-process");
-        assert_eq!(row["hash_version"], 3);
+        assert_eq!(row["hash_version"], 4);
     }
     for action in [
         "create",

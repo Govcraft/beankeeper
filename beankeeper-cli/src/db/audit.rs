@@ -170,6 +170,7 @@ impl Actor {
 /// constraint on `audit_log`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditEntity {
+    Period,
     Proposal,
     SpendLimit,
     Policy,
@@ -190,6 +191,7 @@ enum AuditEntity {
 impl AuditEntity {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Period => "period",
             Self::Proposal => "proposal",
             Self::SpendLimit => "spend_limit",
             Self::Policy => "policy",
@@ -212,6 +214,8 @@ impl AuditEntity {
 /// The kind of change recorded. Maps to the `action` CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditAction {
+    PeriodClose,
+    PeriodReopen,
     ProposalApprove,
     ProposalReject,
     LimitSet,
@@ -238,6 +242,8 @@ enum AuditAction {
 impl AuditAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::PeriodClose => "period_close",
+            Self::PeriodReopen => "period_reopen",
             Self::ProposalApprove => "proposal_approve",
             Self::ProposalReject => "proposal_reject",
             Self::LimitSet => "limit_set",
@@ -293,7 +299,8 @@ fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
         serde_json::json!(match row.hash_version {
             1 => "beankeeper.audit.v1",
             2 => "beankeeper.audit.v2",
-            _ => "beankeeper.audit.v3",
+            3 => "beankeeper.audit.v3",
+            _ => "beankeeper.audit.v4",
         }),
         serde_json::json!(row.id),
         serde_json::json!(row.changed_at),
@@ -307,7 +314,7 @@ fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
     ];
     match row.hash_version {
         1 if row.agent_uri.is_none() && row.token_jti.is_none() => {}
-        2 | 3 => {
+        2..=4 => {
             fields.push(serde_json::json!(row.agent_uri));
             fields.push(serde_json::json!(row.token_jti));
         }
@@ -486,10 +493,10 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         row_hash: String::new(),
         agent_uri: actor.agent_uri().map(str::to_owned),
         token_jti: actor.token_jti().map(str::to_owned),
-        hash_version: if super::schema::get_schema_version(conn)? >= 18 {
-            3
-        } else {
-            2
+        hash_version: match super::schema::get_schema_version(conn)? {
+            20.. => 4,
+            18.. => 3,
+            _ => 2,
         },
     };
     let hash = row_hash(&row)?;
@@ -655,6 +662,98 @@ pub(super) fn require_capability(
         )));
     }
     Ok(())
+}
+
+/// Close through an inclusive company cutoff, or explicitly reopen it with a reason.
+/// Authorization, state change, and audit snapshot share one savepoint.
+///
+/// # Errors
+/// Rejects insufficient admin grants, invalid dates, non-advancing closes,
+/// reopening an open company, empty reasons, and inconsistent persisted state.
+pub fn change_period(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    through: Option<chrono::NaiveDate>,
+    reason: Option<&str>,
+) -> Result<super::periods::PeriodLock, CliError> {
+    in_savepoint(conn, "sp_period_change", || {
+        require_capability(conn, actor, crate::capability::Capability::Admin)?;
+        super::companies::get_company(conn, company)?;
+        let before = super::periods::get(conn, company)?;
+        let previous = before
+            .as_ref()
+            .and_then(|lock| lock.closed_through.as_deref());
+        let through = through
+            .map(|date| super::periods::parse_date(&date.to_string()).map(|date| date.to_string()))
+            .transpose()?;
+        let reason = reason.map(str::trim).filter(|value| !value.is_empty());
+        let action = if let Some(date) = through.as_deref() {
+            if previous.is_some_and(|cutoff| date <= cutoff) {
+                return Err(CliError::Validation(
+                    "close must advance the cutoff; use period reopen to unlock it".into(),
+                ));
+            }
+            AuditAction::PeriodClose
+        } else {
+            if previous.is_none() {
+                return Err(CliError::Validation(
+                    "company has no closed period to reopen".into(),
+                ));
+            }
+            if reason.is_none() {
+                return Err(CliError::Validation(
+                    "period reopen requires a nonempty reason".into(),
+                ));
+            }
+            AuditAction::PeriodReopen
+        };
+        let changed_at =
+            conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+                row.get(0)
+            })?;
+        let after = super::periods::PeriodLock {
+            company_slug: company.to_owned(),
+            closed_through: through,
+            changed_at,
+            actor: actor.name().to_owned(),
+            reason: reason.map(str::to_owned),
+        };
+        record(
+            conn,
+            actor,
+            AuditChange {
+                company_slug: Some(company),
+                entity: AuditEntity::Period,
+                entity_id: company,
+                action,
+                snapshots: (
+                    before.as_ref().map(snapshot).as_deref(),
+                    Some(&snapshot(&after)),
+                ),
+            },
+        )?;
+        if before.is_some() {
+            conn.execute(
+                "UPDATE period_locks SET closed_through = ?2, changed_at = ?3, actor = ?4, reason = ?5
+                 WHERE company_slug = ?1",
+                params![company, after.closed_through, after.changed_at, after.actor, after.reason],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO period_locks (company_slug, closed_through, changed_at, actor, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    company,
+                    after.closed_through,
+                    after.changed_at,
+                    after.actor,
+                    after.reason
+                ],
+            )?;
+        }
+        Ok(after)
+    })
 }
 
 /// Approve exactly once, posting and recording the frozen proposer request atomically.
