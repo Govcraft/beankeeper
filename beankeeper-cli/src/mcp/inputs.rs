@@ -297,6 +297,13 @@ pub(super) struct Report {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum ReportOptions {
+    Trend {
+        metric: TrendMetricArg,
+        from: Option<String>,
+        to: Option<String>,
+        period: Option<PeriodArg>,
+        currency: Option<String>,
+    },
     TrialBalance {
         from: Option<String>,
         to: Option<String>,
@@ -385,4 +392,12 @@ pub(super) enum ReportOptions {
         cash_account: Vec<String>,
         currency: Option<String>,
     },
+}
+
+/// Quantity tracked by a historical trend report.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum TrendMetricArg {
+    Spending,
+    NetWorth,
 }
