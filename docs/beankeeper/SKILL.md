@@ -289,7 +289,23 @@ responses contain an array. Templates include their entries, currency, metadata,
 start/end dates, cadence, next due date, and status. CSV/table output summarizes
 templates; JSON entry amounts include integer minor units and decimal displays.
 
-`run` posts all pending occurrences through today in local time by default.
+`run` posts pending occurrences through today in local time by default, with a
+limit of 1,000 occurrences across all pending templates in the selected company.
+A larger run fails with validation exit code 3 before posting anything, advancing
+progress, or writing audit records. Preview the count with `--dry-run`, choose an
+earlier `--through` date, or explicitly permit the full run with
+`--allow-large-run`:
+
+```bash
+bk --company acme schedule run --through 2030-12-31 --dry-run
+bk --company acme schedule run --through 2030-12-31 --allow-large-run
+```
+
+The limit also applies when `--through` is omitted. It counts only occurrences
+still due, so previously posted, completed, cancelled, future-due, and other
+companies' occurrences do not count. The override retains atomic posting and
+retry safety; it does not split the run into batches.
+
 `--through YYYY-MM-DD` supplies an explicit inclusive cutoff, including future
 posting dates if intentionally requested. Monthly/yearly dates use the original
 start as their anchor: January 31 becomes February 28 (29 in leap years), then
@@ -302,6 +318,9 @@ schedule progress. Each posting uses reference `schedule:<SCHEDULE_ID>:<YYYY-MM-
 Retries after a successful run return an empty array. `run --dry-run` previews
 `{schedule_id, date, transaction_id: null}` rows without posting, advancing progress,
 or writing audit records; real runs return the same shape with transaction IDs.
+Dry runs are unrestricted and print the total due occurrence count to stderr in
+all output formats. `--quiet` suppresses that summary. JSON stdout retains the
+existing occurrence array; its length is the count for scripts.
 New entries start uncleared, as with ordinary postings.
 
 Nothing runs in the background. Invoke `schedule run` explicitly, or call it
