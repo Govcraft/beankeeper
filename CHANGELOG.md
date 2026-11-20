@@ -6,6 +6,24 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.23.0] - Unreleased
+
+### Added
+
+- `bk report schedule-c` groups canonical `sched-c:<line>` entry tags into
+  Schedule C lines and keeps unmapped tags and untagged income/expense activity
+  visible for review.
+- `bk report 1099` (alias `1099-nec`) summarizes vendor payments from transaction
+  `payee` metadata, preserves optional TIN/address details, and supports a
+  configurable minimum total. Each annotated transaction contributes its full
+  debit total, counted once even with split debit entries.
+- Both tax reports support table, JSON, and CSV output, share `tax-summary`
+  date/currency rules, and expose matching JSON payloads through the MCP `report`
+  tool. These are bookkeeping summaries, not filed tax forms; no deduction limits
+  or payment-method exclusions are applied. See the
+  [tax export conventions](docs/tax-exports.md).
+  ([#80](https://github.com/Govcraft/beankeeper/pull/80))
+
 ## [0.22.0] - Unreleased
 
 ### Added
