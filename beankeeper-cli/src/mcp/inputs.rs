@@ -45,6 +45,13 @@ pub(super) enum AgingMethodArg {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+pub(super) enum ReconciliationModeArg {
+    Bank,
+    Settlement,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
 pub(super) enum AuditEntityArg {
     Entry,
     Transaction,
@@ -56,6 +63,7 @@ pub(super) enum AuditEntityArg {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum AuditActionArg {
+    Create,
     StatusChange,
     Reverse,
     Correlate,
@@ -332,6 +340,10 @@ pub(super) enum ReportOptions {
         filter_metadata: Vec<String>,
     },
     Reconciliation {
+        /// Bank balances (default) or statement-scoped AR/AP settlements.
+        mode: Option<ReconciliationModeArg>,
+        /// Settlement link metadata key; defaults to `applies_to`.
+        link_key: Option<String>,
         account: String,
         to: Option<String>,
         statement_balance: Option<String>,

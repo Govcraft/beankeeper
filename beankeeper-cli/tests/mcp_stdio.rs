@@ -328,6 +328,179 @@ fn tool_errors_preserve_codes_and_audited_writes_attribute_the_client() -> TestR
 }
 
 #[test]
+fn mcp_writes_have_chained_audit_records_and_pass_cli_verification() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    client.success(
+        "account_create",
+        &json!({"company":"acme", "code":"5000", "name":"Rent", "account_type":"expense"}),
+    )?;
+    client.success(
+        "budget_set",
+        &json!({"company":"acme", "account":"5000", "year":2026, "month":3, "amount":"100"}),
+    )?;
+    client.success(
+        "budget_delete",
+        &json!({"company":"acme", "account":"5000", "year":2026, "month":3}),
+    )?;
+    let posted = client.success("txn_post", &posting("audited-sale"))?;
+    client.success(
+        "txn_clear",
+        &json!({"company":"acme", "reference":"audited-sale", "account":"1000",
+            "amount":"5", "date":"2026-03-02", "statement":"march"}),
+    )?;
+    let reversal_args = json!({"company":"acme", "id":posted["id"],
+        "date":"2026-03-03", "reference":"audited-reversal"});
+    let reversed = client.success("txn_reverse", &reversal_args)?;
+    let audit = client.success("audit_log", &json!({}))?;
+    let rows = audit.as_array().ok_or("missing audit rows")?;
+    assert_eq!(rows.len(), 6, "{audit}");
+    let mut previous = "0".repeat(64);
+    for row in rows.iter().rev() {
+        assert_eq!(row["actor"], "mcp:codex-test-client");
+        assert_eq!(row["prev_hash"], previous);
+        let hash = row["row_hash"].as_str().ok_or("missing row hash")?;
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|ch| ch.is_ascii_hexdigit()));
+        previous = hash.to_owned();
+    }
+    let creations = client.success("audit_log", &json!({"action":"create"}))?;
+    assert_eq!(creations.as_array().map(Vec::len), Some(2));
+    for id in [&posted["id"], &reversed["id"]] {
+        let shown = client.success("txn_show", &json!({"company":"acme", "id":id}))?;
+        assert_eq!(shown[0]["posted_by"], "mcp:codex-test-client");
+        let entity_id = id.to_string();
+        assert!(
+            creations
+                .as_array()
+                .ok_or("missing creations")?
+                .iter()
+                .any(|row| { row["entity_id"] == entity_id && row["after"].is_string() })
+        );
+    }
+    assert_eq!(
+        client.success("txn_post", &posting("audited-sale"))?["skipped"],
+        true
+    );
+    assert_eq!(
+        client.success("txn_reverse", &reversal_args)?["skipped"],
+        true
+    );
+    assert_eq!(client.success("audit_log", &json!({}))?, audit);
+    assert_eq!(client.success("verify", &json!({}))?["status"], "healthy");
+    drop(client);
+    bk(&path)?.args(["--json", "verify"]).assert().success();
+    Ok(())
+}
+
+#[test]
+fn settlement_report_schema_and_stdio_preserve_statement_charge_applications() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let report_tool = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "report")
+        .ok_or("missing report tool")?;
+    let schema = report_tool["inputSchema"].to_string();
+    for field in ["mode", "bank", "settlement", "statement", "link_key"] {
+        assert!(schema.contains(&format!("\"{field}\"")), "{schema}");
+    }
+    client.success(
+        "account_create",
+        &json!({"company":"acme", "code":"1200", "name":"Receivables", "account_type":"asset"}),
+    )?;
+    let mut charge = posting("charge");
+    charge["debits"][0]["account"] = json!("1200");
+    client.success("txn_post", &charge)?;
+    let mut payment = posting("payment");
+    payment["debits"][0]["amount"] = json!("10.00");
+    payment["credits"][0] = json!({"account":"1200", "amount":"10.00"});
+    payment["meta"] = json!({"settles":"charge"});
+    client.success("txn_post", &payment)?;
+    client.success(
+        "txn_clear",
+        &json!({"company":"acme", "reference":"charge", "account":"1200", "amount":"10.00",
+            "date":"2026-03-02", "statement":"march"}),
+    )?;
+    let arguments = json!({"company":"acme", "kind":"reconciliation", "account":"1200",
+        "mode":"settlement", "statement":"march", "link_key":"settles",
+        "statement_balance":"10.00", "to":"2026-03-31"});
+    let report = client.success("report", &arguments)?;
+    assert_eq!(report["mode"], "settlement");
+    assert_eq!(report["link_key"], "settles");
+    assert_eq!(report["statement"], "march");
+    assert_eq!(report["reconciled"], true);
+    assert_eq!(report["difference"], 0);
+    assert_eq!(report["uncleared_total"], 250);
+    assert_eq!(report["charges"][0]["reference"], "charge");
+    assert_eq!(report["charges"][0]["expected"], 1250);
+    assert_eq!(report["charges"][0]["applied_this_statement"], 1000);
+    assert_eq!(report["charges"][0]["short_pay"], 250);
+    assert_eq!(
+        report["applied_settlements"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let output = bk(&path)?
+        .args([
+            "--json",
+            "--company",
+            "acme",
+            "report",
+            "reconciliation",
+            "--account",
+            "1200",
+            "--mode",
+            "settlement",
+            "--statement",
+            "march",
+            "--link-key",
+            "settles",
+            "--statement-balance",
+            "10.00",
+            "--to",
+            "2026-03-31",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cli: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report, cli["data"]);
+    let mut other_statement = arguments.clone();
+    other_statement["statement"] = json!("april");
+    let other_report = client.success("report", &other_statement)?;
+    assert_eq!(other_report["charges"][0]["applied_this_statement"], 0);
+    assert_eq!(other_report["reconciled"], false);
+    let mut bank = arguments;
+    bank["mode"] = json!("bank");
+    let error = client.call("report", &bank)?;
+    assert_eq!(error["result"]["isError"], true);
+    assert_eq!(payload(&error)?["code"], "USAGE");
+    bank.as_object_mut()
+        .ok_or("missing report arguments")?
+        .remove("link_key");
+    let bank_report = client.success("report", &bank)?;
+    assert!(bank_report.get("charges").is_none());
+    assert_eq!(bank_report["cleared_balance"], 1000);
+    Ok(())
+}
+
+#[test]
 fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");

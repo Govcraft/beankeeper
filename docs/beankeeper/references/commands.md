@@ -72,11 +72,11 @@ an explicit `company` argument, regardless of the CLI's default company.
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
-| `report` | `company`, `kind`, and that report's CLI options in snake_case |
+| `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
 | `txn_reconcile`, `verify` | No arguments; both read-only |
-| `audit_log` | Optional `company`, `entity`, `action`, `limit` |
+| `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`; rows include `prev_hash` and `row_hash` |
 
 `txn_post.debits` and `.credits` contain `{account, amount, memo?}` objects.
 `amount` is a decimal string in major units. `meta` is a string-to-string map;
