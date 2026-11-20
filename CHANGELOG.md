@@ -6,6 +6,26 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.26.0] - Unreleased
+
+### Added
+
+- Per-agent, per-company/currency spend limits through `agent limit set/show/clear`,
+  enforced inside the shared posting savepoint. Total debits measure each posting;
+  transaction-date daily buckets include approved proposals charged to the proposer.
+- Pending posting review with `txn propose/proposals/approve/reject`, the `withdraw`
+  alias, and matching MCP tools. Sibling `ledger/propose` and `ledger/approve` grants
+  control ownership and review; approval posts atomically with approver attribution,
+  a reserved proposal link, and the complete proposer request in the audit trail.
+  ([#73](https://github.com/Govcraft/beankeeper/issues/73))
+
+### Changed
+
+- Schema v19 preserves policy and historical audit hashes while adding proposals,
+  reference reservations, spend buckets and audited resolutions/limit changes.
+- Importers preserve authorization error codes on spend denial. Posting dates are
+  canonicalized so alternate date spellings cannot split the same day's bucket.
+
 ## [0.25.0] - Unreleased
 
 ### Added

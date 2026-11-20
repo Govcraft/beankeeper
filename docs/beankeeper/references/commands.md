@@ -394,6 +394,39 @@ to the partner's (via the audited `correlate` action). A transaction counts as
 correlated only if its metadata is a JSON object with a non-null `correlate`
 key; plain text that mentions "correlate" never does.
 
+### `bk txn propose`, `proposals`, `approve`, `reject`
+
+```sh
+bk --agent-token "$POSTER_TOKEN" --company acme txn propose -d "Equipment" \
+  --debit 5000:750 --credit 1000:750 --date 2026-11-20 --reference equipment-001
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn proposals [--include-rejected]
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn approve PROPOSAL_ID
+bk --agent-token "$REVIEWER_TOKEN" --company acme txn reject PROPOSAL_ID --reason "Requote first"
+bk --agent-token "$POSTER_TOKEN" --company acme txn withdraw PROPOSAL_ID
+```
+
+`propose` accepts all `txn post` flags and always needs a verified agent token.
+It validates and freezes the request without a transaction or hash-chain entry.
+Pending references are unique and reserved against direct posts. A posted
+reference follows `--on-conflict error|skip`; pending conflicts return validation.
+`proposals` lists pending requests; `--include-rejected` includes approved,
+rejected and withdrawn records too. Under enforcement read/propose grants list
+owned requests; approve/admin grants list all. Only an approve grant approves
+or rejects another agent's request. Propose permits withdrawing owned pending
+requests with `reject` or its `withdraw` alias.
+
+Approval revalidates and posts atomically, attributed to the approver, linked
+by reserved metadata `proposal_id`. Its audit snapshot contains the frozen
+request and proposer. Approval may override limits and consumes the proposer's
+bucket. Rejection/withdrawal releases the reference. Each resolution is audited
+and cannot be repeated. Proposal commands print reviewable JSON text in table
+mode; `--json` returns the usual envelope. `data` is a proposal object, or an
+array for listing; objects include `id`, `status`, `payload`, `debit_total`,
+`currency`, proposer URI/JTI, timestamps, resolver URI/JTI, `transaction_id` and
+`reason`. A skipped existing posted reference returns `{status:"skipped",
+transaction_id:ID}`. Amounts retain minor units with `_display` companions.
+MCP equivalents: `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject`.
+
 ### `bk txn list`
 
 Search and filter transactions. Alias: `bk txn search`.
@@ -1294,6 +1327,8 @@ snapshots. The recorded operations are:
 | `metadata_set`, `metadata_unset` | `bk txn meta set/unset` changes annotations; whole-object snapshots, one row per changed batch, no row for no-ops |
 | `reverse` | `bk txn reverse` posts and links a reversal |
 | `correlate` | `bk txn post --correlate` links a partner transaction |
+| `proposal_approve`, `proposal_reject` | Approval, rejection or withdrawal snapshots, filter with `--entity proposal` |
+| `limit_set` | Spend limit set/clear snapshots, filter with `--entity spend_limit` |
 | `budget_set` | `bk budget set` creates or revises a budget (prior amount captured) |
 | `budget_delete` | `bk budget delete` removes a budget |
 | `account_delete` | `bk account delete` removes an account |
@@ -1324,6 +1359,33 @@ Continue with `--offset`; the total uses the same agent/company/entity/action fi
 Audit JSON also includes parsed `before_display` and `after_display` snapshots
 with decimal monetary companions; original snapshot strings and hashes remain
 unchanged. See [amount conventions](json-api.md#amount-conventions).
+
+## Agent spend limits
+
+```sh
+bk agent limit set URI --company acme --currency USD --max-post 500 --daily-limit 2000
+bk agent limit show URI [--company acme]
+bk agent limit clear URI [--company acme]
+```
+
+`set` requires a company, currency and at least one nonnegative major-unit cap.
+It replaces that currency's row; omitted caps become unlimited. `show` returns
+rows, optionally scoped by company. `clear` removes all currency rows in scope,
+or all companies when no company flag/environment default is set. Set/clear
+requires `ledger/admin` under enforcement and records `limit_set`; show requires
+`ledger/read`. JSON rows contain `agent_uri`, `company_slug`, `currency`,
+`max_post`, `daily_limit` and monetary display strings; clear returns `{cleared:N}`.
+
+All live tokens for one URI share company/currency limits. `max-post` measures
+total debits including splits. `daily-limit` sums posted debits on the transaction
+`date`, including approved requests charged to the proposer. Pending requests
+consume nothing; backdated/future-dated posts use their specified date's bucket.
+No rows means no amount cap. With any row for an agent/company, postings in an
+unconfigured currency fail closed with `FORBIDDEN` (exit 7). Imports, loan,
+investment and schedule posts use the same atomic check. Configured limits apply
+to verified agents even with enforcement off; named actors without tokens have
+no URI bucket. See [identity documentation](../../agent-identity.md#spend-limits-and-proposals)
+for bootstrap, ownership and migration details.
 
 ## Agent identity
 
@@ -1401,10 +1463,12 @@ off; afterward all ledger commands require tokens and policy changes require
 | --- | --- |
 | `ledger/read` | List/show, report, export, verify, audit log, agent list, policy show, loan schedule |
 | `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/delete |
+| `ledger/propose` | txn propose, list/withdraw owned proposals |
+| `ledger/approve` | List all proposals, txn approve/reject |
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, policy set, backup/restore |
+| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
 
 Matching uses leaf requirements and path segments. Neither `ledger/admin` nor
 `ledger/post` grants sibling capabilities; issue their explicit union when
