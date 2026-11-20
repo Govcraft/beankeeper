@@ -219,7 +219,7 @@ while retaining their data arrays.
 `txn_clear.batch` contains `{reference, amount?}` rows, where `amount` is an optional decimal
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
 not exposed to tools. `report.kind` accepts `trial-balance`, `balance`,
-`income-statement`, `balance-sheet`, `tax-summary`, `ledger`, `budget-variance`,
+`income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `ledger`, `budget-variance`,
 `cash-flow`, `aging`, or `reconciliation`, including their period/comparison and
 metadata options.
 
@@ -857,6 +857,45 @@ Entries grouped by tax category.
 ```bash
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 ```
+
+### `bk report schedule-c`
+
+```sh
+bk --company llc report schedule-c --from 2026-01-01 --to 2026-12-31 --json
+bk --company llc report schedule-c --to 2026-12-31 --output-format csv
+```
+
+Options: `--from`, `--to`, `--currency`, `--output-format table|json|csv`.
+Global `--format` and `--json` also work. Dates and currency follow `tax-summary`.
+Maps case-insensitive `sched-c:<line>` tags to a static Schedule C line table.
+JSON `data` includes `from`, `to`, `currency`, `lines`, `unmapped`, `untagged`.
+Each activity row carries line/title, category, account fields, debit/credit
+totals, and net. Income lines 1/6 are credit-positive; other lines debit-positive.
+CSV has a `section` column and includes unmatched rows. JSON/CSV use integer
+minor units; JSON adds decimal display strings. No deduction limits are applied.
+See [the supported line table and full contract](../../tax-exports.md).
+
+### `bk report 1099`
+
+```sh
+bk --company llc report 1099 --to 2026-12-31 --threshold 600 --json
+bk --company llc report 1099 --to 2026-12-31 --threshold 0 --format csv
+```
+
+Alias: `1099-nec`. Options: `--from`, `--to`, `--currency`, `--threshold`,
+`--output-format table|json|csv`. Dates/currency match `tax-summary`. Threshold
+is a nonnegative major-unit decimal, default `600`; equality qualifies.
+Only totals at or above the threshold appear; `0` lists every payee.
+Annotate transactions with nonempty string `payee` and optional string `tin`,
+`payee_address`. Grouping uses exact payee strings; conflicting nonempty details
+fail validation. Each transaction contributes its full debit total, counted
+once even with split debit legs. JSON includes `threshold` and `vendors` with
+payee/details, payment count, total, and `meets_threshold`. CSV carries all vendor
+fields, currency, period, and threshold. Monetary fields use minor units, with
+JSON decimal displays. Trace using `txn list --filter-metadata 'payee=Name'`.
+MCP `report` kinds `schedule-c` and `1099` return the same JSON payloads; vendor
+`threshold` is an optional decimal string. These are book summaries, not tax
+advice or filed forms. See [tax export conventions](../../tax-exports.md).
 
 ### `bk report ledger`
 

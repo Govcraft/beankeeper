@@ -192,6 +192,8 @@ attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 | `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |
 | `bk report balance-sheet` | Assets, Liabilities, Equity sections (incl. computed retained earnings) and balance check as of a date |
 | `bk report tax-summary` | Entries grouped by tax category |
+| `bk report schedule-c` | Schedule C lines plus unmapped/untagged activity |
+| `bk report 1099` | Vendor debit totals from payee metadata, filtered by threshold |
 | `bk report budget-variance` | Budget vs actual comparison |
 | `bk report ledger` | General ledger / account statement with running balances |
 | `bk report aging` | Receivables/payables aging buckets (FIFO or specific invoice matching, by transaction date) |
@@ -447,6 +449,22 @@ Reports never mix currencies. Without `--currency`, the report currency is
 inferred from the company's transactions (USD if there are none); if the
 company uses more than one currency the command fails with a `VALIDATION`
 error listing them, and `--currency CODE` is required.
+
+### Tax-oriented exports
+
+Use `report schedule-c` with canonical, case-insensitive `sched-c:<line>` entry
+tags. Inspect all three arrays: `lines`, `unmapped`, and `untagged`. Untagged
+income/expense activity stays visible. Use `report 1099` with transaction
+`--meta 'payee=Name'`, optional string `tin` and `payee_address`; total is the
+transaction's full debit amount, with split transactions counted once. Conflicting
+nonempty details per payee fail validation. The default `--threshold 600` is in
+major currency units; `--threshold 0` lists everyone. Dates and currency follow
+`tax-summary`. Use `--json`, `--format csv`, or `--output-format csv`.
+MCP `report` accepts kinds `schedule-c` and `1099` with optional `from`, `to`,
+`currency`, and decimal-string vendor `threshold`. Trace payments with
+`txn list --filter-metadata 'payee=Name'`. These are bookkeeping summaries,
+not tax advice or filed forms. See [tax export conventions](../tax-exports.md)
+for signs, line meanings, metadata rules, and output fields.
 
 ### Receivables / payables aging
 

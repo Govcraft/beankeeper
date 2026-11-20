@@ -743,6 +743,19 @@ bk --company personal txn show 1
 bk --company personal report tax-summary --from 2026-01-01 --to 2026-12-31
 ```
 
+Schedule C and vendor payment summaries support table, JSON, and CSV output:
+
+```sh
+bk --company personal report schedule-c --to 2026-12-31 --output-format csv
+bk --company personal report 1099 --to 2026-12-31 --threshold 600 --json
+```
+
+Use canonical `sched-c:<line>` tags and transaction `--meta 'payee=Name'`
+annotations. Both reports share `tax-summary` date and currency rules. Schedule C
+keeps unmapped tags and untagged income/expense activity visible; vendor totals
+use each annotated transaction's full debit total. These are book summaries,
+not tax advice or filed forms. See [tax export conventions and supported Schedule C lines](docs/tax-exports.md).
+
 Resolution order: explicit `--tax` flag > account `--default-tax-category` > none. Categories are free-form strings -- no tax-year specifics are baked into the schema.
 
 ### Querying the Ledger
@@ -1216,7 +1229,7 @@ Ten ISO 4217 currencies with correct minor-unit precision:
 
 `JournalEntry::post()` rejects mixed-currency entries at runtime with `TransactionError::CurrencyMismatch`.
 
-Reports (`trial-balance`, `balance`, `income-statement`, `balance-sheet`, `tax-summary`, `budget-variance`) are always computed in a single currency and never add amounts across currencies. Pass `--currency CODE` to choose it; otherwise it is inferred from the company's transactions (USD when there are none). If a company has transactions in more than one currency, a report without `--currency` fails with a validation error listing the currencies found.
+Reports (`trial-balance`, `balance`, `income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `budget-variance`) are always computed in a single currency and never add amounts across currencies. Pass `--currency CODE` to choose it; otherwise it is inferred from the company's transactions (USD when there are none). If a company has transactions in more than one currency, a report without `--currency` fails with a validation error listing the currencies found.
 
 ### Error Handling
 
