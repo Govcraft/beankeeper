@@ -164,6 +164,7 @@ impl Actor {
 /// constraint on `audit_log`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditEntity {
+    Rule,
     Entry,
     Transaction,
     Budget,
@@ -176,6 +177,7 @@ enum AuditEntity {
 impl AuditEntity {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Rule => "rule",
             Self::Entry => "entry",
             Self::Transaction => "transaction",
             Self::Budget => "budget",
@@ -190,6 +192,7 @@ impl AuditEntity {
 /// The kind of change recorded. Maps to the `action` CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditAction {
+    RuleDelete,
     Create,
     StatusChange,
     Correlate,
@@ -207,6 +210,7 @@ enum AuditAction {
 impl AuditAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::RuleDelete => "rule_delete",
             Self::Create => "create",
             Self::StatusChange => "status_change",
             Self::Correlate => "correlate",
@@ -511,6 +515,7 @@ pub(crate) fn record_insert(
     data: &serde_json::Value,
 ) -> Result<(), CliError> {
     let (entity, action) = match entity {
+        "rule" => (AuditEntity::Rule, AuditAction::Create),
         "company" => (AuditEntity::Company, AuditAction::Create),
         "account" => (AuditEntity::Account, AuditAction::Create),
         "attachment" => (AuditEntity::Transaction, AuditAction::Attach),
@@ -1538,6 +1543,8 @@ fn collect_budget_victims(
 
 /// Deletes an account by company slug and code, recording a snapshot.
 ///
+/// Rules referencing the account must be deleted first.
+///
 /// # Errors
 ///
 /// Returns `CliError::NotFound` if the account does not exist,
@@ -1553,6 +1560,17 @@ pub fn delete_account(
         // Reading the row first both yields the snapshot and produces the
         // `NotFound` error when the account is absent.
         let row: AccountRow = super::accounts::get_account(conn, company_slug, code)?;
+
+        let rules: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM categorization_rules WHERE company_slug = ?1 AND account_code = ?2",
+            params![company_slug, code],
+            |row| row.get(0),
+        )?;
+        if rules > 0 {
+            return Err(CliError::Validation(format!(
+                "account {code} cannot be deleted: {rules} categorization rules reference it; delete the rules first"
+            )));
+        }
 
         let (entries, budgets, attachments): (i64, i64, i64) = conn.query_row(
             "SELECT \
@@ -1661,6 +1679,41 @@ pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<()
         )?;
 
         Ok(())
+    })
+}
+
+/// Delete one company's rule, recording its complete before snapshot.
+///
+/// # Errors
+/// Returns not-found for a rule outside this company, or a database error.
+pub fn delete_rule(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    id: &super::rules::RuleId,
+) -> Result<(), CliError> {
+    atomically(conn, || {
+        let rule = super::rules::list_rules(conn, company)?
+            .into_iter()
+            .find(|rule| &rule.id == id)
+            .ok_or_else(|| {
+                CliError::NotFound(format!("rule '{id}' not found in company '{company}'"))
+            })?;
+        conn.execute(
+            "DELETE FROM categorization_rules WHERE company_slug = ?1 AND id = ?2",
+            params![company, id.to_string()],
+        )?;
+        record(
+            conn,
+            actor,
+            AuditChange {
+                company_slug: Some(company),
+                entity: AuditEntity::Rule,
+                entity_id: &id.to_string(),
+                action: AuditAction::RuleDelete,
+                snapshots: (Some(&snapshot(&serde_json::json!(&rule))), None),
+            },
+        )
     })
 }
 
