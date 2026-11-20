@@ -28,7 +28,9 @@ use chrono::NaiveDate;
 use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::cli::{Cli, OutputFormat};
+use crate::cli::{Cli, OutputFormat, ReconciliationMode, ReportCommand};
+
+mod settlement;
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db;
 use crate::db::connection::Db;
@@ -165,6 +167,8 @@ pub struct ReconciliationReport {
     pub uncleared: Vec<UnclearedEntry>,
     pub groups: Option<Vec<GroupTotal>>,
     pub statement_balance: Option<i64>,
+    /// Extra fields present only for settlement mode.
+    pub settlement: Option<settlement::SettlementDetails>,
 }
 
 impl ReconciliationReport {
@@ -191,6 +195,53 @@ impl ReconciliationReport {
     }
 }
 
+/// Dispatch bank or settlement reconciliation.
+///
+/// # Errors
+/// Returns an error for invalid options, account/currency, or database failures.
+pub fn run_command(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let ReportCommand::Reconciliation {
+        account,
+        to,
+        statement_balance,
+        statement,
+        filter_metadata,
+        group_by_metadata,
+        currency,
+        mode,
+        link_key,
+    } = sub
+    else {
+        return Err(CliError::General("expected reconciliation command".into()));
+    };
+    let args = ReconciliationArgs {
+        account,
+        to: to.as_deref(),
+        statement_balance: statement_balance.as_deref(),
+        statement: statement.as_deref(),
+        filter_metadata,
+        group_by_metadata: group_by_metadata.as_deref(),
+        currency: currency.as_deref(),
+    };
+    if *mode == ReconciliationMode::Bank {
+        if link_key.is_some() {
+            return Err(CliError::Usage(
+                "--link-key requires --mode settlement".into(),
+            ));
+        }
+        return run(cli, db, company, &args, format, use_color);
+    }
+    let report = settlement::build_report(db.conn(), company, &args, link_key.as_deref())?;
+    render(cli, company, &report, format, use_color)
+}
+
 /// Execute `bk report reconciliation`.
 ///
 /// # Errors
@@ -206,14 +257,23 @@ pub fn run(
     use_color: bool,
 ) -> Result<(), CliError> {
     let report = build_report(db.conn(), company, args)?;
+    render(cli, company, &report, format, use_color)
+}
 
+fn render(
+    cli: &Cli,
+    company: &str,
+    report: &ReconciliationReport,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
     match format {
-        OutputFormat::Table => println!("{}", render_table(&report, use_color)),
+        OutputFormat::Table => println!("{}", render_table(report, use_color)),
         OutputFormat::Json => {
             let meta = output::json::meta("report.reconciliation", Some(company));
-            println!("{}", render_json(&report, meta)?);
+            println!("{}", render_json(report, meta)?);
         }
-        OutputFormat::Csv => print!("{}", render_csv(&report)?),
+        OutputFormat::Csv => print!("{}", render_csv(report)?),
     }
 
     if !cli.verbosity.quiet {
@@ -401,6 +461,7 @@ pub fn build_report(
         uncleared,
         groups,
         statement_balance,
+        settlement: None,
     })
 }
 
@@ -663,10 +724,24 @@ fn balances_table(r: &ReconciliationReport, use_color: bool) -> String {
         add("Cleared balance", r.cleared_balance);
     }
     add("Reconciled balance", r.reconciled_balance);
-    add("Uncleared total", r.uncleared_total);
+    add(
+        if r.settlement.is_some() {
+            "Open charges total"
+        } else {
+            "Uncleared total"
+        },
+        r.uncleared_total,
+    );
     if let (Some(stmt), Some(diff)) = (r.statement_balance, r.difference()) {
         add("Statement balance", stmt);
-        add("Difference (statement - cleared)", diff);
+        add(
+            if r.settlement.is_some() {
+                "Difference (statement - applied charges)"
+            } else {
+                "Difference (statement - cleared)"
+            },
+            diff,
+        );
     }
     summary.to_string()
 }
@@ -780,6 +855,9 @@ pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
     }
     lines.push(String::new());
     lines.extend(uncleared_lines(r, use_color));
+    if let Some(details) = &r.settlement {
+        lines.push(details.render_table(r));
+    }
     lines.join("\n")
 }
 
@@ -812,6 +890,8 @@ struct ReportJson<'a> {
     reconciled: Option<bool>,
     uncleared_entries: &'a [UnclearedEntry],
     groups: Option<&'a [GroupTotal]>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    settlement: Option<&'a settlement::SettlementDetails>,
 }
 
 /// Render the report as an enveloped JSON document.
@@ -844,6 +924,7 @@ pub fn render_json(r: &ReconciliationReport, meta: output::json::Meta) -> Result
         reconciled: r.is_reconciled(),
         uncleared_entries: &r.uncleared,
         groups: r.groups.as_deref(),
+        settlement: r.settlement.as_ref(),
     };
     let env = output::json::Envelope {
         ok: true,
@@ -932,6 +1013,10 @@ pub fn render_csv(r: &ReconciliationReport) -> Result<String, CliError> {
             "",
         ])
         .map_err(csv_err)?;
+    }
+
+    if let Some(details) = &r.settlement {
+        details.write_csv(&mut wtr, r)?;
     }
 
     let as_of = r.as_of.as_deref().unwrap_or("");

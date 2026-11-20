@@ -167,30 +167,9 @@ fn run_entry_command(
             format,
             use_color,
         ),
-        ReportCommand::Reconciliation {
-            account,
-            to,
-            statement_balance,
-            statement,
-            filter_metadata,
-            group_by_metadata,
-            currency,
-        } => super::report_reconciliation::run(
-            cli,
-            db,
-            company,
-            &super::report_reconciliation::ReconciliationArgs {
-                account,
-                to: to.as_deref(),
-                statement_balance: statement_balance.as_deref(),
-                statement: statement.as_deref(),
-                filter_metadata,
-                group_by_metadata: group_by_metadata.as_deref(),
-                currency: currency.as_deref(),
-            },
-            format,
-            use_color,
-        ),
+        ReportCommand::Reconciliation { .. } => {
+            super::report_reconciliation::run_command(cli, db, company, sub, format, use_color)
+        }
         _ => Err(CliError::General(
             "internal error: not a budget or reconciliation report".to_string(),
         )),
