@@ -299,9 +299,32 @@ impl EnforcementArg {
     }
 }
 
+/// Company-scoped inclusive posting cutoff operations.
+#[derive(Subcommand, Debug)]
+pub enum PeriodCommand {
+    /// Reject new postings dated on or before DATE. An active cutoff can only advance.
+    Close {
+        /// Inclusive cutoff date (YYYY-MM-DD).
+        #[arg(long)]
+        through: String,
+    },
+    /// Clear the entire company cutoff, recording who reopened it and why.
+    Reopen {
+        /// Required explanation for unlocking previously closed dates.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Show the current company cutoff and last close/reopen attribution.
+    List,
+}
+
 /// Top-level commands.
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Close, reopen, or inspect a company posting cutoff.
+    #[command(subcommand)]
+    Period(PeriodCommand),
+
     /// Expose this ledger to AI agents over MCP.
     #[command(subcommand)]
     Mcp(McpCommand),
@@ -858,6 +881,7 @@ pub enum AuditCommand {
 /// Entity-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEntityArg {
+    Period,
     Proposal,
     #[value(name = "spend_limit", alias = "spend-limit")]
     SpendLimit,
@@ -878,6 +902,7 @@ impl AuditEntityArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Period => "period",
             Self::Proposal => "proposal",
             Self::SpendLimit => "spend_limit",
             Self::Policy => "policy",
@@ -897,6 +922,10 @@ impl AuditEntityArg {
 /// Action-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditActionArg {
+    #[value(name = "period_close", alias = "period-close")]
+    PeriodClose,
+    #[value(name = "period_reopen", alias = "period-reopen")]
+    PeriodReopen,
     #[value(name = "proposal_approve", alias = "proposal-approve")]
     ProposalApprove,
     #[value(name = "proposal_reject", alias = "proposal-reject")]
@@ -931,6 +960,8 @@ impl AuditActionArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::PeriodClose => "period_close",
+            Self::PeriodReopen => "period_reopen",
             Self::ProposalApprove => "proposal_approve",
             Self::ProposalReject => "proposal_reject",
             Self::LimitSet => "limit_set",

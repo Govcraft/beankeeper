@@ -82,7 +82,7 @@ Check ledger integrity: validates the schema version and database structure. Ret
 
 ```bash
 bk verify
-bk --json verify   # Returns { "data": { "schema_version": 19, "status": "healthy" } }
+bk --json verify   # Returns { "data": { "schema_version": 20, "status": "healthy" } }
 ```
 
 ### `bk export`
@@ -223,6 +223,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 
 | Tool | Arguments / behavior |
 |------|----------------------|
+| `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
@@ -283,7 +284,8 @@ alias for `1099`.
 Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
 `txn_reject`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
-`investment_sell`, `budget_set`, and `budget_delete` from the router.
+`investment_sell`, `budget_set`, `budget_delete`, `period_close`, and
+`period_reopen` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
@@ -297,6 +299,43 @@ Results match the CLI JSON `data` payload. JSON text content is always included;
 protocol. Tool errors set `isError: true` with `{code, message}`. See
 [README client configurations](../../../README.md#connect-an-ai-assistant-through-mcp)
 for Claude Desktop and Codex examples without plaintext secrets.
+
+## Period close and locking
+
+```bash
+bk --company acme period close --through 2026-01-31
+bk --company acme period list
+bk --company acme --json period list
+bk --company acme period reopen --reason "Correct a missing January receipt"
+```
+
+Each company closes independently. A close locks **all transaction dates on or
+before** the inclusive cutoff, across currencies. An active close can only advance
+the cutoff; an equal or earlier date is a validation error. Reopen clears the
+company's entire cutoff and requires a nonempty reason. Both operations require
+`ledger/admin` when capability enforcement is on; listing requires `ledger/read`.
+No token is needed with enforcement off unless the caller supplies one.
+
+The shared posting path rejects locked dates for journal posts, reversals, OFX,
+CSV and JSON imports, scheduled occurrences, loan payments, investment trades,
+and proposal approvals. A rejected approval remains pending, with its reference
+reservation intact. Idempotent skips that create no posting remain allowed.
+Reopening permits backdated postings, each with its normal creation audit record.
+Clearance and metadata operations keep their existing behavior.
+
+`period list` returns an array with the company's current state, or an empty array
+if it has never closed. After reopening, the retained row has `closed_through: null`.
+JSON/CSV fields are `company_slug`, `closed_through`, `changed_at`, `actor`, `reason`;
+table output displays an open cutoff as `open`. Full close/reopen history is in
+`audit log --entity period`, with `period_close` and `period_reopen` actions.
+
+MCP tools `period_close`, `period_reopen`, and `period_list` share the same arguments
+and behavior. Read-only MCP retains listing and removes close/reopen.
+
+Back up before the automatic schema v19 to v20 migration. Historical audit hashes,
+policy, and proposals are preserved; new records require audit hash version 4,
+so older binaries cannot append. `verify`, backup, and restore validate lock state
+against audit snapshots, including detection of removed lock rows.
 
 ## Companies
 

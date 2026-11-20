@@ -374,6 +374,9 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "investment_sell",
         "investment_lots",
         "investment_holdings",
+        "period_close",
+        "period_reopen",
+        "period_list",
         "company_list",
         "company_show",
         "account_list",
@@ -775,7 +778,10 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 14);
+    assert_eq!(names.len(), 15);
+    assert!(names.contains("period_list"));
+    assert!(!names.contains("period_close"));
+    assert!(!names.contains("period_reopen"));
     for name in [
         "security_create",
         "security_price",
@@ -1750,7 +1756,10 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 14);
+    assert_eq!(names.len(), 15);
+    assert!(names.contains("period_list"));
+    assert!(!names.contains("period_close"));
+    assert!(!names.contains("period_reopen"));
     for name in names {
         assert_eq!(
             beankeeper_cli::capability::Capability::for_operation(name)?,
@@ -1892,8 +1901,63 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     assert_eq!(shown[0]["agent_uri"], issued["agent_uri"]);
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
-    assert_eq!(tool_names(&listed)?.len(), 14);
+    assert_eq!(tool_names(&listed)?.len(), 15);
     assert!(!tool_names(&listed)?.contains("txn_post"));
     writer.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
+fn period_close_and_reopen_apply_to_mcp_postings_and_live_cli_changes() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let close = client.success(
+        "period_close",
+        &json!({"company":"acme", "through":"2026-03-31"}),
+    )?;
+    assert_eq!(close[0]["closed_through"], "2026-03-31");
+    let response = client.call("txn_post", &posting("closed-mcp"))?;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(payload(&response)?["code"], "VALIDATION");
+    assert!(
+        payload(&response)?["message"]
+            .as_str()
+            .is_some_and(|s| s.contains("closed period"))
+    );
+    let mut later = posting("later-mcp");
+    later["date"] = json!("2026-04-01");
+    client.success("txn_post", &later)?;
+    client.success("verify", &json!({}))?;
+    let open = client.success(
+        "period_reopen",
+        &json!({"company":"acme", "reason":"Correct receipt"}),
+    )?;
+    assert!(open[0]["closed_through"].is_null());
+    client.success("txn_post", &posting("closed-mcp"))?;
+    // Existing sessions see closes performed by another process.
+    bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "period",
+            "close",
+            "--through",
+            "2026-03-31",
+        ])
+        .assert()
+        .success();
+    let response = client.call("txn_post", &posting("after-cli-close"))?;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(payload(&response)?["code"], "VALIDATION");
+    assert_eq!(
+        client.success("period_list", &json!({"company":"acme"}))?[0]["closed_through"],
+        "2026-03-31"
+    );
+    client.success("verify", &json!({}))?;
     Ok(())
 }

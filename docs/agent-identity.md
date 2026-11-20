@@ -112,14 +112,14 @@ setting the same value again is a no-op. `policy show` returns JSON data with
 
 | Required grant | Commands and corresponding MCP tools |
 | --- | --- |
-| `ledger/read` | List/show commands, reports, export, verify, audit log, agent list, agent limit show, policy show, loan schedule, list owned proposals |
+| `ledger/read` | List/show commands, reports, export, verify, audit log, agent list, agent limit show, policy show, period list, loan schedule, list owned proposals |
 | `ledger/post` | txn post/import/attach, txn meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/delete |
 | `ledger/propose` | txn propose, list owned proposals, withdraw owned pending proposals |
 | `ledger/approve` | List all proposals, txn approve, txn reject |
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear, txn reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
+| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, period close/reopen, backup/restore |
 
 Matching is hierarchical and respects path segments. The required path is the
 leaf shown above, so a narrower `ledger/post/example` grant cannot authorize

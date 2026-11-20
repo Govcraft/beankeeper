@@ -1386,6 +1386,14 @@ mod tests {
             before.iter().map(|row| row.0).collect::<Vec<_>>(),
             [1, 2, 3, 3]
         );
+        // Exercise the normal file-open migration and complete verify path too.
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("v19.db");
+        conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
+        let migrated = super::super::Db::open_existing(&path, None)?;
+        assert_eq!(get_schema_version(migrated.conn())?, 20);
+        assert_eq!(history(migrated.conn())?, before);
+        crate::commands::verify::execute_json(&migrated)?;
         ensure_schema(&conn)?;
         assert_eq!(get_schema_version(&conn)?, 20);
         assert_eq!(history(&conn)?, before);

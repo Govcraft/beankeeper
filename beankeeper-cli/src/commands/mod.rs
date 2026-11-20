@@ -9,6 +9,7 @@ pub mod import_ofx;
 pub mod init;
 pub mod investment;
 pub mod loan;
+pub mod period;
 pub mod policy;
 pub mod report;
 pub mod report_aging;
@@ -54,6 +55,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
             crate::cli::RuleCommand::List => "rule.list",
             crate::cli::RuleCommand::Delete { .. } => "rule.delete",
         },
+        Command::Period(command) => period::command_name(command),
         Command::Mcp(_) => "mcp.serve",
         Command::Policy(sub) => match sub {
             crate::cli::PolicyCommand::Show => "policy.show",
@@ -150,6 +152,10 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Period(command) => {
+            let company = require_company(cli)?;
+            period::run(cli, &company, command)
+        }
         Command::Backup { output, force } => backup::backup(cli, output, *force),
         Command::Restore { input, force } => backup::restore(cli, input, *force),
         Command::Security(_) | Command::Investment(_) => {

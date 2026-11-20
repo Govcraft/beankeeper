@@ -236,12 +236,36 @@ Initialization, backup, restore, company creation/deletion, account deletion, im
 attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 [client configuration examples](../../README.md#connect-an-ai-assistant-through-mcp).
 
+## Period close and locking
+
+Use `bk --company COMPANY period close --through YYYY-MM-DD` to freeze every
+transaction date on or before the inclusive cutoff for that company, across
+currencies. An existing cutoff may only advance. `period reopen --reason TEXT`
+clears the entire cutoff and requires a nonempty explanation. Both changes are
+audited and require `ledger/admin` under enforcement. `period list` requires
+`ledger/read`; JSON returns the current state in an array, including the last
+reopen with `closed_through: null`, or `[]` if never closed.
+
+The shared posting path enforces locks for posts, imports, schedule runs, loan
+payments, investment trades, reversals, and proposal approval. Rejected approvals
+remain pending; reopening allows backdated posting with its usual audit record.
+Idempotent skips remain allowed because they create no posting. Metadata and
+clearance operations keep their existing behavior. Inspect history with
+`audit log --entity period` (actions `period_close`, `period_reopen`).
+
+MCP equivalents are `period_close`, `period_reopen`, and `period_list`, with
+`company`, and respectively `through`, `reason`, or no additional arguments.
+Read-only MCP retains only listing. Back up before schema v20 upgrades: previous
+hashes, policy, and proposals remain valid, while new v4 audit records block
+older binaries. `verify` detects mismatched or missing cutoff state.
+
 ## Command Overview
 
 | Command | Purpose |
 |---------|---------|
 | `bk mcp serve` | Serve MCP stdio, or authenticated HTTP with `--http`; `--read-only` omits writes |
 | `bk init` | Create a new database (`--demo` for sample data, `--encrypt` for passphrase) |
+| `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/delete` | Manage chart of accounts |
 | `bk txn post` | Record a balanced journal entry |

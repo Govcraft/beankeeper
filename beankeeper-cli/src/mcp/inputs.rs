@@ -52,6 +52,7 @@ pub(super) enum ReconciliationModeArg {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum AuditEntityArg {
+    Period,
     Policy,
     Entry,
     Transaction,
@@ -63,6 +64,10 @@ pub(super) enum AuditEntityArg {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum AuditActionArg {
+    #[serde(rename = "period_close")]
+    PeriodClose,
+    #[serde(rename = "period_reopen")]
+    PeriodReopen,
     #[serde(rename = "policy_change")]
     PolicyChange,
     #[serde(rename = "metadata_set")]
@@ -515,4 +520,22 @@ pub(super) struct InvestmentLots {
 pub(super) struct InvestmentHoldings {
     pub company: String,
     pub as_of: Option<String>,
+}
+
+/// Inclusive company posting cutoff.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PeriodClose {
+    pub company: String,
+    /// Inclusive YYYY-MM-DD cutoff.
+    pub through: String,
+}
+
+/// Explicitly unlock previously closed company dates.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PeriodReopen {
+    pub company: String,
+    /// Nonempty explanation recorded in the audit trail.
+    pub reason: String,
 }

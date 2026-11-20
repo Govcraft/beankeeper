@@ -462,3 +462,25 @@ fn calculator_claps_help_and_early_payoff_payment_number_validation() -> TestRes
     assert_eq!(ledger.transaction_count()?, 0);
     Ok(())
 }
+
+#[test]
+fn closed_period_payment_is_rejected_without_a_posting() -> TestResult {
+    let ledger = Ledger::new()?;
+    let output = ledger
+        .command()?
+        .args([
+            "--company",
+            "acme",
+            "period",
+            "close",
+            "--through",
+            "2026-11-20",
+        ])
+        .output()?;
+    envelope(&output)?;
+    let output = ledger.pay(TERMS, &[])?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("closed period"));
+    assert_eq!(ledger.transaction_count()?, 0);
+    Ok(())
+}

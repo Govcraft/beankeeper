@@ -650,3 +650,34 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
     assert_eq!(lots[0].remaining_cost_basis, 100);
     verify(&db)
 }
+
+#[test]
+fn closed_period_blocks_purchases_and_sales_without_lot_side_effects() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("close-test");
+    investments::buy(
+        db.conn(),
+        &actor,
+        "acme",
+        &purchase("2", 200, "2026-01-01")?,
+    )?;
+    audit::change_period(db.conn(), &actor, "acme", Some(date("2026-01-31")?), None)?;
+    let before = state(&db)?;
+    assert!(matches!(
+        investments::buy(
+            db.conn(),
+            &actor,
+            "acme",
+            &purchase("1", 100, "2026-01-31")?
+        ),
+        Err(CliError::Validation(_))
+    ));
+    assert_eq!(state(&db)?, before);
+    assert!(matches!(
+        investments::sell(db.conn(), &actor, "acme", &sale("1", 150, "2026-01-31")?),
+        Err(CliError::Validation(_))
+    ));
+    assert_eq!(state(&db)?, before);
+    beankeeper_cli::commands::verify::execute_json(&db)?;
+    Ok(())
+}

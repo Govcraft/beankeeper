@@ -6,12 +6,23 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Added
+
+- Company-scoped period close/reopen/list commands and MCP tools. Inclusive
+  cutoffs reject backdated posts, imports, schedule occurrences, loan payments,
+  investment trades, reversals, and proposal approvals. Reopen requires an
+  audited reason; close/reopen require `ledger/admin` under enforcement.
+  ([#102](https://github.com/Govcraft/beankeeper/issues/102))
+
 ### Changed
 
 - Feature and docs PRs keep crate and skill versions unchanged and collect notes
   here. Tagged release preflight now requires a matching dated changelog section;
   versions are assigned once during release preparation.
   ([#91](https://github.com/Govcraft/beankeeper/issues/91))
+- Schema v20 preserves existing policy, proposals, and historical audit hashes.
+  New v4 audit records prevent older binaries from appending. `verify`, backup,
+  and restore detect missing or changed period lock state.
 
 ## [0.26.1] - Unreleased
 

@@ -144,3 +144,24 @@ and tail before and after the atomic rebuild, preserves indexes and protections,
 and rolls back on failure. After schema v18, older binaries cannot append,
 including when enforcement is off. Tokens remain bearer credentials; this does
 not add signatures over writes or defend against arbitrary database/key access.
+
+
+## Schema v20 period cutoffs
+
+Schema v20 preserves all existing v1/v2/v3 hashes and adds company-scoped `period`
+audit events (`period_close`, `period_reopen`). New appends require `hash_version
+= 4` and the `beankeeper.audit.v4` domain tag, retaining the v3 ordered fields.
+The writer barrier prevents v19 and older binaries from posting without checking
+cutoffs, even with capability enforcement off.
+
+Close and reopen pair the current cutoff state with before/after snapshots in
+one savepoint. Storage triggers require those snapshots for insert/update and
+prohibit deletion/replacement. Reads compare persisted state with its latest
+audit snapshot; verification also finds histories whose state row was removed.
+A database insert trigger additionally rejects transactions in closed dates.
+Existing transactions remain intact. Reopen requires a nonempty reason and
+records the actor, verified identity if present, timestamp, and previous cutoff.
+
+Migration verifies the historical hash chain and tail before and after rebuilding
+the audit table atomically. It restores policy/proposal triggers and rolls back
+all schema changes on failure. Back up before upgrading to v20.
