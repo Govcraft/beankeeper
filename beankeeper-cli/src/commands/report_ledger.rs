@@ -502,7 +502,7 @@ fn fmt_amount(minor: i64, decimals: u8, blank_zero: bool) -> String {
     let whole = (abs / divisor).to_string();
     let mut grouped = String::with_capacity(whole.len() + whole.len() / 3);
     for (i, ch) in whole.chars().enumerate() {
-        if i > 0 && (whole.len() - i) % 3 == 0 {
+        if i > 0 && (whole.len() - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(ch);

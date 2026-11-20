@@ -37,11 +37,11 @@ pub fn resolve_passphrase(
     }
 
     // 3. BEANKEEPER_PASSPHRASE_CMD
-    if let Ok(cmd) = std::env::var("BEANKEEPER_PASSPHRASE_CMD") {
-        if !cmd.is_empty() {
-            let secret = run_passphrase_command(&cmd)?;
-            return Ok(Some(secret));
-        }
+    if let Ok(cmd) = std::env::var("BEANKEEPER_PASSPHRASE_CMD")
+        && !cmd.is_empty()
+    {
+        let secret = run_passphrase_command(&cmd)?;
+        return Ok(Some(secret));
     }
 
     // 4. TTY prompt

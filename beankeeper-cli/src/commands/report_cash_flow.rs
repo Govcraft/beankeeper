@@ -515,7 +515,7 @@ fn format_amount(minor_units: i64, decimal_places: u8) -> String {
     let len = whole.len();
     let mut whole_str = String::with_capacity(len + len / 3);
     for (i, ch) in whole.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             whole_str.push(',');
         }
         whole_str.push(ch);

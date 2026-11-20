@@ -212,12 +212,12 @@ pub fn plan_clear(
     existing: &[Clearing],
     spec: &ClearSpec<'_>,
 ) -> Result<ClearPlan, CliError> {
-    if let Some(a) = spec.amount {
-        if a <= 0 {
-            return Err(CliError::Validation(
-                "clearing amount must be positive".to_string(),
-            ));
-        }
+    if let Some(a) = spec.amount
+        && a <= 0
+    {
+        return Err(CliError::Validation(
+            "clearing amount must be positive".to_string(),
+        ));
     }
     if day(spec.date) < day(spec.txn_date) {
         let what = if spec.status == ClearingStatus::Reconciled {
@@ -232,45 +232,43 @@ pub fn plan_clear(
         )));
     }
 
-    if let Some(stmt) = spec.statement {
-        if let Some(prior) = existing
+    if let Some(stmt) = spec.statement
+        && let Some(prior) = existing
             .iter()
             .find(|c| c.statement_ref.as_deref() == Some(stmt))
+    {
+        if let Some(a) = spec.amount
+            && a != prior.amount
         {
-            if let Some(a) = spec.amount {
-                if a != prior.amount {
-                    return Err(CliError::Validation(format!(
-                        "entry {} was already cleared for {} minor units by statement '{stmt}'; \
-                         refusing to record a different amount ({a})",
-                        prior.entry_id, prior.amount
-                    )));
-                }
-            }
-            return match (spec.status, prior.status) {
-                (ClearingStatus::Reconciled, ClearingStatus::Cleared) => {
-                    check_promotable(prior, spec.date)?;
-                    Ok(ClearPlan::Promote {
-                        ids: vec![prior.id],
-                    })
-                }
-                (ClearingStatus::Cleared, ClearingStatus::Reconciled) => {
-                    Err(locked_error(prior.entry_id, Some(stmt)))
-                }
-                _ => Ok(ClearPlan::Skip(SkipReason::AlreadyClearedByStatement)),
-            };
+            return Err(CliError::Validation(format!(
+                "entry {} was already cleared for {} minor units by statement '{stmt}'; \
+                 refusing to record a different amount ({a})",
+                prior.entry_id, prior.amount
+            )));
         }
+        return match (spec.status, prior.status) {
+            (ClearingStatus::Reconciled, ClearingStatus::Cleared) => {
+                check_promotable(prior, spec.date)?;
+                Ok(ClearPlan::Promote {
+                    ids: vec![prior.id],
+                })
+            }
+            (ClearingStatus::Cleared, ClearingStatus::Reconciled) => {
+                Err(locked_error(prior.entry_id, Some(stmt)))
+            }
+            _ => Ok(ClearPlan::Skip(SkipReason::AlreadyClearedByStatement)),
+        };
     }
 
     let remaining = entry_amount - cleared_sum(existing);
-    if spec.status == ClearingStatus::Cleared && remaining <= 0 {
-        if let Some(first) = existing.first() {
-            if existing
-                .iter()
-                .all(|c| c.status == ClearingStatus::Reconciled)
-            {
-                return Err(locked_error(first.entry_id, None));
-            }
-        }
+    if spec.status == ClearingStatus::Cleared
+        && remaining <= 0
+        && let Some(first) = existing.first()
+        && existing
+            .iter()
+            .all(|c| c.status == ClearingStatus::Reconciled)
+    {
+        return Err(locked_error(first.entry_id, None));
     }
     let amount = spec.amount.unwrap_or(remaining);
     if amount > remaining {
