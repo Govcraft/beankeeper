@@ -58,7 +58,8 @@ The `companies` array contains the exported companies with their accounts and tr
 | `VALIDATION` | Business rule violation (unbalanced entry, invalid account type) |
 | `DATABASE` | SQLite or I/O error |
 | `NOT_FOUND` | Entity does not exist |
-| `UNAUTHORIZED` | Invalid, expired, revoked or untrusted supplied agent token (exit 6) |
+| `UNAUTHORIZED` | Missing required, invalid, expired, revoked or untrusted agent token (exit 6) |
+| `FORBIDDEN` | Verified token lacks the required capability (exit 7) |
 | `GENERAL` | Other error |
 | `IO` | File I/O error |
 
@@ -1362,10 +1363,17 @@ the verified `agent://` URI. It is absent without a token, and unverified input
 is never echoed into metadata. Transaction show/list data and audit rows add
 nullable `agent_uri` and `token_jti`. Named `posted_by`/`actor` retain their
 meaning. Audit rows also include `hash_version`: 1 for preserved historical
-hashes, 2 for new rows including nullable identity in the hash payload.
+hashes, 2 for preserved identity rows, 3 for new rows. Versions 2 and 3 include
+nullable identity in the hash payload; v3 uses domain tag `beankeeper.audit.v3`.
 
 `key.init`, `agent.issue`, `agent.list`, `agent.revoke` use the normal envelope.
 See [the command reference](commands.md#agent-identity) for their data fields.
 Tokens and generated private seeds appear only in issuance output; list and
 audit data contain public claims. Successful export output remains standalone.
-Capabilities and agent write signatures are not enforced in Phase 1.
+Capability enforcement defaults off. `policy show` and `policy set --enforce
+on|off` return `data: {"enforce": <boolean>, "updated_at": "<UTC timestamp>"}`.
+With enforcement on, missing credentials are `UNAUTHORIZED`; insufficient grants
+are `FORBIDDEN`, naming the required capability in the message. Before enabling,
+issue an admin token; subsequent policy changes require `ledger/admin` and are
+audited as `policy_change`. See the [capability map](commands.md#capability-policy).
+Agent write signatures and proof of private-key possession remain out of scope.

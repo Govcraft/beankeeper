@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.23.0
+version: 0.24.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -102,7 +102,7 @@ Key conventions for agents:
 
 For the complete JSON envelope specification, see [`references/json-api.md`](references/json-api.md).
 
-## Optional agent identity
+## Agent identity and capability enforcement
 
 For an encrypted ledger, the owner runs `bk key init` once. Supply an agent's
 base64 Ed25519 public key with `bk --json agent issue --name claude
@@ -120,17 +120,40 @@ shows public claims and revocation dates without secrets. `bk agent revoke
 URI_OR_JTI` revokes one token or all current tokens for a URI, idempotently.
 Revocation does not invalidate historical chain verification.
 
-Phase 1 records identity optionally; it does not enforce capabilities or verify
-agent signatures/private-key possession. Treat the token as sensitive. Omit it
-for the existing named-actor behavior; reads require no token. The private root
-stays in the encrypted DB and travels with full database backups. Root recovery,
-rotation, signed writes and permission policies are outside this phase.
-`init` rejects supplied tokens before creating a new ledger; bootstrap without
-one. `init --demo` honors the named actor.
+Enforcement defaults off. `bk policy show` returns `enforce` and `updated_at`.
+Before enabling, issue and save an admin token, for example with
+`--caps ledger/read,ledger/admin`. A named actor can bootstrap with
+`bk policy set --enforce on` while off. Once on, every ledger command requires a
+token; changing policy back to off requires `ledger/admin`. Changes are audited
+as `policy_change`; repeated state is a no-op. Missing tokens are `UNAUTHORIZED`
+(exit 6), and insufficient grants are `FORBIDDEN` (exit 7).
+
+| Grant | Operations |
+| --- | --- |
+| `ledger/read` | List/show/report/export/verify/audit, agent list, policy show, loan schedule |
+| `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule mutations |
+| `ledger/reverse` | txn reverse |
+| `ledger/reconcile` | txn clear/reconcile |
+| `ledger/budget` | budget set/delete |
+| `ledger/admin` | Company/account create/delete, key init, agent issue/revoke, policy set |
+
+Admin does not imply other grants; post does not imply reverse. Issue explicit
+unions. Bare `ledger` is rejected, and narrower descendant grants cannot cover
+parent operations. Omit a token only when enforcement is off. Tokens remain
+bearer credentials without private-key possession or write signatures. The root
+stays in the encrypted DB and full backups. Root recovery/rotation and signed
+writes remain outside this feature. `init` rejects supplied tokens; an admin
+must disable policy before `init --force` can replace an enforced ledger. An
+existing encrypted ledger must be readable with its current passphrase.
+`init --demo` honors the named actor. Back up before upgrading to schema v18:
+old audit hashes are preserved, but only new binaries can append v3 audit rows.
 
 For MCP, supply the token in the server's environment or startup arguments. It
 is per session and reverified on every tool call, so expiry/revocation takes
-effect without a restart. Keep token values out of tool arguments. See the
+effect without a restart. Enforcement filters discovery by startup grants and
+checks grants/policy on every call. Restart after policy changes to refresh the
+tool list. `--read-only` hides all writes including `txn_reconcile` regardless of
+grants. Keep token values out of tool arguments. See the
 [key and agent command reference](references/commands.md#agent-identity).
 
 ## Using MCP

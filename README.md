@@ -52,7 +52,7 @@ Audit rows form a SHA-256 hash chain. `bk verify` checks the chain, its tail, ne
 
 These protections detect tampering against the stored chain; they are not signatures or an external trust anchor. Someone with unrestricted database access can remove triggers and rewrite the ledger, hashes, and sequence together, or restore an older complete database. See [audit integrity](docs/audit-integrity.md) for the format, migration behavior, and limits.
 
-### Optional verified agent identity
+### Verified agent identity and capability enforcement
 
 `bk key init` creates a local trust root inside an encrypted ledger.
 `bk agent issue --name claude --public-key "$AGENT_PUBLIC_KEY" --ttl 8h` issues
@@ -63,10 +63,30 @@ and `agent revoke URI_OR_JTI` manage issued tokens. MCP accepts one token per
 session and rechecks it on every call. Invalid, expired or revoked supplied
 tokens return `UNAUTHORIZED` (exit 6).
 
-Tokens remain optional. Capabilities are recorded, and do not restrict commands
-in this phase. Token verification attests claims without proving possession of
-the agent private key; writes have no agent signatures. See
-[agent identity setup and limits](docs/agent-identity.md).
+Enforcement defaults to off. CLI 0.22.0 adds `bk policy show` and
+`bk policy set --enforce on|off`. Bootstrap by issuing a token with
+`ledger/read,ledger/admin`, saving it, then enabling as a named actor. Once on,
+all reads and mutations require tokens. Missing credentials return `UNAUTHORIZED`
+(exit 6); insufficient grants return `FORBIDDEN` (exit 7). Policy changes require
+`ledger/admin` and append `policy_change` audit records.
+
+| Grant | Operations |
+| --- | --- |
+| `ledger/read` | Lists, shows, reports, export, verify, audit, agent list, policy show, loan schedule |
+| `ledger/post` | Posting/import/attachments/annotations, investment trades, security writes, loan pay, schedule writes, rule writes |
+| `ledger/reverse` | txn reverse |
+| `ledger/reconcile` | txn clear/reconcile |
+| `ledger/budget` | budget set/delete |
+| `ledger/admin` | Company/account writes, key init, agent issue/revoke, policy set |
+
+Grants are siblings: admin does not imply posting, and post does not imply
+reverse. Issue the union needed; bare `ledger` grants are rejected. MCP filters
+tools by startup grants and rechecks every call; `--read-only` remains a ceiling.
+Tokens are bearer credentials without proof of private-key possession or signed
+writes. Back up before schema v18 upgrades: existing hashes remain intact, but
+older binaries cannot append the new v3 audit format. `init --force` requires an
+admin to disable enforcement first. See
+[agent identity setup, capability map, and limits](docs/agent-identity.md).
 
 ### Everything else
 
@@ -1064,7 +1084,7 @@ JSON command responses follow a uniform envelope contract for reliable programma
 }
 ```
 
-For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `UNAUTHORIZED`, `IO`, `GENERAL`.
+For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `IO`, `GENERAL`.
 
 ### Environment Variables
 

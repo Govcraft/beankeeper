@@ -82,7 +82,7 @@ are allowed by storage protections and cannot be attributed by the chain.
 ## Schema v13 agent attribution
 
 Schema v13 preserves every existing v1 hash and snapshot, with null
-`agent_uri`/`token_jti` and `hash_version = 1`. New rows use `hash_version = 2`.
+`agent_uri`/`token_jti` and `hash_version = 1`. Rows written by schema v13 through v17 use `hash_version = 2`.
 Their canonical tuple is the v1 tuple with tag `beankeeper.audit.v2`, followed
 by `agent_uri` and `token_jti` in that order, including JSON nulls for named-only
 writes. The predecessor/hash construction stays the same, and v2 rows extend
@@ -122,3 +122,25 @@ posts each due occurrence through the ordinary transaction creation path. A fail
 posting or audit append rolls back the entire run, including progress. Repeating
 a successful run creates no new postings or audit rows; previews write neither.
 Pending and cancelled templates do not participate in posted ledger balances.
+
+
+## Schema v18 capability policy
+
+Schema v18 preserves historical v1/v2 audit rows and snapshots verbatim and adds
+`policy` events with action `policy_change`. New appends require `hash_version =
+3`, with the same ordered tuple as v2 except the domain tag is
+`beankeeper.audit.v3`. This writer barrier prevents older binaries from appending
+without enforcing capability grants. `verify` supports mixed v1/v2/v3 chains;
+v2/v3 creation snapshots retain both identity fields.
+
+The singleton policy defaults off without an invented audit event. Policy
+changes and their before/after snapshots are atomic. Storage triggers prohibit
+deletion/replacement and require a matching audit record for updates. Policy
+reads compare the current state with its latest snapshot and fail closed if it
+is missing or inconsistent. `verify` performs that check too.
+
+Back up the full database before upgrading. Migration verifies the old chain
+and tail before and after the atomic rebuild, preserves indexes and protections,
+and rolls back on failure. After schema v18, older binaries cannot append,
+including when enforcement is off. Tokens remain bearer credentials; this does
+not add signatures over writes or defend against arbitrary database/key access.
