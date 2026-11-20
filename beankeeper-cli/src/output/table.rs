@@ -209,24 +209,50 @@ pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool)
         return "No transactions found.".to_string();
     }
 
+    let links: Vec<String> = transactions.iter().map(reversal_links).collect();
+    let has_links = links.iter().any(|link| !link.is_empty());
     let mut table = new_table();
-    table.set_header(vec![
+    let mut header = vec![
         Cell::new(styled("ID", bold_style(), use_color)),
         Cell::new(styled("Date", bold_style(), use_color)),
         Cell::new(styled("Description", bold_style(), use_color)),
         Cell::new(styled("Currency", bold_style(), use_color)),
-    ]);
-
-    for txn in transactions {
-        table.add_row(vec![
+    ];
+    if has_links {
+        header.push(Cell::new(styled("Reversal", bold_style(), use_color)));
+    }
+    table.set_header(header);
+    for (txn, link) in transactions.iter().zip(links) {
+        let mut row = vec![
             Cell::new(txn.id).set_alignment(CellAlignment::Right),
             Cell::new(&txn.date),
             Cell::new(&txn.description),
             Cell::new(&txn.currency),
-        ]);
+        ];
+        if has_links {
+            row.push(Cell::new(link));
+        }
+        table.add_row(row);
     }
 
     table.to_string()
+}
+
+/// Render only valid numeric reversal links, tolerating legacy metadata.
+fn reversal_links(txn: &TransactionRow) -> String {
+    let metadata: Option<serde_json::Value> = txn
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok());
+    let mut links = Vec::new();
+    if let Some(meta) = metadata {
+        for (key, label) in [("reverses", "Reverses"), ("reversed_by", "Reversed by")] {
+            if let Some(id) = meta.get(key).and_then(serde_json::Value::as_i64) {
+                links.push(format!("{label} #{id}"));
+            }
+        }
+    }
+    links.join(", ")
 }
 
 /// Render a single transaction in detail with its entry lines.
@@ -268,6 +294,10 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
     lines.push(format!("  Date:        {}", txn.date));
     lines.push(format!("  Description: {}", txn.description));
     lines.push(format!("  Currency:    {}", txn.currency));
+    let reversal = reversal_links(txn);
+    if !reversal.is_empty() {
+        lines.push(format!("  Reversal:    {reversal}"));
+    }
 
     if let Some(ref meta) = txn.metadata {
         lines.push(format!(

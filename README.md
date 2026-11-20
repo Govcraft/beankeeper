@@ -232,6 +232,34 @@ If skipped, `id` is null and `existing_id` is provided:
 
 References are stored verbatim after trimming surrounding whitespace; empty or whitespace-only references are rejected. The same reference can be used in different companies. Transactions without `--reference` have no reference-based deduplication. `--on-conflict upsert` is not implemented.
 
+### Reverse a mistaken transaction
+
+```sh
+bk --company personal txn reverse 42 --date 2026-11-19 --reference VOID-42
+# Retry with the same explicit reference safely returns the existing reversal.
+bk --company personal txn reverse 42 --reference VOID-42
+```
+
+`txn reverse` (alias `txn void`) posts a mirror of every entry, preserving
+accounts, amounts, memos, tax categories and currency. The date defaults to
+today and must be on or after the original date. Use `--description TEXT` to
+override `Reversal of #ID: ORIGINAL DESCRIPTION`. The default reference is
+`reversal-of-ID`. Repeating the command without an explicit reference, or
+with a different reference, rejects an already reversed transaction.
+
+The original gains `reversed_by` metadata and the new posting carries
+`reverses`, both numeric transaction IDs. `txn show` and `txn list` display
+these links. The original's entries and metadata remain intact apart from
+that added link; transaction metadata and attachments are not copied to the
+reversal. An atomic `reverse` audit record captures the actor, original
+metadata, new link and reversal reference (`bk audit log --action reverse`).
+
+A transaction with any reconciled clearing cannot be reversed. Other
+clearings remain on the original, and the reversal starts uncleared. In
+reconciliation, the original keeps its cleared/remaining amounts and the
+reversal appears separately as an outstanding opposite posting from its
+own date. Reversal does not automatically clear or reconcile either side.
+
 ### OFX / QFX Bank Statement Import
 
 Import transactions from bank and credit card statements exported in OFX format. Each OFX transaction becomes a balanced double-entry against a user-specified bank account and suspense/clearing account:

@@ -67,6 +67,7 @@ pub fn run(
             run_list_or_count(cli, &db_handle, company, sub, format, use_color)
         }
         TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
+        TxnCommand::Reverse { .. } => run_reverse(cli, &db_handle, company, sub),
         TxnCommand::Clear { .. } => super::txn_clear::run(cli, &db_handle, company, sub, meta),
         TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
         TxnCommand::Attach {
@@ -85,6 +86,60 @@ pub fn run(
         ),
         TxnCommand::Reconcile => run_reconcile(cli, &db_handle, format, use_color),
     }
+}
+
+/// Execute an atomic reversal and report its new or existing transaction ID.
+fn run_reverse(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
+    let TxnCommand::Reverse {
+        id,
+        date,
+        description,
+        reference,
+    } = sub
+    else {
+        return Err(CliError::General("expected txn reverse subcommand".into()));
+    };
+    let format = resolve_format(None, cli);
+    let date = date
+        .clone()
+        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    let reference = reference
+        .as_deref()
+        .map(normalize_reference)
+        .transpose()
+        .map_err(|e| CliError::Validation(e.to_string()))?;
+    let actor = db::Actor::resolve(cli.actor.as_deref());
+    let result = db::audit::reverse_transaction(
+        db_handle.conn(),
+        &db::audit::ReverseTransactionParams {
+            company_slug: company,
+            id: *id,
+            date: &date,
+            description: description.as_deref(),
+            reference: reference.as_deref(),
+            actor: &actor,
+        },
+    )?;
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            output::json::render_post_result(
+                result,
+                output::json::meta("txn.reverse", Some(company))
+            )?
+        );
+    }
+    if !cli.verbosity.quiet {
+        match result {
+            transactions::PostResult::Created(reversal_id) => {
+                eprintln!("[ok] transaction #{id} reversed by #{reversal_id}");
+            }
+            transactions::PostResult::Skipped(reversal_id) => {
+                eprintln!("[skipped] transaction #{id} already reversed by #{reversal_id}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Execute the `txn import` subcommand.

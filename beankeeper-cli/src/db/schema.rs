@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 10;
+const CURRENT_VERSION: i64 = 11;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -80,6 +80,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 10 {
         apply_v10(conn)?;
+    }
+
+    if version < 11 {
+        apply_v11(conn)?;
     }
 
     debug_assert_eq!(
@@ -458,6 +462,33 @@ fn apply_v10(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Extends the audit action constraint while preserving all existing records.
+fn apply_v11(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.execute_batch(
+            "CREATE TABLE audit_log_v11 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete')),
+                before TEXT,
+                after TEXT
+            );
+            INSERT INTO audit_log_v11 SELECT * FROM audit_log;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v11 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            INSERT INTO schema_version (version) VALUES (11);"
+        )?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +504,36 @@ mod tests {
         String,
         Option<String>,
     );
+
+    #[test]
+    fn v11_migration_preserves_audit_rows_and_extends_action_constraint() -> Result<(), CliError> {
+        let conn = open_conn();
+        // The old audit table can be built independently of the ledger tables.
+        conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")?;
+        apply_v8(&conn)?;
+        conn.execute_batch(
+            "INSERT INTO audit_log (id, changed_at, actor, company_slug, entity, entity_id, action, before, after)
+             VALUES (42, '2026-01-01 12:34:56', 'old-actor', 'acme', 'transaction', '17', 'correlate', '{\"before\":true}', '{\"after\":true}');"
+        )?;
+        let query = "SELECT json_object('id', id, 'changed_at', changed_at, 'actor', actor,
+            'company_slug', company_slug, 'entity', entity, 'entity_id', entity_id,
+            'action', action, 'before', before, 'after', after) FROM audit_log";
+        let before: String = conn.query_row(query, [], |r| r.get(0))?;
+        apply_v11(&conn)?;
+        let after: String = conn.query_row(query, [], |r| r.get(0))?;
+        assert_eq!(before, after);
+        conn.execute("INSERT INTO audit_log (actor, entity, entity_id, action) VALUES ('new', 'transaction', '17', 'reverse')", [])?;
+        assert!(conn.last_insert_rowid() > 42);
+        assert!(conn.execute("INSERT INTO audit_log (actor, entity, entity_id, action) VALUES ('bad', 'transaction', '17', 'invalid')", []).is_err());
+        let indices: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'audit_log'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(indices, 3);
+        assert_eq!(get_schema_version(&conn)?, 11);
+        Ok(())
+    }
 
     #[test]
     fn v10_migration_backfills_clearings_from_v8() {

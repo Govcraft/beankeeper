@@ -137,6 +137,24 @@ When `--on-conflict skip` and reference already exists:
 }
 ```
 
+### `txn reverse` (alias `txn void`)
+
+Uses the same `data` shape as `txn post`, with `meta.command` equal to
+`txn.reverse`. A new mirror returns `id`, `created: true`, `skipped: false`.
+Retrying with an explicit reference matching the linked reversal returns
+`existing_id`, `created: false`, `skipped: true`, without another audit row.
+Other repeat attempts fail with `VALIDATION` (exit 3). Missing or foreign
+transaction IDs return `NOT_FOUND` (exit 5).
+
+`txn show` and `txn list` retain their existing shape. Parse the transaction's
+`metadata` string to read numeric links: `reversed_by` on the original and
+`reverses` on the reversal. The original's other metadata is preserved;
+the new transaction contains only the reversal link. Its entries start
+uncleared, with their original accounts, amounts, memos and tax categories.
+The atomic audit action is `reverse`, associated with the original ID;
+`before` records original metadata and `after` records updated metadata,
+`reversed_by` and the reversal's `reference`.
+
 ### `txn list`
 
 ```json
@@ -1073,7 +1091,7 @@ may be `null` for cross-company changes.
 ```
 
 `entity` is one of `entry`, `transaction`, `budget`, `account`, `company`.
-`action` is one of `status_change`, `correlate`, `budget_set`, `budget_delete`,
+`action` is one of `status_change`, `correlate`, `reverse`, `budget_set`, `budget_delete`,
 `account_delete`, `company_delete`.
 
 `status_change` rows come from `txn clear`. `before`/`after` carry the entry's
