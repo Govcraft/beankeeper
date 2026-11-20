@@ -547,6 +547,16 @@ remote binds also allow their bound IP, while explicitly permitted wildcard bind
 accept any Host. Requests with browser Origin headers are rejected. Use an MCP
 client that sends bearer headers without a browser Origin.
 
+Rust hosts can share their own axum listener with MCP by merging
+`beankeeper_cli::mcp::http_router(&cli, read_only, config)?` into their router.
+The returned router already mounts `/mcp` and authenticates that endpoint only.
+Pass a `beankeeper_cli::mcp::StreamableHttpServerConfig`, keeping a clone of its
+`cancellation_token` to cancel MCP sessions at shutdown. The host owns its runtime,
+listener, shutdown handling, and Host/Origin configuration. Construction opens an
+existing ledger and resolves the passphrase synchronously without prompting;
+request credentials and capability checks work as described above. See the
+factory's Rustdoc for a complete hosting example.
+
 ## Demo Mode
 
 Create sample books for three companies and explore the walkthrough below:

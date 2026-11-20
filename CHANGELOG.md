@@ -13,6 +13,11 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   investment trades, reversals, and proposal approvals. Reopen requires an
   audited reason; close/reopen require `ledger/admin` under enforcement.
   ([#102](https://github.com/Govcraft/beankeeper/issues/102))
+- Public `beankeeper_cli::mcp::http_router` factory for embedding the authenticated
+  `/mcp` endpoint beside host application routes on one listener. Hosts supply
+  transport configuration and control cancellation; the CLI keeps its existing
+  credential, capability, read-only and bind behavior.
+  ([#106](https://github.com/Govcraft/beankeeper/issues/106))
 
 ### Changed
 

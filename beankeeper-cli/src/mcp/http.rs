@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
@@ -114,12 +115,94 @@ async fn authenticate(
     }
 }
 
+/// Build an authenticated Streamable HTTP router with its endpoint at `/mcp`.
+///
+/// Merge this router into an axum app to share the host's listener and runtime.
+/// Only `/mcp` is authenticated by this router; sibling routes keep their own
+/// middleware. No listener, runtime, signal handler, or background task is started.
+/// Construction performs blocking passphrase resolution and database I/O, so call
+/// it during startup or from `tokio::task::spawn_blocking` in an async host.
+///
+/// The ledger must already exist. The passphrase is resolved once from `cli`,
+/// without prompting. Every MCP request verifies a bearer credential, even when
+/// ledger capability enforcement is off. `cli.agent_token` is a fallback only
+/// when the Authorization header is absent. Tool calls recheck the requesting
+/// credential and current policy atomically with execution. `read_only` always
+/// removes mutation tools.
+///
+/// The host supplies the transport configuration, including Host/Origin rules.
+/// Clone `config.cancellation_token` before passing it in, then cancel it during
+/// host shutdown to terminate MCP sessions. The host also owns listener shutdown.
+/// CLI bind flags are not used by this factory.
+///
+/// # Example
+///
+/// ```no_run
+/// use axum::{Router, routing::get};
+/// use beankeeper_cli::{
+///     cli::Cli,
+///     mcp::{http_router, StreamableHttpServerConfig},
+/// };
+/// use clap::Parser;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let cli = Cli::parse_from(["host", "--db", "/path/books.db", "mcp", "serve"]);
+/// let config = StreamableHttpServerConfig::default().enforce_origin_validation();
+/// let cancellation = config.cancellation_token.clone();
+/// // http_router already mounts /mcp; merge it beside the host's routes.
+/// let app = Router::new()
+///     .route("/health", get(|| async { "ok" }))
+///     .merge(http_router(&cli, false, config)?);
+///
+/// tokio::runtime::Runtime::new()?.block_on(async move {
+///     let listener = tokio::net::TcpListener::bind("127.0.0.1:8750").await?;
+///     axum::serve(listener, app)
+///         .with_graceful_shutdown(async move {
+///             let _ = tokio::signal::ctrl_c().await;
+///             cancellation.cancel();
+///         })
+///         .await
+/// })?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns a CLI error if passphrase resolution or opening the ledger fails.
+pub fn http_router(
+    cli: &Cli,
+    read_only: bool,
+    config: StreamableHttpServerConfig,
+) -> Result<Router, CliError> {
+    let passphrase = crate::passphrase::resolve_passphrase(
+        cli.passphrase.passphrase_fd,
+        cli.passphrase.passphrase_file.as_deref(),
+        false,
+    )?;
+    let db = Db::open_existing(&cli.db, passphrase.as_ref())?;
+    drop(passphrase);
+    let mut server = LedgerServer::new(db, read_only);
+    server.require_request_token = true;
+    let authentication = Authentication {
+        db: server.db.clone(),
+        fallback: cli.agent_token.clone(),
+    };
+    let service = StreamableHttpService::new(
+        move || Ok(server.clone()),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    );
+    Ok(Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(authentication, authenticate)))
+}
+
 /// Serve the ledger at `/mcp` using authenticated Streamable HTTP.
 ///
-/// Every request verifies a bearer credential, including when ledger capability
-/// enforcement is off. An explicit Authorization header overrides the optional
-/// process credential. Tool calls recheck credentials and policy atomically with
-/// execution. The passphrase is resolved once, without prompting.
+/// Wraps [`http_router`] with a runtime, listener and Ctrl-C shutdown. Every
+/// request verifies a bearer credential, including when capability enforcement
+/// is off. The passphrase is resolved once, without prompting.
 ///
 /// # Errors
 ///
@@ -135,19 +218,15 @@ pub fn serve_http(
             "non-loopback HTTP binds require --allow-remote (plaintext HTTP, no TLS)".into(),
         ));
     }
-    let passphrase = crate::passphrase::resolve_passphrase(
-        cli.passphrase.passphrase_fd,
-        cli.passphrase.passphrase_file.as_deref(),
-        false,
-    )?;
-    let db = Db::open_existing(&cli.db, passphrase.as_ref())?;
-    drop(passphrase);
-    let mut server = LedgerServer::new(db, read_only);
-    server.require_request_token = true;
-    let authentication = Authentication {
-        db: server.db.clone(),
-        fallback: cli.agent_token.clone(),
-    };
+    let mut config = StreamableHttpServerConfig::default().enforce_origin_validation();
+    if bind.ip().is_unspecified() {
+        // An explicitly enabled remote wildcard bind has no fixed Host.
+        config = config.disable_allowed_hosts();
+    } else {
+        config.allowed_hosts.push(bind.ip().to_string());
+    }
+    let cancellation = config.cancellation_token.clone();
+    let app = http_router(cli, read_only, config)?;
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -155,22 +234,6 @@ pub fn serve_http(
         .block_on(async move {
             let listener = tokio::net::TcpListener::bind(bind).await?;
             let bound = listener.local_addr()?;
-            let mut config = StreamableHttpServerConfig::default().enforce_origin_validation();
-            if bind.ip().is_unspecified() {
-                // An explicitly enabled remote wildcard bind has no fixed Host.
-                config = config.disable_allowed_hosts();
-            } else {
-                config.allowed_hosts.push(bind.ip().to_string());
-            }
-            let cancellation = config.cancellation_token.clone();
-            let service = StreamableHttpService::new(
-                move || Ok(server.clone()),
-                Arc::new(LocalSessionManager::default()),
-                config,
-            );
-            let app = axum::Router::new()
-                .nest_service("/mcp", service)
-                .layer(middleware::from_fn_with_state(authentication, authenticate));
             eprintln!("MCP Streamable HTTP listening on http://{bound}/mcp");
             let result = axum::serve(listener, app)
                 .with_graceful_shutdown(async move {

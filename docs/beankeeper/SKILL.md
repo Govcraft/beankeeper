@@ -212,6 +212,12 @@ require `--allow-remote`, which serves plaintext HTTP without TLS and is not a
 hosted-tier implementation. Browser Origin headers are rejected. Prefer per-request
 tokens for multiple agents; do not put credentials in tool arguments or URLs.
 
+Rust host applications can merge `beankeeper_cli::mcp::http_router(&cli, read_only,
+config)?` beside their own axum routes. It already mounts `/mcp` and retains the
+same authentication and capability rules. The host supplies
+`StreamableHttpServerConfig`, controls its cancellation token, and owns the
+listener, runtime, shutdown, and Host/Origin rules. See the API Rustdoc example.
+
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; only `error` and `skip` are accepted conflict strategies. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
