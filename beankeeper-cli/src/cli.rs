@@ -326,6 +326,12 @@ EXAMPLES:\n  \
     /// Manage pending obligations and recurring transaction templates.
     Schedule(ScheduleArgs),
 
+    /// Manage securities and dated market prices.
+    Security(SecurityArgs),
+
+    /// Record investment trades and report holdings.
+    Investment(InvestmentArgs),
+
     /// Set and manage budgets.
     Budget(BudgetArgs),
 
@@ -340,6 +346,149 @@ EXAMPLES:\n  \
 
     /// Inspect the audit trail of ledger mutations.
     Audit(AuditArgs),
+}
+
+/// Company-scoped security master and prices.
+#[derive(Args, Debug)]
+#[command(subcommand_required = true, arg_required_else_help = true)]
+pub struct SecurityArgs {
+    #[command(subcommand)]
+    pub command: SecurityCommand,
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Create securities and record their dated prices.
+#[derive(Subcommand, Debug)]
+pub enum SecurityCommand {
+    /// Create a security with a fixed quotation currency.
+    Create {
+        /// Ticker or symbol unique within the company.
+        symbol: String,
+        /// Display name.
+        #[arg(long)]
+        name: String,
+        /// Quotation currency code.
+        #[arg(long, default_value = "USD")]
+        currency: String,
+    },
+    /// List company securities.
+    List,
+    /// Record a price per whole share in the security's currency.
+    Price {
+        /// Security symbol.
+        symbol: String,
+        /// Price date (YYYY-MM-DD).
+        #[arg(long)]
+        date: chrono::NaiveDate,
+        /// Price in major currency units (e.g. 12.34 USD).
+        #[arg(long)]
+        price: String,
+    },
+}
+
+impl SecurityCommand {
+    /// Stable JSON command identifier.
+    #[must_use]
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Self::Create { .. } => "security.create",
+            Self::List => "security.list",
+            Self::Price { .. } => "security.price",
+        }
+    }
+}
+
+/// Company-scoped investment trades and reports.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "EXAMPLES:\n  bk --company acme investment buy AAPL --quantity 1.5 --cost 150 --date 2026-01-01 --asset 1200 --cash 1000\n  bk --company acme investment sell AAPL --quantity 1 --proceeds 120 --date 2026-02-01 --asset 1200 --cash 1000 --gain 4000\n  bk --company acme investment holdings --as-of 2026-02-28 --json\n\nAmounts use the security currency. Quantities support eight decimal places. FIFO is the default; specific selection requires --method specific --lot LOT_ID."
+)]
+pub struct InvestmentArgs {
+    #[command(subcommand)]
+    pub command: InvestmentCommand,
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Inputs common to purchases and sales.
+#[derive(Args, Debug)]
+pub struct TradeArgs {
+    /// Security symbol.
+    pub symbol: String,
+    /// Positive shares, with at most eight decimal places.
+    #[arg(long)]
+    pub quantity: beankeeper::core::investments::Quantity,
+    /// Acquisition or disposal date (YYYY-MM-DD).
+    #[arg(long)]
+    pub date: chrono::NaiveDate,
+    /// Asset account carrying the investment at cost.
+    #[arg(long)]
+    pub asset: String,
+    /// Cash asset account for settlement.
+    #[arg(long)]
+    pub cash: String,
+    /// Unique posting reference. A duplicate fails without changing lots.
+    #[arg(long)]
+    pub reference: Option<String>,
+}
+
+/// Buy, sell, inspect lots, and value holdings.
+#[derive(Subcommand, Debug)]
+pub enum InvestmentCommand {
+    /// Acquire a lot and post investment cost against cash.
+    Buy {
+        #[command(flatten)]
+        trade: TradeArgs,
+        /// Total acquisition cost in major currency units.
+        #[arg(long)]
+        cost: String,
+    },
+    /// Dispose of shares and post proceeds, basis relief and gain/loss.
+    Sell {
+        #[command(flatten)]
+        trade: TradeArgs,
+        /// Total sale proceeds in major currency units.
+        #[arg(long)]
+        proceeds: String,
+        /// Revenue account for realized gains (losses debit this account).
+        #[arg(long)]
+        gain: String,
+        /// Lot selection: fifo, lifo, or specific.
+        #[arg(long, default_value = "fifo")]
+        method: beankeeper::core::investments::LotMethod,
+        /// Lot ID required with --method specific.
+        #[arg(long)]
+        lot: Option<String>,
+    },
+    /// List acquisition lots and remaining quantities and basis.
+    Lots {
+        /// Security symbol.
+        symbol: String,
+    },
+    /// Show quantities, cost, market value and unrealized gains without posting.
+    Holdings {
+        /// Valuation date (default: today in local time).
+        #[arg(long)]
+        as_of: Option<chrono::NaiveDate>,
+    },
+}
+
+impl InvestmentCommand {
+    /// Stable JSON command identifier.
+    #[must_use]
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Self::Buy { .. } => "investment.buy",
+            Self::Sell { .. } => "investment.sell",
+            Self::Lots { .. } => "investment.lots",
+            Self::Holdings { .. } => "investment.holdings",
+        }
+    }
 }
 
 /// Company-scoped scheduled transactions.
@@ -2122,6 +2271,8 @@ pub fn resolve_format(command_format: Option<OutputFormat>, cli: &Cli) -> Output
 /// `BEANKEEPER_COMPANY` env var is set.
 pub fn require_company(cli: &Cli) -> Result<String, CliError> {
     let cmd_company = match &cli.command {
+        Command::Security(args) => args.company.as_ref(),
+        Command::Investment(args) => args.company.as_ref(),
         Command::Schedule(args) => args.company.as_ref(),
         Command::Loan(args) => args.company.as_ref(),
         Command::Rule(args) => args.company.as_ref(),

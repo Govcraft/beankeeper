@@ -7,6 +7,7 @@ pub mod export;
 pub mod import_ofx;
 pub mod init;
 pub mod loan;
+pub mod investment;
 pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;
@@ -38,6 +39,8 @@ pub fn command_name(cmd: &Command) -> &'static str {
         return id;
     }
     match cmd {
+        Command::Security(args) => args.command.command_name(),
+        Command::Investment(args) => args.command.command_name(),
         Command::Schedule(args) => args.command.command_name(),
         Command::Loan(args) => match &args.command {
             crate::cli::LoanCommand::Schedule(_) => "loan.schedule",
@@ -119,6 +122,10 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Security(_) | Command::Investment(_) => {
+            let company = require_company(cli)?;
+            investment::run(cli, &company)
+        }
         Command::Schedule(args) => {
             let company = require_company(cli)?;
             schedule::run(cli, &company, &args.command)

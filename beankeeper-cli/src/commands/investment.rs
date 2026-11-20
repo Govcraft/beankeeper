@@ -1,0 +1,322 @@
+//! Security master, exact investment trades, and holdings reports.
+
+use beankeeper::types::Currency;
+use serde_json::Value;
+
+use crate::cli::{Cli, Command, InvestmentCommand, OutputFormat, SecurityCommand, resolve_format};
+use crate::db::{Actor, Db, investments};
+use crate::error::CliError;
+use crate::output::json::{self, with_amount_displays};
+
+/// Run one company-scoped security or investment command.
+///
+/// # Errors
+/// Returns validation, persistence, or output errors.
+pub fn run(cli: &Cli, company: &str) -> Result<(), CliError> {
+    let db = cli.open_db()?;
+    let actor = cli.principal();
+    let (name, data) = match &cli.command {
+        Command::Security(args) => (
+            args.command.command_name(),
+            execute_security(&db, company, &args.command, &actor)?,
+        ),
+        Command::Investment(args) => (
+            args.command.command_name(),
+            execute_investment(&db, company, &args.command, &actor)?,
+        ),
+        _ => {
+            return Err(CliError::Usage(
+                "expected security or investment command".into(),
+            ));
+        }
+    };
+    render(cli, company, name, &data)
+}
+
+/// Execute a security operation using the same behavior for CLI and MCP.
+///
+/// # Errors
+/// Returns validation or persistence errors.
+pub fn execute_security(
+    db: &Db,
+    company: &str,
+    command: &SecurityCommand,
+    actor: &Actor,
+) -> Result<Value, CliError> {
+    crate::db::companies::get_company(db.conn(), company)?;
+    let data = match command {
+        SecurityCommand::Create {
+            symbol,
+            name,
+            currency,
+        } => serde_json::to_value(investments::create_security(
+            db.conn(),
+            actor,
+            company,
+            &investments::SecurityParams {
+                symbol: symbol.clone(),
+                name: name.clone(),
+                currency: currency.clone(),
+            },
+        )?),
+        SecurityCommand::List => {
+            serde_json::to_value(investments::list_securities(db.conn(), company)?)
+        }
+        SecurityCommand::Price {
+            symbol,
+            date,
+            price,
+        } => {
+            let price = amount(db, company, symbol, price)?;
+            serde_json::to_value(investments::record_price(
+                db.conn(),
+                actor,
+                company,
+                &investments::PriceParams {
+                    symbol: symbol.clone(),
+                    date: *date,
+                    price,
+                },
+            )?)
+        }
+    };
+    data.map(|data| with_amount_displays(data, None))
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+}
+
+/// Execute an investment trade or report using the same behavior for CLI and MCP.
+///
+/// # Errors
+/// Returns validation, lot-selection, or persistence errors.
+pub fn execute_investment(
+    db: &Db,
+    company: &str,
+    command: &InvestmentCommand,
+    actor: &Actor,
+) -> Result<Value, CliError> {
+    crate::db::companies::get_company(db.conn(), company)?;
+    let data = match command {
+        InvestmentCommand::Buy { trade, cost } => {
+            let cost = amount(db, company, &trade.symbol, cost)?;
+            serde_json::to_value(investments::buy(
+                db.conn(),
+                actor,
+                company,
+                &investments::BuyParams {
+                    symbol: trade.symbol.clone(),
+                    quantity: trade.quantity,
+                    cost,
+                    date: trade.date,
+                    asset: trade.asset.clone(),
+                    cash: trade.cash.clone(),
+                    reference: normalized_reference(trade.reference.as_deref())?,
+                },
+            )?)
+        }
+        InvestmentCommand::Sell {
+            trade,
+            proceeds,
+            gain,
+            method,
+            lot,
+        } => {
+            let proceeds = amount(db, company, &trade.symbol, proceeds)?;
+            serde_json::to_value(investments::sell(
+                db.conn(),
+                actor,
+                company,
+                &investments::SellParams {
+                    symbol: trade.symbol.clone(),
+                    quantity: trade.quantity,
+                    proceeds,
+                    date: trade.date,
+                    asset: trade.asset.clone(),
+                    cash: trade.cash.clone(),
+                    gain: gain.clone(),
+                    method: *method,
+                    lot: lot.clone(),
+                    reference: normalized_reference(trade.reference.as_deref())?,
+                },
+            )?)
+        }
+        InvestmentCommand::Lots { symbol } => {
+            serde_json::to_value(investments::list_lots(db.conn(), company, symbol)?)
+        }
+        InvestmentCommand::Holdings { as_of } => serde_json::to_value(investments::holdings(
+            db.conn(),
+            company,
+            as_of.unwrap_or_else(|| chrono::Local::now().date_naive()),
+        )?),
+    };
+    data.map(|data| with_amount_displays(data, None))
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+}
+
+fn normalized_reference(value: Option<&str>) -> Result<Option<String>, CliError> {
+    value
+        .map(super::txn::normalize_reference)
+        .transpose()
+        .map_err(|message| CliError::Validation(message.into()))
+}
+
+fn amount(db: &Db, company: &str, symbol: &str, value: &str) -> Result<i64, CliError> {
+    let security = investments::get_security(db.conn(), company, symbol)?;
+    let currency = Currency::from_code(&security.currency)
+        .map_err(|error| CliError::Validation(error.to_string()))?;
+    super::txn::parse_amount_to_minor(value, currency)
+}
+
+fn headers(name: &str) -> &'static [&'static str] {
+    match name {
+        "security.create" | "security.list" => &["symbol", "name", "currency"],
+        "security.price" => &["symbol", "currency", "date", "price"],
+        "investment.lots" => &[
+            "id",
+            "symbol",
+            "asset",
+            "currency",
+            "acquired_date",
+            "quantity",
+            "remaining_quantity",
+            "remaining_cost_basis",
+        ],
+        "investment.holdings" => &[
+            "symbol",
+            "asset",
+            "currency",
+            "quantity",
+            "cost_basis",
+            "price_date",
+            "latest_price",
+            "market_value",
+            "unrealized_gain",
+        ],
+        _ => &[
+            "currency",
+            "transaction_id",
+            "lot_id",
+            "quantity",
+            "cost_basis",
+            "proceeds",
+            "realized_gain",
+        ],
+    }
+}
+
+fn render(cli: &Cli, company: &str, name: &str, data: &Value) -> Result<(), CliError> {
+    let format = resolve_format(None, cli);
+    if cli.verbosity.quiet && format != OutputFormat::Json {
+        return Ok(());
+    }
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            json::envelope_ok(cli.meta(name, Some(company)), data)?
+        );
+        return Ok(());
+    }
+    let rows = match data {
+        Value::Array(rows) => rows.iter().collect::<Vec<_>>(),
+        row => vec![row],
+    };
+    let headers = headers(name);
+    match format {
+        OutputFormat::Csv => {
+            let mut writer = csv::Writer::from_writer(std::io::stdout());
+            writer
+                .write_record(headers)
+                .map_err(|error| CliError::General(error.to_string()))?;
+            for row in rows {
+                writer
+                    .write_record(headers.iter().map(|key| display_cell(row, key)))
+                    .map_err(|error| CliError::General(error.to_string()))?;
+            }
+            writer.flush()?;
+        }
+        OutputFormat::Table => {
+            let mut table = comfy_table::Table::new();
+            table.set_header(headers.iter().copied());
+            for row in rows {
+                table.add_row(headers.iter().map(|key| display_cell(row, key)));
+            }
+            println!("{table}");
+        }
+        OutputFormat::Json => unreachable!("JSON handled above"),
+    }
+    Ok(())
+}
+
+fn display_cell(row: &Value, key: &str) -> String {
+    let display_key = format!("{key}_display");
+    let value = row.get(&display_key).unwrap_or(&row[key]);
+    match value {
+        Value::Null => String::new(),
+        Value::String(value) => value.clone(),
+        value => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn investment_arguments_preserve_exact_quantities_and_company_scope() -> Result<(), CliError> {
+        let cli = Cli::try_parse_from([
+            "bk",
+            "investment",
+            "buy",
+            "TEST",
+            "--company",
+            "acme",
+            "--quantity",
+            "0.00000001",
+            "--cost",
+            "1.23",
+            "--date",
+            "2026-01-01",
+            "--asset",
+            "1200",
+            "--cash",
+            "1000",
+        ])
+        .map_err(|error| CliError::Usage(error.to_string()))?;
+        assert_eq!(crate::cli::require_company(&cli)?, "acme");
+        let Command::Investment(args) = cli.command else {
+            return Err(CliError::General("expected investment command".into()));
+        };
+        let InvestmentCommand::Buy { trade, cost } = args.command else {
+            return Err(CliError::General("expected purchase".into()));
+        };
+        assert_eq!(trade.quantity.atoms(), 1);
+        assert_eq!(cost, "1.23");
+        Ok(())
+    }
+
+    #[test]
+    fn investment_arguments_reject_invalid_or_inexact_quantities() {
+        for quantity in ["0", "-1", "1.000000001", "NaN", "1e2"] {
+            assert!(
+                Cli::try_parse_from([
+                    "bk",
+                    "investment",
+                    "buy",
+                    "TEST",
+                    "--quantity",
+                    quantity,
+                    "--cost",
+                    "1",
+                    "--date",
+                    "2026-01-01",
+                    "--asset",
+                    "1200",
+                    "--cash",
+                    "1000",
+                ])
+                .is_err()
+            );
+        }
+    }
+}

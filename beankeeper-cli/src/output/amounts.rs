@@ -63,6 +63,14 @@ fn monetary_field(key: &str) -> bool {
             | "regular_payment"
             | "total_interest"
             | "total_paid"
+            | "price"
+            | "cost_basis"
+            | "remaining_cost_basis"
+            | "proceeds"
+            | "realized_gain"
+            | "latest_price"
+            | "market_value"
+            | "unrealized_gain"
             | "amounts"
             | "entry_amount"
             | "original_amount"
@@ -127,6 +135,24 @@ fn monetary_field(key: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn investment_money_uses_security_currency_and_preserves_exact_quantities() {
+        let data = json!({"currency":"BHD", "quantity":"0.12345678", "cost_basis":1234,
+            "remaining_cost_basis":1000, "price":1200, "latest_price":null,
+            "market_value":null, "unrealized_gain":null, "proceeds":1001,
+            "realized_gain":-233, "relief":[{"quantity":"0.1", "cost_basis":1}]});
+        let rendered = with_amount_displays(data.clone(), None);
+        assert_eq!(rendered["cost_basis_display"], "1.234");
+        assert_eq!(rendered["remaining_cost_basis_display"], "1.000");
+        assert_eq!(rendered["price_display"], "1.200");
+        assert_eq!(rendered["proceeds_display"], "1.001");
+        assert_eq!(rendered["realized_gain_display"], "-0.233");
+        assert_eq!(rendered["relief"][0]["cost_basis_display"], "0.001");
+        assert_eq!(rendered["quantity"], data["quantity"]);
+        assert!(rendered["market_value_display"].is_null());
+        assert!(rendered.get("quantity_display").is_none());
+    }
 
     #[test]
     fn currencies_inherit_and_override_without_changing_source_values() {
