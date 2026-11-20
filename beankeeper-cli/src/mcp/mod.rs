@@ -6,8 +6,8 @@
 mod http;
 mod inputs;
 
-pub use http::{http_router, serve_http};
-/// Transport options for [`http_router`], including host rules and cancellation.
+pub use http::{http_router, http_router_with_passphrase, serve_http};
+/// Transport options for the HTTP router factories, including host rules and cancellation.
 pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 
 use std::sync::{Arc, Mutex};

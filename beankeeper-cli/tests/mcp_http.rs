@@ -10,6 +10,7 @@ use std::time::Duration;
 use beankeeper_cli::db::{self, Actor, Db};
 use beankeeper_cli::identity::{self, IssueRequest};
 use reqwest::blocking::{Client, Response};
+use secrecy::SecretString;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -17,7 +18,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const PASSPHRASE: &str = "http-test-passphrase";
 
 struct Ledger {
-    _dir: TempDir,
+    dir: TempDir,
     path: PathBuf,
     secret: PathBuf,
     reader: Value,
@@ -26,10 +27,15 @@ struct Ledger {
 
 impl Ledger {
     fn new() -> TestResult<Self> {
+        let ledger = Self::without_secret_file()?;
+        std::fs::write(&ledger.secret, PASSPHRASE)?;
+        Ok(ledger)
+    }
+
+    fn without_secret_file() -> TestResult<Self> {
         let dir = tempdir()?;
         let path = dir.path().join("books.db");
         let secret = dir.path().join("passphrase");
-        std::fs::write(&secret, PASSPHRASE)?;
         let db = Db::open(&path, Some(&PASSPHRASE.into()))?;
         db::create_company(db.conn(), "acme", "Acme", None)?;
         db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
@@ -51,7 +57,7 @@ impl Ledger {
         let reader = issue("http_reader", &["ledger/read".into()])?;
         let writer = issue("http_writer", &["ledger/read".into(), "ledger/post".into()])?;
         Ok(Self {
-            _dir: dir,
+            dir,
             path,
             secret,
             reader,
@@ -674,12 +680,25 @@ fn embedded_request(
 }
 
 fn exercise_embedded_router(read_only: bool) -> TestResult {
+    let ledger = Ledger::new()?;
+    exercise_router(&ledger, read_only, |cli, config| {
+        Ok(beankeeper_cli::mcp::http_router(cli, read_only, config)?)
+    })
+}
+
+fn exercise_router(
+    ledger: &Ledger,
+    read_only: bool,
+    factory: impl FnOnce(
+        &mut beankeeper_cli::cli::Cli,
+        beankeeper_cli::mcp::StreamableHttpServerConfig,
+    ) -> TestResult<axum::Router>,
+) -> TestResult {
     use axum::{Router, routing::get};
     use beankeeper_cli::cli::Cli;
-    use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router};
+    use beankeeper_cli::mcp::StreamableHttpServerConfig;
     use clap::Parser;
 
-    let ledger = Ledger::new()?;
     ledger.enforce()?;
     let writer = token(&ledger.writer)?;
     let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
@@ -691,9 +710,11 @@ fn exercise_embedded_router(read_only: bool) -> TestResult {
     // Construction works before entering a runtime and does not bind a socket.
     let app = Router::new()
         .route("/health", get(|| async { "host is healthy" }))
-        .merge(http_router(&cli, read_only, config)?);
+        .merge(factory(&mut cli, config)?);
     // The passphrase is no longer needed by requests after construction.
-    std::fs::remove_file(&ledger.secret)?;
+    if ledger.secret.exists() {
+        std::fs::remove_file(&ledger.secret)?;
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -716,7 +737,17 @@ fn exercise_embedded_router(read_only: bool) -> TestResult {
         client.get(format!("{base}/health")).send()?.text()?,
         "host is healthy"
     );
-    verify_embedded_router(&client, &endpoint, &ledger, read_only)?;
+    // A host browser session cannot substitute for an MCP bearer credential.
+    assert_eq!(
+        client
+            .post(&endpoint)
+            .header("Cookie", "session=host-browser-session")
+            .header("Origin", "http://localhost")
+            .send()?
+            .status(),
+        403
+    );
+    verify_embedded_router(&client, &endpoint, ledger, read_only)?;
     cancellation.cancel();
     runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), server).await })???;
     Ok(())
@@ -853,6 +884,256 @@ fn embedded_http_router_reports_startup_errors_without_creating_a_ledger() -> Te
     cli.db = ledger.path.with_file_name("missing.db");
     assert!(matches!(
         http_router(&cli, false, StreamableHttpServerConfig::default()),
+        Err(beankeeper_cli::error::CliError::NotFound(_))
+    ));
+    assert!(!cli.db.exists());
+    Ok(())
+}
+
+fn exercise_resolved_router(passphrase: Option<SecretString>, read_only: bool) -> TestResult {
+    use beankeeper_cli::mcp::http_router_with_passphrase;
+
+    let ledger = Ledger::without_secret_file()?;
+    exercise_router(&ledger, read_only, |cli, config| {
+        // Neither the invalid FD nor the nonexistent file may be consulted,
+        // including on platforms where passphrase FDs are unsupported.
+        cli.passphrase.passphrase_fd = Some(-1);
+        let app = http_router_with_passphrase(cli, passphrase.as_ref(), read_only, config)?;
+        let snapshot = Db::open_snapshot(&cli.db, passphrase.as_ref())?;
+        drop(passphrase);
+        let slug: String = snapshot
+            .conn()
+            .query_row("SELECT slug FROM companies", [], |row| row.get(0))?;
+        assert_eq!(slug, "acme");
+        let error = snapshot
+            .conn()
+            .execute("UPDATE companies SET name = 'Changed'", [])
+            .err()
+            .ok_or("snapshot accepted a write")?;
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ReadOnly)
+        );
+        Ok(app)
+    })?;
+    // Only the ledger and SQLite sidecars may have been created. In particular,
+    // the resolved secret must never be bridged through a plaintext file.
+    for entry in std::fs::read_dir(ledger.dir.path())? {
+        assert!(matches!(
+            entry?.file_name().to_str(),
+            Some("books.db" | "books.db-wal" | "books.db-shm")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn resolved_http_router_supports_encrypted_snapshots_and_read_only_ceiling() -> TestResult {
+    for read_only in [false, true] {
+        exercise_resolved_router(Some(PASSPHRASE.into()), read_only)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources() -> TestResult {
+    use beankeeper_cli::cli::Cli;
+    use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router_with_passphrase};
+    use clap::Parser;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    let db = Db::open(&path, None)?;
+    db::create_company(db.conn(), "acme", "Acme", None)?;
+    let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
+    cli.db = path;
+    cli.passphrase.passphrase_fd = Some(-1);
+    cli.passphrase.passphrase_file = Some(dir.path().join("missing-passphrase"));
+    for read_only in [false, true] {
+        let _app = http_router_with_passphrase(
+            &cli,
+            None,
+            read_only,
+            StreamableHttpServerConfig::default(),
+        )?;
+        let snapshot = Db::open_snapshot(&cli.db, None)?;
+        let slug: String = snapshot
+            .conn()
+            .query_row("SELECT slug FROM companies", [], |row| row.get(0))?;
+        assert_eq!(slug, "acme");
+    }
+    for entry in std::fs::read_dir(dir.path())? {
+        assert!(matches!(
+            entry?.file_name().to_str(),
+            Some("books.db" | "books.db-wal" | "books.db-shm")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn resolved_http_router_requires_bearer_authentication_without_a_fallback() -> TestResult {
+    use beankeeper_cli::cli::Cli;
+    use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router_with_passphrase};
+    use clap::Parser;
+
+    let passphrase = SecretString::from(PASSPHRASE);
+    let ledger = Ledger::without_secret_file()?;
+    let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
+    cli.db.clone_from(&ledger.path);
+    cli.agent_token = None;
+    let config = StreamableHttpServerConfig::default().enforce_origin_validation();
+    let cancellation = config.cancellation_token.clone();
+    let app = http_router_with_passphrase(&cli, Some(&passphrase), false, config)?;
+    drop(passphrase);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))?;
+    let endpoint = format!("http://{}/mcp", listener.local_addr()?);
+    let shutdown = cancellation.clone();
+    let server = runtime.spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+    });
+    let client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    for bearer in [None, Some("invalid-token")] {
+        let mut request = client
+            .post(&endpoint)
+            .header("Cookie", "session=host-browser-session");
+        if let Some(bearer) = bearer {
+            request = request.bearer_auth(bearer);
+        }
+        assert_eq!(request.send()?.status(), 401);
+    }
+    let reader = token(&ledger.reader)?;
+    assert_eq!(
+        client
+            .post(&endpoint)
+            .bearer_auth(reader)
+            .header("Cookie", "session=host-browser-session")
+            .header("Origin", "http://localhost")
+            .send()?
+            .status(),
+        403
+    );
+    let initialized = embedded_request(
+        &client,
+        &endpoint,
+        None,
+        Some(reader),
+        "initialize",
+        json!({
+            "protocolVersion":"2025-11-25", "capabilities":{},
+            "clientInfo":{"name":"Bearer Client","version":"1.0"}
+        }),
+    )?;
+    assert!(initialized.status().is_success());
+    assert_eq!(
+        rpc(initialized)?["result"]["serverInfo"]["name"],
+        "beankeeper"
+    );
+    cancellation.cancel();
+    runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), server).await })???;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn resolved_http_router_consumes_a_one_shot_fd_once() -> TestResult {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+
+    let (reader, mut writer) = std::io::pipe()?;
+    writeln!(writer, "{PASSPHRASE}")?;
+    drop(writer);
+    let passphrase =
+        beankeeper_cli::passphrase::resolve_passphrase(Some(reader.as_raw_fd()), None, false)?;
+    exercise_resolved_router(passphrase, false)?;
+    assert!(
+        beankeeper_cli::passphrase::resolve_passphrase(Some(reader.as_raw_fd()), None, false)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn resolved_http_router_consumes_a_one_shot_command_once() -> TestResult {
+    const CHILD: &str = "BK_TEST_RESOLVED_PASSPHRASE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let passphrase = beankeeper_cli::passphrase::resolve_passphrase(None, None, false)?;
+        assert!(passphrase.is_some());
+        return exercise_resolved_router(passphrase, false);
+    }
+
+    // Isolate the command environment in a child rather than mutating the
+    // process environment while other tests are running. The command stores
+    // only a call counter, never the secret, and fails on a second invocation.
+    let dir = tempdir()?;
+    let output = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "resolved_http_router_consumes_a_one_shot_command_once",
+            "--nocapture",
+        ])
+        .current_dir(dir.path())
+        .env(CHILD, "1")
+        .env(
+            "BEANKEEPER_PASSPHRASE_CMD",
+            format!(
+                "test ! -e calls || exit 23; printf 'called\\n' >> calls; printf '{PASSPHRASE}\\n'"
+            ),
+        )
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("calls"))?,
+        "called\n"
+    );
+    assert_eq!(std::fs::read_dir(dir.path())?.count(), 1);
+    Ok(())
+}
+
+#[test]
+fn resolved_http_router_rejects_missing_and_incorrect_keys_without_creating_a_ledger() -> TestResult
+{
+    use beankeeper_cli::cli::Cli;
+    use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router_with_passphrase};
+    use clap::Parser;
+
+    let ledger = Ledger::without_secret_file()?;
+    let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
+    cli.db.clone_from(&ledger.path);
+    for passphrase in [None, Some(SecretString::from("incorrect key"))] {
+        assert!(
+            http_router_with_passphrase(
+                &cli,
+                passphrase.as_ref(),
+                false,
+                StreamableHttpServerConfig::default()
+            )
+            .is_err()
+        );
+    }
+    cli.db = ledger.path.with_file_name("missing.db");
+    assert!(matches!(
+        http_router_with_passphrase(
+            &cli,
+            Some(&PASSPHRASE.into()),
+            false,
+            StreamableHttpServerConfig::default()
+        ),
         Err(beankeeper_cli::error::CliError::NotFound(_))
     ));
     assert!(!cli.db.exists());
