@@ -6,6 +6,17 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.26.1] - Unreleased
+
+### Fixed
+
+- Refreshed `init --demo` with Q1 2025 examples for budgets, import rules,
+  recurring schedules, investment purchases and a partial sale, mapped tax
+  expenses and contractor payments, a funded loan and first payment, and a
+  short-pay settlement. The README walkthrough uses matching dates and covers
+  these examples; `--demo` help now describes multi-company data.
+  ([#84](https://github.com/Govcraft/beankeeper/issues/84))
+
 ## [0.26.0] - Unreleased
 
 ### Added

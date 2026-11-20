@@ -1,5 +1,7 @@
 # Command Reference
 
+For beankeeper-cli 0.26.1 (`bk`).
+
 All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`, `--agent-token TOKEN`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
 
 `--actor NAME` sets the principal recorded in the audit trail for any mutating command (see [Audit](#audit)). It falls back to the `BK_ACTOR` environment variable, then the OS user, then `"cli"`.
@@ -23,6 +25,11 @@ bk init --path /data/books.db    # Create at specific path
 bk init --demo                   # Populate with sample multi-company data
 bk init --force                  # Overwrite existing database
 ```
+
+`init --demo` creates three companies with fixed Q1 2025 data, including budgets,
+a rule, a pending rent schedule, investment lots, tax tags and payee metadata,
+a funded loan with its first payment, and a short-pay settlement. Use explicit
+2025 report dates; see the README Demo Mode walkthrough.
 
 ### Backup and restore
 
@@ -75,7 +82,7 @@ Check ledger integrity: validates the schema version and database structure. Ret
 
 ```bash
 bk verify
-bk --json verify   # Returns { "data": { "schema_version": 16, "status": "healthy" } }
+bk --json verify   # Returns { "data": { "schema_version": 19, "status": "healthy" } }
 ```
 
 ### `bk export`

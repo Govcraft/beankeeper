@@ -6,12 +6,15 @@ use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::passphrase;
 
+mod demo_features;
+
 /// Run the `bk init` command.
 ///
 /// Creates a new database file (or overwrites if `--force`), optionally
 /// encrypted with a passphrase. When `--demo` is set, populates the database
 /// with three sample companies (two business + one personal), charts of
-/// accounts, regular transactions, and intercompany-linked transactions.
+/// accounts, intercompany-linked transactions, and Q1 2025 feature examples
+/// for automation, budgets, taxes, investments, loans, and settlement.
 ///
 /// # Errors
 ///
@@ -69,7 +72,7 @@ pub fn run(
     if demo {
         populate_demo_data(&db, &cli.principal())?;
         if !cli.verbosity.quiet {
-            eprintln!("[ok] Populated demo data (3 companies, intercompany transactions included)");
+            eprintln!("[ok] Populated demo data (3 companies, Q1 2025 walkthrough data)");
         }
     }
 
@@ -98,10 +101,22 @@ fn post(
     entries: &[PostEntryParams],
     reference: (&str, Option<i64>),
 ) -> Result<i64, CliError> {
+    post_with_metadata(context, company, (desc, date), entries, reference, None)
+}
+
+fn post_with_metadata(
+    context: (&rusqlite::Connection, &crate::db::Actor),
+    company: &str,
+    description_and_date: (&str, &str),
+    entries: &[PostEntryParams],
+    reference: (&str, Option<i64>),
+    metadata: Option<&str>,
+) -> Result<i64, CliError> {
     use crate::db::post_transaction;
     use crate::db::transactions::PostTransactionParams;
 
     let (conn, actor) = context;
+    let (desc, date) = description_and_date;
     let (reference, correlate) = reference;
 
     post_transaction(
@@ -109,7 +124,7 @@ fn post(
         &PostTransactionParams {
             company_slug: company,
             description: desc,
-            metadata: None,
+            metadata,
             currency: "USD",
             date,
             entries,
@@ -201,6 +216,7 @@ fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError>
     seed_products_transactions(conn, actor)?;
     seed_personal_transactions(conn, actor)?;
     seed_intercompany_transactions(conn, actor)?;
+    demo_features::seed(conn, actor)?;
 
     Ok(())
 }
@@ -693,9 +709,9 @@ mod tests {
         assert_eq!(companies.len(), 3);
 
         let expected_accounts = [
-            ("acme-consulting", 14),
+            ("acme-consulting", 18),
             ("acme-products", 10),
-            ("personal", 13),
+            ("personal", 14),
         ];
 
         for (slug, expected_count) in &expected_accounts {
