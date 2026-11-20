@@ -510,44 +510,83 @@ client that sends bearer headers without a browser Origin.
 
 ## Demo Mode
 
-Spin up a fully populated database to explore every feature without manual setup:
+Create sample books for three companies and explore the walkthrough below:
 
 ```sh
 bk init --demo
 ```
 
-This creates three companies with charts of accounts, regular transactions, and intercompany-linked mirror pairs:
+The demo uses fixed dates in **January through March 2025**, USD amounts, and
+fictional counterparties and securities. Use the explicit dates below: reports
+that default to the current year can be empty after 2025. Generated IDs and audit
+timestamps vary between runs; the sample dates, amounts, and report totals stay
+the same.
 
-| Company | Slug | Description |
-|---------|------|-------------|
-| Acme Consulting LLC | `acme-consulting` | Service revenue, rent, office expenses, payroll |
+| Company | Slug | Examples |
+|---------|------|----------|
+| Acme Consulting LLC | `acme-consulting` | Service revenue, payroll, budgets, import rule, recurring rent, contractor payments, loan, settlement |
 | Acme Products Inc | `acme-products` | Inventory, product sales, COGS, shipping |
-| Personal | `personal` | Checking/savings, salary income, personal expenses |
+| Personal | `personal` | Checking/savings, salary, personal expenses, investment lots |
 
-Intercompany transactions demonstrate bidirectional correlation:
+Intercompany mirror pairs link the owner's loan, a software licence purchase,
+its settlement, and payroll with federal, state, and FICA withholdings. Other
+examples include a $2,500 monthly rent budget, an office-supplies import rule,
+and pending monthly rent from March through December. The schedule preview
+below leaves those obligations unposted.
 
-- Owner loans personal savings to acme-consulting (`--correlate`)
-- acme-consulting purchases software licences from acme-products
-- acme-consulting settles the intercompany payable to acme-products
-- **Payroll with withholdings** -- a split transaction showing a $5,000 gross salary broken into federal tax, state tax, FICA, and net pay on both the employer and employee books
+The fictional `DEMO` fund has two purchases (10 shares at $100 and 5 at $120),
+a FIFO sale of 4 shares for $520, and a March 31 price of $130. The remaining
+11 shares have a $1,200 cost basis and a $1,430 market value.
+
+Consulting includes two fictional contractor payments totaling $1,500, canonical
+`sched-c:` tags, and the original free-form tags for comparison. A $12,000
+business loan at 6% over 12 months includes
+funding and its first payment. Loans are stateless, so the schedule command
+repeats the original terms. Settlement account `1150` has a $1,800 invoice and
+a linked $1,620 payment on statement `DEMO-2025-03`, leaving $180 open at the
+invoice's original age.
 
 Try it out:
 
 ```sh
 # Trial balance for the consulting company
-bk --company acme-consulting report trial-balance
+bk --company acme-consulting report trial-balance --from 2025-01-01 --to 2025-03-31
 
 # View the payroll split transaction
 bk --company acme-consulting txn list --description "payroll" --json
 
-# Balance sheet as of quarter end
-bk --company personal report balance-sheet --to 2024-03-31
+# Personal reports over the actual demo dates
+bk --company personal report balance-sheet --to 2025-03-31
+bk --company personal report trial-balance --from 2025-01-01 --to 2025-03-31
+bk --company personal report balance --account 1000 --to 2025-03-16
 
-# Trial balance for a date range
-bk --company personal report trial-balance --from 2024-01-01 --to 2024-03-31
+# Rent budget versus actuals, plus the import categorization rule
+bk --company acme-consulting report budget-variance --year 2025 --from 1 --to 3
+bk --company acme-consulting rule list
 
-# Balance as of a specific date
-bk --company personal report balance --account 1000 --to 2024-03-16
+# Preview the next rent payment without changing the books
+bk --company acme-consulting schedule list
+bk --company acme-consulting schedule run --through 2025-03-31 --dry-run
+
+# Mapped Schedule C lines and contractor totals above the default $600 threshold
+bk --company acme-consulting report schedule-c --from 2025-01-01 --to 2025-03-31
+bk --company acme-consulting report 1099 --from 2025-01-01 --to 2025-03-31
+
+# Open lots after the partial sale, and their quarter-end valuation
+bk --company personal security list
+bk --company personal investment lots DEMO
+bk --company personal investment holdings --as-of 2025-03-31
+
+# Original loan schedule and the posted principal/interest split
+bk loan schedule --principal 12000 --rate 6 --months 12 --currency USD
+bk --company acme-consulting report ledger --account 2100 --from 2025-01-01 --to 2025-03-31
+
+# A reconciled $1,620 statement with a $180 short-pay still outstanding
+bk --company acme-consulting report reconciliation --mode settlement --account 1150 \
+  --statement DEMO-2025-03 --statement-balance 1620 --to 2025-03-31
+
+# Check accounting invariants and the audit trail
+bk verify
 ```
 
 Beyond the core guarantees above, `bk` provides the following capabilities for multi-entity accounting, automation, and reporting.
