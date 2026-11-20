@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_VERSION: i64 = 14;
+const CURRENT_VERSION: i64 = 15;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -96,6 +96,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 14 {
         apply_v14(conn)?;
+    }
+
+    if version < 15 {
+        apply_v15(conn)?;
     }
 
     debug_assert_eq!(
@@ -718,9 +722,126 @@ fn apply_v14(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
+/// Allow audited annotation actions while preserving historical hashes and triggers.
+fn apply_v15(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(conn)?;
+        conn.execute_batch(
+            "CREATE TABLE audit_log_v15 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                actor TEXT NOT NULL,
+                company_slug TEXT,
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule')),
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset')),
+                before TEXT,
+                after TEXT,
+                prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
+                row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
+                agent_uri TEXT,
+                token_jti TEXT,
+                hash_version INTEGER NOT NULL DEFAULT 2 CHECK(hash_version IN (1,2)),
+                CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
+                CHECK(hash_version != 1 OR agent_uri IS NULL)
+            );
+            INSERT INTO audit_log_v15 SELECT * FROM audit_log ORDER BY id;
+            DROP TRIGGER protect_audit_insert;
+            DROP TRIGGER protect_audit_update;
+            DROP TRIGGER protect_audit_delete;
+            DROP TABLE audit_log;
+            ALTER TABLE audit_log_v15 RENAME TO audit_log;
+            CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+            CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
+            CREATE INDEX idx_audit_action ON audit_log(action);
+            CREATE INDEX idx_audit_agent ON audit_log(agent_uri);
+            CREATE TRIGGER protect_audit_update BEFORE UPDATE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records are immutable'); END;
+            CREATE TRIGGER protect_audit_delete BEFORE DELETE ON audit_log
+            BEGIN SELECT RAISE(ABORT, 'audit records cannot be deleted'); END;
+            CREATE TRIGGER protect_audit_insert BEFORE INSERT ON audit_log
+            WHEN NEW.id <= COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
+                 IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
+              OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
+              OR NEW.hash_version != 2
+            BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
+            INSERT INTO schema_version (version) VALUES (15);"
+        )?;
+        super::audit::verify_hash_chain(conn)?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v15_preserves_history_and_metadata_edits_extend_the_chain() -> Result<(), CliError> {
+        use super::super::{Actor, audit, metadata::MetadataEdit};
+        let conn = v12_connection()?;
+        seed_v12_creation(&conn)?;
+        apply_v13(&conn)?;
+        apply_v14(&conn)?;
+        let historical: (String, String) = conn.query_row(
+            "SELECT prev_hash, row_hash FROM audit_log ORDER BY id LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        ensure_schema(&conn)?;
+        let retained: (String, String) = conn.query_row(
+            "SELECT prev_hash, row_hash FROM audit_log ORDER BY id LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(historical, retained);
+        let id: i64 =
+            conn.query_row("SELECT id FROM transactions LIMIT 1", [], |row| row.get(0))?;
+        for edit in [
+            MetadataEdit::Set(vec![("status".into(), "disputed".into())]),
+            MetadataEdit::Unset(vec!["status".into()]),
+        ] {
+            assert!(
+                audit::edit_metadata(
+                    &conn,
+                    &Actor::new("v15"),
+                    "legacy",
+                    audit::MetadataTarget::Id(id),
+                    &edit
+                )?
+                .changed
+            );
+        }
+        audit::verify_hash_chain(&conn)?;
+        audit::verify_creations(&conn)?;
+        assert!(conn.execute("DELETE FROM audit_log", []).is_err());
+        assert!(
+            conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
+                .is_err()
+        );
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(&conn)?, 15);
+        Ok(())
+    }
+
+    #[test]
+    fn v15_rejects_corrupt_history_and_rolls_back_failed_migrations() -> Result<(), CliError> {
+        for corrupt in [false, true] {
+            let conn = v12_connection()?;
+            seed_v12_creation(&conn)?;
+            apply_v13(&conn)?;
+            apply_v14(&conn)?;
+            if corrupt {
+                conn.execute_batch("DROP TRIGGER protect_audit_delete; DELETE FROM audit_log;")?;
+            } else {
+                conn.execute_batch("CREATE TABLE audit_log_v15 (collision TEXT);")?;
+            }
+            assert!(apply_v15(&conn).is_err());
+            assert_eq!(get_schema_version(&conn)?, 14);
+        }
+        Ok(())
+    }
 
     #[test]
     fn v14_preserves_history_and_extends_the_chain_with_rules() -> Result<(), CliError> {
@@ -743,7 +864,7 @@ mod tests {
         };
         let before = hashes(&conn)?;
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, 14);
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
         let rule = rules::create_rule(
             &conn,

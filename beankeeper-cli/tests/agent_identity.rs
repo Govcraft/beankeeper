@@ -700,3 +700,28 @@ fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestR
     assert_eq!(wrong, 0);
     Ok(())
 }
+
+#[test]
+fn metadata_annotations_record_verified_identity_without_changing_the_poster() -> TestResult {
+    let ledger = Ledger::new()?;
+    let issued = ledger.issue()?;
+    let token = text(&issued, "token")?;
+    let posted = ledger.post("annotate", None)?;
+    let id = posted["data"]["id"].to_string();
+    let edit = ledger.run(&["txn", "meta", "set", &id, "status=disputed"], Some(token))?;
+    assert_eq!(edit["meta"]["agent"], issued["agent_uri"]);
+    ledger.run(
+        &["txn", "meta", "unset", "--reference", "annotate", "status"],
+        Some(token),
+    )?;
+    for action in ["metadata_set", "metadata_unset"] {
+        let rows = ledger.run(&["audit", "log", "--action", action], None)?;
+        assert_eq!(rows["data"][0]["agent_uri"], issued["agent_uri"]);
+        assert_eq!(rows["data"][0]["token_jti"], issued["token_jti"]);
+    }
+    let original = ledger.run(&["txn", "show", &id], None)?;
+    assert_eq!(original["data"][0]["posted_by"], "host-process");
+    assert!(original["data"][0]["agent_uri"].is_null());
+    ledger.run(&["verify"], None)?;
+    Ok(())
+}
