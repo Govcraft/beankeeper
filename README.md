@@ -183,6 +183,8 @@ SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directo
 with `BK_INSTALL=~/.local/bin` or pin a published CLI release with
 `BK_VERSION=X.Y.Z`. See the [changelog](CHANGELOG.md) for user-visible changes
 and the [release procedure](docs/RELEASE.md) for cutting and verifying a release.
+Contributors add notes under `[Unreleased]` and leave crate and skill versions
+unchanged until release prep; see the [contributor convention](docs/RELEASE.md#agent--contributor-convention).
 
 **Arch Linux (AUR)**:
 
