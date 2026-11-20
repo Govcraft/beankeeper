@@ -134,7 +134,7 @@ fn audit_pagination_counts_filtered_rows_at_below_and_above_limit() -> TestResul
         }
         let mut quiet = vec!["--quiet"];
         quiet.extend_from_slice(&args);
-        assert!(ledger.run(&quiet)?.stderr.is_empty());
+        assert_eq!(ledger.run(&quiet)?.stderr, Vec::<u8>::new());
     }
     Ok(())
 }

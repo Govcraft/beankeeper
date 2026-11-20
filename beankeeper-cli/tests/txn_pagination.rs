@@ -100,7 +100,7 @@ fn default_page_and_offset_keep_the_array_and_report_total() -> TestResult {
     );
     let quiet = ledger.list(&["--quiet"])?;
     assert_success(&quiet);
-    assert!(quiet.stderr.is_empty());
+    assert_eq!(quiet.stderr, Vec::<u8>::new());
     assert_eq!(quiet.stdout, output.stdout);
     Ok(())
 }
