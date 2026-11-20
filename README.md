@@ -16,15 +16,15 @@ SQLite (optionally encrypted with SQLCipher) is the source of truth, not a `.jou
 
 ### The agent cannot create an unbalanced transaction
 
-The double-entry invariant is enforced at the type level. There's no error to catch at runtime because there's no way to construct a transaction with unequal debits and credits -- the accounting equation is a compile-time guarantee, not a runtime check. A confused or hallucinating agent simply cannot post bad data.
+A `Transaction` can only be constructed through `JournalEntry::post()`, which checks at runtime that there are at least two entries, all in one currency, and that total debits equal total credits. Invalid entries return a `TransactionError`; the type's private fields prevent callers from bypassing those checks when constructing a `Transaction`. The CLI validates postings through this API before saving them and reports validation failures as `VALIDATION` errors (exit code 3).
 
 ### Retries are safe
 
-Agents retry. Import scripts fail mid-batch. `--reference` takes any string (a bank reference number, a statement row hash, whatever) and produces a deterministic idempotency key via SHA-256. Same reference, same company, always maps to the same transaction -- subsequent posts with the same key are rejected with the existing transaction ID. The agent can retry as many times as it wants without creating duplicates.
+Agents retry. Import scripts fail mid-batch. `--reference` takes a non-empty string (a bank reference number, a statement row hash, whatever), trims surrounding whitespace, and stores it verbatim as a key unique per company. Subsequent posts with the same reference in that company are rejected with the existing transaction ID, or skipped with `--on-conflict skip`. Retrying a referenced post does not create duplicates.
 
 ### The agent gets structured feedback, not text to parse
 
-Every command in JSON mode returns the same envelope:
+JSON command responses use the same envelope, except for successful `export` output, which uses the file format described below:
 
 ```json
 { "ok": true,  "meta": { "command": "txn.post", "company": "acme", "timestamp": "..." }, "data": { ... } }
@@ -32,6 +32,8 @@ Every command in JSON mode returns the same envelope:
 ```
 
 Named error codes (`NOT_FOUND`, `VALIDATION`, `DATABASE`, etc.), `meta.command` in dot notation, consistent field presence. The agent can handle `bk` output reliably without parsing human-readable text or guessing at shapes.
+
+A successful `bk export --output-format json` writes a standalone `{"beankeeper_export": {"version": 1, "companies": [...]}}` object, without `ok`, `meta`, or `data`, even with `--json`. Read its companies with `jq '.beankeeper_export.companies'`.
 
 ### The audit trail is tamper-proof
 
@@ -55,7 +57,7 @@ If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent
 curl -fsSL https://raw.githubusercontent.com/Govcraft/beankeeper/main/install.sh | sh
 ```
 
-Detects your OS and architecture, downloads the right binary, verifies the SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory with `BK_INSTALL=~/.local/bin` or pin a version with `BK_VERSION=0.2.0`.
+Detects your OS and architecture, downloads the right binary, verifies the SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory with `BK_INSTALL=~/.local/bin` or pin a version with `BK_VERSION=X.Y.Z`, replacing `X.Y.Z` with a published CLI release version.
 
 **Arch Linux (AUR)**:
 ```sh
@@ -228,7 +230,7 @@ If skipped, `id` is null and `existing_id` is provided:
 }
 ```
 
-References are hashed into deterministic `txnref_`-prefixed keys. Transactions without `--reference` are unrestricted.
+References are stored verbatim after trimming surrounding whitespace; empty or whitespace-only references are rejected. The same reference can be used in different companies. Transactions without `--reference` have no reference-based deduplication. `--on-conflict upsert` is not implemented.
 
 ### OFX / QFX Bank Statement Import
 
@@ -359,8 +361,8 @@ bk --company personal --json report trial-balance | jq '.data.accounts[] | selec
 # CSV for spreadsheets
 bk --company personal --format csv txn list > transactions.csv
 
-# Export entire database (all companies) to JSON
-bk export --json > backup.json
+# Export all companies, accounts, and transactions as standalone JSON (no envelope)
+bk export --output-format json > backup.json
 
 # Machine-readable for scripts (exit codes: 0=ok, 3=validation error)
 bk txn reconcile --json || echo "Orphaned correlations found"
@@ -545,7 +547,7 @@ Without `--cash-account`, every **asset** account whose name contains `cash`, `b
 
 ### JSON Envelope
 
-All JSON output follows a uniform envelope contract for reliable programmatic consumption by agents and scripts:
+JSON command responses follow a uniform envelope contract for reliable programmatic consumption by agents and scripts. Successful JSON exports instead write the standalone `beankeeper_export` object described above:
 
 **Success:**
 ```json
@@ -575,7 +577,7 @@ All JSON output follows a uniform envelope contract for reliable programmatic co
 }
 ```
 
-The `meta` block is guaranteed to be present for both success and error responses. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
+For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `IO`, `GENERAL`.
 
 ### Environment Variables
 
@@ -695,7 +697,7 @@ Ten ISO 4217 currencies with correct minor-unit precision:
 | Bahraini Dinar | `BHD` | 3 |
 | Kuwaiti Dinar | `KWD` | 3 |
 
-Currency mismatches within a transaction are rejected at the type level.
+`JournalEntry::post()` rejects mixed-currency entries at runtime with `TransactionError::CurrencyMismatch`.
 
 Reports (`trial-balance`, `balance`, `income-statement`, `balance-sheet`, `tax-summary`, `budget-variance`) are always computed in a single currency and never add amounts across currencies. Pass `--currency CODE` to choose it; otherwise it is inferred from the company's transactions (USD when there are none). If a company has transactions in more than one currency, a report without `--currency` fails with a validation error listing the currencies found.
 
@@ -725,7 +727,7 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- proper error handling everywhere
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
 - Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
-- 440+ tests covering unit, integration, and real-world accounting scenarios
+- Tests covering unit, integration, doctest, and real-world accounting scenarios
 
 Every pull request and push to `main` runs formatting, Clippy with warnings
 treated as errors, and the workspace tests (including doctests) on Linux and

@@ -1,6 +1,21 @@
 # JSON API Reference
 
-Enable JSON output with `--json` or `--format json`. All responses use a uniform envelope.
+Enable JSON command responses with `--json` or `--format json`. Responses use a uniform envelope, except for successful JSON exports, which write the standalone file format described below.
+
+## JSON Export
+
+`bk export --output-format json` writes this object to stdout, or to the path given by `--output`, even when `--json` is also set:
+
+```json
+{
+  "beankeeper_export": {
+    "version": 1,
+    "companies": []
+  }
+}
+```
+
+The `companies` array contains the exported companies with their accounts and transactions. Successful export output has no `ok`, `meta`, or `data` wrapper. For example, `bk export --output-format json | jq '.beankeeper_export.companies'` reads the exported companies. Export errors in JSON response mode use the error envelope.
 
 ## Envelope Structure
 
