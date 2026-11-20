@@ -108,7 +108,11 @@ fn run_set(
 
         match format {
             OutputFormat::Table => {
-                let rendered = output::table::render_budgets(&rows, currency.minor_units(), true);
+                let rendered = output::table::render_budgets(
+                    &rows,
+                    currency.minor_units(),
+                    output::should_use_color(cli.verbosity.no_color),
+                );
                 println!("{rendered}");
             }
             OutputFormat::Json => {
@@ -151,7 +155,11 @@ fn run_set(
 
         match format {
             OutputFormat::Table => {
-                let rendered = output::table::render_budgets(&[row], currency.minor_units(), true);
+                let rendered = output::table::render_budgets(
+                    &[row],
+                    currency.minor_units(),
+                    output::should_use_color(cli.verbosity.no_color),
+                );
                 println!("{rendered}");
             }
             OutputFormat::Json => {
@@ -204,7 +212,11 @@ fn run_list(
 
     match format {
         OutputFormat::Table => {
-            let rendered = output::table::render_budgets(&rows, currency.minor_units(), true);
+            let rendered = output::table::render_budgets(
+                &rows,
+                currency.minor_units(),
+                output::should_use_color(cli.verbosity.no_color),
+            );
             println!("{rendered}");
         }
         OutputFormat::Json => {
