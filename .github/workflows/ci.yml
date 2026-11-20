@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch dependencies for offline packaging tests
+        run: cargo fetch --locked
       - name: Test offline release preflight
         run: python3 -B -m unittest discover -s scripts/tests -v
       - name: Check CLI version has a changelog section
@@ -46,3 +49,15 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test workspace including documentation
         run: cargo test --workspace --locked
+
+  publish-dry-run:
+    name: Verify crates.io packages (no upload)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Cargo stages workspace dependencies locally, so this also verifies the
+      # CLI before the matching library version has been published to crates.io.
+      - name: Dry-run library and CLI publishing in dependency order
+        run: cargo publish --dry-run --workspace --locked

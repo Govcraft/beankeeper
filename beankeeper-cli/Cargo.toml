@@ -7,6 +7,13 @@ description = "Command-line interface for beankeeper double-entry accounting"
 authors = ["Roland <roland@govcraft.ai>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Govcraft/beankeeper"
+readme = "../README.md"
+include = ["/src/**", "/tests/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/beankeeper-cli-v{ version }/bk-{ version }-{ target }.tar.gz"
+bin-dir = "bk-{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
 
 [[bin]]
 name = "bk"
@@ -17,7 +24,7 @@ agent-uri = "0.6.0"
 agent-uri-attestation = "0.8.2"
 anstream = "1.0.0"
 anstyle = "1.0.14"
-beankeeper = { path = "../beankeeper" }
+beankeeper = { version = "0.7.0", path = "../beankeeper" }
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.0", features = ["derive", "env"] }
 comfy-table = { version = "7.2.2", features = ["custom_styling"] }
