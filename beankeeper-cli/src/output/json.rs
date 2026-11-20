@@ -7,13 +7,14 @@
 //! { "ok": true, "meta": { "command": "...", "timestamp": "..." }, "data": ... }
 //! ```
 //!
-//! Amounts are always raw integers (minor units) and enum values are always
-//! lowercase.
+//! Monetary fields retain raw integers (minor units) and gain decimal-string
+//! display companions. Enum values are always lowercase.
 
 use std::collections::HashMap;
 
+use beankeeper::types::Currency;
 use chrono::{SecondsFormat, Utc};
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use crate::db::clearings::Clearing;
 use crate::db::{
@@ -33,18 +34,84 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company: Option<String>,
     pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<Pagination>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+/// A filtered result page. Negative limits mean unlimited, as in SQLite.
+#[derive(Debug, Clone, Serialize)]
+pub struct Pagination {
+    pub limit: i64,
+    pub offset: i64,
+    pub returned: usize,
+    pub total: i64,
+    pub has_more: bool,
+}
+
+impl Pagination {
+    /// Describe a page using the same filters as its total count.
+    #[must_use]
+    pub fn new(limit: i64, offset: i64, returned: usize, total: i64) -> Self {
+        let offset = offset.max(0);
+        Self {
+            limit,
+            offset,
+            returned,
+            total,
+            has_more: offset.saturating_add(i64::try_from(returned).unwrap_or(i64::MAX)) < total,
+        }
+    }
+}
+
+impl Meta {
+    /// Attach pagination without changing the data payload shape.
+    #[must_use]
+    pub fn with_pagination(mut self, pagination: Pagination) -> Self {
+        self.pagination = Some(pagination);
+        self
+    }
+
+    /// Supply the currency for payloads that do not carry their own currency.
+    #[must_use]
+    pub fn with_currency(mut self, currency: Currency) -> Self {
+        self.currency = Some(currency.code().to_owned());
+        self
+    }
 }
 
 /// Uniform JSON response envelope.
-#[derive(Serialize)]
 pub struct Envelope<T: Serialize> {
     pub ok: bool,
     pub meta: Meta,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<T>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<EnvelopeError>,
 }
+
+impl<T: Serialize> Serialize for Envelope<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let fields = 2 + usize::from(self.data.is_some()) + usize::from(self.error.is_some());
+        let mut envelope = serializer.serialize_struct("Envelope", fields)?;
+        envelope.serialize_field("ok", &self.ok)?;
+        envelope.serialize_field("meta", &self.meta)?;
+        if let Some(data) = &self.data {
+            let value = serde_json::to_value(data).map_err(serde::ser::Error::custom)?;
+            let currency = self
+                .meta
+                .currency
+                .as_deref()
+                .and_then(|c| Currency::from_code(c).ok());
+            envelope.serialize_field("data", &with_amount_displays(value, currency))?;
+        }
+        if let Some(error) = &self.error {
+            envelope.serialize_field("error", error)?;
+        }
+        envelope.end()
+    }
+}
+
+pub use super::amounts::with_amount_displays;
 
 /// Error payload within the envelope.
 #[derive(Serialize)]
@@ -60,6 +127,8 @@ pub fn meta(command: &str, company: Option<&str>) -> Meta {
         command: command.to_string(),
         company: company.map(str::to_string),
         timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        pagination: None,
+        currency: None,
     }
 }
 
@@ -70,6 +139,8 @@ pub fn meta_with_timestamp(command: &str, company: Option<&str>, timestamp: Stri
         command: command.to_string(),
         company: company.map(str::to_string),
         timestamp,
+        pagination: None,
+        currency: None,
     }
 }
 
@@ -703,6 +774,7 @@ pub fn render_import_result(
         date: String,
         description: String,
         amount: i64,
+        currency: String,
         status: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
@@ -716,6 +788,7 @@ pub fn render_import_result(
             date: t.date.clone(),
             description: t.description.clone(),
             amount: t.amount_minor,
+            currency: t.currency.clone(),
             status: "imported".to_string(),
             reason: None,
         });
@@ -726,6 +799,7 @@ pub fn render_import_result(
             date: t.date.clone(),
             description: t.description.clone(),
             amount: t.amount_minor,
+            currency: t.currency.clone(),
             status: "skipped".to_string(),
             reason: Some("duplicate".to_string()),
         });
@@ -736,6 +810,7 @@ pub fn render_import_result(
             date: t.date.clone(),
             description: t.description.clone(),
             amount: t.amount_minor,
+            currency: t.currency.clone(),
             status: "error".to_string(),
             reason: Some(t.error.clone()),
         });

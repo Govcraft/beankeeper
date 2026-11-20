@@ -272,7 +272,8 @@ fn run_trial_balance(
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("report.trial-balance", Some(company));
+            let meta =
+                output::json::meta("report.trial-balance", Some(company)).with_currency(currency);
             let rendered = output::json::render_trial_balance(&balances, meta)?;
             writeln!(output.writer, "{rendered}")?;
         }
@@ -338,7 +339,7 @@ fn run_balance(
             print_period_table(&rendered, &title, output.writer)?;
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("report.balance", Some(company));
+            let meta = output::json::meta("report.balance", Some(company)).with_currency(currency);
             let rendered =
                 output::json::render_account_balance(&balance_row, currency.code(), meta)?;
             writeln!(output.writer, "{rendered}")?;
@@ -394,7 +395,8 @@ fn run_income_statement(
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("report.income-statement", Some(company));
+            let meta = output::json::meta("report.income-statement", Some(company))
+                .with_currency(currency);
             let rendered = output::statements::render_income_statement_json(&stmt, meta)?;
             writeln!(output.writer, "{rendered}")?;
         }
@@ -461,7 +463,8 @@ fn run_balance_sheet(
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("report.balance-sheet", Some(company));
+            let meta =
+                output::json::meta("report.balance-sheet", Some(company)).with_currency(currency);
             let rendered = output::statements::render_balance_sheet_json(&sheet, meta)?;
             writeln!(output.writer, "{rendered}")?;
         }
@@ -544,7 +547,8 @@ fn run_tax_summary(
             print_period_table(&rendered, &title, output.writer)?;
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("report.tax-summary", Some(company));
+            let meta =
+                output::json::meta("report.tax-summary", Some(company)).with_currency(currency);
             let rendered = output::json::render_tax_summary(&rows, meta)?;
             writeln!(output.writer, "{rendered}")?;
         }
@@ -636,7 +640,8 @@ fn run_budget_variance(
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
-            let meta = output::json::meta("report.budget-variance", Some(company));
+            let meta =
+                output::json::meta("report.budget-variance", Some(company)).with_currency(currency);
             let rendered = output::json::render_budget_variance(
                 &rows,
                 year,

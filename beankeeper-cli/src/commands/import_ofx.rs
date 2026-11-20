@@ -106,6 +106,7 @@ pub struct ImportedTransaction {
     pub date: String,
     pub description: String,
     pub amount_minor: i64,
+    pub currency: String,
     pub is_inflow: bool,
 }
 
@@ -115,6 +116,7 @@ pub struct SkippedTransaction {
     pub date: String,
     pub description: String,
     pub amount_minor: i64,
+    pub currency: String,
     pub reference: String,
 }
 
@@ -124,6 +126,7 @@ pub struct FailedTransaction {
     pub date: String,
     pub description: String,
     pub amount_minor: i64,
+    pub currency: String,
     pub error: String,
 }
 
@@ -305,6 +308,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
             date: prepared.date.clone(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
+            currency: prepared.currency.clone(),
             is_inflow: prepared.is_inflow,
         });
     }
@@ -330,6 +334,7 @@ fn check_conflict(
                     date: prepared.date.clone(),
                     description: prepared.description.clone(),
                     amount_minor: prepared.amount_minor,
+                    currency: prepared.currency.clone(),
                     error: format!("duplicate reference: {}", prepared.reference),
                 })
             }
@@ -338,6 +343,7 @@ fn check_conflict(
                     date: prepared.date.clone(),
                     description: prepared.description.clone(),
                     amount_minor: prepared.amount_minor,
+                    currency: prepared.currency.clone(),
                     reference: prepared.reference.clone(),
                 })
             }
@@ -346,6 +352,7 @@ fn check_conflict(
                     date: prepared.date.clone(),
                     description: prepared.description.clone(),
                     amount_minor: prepared.amount_minor,
+                    currency: prepared.currency.clone(),
                     error: "on-conflict=upsert not yet implemented".to_string(),
                 })
             }
@@ -355,6 +362,7 @@ fn check_conflict(
             date: prepared.date.clone(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
+            currency: prepared.currency.clone(),
             error: e.to_string(),
         })),
     }
@@ -410,6 +418,7 @@ fn insert_transaction(
                 date: prepared.date.clone(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
+                currency: prepared.currency.clone(),
                 is_inflow: prepared.is_inflow,
             })
         }
@@ -419,6 +428,7 @@ fn insert_transaction(
                 date: prepared.date.clone(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
+                currency: prepared.currency.clone(),
                 reference: prepared.reference.clone(),
             })
         }
@@ -426,6 +436,7 @@ fn insert_transaction(
             date: prepared.date.clone(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
+            currency: prepared.currency.clone(),
             error: e.to_string(),
         }),
     }
@@ -485,6 +496,7 @@ fn process_transactions(
                     date: format_ofx_date(txn.date_posted()),
                     description: build_description(txn.name(), txn.memo(), txn.fit_id().as_str()),
                     amount_minor: 0,
+                    currency: ctx.currency_code.to_string(),
                     error: e.to_string(),
                 });
                 continue;
