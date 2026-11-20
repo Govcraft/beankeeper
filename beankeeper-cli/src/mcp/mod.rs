@@ -706,7 +706,7 @@ impl ServerHandler for LedgerServer {
                     if crate::db::policy::get(db.conn())?.enforce {
                         let mut allowed = Vec::new();
                         for tool in tools {
-                            if identity.allows(Capability::for_operation(&tool.name)?)? {
+                            if identity.allows_operation(&tool.name)? {
                                 allowed.push(tool);
                             }
                         }

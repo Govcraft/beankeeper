@@ -94,7 +94,7 @@ admin to disable enforcement first. See
 
 ### Spend limits and approval gates
 
-CLI 0.25.0 adds per-agent, per-company spend limits and pending proposals:
+CLI 0.26.0 adds per-agent, per-company spend limits and pending proposals:
 
 ```sh
 bk agent limit set "$AGENT_URI" --company acme --currency USD --max-post 500 --daily-limit 2000
