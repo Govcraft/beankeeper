@@ -354,7 +354,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         force: bool,
 
-        /// Populate the database with a sample company, chart of accounts, and transactions.
+        /// Populate the database with multi-company sample data and feature examples.
         #[arg(long)]
         demo: bool,
     },
