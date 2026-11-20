@@ -121,7 +121,12 @@ See the [command reference](docs/beankeeper/references/commands.md#loans).
 curl -fsSL https://raw.githubusercontent.com/Govcraft/beankeeper/main/install.sh | sh
 ```
 
-Detects your OS and architecture, downloads the right binary, verifies the SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory with `BK_INSTALL=~/.local/bin` or pin a version with `BK_VERSION=X.Y.Z`, replacing `X.Y.Z` with a published CLI release version.
+Installs the latest **GitHub release**, which can lag behind `main`. The script
+detects your OS and architecture, downloads the right binary, verifies the
+SHA-256 checksum, and installs to `/usr/local/bin`. Override the install directory
+with `BK_INSTALL=~/.local/bin` or pin a published CLI release with
+`BK_VERSION=X.Y.Z`. See the [changelog](CHANGELOG.md) for user-visible changes
+and the [release procedure](docs/RELEASE.md) for cutting and verifying a release.
 
 **Arch Linux (AUR)**:
 ```sh

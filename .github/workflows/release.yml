@@ -12,8 +12,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  preflight:
+    name: Validate release tag and binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag and changelog before building
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: scripts/check-release.sh --metadata-only --tag "$RELEASE_TAG"
+      - name: Test offline release preflight
+        run: python3 -B -m unittest discover -s scripts/tests -v
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build preflight binary
+        run: cargo build --locked -p beankeeper-cli
+      - name: Check built binary version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: scripts/check-release.sh --tag "$RELEASE_TAG"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: preflight
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -50,9 +71,11 @@ jobs:
       - name: Set cross-compile env (aarch64-linux)
         if: matrix.cross
         run: |
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+          } >> "$GITHUB_ENV"
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }} -p beankeeper-cli
@@ -112,7 +135,7 @@ jobs:
 
       - name: Generate checksums
         working-directory: release
-        run: sha256sum *.tar.gz > checksums-sha256.txt
+        run: sha256sum -- *.tar.gz > checksums-sha256.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
