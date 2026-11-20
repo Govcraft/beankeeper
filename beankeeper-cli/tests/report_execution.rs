@@ -14,6 +14,24 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const CASES: &[&[&str]] = &[
     &[
+        "trend",
+        "--metric",
+        "spending",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-12-31",
+    ],
+    &[
+        "trend",
+        "--metric",
+        "net-worth",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-12-31",
+    ],
+    &[
         "trial-balance",
         "--from",
         "2000-01-01",

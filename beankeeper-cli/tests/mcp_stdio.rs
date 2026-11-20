@@ -1013,3 +1013,55 @@ fn metadata_tools_share_cli_rules_and_audit_the_mcp_actor() -> TestResult {
     client.success("verify", &json!({}))?;
     Ok(())
 }
+
+#[test]
+fn historical_trends_over_stdio_match_cli_payloads() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?;
+    let schema = tools
+        .iter()
+        .find(|tool| tool["name"] == "report")
+        .ok_or("missing report tool")?["inputSchema"]
+        .to_string();
+    assert!(schema.contains("net-worth"), "{schema}");
+    assert!(schema.contains("spending"), "{schema}");
+    for metric in ["spending", "net-worth"] {
+        let report = client.success(
+            "report",
+            &json!({
+                "company":"acme", "kind":"trend", "metric":metric,
+                "from":"2026-01-01", "to":"2026-03-31", "period":"month"
+            }),
+        )?;
+        let output = bk(&path)?
+            .args([
+                "--json",
+                "--company",
+                "acme",
+                "report",
+                "trend",
+                "--metric",
+                metric,
+                "--from",
+                "2026-01-01",
+                "--to",
+                "2026-03-31",
+                "--period",
+                "month",
+            ])
+            .output()?;
+        assert!(output.status.success());
+        let cli: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(report, cli["data"]);
+    }
+    Ok(())
+}
