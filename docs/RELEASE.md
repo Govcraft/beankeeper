@@ -15,11 +15,10 @@ tags. Library tags do not trigger the binary release workflow. See
 [crates.io publishing](#cratesio-publishing) below: only the library is
 published there; the CLI ships as GitHub Release binaries.
 
-CLI [0.23.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.23.0)
-was released on 2026-11-20, including the changes tracked under 0.21.0 and
-0.22.0. The examples below use `0.27.0` as a hypothetical next CLI release, not a
-chosen or shipped version. Select the actual version during release preparation
-and substitute it throughout.
+CLI [0.27.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.27.0)
+was released on 2026-11-20, including the changes tracked under 0.24.0 through
+0.26.1. The examples below use `0.27.0`; substitute the version selected during
+release preparation.
 
 ## Agent / contributor convention
 
