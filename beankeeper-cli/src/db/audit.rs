@@ -164,6 +164,7 @@ impl Actor {
 /// constraint on `audit_log`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditEntity {
+    Schedule,
     Rule,
     Entry,
     Transaction,
@@ -177,6 +178,7 @@ enum AuditEntity {
 impl AuditEntity {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Schedule => "schedule",
             Self::Rule => "rule",
             Self::Entry => "entry",
             Self::Transaction => "transaction",
@@ -192,6 +194,8 @@ impl AuditEntity {
 /// The kind of change recorded. Maps to the `action` CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditAction {
+    ScheduleRun,
+    ScheduleCancel,
     MetadataSet,
     MetadataUnset,
     RuleDelete,
@@ -212,6 +216,8 @@ enum AuditAction {
 impl AuditAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::ScheduleRun => "schedule_run",
+            Self::ScheduleCancel => "schedule_cancel",
             Self::MetadataSet => "metadata_set",
             Self::MetadataUnset => "metadata_unset",
             Self::RuleDelete => "rule_delete",
@@ -519,6 +525,7 @@ pub(crate) fn record_insert(
     data: &serde_json::Value,
 ) -> Result<(), CliError> {
     let (entity, action) = match entity {
+        "schedule" => (AuditEntity::Schedule, AuditAction::Create),
         "rule" => (AuditEntity::Rule, AuditAction::Create),
         "company" => (AuditEntity::Company, AuditAction::Create),
         "account" => (AuditEntity::Account, AuditAction::Create),
@@ -1565,6 +1572,17 @@ pub fn delete_account(
         // `NotFound` error when the account is absent.
         let row: AccountRow = super::accounts::get_account(conn, company_slug, code)?;
 
+        let schedules: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schedule_entries WHERE company_slug = ?1 AND account_code = ?2",
+            params![company_slug, code],
+            |row| row.get(0),
+        )?;
+        if schedules > 0 {
+            return Err(CliError::Validation(format!(
+                "account {code} cannot be deleted: retained schedule templates reference it"
+            )));
+        }
+
         let rules: i64 = conn.query_row(
             "SELECT COUNT(*) FROM categorization_rules WHERE company_slug = ?1 AND account_code = ?2",
             params![company_slug, code],
@@ -1632,6 +1650,17 @@ pub fn delete_account(
 pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<(), CliError> {
     in_savepoint(conn, "sp_company_delete", || {
         let row: CompanyRow = super::companies::get_company(conn, slug)?;
+
+        let schedules: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schedules WHERE company_slug = ?1",
+            [slug],
+            |row| row.get(0),
+        )?;
+        if schedules > 0 {
+            return Err(CliError::Validation(format!(
+                "company '{slug}' cannot be deleted: retained schedule templates reference it"
+            )));
+        }
 
         let dependencies: (i64, i64, i64, i64, i64) = conn.query_row(
             "SELECT \
@@ -1719,6 +1748,54 @@ pub fn delete_rule(
             },
         )
     })
+}
+
+/// Obtain SQLite's writer reservation before reading schedule progress.
+/// This statement changes no rows and is not itself a ledger mutation.
+pub(crate) fn lock_schedule_writer(conn: &Connection) -> Result<(), CliError> {
+    conn.execute(
+        "UPDATE schedules SET occurrence_index = occurrence_index WHERE 0",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Change execution progress and append the complete before/after snapshot.
+/// Callers hold an atomic savepoint and acquire the writer before reading.
+pub(crate) fn change_schedule(
+    conn: &Connection,
+    actor: &Actor,
+    before: &super::schedules::Schedule,
+    after: &super::schedules::Schedule,
+    action: &str,
+) -> Result<(), CliError> {
+    let action = match action {
+        "schedule_run" => AuditAction::ScheduleRun,
+        "schedule_cancel" => AuditAction::ScheduleCancel,
+        _ => return Err(CliError::Validation("invalid schedule change".into())),
+    };
+    conn.execute(
+        "UPDATE schedules SET occurrence_index = ?1, next_due = ?2, status = ?3
+         WHERE id = ?4 AND company_slug = ?5",
+        params![
+            after.occurrence_index,
+            after.next_due.map(|date| date.to_string()),
+            after.status,
+            after.id.to_string(),
+            after.company_slug
+        ],
+    )?;
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: Some(&after.company_slug),
+            entity: AuditEntity::Schedule,
+            entity_id: &after.id.to_string(),
+            action,
+            snapshots: (Some(&snapshot(before)), Some(&snapshot(after))),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

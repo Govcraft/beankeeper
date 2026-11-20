@@ -351,7 +351,7 @@ fn run_list_or_count(
 /// Parse `--tax` flag arguments into a map of `account_code` -> `tax_category`.
 ///
 /// Each argument should be `account_code=category`.
-fn parse_tax_args(args: &[String]) -> Result<HashMap<String, String>, CliError> {
+pub(crate) fn parse_tax_args(args: &[String]) -> Result<HashMap<String, String>, CliError> {
     let mut map = HashMap::new();
     for arg in args {
         let (code, category) = arg.split_once('=').ok_or_else(|| {
@@ -377,7 +377,10 @@ fn parse_tax_args(args: &[String]) -> Result<HashMap<String, String>, CliError> 
 /// Decimal amounts are also major units (e.g. `50.00` = 50 dollars).
 /// The amount is converted to minor units based on the currency's decimal places.
 /// An optional third segment after a second colon is treated as a memo.
-fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64, Option<String>), CliError> {
+pub(crate) fn parse_entry_arg(
+    s: &str,
+    currency: Currency,
+) -> Result<(String, i64, Option<String>), CliError> {
     let parts: Vec<&str> = s.splitn(3, ':').collect();
 
     if parts.len() < 2 {

@@ -323,6 +323,9 @@ EXAMPLES:\n  \
     /// Record and query transactions.
     Txn(TxnArgs),
 
+    /// Manage pending obligations and recurring transaction templates.
+    Schedule(ScheduleArgs),
+
     /// Set and manage budgets.
     Budget(BudgetArgs),
 
@@ -334,6 +337,95 @@ EXAMPLES:\n  \
 
     /// Inspect the audit trail of ledger mutations.
     Audit(AuditArgs),
+}
+
+/// Company-scoped scheduled transactions.
+#[derive(Args, Debug)]
+#[command(
+    subcommand_required = true,
+    arg_required_else_help = true,
+    after_help = "EXAMPLES:\n  bk --company acme schedule create -d Rent --start 2026-01-31 --frequency monthly --debit 5000:1200 --credit 1000:1200\n  bk --company acme schedule list --due-through 2026-03-31 --json\n  bk --company acme schedule run --dry-run\n  bk --company acme schedule run\n\nPending templates do not affect balances. Run explicitly or from cron to post due entries."
+)]
+pub struct ScheduleArgs {
+    #[command(subcommand)]
+    pub command: ScheduleCommand,
+    /// Company slug.
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Create, inspect, post, and cancel scheduled obligations.
+#[derive(Subcommand, Debug)]
+pub enum ScheduleCommand {
+    /// Create a balanced pending template without posting it.
+    Create {
+        /// Description copied to each posting.
+        #[arg(short = 'd', long)]
+        description: String,
+        /// First due date (YYYY-MM-DD).
+        #[arg(long)]
+        start: chrono::NaiveDate,
+        /// once, daily, weekly, monthly, or yearly.
+        #[arg(long, default_value = "once")]
+        frequency: beankeeper::core::Frequency,
+        /// Last due date, inclusive (YYYY-MM-DD).
+        #[arg(long)]
+        end: Option<chrono::NaiveDate>,
+        /// Debit entry in major units: account:amount[:memo]. Repeat for splits.
+        #[arg(long, required = true)]
+        debit: Vec<String>,
+        /// Credit entry in major units: account:amount[:memo]. Repeat for splits.
+        #[arg(long, required = true)]
+        credit: Vec<String>,
+        /// Currency code for all entries.
+        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+        currency: String,
+        /// Metadata copied to each posting.
+        #[arg(short = 'm', long)]
+        metadata: Option<String>,
+        /// Metadata key=value copied to each posting. Repeat as needed.
+        #[arg(long = "meta")]
+        meta: Vec<String>,
+        /// Override an account's default tax category: account=category.
+        #[arg(long)]
+        tax: Vec<String>,
+    },
+    /// List templates and their next pending date.
+    List {
+        /// Include completed and cancelled templates.
+        #[arg(long)]
+        all: bool,
+        /// Only pending templates due on or before this date (YYYY-MM-DD).
+        #[arg(long, conflicts_with = "all")]
+        due_through: Option<chrono::NaiveDate>,
+    },
+    /// Post every due occurrence atomically. Safe to retry.
+    Run {
+        /// Inclusive cutoff date (default: today in local time).
+        #[arg(long)]
+        through: Option<chrono::NaiveDate>,
+        /// Preview due occurrences without posting or advancing templates.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Cancel future occurrences, preserving posted transactions.
+    Cancel {
+        /// Schedule `TypeID` returned by create/list.
+        id: crate::db::schedules::ScheduleId,
+    },
+}
+
+impl ScheduleCommand {
+    /// Stable JSON command identifier.
+    #[must_use]
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Self::Create { .. } => "schedule.create",
+            Self::List { .. } => "schedule.list",
+            Self::Run { .. } => "schedule.run",
+            Self::Cancel { .. } => "schedule.cancel",
+        }
+    }
 }
 
 /// Arguments for company-scoped categorization rules.
@@ -434,6 +526,7 @@ pub enum AuditCommand {
 /// Entity-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEntityArg {
+    Schedule,
     Rule,
     Entry,
     Transaction,
@@ -449,6 +542,7 @@ impl AuditEntityArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Schedule => "schedule",
             Self::Rule => "rule",
             Self::Entry => "entry",
             Self::Transaction => "transaction",
@@ -464,6 +558,8 @@ impl AuditEntityArg {
 /// Action-kind filter for `audit log`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditActionArg {
+    ScheduleCancel,
+    ScheduleRun,
     #[value(name = "metadata_set", alias = "metadata-set")]
     MetadataSet,
     #[value(name = "metadata_unset", alias = "metadata-unset")]
@@ -490,6 +586,8 @@ impl AuditActionArg {
         match self {
             Self::MetadataSet => "metadata_set",
             Self::MetadataUnset => "metadata_unset",
+            Self::ScheduleCancel => "schedule_cancel",
+            Self::ScheduleRun => "schedule_run",
             Self::RuleDelete => "rule_delete",
             Self::Create => "create",
             Self::StatusChange => "status_change",
@@ -1957,6 +2055,7 @@ pub fn resolve_format(command_format: Option<OutputFormat>, cli: &Cli) -> Output
 /// `BEANKEEPER_COMPANY` env var is set.
 pub fn require_company(cli: &Cli) -> Result<String, CliError> {
     let cmd_company = match &cli.command {
+        Command::Schedule(args) => args.company.as_ref(),
         Command::Rule(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),

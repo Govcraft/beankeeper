@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::core::TransactionError;
+use crate::core::{RecurrenceError, TransactionError};
 use crate::types::{
     AccountCodeError, AccountTypeError, AmountError, CurrencyError, DebitCreditError,
     DocumentTypeError, EntryError, IdempotencyKeyError, MoneyError, SourceDocumentError,
@@ -17,6 +17,8 @@ use crate::types::{
 pub enum BeanError {
     /// An error from monetary amount operations.
     Amount(AmountError),
+    /// An error calculating or parsing a scheduled recurrence.
+    Recurrence(RecurrenceError),
     /// An error from currency operations.
     Currency(CurrencyError),
     /// An error from money operations.
@@ -43,6 +45,7 @@ impl fmt::Display for BeanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Amount(e) => write!(f, "{e}"),
+            Self::Recurrence(e) => write!(f, "{e}"),
             Self::Currency(e) => write!(f, "{e}"),
             Self::Money(e) => write!(f, "{e}"),
             Self::AccountCode(e) => write!(f, "{e}"),
@@ -61,6 +64,7 @@ impl std::error::Error for BeanError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Amount(e) => Some(e),
+            Self::Recurrence(e) => Some(e),
             Self::Currency(e) => Some(e),
             Self::Money(e) => Some(e),
             Self::AccountCode(e) => Some(e),
@@ -72,6 +76,12 @@ impl std::error::Error for BeanError {
             Self::Transaction(e) => Some(e),
             Self::IdempotencyKey(e) => Some(e),
         }
+    }
+}
+
+impl From<RecurrenceError> for BeanError {
+    fn from(err: RecurrenceError) -> Self {
+        Self::Recurrence(err)
     }
 }
 
@@ -144,6 +154,18 @@ impl From<IdempotencyKeyError> for BeanError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recurrence_error_preserves_source_and_message() {
+        use std::error::Error;
+        let err: BeanError = RecurrenceError::DateOverflow.into();
+        assert!(matches!(
+            err,
+            BeanError::Recurrence(RecurrenceError::DateOverflow)
+        ));
+        assert_eq!(err.to_string(), RecurrenceError::DateOverflow.to_string());
+        assert!(err.source().is_some());
+    }
 
     #[test]
     fn from_amount_error() {

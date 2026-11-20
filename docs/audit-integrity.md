@@ -107,3 +107,18 @@ before/after record per changed batch in the same savepoint. No-op requests do
 not append history. The four built-in relationship keys (`correlate`, `reverses`,
 `reversed_by`, `applies_to`) cannot be edited by these commands. Financial data
 and creation snapshots are unchanged; the new rows extend the existing chain.
+
+## Scheduled obligations
+
+Schema v16 adds company-scoped schedules and template entries, plus audit entity
+`schedule` and actions `schedule_cancel` and `schedule_run`. The migration verifies
+the existing hash chain before and after rebuilding its constraints, preserving
+historical hashes, IDs, identity fields, indexes, and triggers.
+
+Template creation records the complete validated template. Cancellation and
+posting progress record before/after snapshots in the same savepoint as their
+changes. The runner obtains SQLite's writer lock before reading progress and
+posts each due occurrence through the ordinary transaction creation path. A failed
+posting or audit append rolls back the entire run, including progress. Repeating
+a successful run creates no new postings or audit rows; previews write neither.
+Pending and cancelled templates do not participate in posted ledger balances.
