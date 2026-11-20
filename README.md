@@ -151,14 +151,37 @@ with `BK_INSTALL=~/.local/bin` or pin a published CLI release with
 and the [release procedure](docs/RELEASE.md) for cutting and verifying a release.
 
 **Arch Linux (AUR)**:
+
 ```sh
 yay -S bk-bin
 ```
 
-**From source**:
+**Cargo binstall (after the CLI is published to crates.io)**:
+
+```sh
+cargo binstall beankeeper-cli
+```
+
+The package is `beankeeper-cli`; the executable is `bk`. As of 2026-11-20,
+only the `beankeeper` library (0.7.0) is published on crates.io. The CLI's
+first crates.io publication and trusted-publisher setup are pending, so
+`cargo binstall beankeeper-cli` and `cargo install beankeeper-cli` are not yet
+available. Binstall needs the published CLI crate's metadata and matching
+GitHub release assets. See the [CLI bootstrap procedure](docs/RELEASE.md#bootstrap-the-cli-once).
+
+**From source (available now, builds from `main`)**:
+
 ```sh
 cargo install --git https://github.com/Govcraft/beankeeper beankeeper-cli
 ```
+
+**Rust library**:
+
+```sh
+cargo add beankeeper
+```
+
+This adds the embeddable library to your Rust project; it does not install `bk`.
 
 ## Quick Start
 

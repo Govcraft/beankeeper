@@ -15,9 +15,11 @@ tags. Library tags do not trigger the binary release workflow. See
 [crates.io publishing](#cratesio-publishing) below for registry publishing and
 the one-time CLI bootstrap.
 
-**The PR for #75 does not push a production tag.** After it merges, the maintainer
-or PM cuts the catch-up release using the CLI version at that time. The examples
-below use `0.21.0`; read the manifest rather than assuming it is still current.
+CLI [0.23.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.23.0)
+was released on 2026-11-20, including the changes tracked under 0.21.0 and
+0.22.0. The examples below use the current source CLI version, `0.25.0`, for a
+future release; they do not mean it has shipped. Read the manifest at release
+time and substitute its version throughout.
 
 ## Prepare and confirm the release commit
 
@@ -25,7 +27,8 @@ Use a clean checkout of the intended merged `main` commit. Confirm that its CLI
 manifest version and changelog section describe what will ship. Bump the CLI
 version for subsequent releases as appropriate, update `Cargo.lock` and the
 agent skill version in `docs/beankeeper/SKILL.md`, and curate the matching
-`## [X.Y.Z]` changelog section. A catch-up release may use the existing version.
+`## [X.Y.Z]` changelog section. An unreleased source version may be used as-is
+if it describes the intended release.
 Before publishing, replace that section's `Unreleased` date with the intended
 release date and remove any provisional catch-up wording. Merge preparation
 changes before tagging.
@@ -51,7 +54,7 @@ Build a fresh binary from that same tree and run the offline preflight:
 
 ```sh
 cargo build --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.21.0
+scripts/check-release.sh --tag beankeeper-cli-v0.25.0
 ```
 
 The script reads the CLI manifest, requires a stable `X.Y.Z` version and an exact
@@ -61,7 +64,7 @@ to require exactly `bk X.Y.Z`. It defaults to `target/debug/bk`, honoring
 
 ```sh
 cargo build --release --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.21.0 "${CARGO_TARGET_DIR:-target}/release/bk"
+scripts/check-release.sh --tag beankeeper-cli-v0.25.0 "${CARGO_TARGET_DIR:-target}/release/bk"
 cargo fetch --locked
 python3 -B -m unittest discover -s scripts/tests -v
 ```
@@ -81,8 +84,8 @@ checks pass. Recheck the working tree is clean, then create a signed tag on the
 confirmed commit and push only that tag:
 
 ```sh
-git tag -s beankeeper-cli-v0.21.0 -m 'bk 0.21.0'
-git push origin refs/tags/beankeeper-cli-v0.21.0
+git tag -s beankeeper-cli-v0.25.0 -m 'bk 0.25.0'
+git push origin refs/tags/beankeeper-cli-v0.25.0
 ```
 
 Do not move an existing published tag. Correct an already published release with
@@ -117,7 +120,7 @@ Watch the Release workflow in GitHub Actions and inspect the resulting release:
 
 ```sh
 gh run list --workflow release.yml --limit 5
-gh release view beankeeper-cli-v0.21.0
+gh release view beankeeper-cli-v0.25.0
 ```
 
 AUR requires repository secret `AUR_SSH_KEY` with push access to `bk-bin`. If it
@@ -140,11 +143,11 @@ BK_INSTALL="$latest_dir" sh install.sh
 "$latest_dir/bk" --version
 
 pinned_dir=$(mktemp -d)
-BK_INSTALL="$pinned_dir" BK_VERSION=0.21.0 sh install.sh
+BK_INSTALL="$pinned_dir" BK_VERSION=0.25.0 sh install.sh
 "$pinned_dir/bk" --version
 ```
 
-Immediately after this release becomes latest, both should print `bk 0.21.0`.
+Immediately after this release becomes latest, both should print `bk 0.25.0`.
 `BK_VERSION` is the bare CLI version, without `v` or the tag prefix. The installer
 downloads from `beankeeper-cli-v${VERSION}`, verifies SHA-256, installs `bk`, and
 checks the installed version. Its PATH warning is expected for a temporary
@@ -153,6 +156,12 @@ directories afterward. Confirm the AUR package's `pkgver` and Linux checksums
 also match the release before announcing the AUR update.
 
 ## crates.io publishing
+
+As of 2026-11-20, the `beankeeper` library is published at 0.7.0, but
+`beankeeper-cli` has not been published. Its first publication and trusted-publisher
+setup are still pending. Until then, use `install.sh`, AUR, or the Git source
+install in the [README](../README.md#install) for the CLI. Neither
+`cargo install beankeeper-cli` nor `cargo binstall beankeeper-cli` is available yet.
 
 `beankeeper` publishes only through the `publish-crates` job in
 [release.yml](../.github/workflows/release.yml), never with an API token. Its
@@ -229,13 +238,13 @@ After both crates are published, verify a source install in a temporary root:
 
 ```sh
 install_dir=$(mktemp -d)
-cargo install beankeeper-cli --version 0.21.0 --locked --root "$install_dir"
+cargo install beankeeper-cli --version 0.25.0 --locked --root "$install_dir"
 "$install_dir/bin/bk" --version
 ```
 
 Remove that temporary root afterward. For a binary install, first complete the
 GitHub CLI release procedure above, then use `cargo binstall beankeeper-cli
---version 0.21.0`. The package name is `beankeeper-cli`; it installs the executable
+--version 0.25.0`. The package name is `beankeeper-cli`; it installs the executable
 `bk`. Its manifest's binstall templates point at
 `beankeeper-cli-vX.Y.Z/bk-X.Y.Z-TARGET.tar.gz`, with `bk` inside the
 `bk-X.Y.Z-TARGET/` directory. These names match the four Linux GNU and macOS
