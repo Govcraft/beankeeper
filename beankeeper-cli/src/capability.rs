@@ -2,7 +2,7 @@
 
 use crate::error::CliError;
 
-/// Explicit sibling grants beneath the ledger identity path.
+/// Explicit grants beneath the ledger or UI identity path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     Read,
@@ -13,6 +13,8 @@ pub enum Capability {
     Reconcile,
     Budget,
     Admin,
+    /// Host navigation authority, issued to a separate UI-scoped identity.
+    Navigate,
 }
 
 impl Capability {
@@ -28,6 +30,7 @@ impl Capability {
             Self::Reconcile => "ledger/reconcile",
             Self::Budget => "ledger/budget",
             Self::Admin => "ledger/admin",
+            Self::Navigate => "ui/navigate",
         }
     }
 

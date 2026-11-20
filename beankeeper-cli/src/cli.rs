@@ -220,7 +220,7 @@ pub enum AgentCommand {
         /// `TypeID` prefix (lowercase letters and underscores).
         #[arg(long)]
         name: String,
-        /// Explicit grants checked when this ledger enables enforcement.
+        /// Explicit ledger/* grants, or separate ui/* grants (ui/navigate is always checked).
         #[arg(long, value_delimiter = ',', default_value = "ledger/read,ledger/post")]
         caps: Vec<String>,
         /// Token lifetime, positive and at most 30d.
