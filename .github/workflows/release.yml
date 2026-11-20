@@ -140,6 +140,10 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -164,14 +168,33 @@ jobs:
         working-directory: release
         run: sha256sum -- *.tar.gz > checksums-sha256.txt
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Sign release artifacts with Sigstore
+        working-directory: release
+        run: |
+          for artifact in *.tar.gz checksums-sha256.txt; do
+            cosign sign-blob --yes --bundle "${artifact}.sigstore" "$artifact"
+          done
+
+      - name: Attest release build provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            release/*.tar.gz
+            release/checksums-sha256.txt
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           name: bk v${{ steps.version.outputs.version }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             release/*.tar.gz
             release/checksums-sha256.txt
+            release/*.sigstore
 
   aur:
     name: Update AUR package
