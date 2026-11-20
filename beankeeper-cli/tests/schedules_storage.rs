@@ -4,7 +4,7 @@ use beankeeper::core::Frequency;
 use beankeeper_cli::{
     db::{
         Actor, Db, PostEntryParams, accounts, audit, companies,
-        schedules::{self, CreateScheduleParams},
+        schedules::{self, CreateScheduleParams, DEFAULT_RUN_LIMIT},
     },
     error::CliError,
 };
@@ -308,5 +308,97 @@ fn finite_schedules_complete_at_the_supported_date_boundary() -> TestResult {
         audit::verify_hash_chain(db.conn())?;
         audit::verify_creations(db.conn())?;
     }
+    Ok(())
+}
+
+fn daily_template(occurrences: u64) -> Result<CreateScheduleParams, CliError> {
+    let mut params = template()?;
+    params.start_date = date("2020-01-01")?;
+    params.frequency = Frequency::Daily;
+    params.end_date = params
+        .start_date
+        .checked_add_days(chrono::Days::new(occurrences - 1));
+    Ok(params)
+}
+
+#[test]
+fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-limit-test");
+    schedules::create_schedule(db.conn(), &actor, "acme", &daily_template(1_000)?)?;
+    let posted = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, false)?;
+    assert_eq!(posted.len(), DEFAULT_RUN_LIMIT);
+    assert!(posted.iter().all(|row| row.transaction_id.is_some()));
+    assert_eq!(
+        schedules::list_schedules(db.conn(), "acme")?[0].status,
+        "completed"
+    );
+    assert!(schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, false)?.is_empty());
+    audit::verify_hash_chain(db.conn())?;
+    audit::verify_creations(db.conn())?;
+    Ok(())
+}
+
+#[test]
+fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-limit-test");
+    for count in [500, 501] {
+        schedules::create_schedule(db.conn(), &actor, "acme", &daily_template(count)?)?;
+    }
+    let before = serde_json::json!(schedules::list_schedules(db.conn(), "acme")?);
+    db.conn().execute_batch(
+        "CREATE TRIGGER reject_any_post BEFORE INSERT ON transactions
+         BEGIN SELECT RAISE(ABORT, 'posting attempted before limit check'); END;",
+    )?;
+    let Err(error) = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, false)
+    else {
+        panic!("1001 occurrences must exceed the cap");
+    };
+    assert!(matches!(error, CliError::Validation(_)));
+    assert!(error.to_string().contains("1000 occurrences"));
+    assert!(error.to_string().contains("--allow-large-run"));
+    assert_eq!(
+        serde_json::json!(schedules::list_schedules(db.conn(), "acme")?),
+        before
+    );
+    for (table, expected) in [("transactions", 0), ("entries", 0), ("audit_log", 2)] {
+        let count: i64 =
+            db.conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+        assert_eq!(count, expected);
+    }
+    audit::verify_hash_chain(db.conn())?;
+    Ok(())
+}
+
+#[test]
+fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> TestResult {
+    let db = fixture()?;
+    let actor = Actor::new("schedule-limit-test");
+    companies::create_company(db.conn(), "other", "Other", None)?;
+    for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+        accounts::create_account(db.conn(), "other", code, code, kind, None)?;
+    }
+    let params = daily_template(1_001)?;
+    schedules::create_schedule(db.conn(), &actor, "other", &params)?;
+    let cancelled = schedules::create_schedule(db.conn(), &actor, "acme", &params)?;
+    schedules::cancel_schedule(db.conn(), &actor, "acme", &cancelled.id)?;
+    let mut future = daily_template(1_001)?;
+    future.start_date = date("2030-01-01")?;
+    future.end_date = None;
+    schedules::create_schedule(db.conn(), &actor, "acme", &future)?;
+    schedules::create_schedule(db.conn(), &actor, "acme", &params)?;
+    let posted = schedules::run_due(db.conn(), &actor, "acme", date("2020-01-01")?, false)?;
+    assert_eq!(posted.len(), 1);
+    assert_eq!(
+        schedules::list_schedules(db.conn(), "other")?[0].next_due,
+        Some(params.start_date)
+    );
+    let remaining = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, true)?;
+    assert_eq!(remaining.len(), DEFAULT_RUN_LIMIT);
+    audit::verify_hash_chain(db.conn())?;
     Ok(())
 }

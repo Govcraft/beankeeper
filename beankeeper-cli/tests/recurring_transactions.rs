@@ -471,3 +471,137 @@ fn pending_schedule_prevents_account_deletion() -> TestResult {
     assert_eq!(ledger.count("audit_log")?, audits);
     Ok(())
 }
+
+#[test]
+fn oversized_runs_require_override_and_previews_show_the_count() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.create(
+        "acme",
+        "2020-01-01",
+        ("5000:10", "1000:10"),
+        &["--frequency", "daily", "--end", "2022-09-27"],
+    )?;
+    let pending = ledger.run("acme", &["schedule", "list", "--all"])?;
+    let audits = ledger.count("audit_log")?;
+    for format in ["table", "csv", "json"] {
+        let preview = ledger
+            .command()?
+            .args([
+                "--company",
+                "acme",
+                "--format",
+                format,
+                "schedule",
+                "run",
+                "--through",
+                "2022-09-27",
+                "--dry-run",
+            ])
+            .output()?;
+        assert!(preview.status.success());
+        let message = String::from_utf8(preview.stderr.clone())?;
+        assert!(message.contains("Preview: 1001 due occurrences"));
+        assert!(message.contains("no transactions posted or schedules advanced"));
+        if format == "json" {
+            let rows = data(&preview)?;
+            let rows = rows.as_array().ok_or("expected occurrence array")?;
+            assert_eq!(rows.len(), 1_001);
+            assert!(rows.iter().all(|row| row["transaction_id"].is_null()));
+        }
+    }
+    let blocked = ledger
+        .command()?
+        .args([
+            "--json",
+            "--company",
+            "acme",
+            "schedule",
+            "run",
+            "--through",
+            "2022-09-27",
+        ])
+        .output()?;
+    assert_eq!(blocked.status.code(), Some(3));
+    assert_eq!(blocked.stdout, [] as [u8; 0]);
+    let error: Value = serde_json::from_slice(&blocked.stderr)?;
+    assert_eq!(error["ok"], false);
+    assert_eq!(error["error"]["code"], "VALIDATION");
+    let message = error["error"]["message"]
+        .as_str()
+        .ok_or("missing error message")?;
+    for hint in [
+        "1000 occurrences",
+        "--dry-run",
+        "--through",
+        "--allow-large-run",
+    ] {
+        assert!(message.contains(hint));
+    }
+    assert_eq!(ledger.count("transactions")?, 0);
+    assert_eq!(ledger.count("entries")?, 0);
+    assert_eq!(ledger.count("audit_log")?, audits);
+    assert_eq!(ledger.run("acme", &["schedule", "list", "--all"])?, pending);
+
+    let posted = ledger.run(
+        "acme",
+        &[
+            "schedule",
+            "run",
+            "--through",
+            "2022-09-27",
+            "--allow-large-run",
+        ],
+    )?;
+    let rows = posted.as_array().ok_or("expected posting array")?;
+    assert_eq!(rows.len(), 1_001);
+    assert!(rows.iter().all(|row| row["transaction_id"].is_i64()));
+    assert_eq!(ledger.count("transactions")?, 1_001);
+    assert_eq!(ledger.count("entries")?, 2_002);
+    assert_eq!(ledger.run("acme", &["schedule", "list"])?, json!([]));
+    assert_eq!(
+        ledger.run("acme", &["schedule", "run", "--through", "2022-09-27"])?,
+        json!([])
+    );
+    ledger.run("acme", &["verify"])?;
+    Ok(())
+}
+
+#[test]
+fn dry_run_counts_include_empty_runs_and_respect_quiet_in_all_formats() -> TestResult {
+    let ledger = Ledger::new()?;
+    for format in ["table", "csv", "json"] {
+        for quiet in [false, true] {
+            let mut command = ledger.command()?;
+            command.args([
+                "--company",
+                "acme",
+                "--format",
+                format,
+                "schedule",
+                "run",
+                "--through",
+                "2026-01-01",
+                "--dry-run",
+            ]);
+            if quiet {
+                command.arg("--quiet");
+            }
+            let output = command.output()?;
+            assert!(output.status.success());
+            if quiet {
+                assert_eq!(output.stderr, [] as [u8; 0]);
+                if format != "json" {
+                    assert_eq!(output.stdout, [] as [u8; 0]);
+                }
+            } else {
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("Preview: 0 due occurrences")
+                );
+            }
+            if format == "json" {
+                assert_eq!(data(&output)?, json!([]));
+            }
+        }
+    }
+    Ok(())
+}
