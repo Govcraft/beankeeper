@@ -35,7 +35,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             render_companies(&[row], "company.create", format, use_color)?;
         }
         CompanyCommand::List => {
-            let rows = companies::list_companies(db.conn())?;
+            let rows = read_companies(&db, sub)?;
             render_companies(&rows, "company.list", format, use_color)?;
             if !cli.verbosity.quiet {
                 let count = rows.len();
@@ -45,9 +45,9 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
                 );
             }
         }
-        CompanyCommand::Show { slug } => {
-            let row = companies::get_company(db.conn(), slug)?;
-            render_companies(&[row], "company.show", format, use_color)?;
+        CompanyCommand::Show { .. } => {
+            let rows = read_companies(&db, sub)?;
+            render_companies(&rows, "company.show", format, use_color)?;
         }
         CompanyCommand::Delete { slug, force } => {
             if !force {
@@ -103,4 +103,79 @@ fn render_companies(
         }
     }
     Ok(())
+}
+
+/// Execute a company read without writing to stdout.
+///
+/// # Errors
+///
+/// Returns the same validation and database errors as the CLI.
+pub fn execute_json(db: &Db, sub: &CompanyCommand) -> Result<serde_json::Value, CliError> {
+    let rows = read_companies(db, sub)?;
+    let command = match sub {
+        CompanyCommand::List => "company.list",
+        CompanyCommand::Show { .. } => "company.show",
+        _ => return Err(CliError::Usage("unsupported MCP company operation".into())),
+    };
+    json_data(&output::json::render_companies(
+        &rows,
+        output::json::meta(command, None),
+    )?)
+}
+
+fn read_companies(db: &Db, sub: &CompanyCommand) -> Result<Vec<crate::db::CompanyRow>, CliError> {
+    match sub {
+        CompanyCommand::List => companies::list_companies(db.conn()),
+        CompanyCommand::Show { slug } => Ok(vec![companies::get_company(db.conn(), slug)?]),
+        _ => Err(CliError::Usage("unsupported MCP company operation".into())),
+    }
+}
+
+pub(crate) fn json_data(rendered: &str) -> Result<serde_json::Value, CliError> {
+    let mut envelope: serde_json::Value = serde_json::from_str(rendered)
+        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
+    envelope
+        .get_mut("data")
+        .map(serde_json::Value::take)
+        .ok_or_else(|| CliError::General("JSON response is missing data".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_company_api_never_creates_or_deletes() -> Result<(), CliError> {
+        let db = Db::open_in_memory()?;
+        let create = CompanyCommand::Create {
+            slug: "acme".into(),
+            name: "Acme".into(),
+            description: None,
+        };
+        assert!(matches!(
+            execute_json(&db, &create),
+            Err(CliError::Usage(_))
+        ));
+        assert_eq!(
+            execute_json(&db, &CompanyCommand::List)?,
+            serde_json::json!([])
+        );
+        companies::create_company(db.conn(), "acme", "Acme", None)?;
+        let delete = CompanyCommand::Delete {
+            slug: "acme".into(),
+            force: true,
+        };
+        assert!(matches!(
+            execute_json(&db, &delete),
+            Err(CliError::Usage(_))
+        ));
+        let shown = execute_json(
+            &db,
+            &CompanyCommand::Show {
+                slug: "acme".into(),
+            },
+        )?;
+        assert_eq!(shown[0]["name"], "Acme");
+        Ok(())
+    }
 }

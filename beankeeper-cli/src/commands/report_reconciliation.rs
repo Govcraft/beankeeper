@@ -199,13 +199,12 @@ impl ReconciliationReport {
 ///
 /// # Errors
 /// Returns an error for invalid options, account/currency, or database failures.
-pub fn run_command(
+pub(crate) fn run_command_to(
     cli: &Cli,
     db: &Db,
     company: &str,
     sub: &ReportCommand,
-    format: OutputFormat,
-    use_color: bool,
+    output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let ReportCommand::Reconciliation {
         account,
@@ -236,10 +235,10 @@ pub fn run_command(
                 "--link-key requires --mode settlement".into(),
             ));
         }
-        return run(cli, db, company, &args, format, use_color);
+        return run_to(cli, db, company, &args, output);
     }
     let report = settlement::build_report(db.conn(), company, &args, link_key.as_deref())?;
-    render(cli, company, &report, format, use_color)
+    render(cli, company, &report, output)
 }
 
 /// Execute `bk report reconciliation`.
@@ -256,24 +255,41 @@ pub fn run(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput {
+        format,
+        use_color,
+        writer: &mut stdout,
+    };
+    run_to(cli, db, company, args, &mut output)
+}
+
+pub(crate) fn run_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    args: &ReconciliationArgs<'_>,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
     let report = build_report(db.conn(), company, args)?;
-    render(cli, company, &report, format, use_color)
+    render(cli, company, &report, output)
 }
 
 fn render(
     cli: &Cli,
     company: &str,
     report: &ReconciliationReport,
-    format: OutputFormat,
-    use_color: bool,
+    output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    match format {
-        OutputFormat::Table => println!("{}", render_table(report, use_color)),
+    match output.format {
+        OutputFormat::Table => {
+            writeln!(output.writer, "{}", render_table(report, output.use_color))?;
+        }
         OutputFormat::Json => {
             let meta = output::json::meta("report.reconciliation", Some(company));
-            println!("{}", render_json(report, meta)?);
+            writeln!(output.writer, "{}", render_json(report, meta)?)?;
         }
-        OutputFormat::Csv => print!("{}", render_csv(report)?),
+        OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,
     }
 
     if !cli.verbosity.quiet {

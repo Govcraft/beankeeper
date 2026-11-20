@@ -103,9 +103,24 @@ impl Cli {
     }
 }
 
+/// MCP transport commands.
+#[derive(Subcommand, Debug)]
+pub enum McpCommand {
+    /// Serve MCP JSON-RPC over stdin/stdout against an existing database.
+    Serve {
+        /// Register only tools that read the ledger.
+        #[arg(long)]
+        read_only: bool,
+    },
+}
+
 /// Top-level commands.
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Expose this ledger to AI agents over MCP.
+    #[command(subcommand)]
+    Mcp(McpCommand),
+
     /// Create a new accounting database.
     #[command(after_help = "\
 EXAMPLES:\n  \

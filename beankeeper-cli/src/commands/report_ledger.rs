@@ -112,6 +112,22 @@ pub fn run_command(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput {
+        format,
+        use_color,
+        writer: &mut stdout,
+    };
+    run_command_to(cli, db, company, sub, &mut output)
+}
+
+pub(crate) fn run_command_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &crate::cli::ReportCommand,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
     let crate::cli::ReportCommand::Ledger {
         account,
         from,
@@ -131,7 +147,7 @@ pub fn run_command(
         currency: currency.as_deref(),
         filter_metadata,
     };
-    run(cli, db, company, &opts, format, use_color)
+    run_to(cli, db, company, &opts, output)
 }
 
 /// Execute `bk report ledger`.
@@ -149,16 +165,36 @@ pub fn run(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput {
+        format,
+        use_color,
+        writer: &mut stdout,
+    };
+    run_to(cli, db, company, opts, &mut output)
+}
+
+pub(crate) fn run_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    opts: &LedgerOptions<'_>,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
     let report = build_report(db.conn(), company, opts)?;
     let minor_units = Currency::from_code(&report.currency).map_or(2, |c| c.minor_units());
 
-    match format {
-        OutputFormat::Table => println!("{}", render_table(&report, minor_units, use_color)),
+    match output.format {
+        OutputFormat::Table => writeln!(
+            output.writer,
+            "{}",
+            render_table(&report, minor_units, output.use_color)
+        )?,
         OutputFormat::Json => {
             let meta = output::json::meta("report.ledger", Some(company));
-            println!("{}", render_json(&report, meta)?);
+            writeln!(output.writer, "{}", render_json(&report, meta)?)?;
         }
-        OutputFormat::Csv => print!("{}", render_csv(&report)?),
+        OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report)?)?,
     }
 
     if !cli.verbosity.quiet {

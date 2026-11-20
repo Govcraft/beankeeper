@@ -1294,6 +1294,22 @@ pub fn run_command(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput {
+        format,
+        use_color,
+        writer: &mut stdout,
+    };
+    run_command_to(cli, db, company, sub, &mut output)
+}
+
+pub(crate) fn run_command_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
     let ReportCommand::Aging {
         account,
         include_children,
@@ -1325,7 +1341,7 @@ pub fn run_command(
         group_across_accounts: *group_across_accounts,
         filter_metadata,
     };
-    run(cli, db, company, &opts, format, use_color)
+    run_to(cli, db, company, &opts, output)
 }
 
 /// Everything shared by the per-account aging runs.
@@ -1415,6 +1431,22 @@ pub fn run(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput {
+        format,
+        use_color,
+        writer: &mut stdout,
+    };
+    run_to(cli, db, company, opts, &mut output)
+}
+
+pub(crate) fn run_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    opts: &AgingOptions<'_>,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
     let as_of = match opts.as_of {
         Some(d) => parse_date(d, "--as-of date")?,
         None => chrono::Local::now().date_naive(),
@@ -1458,10 +1490,14 @@ pub fn run(
         filters: &filters,
     };
 
-    match format {
-        OutputFormat::Table => println!("{}", render_table(&report, &ctx, use_color)),
-        OutputFormat::Json => println!("{}", render_json(&report, &ctx, company)?),
-        OutputFormat::Csv => print!("{}", render_csv(&report, &ctx)?),
+    match output.format {
+        OutputFormat::Table => writeln!(
+            output.writer,
+            "{}",
+            render_table(&report, &ctx, output.use_color)
+        )?,
+        OutputFormat::Json => writeln!(output.writer, "{}", render_json(&report, &ctx, company)?)?,
+        OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report, &ctx)?)?,
     }
 
     if !cli.verbosity.quiet {

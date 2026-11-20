@@ -19,11 +19,27 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
     )?;
     let db = Db::open_existing(&cli.db, pp.as_ref())?;
 
-    // Check schema version
-    let version = schema::get_schema_version(db.conn())?;
+    let version = verify(&db)?;
     if cli.verbosity.verbose {
         eprintln!("[ok] Schema version: {version}");
     }
+
+    if cli.is_json() {
+        let meta = crate::output::json::meta("verify", None);
+        let rendered = crate::output::json::render_verify(version, meta)?;
+        println!("{rendered}");
+    }
+
+    if !cli.verbosity.quiet {
+        eprintln!("[ok] Ledger is healthy");
+    }
+
+    Ok(())
+}
+
+fn verify(db: &Db) -> Result<i64, CliError> {
+    // Check schema version
+    let version = schema::get_schema_version(db.conn())?;
 
     crate::db::audit::atomically(db.conn(), || {
         crate::db::audit::verify_hash_chain(db.conn())?;
@@ -66,15 +82,18 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
         Ok(())
     })?;
 
-    if cli.is_json() {
-        let meta = crate::output::json::meta("verify", None);
-        let rendered = crate::output::json::render_verify(version, meta)?;
-        println!("{rendered}");
-    }
+    Ok(version)
+}
 
-    if !cli.verbosity.quiet {
-        eprintln!("[ok] Ledger is healthy");
-    }
-
-    Ok(())
+/// Verify an open ledger without writing to stdout.
+///
+/// # Errors
+///
+/// Returns database errors for invalid ledgers.
+pub fn execute_json(db: &Db) -> Result<serde_json::Value, CliError> {
+    let version = verify(db)?;
+    super::company::json_data(&crate::output::json::render_verify(
+        version,
+        crate::output::json::meta("verify", None),
+    )?)
 }

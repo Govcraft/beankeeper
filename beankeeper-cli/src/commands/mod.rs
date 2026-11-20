@@ -32,6 +32,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
         return id;
     }
     match cmd {
+        Command::Mcp(_) => "mcp.serve",
         Command::Init { .. } => "init",
         Command::Verify => "verify",
         Command::Export { .. } => "export",
@@ -87,6 +88,9 @@ pub fn command_name(cmd: &Command) -> &'static str {
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     match &cli.command {
+        Command::Mcp(crate::cli::McpCommand::Serve { read_only }) => {
+            crate::mcp::serve(cli, *read_only)
+        }
         Command::Init {
             encrypt,
             path,

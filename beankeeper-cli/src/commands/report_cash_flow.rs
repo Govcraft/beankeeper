@@ -196,6 +196,22 @@ pub fn run(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput {
+        format,
+        use_color,
+        writer: &mut stdout,
+    };
+    run_to(cli, db, company, args, &mut output)
+}
+
+pub(crate) fn run_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    args: &CashFlowArgs,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
     let conn = db.conn();
     if !db::company_exists(conn, company)? {
         return Err(CliError::NotFound(format!("company '{company}' not found")));
@@ -224,8 +240,12 @@ pub fn run(
     )?;
     let minor_units = currency.minor_units();
 
-    match format {
-        OutputFormat::Table => println!("{}", render_table(&statement, minor_units, use_color)),
+    match output.format {
+        OutputFormat::Table => writeln!(
+            output.writer,
+            "{}",
+            render_table(&statement, minor_units, output.use_color)
+        )?,
         OutputFormat::Json => {
             let meta = output::json::meta("report.cash-flow", Some(company));
             let env = output::json::Envelope {
@@ -236,9 +256,9 @@ pub fn run(
             };
             let rendered = serde_json::to_string_pretty(&env)
                 .map_err(|e| CliError::General(format!("JSON serialisation failed: {e}")))?;
-            println!("{rendered}");
+            writeln!(output.writer, "{rendered}")?;
         }
-        OutputFormat::Csv => print!("{}", render_csv(&statement)?),
+        OutputFormat::Csv => write!(output.writer, "{}", render_csv(&statement)?)?,
     }
 
     if !cli.verbosity.quiet {

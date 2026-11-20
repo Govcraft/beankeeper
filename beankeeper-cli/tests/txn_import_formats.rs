@@ -99,7 +99,7 @@ fn validation_error(output: &Output, expected: &str) -> TestResult {
             .is_some_and(|message| message.contains(expected)),
         "{value}"
     );
-    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(output.stdout, b"");
     Ok(())
 }
 

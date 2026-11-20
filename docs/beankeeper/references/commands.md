@@ -44,6 +44,73 @@ export commands, place general response `--format` before the subcommand (or use
 `--json`) so it is distinct from the local file format. For example,
 `bk --format json txn import --input-format ofx --file statement.ofx --account 1000 --suspense 9000`.
 
+## MCP
+
+### `bk mcp serve [--read-only]`
+
+Serve an existing database over MCP stdio. Stdout contains only JSON-RPC;
+diagnostics go to stderr. No subprocess invocation of `bk` is used for tools.
+
+```bash
+bk --db /absolute/path/books.db mcp serve
+bk --db /absolute/path/books.db mcp serve --read-only
+bk --db /absolute/path/books.db --passphrase-file /secure/passphrase mcp serve
+BEANKEEPER_PASSPHRASE_CMD='secret-tool lookup service beankeeper ledger books' bk --db /absolute/path/books.db mcp serve
+```
+
+Database and passphrase sources are resolved once at startup. `BEANKEEPER_DB`
+works as usual. Missing databases and wrong passphrases are startup failures.
+Passphrase file descriptor 0 is rejected because stdin carries MCP requests.
+Passphrases and database paths are never tool inputs. Company-scoped tools require
+an explicit `company` argument, regardless of the CLI's default company.
+
+| Tool | Arguments / behavior |
+|------|----------------------|
+| `company_list`, `company_show` | List companies; show accepts `slug` |
+| `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
+| `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
+| `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
+| `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
+| `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
+| `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
+| `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
+| `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
+| `txn_reconcile`, `verify` | No arguments; both read-only |
+| `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`; rows include `prev_hash` and `row_hash` |
+
+`txn_post.debits` and `.credits` contain `{account, amount, memo?}` objects.
+`amount` is a decimal string in major units. `meta` is a string-to-string map;
+`tax` is an array of `account=category` strings. Use `reference` with
+`on_conflict: "skip"` for safe retries returning the existing transaction ID.
+`error` preserves duplicate rejection, and `upsert` preserves the CLI's current
+unsupported-strategy error.
+
+`txn_reverse` creates a linked mirror posting with the CLI reversal rules. Its
+`date` defaults to today and must be on or after the original date. Description
+defaults to `Reversal of #ID: ORIGINAL DESCRIPTION`; reference defaults to
+`reversal-of-ID`. Safe retries require the same **explicit** `reference`, returning
+`{created: false, skipped: true, existing_id}`. A first reversal returns
+`{created: true, skipped: false, id}`. Reconciled originals cannot be reversed;
+existing clearings stay on the original and reversal entries start uncleared.
+Use `audit_log` with `action: "reverse"` to inspect the audit record.
+
+`txn_clear.batch` contains `{reference, amount?}` rows, where `amount` is an optional decimal
+string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
+not exposed to tools. `report.kind` accepts `trial-balance`, `balance`,
+`income-statement`, `balance-sheet`, `tax-summary`, `ledger`, `budget-variance`,
+`cash-flow`, `aging`, or `reconciliation`, including their period/comparison and
+metadata options.
+
+Read-only mode removes `account_create`, `txn_post`, `txn_reverse`, `budget_set`,
+`budget_delete`, and `txn_clear` from the router. Audited writes use `mcp:<sanitized client name>`
+from `initialize.clientInfo.name`, falling back to `mcp:unknown`.
+
+Results match the CLI JSON `data` payload. JSON text content is always included;
+`structuredContent` is also supplied when its shape is supported by the negotiated
+protocol. Tool errors set `isError: true` with `{code, message}`. See
+[README client configurations](../../../README.md#connect-an-ai-assistant-through-mcp)
+for Claude Desktop and Codex examples without plaintext secrets.
+
 ## Companies
 
 ### `bk company create SLUG NAME`
