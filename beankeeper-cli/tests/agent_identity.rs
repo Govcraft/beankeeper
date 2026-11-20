@@ -139,6 +139,67 @@ fn unauthorized(output: &Output) -> TestResult {
 }
 
 #[test]
+fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() -> TestResult {
+    let ledger = Ledger::new()?;
+    db::create_account(ledger.db.conn(), "acme", "2000", "Loan", "liability", None)?;
+    db::create_account(
+        ledger.db.conn(),
+        "acme",
+        "5000",
+        "Interest",
+        "expense",
+        None,
+    )?;
+    let issued = ledger.issue()?;
+    let token = text(&issued, "token")?;
+    let args = [
+        "loan",
+        "pay",
+        "--principal",
+        "1000",
+        "--rate",
+        "6",
+        "--months",
+        "12",
+        "--payment-number",
+        "1",
+        "--liability",
+        "2000",
+        "--interest-account",
+        "5000",
+        "--paying-account",
+        "1000",
+        "--date",
+        "2026-11-20",
+        "--reference",
+        "LOAN-1",
+    ];
+    let invalid = ledger
+        .command()?
+        .args(["--agent-token", "invalid"])
+        .args(args)
+        .output()?;
+    unauthorized(&invalid)?;
+    assert_eq!(ledger.count("transactions")?, 0);
+    let result = ledger.run(&args, Some(token))?;
+    assert_eq!(result["meta"]["command"], "loan.pay");
+    assert_eq!(result["meta"]["agent"], issued["agent_uri"]);
+    let id = result["data"]["id"].to_string();
+    let shown = ledger.run(&["txn", "show", &id], None)?;
+    assert_eq!(shown["data"][0]["agent_uri"], issued["agent_uri"]);
+    assert_eq!(shown["data"][0]["token_jti"], issued["token_jti"]);
+    assert_eq!(shown["data"][0]["posted_by"], "host-process");
+    let (uri, jti): (String, String) = ledger.db.conn().query_row(
+        "SELECT agent_uri, token_jti FROM audit_log WHERE entity = 'transaction' AND action = 'create'",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(uri, text(&issued, "agent_uri")?);
+    assert_eq!(jti, text(&issued, "token_jti")?);
+    ledger.run(&["verify"], None)?;
+    Ok(())
+}
+
+#[test]
 fn key_and_token_lifecycle_binds_supplied_key_and_never_lists_secrets() -> TestResult {
     let ledger = Ledger::new()?;
     let root = ledger.run(&["key", "init"], None)?["data"].clone();

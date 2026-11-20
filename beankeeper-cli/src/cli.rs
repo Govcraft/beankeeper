@@ -332,6 +332,9 @@ EXAMPLES:\n  \
     /// Manage automatic bank import categorization.
     Rule(RuleArgs),
 
+    /// Calculate monthly loan payments or post a scheduled payment.
+    Loan(LoanArgs),
+
     /// Generate financial reports.
     Report(ReportArgs),
 
@@ -426,6 +429,70 @@ impl ScheduleCommand {
             Self::Cancel { .. } => "schedule.cancel",
         }
     }
+}
+
+/// Arguments for stateless loan calculations and payments.
+#[derive(Args, Debug)]
+pub struct LoanArgs {
+    #[command(subcommand)]
+    pub command: LoanCommand,
+    /// Company slug (required for pay).
+    #[arg(long, global = true)]
+    pub company: Option<String>,
+}
+
+/// Original fixed-rate loan terms, shared by schedule and pay.
+#[derive(Args, Debug)]
+pub struct LoanCalculationArgs {
+    /// Original principal in major currency units.
+    #[arg(long, allow_hyphen_values = true)]
+    pub principal: String,
+    /// Nominal annual percentage, 0 through 100, at most four decimal places.
+    #[arg(long, allow_hyphen_values = true)]
+    pub rate: String,
+    /// Monthly term, 1 through 1200.
+    #[arg(long)]
+    pub months: u32,
+    /// Currency used to interpret and display amounts.
+    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+    pub currency: String,
+}
+
+/// Stateless monthly loan operations. No persistent loan records are created.
+#[derive(Subcommand, Debug)]
+pub enum LoanCommand {
+    /// Show a schedule without opening a database or requiring a company.
+    Schedule(LoanCalculationArgs),
+    /// Post one scheduled payment through the audited transaction path.
+    Pay(LoanPayArgs),
+}
+
+/// Account mapping and identification for one scheduled payment.
+#[derive(Args, Debug)]
+pub struct LoanPayArgs {
+    #[command(flatten)]
+    pub terms: LoanCalculationArgs,
+    /// One-based payment number from the schedule.
+    #[arg(long)]
+    pub payment_number: u32,
+    /// Liability account debited for principal.
+    #[arg(long)]
+    pub liability: String,
+    /// Expense account debited for interest.
+    #[arg(long)]
+    pub interest_account: String,
+    /// Asset account credited for the total payment.
+    #[arg(long)]
+    pub paying_account: String,
+    /// Payment transaction date (YYYY-MM-DD).
+    #[arg(long)]
+    pub date: String,
+    /// Unique reference for this loan and payment; reuse it safely on retries.
+    #[arg(long)]
+    pub reference: String,
+    /// Duplicate reference behavior.
+    #[arg(long, value_enum, default_value = "error")]
+    pub on_conflict: OnConflictArg,
 }
 
 /// Arguments for company-scoped categorization rules.
@@ -2056,6 +2123,7 @@ pub fn resolve_format(command_format: Option<OutputFormat>, cli: &Cli) -> Output
 pub fn require_company(cli: &Cli) -> Result<String, CliError> {
     let cmd_company = match &cli.command {
         Command::Schedule(args) => args.company.as_ref(),
+        Command::Loan(args) => args.company.as_ref(),
         Command::Rule(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),

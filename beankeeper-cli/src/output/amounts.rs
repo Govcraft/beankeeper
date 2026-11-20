@@ -57,6 +57,12 @@ fn monetary_field(key: &str) -> bool {
     matches!(
         key,
         "amount"
+            | "principal"
+            | "interest"
+            | "payment"
+            | "regular_payment"
+            | "total_interest"
+            | "total_paid"
             | "amounts"
             | "entry_amount"
             | "original_amount"

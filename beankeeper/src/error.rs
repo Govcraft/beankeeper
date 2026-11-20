@@ -3,6 +3,7 @@
 use core::fmt;
 
 use crate::core::{RecurrenceError, TransactionError};
+use crate::loan::LoanError;
 use crate::types::{
     AccountCodeError, AccountTypeError, AmountError, CurrencyError, DebitCreditError,
     DocumentTypeError, EntryError, IdempotencyKeyError, MoneyError, SourceDocumentError,
@@ -15,6 +16,8 @@ use crate::types::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BeanError {
+    /// An error from loan calculation or term validation.
+    Loan(LoanError),
     /// An error from monetary amount operations.
     Amount(AmountError),
     /// An error calculating or parsing a scheduled recurrence.
@@ -44,6 +47,7 @@ pub enum BeanError {
 impl fmt::Display for BeanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Loan(e) => write!(f, "{e}"),
             Self::Amount(e) => write!(f, "{e}"),
             Self::Recurrence(e) => write!(f, "{e}"),
             Self::Currency(e) => write!(f, "{e}"),
@@ -63,6 +67,7 @@ impl fmt::Display for BeanError {
 impl std::error::Error for BeanError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Loan(e) => Some(e),
             Self::Amount(e) => Some(e),
             Self::Recurrence(e) => Some(e),
             Self::Currency(e) => Some(e),
@@ -88,6 +93,12 @@ impl From<RecurrenceError> for BeanError {
 impl From<AmountError> for BeanError {
     fn from(err: AmountError) -> Self {
         Self::Amount(err)
+    }
+}
+
+impl From<LoanError> for BeanError {
+    fn from(err: LoanError) -> Self {
+        Self::Loan(err)
     }
 }
 

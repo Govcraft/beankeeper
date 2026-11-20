@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.18.0
+version: 0.19.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -513,6 +513,41 @@ companies. JSON uses `columns` with `label/from/to` and `series` with `code/name
 `code,name,<period labels>` with minor-unit integers. No sum of period-end
 balances is emitted. MCP `report` accepts `kind: "trend"`, required `metric`
 (`spending` or `net-worth`), and optional `from`, `to`, `period`, `currency`.
+
+### Loan amortization and payment splits
+
+```bash
+# Calculate without a company or database
+bk loan schedule --principal 200000 --rate 6 --months 360 --currency USD --json
+
+# Existing accounts: 2000 liability, 5100 expense, 1000 asset
+bk --company acme loan pay --principal 200000 --rate 6 --months 360 \
+  --payment-number 1 --liability 2000 --interest-account 5100 \
+  --paying-account 1000 --date 2026-11-20 --reference mortgage-2026-11 --json
+```
+
+The calculator assumes monthly payments and nominal annual interest divided by
+twelve. `--rate` is a percentage from 0 to 100, with at most four decimal places;
+`--months` is 1 through 1,200. Principal uses major currency units. Currency is
+`--currency`, then `BEANKEEPER_CURRENCY`, then USD. Payments and interest round
+half up in minor units, with the last payment clearing the remainder. Minimum
+regular payment is one minor unit; small loans can pay off early.
+
+`loan pay` debits principal to a liability, interest to an expense, and credits
+the total to an asset, skipping zero-value entries. It uses the audited posting
+path, actor/agent attribution, account tax defaults, and reference duplicate
+detection. Reuse one unique reference per loan payment on every retry; add
+`--on-conflict skip` to return the existing transaction. JSON command IDs are
+`loan.schedule` and `loan.pay`; pay returns the same created/skipped payload as
+`txn post`. Inspect the resulting split with `txn show`.
+
+There are no persistent loan records. Always reuse the original principal,
+rate and term with an explicit payment number. Verify the intended payment
+against the lender's statement: this helper does not infer payment order,
+check the liability balance, handle extra payments or calculate daily interest.
+Fees and variable rates are outside this feature. Schedule needs no ledger
+unless an agent token is supplied, in which case normal token verification
+opens the database. Both commands are CLI-only; MCP tools are unchanged.
 
 ### Budgeting
 
