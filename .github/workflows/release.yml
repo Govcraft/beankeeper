@@ -21,9 +21,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: scripts/check-release.sh --metadata-only --tag "$RELEASE_TAG"
+      - uses: dtolnay/rust-toolchain@stable
       - name: Test offline release preflight
         run: python3 -B -m unittest discover -s scripts/tests -v
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build preflight binary
         run: cargo build --locked -p beankeeper-cli
