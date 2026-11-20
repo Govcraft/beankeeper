@@ -123,6 +123,83 @@ bk --company personal budget set 5000 --year 2026 --annual 14400
 bk --company personal report budget-variance --year 2026
 ```
 
+## Connect an AI assistant through MCP
+
+`bk mcp serve` exposes an existing ledger over the Model Context Protocol using
+stdio. Initialize the ledger and its companies with the CLI first, then configure
+your assistant to launch the server. Each process opens one database and resolves
+its passphrase once at startup. Missing databases and incorrect passphrases fail
+before the protocol starts.
+
+For Claude Desktop, add this entry to `claude_desktop_config.json`, adjusting the
+absolute binary and database paths:
+
+```json
+{
+  "mcpServers": {
+    "bk": {
+      "command": "/usr/local/bin/bk",
+      "args": ["--db", "/absolute/path/books.db", "mcp", "serve"],
+      "env": {
+        "BEANKEEPER_PASSPHRASE_CMD": "secret-tool lookup service beankeeper ledger books"
+      }
+    }
+  }
+}
+```
+
+For Codex, add this entry to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.bk]
+command = "/usr/local/bin/bk"
+args = ["--db", "/absolute/path/books.db", "mcp", "serve"]
+
+[mcp_servers.bk.env]
+BEANKEEPER_PASSPHRASE_CMD = "secret-tool lookup service beankeeper ledger books"
+```
+
+The example command retrieves a passphrase from an existing desktop keyring entry;
+replace it with your password manager's command. The command must run without
+interactive input and print only the passphrase. Omit the environment entry for an
+unencrypted ledger. `BEANKEEPER_DB`, `--passphrase-file`, and a separate
+`--passphrase-fd` also work. File descriptor 0 is reserved for MCP. Passphrases are
+never tool arguments. Append `"--read-only"` to `args` to register only read tools;
+mutation tools are absent and cannot be called.
+
+The server provides `company_list`, `company_show`, `account_list`, `account_show`,
+`account_create`, `txn_post`, `txn_list`, `txn_show`, `report`, `budget_list`,
+`budget_set`, `budget_delete`, `txn_clear`, `txn_reconcile`, `verify`, and `audit_log`.
+Company-scoped tools require a `company` argument. `report` takes a `kind` and its
+options, with all ten CLI report kinds available. Tool schemas describe the
+accepted arguments. For example, `txn_post` takes:
+
+```json
+{
+  "company": "personal",
+  "description": "March rent",
+  "date": "2026-03-01",
+  "reference": "rent-2026-03",
+  "on_conflict": "skip",
+  "debits": [{"account": "5000", "amount": "1200.00", "memo": "Rent"}],
+  "credits": [{"account": "1000", "amount": "1200.00"}],
+  "meta": {"vendor": "Landlord"}
+}
+```
+
+Always supply a stable `reference` and `on_conflict: "skip"` for safe retries.
+The CLI's default `error` strategy rejects duplicates; its existing `upsert`
+strategy remains unsupported. Inputs use decimal major-unit strings, and results
+use the same data payload and integer minor units as `bk --json`. Results are
+available as JSON text content and, where the negotiated MCP protocol permits the
+payload's shape, `structuredContent`. Tool failures set `isError: true` with
+`{code, message}`. Audited writes use `mcp:<client name>` from the MCP handshake,
+with a sanitized name or `mcp:unknown`. Creation auditing is unchanged.
+
+This local server has no HTTP transport or authentication. Ledger initialization,
+company creation/deletion, account deletion, import, export, and attachments remain
+CLI operations. See the [MCP command reference](docs/beankeeper/references/commands.md#mcp).
+
 ## Demo Mode
 
 Spin up a fully populated database to explore every feature without manual setup:

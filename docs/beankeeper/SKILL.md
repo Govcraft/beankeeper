@@ -3,7 +3,7 @@ name: beankeeper
 version: 0.10.1
 description: >
   This skill should be used when interacting with the beankeeper accounting system
-  via the `bk` CLI. Use when the user asks to "record a transaction", "post an entry",
+  via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
   "check a balance", "generate a report", "create a company", "set up accounts",
   "import bank statements", "set a budget", "compare budget vs actual",
   "reconcile entries", "verify the ledger", "export data", "attach a receipt",
@@ -13,7 +13,7 @@ description: >
 
 # Beankeeper (`bk`) -- Double-Entry Accounting CLI
 
-Beankeeper is a double-entry accounting system operated entirely through the `bk` command-line interface. It stores data in a local SQLite database (optionally encrypted via SQLCipher). All output supports three formats: human-readable tables, machine-readable JSON, and CSV.
+Beankeeper is a double-entry accounting system operated through the `bk` CLI or its local MCP server. It stores data in a local SQLite database (optionally encrypted via SQLCipher). All output supports three formats: human-readable tables, machine-readable JSON, and CSV.
 
 ## Core Concepts
 
@@ -52,10 +52,38 @@ Key conventions for agents:
 
 For the complete JSON envelope specification, see [`references/json-api.md`](references/json-api.md).
 
+## Using MCP
+
+When a `bk` MCP connection is available, call its tools directly. The server runs
+as `bk --db /absolute/path/books.db mcp serve` against an existing ledger. Add
+`--read-only` to omit all mutation tools. Configure secrets at startup through
+`BEANKEEPER_PASSPHRASE_CMD`, `--passphrase-file`, or a descriptor other than stdin;
+never include a passphrase in tool arguments. The database and secret are fixed
+for that server process.
+
+- Pass `company` explicitly for account, transaction, report, and budget tools.
+- Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
+- Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; the existing CLI `upsert` strategy remains unsupported. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
+- Call `txn_list` or `txn_show` to inspect posted entries. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
+- Use `budget_list`, `budget_set`, `budget_delete`, and `txn_clear` for their CLI equivalents. Budget deletion is confirmed by calling the tool. `txn_clear.batch` accepts an in-memory array of `{reference, amount?}` rows with an `account`; it never reads a file or stdin.
+- `txn_reconcile` checks for orphaned intercompany links without changing data. `verify` checks ledger integrity; `audit_log` shows changes.
+
+Successful results contain the CLI JSON **data payload**, without its envelope.
+Read JSON text content, or `structuredContent` when present. The SDK uses JSON text
+for array payloads on protocol versions that require structured content to be an
+object. Amounts in results remain integer minor units. Errors set `isError: true`
+and return `{code, message}` with the CLI's existing error codes. Audited mutations
+record `mcp:<sanitized client name>`; current creation-auditing behavior is unchanged.
+
+Initialization, company creation/deletion, account deletion, import, export, and
+attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
+[client configuration examples](../../README.md#connect-an-ai-assistant-through-mcp).
+
 ## Command Overview
 
 | Command | Purpose |
 |---------|---------|
+| `bk mcp serve` | Serve the local ledger over MCP stdio (`--read-only` omits writes) |
 | `bk init` | Create a new database (`--demo` for sample data, `--encrypt` for passphrase) |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/delete` | Manage chart of accounts |
