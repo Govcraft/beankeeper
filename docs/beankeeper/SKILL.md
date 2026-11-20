@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.6.0
+version: 0.10.1
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI. Use when the user asks to "record a transaction", "post an entry",
@@ -17,19 +17,19 @@ Beankeeper is a double-entry accounting system operated entirely through the `bk
 
 ## Core Concepts
 
-- **Double-entry**: Every transaction has balanced debits and credits. Total debits always equal total credits.
+- **Double-entry**: Postings are validated at runtime before saving. Unbalanced or mixed-currency entries are rejected; the library's `Transaction` type can only be constructed through `JournalEntry::post()` after validation.
 - **Companies**: Multi-tenant -- each company has its own chart of accounts and ledger. Specified via `--company SLUG` or `BEANKEEPER_COMPANY` env var.
 - **Accounts**: Five types: `asset`, `liability`, `equity`, `revenue`, `expense`. Each has a code (e.g. `1000`) and a normal balance direction (debit or credit).
 - **Amounts**: Always specified in **major units** (dollars, not cents) on the CLI. Stored internally as minor units (cents). Example: `2500` means $2,500.00.
 - **Append-only ledger**: Transactions cannot be edited or deleted after posting. Corrections are made via reversing entries.
 - **Audit trail**: The few operations that mutate or delete existing rows (clearance changes, intercompany correlation, budget revisions, account/company deletions) each append an immutable record — actor, timestamp, before/after — readable via `bk audit log`. Set the actor with `--actor NAME` or `BK_ACTOR`.
-- **Idempotency**: Use `--reference KEY` with `--on-conflict skip` for safe retry of duplicate posts.
+- **Idempotency**: `--reference KEY` is trimmed, stored verbatim, and unique per company. Empty references are rejected. Use `--on-conflict skip` for safe retry of duplicate posts; `upsert` is not implemented.
 
 For detailed accounting concepts and account types, see [`references/accounting.md`](references/accounting.md).
 
 ## Agent Integration
 
-**Always use `--json` for programmatic access.** Every JSON response uses a uniform envelope:
+**Use `--json` for programmatic command responses.** Responses use a uniform envelope, except for successful exports:
 
 ```json
 {
@@ -40,6 +40,8 @@ For detailed accounting concepts and account types, see [`references/accounting.
 ```
 
 Errors return `"ok": false` with an `"error"` object containing `"code"` and `"message"`.
+
+`bk export --output-format json` writes a standalone `{"beankeeper_export": {"version": 1, "companies": [...]}}` object, even with `--json`. It has no `ok`, `meta`, or `data` wrapper. Read exported companies with `jq '.beankeeper_export.companies'`.
 
 Key conventions for agents:
 - Amounts in JSON are **raw integers in minor units** (e.g. `250000` = $2,500.00 for USD with 2 decimal places)

@@ -36,6 +36,8 @@ bk export --output-format json                # JSON to stdout
 bk export --output-format csv --output backup.csv  # CSV to file
 ```
 
+Successful JSON exports write a standalone `{"beankeeper_export": {"version": 1, "companies": [...]}}` object rather than the command-response envelope, even with `--json`. Use `jq '.beankeeper_export.companies'` to read the exported companies.
+
 `--output-format {json|csv}` selects the export file format. The legacy local
 `export --format` spelling remains supported as a hidden alias. For import and
 export commands, place general response `--format` before the subcommand (or use

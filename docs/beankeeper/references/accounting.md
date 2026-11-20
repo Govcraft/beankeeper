@@ -89,7 +89,7 @@ recoverable via `bk audit log --entity entry`.
 
 Transactions support an optional `--reference` key (unique per company). Posting with the same reference twice returns an error by default, or silently skips with `--on-conflict skip`. This enables safe retries when importing or automating transaction posting.
 
-The reference is a human-readable string (e.g. `RENT-2026-03`, `CHASE-20260315-001`). Internally, beankeeper generates a deterministic hash-based idempotency key from it.
+The reference is a human-readable string (e.g. `RENT-2026-03`, `CHASE-20260315-001`). The CLI trims surrounding whitespace and stores the reference verbatim as the key, unique per company. Empty or whitespace-only references are rejected. References are not hashed, and the same reference can be used in different companies. `--on-conflict upsert` is not implemented.
 
 ## Intercompany Linking
 
