@@ -219,6 +219,7 @@ tokens for multiple agents; do not put credentials in tool arguments or URLs.
 - Call `txn_reverse` with `company` and the original `id` to create a linked mirror posting; optional fields are `date`, `description`, and `reference`. Supply the same explicit `reference` on retries to get `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed. Existing clearings stay on the original; reversal entries start uncleared. This write tool is absent in read-only mode.
 - Call `txn_list` or `txn_show` to inspect posted entries. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
 - For `report` with `kind: "reconciliation"`, `mode` accepts `bank` (default) or `settlement`. Settlement mode requires `statement` and accepts `link_key` (default `applies_to`) for payment-to-charge metadata links.
+- Use `security_create`, `security_list`, and `security_price` to register symbols, inspect them and record price observations. Trade with `investment_buy` / `investment_sell`, inspect basis with `investment_lots`, and value positions with `investment_holdings`. Quantities and input money are decimal strings; `company` is required. Read-only mode retains the three inspection tools and hides the four writes. See [securities and investment lots](#securities-and-investment-lots) for account setup and trade rules.
 - Use `budget_list`, `budget_set`, `budget_delete`, and `txn_clear` for their CLI equivalents. Budget deletion is confirmed by calling the tool. `txn_clear.batch` accepts an in-memory array of `{reference, amount?}` rows with an `account`; it never reads a file or stdin.
 - `txn_reconcile` checks for orphaned intercompany links without changing data. `verify` checks accounting and audit integrity; `audit_log` includes `prev_hash` and `row_hash`, and accepts `action: "create"` for posting attribution. Audited MCP writes use the hash-chained actor `mcp:<client>`.
 
@@ -244,10 +245,22 @@ attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/delete` | Manage chart of accounts |
 | `bk txn post` | Record a balanced journal entry |
+| `bk txn meta set/unset` | Annotate posted transactions by ID or reference without changing financial fields |
+| `bk txn propose` | Submit a balanced posting for approval without posting it |
+| `bk txn proposals` | List visible pending requests, optionally including resolved proposals |
+| `bk txn approve/reject` | Resolve a pending proposal; `withdraw` aliases rejection of an owned request |
 | `bk txn list` | Search and filter transactions |
 | `bk txn reverse ID` | Post a linked mirror transaction (alias `void`); reject reconciled originals |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
+| `bk schedule create/list/run/cancel` | Manage pending recurring templates and post due occurrences |
+| `bk security create/list/price` | Register company securities and record dated prices |
+| `bk investment buy/sell/lots/holdings` | Post trades, inspect lot basis and value holdings |
+| `bk loan schedule/pay` | Calculate fixed-rate amortization or post one scheduled payment |
+| `bk key init` | Create the local trust root inside an encrypted ledger |
+| `bk agent issue/list/revoke` | Issue attestations, inspect claims and revoke credentials |
+| `bk agent limit set/show/clear` | Manage per-agent, per-company/currency spend limits |
+| `bk policy show/set` | Inspect or change capability enforcement |
 | `bk rule create` | Persist a company-scoped description-to-account mapping |
 | `bk rule list` | List categorization rules in evaluation order |
 | `bk rule delete` | Remove a mapping without changing existing postings |
@@ -269,6 +282,7 @@ attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 | `bk report aging` | Receivables/payables aging buckets (FIFO or specific invoice matching, by transaction date) |
 | `bk report reconciliation` | Bank balances by default; `--mode settlement --statement ID` compares AR/AP charge applications with statement net, listing short pays, overpays and linked/unmatched credits. Supports metadata filters/grouping |
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
+| `bk report trend` | Show revenue, spending or net worth across periods |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export accounting data as JSON or CSV |

@@ -413,12 +413,26 @@ unencrypted ledger. `BEANKEEPER_DB`, `--passphrase-file`, and a separate
 never tool arguments. Append `"--read-only"` to `args` to register only read tools;
 mutation tools are absent and cannot be called.
 
-The server provides `company_list`, `company_show`, `account_list`, `account_show`,
-`account_create`, `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_list`, `txn_show`, `report`, `budget_list`,
-`budget_set`, `budget_delete`, `txn_clear`, `txn_reconcile`, `verify`, and `audit_log`.
-Company-scoped tools require a `company` argument. `report` takes a `kind` and its
-options, with all eleven CLI report kinds available. Tool schemas describe the
-accepted arguments. For example, `txn_post` takes:
+### Available tools
+
+| Tools | Purpose |
+| --- | --- |
+| `company_list`, `company_show` | Inspect companies |
+| `account_list`, `account_show`, `account_create` | Inspect and create accounts |
+| `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Post, reverse and annotate transactions |
+| `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
+| `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
+| `security_create`, `security_list`, `security_price` | Register securities and record prices |
+| `investment_buy`, `investment_sell`, `investment_lots`, `investment_holdings` | Trade, inspect lots and value holdings |
+| `report` | Run CLI reports |
+| `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
+| `verify`, `audit_log` | Verify integrity and inspect the audit trail |
+
+This catalog covers the full router. Capability enforcement can restrict discovery
+further. Company-scoped tools require a `company` argument. `report` takes a `kind`
+and its options, with all 13 CLI report kinds available, including `schedule-c`,
+`1099` and `trend`. See the [report-kind list](docs/beankeeper/references/commands.md#report-kinds).
+Tool schemas describe the accepted arguments. For example, `txn_post` takes:
 
 ```json
 {
