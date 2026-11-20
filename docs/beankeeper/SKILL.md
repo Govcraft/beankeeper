@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.14.0
+version: 0.15.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -128,6 +128,9 @@ attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 | `bk txn reverse ID` | Post a linked mirror transaction (alias `void`); reject reconciled originals |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
+| `bk rule create` | Persist a company-scoped description-to-account mapping |
+| `bk rule list` | List categorization rules in evaluation order |
+| `bk rule delete` | Remove a mapping without changing existing postings |
 | `bk txn clear` | Clear entries (in full or in part) against a statement, by id, by reference, or in an atomic batch; mark reconciled |
 | `bk txn attach` | Link documents (receipts, invoices) to transactions |
 | `bk txn reconcile` | Find orphaned intercompany correlations |
@@ -240,6 +243,30 @@ rows are all posted; re-importing the same or an overlapping file skips matching
 occurrences and posts only additional ones. Duplicate explicit references still
 skip or error according to `--on-conflict`.
 See [commands.md](references/commands.md) for the full import contract.
+
+### Memorize bank categorization
+
+```bash
+bk --company acme rule create --contains Starbucks --account 5000 --priority 10
+bk --company acme rule list --json
+bk --company acme rule delete <RULE_ID> --force
+```
+
+Rules automatically apply to future CSV and OFX/QFX imports, including dry runs.
+Patterns are trimmed and matched as literal substrings after Unicode lowercase
+conversion. CSV matches its description; OFX matches combined name/memo.
+Higher priority wins (default `0`), then ascending rule ID. Rules are scoped to
+one company, require an existing destination account, and replace only the
+suspense side. They apply to both inflows and outflows; unmatched rows retain
+`--suspense`. Account tax defaults apply. A rule targeting the import bank is
+an error. JSON journal imports retain their explicit entries.
+
+Creating/deleting rules never changes posted transactions. CSV references are
+computed before rule selection, preserving duplicate detection across rule
+changes. Delete and recreate a rule to change its mapping. Creation/deletion
+are audited under entity `rule`, with actions `create` and `rule_delete` in JSON.
+Accounts referenced by rules cannot be deleted until those rules are removed.
+Rule management is available via CLI; MCP tools remain unchanged.
 
 ### Generate reports
 

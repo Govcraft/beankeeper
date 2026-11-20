@@ -457,9 +457,46 @@ posts only the additional occurrence. File names and unrelated rows do not
 affect these references. Duplicate explicit references still skip or error
 according to `--on-conflict`. Explicit blank JSON references are rejected.
 
+### Bank Import Categorization Rules
+
+Save recurring description-to-account mappings once, then apply them automatically
+to future CSV and OFX/QFX imports:
+
+```sh
+bk --company personal rule create --contains Starbucks --account 5000 --priority 10
+bk --company personal rule list --json
+bk --company personal txn import --file checking.ofx --account 1000 --suspense 9000
+bk --company personal rule delete rule_01h455vb4pex5vsknk084sn02q --force
+```
+
+Use the rule ID returned by `create` or `list` when deleting a rule. Rules belong
+to one company and select an existing account in that company. Matching trims
+the pattern, lowercases it and the imported description using Unicode lowercase,
+then checks for a literal substring. `%` and `_` have no special meaning. CSV
+uses its description column; OFX uses the combined name and memo.
+
+The first matching rule wins: higher `--priority` values run first (default `0`),
+then ascending rule ID breaks ties. The selected account replaces only suspense:
+an outflow debits it, and an inflow credits it. Unmatched rows keep `--suspense`,
+which remains required. Destination account tax defaults apply. A rule selecting
+the import's bank account is rejected. JSON journal batches keep their explicit
+entries.
+
+Rules apply during `--dry-run` too. Creating or deleting rules does not change
+existing postings or their references. CSV generated references are calculated
+before rule selection, so rule changes do not duplicate previously imported
+rows. To change a mapping, delete its rule and create a replacement. These
+operations are audited (`--entity rule`, actions `create` and `rule-delete`).
+Delete referencing rules before deleting an account. Rule commands support
+table, JSON and CSV output; they are available through the CLI, with no new MCP
+tools.
+
 ### OFX / QFX Bank Statement Import
 
-Import transactions from bank and credit card statements exported in OFX format. Each OFX transaction becomes a balanced double-entry against a user-specified bank account and suspense/clearing account:
+Import transactions from bank and credit card statements exported in OFX format.
+Each OFX transaction becomes a balanced double-entry against a user-specified
+bank account and the matching rule's account, or suspense/clearing when no rule
+matches:
 
 ```sh
 # Import an OFX statement -- format is auto-detected from the file extension
