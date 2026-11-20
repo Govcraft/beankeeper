@@ -311,7 +311,7 @@ mod tests {
         let (hash, dest) = hash_and_store_file(&source, &db_path)
             .unwrap_or_else(|e| panic!("hash_and_store: {e}"));
 
-        assert!(!hash.is_empty());
+        assert_ne!(hash, "");
         assert_eq!(hash.len(), 64); // SHA-256 hex is 64 chars
         assert!(dest.exists());
 

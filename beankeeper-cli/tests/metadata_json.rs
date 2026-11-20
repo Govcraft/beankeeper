@@ -238,7 +238,10 @@ fn meta_flags_on_post_and_list() {
 
     // Exact, case-sensitive string match; free text never matches.
     assert_eq!(list_ids(&db, "acme", &["--meta", "vendor=AWS"]), vec![a]);
-    assert!(list_ids(&db, "acme", &["--meta", "vendor=aws"]).is_empty());
+    assert_eq!(
+        list_ids(&db, "acme", &["--meta", "vendor=aws"]),
+        Vec::<i64>::new()
+    );
     // Repeated filters are AND-ed.
     assert_eq!(
         list_ids(
@@ -248,13 +251,13 @@ fn meta_flags_on_post_and_list() {
         ),
         vec![a]
     );
-    assert!(
+    assert_eq!(
         list_ids(
             &db,
             "acme",
             &["--meta", "vendor=AWS", "--meta", "project=x"]
-        )
-        .is_empty()
+        ),
+        Vec::<i64>::new()
     );
     // Numbers and booleans compare by their JSON text.
     assert_eq!(list_ids(&db, "acme", &["--meta", "qty=3"]), vec![b]);

@@ -727,6 +727,21 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
 - 440+ tests covering unit, integration, and real-world accounting scenarios
 
+Every pull request and push to `main` runs formatting, Clippy with warnings
+treated as errors, and the workspace tests (including doctests) on Linux and
+macOS using stable Rust. A separate job checks all workspace and test targets
+with Rust 1.88.0, the minimum supported version declared by both crates.
+Compiled dependencies are cached per platform and toolchain.
+
+Run the quality checks locally before submitting a change:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo +1.88.0 check --workspace --all-targets --locked
+```
+
 ## License
 
 Licensed under either of:

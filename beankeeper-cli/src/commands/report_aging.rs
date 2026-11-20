@@ -2367,7 +2367,7 @@ mod tests {
     #[test]
     fn fifo_overpayment_becomes_unapplied_credit() {
         let r = apply_fifo(&[mv(1, "2026-01-01", 1000), mv(2, "2026-01-10", -1500)]);
-        assert!(r.open_items.is_empty());
+        assert_eq!(r.open_items, Vec::<OpenItem>::new());
         assert_eq!(r.unapplied_credit, 500);
     }
 
@@ -2388,7 +2388,7 @@ mod tests {
     fn fifo_sorts_by_date_then_id() {
         // Payment listed first but dated after the charge.
         let r = apply_fifo(&[mv(5, "2026-03-01", -100), mv(9, "2026-02-01", 100)]);
-        assert!(r.open_items.is_empty());
+        assert_eq!(r.open_items, Vec::<OpenItem>::new());
         assert_eq!(r.unapplied_credit, 0);
     }
 
@@ -2541,7 +2541,7 @@ mod tests {
         let grouped = build_report(rows(true), as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(grouped.groups.len(), 2);
         assert_eq!(grouped.groups[0].items[0].item.transaction_id, 1);
-        assert!(grouped.groups[1].items.is_empty());
+        assert_eq!(grouped.groups[1].items, Vec::<AgedItem>::new());
         assert_eq!(grouped.net(), ungrouped.net());
     }
 
@@ -2553,7 +2553,7 @@ mod tests {
             linked(3, "2026-02-10", -100, vec![by_ref("R2")]),
         ]);
         assert_eq!(open_of(&r), vec![(2, 100)]);
-        assert!(r.unmatched_links.is_empty());
+        assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
     }
 
     #[test]
@@ -2578,7 +2578,7 @@ mod tests {
         ];
         let specific = apply_specific(&movements);
         assert_eq!(open_of(&specific), vec![(1, 1000), (2, 200)]);
-        assert!(specific.unmatched_links.is_empty());
+        assert_eq!(specific.unmatched_links, Vec::<UnmatchedLink>::new());
         // FIFO would have reduced the oldest item instead.
         assert_eq!(open_of(&apply_fifo(&movements)), vec![(1, 700), (2, 500)]);
     }
@@ -2596,7 +2596,7 @@ mod tests {
         ]);
         assert_eq!(open_of(&r), vec![(2, 80)]);
         assert_eq!(r.unapplied_credit, 0);
-        assert!(r.unmatched_links.is_empty());
+        assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
     }
 
     #[test]
@@ -2610,7 +2610,7 @@ mod tests {
             linked(6, "2026-03-03", -10, vec![by_ref("3")]),
         ]);
         assert_eq!(open_of(&r), vec![(1, 100), (3, 50)]);
-        assert!(r.unmatched_links.is_empty());
+        assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
     }
 
     #[test]
@@ -2656,7 +2656,7 @@ mod tests {
             mv(3, "2026-02-01", 60),
         ]);
         assert_eq!(open_of(&r), vec![(1, 100)]);
-        assert!(r.unmatched_links.is_empty());
+        assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
     }
 
     #[test]
@@ -2702,7 +2702,7 @@ mod tests {
             linked(4, "2026-02-06", -30, vec![by_ref("R2")]),
         ]);
         assert_eq!(open_of(&r), vec![(1, 70)]);
-        assert!(r.unmatched_links.is_empty());
+        assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
     }
 
     #[test]
@@ -2712,7 +2712,7 @@ mod tests {
             linked(2, "2026-01-05", -180, vec![by_ref("R1")]),
             mv(3, "2026-01-10", 50), // consumes credit
         ]);
-        assert!(r.open_items.is_empty());
+        assert_eq!(r.open_items, Vec::<OpenItem>::new());
         assert_eq!(r.unapplied_credit, 30);
     }
 

@@ -619,7 +619,7 @@ fn specific_short_payment_on_recent_item() {
         bucket_amounts(&r["data"]["totals"]["buckets"]),
         vec![0, 20_000, 0, 0, 40_000]
     );
-    assert!(unmatched_reasons(&r).is_empty());
+    assert_eq!(unmatched_reasons(&r), Vec::<(String, String)>::new());
     assert_ties_to_balance(&l, &r, "1100", true);
 }
 
@@ -690,7 +690,7 @@ fn specific_excess_and_unlinked_settlements_fall_back_to_fifo() {
         open_items(&r["data"]["groups"][0]),
         items(&[("INV-101", 25_000)])
     );
-    assert!(unmatched_reasons(&r).is_empty());
+    assert_eq!(unmatched_reasons(&r), Vec::<(String, String)>::new());
     assert_ties_to_balance(&l, &r, "1100", true);
 }
 
@@ -1007,7 +1007,7 @@ fn payable_specific_identification() {
         bucket_amounts(&r["data"]["totals"]["buckets"]),
         vec![0, 0, 0, 0, 20_000]
     );
-    assert!(unmatched_reasons(&r).is_empty());
+    assert_eq!(unmatched_reasons(&r), Vec::<(String, String)>::new());
     assert_ties_to_balance(&l, &r, "2000", false);
 
     let fifo = l.aging(&["--account", "2000"]);
