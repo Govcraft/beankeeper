@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.19.0
+version: 0.20.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
