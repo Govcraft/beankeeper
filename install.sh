@@ -102,10 +102,14 @@ compute_sha256() {
 }
 
 verify() {
-    if command -v bk >/dev/null 2>&1; then
-        info "installed bk v${VERSION} to ${INSTALL_DIR}/bk"
-    else
-        warn "bk was installed to ${INSTALL_DIR}/bk but is not on your PATH"
+    INSTALLED_VERSION="$("${INSTALL_DIR}/bk" --version)" || fatal "installed bk could not be executed"
+    if [ "$INSTALLED_VERSION" != "bk ${VERSION}" ]; then
+        fatal "installed binary reports '${INSTALLED_VERSION}', expected 'bk ${VERSION}'"
+    fi
+
+    info "installed bk v${VERSION} to ${INSTALL_DIR}/bk"
+    if [ "$(command -v bk || true)" != "${INSTALL_DIR}/bk" ]; then
+        warn "add ${INSTALL_DIR} to the front of your PATH to use this installation"
     fi
 }
 

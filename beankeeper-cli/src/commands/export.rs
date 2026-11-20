@@ -26,7 +26,7 @@ pub fn run(
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open(&cli.db, pp.as_ref())?;
+    let db = Db::open_existing(&cli.db, pp.as_ref())?;
 
     let export_format = format.unwrap_or(ExportFormat::Json);
 

@@ -217,7 +217,10 @@ fn json_shape_and_default_account_selection() -> TestResult {
     assert_eq!(env["meta"]["company"], CO);
     assert_eq!(env["data"]["currency"], "USD");
     assert!(env["data"]["from"].is_null());
-    assert!(env["data"]["to"].is_null());
+    assert_eq!(
+        env["data"]["to"],
+        chrono::Local::now().date_naive().to_string()
+    );
 
     // Only accounts with activity: 2000 (Loan) has none.
     let codes: Vec<&str> = env["data"]["accounts"]
@@ -352,7 +355,10 @@ fn table_output_renders_statement() -> TestResult {
             "1000",
         ],
     )?;
-    assert!(out.contains("General Ledger (USD)"));
+    assert!(out.contains(&format!(
+        "General Ledger (through {}) (USD)",
+        chrono::Local::now().date_naive()
+    )));
     assert!(out.contains("Opening balance"));
     assert!(out.contains("Closing balance"));
     assert!(out.contains("120.00"));

@@ -9,6 +9,7 @@ pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;
 pub mod report_currency;
+mod report_dates;
 pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;
@@ -93,7 +94,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
 
         Command::Verify => verify::run(cli),
 
-        Command::Export { format, output } => export::run(cli, *format, output.as_deref()),
+        Command::Export { format, output, .. } => export::run(cli, *format, output.as_deref()),
 
         Command::Company(sub) => company::run(cli, sub),
 

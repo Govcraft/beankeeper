@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::CliError;
@@ -20,7 +20,41 @@ impl Db {
     ///
     /// Returns `CliError::Sqlite` on connection or pragma errors.
     pub fn open(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
-        let conn = Connection::open(path)?;
+        Self::open_with_flags(path, passphrase, OpenFlags::default())
+    }
+
+    /// Opens an existing database without creating a new file.
+    ///
+    /// Applies the same encryption, connection settings, and schema migrations
+    /// as [`Self::open`]. Commands other than `init` must use this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::NotFound`] with initialization instructions when the
+    /// path does not exist, or a database error if it cannot be opened.
+    pub fn open_existing(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
+        if !path.try_exists()? {
+            return Err(CliError::NotFound(format!(
+                "database '{}' not found; run `bk init --path '{}'` to create it",
+                path.display(),
+                path.display()
+            )));
+        }
+        // Omit SQLITE_OPEN_CREATE so a file removed after the existence check
+        // cannot be silently recreated.
+        Self::open_with_flags(
+            path,
+            passphrase,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+    }
+
+    fn open_with_flags(
+        path: &Path,
+        passphrase: Option<&SecretString>,
+        flags: OpenFlags,
+    ) -> Result<Self, CliError> {
+        let conn = Connection::open_with_flags(path, flags)?;
 
         if let Some(pp) = passphrase {
             conn.pragma_update(None, "key", pp.expose_secret())?;

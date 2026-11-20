@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use beankeeper::core::JournalEntry;
+use beankeeper::core::{JournalEntry, TransactionError};
 use beankeeper::types::{Currency, DocumentType, Money};
 
 use crate::cli::{Cli, OutputFormat, TxnCommand, resolve_format};
@@ -27,7 +27,10 @@ pub fn run(
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db_handle = Db::open(&cli.db, pp.as_ref())?;
+    let db_handle = Db::open_existing(&cli.db, pp.as_ref())?;
+    if !matches!(sub, TxnCommand::Reconcile) {
+        crate::db::companies::get_company(db_handle.conn(), company)?;
+    }
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
@@ -93,6 +96,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
         account,
         suspense,
         on_conflict,
+        ..
     } = sub
     else {
         return Err(CliError::General("expected txn import subcommand".into()));
@@ -104,7 +108,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
             Some(path) if path != "-" => crate::commands::import_ofx::detect_format(path)?,
             _ => {
                 return Err(CliError::Usage(
-                    "cannot detect format from stdin; specify --format".into(),
+                    "cannot detect format from stdin; specify --input-format".into(),
                 ));
             }
         },
@@ -256,6 +260,14 @@ fn parse_entry_arg(s: &str, currency: Currency) -> Result<(String, i64, Option<S
     }
 
     let minor = parse_amount_to_minor(amount_str.trim(), currency)?;
+    if minor <= 0 {
+        let amount = Money::from_minor(i128::from(minor), currency)
+            .amount()
+            .format_decimal(currency.minor_units());
+        return Err(CliError::Validation(format!(
+            "entry amount must be positive, got {amount} {currency}"
+        )));
+    }
 
     let memo = if parts.len() == 3 && !parts[2].is_empty() {
         Some(parts[2].to_string())
@@ -354,6 +366,30 @@ fn normalize_reference(input: &str) -> Result<String, &'static str> {
     Ok(trimmed.to_string())
 }
 
+/// Validate a posting and retain the input currency in balance diagnostics.
+fn validate_journal(journal: JournalEntry, currency: Currency) -> Result<(), CliError> {
+    match journal.post() {
+        Ok(_) => Ok(()),
+        Err(TransactionError::Unbalanced {
+            total_debits,
+            total_credits,
+        }) => {
+            let difference = Money::new(total_debits, currency)
+                .checked_sub(Money::new(total_credits, currency))
+                .map_err(|error| CliError::Validation(error.to_string()))?
+                .abs()
+                .amount()
+                .format_decimal(currency.minor_units());
+            let debits = total_debits.format_decimal(currency.minor_units());
+            let credits = total_credits.format_decimal(currency.minor_units());
+            Err(CliError::Validation(format!(
+                "transaction is unbalanced: debits={debits} {currency}, credits={credits} {currency} (difference {difference} {currency})"
+            )))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Execute the `txn post` subcommand.
 #[allow(clippy::too_many_arguments)]
 fn run_post(
@@ -425,7 +461,7 @@ fn run_post(
     }
 
     // 5. Validate via post() - enforces balance invariant
-    let _transaction = journal.post()?;
+    validate_journal(journal, currency)?;
 
     // 6. Build entries for DB persistence
     let db_entries = build_db_entries(

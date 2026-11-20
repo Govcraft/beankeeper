@@ -23,7 +23,8 @@ pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open(&cli.db, pp.as_ref())?;
+    let db = Db::open_existing(&cli.db, pp.as_ref())?;
+    crate::db::companies::get_company(db.conn(), company)?;
     let format = resolve_format(None, cli);
 
     match sub {
@@ -107,7 +108,11 @@ fn run_set(
 
         match format {
             OutputFormat::Table => {
-                let rendered = output::table::render_budgets(&rows, currency.minor_units(), true);
+                let rendered = output::table::render_budgets(
+                    &rows,
+                    currency.minor_units(),
+                    output::should_use_color(cli.verbosity.no_color),
+                );
                 println!("{rendered}");
             }
             OutputFormat::Json => {
@@ -150,7 +155,11 @@ fn run_set(
 
         match format {
             OutputFormat::Table => {
-                let rendered = output::table::render_budgets(&[row], currency.minor_units(), true);
+                let rendered = output::table::render_budgets(
+                    &[row],
+                    currency.minor_units(),
+                    output::should_use_color(cli.verbosity.no_color),
+                );
                 println!("{rendered}");
             }
             OutputFormat::Json => {
@@ -203,7 +212,11 @@ fn run_list(
 
     match format {
         OutputFormat::Table => {
-            let rendered = output::table::render_budgets(&rows, currency.minor_units(), true);
+            let rendered = output::table::render_budgets(
+                &rows,
+                currency.minor_units(),
+                output::should_use_color(cli.verbosity.no_color),
+            );
             println!("{rendered}");
         }
         OutputFormat::Json => {

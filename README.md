@@ -242,7 +242,7 @@ bk --company personal txn import --file checking.ofx --account 1000 --suspense 9
 bk --company personal txn import --file checking.ofx --account 1000 --suspense 9000 --dry-run
 
 # Import from stdin with explicit format
-cat statement.qfx | bk --company personal txn import --file - --format ofx --account 1000 --suspense 9000
+cat statement.qfx | bk --company personal txn import --file - --input-format ofx --account 1000 --suspense 9000
 ```
 
 **Deduplication is automatic.** Each OFX transaction's unique `FITID` is stored as an idempotency reference, so re-importing the same file skips already-posted transactions. Use `--on-conflict error` to fail the whole import if any transaction already exists:
@@ -350,7 +350,7 @@ bk --company personal account list --name "Cash" --with-balances --to 2026-06-30
 
 ### Output Formats
 
-Every command supports `--format table` (default), `--format json`, and `--format csv`. The output `--format`/`--json` options are top-level: place them before the subcommand (e.g. `bk --format csv txn list`). Use `--json` as shorthand:
+Every command supports `--format table` (default), `--format json`, and `--format csv`. The output `--format`/`--json` options work before or after the subcommand (e.g. `bk txn list --format csv`). Import and export use `--input-format` and `--output-format` for their file formats; their legacy local `--format` aliases remain supported. Use `--json` as shorthand:
 
 ```sh
 # Pipe JSON to jq (data is inside the envelope's "data" field)

@@ -1,6 +1,6 @@
 # Command Reference
 
-All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`.
+All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
 
 `--actor NAME` sets the principal recorded in the audit trail for any mutating command (see [Audit](#audit)). It falls back to the `BK_ACTOR` environment variable, then the OS user, then `"cli"`.
 
@@ -32,9 +32,15 @@ bk --json verify   # Returns { "data": { "schema_version": 7, "status": "healthy
 Export all data as JSON or CSV.
 
 ```bash
-bk export --format json                # JSON to stdout
-bk export --format csv --output backup.csv  # CSV to file
+bk export --output-format json                # JSON to stdout
+bk export --output-format csv --output backup.csv  # CSV to file
 ```
+
+`--output-format {json|csv}` selects the export file format. The legacy local
+`export --format` spelling remains supported as a hidden alias. For import and
+export commands, place general response `--format` before the subcommand (or use
+`--json`) so it is distinct from the local file format. For example,
+`bk --format json txn import --input-format ofx --file statement.ofx --account 1000 --suspense 9000`.
 
 ## Companies
 
@@ -218,12 +224,12 @@ bk --company acme txn import \
   --file statement.ofx --account 1000 --suspense 9000 --dry-run
 
 cat data.ofx | bk --company acme txn import \
-  --file - --format ofx --account 1000 --suspense 9000
+  --file - --input-format ofx --account 1000 --suspense 9000
 ```
 
 **Flags:**
 - `--file PATH`: Input file (use `-` for stdin)
-- `--format {ofx|csv|json}`: Auto-detected from extension if omitted
+- `--input-format {ofx|csv|json}`: Auto-detected from extension if omitted; `--format` remains a hidden compatibility alias
 - `--account CODE`: Bank/asset account (required for OFX)
 - `--suspense CODE`: Contra account for unclassified entries (required for OFX)
 - `--dry-run`: Validate without persisting
@@ -349,6 +355,19 @@ bk --company acme budget delete 5000 --year 2026 --force   # Skip confirmation
 ```
 
 ## Reports
+
+### Report date defaults
+
+All date-based reports use inclusive `YYYY-MM-DD` dates and local today as the
+omitted end date. Point-in-time reports (`balance`, `balance-sheet`,
+`trial-balance`, `ledger`, `reconciliation`, and `aging`) include history through
+today and exclude future transactions unless an explicit later end date is
+provided. Aging uses `--as-of`; the others use `--to`. An omitted `--from` on
+`income-statement`, `cash-flow`, `tax-summary`, or a `--period`/`--compare` report
+means January 1 of the effective end date's year. Thus a historical `--to` alone
+selects that year's activity. Explicit bounds override these defaults; invalid
+or reversed ranges fail validation. Table headings show the effective window.
+Budget variance continues to use its required `--year` and optional month range.
 
 All report commands require `--company`.
 
@@ -617,7 +636,7 @@ bk --company acme report reconciliation --account 1200 \
 
 **Flags:**
 - `--account CODE` (required): Account to reconcile
-- `--to YYYY-MM-DD`: As-of date, inclusive (default: all dates). Point in time: only entries dated on or before it count; a clearing counts toward the cleared balance when `cleared_date <= --to`, and toward the reconciled balance only when it is reconciled and `reconciled_date <= --to`. So an item cleared later shows as uncleared as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled (also with `--statement`)
+- `--to YYYY-MM-DD`: As-of date, inclusive (default: today). Point in time: only entries dated on or before it count; a clearing counts toward the cleared balance when `cleared_date <= --to`, and toward the reconciled balance only when it is reconciled and `reconciled_date <= --to`. So an item cleared later shows as uncleared as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled (also with `--statement`)
 - `--statement-balance AMT`: Statement ending balance in major units (e.g. `1234.56`, may be negative), on the account's normal side
 - `--statement ID`: The cleared and reconciled balances count only this statement's clearings, so `--statement-balance` checks that statement alone. Outstanding items still reflect every statement's clearings
 - `--filter-metadata KEY=VALUE` (repeatable, AND-ed): Only entries whose transaction metadata has top-level `KEY` equal to `VALUE` (same rule as `txn list`: strings exactly, numbers and booleans by their JSON text; null, arrays, objects and non-JSON metadata never match). Applies to every balance and the item list
@@ -652,7 +671,7 @@ bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31 --currency 
 ```
 
 **Flags:**
-- `--from DATE`, `--to DATE` (required, inclusive, `YYYY-MM-DD`)
+- `--from DATE`, `--to DATE` (inclusive, `YYYY-MM-DD`): the end defaults to today; the start defaults to January 1 of the effective end year
 - `--cash-account CODE` (repeatable): accounts to treat as cash; each must exist and be an asset
 - `--currency CODE`: report currency. Defaults to the company's only transaction currency; if the company has several, `--currency` is required (validation error); with no transactions, USD
 

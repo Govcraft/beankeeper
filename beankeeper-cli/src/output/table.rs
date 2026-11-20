@@ -60,7 +60,7 @@ fn format_with_commas(n: u64) -> String {
 
     let mut result = String::with_capacity(len + (len - 1) / 3);
     for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(ch);
@@ -140,11 +140,7 @@ pub fn render_companies(companies: &[CompanyRow], use_color: bool) -> String {
         ]);
     }
 
-    let count = companies.len();
-    format!(
-        "{table}\n\n{count} {noun}",
-        noun = if count == 1 { "company" } else { "companies" }
-    )
+    table.to_string()
 }
 
 /// Render a list of accounts as a table.
@@ -171,11 +167,7 @@ pub fn render_accounts(accounts: &[AccountRow], use_color: bool) -> String {
         ]);
     }
 
-    let count = accounts.len();
-    format!(
-        "{table}\n\n{count} {noun}",
-        noun = if count == 1 { "account" } else { "accounts" }
-    )
+    table.to_string()
 }
 
 /// Render a list of accounts with balance totals as a table.
@@ -207,11 +199,7 @@ pub fn render_accounts_with_balances(
         ]);
     }
 
-    let count = accounts.len();
-    format!(
-        "{table}\n\n{count} {noun}",
-        noun = if count == 1 { "account" } else { "accounts" }
-    )
+    table.to_string()
 }
 
 /// Render a list of transactions as a summary table.
@@ -238,15 +226,7 @@ pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool)
         ]);
     }
 
-    let count = transactions.len();
-    format!(
-        "{table}\n\n{count} {noun}",
-        noun = if count == 1 {
-            "transaction"
-        } else {
-            "transactions"
-        }
-    )
+    table.to_string()
 }
 
 /// Render a single transaction in detail with its entry lines.
@@ -742,12 +722,6 @@ pub fn render_budgets(rows: &[BudgetRow], currency_minor_units: u8, use_color: b
 
     lines.push(table.to_string());
 
-    let count = rows.len();
-    lines.push(format!(
-        "\n{count} budget {noun}",
-        noun = if count == 1 { "entry" } else { "entries" }
-    ));
-
     lines.join("\n")
 }
 
@@ -936,7 +910,7 @@ mod tests {
         let out = render_companies(&rows, false);
         assert!(out.contains("acme"));
         assert!(out.contains("Acme Corp"));
-        assert!(out.contains("1 company"));
+        assert!(!out.contains("1 company"));
     }
 
     #[test]
@@ -956,7 +930,7 @@ mod tests {
             },
         ];
         let out = render_companies(&rows, false);
-        assert!(out.contains("2 companies"));
+        assert!(!out.contains("2 companies"));
     }
 
     // -- render_accounts --
@@ -981,7 +955,7 @@ mod tests {
         assert!(out.contains("Cash"));
         assert!(out.contains("Asset"));
         assert!(out.contains("Debit"));
-        assert!(out.contains("1 account"));
+        assert!(!out.contains("1 account"));
     }
 
     // -- render_transaction_list --
@@ -1010,7 +984,7 @@ mod tests {
         assert!(out.contains('1'));
         assert!(out.contains("2025-03-15"));
         assert!(out.contains("Test sale"));
-        assert!(out.contains("1 transaction"));
+        assert!(!out.contains("1 transaction"));
     }
 
     // -- render_transaction_detail --

@@ -74,7 +74,7 @@ jobs:
 
           mkdir -p "staging/${ARCHIVE_NAME}"
           cp "target/${TARGET}/release/${BIN_NAME}" "staging/${ARCHIVE_NAME}/"
-          cp README.md LICENSE-* 2>/dev/null || true
+          cp README.md LICENSE-MIT LICENSE-APACHE "staging/${ARCHIVE_NAME}/"
 
           cd staging
           tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
@@ -186,6 +186,8 @@ jobs:
 
           package() {
               install -Dm755 "bk-\${pkgver}-\${CARCH}-unknown-linux-gnu/bk" "\${pkgdir}/usr/bin/bk"
+              install -Dm644 "bk-\${pkgver}-\${CARCH}-unknown-linux-gnu/LICENSE-MIT" "\${pkgdir}/usr/share/licenses/bk-bin/LICENSE-MIT"
+              install -Dm644 "bk-\${pkgver}-\${CARCH}-unknown-linux-gnu/LICENSE-APACHE" "\${pkgdir}/usr/share/licenses/bk-bin/LICENSE-APACHE"
           }
           PKGBUILD_EOF
 
