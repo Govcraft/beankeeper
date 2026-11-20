@@ -1,6 +1,7 @@
 pub mod account;
 pub mod agent;
 pub mod audit;
+pub mod backup;
 pub mod budget;
 pub mod company;
 pub mod export;
@@ -59,6 +60,8 @@ pub fn command_name(cmd: &Command) -> &'static str {
             crate::cli::AgentCommand::Revoke { .. } => "agent.revoke",
         },
         Command::Init { .. } => "init",
+        Command::Backup { .. } => "backup",
+        Command::Restore { .. } => "restore",
         Command::Verify => "verify",
         Command::Export { .. } => "export",
         Command::Company(sub) => match sub {
@@ -114,7 +117,9 @@ pub fn command_name(cmd: &Command) -> &'static str {
 ///
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
-    if cli.agent_token.is_some() && !matches!(cli.command, Command::Mcp(_)) {
+    if cli.agent_token.is_some()
+        && !matches!(cli.command, Command::Mcp(_) | Command::Restore { .. })
+    {
         if matches!(cli.command, Command::Init { .. }) {
             return Err(CliError::Unauthorized("initialization creates a new trust boundary; omit --agent-token and initialize its key afterward".into()));
         }
@@ -122,6 +127,8 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Backup { output, force } => backup::backup(cli, output, *force),
+        Command::Restore { input, force } => backup::restore(cli, input, *force),
         Command::Security(_) | Command::Investment(_) => {
             let company = require_company(cli)?;
             investment::run(cli, &company)

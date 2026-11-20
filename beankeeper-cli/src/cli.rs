@@ -114,6 +114,13 @@ impl Cli {
     /// # Errors
     /// Returns passphrase, database or unauthorized errors.
     pub fn open_db(&self) -> Result<crate::db::Db, CliError> {
+        let db = crate::db::Db::open_existing(&self.db, self.resolve_passphrase()?)?;
+        self.verify_agent(&db)?;
+        Ok(db)
+    }
+
+    /// Resolve and cache the passphrase, including one-shot descriptors.
+    pub(crate) fn resolve_passphrase(&self) -> Result<Option<&SecretString>, CliError> {
         if self.resolved_passphrase.get().is_none() {
             let passphrase = crate::passphrase::resolve_passphrase(
                 self.passphrase.passphrase_fd,
@@ -122,15 +129,15 @@ impl Cli {
             )?;
             let _ = self.resolved_passphrase.set(passphrase);
         }
-        let db = crate::db::Db::open_existing(
-            &self.db,
-            self.resolved_passphrase.get().and_then(Option::as_ref),
-        )?;
+        Ok(self.resolved_passphrase.get().and_then(Option::as_ref))
+    }
+
+    pub(crate) fn verify_agent(&self, db: &crate::db::Db) -> Result<(), CliError> {
         if let Some(token) = &self.agent_token {
             let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
             let _ = self.verified_agent.set(identity);
         }
-        Ok(db)
+        Ok(())
     }
 
     /// Principal for this command, retaining the named actor for compatibility.
@@ -216,6 +223,26 @@ pub enum Command {
     /// Expose this ledger to AI agents over MCP.
     #[command(subcommand)]
     Mcp(McpCommand),
+
+    /// Save a verified full database snapshot with its original encryption key.
+    Backup {
+        /// Snapshot file to create.
+        #[arg(long)]
+        output: PathBuf,
+        /// Replace an existing, offline destination.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Restore and verify a snapshot (requires an explicit --db destination).
+    Restore {
+        /// Full database snapshot produced by backup.
+        #[arg(long)]
+        input: PathBuf,
+        /// Replace an existing, offline destination.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Create a new accounting database.
     #[command(after_help = "\

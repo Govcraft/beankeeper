@@ -31,7 +31,7 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
     Ok(())
 }
 
-fn verify(db: &Db) -> Result<i64, CliError> {
+pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
     // Check schema version
     let version = schema::get_schema_version(db.conn())?;
 

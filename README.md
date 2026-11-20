@@ -804,7 +804,7 @@ bk --company personal --json report trial-balance | jq '.data.accounts[] | selec
 bk --company personal --format csv txn list > transactions.csv
 
 # Export all companies, accounts, and transactions as standalone JSON (no envelope)
-bk export --output-format json > backup.json
+bk export --output-format json > accounting-export.json
 
 # Machine-readable for scripts (exit codes: 0=ok, 3=validation error)
 bk txn reconcile --json || echo "Orphaned correlations found"
@@ -1064,6 +1064,47 @@ For enveloped responses, the `meta` block is present on both success and error. 
 | `BK_ACTOR` | Named poster and audit actor |
 | `BK_AGENT_TOKEN` | Optional local agent attestation; overridden by `--agent-token` |
 | `NO_COLOR` | Disable colored output |
+
+### Backup and restore
+
+Use `backup` for a consistent snapshot of the entire ledger, including committed
+writes from active connections. Encryption stays enabled with the original
+passphrase. Both commands verify the staged file before publishing it.
+
+```sh
+bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup
+bk restore --input ledger.bk-backup --db /data/restored.db --passphrase-file /secure/books.key
+bk --db /data/restored.db --passphrase-file /secure/books.key verify
+```
+
+Omit the passphrase option for unencrypted ledgers. `backup --output` and
+`restore --input` are required. Restore also requires an explicit `--db` flag,
+even when `BEANKEEPER_DB` is configured. Global `--company` is ignored.
+JSON success envelopes report `path`, `bytes`, `schema_version`, and `encrypted`.
+
+Existing destinations require `--force`. Close all connections to a destination
+before replacing it; SQLite `-wal`, `-shm`, or `-journal` files cause rejection.
+Source and destination must differ, including symlink and hard-link aliases.
+Destinations must be regular files or new paths. Failed verification leaves an
+existing destination untouched and removes temporary files. On Unix, published
+files have owner-only permissions (0600).
+
+Snapshots are standalone SQLCipher/SQLite databases, with no archive wrapper.
+Restore accepts only a valid current-schema ledger and runs the same accounting,
+audit-chain, foreign-key, and integrity checks as `bk verify`, without migrating
+it. The file carries no proof that `backup` created it; any complete ledger
+passing those checks is accepted. To restore an older snapshot, use its matching
+CLI version first. A lost
+passphrase cannot be recovered. Keep the backup and passphrase separately.
+
+The snapshot includes all database tables: accounting, identity root, token
+registry, audit history, budgets, rules, schedules, investments, and attachment
+records. Receipt and document **files** are stored outside SQLite in the
+`attachments/` directory beside the source database. Back up that directory
+separately and preserve the paths referenced by attachment records when moving
+machines. External attachment storage changes are outside these commands.
+`bk export` remains an accounting JSON/CSV export, not a recovery backup.
+Backup and restore are CLI commands and are not exposed over MCP.
 
 ### Encryption
 

@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.21.0
+version: 0.22.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or local MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -161,7 +161,7 @@ for `txn_list` and `audit_log`; both accept `limit` and `offset`. Errors set `is
 and return `{code, message}` with the CLI's existing error codes. Audited mutations
 record `mcp:<sanitized client name>`; current creation-auditing behavior is unchanged.
 
-Initialization, company creation/deletion, account deletion, import, export, and
+Initialization, backup, restore, company creation/deletion, account deletion, import, export, and
 attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 [client configuration examples](../../README.md#connect-an-ai-assistant-through-mcp).
 
@@ -199,11 +199,36 @@ attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk verify` | Check ledger integrity |
-| `bk export` | Export all data as JSON or CSV |
+| `bk export` | Export accounting data as JSON or CSV |
+| `bk backup --output PATH` | Save and verify a full database snapshot, preserving encryption |
+| `bk restore --input PATH --db DEST` | Restore a snapshot and verify it before publishing |
 
 For the full command reference with all flags and examples, see [`references/commands.md`](references/commands.md).
 
 ## Essential Workflows
+
+### Back up and restore a ledger
+
+```sh
+bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup
+bk restore --input ledger.bk-backup --db restored.db --passphrase-file /secure/books.key
+bk --db restored.db --passphrase-file /secure/books.key verify
+```
+
+Omit passphrase flags for plaintext databases. Backups preserve the original key,
+root, token registry, audit chain, schedules, investments, and all other tables.
+Both commands verify the staged snapshot before publishing it. `--output`,
+`--input`, and restore's explicit `--db` are required; the environment/default DB
+is not a restore destination. `--company` is ignored. Add `--force` to replace an
+offline destination. Close its connections first: SQLite sidecars cause rejection.
+Same-file aliases and symlink destinations are rejected. Failed validation keeps
+existing destinations intact. Restore requires the current schema and performs
+no migrations. JSON data has `path`, `bytes`, `schema_version`, and `encrypted`.
+
+Back up receipt files in the external `attachments/` directory separately;
+snapshots contain attachment records, not those files. Keep the original
+passphrase separately. Use `bk export` for accounting interchange, not recovery.
+See the [backup reference](references/commands.md#backup-and-restore).
 
 ### Set up a new ledger
 

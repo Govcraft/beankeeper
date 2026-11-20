@@ -6,6 +6,20 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.22.0] - Unreleased
+
+### Added
+
+- `bk backup` creates a consistent snapshot of the entire ledger, including
+  committed WAL data, and verifies it before publishing. `bk restore` verifies
+  a snapshot before replacing an explicitly selected database. Both commands
+  support encrypted ledgers with the original passphrase and require `--force`
+  to replace an existing destination.
+  ([#79](https://github.com/Govcraft/beankeeper/pull/79))
+- Snapshots include attachment records, but not the receipt or invoice files
+  stored outside the database. Back up those files separately and preserve the
+  paths referenced by attachment records when restoring on another machine.
+
 ## [0.21.0] - Unreleased
 
 This catch-up section covers changes since the published CLI 0.10.0 baseline
