@@ -63,7 +63,7 @@ and `agent revoke URI_OR_JTI` manage issued tokens. MCP accepts one token per
 session and rechecks it on every call. Invalid, expired or revoked supplied
 tokens return `UNAUTHORIZED` (exit 6).
 
-Enforcement defaults to off. CLI 0.22.0 adds `bk policy show` and
+Enforcement defaults to off. CLI 0.24.0 adds `bk policy show` and
 `bk policy set --enforce on|off`. Bootstrap by issuing a token with
 `ledger/read,ledger/admin`, saving it, then enabling as a named actor. Once on,
 all reads and mutations require tokens. Missing credentials return `UNAUTHORIZED`
@@ -77,7 +77,7 @@ all reads and mutations require tokens. Missing credentials return `UNAUTHORIZED
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | Company/account writes, key init, agent issue/revoke, policy set |
+| `ledger/admin` | Company/account writes, key init, agent issue/revoke, policy set, backup/restore |
 
 Grants are siblings: admin does not imply posting, and post does not imply
 reverse. Issue the union needed; bare `ledger` grants are rejected. MCP filters

@@ -1432,6 +1432,12 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
         );
     }
     client.success("company_list", &json!({}))?;
+    for kind in ["schedule-c", "1099", "1099-nec"] {
+        client.success(
+            "report",
+            &json!({"company":"acme", "kind":kind, "to":"2026-12-31"}),
+        )?;
+    }
     let audit = client.success(
         "audit_log",
         &json!({"entity":"policy", "action":"policy_change"}),

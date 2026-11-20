@@ -701,6 +701,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_mcp_tool_has_an_explicit_requirement() -> Result<(), CliError> {
+        let server = LedgerServer::new(Db::open_in_memory()?, false);
+        for tool in server.tool_router.list_all() {
+            Capability::for_operation(&tool.name)?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn investment_read_only_router_omits_mutations() -> Result<(), CliError> {
         let server = LedgerServer::new(Db::open_in_memory()?, true);
         let tools = server.tool_router.list_all();

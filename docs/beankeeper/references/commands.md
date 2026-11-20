@@ -41,8 +41,12 @@ Omit the passphrase option for unencrypted ledgers. `backup --output` and
 even when `BEANKEEPER_DB` is configured. Global `--company` is ignored.
 JSON success envelopes report `path`, `bytes`, `schema_version`, and `encrypted`.
 
-Existing destinations require `--force`. Close all connections to a destination
-before replacing it; SQLite `-wal`, `-shm`, or `-journal` files cause rejection.
+When enforcement is on, backup and restore require `ledger/admin` on the source
+ledger or snapshot. Existing destinations require `--force` and must be readable
+with the supplied passphrase (or unencrypted), at the current schema, and have
+enforcement off. Disable destination enforcement with its own admin token before
+restoring. Close all connections to a destination before replacing it; SQLite
+`-wal`, `-shm`, or `-journal` files cause rejection.
 Source and destination must differ, including symlink and hard-link aliases.
 Destinations must be regular files or new paths. Failed verification leaves an
 existing destination untouched and removes temporary files. On Unix, published
@@ -1374,7 +1378,7 @@ off; afterward all ledger commands require tokens and policy changes require
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, policy set |
+| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, policy set, backup/restore |
 
 Matching uses leaf requirements and path segments. Neither `ledger/admin` nor
 `ledger/post` grants sibling capabilities; issue their explicit union when

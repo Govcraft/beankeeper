@@ -21,7 +21,9 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 - MCP discovery reflects startup grants, with live policy and capability checks
   on every call. Bare `ledger` grants are rejected. Forced initialization cannot
-  overwrite an enforced or unreadable ledger.
+  overwrite an enforced or unreadable ledger. Backup and restore require
+  `ledger/admin` when source enforcement is on; restore also requires destination
+  enforcement to be disabled before replacement.
 - Schema v18 preserves historical audit hashes and adds default-off policy
   storage. New v3 audit records block older binaries from appending, including
   when enforcement is off. Back up the full database before upgrading.

@@ -1,7 +1,7 @@
 //! Capability policy behavior through the real CLI and persisted ledger.
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use tempfile::{TempDir, tempdir};
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Ledger {
-    _dir: TempDir,
+    dir: TempDir,
     path: PathBuf,
     passphrase_file: PathBuf,
     db: Db,
@@ -37,7 +37,7 @@ impl Ledger {
         }
         identity::init_root(db.conn(), &Actor::new("owner"))?;
         Ok(Self {
-            _dir: dir,
+            dir,
             path,
             passphrase_file,
             db,
@@ -45,10 +45,14 @@ impl Ledger {
     }
 
     fn command(&self) -> Result<Command, Box<dyn Error>> {
+        self.command_at(&self.path)
+    }
+
+    fn command_at(&self, path: &Path) -> Result<Command, Box<dyn Error>> {
         let mut command = Command::cargo_bin("bk")?;
         command
             .arg("--db")
-            .arg(&self.path)
+            .arg(path)
             .arg("--passphrase-file")
             .arg(&self.passphrase_file)
             .args(["--json", "--company", "acme", "--actor", "owner"]);
@@ -182,6 +186,9 @@ fn read_grant_allows_reads_and_denies_all_mutations_without_side_effects() -> Te
         vec!["account", "list"],
         vec!["txn", "list"],
         vec!["report", "trial-balance"],
+        vec!["report", "schedule-c"],
+        vec!["report", "1099"],
+        vec!["report", "1099-nec"],
         vec!["verify"],
         vec!["audit", "log"],
         vec!["agent", "list"],
@@ -530,5 +537,66 @@ fn signed_grants_ignore_registry_edits_and_descendants_do_not_grant_parent_opera
     )?;
     ledger.run(&["company", "list"], Some(&read))?;
     assert_eq!(ledger.count("transactions")?, 0);
+    Ok(())
+}
+
+#[test]
+fn snapshots_require_admin_and_preserve_enforcement_on_restore() -> TestResult {
+    let ledger = Ledger::new()?;
+    let read = ledger.issue(&["ledger/read"])?;
+    let admin = ledger.issue(&["ledger/admin"])?;
+    ledger.enable()?;
+    let snapshot = ledger.dir.path().join("snapshot.db");
+    let output = snapshot.to_str().ok_or("snapshot path")?;
+    for (token, code, exit, capability) in [
+        (None, "UNAUTHORIZED", 6, None),
+        (Some(read.as_str()), "FORBIDDEN", 7, Some("ledger/admin")),
+    ] {
+        denied(
+            &ledger.call(&["backup", "--output", output], token)?,
+            code,
+            exit,
+            capability,
+        )?;
+        assert!(!snapshot.exists());
+    }
+    ledger.run(&["backup", "--output", output], Some(&admin))?;
+    let destination = ledger.dir.path().join("restored.db");
+    for (token, code, exit, capability) in [
+        (None, "UNAUTHORIZED", 6, None),
+        (Some(read.as_str()), "FORBIDDEN", 7, Some("ledger/admin")),
+    ] {
+        let mut command = ledger.command_at(&destination)?;
+        if let Some(token) = token {
+            command.args(["--agent-token", token]);
+        }
+        denied(
+            &command.args(["restore", "--input", output]).output()?,
+            code,
+            exit,
+            capability,
+        )?;
+        assert!(!destination.exists());
+    }
+    let restored = ledger
+        .command_at(&destination)?
+        .args(["--agent-token", &admin, "restore", "--input", output])
+        .output()?;
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let passphrase: SecretString = "capability-test-passphrase".into();
+    let db = Db::open_existing(&destination, Some(&passphrase))?;
+    assert!(db::policy::get(db.conn())?.enforce);
+    assert!(
+        identity::authorize(
+            db.conn(),
+            Some(&admin),
+            beankeeper_cli::capability::Capability::Admin
+        )
+        .is_ok()
+    );
     Ok(())
 }

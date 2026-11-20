@@ -135,7 +135,7 @@ as `policy_change`; repeated state is a no-op. Missing tokens are `UNAUTHORIZED`
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | Company/account create/delete, key init, agent issue/revoke, policy set |
+| `ledger/admin` | Company/account create/delete, key init, agent issue/revoke, policy set, backup/restore |
 
 Admin does not imply other grants; post does not imply reverse. Issue explicit
 unions. Bare `ledger` is rejected, and narrower descendant grants cannot cover

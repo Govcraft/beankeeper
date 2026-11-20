@@ -63,6 +63,9 @@ impl Capability {
             | "report.income-statement.periods"
             | "report.ledger"
             | "report.reconciliation"
+            | "report.schedule-c"
+            | "report.1099"
+            | "report.1099-nec"
             | "report.tax-summary"
             | "report.trend"
             | "report.trial-balance"
@@ -76,9 +79,8 @@ impl Capability {
             "txn.clear" | "txn.reconcile" => Ok(Self::Reconcile),
             "budget.set" | "budget.delete" => Ok(Self::Budget),
             "company.create" | "company.delete" | "account.create" | "account.delete"
-            | "key.init" | "agent.issue" | "agent.revoke" | "policy.set" | "init" => {
-                Ok(Self::Admin)
-            }
+            | "key.init" | "agent.issue" | "agent.revoke" | "policy.set" | "init" | "backup"
+            | "restore" => Ok(Self::Admin),
             _ => Err(CliError::Usage(
                 "operation has no capability mapping".into(),
             )),
@@ -116,6 +118,12 @@ mod tests {
             ("txn.reverse", Capability::Reverse),
             ("txn_reconcile", Capability::Reconcile),
             ("account_create", Capability::Admin),
+            ("backup", Capability::Admin),
+            ("restore", Capability::Admin),
+            ("report.schedule-c", Capability::Read),
+            ("report.1099", Capability::Read),
+            ("report.1099-nec", Capability::Read),
+            ("report", Capability::Read),
         ] {
             assert_eq!(Capability::for_operation(operation)?, expected);
         }

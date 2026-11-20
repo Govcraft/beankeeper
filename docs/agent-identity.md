@@ -1,7 +1,7 @@
 # Optional agent identity
 
 Beankeeper records a verified `agent://` identity alongside the named actor on
-ledger writes. Since CLI 0.22.0, each ledger can enforce the token's explicit
+ledger writes. Since CLI 0.24.0, each ledger can enforce the token's explicit
 capability grants. Enforcement defaults to off for new and upgraded ledgers:
 tokens remain optional and grants do not restrict commands until enabled.
 An explicitly supplied token must always verify, including on reads. Missing
@@ -45,8 +45,12 @@ Backup includes committed WAL writes even while the source is open. Restore
 verifies the complete snapshot before publishing it, including the audit chain.
 The restored root and registry accept the same unexpired, unrevoked tokens.
 A supplied agent token is checked against the snapshot being restored, not an
-existing destination. Replacing a destination requires `--force` and all its
-connections must be closed. Accounting exports exclude the root and registry.
+existing destination. When snapshot enforcement is on, backup and restore require
+`ledger/admin`. Replacing a destination requires `--force` and all its connections
+must be closed. An existing destination must be readable with the supplied
+passphrase (or unencrypted), at the current schema, and have enforcement off;
+disable its policy with its own admin token before replacing it. Accounting
+exports exclude the root and registry.
 Keep the passphrase separately: these commands cannot recover a lost key.
 External receipt files need a separate backup; see
 [backup and restore](../README.md#backup-and-restore).
@@ -111,7 +115,7 @@ setting the same value again is a no-op. `policy show` returns JSON data with
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear, txn reconcile |
 | `ledger/budget` | budget set/delete |
-| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, policy set |
+| `ledger/admin` | company/account create/delete, key init, agent issue/revoke, policy set, backup/restore |
 
 Matching is hierarchical and respects path segments. The required path is the
 leaf shown above, so a narrower `ledger/post/example` grant cannot authorize
