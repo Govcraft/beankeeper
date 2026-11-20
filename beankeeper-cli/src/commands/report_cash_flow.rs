@@ -41,15 +41,15 @@ use crate::output;
 pub const DEFAULT_CASH_NAME_KEYWORDS: &[&str] = &["cash", "bank", "checking", "savings"];
 
 /// Arguments for `bk report cash-flow`.
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Clone)]
 pub struct CashFlowArgs {
-    /// Start date (inclusive, YYYY-MM-DD).
+    /// Start date (inclusive, YYYY-MM-DD). Defaults to January 1 of the end year.
     #[arg(long)]
-    pub from: String,
+    pub from: Option<String>,
 
-    /// End date (inclusive, YYYY-MM-DD).
+    /// End date (inclusive, YYYY-MM-DD). Defaults to today.
     #[arg(long)]
-    pub to: String,
+    pub to: Option<String>,
 
     /// Account code to treat as cash (repeatable). Defaults to asset accounts
     /// whose name contains "cash", "bank", "checking" or "savings".
@@ -201,13 +201,16 @@ pub fn run(
         return Err(CliError::NotFound(format!("company '{company}' not found")));
     }
 
-    let from = parse_date("--from", &args.from)?;
-    let to = parse_date("--to", &args.to)?;
-    if from > to {
-        return Err(CliError::Validation(format!(
-            "--from ({from}) must be on or before --to ({to})"
-        )));
-    }
+    let window = super::report_dates::DateWindow::resolve(
+        args.from.as_deref(),
+        args.to.as_deref(),
+        true,
+        chrono::Local::now().date_naive(),
+    )?;
+    let from = window
+        .from
+        .ok_or_else(|| CliError::General("missing report start date".to_string()))?;
+    let to = window.to;
 
     let currency = resolve_currency(conn, company, args.currency.as_deref())?;
     let cash_accounts = resolve_cash_accounts(conn, company, &args.cash_account)?;
@@ -250,15 +253,6 @@ pub fn run(
     }
 
     Ok(())
-}
-
-/// Parse a `YYYY-MM-DD` date argument.
-fn parse_date(flag: &str, value: &str) -> Result<chrono::NaiveDate, CliError> {
-    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
-        CliError::Validation(format!(
-            "{flag} must be a date in YYYY-MM-DD format, got '{value}'"
-        ))
-    })
 }
 
 /// Resolve the report currency via the shared report resolver

@@ -22,6 +22,9 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
+    let resolved = super::report_dates::resolve(sub, chrono::Local::now().date_naive())?;
+    let sub = &resolved;
+
     // `--period` / `--compare` multi-column modes (issue #22).
     let multi = super::report_periods::try_run(cli, &db, company, sub, format, use_color);
     if let Some(result) = multi {
@@ -252,8 +255,9 @@ fn run_balance(
                 currency_minor_units: currency.minor_units(),
                 use_color,
             };
+            let title = build_period_title("Account Balance", currency.code(), from, to);
             let rendered = output::table::render_account_balance(&params);
-            println!("{rendered}");
+            print_period_table(&rendered, &title);
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.balance", Some(company));
@@ -416,6 +420,12 @@ fn compute_period_balances(
     db::compute_trial_balance(db.conn(), company, Some(type_filter), from, to, currency)
 }
 
+/// Replace a renderer's plain heading with its effective date window.
+fn print_period_table(rendered: &str, title: &str) {
+    let body = rendered.split_once('\n').map_or(rendered, |(_, body)| body);
+    println!("{title}\n{body}");
+}
+
 /// Build a period-qualified report title.
 fn build_period_title(
     base: &str,
@@ -449,9 +459,10 @@ fn run_tax_summary(
 
     match format {
         OutputFormat::Table => {
+            let title = build_period_title("Tax Summary", currency.code(), from, to);
             let rendered =
                 output::table::render_tax_summary(&rows, currency.code(), minor_units, use_color);
-            println!("{rendered}");
+            print_period_table(&rendered, &title);
         }
         OutputFormat::Json => {
             let meta = output::json::meta("report.tax-summary", Some(company));

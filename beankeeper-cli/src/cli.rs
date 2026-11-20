@@ -1054,7 +1054,7 @@ EXAMPLES:\n  \
 }
 
 /// Report subcommands.
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 #[command(after_help = "\
 EXAMPLES:\n  \
     Quick financial overview:\n    \
@@ -1086,7 +1086,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         from: Option<String>,
 
-        /// End date (inclusive).
+        /// End date (inclusive). Defaults to today.
         #[arg(long)]
         to: Option<String>,
 
@@ -1099,11 +1099,11 @@ EXAMPLES:\n  \
         /// than one currency; otherwise inferred.
         #[arg(long)]
         currency: Option<String>,
-        /// One column per period (requires --from and --to), plus a Total column.
+        /// One column per period, plus a Total column. Defaults to year-to-date.
         #[arg(long, value_enum, conflicts_with = "compare")]
         period: Option<crate::commands::report_periods::PeriodArg>,
 
-        /// Add a column for an earlier range, with change and percent (requires --from and --to).
+        /// Add a column for an earlier range, with change and percent. Defaults to year-to-date.
         #[arg(long, value_enum)]
         compare: Option<crate::commands::report_periods::CompareArg>,
     },
@@ -1129,7 +1129,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         from: Option<String>,
 
-        /// End date (inclusive).
+        /// End date (inclusive). Defaults to today.
         #[arg(long)]
         to: Option<String>,
 
@@ -1154,7 +1154,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         from: Option<String>,
 
-        /// End date (inclusive).
+        /// End date (inclusive). Defaults to today.
         #[arg(long)]
         to: Option<String>,
 
@@ -1163,11 +1163,11 @@ EXAMPLES:\n  \
         /// than one currency; otherwise inferred.
         #[arg(long)]
         currency: Option<String>,
-        /// One column per period (requires --from and --to), plus a Total column.
+        /// One column per period, plus a Total column. Defaults to year-to-date.
         #[arg(long, value_enum, conflicts_with = "compare")]
         period: Option<crate::commands::report_periods::PeriodArg>,
 
-        /// Add a column for an earlier range, with change and percent (requires --from and --to).
+        /// Add a column for an earlier range, with change and percent. Defaults to year-to-date.
         #[arg(long, value_enum)]
         compare: Option<crate::commands::report_periods::CompareArg>,
     },
@@ -1182,7 +1182,7 @@ EXAMPLES:\n  \
     $ bk --company acme report balance-sheet --to 2025-03-31\
 ")]
     BalanceSheet {
-        /// End date (inclusive).
+        /// End date (inclusive). Defaults to today.
         #[arg(long)]
         to: Option<String>,
 
@@ -1206,7 +1206,7 @@ EXAMPLES:\n  \
         /// Start date (inclusive).
         #[arg(long)]
         from: Option<String>,
-        /// End date (inclusive).
+        /// End date (inclusive). Defaults to today.
         #[arg(long)]
         to: Option<String>,
 
@@ -1238,7 +1238,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         from: Option<String>,
 
-        /// End date (inclusive).
+        /// End date (inclusive). Defaults to today.
         #[arg(long)]
         to: Option<String>,
 
@@ -1400,7 +1400,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         account: String,
 
-        /// As-of date (inclusive, YYYY-MM-DD). Defaults to all dates. Counts
+        /// As-of date (inclusive, YYYY-MM-DD). Defaults to today. Counts
         /// clearings cleared on or before it, and as reconciled only those
         /// reconciled on or before it.
         #[arg(long)]

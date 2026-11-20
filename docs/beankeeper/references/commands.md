@@ -594,7 +594,7 @@ bk --company acme report reconciliation --account 1200 \
 
 **Flags:**
 - `--account CODE` (required): Account to reconcile
-- `--to YYYY-MM-DD`: As-of date, inclusive (default: all dates). Point in time: only entries dated on or before it count; a clearing counts toward the cleared balance when `cleared_date <= --to`, and toward the reconciled balance only when it is reconciled and `reconciled_date <= --to`. So an item cleared later shows as uncleared as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled (also with `--statement`)
+- `--to YYYY-MM-DD`: As-of date, inclusive (default: today). Point in time: only entries dated on or before it count; a clearing counts toward the cleared balance when `cleared_date <= --to`, and toward the reconciled balance only when it is reconciled and `reconciled_date <= --to`. So an item cleared later shows as uncleared as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled (also with `--statement`)
 - `--statement-balance AMT`: Statement ending balance in major units (e.g. `1234.56`, may be negative), on the account's normal side
 - `--statement ID`: The cleared and reconciled balances count only this statement's clearings, so `--statement-balance` checks that statement alone. Outstanding items still reflect every statement's clearings
 - `--filter-metadata KEY=VALUE` (repeatable, AND-ed): Only entries whose transaction metadata has top-level `KEY` equal to `VALUE`, compared as strings (numbers and booleans by their JSON text). Applies to every balance and the item list. Metadata that is not a JSON object has no keys
@@ -629,7 +629,7 @@ bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31 --currency 
 ```
 
 **Flags:**
-- `--from DATE`, `--to DATE` (required, inclusive, `YYYY-MM-DD`)
+- `--from DATE`, `--to DATE` (inclusive, `YYYY-MM-DD`): default to January 1 of the effective end year through today
 - `--cash-account CODE` (repeatable): accounts to treat as cash; each must exist and be an asset
 - `--currency CODE`: report currency. Defaults to the company's only transaction currency; if the company has several, `--currency` is required (validation error); with no transactions, USD
 
@@ -677,3 +677,16 @@ bk audit log --json                                # full before/after snapshots
 - `--entity KIND`: One of `entry`, `transaction`, `budget`, `account`, `company`
 - `--action KIND`: One of `status-change`, `correlate`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
 - `--limit N` (default: 50)
+
+### Report date defaults
+
+All date-based reports use inclusive `YYYY-MM-DD` dates and local today as the
+omitted end date. Point-in-time reports (`balance`, `balance-sheet`,
+`trial-balance`, `ledger`, `reconciliation`, and `aging`) include history through
+today and exclude future transactions unless an explicit later end date is
+provided. Aging uses `--as-of`; the others use `--to`. An omitted `--from` on
+`income-statement`, `cash-flow`, `tax-summary`, or a `--period`/`--compare` report
+means January 1 of the effective end date's year. Thus a historical `--to` alone
+selects that year's activity. Explicit bounds override these defaults; invalid
+or reversed ranges fail validation. Table headings show the effective window.
+Budget variance continues to use its required `--year` and optional month range.

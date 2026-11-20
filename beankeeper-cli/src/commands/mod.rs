@@ -9,6 +9,7 @@ pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;
 pub mod report_currency;
+mod report_dates;
 pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;

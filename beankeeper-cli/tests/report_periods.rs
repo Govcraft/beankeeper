@@ -408,7 +408,7 @@ fn default_income_statement_is_single_column() {
 }
 
 #[test]
-fn period_requires_from_and_to() {
+fn period_and_compare_resolve_omitted_dates() {
     let (_dir, db) = setup();
     for args in [
         vec!["report", "income-statement", "--period", "month"],
@@ -428,24 +428,7 @@ fn period_requires_from_and_to() {
             "--period",
             "year",
         ],
-    ] {
-        let mut full = vec!["--company", "co"];
-        full.extend(args.iter().copied());
-        let run = bk(&db, &full);
-        assert_eq!(run.code, 3, "{args:?}: {}", run.stderr);
-        assert!(
-            run.stderr
-                .contains("--period requires both --from and --to"),
-            "{args:?}: {}",
-            run.stderr
-        );
-    }
-
-    let run = bk(
-        &db,
-        &[
-            "--company",
-            "co",
+        vec![
             "report",
             "income-statement",
             "--to",
@@ -453,35 +436,12 @@ fn period_requires_from_and_to() {
             "--compare",
             "prior-year",
         ],
-    );
-    assert_eq!(run.code, 3, "{}", run.stderr);
-    assert!(
-        run.stderr
-            .contains("--compare requires both --from and --to"),
-        "{}",
-        run.stderr
-    );
-
-    // JSON mode reports a VALIDATION error with the mode's command id.
-    let run = bk(
-        &db,
-        &[
-            "--json",
-            "--company",
-            "co",
-            "report",
-            "income-statement",
-            "--period",
-            "month",
-        ],
-    );
-    assert_eq!(run.code, 3);
-    assert!(run.stderr.contains("\"VALIDATION\""), "{}", run.stderr);
-    assert!(
-        run.stderr.contains("report.income-statement.periods"),
-        "{}",
-        run.stderr
-    );
+    ] {
+        let v = bk_json(&db, &args);
+        assert!(v["ok"].as_bool().unwrap_or(false));
+        assert!(v["data"]["from"].as_str().is_some(), "{v}");
+        assert!(v["data"]["to"].as_str().is_some(), "{v}");
+    }
 }
 
 #[test]
