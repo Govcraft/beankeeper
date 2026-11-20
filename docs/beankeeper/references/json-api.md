@@ -193,6 +193,26 @@ are inclusive. MCP returns this same data payload.
 
 `normal_balance` is `"debit"` for asset/expense, `"credit"` for liability/equity/revenue.
 
+### `loan schedule` and `loan pay`
+
+`loan.schedule` needs no company or ledger unless agent-token verification is
+requested. Its `data` object contains `currency`, original `principal`,
+`annual_rate` (a percentage string with four decimal places), requested `months`,
+`regular_payment`, `total_interest`, `total_paid`, and `payments`. Every payment
+has a one-based `number`, `payment`, `principal`, `interest`, and remaining
+`balance`. All monetary fields are minor-unit integers with corresponding
+`_display` strings inherited from `currency`. The number of payments can be
+less than `months` if rounding pays off a very small loan early.
+
+For `--principal 10 --rate 0 --months 3 --currency USD`, the monetary values are
+`regular_payment: 333`, `total_interest: 0`, `total_paid: 1000`. Payment principal
+is `333`, `333`, `334`; balances are `667`, `334`, `0`.
+
+`loan.pay` uses the `txn post` result schema below with command `loan.pay` and
+the resolved company. A duplicate skipped reference returns the existing
+transaction identity without attaching the newly calculated split. Read
+`txn show` to inspect the actual posted entries.
+
 ### `txn post`
 
 ```json

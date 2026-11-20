@@ -577,6 +577,70 @@ Types: `receipt`, `invoice`, `statement`, `contract`, `other`.
 
 Find orphaned intercompany correlations. Does not require `--company` (scans all).
 
+## Loans
+
+### `bk loan schedule`
+
+```bash
+bk loan schedule --principal 200000 --rate 6 --months 360 --currency USD --json
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--principal AMOUNT` | Required original principal, positive major currency units |
+| `--rate PERCENT` | Required nominal annual percentage, 0 through 100, up to four decimal places |
+| `--months N` | Required number of monthly payments, 1 through 1,200 |
+| `--currency CODE` | Currency; defaults to `BEANKEEPER_CURRENCY`, then USD |
+
+No company or database is needed unless an agent token is supplied, which
+triggers normal database-backed token verification. Table mode shows the
+regular payment, total interest, total paid and every payment split. JSON uses
+the standard envelope with command `loan.schedule` and minor-unit integers plus
+decimal display companions. CSV columns are
+`number,payment,principal,interest,balance`, with amounts in minor units.
+
+The monthly rate is the nominal annual rate divided by twelve. The exact annuity
+payment and each month's interest round half up to the currency's minor unit.
+The final payment absorbs rounding so principal ends at exactly zero. The
+regular payment is at least one minor unit and payments cap at the remaining
+principal plus interest, so very small loans can finish early. Zero-rate loans
+are supported. All CLI monetary values, including totals, must fit `i64`.
+
+### `bk loan pay`
+
+Accepts all schedule flags plus the required flags below, and requires a
+company through `--company` or `BEANKEEPER_COMPANY`.
+
+| Flag | Meaning |
+|------|---------|
+| `--payment-number N` | One-based payment number present in the calculated schedule |
+| `--liability CODE` | Existing liability account, debited for principal |
+| `--interest-account CODE` | Existing expense account, debited for interest |
+| `--paying-account CODE` | Existing asset account, credited for the payment total |
+| `--date YYYY-MM-DD` | Transaction date |
+| `--reference KEY` | Nonempty unique reference for this loan and payment |
+| `--on-conflict error\|skip` | Duplicate reference behavior, default `error` |
+
+```bash
+bk --company acme loan pay --principal 200000 --rate 6 --months 360 \
+  --payment-number 1 --liability 2000 --interest-account 5100 \
+  --paying-account 1000 --date 2026-11-20 --reference mortgage-2026-11 --json
+```
+
+Posts through the existing transaction validation and atomic audited path;
+zero-value lines are omitted and account tax defaults apply. JSON command
+`loan.pay` returns the same `id`/`created`/`skipped` or
+`existing_id`/`created`/`skipped` payload as `txn post`. Table output reports the
+transaction ID and status. CSV has `id,status` columns. Use `txn show` to inspect
+the posted entries. Retry with the same reference; `skip` reports the existing
+transaction and does not promise its terms match the supplied calculation.
+
+No loan records or schema migrations are introduced. Both commands are
+stateless: original terms and payment number are explicit, payment order is
+not enforced, and liability balances are not used to recalculate payments.
+Persistent loan tracking, extra payments, fees, daily interest and variable
+rates are outside scope. These commands do not add MCP tools.
+
 ## Budgets
 
 All budget commands require `--company`.

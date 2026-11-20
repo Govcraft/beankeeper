@@ -81,6 +81,40 @@ the agent private key; writes have no agent signatures. See
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
 
+## Loan amortization
+
+Calculate a monthly fixed-rate schedule without a database or company:
+
+```sh
+bk loan schedule --principal 200000 --rate 6 --months 360 --currency USD --json
+```
+
+Post a scheduled payment to existing accounts: principal debits a liability,
+interest debits an expense, and the payment credits an asset.
+
+```sh
+bk --company personal loan pay --principal 200000 --rate 6 --months 360 \
+  --payment-number 1 --liability 2000 --interest-account 5100 \
+  --paying-account 1000 --date 2026-11-20 --reference mortgage-2026-11
+```
+
+Rates are nominal annual percentages divided by twelve, from 0 to 100 with
+up to four decimal places; terms are 1 through 1,200 months. Payments and monthly
+interest round half up to the currency's minor unit, including JPY and BHD.
+The final payment clears the remaining principal. The regular payment is at
+least one minor unit, so very small loans can finish early. The schedule supports
+table, JSON and CSV output; JSON retains minor-unit integers and adds display
+strings. CSV monetary columns contain minor-unit integers.
+
+Payments use the existing audited transaction path and account tax defaults.
+Reuse the same reference for retries, optionally with `--on-conflict skip`.
+This helper is stateless: supply the original terms and the intended payment
+number each time. It does not track payment order or compare the schedule with
+the current liability balance. Extra payments, daily interest, fees, variable
+rates and persistent loan records are outside this feature. A supplied agent
+token is verified against the database, including for schedule calculations.
+See the [command reference](docs/beankeeper/references/commands.md#loans).
+
 ## Install
 
 ```sh
