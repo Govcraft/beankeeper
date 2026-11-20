@@ -23,7 +23,7 @@ class ReleasePreflightTests(unittest.TestCase):
         self.manifest = self.root / "beankeeper-cli/Cargo.toml"
         self.write_version("0.21.0")
         self.changelog = self.root / "CHANGELOG.md"
-        self.changelog.write_text("# Changelog\n\n## [0.21.0] - Unreleased\n")
+        self.changelog.write_text("# Changelog\n\n## [Unreleased]\n\n## [0.21.0] - Unreleased\n")
         self.binary = self.root / "target/debug/bk"
         self.write_binary(self.binary, "bk 0.21.0")
         self.env = os.environ.copy()
@@ -112,7 +112,30 @@ class ReleasePreflightTests(unittest.TestCase):
         self.run_check(error="expected 'bk 0.21.0'")
 
     def test_matching_tag(self):
+        self.changelog.write_text("## [0.21.0] - 2026-11-20\n")
         self.run_check("--tag", "beankeeper-cli-v0.21.0")
+
+    def test_tag_requires_date_with_or_without_binary_check(self):
+        for heading in (
+            "## [0.21.0] - Unreleased",
+            "## [0.21.0]",
+            "## [0.21.0] - 2026-1-20",
+            "## [0.21.0] - 2026-11-20 provisional",
+        ):
+            for mode in ((), ("--metadata-only",)):
+                with self.subTest(heading=heading, mode=mode):
+                    self.changelog.write_text(f"## [Unreleased]\n{heading}\n")
+                    self.run_check(*mode, "--tag", "beankeeper-cli-v0.21.0", error="needs a dated section")
+
+    def test_tag_date_must_belong_to_manifest_version(self):
+        self.changelog.write_text("## [0.21.0] - Unreleased\n## [1.2.3] - 2026-11-20\n")
+        self.run_check("--metadata-only", "--tag", "beankeeper-cli-v0.21.0", error="needs a dated section")
+
+    def test_dated_tagged_metadata_needs_no_binary_or_unreleased_section(self):
+        self.write_version("1.2.3")
+        self.changelog.write_text("## [1.2.3] - 2026-11-20\n")
+        self.binary.unlink()
+        self.run_check("--metadata-only", "--tag", "beankeeper-cli-v1.2.3")
 
     def test_wrong_tag(self):
         for tag in ("beankeeper-cli-v0.10.0", "beankeeper-v0.21.0", "v0.21.0"):
@@ -122,6 +145,21 @@ class ReleasePreflightTests(unittest.TestCase):
     def test_metadata_only_needs_no_build(self):
         self.binary.unlink()
         self.run_check("--metadata-only")
+
+    def test_feature_note_needs_no_version_bump(self):
+        original_manifest = self.manifest.read_bytes()
+        self.changelog.write_text(
+            "## [Unreleased]\n\n### Added\n\n- A new feature.\n\n"
+            "## [0.21.0] - 2026-11-19\n"
+        )
+        self.run_check("--metadata-only")
+        self.assertEqual(self.manifest.read_bytes(), original_manifest)
+
+    def test_metadata_only_requires_unreleased_heading(self):
+        for heading in ("", "Mentions ## [Unreleased]", "### [Unreleased]", "## [Unreleased] extra"):
+            with self.subTest(heading=heading):
+                self.changelog.write_text(f"{heading}\n## [0.21.0] - 2026-11-19\n")
+                self.run_check("--metadata-only", error="needs a section headed ## [Unreleased]")
 
     def test_metadata_only_still_rejects_changelog_mismatch(self):
         self.changelog.write_text("## [0.10.0]\n")

@@ -53,6 +53,17 @@ awk -v version="$VERSION" '
 if [ -n "$TAG" ]; then
     [ "$TAG" = "beankeeper-cli-v$VERSION" ] \
         || fail "tag '$TAG' must equal beankeeper-cli-v$VERSION"
+    awk -v version="$VERSION" '
+        $1 == "##" && $2 == "[" version "]" && $3 == "-" && NF == 4 &&
+            $4 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ { found = 1 }
+        END { exit !found }
+    ' "$ROOT/CHANGELOG.md" \
+        || fail "CHANGELOG.md needs a dated section headed ## [$VERSION] - YYYY-MM-DD for a tagged release"
+elif [ "$METADATA_ONLY" = true ]; then
+    awk '
+        $1 == "##" && $2 == "[Unreleased]" && NF == 2 { found = 1 }
+        END { exit !found }
+    ' "$ROOT/CHANGELOG.md" || fail 'CHANGELOG.md needs a section headed ## [Unreleased]'
 fi
 
 if [ "$METADATA_ONLY" = true ]; then

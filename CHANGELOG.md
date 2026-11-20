@@ -6,6 +6,13 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Changed
+
+- Feature and docs PRs keep crate and skill versions unchanged and collect notes
+  here. Tagged release preflight now requires a matching dated changelog section;
+  versions are assigned once during release preparation.
+  ([#91](https://github.com/Govcraft/beankeeper/issues/91))
+
 ## [0.26.1] - Unreleased
 
 ### Fixed

@@ -17,21 +17,48 @@ the one-time CLI bootstrap.
 
 CLI [0.23.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.23.0)
 was released on 2026-11-20, including the changes tracked under 0.21.0 and
-0.22.0. The examples below use the current source CLI version, `0.25.0`, for a
-future release; they do not mean it has shipped. Read the manifest at release
-time and substitute its version throughout.
+0.22.0. The examples below use `0.27.0` as a hypothetical next CLI release, not a
+chosen or shipped version. Select the actual version during release preparation
+and substitute it throughout.
+
+## Agent / contributor convention
+
+Feature and docs PRs add user-visible notes only under `## [Unreleased]`, grouped
+by Added, Changed, and Fixed. Leave `[package].version` in both
+`beankeeper-cli/Cargo.toml` and `beankeeper/Cargo.toml` unchanged. Do not change
+`Cargo.lock` solely for a version bump or bump the version in
+`docs/beankeeper/SKILL.md`. Dependency changes may still require lockfile updates.
+A development build reports the existing manifest version until release prep.
+
+When rebasing, merge both contributions into the appropriate Unreleased lists.
+Keep the version assigned on `main`; do not resolve conflicts by inventing a new
+version or another numbered Unreleased section. Existing numbered sections dated
+`Unreleased` are historical records and remain until curated during release prep.
+
+PR and `main` CI run `scripts/check-release.sh --metadata-only`. This requires a
+stable CLI manifest version, a matching numbered changelog heading, and a
+`## [Unreleased]` heading. New work belongs in Unreleased even when the manifest's
+numbered section describes an earlier release or an already-assigned version.
 
 ## Prepare and confirm the release commit
 
-Use a clean checkout of the intended merged `main` commit. Confirm that its CLI
-manifest version and changelog section describe what will ship. Bump the CLI
-version for subsequent releases as appropriate, update `Cargo.lock` and the
-agent skill version in `docs/beankeeper/SKILL.md`, and curate the matching
-`## [X.Y.Z]` changelog section. An unreleased source version may be used as-is
-if it describes the intended release.
-Before publishing, replace that section's `Unreleased` date with the intended
-release date and remove any provisional catch-up wording. Merge preparation
-changes before tagging.
+Prepare a release from merged `main` in a clean checkout. In one release-prep
+commit:
+
+1. Curate the notes under `## [Unreleased]` into the intended release contents.
+2. Choose the next CLI version using Semantic Versioning and bump it **once** in
+   `beankeeper-cli/Cargo.toml`. Update its package entry in `Cargo.lock` and the
+   version in `docs/beankeeper/SKILL.md` to match. The library has an independent
+   version: bump it only when preparing a library release, and update the CLI's
+   library dependency and lockfile together if that version changes.
+3. Move the curated notes into `## [X.Y.Z] - YYYY-MM-DD`, using the chosen version
+   and intended release date. Keep an empty `## [Unreleased]` above it for the
+   next development cycle. Curate any older provisional notes included in the
+   release without duplicating them, and remove provisional catch-up wording.
+4. Merge the release-prep commit and confirm its checks pass before tagging.
+
+Do not create a release tag from an undated section or one dated `Unreleased`.
+After release prep has merged, confirm the intended commit:
 
 ```sh
 git fetch origin
@@ -54,17 +81,20 @@ Build a fresh binary from that same tree and run the offline preflight:
 
 ```sh
 cargo build --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.25.0
+scripts/check-release.sh --tag beankeeper-cli-v0.27.0
 ```
 
 The script reads the CLI manifest, requires a stable `X.Y.Z` version and an exact
 `## [X.Y.Z]` changelog heading, checks the supplied tag, and executes `bk --version`
-to require exactly `bk X.Y.Z`. It defaults to `target/debug/bk`, honoring
-`CARGO_TARGET_DIR` when set. Pass a binary explicitly for release or other builds:
+to require exactly `bk X.Y.Z`. With `--tag`, the matching heading must also have
+a date in the form `## [X.Y.Z] - YYYY-MM-DD`; `Unreleased` or a missing date fails
+even when combined with `--metadata-only`. It defaults to `target/debug/bk`,
+honoring `CARGO_TARGET_DIR` when set. Pass a binary explicitly for release or
+other builds:
 
 ```sh
 cargo build --release --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.25.0 "${CARGO_TARGET_DIR:-target}/release/bk"
+scripts/check-release.sh --tag beankeeper-cli-v0.27.0 "${CARGO_TARGET_DIR:-target}/release/bk"
 cargo fetch --locked
 python3 -B -m unittest discover -s scripts/tests -v
 ```
@@ -75,7 +105,9 @@ The packaging tests run offline and require `cargo fetch --locked` first.
 It checks version agreement, not source provenance: the clean tree, fresh build,
 and exact commit confirmation above are still required. It does not require the
 proposed tag to exist yet. `--metadata-only` skips the executable check so CI can
-check the manifest and changelog on every PR and push to `main` without a build.
+check the manifest, its numbered heading, and the Unreleased heading on every PR
+and push to `main` without a build. Without `--tag`, this mode permits the existing
+numbered section to retain its historical `Unreleased` date.
 
 ## Tag and push
 
@@ -84,8 +116,8 @@ checks pass. Recheck the working tree is clean, then create a signed tag on the
 confirmed commit and push only that tag:
 
 ```sh
-git tag -s beankeeper-cli-v0.25.0 -m 'bk 0.25.0'
-git push origin refs/tags/beankeeper-cli-v0.25.0
+git tag -s beankeeper-cli-v0.27.0 -m 'bk 0.27.0'
+git push origin refs/tags/beankeeper-cli-v0.27.0
 ```
 
 Do not move an existing published tag. Correct an already published release with
@@ -97,9 +129,9 @@ a new version and tag.
 `beankeeper-cli-v*` tags:
 
 1. Preflight validates the tag against the checked-out CLI manifest and
-   changelog, fetches locked dependencies, runs the offline script tests, builds
-   `bk` with locked dependencies, and verifies its reported version. A failure
-   blocks the platform builds.
+   dated changelog section, fetches locked dependencies, runs the offline script
+   tests, builds `bk` with locked dependencies, and verifies its reported version.
+   A failure blocks the platform builds.
 2. Four builds produce `bk` for x86_64 and aarch64 on Linux GNU and macOS. Linux
    aarch64 uses the installed cross-compilation toolchain.
 3. Each archive is `bk-X.Y.Z-TARGET.tar.gz`, containing a directory of the same
@@ -120,7 +152,7 @@ Watch the Release workflow in GitHub Actions and inspect the resulting release:
 
 ```sh
 gh run list --workflow release.yml --limit 5
-gh release view beankeeper-cli-v0.25.0
+gh release view beankeeper-cli-v0.27.0
 ```
 
 AUR requires repository secret `AUR_SSH_KEY` with push access to `bk-bin`. If it
@@ -143,11 +175,11 @@ BK_INSTALL="$latest_dir" sh install.sh
 "$latest_dir/bk" --version
 
 pinned_dir=$(mktemp -d)
-BK_INSTALL="$pinned_dir" BK_VERSION=0.25.0 sh install.sh
+BK_INSTALL="$pinned_dir" BK_VERSION=0.27.0 sh install.sh
 "$pinned_dir/bk" --version
 ```
 
-Immediately after this release becomes latest, both should print `bk 0.25.0`.
+Immediately after this release becomes latest, both should print `bk 0.27.0`.
 `BK_VERSION` is the bare CLI version, without `v` or the tag prefix. The installer
 downloads from `beankeeper-cli-v${VERSION}`, verifies SHA-256, installs `bk`, and
 checks the installed version. Its PATH warning is expected for a temporary
@@ -238,13 +270,13 @@ After both crates are published, verify a source install in a temporary root:
 
 ```sh
 install_dir=$(mktemp -d)
-cargo install beankeeper-cli --version 0.25.0 --locked --root "$install_dir"
+cargo install beankeeper-cli --version 0.27.0 --locked --root "$install_dir"
 "$install_dir/bin/bk" --version
 ```
 
 Remove that temporary root afterward. For a binary install, first complete the
 GitHub CLI release procedure above, then use `cargo binstall beankeeper-cli
---version 0.25.0`. The package name is `beankeeper-cli`; it installs the executable
+--version 0.27.0`. The package name is `beankeeper-cli`; it installs the executable
 `bk`. Its manifest's binstall templates point at
 `beankeeper-cli-vX.Y.Z/bk-X.Y.Z-TARGET.tar.gz`, with `bk` inside the
 `bk-X.Y.Z-TARGET/` directory. These names match the four Linux GNU and macOS
