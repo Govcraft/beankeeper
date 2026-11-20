@@ -43,21 +43,91 @@ pub fn run(
     sub: &TxnCommand,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
+    let batch = match sub {
+        TxnCommand::Clear {
+            from_file: Some(path),
+            ..
+        } => Some(parse_batch(&read_input(path)?)?),
+        _ => None,
+    };
+    let actor = Actor::resolve(cli.actor.as_deref());
+    let result = compute(db_handle, company, sub, &actor, batch.as_deref())?;
+    let ctx = result.context(db_handle, company, actor);
+    let format = resolve_format(None, cli);
+    let meta = meta.unwrap_or_else(|| output::json::meta("txn.clear", Some(company)));
+    if let Some(account) = &result.account {
+        render_batch(cli, &ctx, account, &result.items, format, meta)
+    } else {
+        render_single(cli, &ctx, &result.items[0], format, meta)
+    }
+}
+
+/// Clear entries without reading files or writing to stdout.
+///
+/// Batch callers provide parsed lines directly. The result matches the CLI's
+/// JSON data payload, and every mutation uses the supplied audit actor.
+///
+/// # Errors
+///
+/// Returns the same argument, validation and database errors as `bk txn clear`.
+/// A batch is atomic and a failing batch changes nothing.
+pub fn execute_json(
+    db_handle: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    actor: &Actor,
+    batch: Option<&[BatchLine]>,
+) -> Result<serde_json::Value, CliError> {
+    db::get_company(db_handle.conn(), company)?;
+    let result = compute(db_handle, company, sub, actor, batch)?;
+    let ctx = result.context(db_handle, company, actor.clone());
+    if let Some(account) = &result.account {
+        batch_data(&ctx, account, &result.items)
+    } else {
+        single_data(&ctx, &result.items[0])
+    }
+}
+
+struct Execution {
+    date: String,
+    statement: Option<String>,
+    status: ClearanceArg,
+    account: Option<String>,
+    items: Vec<Item>,
+}
+
+impl Execution {
+    fn context<'a>(&'a self, db: &'a Db, company: &'a str, actor: Actor) -> Ctx<'a> {
+        Ctx {
+            conn: db.conn(),
+            actor,
+            company,
+            date: &self.date,
+            statement: self.statement.as_deref(),
+            status: self.status,
+        }
+    }
+}
+
+fn compute(
+    db_handle: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    actor: &Actor,
+    batch: Option<&[BatchLine]>,
+) -> Result<Execution, CliError> {
     let TxnCommand::Clear {
-        transaction_id,
-        entry,
-        reference,
         account,
         from_file,
         amount,
         date,
         statement,
         status,
+        ..
     } = sub
     else {
         return Err(CliError::General("expected txn clear subcommand".into()));
     };
-
     let cleared_date = resolve_date(date.as_deref())?;
     let statement = statement
         .as_deref()
@@ -70,51 +140,102 @@ pub fn run(
     }
     let ctx = Ctx {
         conn: db_handle.conn(),
-        actor: Actor::resolve(cli.actor.as_deref()),
+        actor: actor.clone(),
         company,
         date: &cleared_date,
         statement,
         status: *status,
     };
-    let format = resolve_format(None, cli);
-    let meta = meta.unwrap_or_else(|| output::json::meta("txn.clear", Some(company)));
-
-    if let Some(path) = from_file {
+    let (batch_account, items) = if let Some(lines) = batch {
+        validate_batch_target(sub, lines)?;
         let account = account
             .as_deref()
-            .ok_or_else(|| CliError::Usage("--from-file requires --account".into()))?;
-        let input = read_input(path)?;
-        let lines = parse_batch(&input)?;
-        let items = run_batch(&ctx, account, &lines)?;
-        render_batch(cli, &ctx, account, &items, format, meta)
+            .ok_or_else(|| CliError::Usage("batch clearing requires --account".into()))?;
+        (Some(account.to_string()), run_batch(&ctx, account, lines)?)
     } else {
-        let target = if let Some(reference) = reference {
-            let account = account
-                .as_deref()
-                .ok_or_else(|| CliError::Usage("--reference requires --account".into()))?;
-            db::find_entry_by_reference(ctx.conn, company, reference, account)?
-        } else {
-            let (Some(txn_id), Some(entry_id)) = (transaction_id, entry) else {
-                return Err(CliError::Usage(
-                    "specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, \
-                     or --from-file <PATH> --account <CODE>"
-                        .into(),
-                ));
-            };
-            if account.is_some() {
-                return Err(CliError::Usage(
-                    "--account is only used with --reference or --from-file".into(),
-                ));
-            }
-            db::get_entry_target(ctx.conn, company, *txn_id, *entry_id)?
-        };
+        if from_file.is_some() {
+            return Err(CliError::Usage(
+                "MCP batch input must be supplied directly".into(),
+            ));
+        }
+        let target = resolve_target(&ctx, sub)?;
         let amount = amount
             .as_deref()
             .map(|a| parse_amount(a, &target))
             .transpose()?;
         let outcome = apply(&ctx, &target, amount)?;
-        let item = Item::new(None, &target, &outcome);
-        render_single(cli, &ctx, &item, format, meta)
+        (None, vec![Item::new(None, &target, &outcome)])
+    };
+    Ok(Execution {
+        date: cleared_date,
+        statement: statement.map(str::to_string),
+        status: *status,
+        account: batch_account,
+        items,
+    })
+}
+
+fn validate_batch_target(sub: &TxnCommand, lines: &[BatchLine]) -> Result<(), CliError> {
+    let TxnCommand::Clear {
+        transaction_id,
+        entry,
+        reference,
+        amount,
+        ..
+    } = sub
+    else {
+        return Err(CliError::General("expected txn clear subcommand".into()));
+    };
+    if transaction_id.is_some() || entry.is_some() || reference.is_some() || amount.is_some() {
+        return Err(CliError::Usage(
+            "batch clearing cannot be combined with a single entry or amount".into(),
+        ));
+    }
+    if lines.is_empty() {
+        return Err(CliError::Validation("batch input has no lines".into()));
+    }
+    let mut references = HashSet::new();
+    for line in lines {
+        if line.reference.trim().is_empty() || !references.insert(line.reference.as_str()) {
+            return Err(CliError::Validation(
+                "batch references must be non-empty and unique".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_target(ctx: &Ctx<'_>, sub: &TxnCommand) -> Result<EntryTarget, CliError> {
+    let TxnCommand::Clear {
+        transaction_id,
+        entry,
+        reference,
+        account,
+        ..
+    } = sub
+    else {
+        return Err(CliError::General("expected txn clear subcommand".into()));
+    };
+    if let Some(reference) = reference {
+        if transaction_id.is_some() || entry.is_some() {
+            return Err(CliError::Usage(
+                "--reference cannot be combined with transaction or entry IDs".into(),
+            ));
+        }
+        let account = account
+            .as_deref()
+            .ok_or_else(|| CliError::Usage("--reference requires --account".into()))?;
+        db::find_entry_by_reference(ctx.conn, ctx.company, reference, account)
+    } else {
+        let (Some(txn_id), Some(entry_id)) = (transaction_id, entry) else {
+            return Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into()));
+        };
+        if account.is_some() {
+            return Err(CliError::Usage(
+                "--account is only used with --reference or batch input".into(),
+            ));
+        }
+        db::get_entry_target(ctx.conn, ctx.company, *txn_id, *entry_id)
     }
 }
 
@@ -449,13 +570,7 @@ fn describe(i: &Item) -> String {
     }
 }
 
-fn render_single(
-    cli: &Cli,
-    ctx: &Ctx<'_>,
-    item: &Item,
-    format: OutputFormat,
-    meta: output::json::Meta,
-) -> Result<(), CliError> {
+fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError> {
     #[derive(Serialize)]
     struct Single<'a> {
         #[serde(flatten)]
@@ -468,15 +583,27 @@ fn render_single(
         statement: Option<&'a str>,
     }
 
+    let data = Single {
+        item,
+        status: ctx.status.as_str(),
+        cleared_date: ctx.date,
+        reconciled_date: ctx.reconciled_date(),
+        statement: ctx.statement,
+    };
+    serde_json::to_value(data)
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+}
+
+fn render_single(
+    cli: &Cli,
+    ctx: &Ctx<'_>,
+    item: &Item,
+    format: OutputFormat,
+    meta: output::json::Meta,
+) -> Result<(), CliError> {
     match format {
         OutputFormat::Json => {
-            let data = Single {
-                item,
-                status: ctx.status.as_str(),
-                cleared_date: ctx.date,
-                reconciled_date: ctx.reconciled_date(),
-                statement: ctx.statement,
-            };
+            let data = single_data(ctx, item)?;
             println!("{}", to_json(data, meta)?);
         }
         OutputFormat::Csv => print!("{}", to_csv(ctx, std::slice::from_ref(item))?),
@@ -488,14 +615,7 @@ fn render_single(
     Ok(())
 }
 
-fn render_batch(
-    cli: &Cli,
-    ctx: &Ctx<'_>,
-    account: &str,
-    items: &[Item],
-    format: OutputFormat,
-    meta: output::json::Meta,
-) -> Result<(), CliError> {
+fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json::Value, CliError> {
     #[derive(Serialize)]
     struct Batch<'a> {
         account: &'a str,
@@ -515,21 +635,34 @@ fn render_batch(
 
     let (skipped, cleared): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.skipped());
     let cleared_total = cleared.iter().map(|i| i.amount).sum();
+    let data = Batch {
+        account,
+        status: ctx.status.as_str(),
+        cleared_date: ctx.date,
+        reconciled_date: ctx.reconciled_date(),
+        statement: ctx.statement,
+        count: items.len(),
+        cleared_count: cleared.len(),
+        skipped_count: skipped.len(),
+        cleared_total,
+        cleared,
+        skipped,
+    };
+    serde_json::to_value(data)
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+}
+
+fn render_batch(
+    cli: &Cli,
+    ctx: &Ctx<'_>,
+    account: &str,
+    items: &[Item],
+    format: OutputFormat,
+    meta: output::json::Meta,
+) -> Result<(), CliError> {
     match format {
         OutputFormat::Json => {
-            let data = Batch {
-                account,
-                status: ctx.status.as_str(),
-                cleared_date: ctx.date,
-                reconciled_date: ctx.reconciled_date(),
-                statement: ctx.statement,
-                count: items.len(),
-                cleared_count: cleared.len(),
-                skipped_count: skipped.len(),
-                cleared_total,
-                cleared,
-                skipped,
-            };
+            let data = batch_data(ctx, account, items)?;
             println!("{}", to_json(data, meta)?);
             finish(cli, items);
             return Ok(());

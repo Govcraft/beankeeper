@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 
 use beankeeper::core::{JournalEntry, TransactionError};
@@ -35,56 +36,34 @@ pub fn run(
     let format = resolve_format(None, cli);
 
     match sub {
-        TxnCommand::Post {
-            description,
-            debit,
-            credit,
-            metadata,
-            meta,
-            currency,
-            date,
-            correlate,
-            reference,
-            on_conflict,
-            tax,
-        } => run_post(
+        TxnCommand::Post { .. } => {
+            let actor = db::Actor::resolve(cli.actor.as_deref());
+            let result = execute_post(&db_handle, company, sub, &actor)?;
+            print_post_result(cli, company, result)
+        }
+        TxnCommand::List { .. } => run_list_or_count(
             cli,
             &db_handle,
             company,
-            description,
-            debit,
-            credit,
-            metadata.as_deref(),
-            meta,
-            currency,
-            date.as_deref(),
-            *correlate,
-            reference.as_deref(),
-            *on_conflict,
-            tax,
+            sub,
+            (format, use_color),
+            &mut std::io::stdout(),
         ),
-        TxnCommand::List { .. } => {
-            run_list_or_count(cli, &db_handle, company, sub, format, use_color)
-        }
-        TxnCommand::Show { id } => run_show(cli, &db_handle, company, *id, format, use_color),
+        TxnCommand::Show { id } => run_show(
+            &db_handle,
+            company,
+            *id,
+            format,
+            use_color,
+            &mut std::io::stdout(),
+        ),
         TxnCommand::Reverse { .. } => run_reverse(cli, &db_handle, company, sub),
         TxnCommand::Clear { .. } => super::txn_clear::run(cli, &db_handle, company, sub, meta),
         TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
-        TxnCommand::Attach {
-            transaction_id,
-            file_path,
-            document_type,
-            entry,
-        } => run_attach(
-            cli,
-            &db_handle,
-            company,
-            *transaction_id,
-            file_path,
-            document_type,
-            *entry,
-        ),
-        TxnCommand::Reconcile => run_reconcile(cli, &db_handle, format, use_color),
+        TxnCommand::Attach { .. } => run_attach(cli, &db_handle, company, sub),
+        TxnCommand::Reconcile => {
+            run_reconcile(&db_handle, format, use_color, &mut std::io::stdout())
+        }
     }
 }
 
@@ -142,6 +121,58 @@ fn run_reverse(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Re
     Ok(())
 }
 
+/// Execute a supported transaction operation without writing to stdout.
+///
+/// The returned value is exactly the data payload of the CLI JSON envelope.
+/// Mutations use the explicitly supplied audit actor.
+///
+/// # Errors
+///
+/// Returns the same validation, lookup and database errors as the CLI. Import
+/// and attachment operations are intentionally unavailable through this API.
+pub fn execute_json(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    sub: &TxnCommand,
+    actor: &db::Actor,
+) -> Result<serde_json::Value, CliError> {
+    if !matches!(sub, TxnCommand::Reconcile) {
+        db::get_company(db_handle.conn(), company)?;
+    }
+    let mut out = Vec::new();
+    match sub {
+        TxnCommand::Post { .. } => {
+            let result = execute_post(db_handle, company, sub, actor)?;
+            let meta = output::json::meta("txn.post", Some(company));
+            out = output::json::render_post_result(result, meta)?.into_bytes();
+        }
+        TxnCommand::List { .. } => run_list_or_count(
+            cli,
+            db_handle,
+            company,
+            sub,
+            (OutputFormat::Json, false),
+            &mut out,
+        )?,
+        TxnCommand::Show { id } => {
+            run_show(db_handle, company, *id, OutputFormat::Json, false, &mut out)?;
+        }
+        TxnCommand::Reconcile => run_reconcile(db_handle, OutputFormat::Json, false, &mut out)?,
+        TxnCommand::Clear { .. } => {
+            return super::txn_clear::execute_json(db_handle, company, sub, actor, None);
+        }
+        TxnCommand::Reverse { .. } | TxnCommand::Import { .. } | TxnCommand::Attach { .. } => {
+            return Err(CliError::Usage(
+                "transaction operation is not available over MCP".into(),
+            ));
+        }
+    }
+    let envelope: serde_json::Value = serde_json::from_slice(&out)
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))?;
+    Ok(envelope["data"].clone())
+}
+
 /// Execute the `txn import` subcommand.
 fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
     let TxnCommand::Import {
@@ -195,15 +226,15 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
 }
 
 /// Build `ListTransactionParams` from CLI args and dispatch to list or count.
-#[allow(clippy::too_many_arguments)]
 fn run_list_or_count(
     cli: &Cli,
     db_handle: &Db,
     company: &str,
     sub: &TxnCommand,
-    format: OutputFormat,
-    use_color: bool,
+    presentation: (OutputFormat, bool),
+    out: &mut dyn Write,
 ) -> Result<(), CliError> {
+    let (format, use_color) = presentation;
     let TxnCommand::List {
         account,
         from,
@@ -258,9 +289,9 @@ fn run_list_or_count(
     lp.direction_filter = dir_str;
 
     if *count {
-        run_count(cli, db_handle, &lp, format)
+        run_count(cli, db_handle, &lp, format, out)
     } else {
-        run_list(cli, db_handle, &lp, format, use_color)
+        run_list(cli, db_handle, &lp, format, use_color, out)
     }
 }
 
@@ -443,37 +474,38 @@ fn validate_journal(journal: JournalEntry, currency: Currency) -> Result<(), Cli
 }
 
 /// Execute the `txn post` subcommand.
-#[allow(clippy::too_many_arguments)]
-fn run_post(
-    cli: &Cli,
+fn execute_post(
     db_handle: &Db,
     company: &str,
-    description: &str,
-    debit_args: &[String],
-    credit_args: &[String],
-    metadata: Option<&str>,
-    meta_args: &[String],
-    currency_code: &str,
-    date: Option<&str>,
-    correlate: Option<i64>,
-    reference: Option<&str>,
-    on_conflict: crate::cli::OnConflictArg,
-    tax_args: &[String],
-) -> Result<(), CliError> {
+    sub: &TxnCommand,
+    actor: &db::Actor,
+) -> Result<transactions::PostResult, CliError> {
+    let TxnCommand::Post {
+        description,
+        debit: debit_args,
+        credit: credit_args,
+        metadata,
+        meta: meta_args,
+        currency: currency_code,
+        date,
+        correlate,
+        reference,
+        on_conflict,
+        tax: tax_args,
+    } = sub
+    else {
+        return Err(CliError::General("expected txn post subcommand".into()));
+    };
+    let date = date.as_deref();
+    let metadata = metadata.as_deref();
+    let reference = reference.as_deref();
     // 1. Parse currency
     let currency = Currency::from_code(currency_code)
         .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
 
     // 2. Parse debit/credit args into (code, minor_units, memo) tuples
-    let mut parsed_debits = Vec::new();
-    for arg in debit_args {
-        parsed_debits.push(parse_entry_arg(arg, currency)?);
-    }
-
-    let mut parsed_credits = Vec::new();
-    for arg in credit_args {
-        parsed_credits.push(parse_entry_arg(arg, currency)?);
-    }
+    let parsed_debits = parse_entries(debit_args, currency)?;
+    let parsed_credits = parse_entries(credit_args, currency)?;
 
     // 2b. Parse --tax flags into account_code -> category map
     let tax_map = parse_tax_args(tax_args)?;
@@ -533,7 +565,6 @@ fn run_post(
         .transpose()
         .map_err(|e| CliError::Validation(format!("invalid reference: {e}")))?;
 
-    let actor = crate::db::Actor::resolve(cli.actor.as_deref());
     let params = transactions::PostTransactionParams {
         company_slug: company,
         description,
@@ -541,14 +572,21 @@ fn run_post(
         currency: currency_code,
         date: &effective_date,
         entries: &db_entries,
-        correlate,
+        correlate: *correlate,
         reference: reference.as_deref(),
-        on_conflict: conflict_strategy(on_conflict),
-        actor: &actor,
+        on_conflict: conflict_strategy(*on_conflict),
+        actor,
     };
 
-    let post_result = transactions::post_transaction(db_handle.conn(), &params)?;
-    print_post_result(cli, company, post_result)
+    transactions::post_transaction(db_handle.conn(), &params)
+}
+fn parse_entries(
+    args: &[String],
+    currency: Currency,
+) -> Result<Vec<(String, i64, Option<String>)>, CliError> {
+    args.iter()
+        .map(|arg| parse_entry_arg(arg, currency))
+        .collect()
 }
 
 /// Map the `--on-conflict` flag to the storage strategy.
@@ -644,20 +682,20 @@ fn build_db_entries(
 }
 
 /// Execute the `txn list` subcommand.
-#[allow(clippy::too_many_arguments)]
 fn run_list(
     cli: &Cli,
     db_handle: &Db,
     params: &transactions::ListTransactionParams<'_>,
     format: OutputFormat,
     use_color: bool,
+    out: &mut dyn Write,
 ) -> Result<(), CliError> {
     let rows = transactions::list_transactions(db_handle.conn(), params)?;
 
     match format {
         OutputFormat::Table => {
             let rendered = output::table::render_transaction_list(&rows, use_color);
-            println!("{rendered}");
+            writeln!(out, "{rendered}")?;
         }
         OutputFormat::Json => {
             // For JSON, include entries for each transaction
@@ -668,11 +706,11 @@ fn run_list(
             }
             let meta = output::json::meta("txn.list", Some(params.company_slug));
             let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
-            println!("{rendered}");
+            writeln!(out, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_transactions(&rows)?;
-            print!("{rendered}");
+            write!(out, "{rendered}")?;
         }
     }
 
@@ -697,6 +735,7 @@ fn run_count(
     db_handle: &Db,
     params: &transactions::ListTransactionParams<'_>,
     format: OutputFormat,
+    out: &mut dyn Write,
 ) -> Result<(), CliError> {
     let count = transactions::count_transactions(db_handle.conn(), params)?;
 
@@ -704,10 +743,10 @@ fn run_count(
         OutputFormat::Json => {
             let meta = output::json::meta("txn.list", Some(params.company_slug));
             let rendered = output::json::render_count(count, meta)?;
-            println!("{rendered}");
+            writeln!(out, "{rendered}")?;
         }
         OutputFormat::Table | OutputFormat::Csv => {
-            println!("{count}");
+            writeln!(out, "{count}")?;
         }
     }
 
@@ -727,12 +766,12 @@ fn run_count(
 
 /// Execute the `txn show` subcommand.
 fn run_show(
-    _cli: &Cli,
     db_handle: &Db,
     company: &str,
     id: i64,
     format: OutputFormat,
     use_color: bool,
+    out: &mut dyn Write,
 ) -> Result<(), CliError> {
     let (txn, entries) = transactions::get_transaction(db_handle.conn(), company, id)?;
     let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
@@ -753,10 +792,10 @@ fn run_show(
                 currency_minor_units,
                 use_color,
             );
-            println!("{rendered}");
+            writeln!(out, "{rendered}")?;
             if !att_rows.is_empty() {
                 let att_rendered = output::table::render_attachments(&att_rows, use_color);
-                println!("{att_rendered}");
+                writeln!(out, "{att_rendered}")?;
             }
         }
         OutputFormat::Json => {
@@ -772,11 +811,11 @@ fn run_show(
                 &clearings,
                 meta,
             )?;
-            println!("{rendered}");
+            writeln!(out, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_transactions(&[txn])?;
-            print!("{rendered}");
+            write!(out, "{rendered}")?;
         }
     }
 
@@ -784,16 +823,18 @@ fn run_show(
 }
 
 /// Execute the `txn attach` subcommand.
-#[allow(clippy::too_many_arguments)]
-fn run_attach(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    transaction_id: i64,
-    file_path: &str,
-    document_type_str: &str,
-    entry_id: Option<i64>,
-) -> Result<(), CliError> {
+fn run_attach(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
+    let TxnCommand::Attach {
+        transaction_id,
+        file_path,
+        document_type: document_type_str,
+        entry: entry_id,
+    } = sub
+    else {
+        return Err(CliError::General("expected txn attach subcommand".into()));
+    };
+    let transaction_id = *transaction_id;
+    let entry_id = *entry_id;
     // 1. Validate document type
     let doc_type: DocumentType = document_type_str
         .parse()
@@ -847,12 +888,11 @@ fn run_attach(
 
     Ok(())
 }
-
 fn run_reconcile(
-    _cli: &Cli,
     db_handle: &Db,
     format: OutputFormat,
     use_color: bool,
+    out: &mut dyn Write,
 ) -> Result<(), CliError> {
     let orphans = transactions::find_orphaned_correlations(db_handle.conn())?;
 
@@ -861,9 +901,11 @@ fn run_reconcile(
             OutputFormat::Json => {
                 let meta = output::json::meta("txn.reconcile", None);
                 let rendered = output::json::render_orphaned_correlations(&[], meta)?;
-                println!("{rendered}");
+                writeln!(out, "{rendered}")?;
             }
-            OutputFormat::Csv => println!("transaction_id,company,description,date,partner_id"),
+            OutputFormat::Csv => {
+                writeln!(out, "transaction_id,company,description,date,partner_id")?;
+            }
             OutputFormat::Table => eprintln!("[ok] no orphaned correlations found"),
         }
         return Ok(());
@@ -872,17 +914,17 @@ fn run_reconcile(
     match format {
         OutputFormat::Table => {
             let rendered = output::table::render_orphaned_correlations(&orphans, use_color);
-            println!("{rendered}");
+            writeln!(out, "{rendered}")?;
             eprintln!("[!!] {} orphaned correlation(s) found", orphans.len());
         }
         OutputFormat::Json => {
             let meta = output::json::meta("txn.reconcile", None);
             let rendered = output::json::render_orphaned_correlations(&orphans, meta)?;
-            println!("{rendered}");
+            writeln!(out, "{rendered}")?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_orphaned_correlations(&orphans)?;
-            print!("{rendered}");
+            write!(out, "{rendered}")?;
         }
     }
 
@@ -896,6 +938,210 @@ fn run_reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture() -> Result<Db, CliError> {
+        let db = Db::open_in_memory()?;
+        db::create_company(db.conn(), "acme", "Acme", None)?;
+        db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
+        db::create_account(
+            db.conn(),
+            "acme",
+            "4000",
+            "Revenue",
+            "revenue",
+            Some("income"),
+        )?;
+        Ok(db)
+    }
+
+    fn execute_args(db: &Db, args: &[&str]) -> Result<serde_json::Value, CliError> {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(
+            ["bk", "--company", "acme", "--json", "--quiet"]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )
+        .unwrap_or_else(|error| panic!("test arguments: {error}"));
+        let crate::cli::Command::Txn(txn) = &cli.command else {
+            panic!("expected transaction command");
+        };
+        execute_json(
+            &cli,
+            db,
+            "acme",
+            txn.command.as_ref(),
+            &db::Actor::new("mcp:test"),
+        )
+    }
+
+    #[test]
+    fn shared_post_preserves_reference_metadata_tax_and_idempotency() -> Result<(), CliError> {
+        let db = fixture()?;
+        let args = [
+            "txn",
+            "post",
+            "--description",
+            "Sale",
+            "--debit",
+            "1000:12.50:memo",
+            "--credit",
+            "4000:12.50",
+            "--date",
+            "2026-03-01",
+            "--reference",
+            "invoice-1",
+            "--on-conflict",
+            "skip",
+            "--meta",
+            "invoice=one",
+        ];
+        let first = execute_args(&db, &args)?;
+        let retry = execute_args(&db, &args)?;
+        assert_eq!(first["created"], true);
+        assert_eq!(retry["skipped"], true);
+        assert_eq!(retry["existing_id"], first["id"]);
+        let listed = execute_args(&db, &["txn", "list", "--reference", "invoice-1"])?;
+        assert_eq!(listed.as_array().map(Vec::len), Some(1));
+        assert_eq!(listed[0]["reference"], "invoice-1");
+        assert_eq!(listed[0]["entries"][0]["amount"], 1250);
+        assert_eq!(listed[0]["entries"][0]["memo"], "memo");
+        assert_eq!(listed[0]["entries"][1]["tax_category"], "income");
+        let metadata: serde_json::Value =
+            serde_json::from_str(listed[0]["metadata"].as_str().unwrap_or_default())
+                .unwrap_or_else(|error| panic!("metadata: {error}"));
+        assert_eq!(metadata["invoice"], "one");
+        Ok(())
+    }
+
+    #[test]
+    fn shared_post_rejects_unbalanced_before_persisting() -> Result<(), CliError> {
+        let db = fixture()?;
+        let error = execute_args(
+            &db,
+            &[
+                "txn",
+                "post",
+                "--description",
+                "Bad",
+                "--debit",
+                "1000:10",
+                "--credit",
+                "4000:9",
+            ],
+        );
+        assert!(matches!(error, Err(CliError::Validation(_))));
+        let count = execute_args(&db, &["txn", "list", "--count"])?;
+        assert_eq!(count["count"], 0);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_clear_records_explicit_actor_and_show_breakdown() -> Result<(), CliError> {
+        let db = fixture()?;
+        let posted = execute_args(
+            &db,
+            &[
+                "txn",
+                "post",
+                "--description",
+                "Sale",
+                "--debit",
+                "1000:10",
+                "--credit",
+                "4000:10",
+                "--date",
+                "2026-03-01",
+                "--reference",
+                "clear-1",
+            ],
+        )?;
+        let cleared = execute_args(
+            &db,
+            &[
+                "txn",
+                "clear",
+                "--reference",
+                "clear-1",
+                "--account",
+                "1000",
+                "--amount",
+                "4",
+                "--date",
+                "2026-03-02",
+                "--statement",
+                "bank-1",
+            ],
+        )?;
+        assert_eq!(cleared["amount"], 400);
+        assert_eq!(cleared["remaining_amount"], 600);
+        let actor: String = db.conn().query_row(
+            "SELECT actor FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(actor, "mcp:test");
+        let id = posted["id"].to_string();
+        let shown = execute_args(&db, &["txn", "show", &id])?;
+        assert_eq!(shown[0]["entries"][0]["cleared_amount"], 400);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_clear_batch_is_atomic_and_accepts_memory_input() -> Result<(), CliError> {
+        let db = fixture()?;
+        for reference in ["batch-a", "batch-b"] {
+            execute_args(
+                &db,
+                &[
+                    "txn",
+                    "post",
+                    "--description",
+                    "Sale",
+                    "--debit",
+                    "1000:10",
+                    "--credit",
+                    "4000:10",
+                    "--date",
+                    "2026-03-01",
+                    "--reference",
+                    reference,
+                ],
+            )?;
+        }
+        let sub = TxnCommand::Clear {
+            transaction_id: None,
+            entry: None,
+            reference: None,
+            account: Some("1000".into()),
+            from_file: Some("-".into()),
+            amount: None,
+            date: Some("2026-03-02".into()),
+            statement: Some("batch-statement".into()),
+            status: crate::cli::ClearanceArg::Cleared,
+        };
+        let actor = db::Actor::new("mcp:batch-test");
+        let invalid = super::super::txn_clear::parse_batch("batch-a,5\nbatch-b,11")?;
+        assert!(
+            super::super::txn_clear::execute_json(&db, "acme", &sub, &actor, Some(&invalid),)
+                .is_err()
+        );
+        let cleared: i64 =
+            db.conn()
+                .query_row("SELECT count(*) FROM entry_clearings", [], |row| row.get(0))?;
+        assert_eq!(cleared, 0);
+        let valid = super::super::txn_clear::parse_batch("batch-a,5\nbatch-b,6")?;
+        let result =
+            super::super::txn_clear::execute_json(&db, "acme", &sub, &actor, Some(&valid))?;
+        assert_eq!(result["cleared_count"], 2);
+        assert_eq!(result["cleared_total"], 1100);
+        let actors: i64 = db.conn().query_row(
+            "SELECT count(*) FROM audit_log WHERE actor = 'mcp:batch-test'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(actors >= 2);
+        Ok(())
+    }
 
     #[test]
     fn normalize_reference_stores_verbatim() {
