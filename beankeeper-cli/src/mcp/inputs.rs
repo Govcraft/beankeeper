@@ -62,6 +62,10 @@ pub(super) enum AuditEntityArg {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum AuditActionArg {
+    #[serde(rename = "metadata_set")]
+    MetadataSet,
+    #[serde(rename = "metadata_unset")]
+    MetadataUnset,
     Create,
     StatusChange,
     Reverse,
@@ -156,6 +160,26 @@ pub(super) struct TxnReverse {
     pub description: Option<String>,
     /// Pass the same explicit reference for safe retries.
     pub reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TxnMetaSet {
+    pub company: String,
+    pub id: Option<i64>,
+    pub reference: Option<String>,
+    /// Non-empty array of key=value strings, using the CLI --meta rule.
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TxnMetaUnset {
+    pub company: String,
+    pub id: Option<i64>,
+    pub reference: Option<String>,
+    /// Non-empty array of top-level annotation keys.
+    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

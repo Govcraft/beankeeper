@@ -206,6 +206,8 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "account_create",
         "txn_post",
         "txn_reverse",
+        "txn_meta_set",
+        "txn_meta_unset",
         "txn_list",
         "txn_show",
         "report",
@@ -599,6 +601,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "account_create",
         "txn_post",
         "txn_reverse",
+        "txn_meta_set",
+        "txn_meta_unset",
         "txn_clear",
         "budget_set",
         "budget_delete",
@@ -962,5 +966,50 @@ fn invalid_session_token_fails_before_mcp_protocol_starts() -> TestResult {
     assert_eq!(output.stdout, Vec::<u8>::new());
     let error: Value = serde_json::from_slice(&output.stderr)?;
     assert_eq!(error["error"]["code"], "UNAUTHORIZED");
+    Ok(())
+}
+
+#[test]
+fn metadata_tools_share_cli_rules_and_audit_the_mcp_actor() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let id = client.success("txn_post", &posting("annotate"))?["id"].clone();
+    let set = json!({"company":"acme", "id":id, "values":["status=disputed", "dispute_id=D=42"]});
+    let updated = client.success("txn_meta_set", &set)?;
+    assert_eq!(updated["id"], id);
+    assert_eq!(updated["changed"], true);
+    assert_eq!(client.success("txn_meta_set", &set)?["changed"], false);
+    let audit = client.success("audit_log", &json!({"action":"metadata_set"}))?;
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+    assert_eq!(audit[0]["actor"], "mcp:codex-test-client");
+    let bad = client.call(
+        "txn_meta_unset",
+        &json!({"company":"acme", "reference":"annotate", "keys":["status", "applies_to"]}),
+    )?;
+    assert_eq!(payload(&bad)?["code"], "VALIDATION");
+    assert_eq!(
+        client.success(
+            "txn_meta_unset",
+            &json!({"company":"acme", "reference":"annotate", "keys":["status", "dispute_id"]})
+        )?["changed"],
+        true
+    );
+    assert_eq!(
+        client
+            .success("audit_log", &json!({"action":"metadata_unset"}))?
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    let mut unsupported = posting("unsupported");
+    unsupported["on_conflict"] = "upsert".into();
+    let rejected = client.call("txn_post", &unsupported)?;
+    assert!(rejected.get("error").is_some() || rejected["result"]["isError"] == true);
+    client.success("verify", &json!({}))?;
     Ok(())
 }
