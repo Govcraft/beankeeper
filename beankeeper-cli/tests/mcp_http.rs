@@ -694,6 +694,18 @@ fn exercise_router(
         beankeeper_cli::mcp::StreamableHttpServerConfig,
     ) -> TestResult<axum::Router>,
 ) -> TestResult {
+    exercise_router_with_check(ledger, read_only, factory, |_, _| Ok(()))
+}
+
+fn exercise_router_with_check(
+    ledger: &Ledger,
+    read_only: bool,
+    factory: impl FnOnce(
+        &mut beankeeper_cli::cli::Cli,
+        beankeeper_cli::mcp::StreamableHttpServerConfig,
+    ) -> TestResult<axum::Router>,
+    check: impl FnOnce(&Client, &str) -> TestResult,
+) -> TestResult {
     use axum::{Router, routing::get};
     use beankeeper_cli::cli::Cli;
     use beankeeper_cli::mcp::StreamableHttpServerConfig;
@@ -747,6 +759,7 @@ fn exercise_router(
             .status(),
         403
     );
+    check(&client, &endpoint)?;
     verify_embedded_router(&client, &endpoint, ledger, read_only)?;
     cancellation.cancel();
     runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), server).await })???;
@@ -1137,5 +1150,321 @@ fn resolved_http_router_rejects_missing_and_incorrect_keys_without_creating_a_le
         Err(beankeeper_cli::error::CliError::NotFound(_))
     ));
     assert!(!cli.db.exists());
+    Ok(())
+}
+
+struct TestHost {
+    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl beankeeper_cli::mcp::HostToolHandler for TestHost {
+    fn tools(&self) -> Vec<beankeeper_cli::mcp::HostTool> {
+        use beankeeper_cli::capability::Capability;
+        use beankeeper_cli::mcp::{HostTool, HostToolEffect};
+        [
+            (
+                "host_observe",
+                Capability::Navigate,
+                HostToolEffect::ReadOnly,
+            ),
+            (
+                "host_navigate",
+                Capability::Navigate,
+                HostToolEffect::Mutation,
+            ),
+            ("host_post", Capability::Post, HostToolEffect::Mutation),
+        ]
+        .into_iter()
+        .map(|(name, capability, effect)| HostTool {
+            tool: rmcp::model::Tool::new(
+                name,
+                "Test host tool",
+                serde_json::Map::from_iter([("type".into(), json!("object"))]),
+            ),
+            capability,
+            effect,
+        })
+        .collect()
+    }
+
+    fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        identity: identity::VerifiedAgent,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>> + Send
+    {
+        let result = self
+            .calls
+            .lock()
+            .map_err(|_| rmcp::ErrorData::internal_error("host unavailable", None))
+            .map(|mut calls| {
+                calls.push(identity.jti().to_string());
+                rmcp::model::CallToolResult::structured(json!({
+                    "tool": request.name, "agent_uri": identity.uri(), "token_jti": identity.jti()
+                }))
+            });
+        std::future::ready(result)
+    }
+}
+
+#[test]
+fn composed_host_tools_use_live_request_grants_and_preserve_ledger_tools() -> TestResult {
+    exercise_host_tools(false)
+}
+
+#[test]
+fn composed_host_read_only_ceiling_also_removes_host_mutations() -> TestResult {
+    exercise_host_tools(true)
+}
+
+fn exercise_host_tools(read_only: bool) -> TestResult {
+    use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router_with_host_tools};
+
+    let ledger = Ledger::new()?;
+    let navigation = identity::issue(
+        ledger.db()?.conn(),
+        &Actor::new("owner"),
+        &IssueRequest {
+            name: "navigator",
+            capabilities: &["ui/navigate".into()],
+            ttl: Duration::from_secs(3600),
+            public_key: None,
+            generate_key: true,
+        },
+    )?;
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let host = TestHost {
+        calls: calls.clone(),
+    };
+    exercise_router_with_check(
+        &ledger,
+        read_only,
+        |cli, config: StreamableHttpServerConfig| {
+            Ok(http_router_with_host_tools(
+                cli,
+                Some(&PASSPHRASE.into()),
+                read_only,
+                config,
+                host,
+            )?)
+        },
+        |client, endpoint| {
+            verify_host_tools(client, endpoint, &ledger, read_only, &navigation, &calls)
+        },
+    )
+}
+
+struct HostSession<'a> {
+    client: &'a Client,
+    endpoint: &'a str,
+    session: String,
+}
+
+impl HostSession<'_> {
+    fn request(
+        &self,
+        credential: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> TestResult<Response> {
+        embedded_request(
+            self.client,
+            self.endpoint,
+            Some(&self.session),
+            credential,
+            method,
+            params,
+        )
+    }
+
+    fn call(&self, credential: Option<&str>, name: &str) -> TestResult<Value> {
+        rpc(self.request(
+            credential,
+            "tools/call",
+            json!({"name":name, "arguments":{}}),
+        )?)
+    }
+}
+
+fn verify_host_tools(
+    client: &Client,
+    endpoint: &str,
+    ledger: &Ledger,
+    read_only: bool,
+    navigation: &Value,
+    calls: &std::sync::Mutex<Vec<String>>,
+) -> TestResult {
+    let session = HostSession {
+        client,
+        endpoint,
+        session: initialize_embedded_router(client, endpoint)?,
+    };
+    let navigator = token(navigation)?;
+    let reader = token(&ledger.reader)?;
+    // Initialize used the writer fallback. Every subsequent bearer may differ.
+    verify_host_policy(&session, ledger, read_only, navigation)?;
+    let moved = session.call(Some(navigator), "host_navigate")?;
+    if read_only {
+        assert!(moved.get("error").is_some() || moved["result"]["isError"] == true);
+    } else {
+        assert_eq!(payload(&moved)?["token_jti"], navigation["token_jti"]);
+    }
+    let fallback = session.call(None, "host_post")?;
+    if read_only {
+        assert!(fallback.get("error").is_some() || fallback["result"]["isError"] == true);
+    } else {
+        assert_eq!(payload(&fallback)?["token_jti"], ledger.writer["token_jti"]);
+    }
+    // Explicit bad credentials never fall back to the configured writer.
+    assert_eq!(
+        session
+            .request(Some("invalid"), "tools/list", json!({}))?
+            .status(),
+        401
+    );
+    assert_eq!(
+        session
+            .request(
+                Some("invalid"),
+                "tools/call",
+                json!({
+                    "name":"host_observe", "arguments":{}
+                })
+            )?
+            .status(),
+        401
+    );
+    identity::revoke(
+        ledger.db()?.conn(),
+        &Actor::new("owner"),
+        navigation["token_jti"].as_str().ok_or("jti")?,
+    )?;
+    for (method, params) in [
+        ("tools/list", json!({})),
+        ("tools/call", json!({"name":"host_observe", "arguments":{}})),
+    ] {
+        assert_eq!(
+            session.request(Some(navigator), method, params)?.status(),
+            401
+        );
+    }
+    // Revoking one bearer does not revoke a different bearer on that session.
+    let result = session.call(Some(reader), "company_list")?;
+    assert_eq!(payload(&result)?[0]["slug"], "acme");
+    let calls = calls.lock().map_err(|_| "host calls lock")?;
+    assert_eq!(calls.len(), if read_only { 3 } else { 5 });
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|jti| jti.as_str() == navigation["token_jti"].as_str().unwrap_or_default())
+            .count(),
+        if read_only { 3 } else { 4 }
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|jti| jti.as_str() == ledger.writer["token_jti"].as_str().unwrap_or_default())
+            .count(),
+        usize::from(!read_only)
+    );
+    Ok(())
+}
+
+fn verify_host_policy(
+    session: &HostSession<'_>,
+    ledger: &Ledger,
+    read_only: bool,
+    navigation: &Value,
+) -> TestResult {
+    let navigator = token(navigation)?;
+    let reader = token(&ledger.reader)?;
+    for enforce in [true, false, true] {
+        db::audit::set_policy(ledger.db()?.conn(), &Actor::new("owner"), enforce)?;
+        for credential in [None, Some(reader), Some(navigator)] {
+            let tools = rpc(session.request(credential, "tools/list", json!({}))?)?;
+            let names: Vec<_> = tools["result"]["tools"]
+                .as_array()
+                .ok_or("tools")?
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .collect();
+            assert_eq!(
+                names.contains(&"host_observe"),
+                credential == Some(navigator)
+            );
+            assert_eq!(
+                names.contains(&"host_navigate"),
+                credential == Some(navigator) && !read_only
+            );
+            assert_eq!(
+                names.contains(&"host_post"),
+                credential.is_none() && !read_only
+            );
+            assert_eq!(
+                names.contains(&"company_list"),
+                !enforce || credential != Some(navigator)
+            );
+            assert_eq!(
+                names.contains(&"txn_post"),
+                !read_only && (!enforce || credential.is_none())
+            );
+            let result = session.call(credential, "host_observe")?;
+            if credential == Some(navigator) {
+                assert_eq!(payload(&result)?["token_jti"], navigation["token_jti"]);
+                assert_eq!(payload(&result)?["agent_uri"], navigation["agent_uri"]);
+            } else {
+                assert_eq!(payload(&result)?["code"], "FORBIDDEN");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn composed_router_rejects_duplicate_and_reserved_tool_names() -> TestResult {
+    use beankeeper_cli::cli::Cli;
+    use beankeeper_cli::mcp::{
+        HostTool, HostToolHandler, StreamableHttpServerConfig, http_router_with_host_tools,
+    };
+    use clap::Parser;
+
+    struct Catalog(Vec<HostTool>);
+    impl HostToolHandler for Catalog {
+        fn tools(&self) -> Vec<HostTool> {
+            self.0.clone()
+        }
+        fn call_tool(
+            &self,
+            _: rmcp::model::CallToolRequestParams,
+            _: identity::VerifiedAgent,
+        ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>> + Send
+        {
+            std::future::ready(Err(rmcp::ErrorData::internal_error(
+                "must not dispatch",
+                None,
+            )))
+        }
+    }
+    let cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
+    let host = TestHost {
+        calls: std::sync::Arc::default(),
+    };
+    let entry = host.tools().remove(0);
+    for name in ["", "company_list", "txn_post", "host_observe"] {
+        let mut duplicate = entry.clone();
+        duplicate.tool.name = name.to_owned().into();
+        for read_only in [false, true] {
+            assert!(matches!(
+                http_router_with_host_tools(
+                    &cli,
+                    None,
+                    read_only,
+                    StreamableHttpServerConfig::default(),
+                    Catalog(vec![entry.clone(), duplicate.clone()])
+                ),
+                Err(beankeeper_cli::error::CliError::Validation(_))
+            ));
+        }
+    }
     Ok(())
 }

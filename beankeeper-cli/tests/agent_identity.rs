@@ -120,6 +120,111 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, Box<dyn Error>> {
         .ok_or_else(|| format!("missing {key}").into())
 }
 
+#[test]
+fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestResult {
+    use beankeeper_cli::capability::Capability;
+    use beankeeper_cli::error::CliError;
+
+    let ledger = Ledger::new()?;
+    let legacy = ledger.issue()?;
+    let issue = |caps| {
+        ledger.run(
+            &[
+                "agent",
+                "issue",
+                "--name",
+                "desktop",
+                "--generate-key",
+                "--caps",
+                caps,
+            ],
+            None,
+        )
+    };
+    let navigation = issue("ui/navigate")?["data"].clone();
+    let narrow = issue("ui/navigate/panel")?["data"].clone();
+    let uri = AgentUri::parse(text(&navigation, "agent_uri")?)?;
+    assert_eq!(uri.capability_path().as_str(), "ui");
+    assert_eq!(navigation["capabilities"], json!(["ui/navigate"]));
+    let identity = identity::verify(ledger.db.conn(), text(&navigation, "token")?)?;
+    assert!(identity.allows(Capability::Navigate)?);
+    assert!(!identity.allows(Capability::Read)?);
+    assert!(!identity.allows(Capability::Post)?);
+    let legacy_identity = identity::verify(ledger.db.conn(), text(&legacy, "token")?)?;
+    assert_eq!(
+        AgentUri::parse(legacy_identity.uri())?
+            .capability_path()
+            .as_str(),
+        "ledger"
+    );
+    assert!(legacy_identity.allows(Capability::Post)?);
+    assert!(!legacy_identity.allows(Capability::Navigate)?);
+    for enforce in [false, true] {
+        db::audit::set_policy(ledger.db.conn(), &Actor::new("owner"), enforce)?;
+        assert!(
+            identity::authorize(
+                ledger.db.conn(),
+                Some(text(&navigation, "token")?),
+                Capability::Navigate
+            )?
+            .is_some()
+        );
+        for issued in [&legacy, &narrow] {
+            assert!(matches!(
+                identity::authorize(
+                    ledger.db.conn(),
+                    Some(text(issued, "token")?),
+                    Capability::Navigate
+                ),
+                Err(CliError::Forbidden(_))
+            ));
+        }
+        assert!(matches!(
+            identity::authorize(ledger.db.conn(), None, Capability::Navigate),
+            Err(CliError::Unauthorized(_))
+        ));
+    }
+    assert!(matches!(
+        identity::authorize(
+            ledger.db.conn(),
+            Some(text(&navigation, "token")?),
+            Capability::Read
+        ),
+        Err(CliError::Forbidden(_))
+    ));
+    db::audit::set_policy(ledger.db.conn(), &Actor::new("owner"), false)?;
+    let before = ledger.count("agent_tokens")?;
+    for caps in [
+        "ui",
+        "ledger",
+        "ledger/read,ui/navigate",
+        "outside/post",
+        "ui/navigate,",
+    ] {
+        let output = ledger
+            .command()?
+            .args([
+                "agent",
+                "issue",
+                "--name",
+                "desktop",
+                "--generate-key",
+                "--caps",
+                caps,
+            ])
+            .output()?;
+        assert!(!output.status.success(), "accepted {caps}");
+    }
+    assert_eq!(ledger.count("agent_tokens")?, before);
+    identity::revoke(ledger.db.conn(), &Actor::new("owner"), identity.jti())?;
+    assert!(matches!(
+        identity::verify(ledger.db.conn(), text(&navigation, "token")?),
+        Err(CliError::Unauthorized(_))
+    ));
+    ledger.run(&["verify"], None)?;
+    Ok(())
+}
+
 fn unauthorized(output: &Output) -> TestResult {
     assert_eq!(
         output.status.code(),

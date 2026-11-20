@@ -87,6 +87,7 @@ pub fn verify(conn: &Connection, token: &str) -> Result<VerifiedAgent, CliError>
 }
 
 /// Verify optional credentials and enforce the current ledger policy.
+/// Navigation always requires a verified `ui/navigate` grant, even with policy off.
 ///
 /// # Errors
 /// Returns `UNAUTHORIZED` for missing or rejected credentials, `FORBIDDEN` for
@@ -96,12 +97,13 @@ pub fn authorize(
     token: Option<&str>,
     required: Capability,
 ) -> Result<Option<VerifiedAgent>, CliError> {
-    let enforce = crate::db::policy::get(conn)?.enforce;
+    let enforce = crate::db::policy::get(conn)?.enforce || required == Capability::Navigate;
     match token {
         Some(token) => verify_required(conn, token, enforce.then_some(required)).map(Some),
-        None if enforce => Err(CliError::Unauthorized(
-            "ledger enforcement requires an agent token".into(),
-        )),
+        None if enforce => Err(CliError::Unauthorized(format!(
+            "operation requires an agent token for {}",
+            required.path()
+        ))),
         None => Ok(None),
     }
 }
@@ -183,7 +185,7 @@ fn verify_required(
     if claims
         .capabilities
         .iter()
-        .any(|capability| capability == "ledger")
+        .any(|capability| capability == "ledger" || capability == "ui")
     {
         return Err(unauthorized());
     }
@@ -193,10 +195,12 @@ fn verify_required(
         verifier
             .verify_for_capability(token, &uri, &path)
             .map_err(|error| match error {
-                AttestationError::InsufficientCapabilities { .. } => CliError::Forbidden(format!(
-                    "operation requires capability {}",
-                    required.path()
-                )),
+                // The token and its claim scope have already verified above.
+                // A requested operation outside that scope is a missing grant.
+                AttestationError::InsufficientCapabilities { .. }
+                | AttestationError::CapabilityOutsideIdentity { .. } => CliError::Forbidden(
+                    format!("operation requires capability {}", required.path()),
+                ),
                 _ => unauthorized(),
             })?;
     }
@@ -250,7 +254,7 @@ pub fn init_root(conn: &Connection, actor: &Actor) -> Result<Value, CliError> {
     })
 }
 
-/// Validated token issuance inputs with explicit ledger capability grants.
+/// Token issuance inputs with explicit grants in one namespace: `ledger/*` or `ui/*`.
 pub struct IssueRequest<'a> {
     pub name: &'a str,
     pub capabilities: &'a [String],
@@ -268,15 +272,7 @@ pub fn issue(
     actor: &Actor,
     request: &IssueRequest<'_>,
 ) -> Result<Value, CliError> {
-    if request
-        .capabilities
-        .iter()
-        .any(|capability| capability == "ledger")
-    {
-        return Err(CliError::Validation(
-            "bare ledger capability is not allowed; issue explicit ledger/* grants".into(),
-        ));
-    }
+    let scope = issuance_scope(request.capabilities)?;
     if request.public_key.is_some() == request.generate_key {
         return Err(CliError::Usage(
             "supply --public-key BASE64 or --generate-key".into(),
@@ -307,7 +303,7 @@ pub fn issue(
         .map_err(|_| CliError::Database("invalid root key length".into()))?;
     let key =
         SigningKey::from_bytes(seed).map_err(|_| CliError::Database("invalid root key".into()))?;
-    let uri = AgentUri::parse(&format!("agent://{root}/ledger/{agent_id}"))
+    let uri = AgentUri::parse(&format!("agent://{root}/{scope}/{agent_id}"))
         .map_err(|e| CliError::Validation(e.to_string()))?;
     let claims = AttestationClaims::builder()
         .jti("token".create_type_id::<V7>().to_string())
@@ -341,6 +337,34 @@ pub fn issue(
         result["private_key"] = json!(hex);
     }
     Ok(result)
+}
+
+// The attestation builder and issuer both enforce subject scope. Keep grants
+// verbatim and select their namespace instead of weakening that validation.
+fn issuance_scope(capabilities: &[String]) -> Result<&'static str, CliError> {
+    let mut scope = None;
+    for capability in capabilities {
+        CapabilityPath::parse(capability)
+            .map_err(|error| CliError::Validation(error.to_string()))?;
+        let namespace = if capability.starts_with("ledger/") {
+            "ledger"
+        } else if capability.starts_with("ui/") {
+            "ui"
+        } else {
+            return Err(CliError::Validation(
+                "issue explicit ledger/* or ui/* grants; bare namespace grants are not allowed"
+                    .into(),
+            ));
+        };
+        if scope.is_some_and(|scope| scope != namespace) {
+            return Err(CliError::Validation(
+                "ledger/* and ui/* grants require separate tokens to preserve attestation scope"
+                    .into(),
+            ));
+        }
+        scope = Some(namespace);
+    }
+    scope.ok_or_else(|| CliError::Validation("at least one explicit grant is required".into()))
 }
 
 /// List issued claims without returning tokens or private keys.

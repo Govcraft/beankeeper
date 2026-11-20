@@ -359,7 +359,14 @@ fn enforcement_rejects_missing_invalid_revoked_and_foreign_tokens() -> TestResul
 }
 
 #[test]
-fn bare_ledger_is_rejected_at_issuance_and_when_accepting_a_legacy_token() -> TestResult {
+fn bare_namespaces_are_rejected_at_issuance_and_when_accepting_legacy_tokens() -> TestResult {
+    for namespace in ["ledger", "ui"] {
+        reject_bare_namespace(namespace)?;
+    }
+    Ok(())
+}
+
+fn reject_bare_namespace(namespace: &str) -> TestResult {
     let ledger = Ledger::new()?;
     let before = (ledger.count("agent_tokens")?, ledger.count("audit_log")?);
     denied(
@@ -371,7 +378,7 @@ fn bare_ledger_is_rejected_at_issuance_and_when_accepting_a_legacy_token() -> Te
                 "unsafe_grant",
                 "--generate-key",
                 "--caps",
-                "ledger",
+                namespace,
             ],
             None,
         )?,
@@ -388,7 +395,7 @@ fn bare_ledger_is_rejected_at_issuance_and_when_accepting_a_legacy_token() -> Te
         &Actor::new("owner"),
         &IssueRequest {
             name: "legacy",
-            capabilities: &["ledger/read".into()],
+            capabilities: &[format!("{namespace}/read")],
             ttl: Duration::from_secs(3600),
             public_key: None,
             generate_key: true,
@@ -404,7 +411,7 @@ fn bare_ledger_is_rejected_at_issuance_and_when_accepting_a_legacy_token() -> Te
         .jti(issued["token_jti"].as_str().ok_or("jti")?)
         .agent_uri(issued["agent_uri"].as_str().ok_or("uri")?)
         .agent_key(&SigningKey::generate().verifying_key())
-        .capabilities(vec!["ledger".into()])
+        .capabilities(vec![namespace.into()])
         .issuer(&root)
         .ttl(Duration::from_secs(3600))
         .build()?;

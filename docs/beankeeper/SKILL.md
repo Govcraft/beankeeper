@@ -236,6 +236,14 @@ ignores CLI passphrase sources and `BEANKEEPER_PASSPHRASE_CMD`; it needs no file
 descriptor bridge or plaintext secret file on any platform. MCP authentication
 and capability checks remain the same.
 
+Embedded hosts can compose their own tools with `http_router_with_host_tools`
+and `HostToolHandler`. Each host tool declares a required grant and read-only
+effect; discovery and dispatch require the current bearer's grant even with
+ledger enforcement off. `--caps ui/navigate` issues a separate `/ui/` identity.
+Ledger grants do not authorize navigation, and mixed ledger/UI grant lists are
+rejected. Navigation is a mutation and is removed by the read-only ceiling.
+See [the host API contract and example](../mcp-host-tools.md).
+
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; only `error` and `skip` are accepted conflict strategies. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.

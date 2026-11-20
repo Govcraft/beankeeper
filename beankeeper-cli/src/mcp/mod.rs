@@ -3,10 +3,12 @@
 //! Tool bodies use the same in-process database operations and JSON renderers
 //! as the CLI. Only the transport writes to stdout.
 
+mod host;
 mod http;
 mod inputs;
 
-pub use http::{http_router, http_router_with_passphrase, serve_http};
+pub use host::{HostTool, HostToolEffect, HostToolHandler};
+pub use http::{http_router, http_router_with_host_tools, http_router_with_passphrase, serve_http};
 /// Transport options for the HTTP router factories, including host rules and cancellation.
 pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 
