@@ -115,3 +115,26 @@ fn failed_forced_encrypted_init_preserves_the_existing_database() -> TestResult 
     assert_eq!(std::fs::read(&path)?, original);
     Ok(())
 }
+
+#[test]
+fn forced_encrypted_init_can_replace_a_plaintext_ledger_with_enforcement_off() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    let passphrase = dir.path().join("passphrase");
+    std::fs::write(&passphrase, "replacement secret")?;
+    bk(&path)?.arg("init").assert().success();
+    bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase)
+        .args(["init", "--encrypt", "--force"])
+        .assert()
+        .success();
+    bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase)
+        .args(["company", "list"])
+        .assert()
+        .success();
+    assert!(!std::fs::read(&path)?.starts_with(b"SQLite format 3\0"));
+    Ok(())
+}

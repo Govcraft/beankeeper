@@ -603,7 +603,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 14);
+    assert_eq!(names.len(), 13);
     for name in [
         "security_create",
         "security_price",
@@ -615,12 +615,13 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "txn_meta_set",
         "txn_meta_unset",
         "txn_clear",
+        "txn_reconcile",
         "budget_set",
         "budget_delete",
     ] {
         assert!(!names.contains(name));
     }
-    assert!(names.contains("txn_reconcile"));
+    assert!(!names.contains("txn_reconcile"));
     let response = client.call("txn_post", &posting("read-only"))?;
     assert!(response.get("error").is_some() || response["result"]["isError"] == true);
     let transactions = client.success("txn_list", &json!({"company":"acme"}))?;
@@ -1386,5 +1387,166 @@ fn tax_reports_over_stdio_match_cli_and_advertise_threshold() -> TestResult {
         &json!({"company":"acme", "kind":"1099", "threshold":"-1"}),
     )?;
     assert_eq!(rejected["result"]["isError"], true);
+    Ok(())
+}
+
+fn identity_client(
+    path: &Path,
+    passphrase_file: &Path,
+    token: Option<&str>,
+    read_only: bool,
+) -> Result<Client, Box<dyn Error>> {
+    let mut command = bk(path)?;
+    command.arg("--passphrase-file").arg(passphrase_file);
+    if let Some(token) = token {
+        command.args(["--agent-token", token]);
+    }
+    command.args(["mcp", "serve"]);
+    if read_only {
+        command.arg("--read-only");
+    }
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    Ok(client)
+}
+
+#[test]
+fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
+    use beankeeper_cli::db::{self, Actor, Db};
+    let dir = tempdir()?;
+    let path = dir.path().join("identity.db");
+    let passphrase_file = dir.path().join("passphrase");
+    let issued = identity_ledger(&path, &passphrase_file)?;
+    let token = issued["token"].as_str().ok_or("token")?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = Db::open_existing(&path, Some(&passphrase))?;
+    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let names = tool_names(&listed)?;
+    assert_eq!(names.len(), 13);
+    for name in names {
+        assert_eq!(
+            beankeeper_cli::capability::Capability::for_operation(name)?,
+            beankeeper_cli::capability::Capability::Read
+        );
+    }
+    client.success("company_list", &json!({}))?;
+    let audit = client.success(
+        "audit_log",
+        &json!({"entity":"policy", "action":"policy_change"}),
+    )?;
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+    let response = client.call("txn_post", &posting("hidden"))?;
+    assert!(response.get("error").is_some() || response["result"]["isError"] == true);
+    beankeeper_cli::identity::revoke(
+        db.conn(),
+        &Actor::new("owner"),
+        issued["token_jti"].as_str().ok_or("jti")?,
+    )?;
+    let response = client.call("company_list", &json!({}))?;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(payload(&response)?["code"], "UNAUTHORIZED");
+    Ok(())
+}
+
+#[test]
+fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> TestResult {
+    use beankeeper_cli::db::{self, Actor, Db};
+    let dir = tempdir()?;
+    let path = dir.path().join("identity.db");
+    let passphrase_file = dir.path().join("passphrase");
+    let issued = identity_ledger(&path, &passphrase_file)?;
+    let token = issued["token"].as_str().ok_or("token")?;
+    let mut attested = identity_client(&path, &passphrase_file, Some(token), false)?;
+    let mut named = identity_client(&path, &passphrase_file, None, false)?;
+    let listed = attested.request("tools/list", &json!({}))?;
+    assert!(tool_names(&listed)?.contains("txn_reconcile"));
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = Db::open_existing(&path, Some(&passphrase))?;
+    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    for (name, input, capability) in [
+        ("txn_post", posting("forbidden"), "ledger/post"),
+        ("txn_reconcile", json!({}), "ledger/reconcile"),
+        (
+            "account_create",
+            json!({"company":"acme", "code":"2000", "name":"Loan", "account_type":"liability"}),
+            "ledger/admin",
+        ),
+    ] {
+        let result = attested.call(name, &input)?;
+        assert_eq!(result["result"]["isError"], true);
+        let data = payload(&result)?;
+        assert_eq!(data["code"], "FORBIDDEN");
+        assert!(
+            data["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(capability))
+        );
+    }
+    attested.success("company_list", &json!({}))?;
+    let denied = named.call("company_list", &json!({}))?;
+    assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM transactions", [], |row| row
+                .get::<_, i64>(0))?,
+        0
+    );
+    // Once enforcement is active, a tokenless new process fails before protocol output.
+    let output = bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_file)
+        .args(["--json", "mcp", "serve"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(6));
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    Ok(())
+}
+
+#[test]
+fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> TestResult {
+    use beankeeper_cli::db::{self, Actor, Db};
+    use beankeeper_cli::identity::{self, IssueRequest};
+    let dir = tempdir()?;
+    let path = dir.path().join("identity.db");
+    let passphrase_file = dir.path().join("passphrase");
+    identity_ledger(&path, &passphrase_file)?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = Db::open_existing(&path, Some(&passphrase))?;
+    let issued = identity::issue(
+        db.conn(),
+        &Actor::new("owner"),
+        &IssueRequest {
+            name: "poster",
+            capabilities: &["ledger/read".into(), "ledger/post".into()],
+            ttl: Duration::from_secs(3600),
+            public_key: None,
+            generate_key: true,
+        },
+    )?;
+    let token = issued["token"].as_str().ok_or("token")?;
+    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    let mut writer = identity_client(&path, &passphrase_file, Some(token), false)?;
+    let listed = writer.request("tools/list", &json!({}))?;
+    let names = tool_names(&listed)?;
+    assert!(names.contains("txn_post"));
+    for forbidden in [
+        "txn_reverse",
+        "txn_reconcile",
+        "txn_clear",
+        "budget_set",
+        "account_create",
+    ] {
+        assert!(!names.contains(forbidden));
+    }
+    let posted = writer.success("txn_post", &posting("enforced"))?;
+    let shown = writer.success("txn_show", &json!({"company":"acme", "id":posted["id"]}))?;
+    assert_eq!(shown[0]["agent_uri"], issued["agent_uri"]);
+    let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
+    let listed = reader.request("tools/list", &json!({}))?;
+    assert_eq!(tool_names(&listed)?.len(), 13);
+    assert!(!tool_names(&listed)?.contains("txn_post"));
+    writer.success("verify", &json!({}))?;
     Ok(())
 }
