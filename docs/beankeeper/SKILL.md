@@ -228,6 +228,14 @@ same authentication and capability rules. The host supplies
 `StreamableHttpServerConfig`, controls its cancellation token, and owns the
 listener, runtime, shutdown, and Host/Origin rules. See the API Rustdoc example.
 
+For a host that also opens `Db::open_snapshot`, resolve the passphrase once and
+use `beankeeper_cli::mcp::http_router_with_passphrase(&cli, passphrase.as_ref(),
+read_only, config)?`. Pass the same borrowed secret to the snapshot, then drop it
+after both connections open. `None` opens an unencrypted ledger. This factory
+ignores CLI passphrase sources and `BEANKEEPER_PASSPHRASE_CMD`; it needs no file
+descriptor bridge or plaintext secret file on any platform. MCP authentication
+and capability checks remain the same.
+
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; only `error` and `skip` are accepted conflict strategies. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.

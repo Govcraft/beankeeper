@@ -134,6 +134,8 @@ async fn authenticate(
 /// Clone `config.cancellation_token` before passing it in, then cancel it during
 /// host shutdown to terminate MCP sessions. The host also owns listener shutdown.
 /// CLI bind flags are not used by this factory.
+/// Hosts that already resolved a secret should use [`http_router_with_passphrase`]
+/// to share it with other connections without consuming its source again.
 ///
 /// # Example
 ///
@@ -180,8 +182,59 @@ pub fn http_router(
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open_existing(&cli.db, passphrase.as_ref())?;
-    drop(passphrase);
+    http_router_with_passphrase(cli, passphrase.as_ref(), read_only, config)
+}
+
+/// Build an authenticated `/mcp` router using an already-resolved passphrase.
+///
+/// This has the same authentication, capability, read-only, transport and host
+/// lifecycle behavior as [`http_router`]. It opens the existing ledger at
+/// `cli.db` with `passphrase`, ignoring CLI passphrase sources and
+/// `BEANKEEPER_PASSPHRASE_CMD`. It never prompts or creates a passphrase file.
+/// Pass `None` for an unencrypted ledger.
+///
+/// The secret is borrowed only during construction and is not retained by the
+/// router. Hosts can reuse it for [`Db::open_snapshot`] and drop it after opening
+/// both connections. This API is platform-independent and needs no file
+/// descriptor bridge. Construction performs blocking database I/O.
+///
+/// # Example
+///
+/// ```no_run
+/// use beankeeper_cli::{
+///     cli::Cli,
+///     db::Db,
+///     mcp::{http_router_with_passphrase, StreamableHttpServerConfig},
+///     passphrase::resolve_passphrase,
+/// };
+/// use clap::Parser;
+///
+/// # fn main() -> Result<(), beankeeper_cli::error::CliError> {
+/// let cli = Cli::parse_from(["host", "--db", "/path/books.db", "mcp", "serve"]);
+/// let passphrase = resolve_passphrase(
+///     cli.passphrase.passphrase_fd,
+///     cli.passphrase.passphrase_file.as_deref(),
+///     false,
+/// )?;
+/// let config = StreamableHttpServerConfig::default().enforce_origin_validation();
+/// let app = http_router_with_passphrase(&cli, passphrase.as_ref(), false, config)?;
+/// let snapshot = Db::open_snapshot(&cli.db, passphrase.as_ref())?;
+/// drop(passphrase);
+/// // Merge app into the host router and use snapshot for read-only queries.
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns a CLI error if opening the existing ledger with the supplied key fails.
+pub fn http_router_with_passphrase(
+    cli: &Cli,
+    passphrase: Option<&SecretString>,
+    read_only: bool,
+    config: StreamableHttpServerConfig,
+) -> Result<Router, CliError> {
+    let db = Db::open_existing(&cli.db, passphrase)?;
     let mut server = LedgerServer::new(db, read_only);
     server.require_request_token = true;
     let authentication = Authentication {

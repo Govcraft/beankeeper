@@ -8,6 +8,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Added
 
+- Public `beankeeper_cli::mcp::http_router_with_passphrase` factory for sharing
+  one resolved in-memory secret with a read-only snapshot across platforms.
+  The existing CLI-source factory delegates to it and preserves authentication.
+  ([#109](https://github.com/Govcraft/beankeeper/issues/109))
 - Company-scoped period close/reopen/list commands and MCP tools. Inclusive
   cutoffs reject backdated posts, imports, schedule occurrences, loan payments,
   investment trades, reversals, and proposal approvals. Reopen requires an
