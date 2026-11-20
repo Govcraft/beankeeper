@@ -198,7 +198,7 @@ bk --company acme txn list --count   # Count only, no rows
 - `--currency CODE`: Filter by currency
 - `--reference KEY`: Filter by idempotency key
 - `--metadata TEXT`: Substring search over the raw metadata JSON text
-- `--meta KEY=VALUE` (repeatable, AND-ed): Exact match on a top-level metadata key. JSON strings match exactly (case-sensitive); numbers and booleans match by their JSON text as stored (`qty=3` matches `{"qty":3}` but not `{"qty":3.0}`; `paid=true` matches `{"paid":true}`); `null`, arrays and objects never match. Free text from `-m` is matched with `--meta memo=TEXT`.
+- `--filter-metadata KEY=VALUE` (alias `--meta`; repeatable, AND-ed): Exact match on a top-level metadata key. JSON strings match exactly (case-sensitive; `KEY=` matches an empty string); numbers and booleans match by their JSON text as stored (`qty=3` matches `{"qty":3}` but not `{"qty":3.0}`; `paid=true` matches `{"paid":true}`); `null`, arrays, objects, missing keys and non-JSON metadata never match. Free text from `-m` is matched with `--filter-metadata memo=TEXT`. This is the same rule as on `report ledger`, `report reconciliation` and `report aging`.
 - `--tax-category CAT`: Filter by tax category
 - `--direction {debit|credit}`: Filter entry direction
 - `--limit N` (default: 50), `--offset N` (default: 0): Pagination
@@ -449,6 +449,7 @@ expense accounts, `credits - debits` for liability, equity and revenue accounts.
 bk --company acme report ledger
 bk --company acme report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
 bk --company acme report ledger --account 1000 --account 4000 --currency EUR
+bk --company acme report ledger --account 5000 --filter-metadata project=apollo
 bk --company acme --format csv report ledger --account 1000
 ```
 
@@ -459,6 +460,12 @@ bk --company acme --format csv report ledger --account 1000
 - `--currency CODE`: Only entries of this currency. Default: the company's only
   transaction currency; if the company has several, the command fails with a
   validation error (exit 3) asking for `--currency`; with no transactions, USD.
+- `--filter-metadata KEY=VALUE` (repeatable, AND-ed): only entries whose
+  transaction metadata matches (same rule as `txn list`). The opening balance,
+  running balances and closing balance count matching entries only, so the
+  statement stays consistent; the table prints the active filter and JSON lists
+  it in `metadata_filters`. Without `--account`, only accounts with matching
+  activity are listed.
 
 **CSV:** one flat row per statement line. Columns: `account_code`,
 `account_name`, `account_type`, `currency`, `row_type`, `date`,
@@ -469,7 +476,7 @@ bk --company acme --format csv report ledger --account 1000
 
 ### `bk report aging`
 
-Receivables / payables aging for a single asset or liability account.
+Receivables / payables aging for one or more asset or liability accounts.
 
 ```bash
 bk --company acme report aging --account 1100
@@ -480,10 +487,15 @@ bk --company acme report aging --account 1100 --group-by customer --detail
 bk --company acme report aging --account 1100 --method specific
 bk --company acme report aging --account 1100 --method specific --link-key invoice
 bk --company acme report aging --account 1100 --currency EUR
+bk --company acme report aging --account 1110 --account 1120
+bk --company acme report aging --account 1100 --include-children --group-by customer
+bk --company acme report aging --account 1100 --include-children --group-by customer --group-across-accounts
+bk --company acme report aging --account 1100 --filter-metadata status=disputed
 ```
 
 **Flags:**
-- `--account CODE` (required): an asset account (receivable: charges are debits, settlements are credits) or a liability account (payable: charges are credits, settlements are debits). Other account types are a validation error (exit 3).
+- `--account CODE` (required, repeatable): an asset account (receivable: charges are debits, settlements are credits) or a liability account (payable: charges are credits, settlements are debits). Other account types, and a mix of asset and liability accounts, are a validation error (exit 3). Duplicates are ignored; accounts are reported in code order.
+- `--include-children`: also age every account whose code starts with each `--account` code minus its trailing zeros (`1100` adds `1110`, `1120`, `11xx...`; `1110` adds `1110x...`). A code that is all zeros is rejected. There is no separate parent column: the rollup follows the chart-of-accounts code convention.
 - `--as-of DATE`: include transactions dated on or before this date (default: today). Charges and settlements dated later are ignored, so rerunning for a past period end gives the same answer after later-dated payments are posted (back-dated postings on or before the date do change it).
 - `--buckets N,N,...`: strictly ascending positive day bounds (default `30,60,90`, giving `Current`, `1-30`, `31-60`, `61-90`, `90+`)
 - `--group-by-metadata KEY` (alias `--group-by KEY`): group by a key of the transaction metadata. Metadata is parsed leniently: if it is a JSON object holding a non-empty string or a number under `KEY`, that value is the counterparty; anything else (missing key, non-JSON text, JSON that is not an object, other value types) goes to `(unassigned)`.
@@ -491,6 +503,12 @@ bk --company acme report aging --account 1100 --currency EUR
 - `--link-key KEY` (default `applies_to`): metadata key holding a settlement's link to its charge. Only valid with `--method specific` (exit 3 otherwise).
 - `--detail`: list the open charges under each counterparty in table and CSV output (JSON always includes `open_items`).
 - `--currency CODE`: currency to report. Defaults to the company's single transaction currency; if the company has several, `--currency` is required (exit 3); with no transactions, USD.
+- `--group-across-accounts` (requires `--group-by`): with several accounts, show one row per counterparty combined across accounts (followed by account subtotals) instead of counterparty rows within each account. Matching is unchanged; JSON always has both views.
+- `--filter-metadata KEY=VALUE` (repeatable, AND-ed; same rule as `txn list`): show only open charges whose transaction metadata matches. See "Metadata filter" below.
+
+**Several accounts.** Each selected account is aged on its own, exactly as in a single-account run: FIFO and specific matching never cross accounts, so the combined totals equal the sum of the single-account runs. A specific link from a settlement on one selected account to a charge on another is not honoured and is reported with reason `other_account`. With `--group-by`, groups are formed within each account.
+
+**Metadata filter.** Settlements are matched against every charge first; only then are the open items restricted to charges whose metadata matches. A filtered charge therefore keeps its original age and shows what is still open after the payments applied to it, whether they matched the filter or not (typically payments carry no `status`). This lets a disputed receivable stay in the AR account tagged `{"status":"disputed"}` instead of moving to another account, which would reset its age. Unapplied credit cannot be attributed to a charge, so it is not shown under a filter (`unapplied_credit` is 0), and the totals no longer tie to the account balance: the table shows the unfiltered balance separately, and JSON still has the real `account_balance`.
 
 **How it works.** The ledger has no invoice or due-date model, so ages are measured from transaction dates. Entries on the account are netted per transaction; a net increase is a *charge* and a net decrease is a *settlement*. For an asset account (receivables) charges are debits and settlements credits; for a liability account (payables) charges are credits and settlements debits -- the same command serves AR and AP. Transactions are processed by date (charges before settlements on the same date, then by id), per counterparty when grouping. Settlements beyond the open charges are reported as an *unapplied credit*, which later charges consume first. Each charge's remaining open amount is bucketed by age in days (`as_of - transaction date`; age 0 is `Current`). The report always reconciles: total open - unapplied credit = account balance as of the date.
 
@@ -510,15 +528,20 @@ bk --company acme txn post -d "Globex payment" --debit 1000:100 --credit 1100:10
   -m '{"customer":"Globex","applies_to":"INV-102"}'
 ```
 
-A link that cannot be honoured is ignored, the settlement is applied FIFO, a `[warn]` line is printed on stderr (unless `--quiet`), the table lists it under "Unmatched links", and JSON reports it in `unmatched_links` with one of these reasons: `not_found` (no transaction with that reference/id), `not_on_account` (the transaction has no entries on this account in this currency), `not_a_charge` (it is a settlement or nets to zero on this account), `charge_after_settlement` (the charge is dated after the settlement), `after_as_of` (the charge is dated after `--as-of`), `other_counterparty` (the charge belongs to another counterparty group), `invalid` (the value is not a non-empty string, a positive integer, or an array of those). A link to a charge that is already fully settled is not an error: the amount simply falls back to FIFO.
+A link that cannot be honoured is ignored, the settlement is applied FIFO, a `[warn]` line is printed on stderr (unless `--quiet`), the table lists it under "Unmatched links", and JSON reports it in `unmatched_links` with one of these reasons: `not_found` (no transaction with that reference/id), `not_on_account` (the transaction has no entries on this account in this currency), `not_a_charge` (it is a settlement or nets to zero on this account), `charge_after_settlement` (the charge is dated after the settlement), `after_as_of` (the charge is dated after `--as-of`), `other_counterparty` (the charge belongs to another counterparty group), `other_account` (the charge is on another of the selected accounts), `invalid` (the value is not a non-empty string, a positive integer, or an array of those). A link to a charge that is already fully settled is not an error: the amount simply falls back to FIFO.
 
 **Credits, refunds and reversals.** On a receivable, every credit-side net movement is a settlement: payments, credit notes, write-offs, and reversals of an invoice. Under `fifo` it reduces the oldest open charge; under `specific`, link it to the invoice (e.g. a credit note with `{"applies_to":"INV-102"}`) and it cancels that invoice. Every debit-side net movement is a charge: invoices, refunds paid out to the customer, and payment chargebacks (bounced payments). A charge first consumes any unapplied credit, so refunding an overpayment clears the credit; a chargeback that is not absorbed becomes a new open item aged from its own date. Payables mirror this with the sides swapped: bills and vendor refunds received are charges (credits), payments and vendor credit notes are settlements (debits).
 
 **Net credit.** When settlements exceed the open charges the counterparty (or the account) is in *net credit*: the customer has prepaid or overpaid (for payables: we have prepaid or overpaid the vendor). Its open buckets are zero and the excess is shown as `Unapplied Credit`; `Net` (= total open - unapplied credit) is negative. The table marks it `CR` (e.g. `-150.00 CR`) and adds a legend line; CSV has a negative `net`; JSON has a negative `net` and `"net_credit": true`.
 
-**Output.** Table output has one row per counterparty (or a single `(all)` row) plus a total row, with columns for each bucket, `Total Open`, `Unapplied Credit` and `Net`. With `--detail`, an "Open items" table follows for each counterparty: date, transaction id, reference, description, age (days), bucket, original amount and open amount.
+**Output.** Table output has columns for each bucket, `Total Open`, `Unapplied Credit` and `Net`, and these rows:
+- without `--group-by`: one row per account (an `Account` column with code and name), then `Total`;
+- with `--group-by` and one account: one row per counterparty, then `Total`;
+- with `--group-by` and several accounts: per account, its counterparty rows and a `Subtotal` row (`Account` and `Counterparty` columns), then `Total`; with `--group-across-accounts`, the combined counterparty rows first, then one `Subtotal` per account, then `Total`.
 
-CSV (amounts in minor units) without `--detail` has columns `counterparty`, one per bucket, `total_open`, `unapplied_credit`, `net`, one row per counterparty and a final `TOTAL` row. With `--detail` it is a single flat table with a leading `row_type` column: `row_type, counterparty, transaction_id, date, reference, description, age_days, bucket, original_amount, open_amount, <bucket columns>, total_open, unapplied_credit, net`. Rows are `item` (one per open charge; its open amount appears in its bucket column and in `total_open`), then a `counterparty` summary row per group (item columns empty), then a final `total` row with counterparty `TOTAL`.
+With `--detail`, an "Open items" table follows for each counterparty (or each account when ungrouped): date, transaction id, reference, description, age (days), bucket, original amount and open amount, plus an `Account` column with several accounts.
+
+CSV (amounts in minor units) is one flat table in the same row order. Columns: `row_type, account, counterparty`, then (with `--detail` only) `transaction_id, date, reference, description, age_days, bucket, original_amount, open_amount`, then one column per bucket, `total_open, unapplied_credit, net`. `row_type` is `counterparty` (`account` is empty for rows combined across accounts), `account` (an account's only row when ungrouped, otherwise its subtotal; subtotals appear only with several accounts), or `total` (`account` and `counterparty` empty). With `--detail`, `item` rows (one per open charge; its open amount appears in its bucket column and in `total_open`) precede the row that totals them.
 
 ### `bk report budget-variance`
 
@@ -616,7 +639,7 @@ bk --company acme report reconciliation --account 1200 \
 - `--to YYYY-MM-DD`: As-of date, inclusive (default: today). Point in time: only entries dated on or before it count; a clearing counts toward the cleared balance when `cleared_date <= --to`, and toward the reconciled balance only when it is reconciled and `reconciled_date <= --to`. So an item cleared later shows as uncleared as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled (also with `--statement`)
 - `--statement-balance AMT`: Statement ending balance in major units (e.g. `1234.56`, may be negative), on the account's normal side
 - `--statement ID`: The cleared and reconciled balances count only this statement's clearings, so `--statement-balance` checks that statement alone. Outstanding items still reflect every statement's clearings
-- `--filter-metadata KEY=VALUE` (repeatable, AND-ed): Only entries whose transaction metadata has top-level `KEY` equal to `VALUE`, compared as strings (numbers and booleans by their JSON text). Applies to every balance and the item list. Metadata that is not a JSON object has no keys
+- `--filter-metadata KEY=VALUE` (repeatable, AND-ed): Only entries whose transaction metadata has top-level `KEY` equal to `VALUE` (same rule as `txn list`: strings exactly, numbers and booleans by their JSON text; null, arrays, objects and non-JSON metadata never match). Applies to every balance and the item list
 - `--group-by-metadata KEY` (alias `--group-by`): Group outstanding items by top-level `KEY`, with per-group counts and subtotals; items without the key (or with null, blank or nested values) go to `(unassigned)`, listed last
 - `--currency CODE`: Only entries of transactions in this currency. If omitted, the company's single transaction currency is used (USD if it has no transactions); if the company has several currencies, the command fails with `VALIDATION` and `--currency` is required
 

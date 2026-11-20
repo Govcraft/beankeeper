@@ -25,13 +25,14 @@ use std::collections::BTreeMap;
 
 use beankeeper::types::Currency;
 use chrono::NaiveDate;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::cli::{Cli, OutputFormat};
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db;
 use crate::db::connection::Db;
+use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
 
@@ -152,7 +153,7 @@ pub struct ReconciliationReport {
     pub currency: Currency,
     pub as_of: Option<String>,
     pub statement: Option<String>,
-    pub filters: Vec<(String, String)>,
+    pub filters: Vec<MetadataFilter>,
     pub group_by: Option<String>,
     pub book_balance: i64,
     /// Cleared balance (only `statement`'s clearings when set).
@@ -259,29 +260,6 @@ fn metadata_for_output(raw: Option<&str>) -> Option<serde_json::Value> {
     })
 }
 
-/// Parse `KEY=VALUE` filters.
-///
-/// # Errors
-///
-/// Returns [`CliError::Usage`] when a filter has no `=` or an empty key.
-pub fn parse_filters(specs: &[String]) -> Result<Vec<(String, String)>, CliError> {
-    specs
-        .iter()
-        .map(|s| match s.split_once('=') {
-            Some((k, v)) if !k.trim().is_empty() => Ok((k.trim().to_string(), v.to_string())),
-            _ => Err(CliError::Usage(format!(
-                "invalid --filter-metadata '{s}': expected KEY=VALUE"
-            ))),
-        })
-        .collect()
-}
-
-fn matches_filters(raw: Option<&str>, filters: &[(String, String)]) -> bool {
-    filters
-        .iter()
-        .all(|(k, v)| metadata_value(raw, k).as_deref() == Some(v.as_str()))
-}
-
 /// Group outstanding items by their group value, sorted by value with
 /// [`NO_GROUP`] last.
 fn group_items(items: &[UnclearedEntry]) -> Result<Vec<GroupTotal>, CliError> {
@@ -325,7 +303,7 @@ pub fn build_report(
             CliError::Validation(format!("invalid --to date '{to}': expected YYYY-MM-DD"))
         })?;
     }
-    let filters = parse_filters(args.filter_metadata)?;
+    let filters = metadata_filter::parse_filters(args.filter_metadata)?;
     let statement = args
         .statement
         .map(str::trim)
@@ -345,18 +323,18 @@ pub fn build_report(
     let rows = load_entries(
         conn,
         company,
-        &account.code,
-        currency,
-        args.to,
-        statement.as_deref(),
+        &EntryQuery {
+            code: &account.code,
+            currency,
+            to: args.to,
+            statement: statement.as_deref(),
+            filters: &filters,
+        },
     )?;
 
     let (mut book, mut cleared, mut total_cleared, mut reconciled) = (0i64, 0i64, 0i64, 0i64);
     let mut uncleared = Vec::new();
     for r in rows {
-        if !matches_filters(r.metadata.as_deref(), &filters) {
-            continue;
-        }
         let dsign = if r.direction == "debit" { sign } else { -sign };
         let (stmt_cleared, stmt_reconciled) = if statement.is_some() {
             (r.cleared_stmt, r.reconciled_stmt)
@@ -454,18 +432,35 @@ struct EntryRow {
     reconciled_stmt: i64,
 }
 
+/// Which entries [`load_entries`] reads: one account in one currency, up to
+/// `to`, matching the metadata filters; `statement` scopes the per-statement
+/// clearing sums.
+#[derive(Clone, Copy)]
+struct EntryQuery<'a> {
+    code: &'a str,
+    currency: Currency,
+    to: Option<&'a str>,
+    statement: Option<&'a str>,
+    filters: &'a [MetadataFilter],
+}
+
 /// Load the account's entries (oldest first) with clearing sums as of `to`:
 /// cleared sums count clearings with `cleared_date <= to`, reconciled sums
 /// only reconciled clearings with `reconciled_date <= to`.
 fn load_entries(
     conn: &Connection,
     company: &str,
-    code: &str,
-    currency: Currency,
-    to: Option<&str>,
-    statement: Option<&str>,
+    query: &EntryQuery<'_>,
 ) -> Result<Vec<EntryRow>, CliError> {
-    let mut stmt = conn.prepare(
+    let EntryQuery {
+        code,
+        currency,
+        to,
+        statement,
+        filters,
+    } = *query;
+    let filter = metadata_filter::sql_predicate("t.metadata", filters, 6);
+    let mut stmt = conn.prepare(&format!(
         "SELECT e.id, t.id, t.date, t.description, t.reference, t.metadata, e.memo, \
                 e.direction, e.amount, \
                 COALESCE(c.cleared_all, 0), COALESCE(c.reconciled_all, 0), \
@@ -487,29 +482,35 @@ fn load_entries(
              GROUP BY entry_id \
          ) c ON c.entry_id = e.id \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3 \
-           AND (?4 IS NULL OR t.date <= ?4) \
+           AND (?4 IS NULL OR t.date <= ?4) AND {} \
          ORDER BY t.date, t.id, e.id",
-    )?;
-    let rows = stmt.query_map(
-        params![company, code, currency.code(), to, statement],
-        |row| {
-            Ok(EntryRow {
-                entry_id: row.get(0)?,
-                transaction_id: row.get(1)?,
-                date: row.get(2)?,
-                description: row.get(3)?,
-                reference: row.get(4)?,
-                metadata: row.get(5)?,
-                memo: row.get(6)?,
-                direction: row.get(7)?,
-                amount: row.get(8)?,
-                cleared_all: row.get(9)?,
-                reconciled_all: row.get(10)?,
-                cleared_stmt: row.get(11)?,
-                reconciled_stmt: row.get(12)?,
-            })
-        },
-    )?;
+        filter.sql
+    ))?;
+    let mut values: Vec<Option<String>> = vec![
+        Some(company.to_string()),
+        Some(code.to_string()),
+        Some(currency.code().to_string()),
+        to.map(str::to_string),
+        statement.map(str::to_string),
+    ];
+    values.extend(filter.params.into_iter().map(Some));
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
+        Ok(EntryRow {
+            entry_id: row.get(0)?,
+            transaction_id: row.get(1)?,
+            date: row.get(2)?,
+            description: row.get(3)?,
+            reference: row.get(4)?,
+            metadata: row.get(5)?,
+            memo: row.get(6)?,
+            direction: row.get(7)?,
+            amount: row.get(8)?,
+            cleared_all: row.get(9)?,
+            reconciled_all: row.get(10)?,
+            cleared_stmt: row.get(11)?,
+            reconciled_stmt: row.get(12)?,
+        })
+    })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
 }
 
@@ -585,37 +586,40 @@ fn metadata_cell(m: Option<&serde_json::Value>) -> String {
     }
 }
 
-/// Render the report as human-readable tables.
-#[must_use]
-#[allow(clippy::too_many_lines)]
-pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
+fn new_table() -> comfy_table::Table {
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
-    use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
+    let mut t = comfy_table::Table::new();
+    t.load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+    t
+}
 
+/// Amount with the currency code, e.g. `1,234.56 USD`.
+fn with_currency(r: &ReconciliationReport, v: i64) -> String {
+    format!(
+        "{} {}",
+        format_amount(v, r.currency.minor_units()),
+        r.currency.code()
+    )
+}
+
+/// Title, account type, statement and filter lines.
+fn header_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
     let bold = anstyle::Style::new().bold();
-    let cyan = color(anstyle::AnsiColor::Cyan);
-    let green = color(anstyle::AnsiColor::Green);
-    let red_bold = color(anstyle::AnsiColor::Red).bold();
-    let mu = r.currency.minor_units();
-    let ccy = r.currency.code();
-    let fmt = |v: i64| format!("{} {ccy}", format_amount(v, mu));
-
-    let new_table = || {
-        let mut t = Table::new();
-        t.load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_content_arrangement(ContentArrangement::Dynamic);
-        t
-    };
-
     let as_of = r
         .as_of
         .as_deref()
         .map_or_else(|| "all dates".to_string(), |d| format!("through {d}"));
     let mut lines = vec![
         styled(
-            &format!("Reconciliation -- {} {} ({as_of}) ({ccy})", r.code, r.name),
+            &format!(
+                "Reconciliation -- {} {} ({as_of}) ({})",
+                r.code,
+                r.name,
+                r.currency.code()
+            ),
             bold,
             use_color,
         ),
@@ -628,106 +632,109 @@ pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
         lines.push(format!("Statement: {s}"));
     }
     if !r.filters.is_empty() {
-        let f: Vec<String> = r.filters.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        lines.push(format!("Metadata filter: {}", f.join(", ")));
+        lines.push(format!(
+            "Metadata filter: {}",
+            metadata_filter::describe(&r.filters)
+        ));
     }
-    lines.push(String::new());
+    lines
+}
 
+/// The balances table.
+fn balances_table(r: &ReconciliationReport, use_color: bool) -> String {
+    use comfy_table::{Cell, CellAlignment};
+    let bold = anstyle::Style::new().bold();
     let mut summary = new_table();
     summary.set_header(vec![
         Cell::new(styled("Balance", bold, use_color)),
         Cell::new(styled("Amount", bold, use_color)),
     ]);
-    let mut add = |label: &str, value: String| {
+    let mut add = |label: &str, value: i64| {
         summary.add_row(vec![
             Cell::new(label),
-            Cell::new(value).set_alignment(CellAlignment::Right),
+            Cell::new(with_currency(r, value)).set_alignment(CellAlignment::Right),
         ]);
     };
-    add("Book balance", fmt(r.book_balance));
+    add("Book balance", r.book_balance);
     if r.statement.is_some() {
-        add("Cleared balance (this statement)", fmt(r.cleared_balance));
-        add(
-            "Cleared balance (all statements)",
-            fmt(r.total_cleared_balance),
-        );
+        add("Cleared balance (this statement)", r.cleared_balance);
+        add("Cleared balance (all statements)", r.total_cleared_balance);
     } else {
-        add("Cleared balance", fmt(r.cleared_balance));
+        add("Cleared balance", r.cleared_balance);
     }
-    add("Reconciled balance", fmt(r.reconciled_balance));
-    add("Uncleared total", fmt(r.uncleared_total));
+    add("Reconciled balance", r.reconciled_balance);
+    add("Uncleared total", r.uncleared_total);
     if let (Some(stmt), Some(diff)) = (r.statement_balance, r.difference()) {
-        add("Statement balance", fmt(stmt));
-        add("Difference (statement - cleared)", fmt(diff));
+        add("Statement balance", stmt);
+        add("Difference (statement - cleared)", diff);
     }
-    lines.push(summary.to_string());
+    summary.to_string()
+}
 
-    if let Some(ok) = r.is_reconciled() {
-        lines.push(if ok {
-            styled("[ok] reconciled: yes", green, use_color)
+/// A table of outstanding entries.
+fn items_table(items: &[&UnclearedEntry], minor_units: u8, use_color: bool) -> String {
+    use comfy_table::{Cell, CellAlignment};
+    let bold = anstyle::Style::new().bold();
+    let cyan = color(anstyle::AnsiColor::Cyan);
+    let mut t = new_table();
+    t.set_header(
+        [
+            "Entry",
+            "Txn",
+            "Date",
+            "Reference",
+            "Description",
+            "Amount",
+            "Cleared",
+            "Remaining",
+            "Metadata",
+        ]
+        .iter()
+        .map(|h| Cell::new(styled(h, bold, use_color)))
+        .collect::<Vec<_>>(),
+    );
+    let amount =
+        |v: i64| Cell::new(format_amount(v, minor_units)).set_alignment(CellAlignment::Right);
+    for e in items {
+        let cleared = if e.partially_cleared {
+            format_amount(e.cleared_amount * e.signed_amount.signum(), minor_units)
         } else {
-            styled("[!!] reconciled: no", red_bold, use_color)
-        });
+            String::new()
+        };
+        t.add_row(vec![
+            Cell::new(e.entry_id).set_alignment(CellAlignment::Right),
+            Cell::new(styled(&e.transaction_id.to_string(), cyan, use_color))
+                .set_alignment(CellAlignment::Right),
+            Cell::new(&e.date),
+            Cell::new(e.reference.as_deref().unwrap_or("")),
+            Cell::new(&e.description),
+            amount(e.signed_amount),
+            Cell::new(cleared).set_alignment(CellAlignment::Right),
+            amount(e.signed_remaining),
+            Cell::new(metadata_cell(e.metadata.as_ref())),
+        ]);
     }
+    t.to_string()
+}
 
-    lines.push(String::new());
+/// The outstanding entries, grouped when `--group-by-metadata` is set.
+fn uncleared_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
+    let bold = anstyle::Style::new().bold();
+    let mu = r.currency.minor_units();
     if r.uncleared.is_empty() {
-        lines.push("No uncleared entries.".to_string());
-        return lines.join("\n");
+        return vec!["No uncleared entries.".to_string()];
     }
-
-    let items_table = |items: &[&UnclearedEntry]| {
-        let mut t = new_table();
-        t.set_header(
-            [
-                "Entry",
-                "Txn",
-                "Date",
-                "Reference",
-                "Description",
-                "Amount",
-                "Cleared",
-                "Remaining",
-                "Metadata",
-            ]
-            .iter()
-            .map(|h| Cell::new(styled(h, bold, use_color)))
-            .collect::<Vec<_>>(),
-        );
-        for e in items {
-            let cleared = if e.partially_cleared {
-                format_amount(e.cleared_amount * e.signed_amount.signum(), mu)
-            } else {
-                String::new()
-            };
-            t.add_row(vec![
-                Cell::new(e.entry_id).set_alignment(CellAlignment::Right),
-                Cell::new(styled(&e.transaction_id.to_string(), cyan, use_color))
-                    .set_alignment(CellAlignment::Right),
-                Cell::new(&e.date),
-                Cell::new(e.reference.as_deref().unwrap_or("")),
-                Cell::new(&e.description),
-                Cell::new(format_amount(e.signed_amount, mu)).set_alignment(CellAlignment::Right),
-                Cell::new(cleared).set_alignment(CellAlignment::Right),
-                Cell::new(format_amount(e.signed_remaining, mu))
-                    .set_alignment(CellAlignment::Right),
-                Cell::new(metadata_cell(e.metadata.as_ref())),
-            ]);
-        }
-        t.to_string()
-    };
-
     let partial = r.partially_cleared_count();
     let partial_note = if partial > 0 {
         format!(", {partial} partially cleared")
     } else {
         String::new()
     };
-    lines.push(styled(
+    let mut lines = vec![styled(
         &format!("Uncleared entries ({}{partial_note})", r.uncleared.len()),
         bold,
         use_color,
-    ));
+    )];
 
     if let (Some(groups), Some(key)) = (&r.groups, &r.group_by) {
         for g in groups {
@@ -741,18 +748,38 @@ pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
                     "{key} = {} ({} items, subtotal {})",
                     g.value,
                     g.count,
-                    fmt(g.uncleared_total)
+                    with_currency(r, g.uncleared_total)
                 ),
                 bold,
                 use_color,
             ));
-            lines.push(items_table(&items));
+            lines.push(items_table(&items, mu, use_color));
         }
     } else {
         let items: Vec<&UnclearedEntry> = r.uncleared.iter().collect();
-        lines.push(items_table(&items));
+        lines.push(items_table(&items, mu, use_color));
     }
+    lines
+}
 
+/// Render the report as human-readable tables.
+#[must_use]
+pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
+    let green = color(anstyle::AnsiColor::Green);
+    let red_bold = color(anstyle::AnsiColor::Red).bold();
+
+    let mut lines = header_lines(r, use_color);
+    lines.push(String::new());
+    lines.push(balances_table(r, use_color));
+    if let Some(ok) = r.is_reconciled() {
+        lines.push(if ok {
+            styled("[ok] reconciled: yes", green, use_color)
+        } else {
+            styled("[!!] reconciled: no", red_bold, use_color)
+        });
+    }
+    lines.push(String::new());
+    lines.extend(uncleared_lines(r, use_color));
     lines.join("\n")
 }
 
@@ -766,18 +793,12 @@ struct AccountJson<'a> {
 }
 
 #[derive(Serialize)]
-struct FilterJson<'a> {
-    key: &'a str,
-    value: &'a str,
-}
-
-#[derive(Serialize)]
 struct ReportJson<'a> {
     account: AccountJson<'a>,
     currency: &'a str,
     as_of: Option<&'a str>,
     statement: Option<&'a str>,
-    metadata_filters: Vec<FilterJson<'a>>,
+    metadata_filters: &'a [MetadataFilter],
     group_by_metadata: Option<&'a str>,
     book_balance: i64,
     cleared_balance: i64,
@@ -809,11 +830,7 @@ pub fn render_json(r: &ReconciliationReport, meta: output::json::Meta) -> Result
         currency: r.currency.code(),
         as_of: r.as_of.as_deref(),
         statement: r.statement.as_deref(),
-        metadata_filters: r
-            .filters
-            .iter()
-            .map(|(key, value)| FilterJson { key, value })
-            .collect(),
+        metadata_filters: &r.filters,
         group_by_metadata: r.group_by.as_deref(),
         book_balance: r.book_balance,
         cleared_balance: r.cleared_balance,
@@ -1003,21 +1020,5 @@ mod tests {
         assert_eq!(metadata_value(Some("free text"), k), None);
         assert_eq!(metadata_value(Some("[1,2]"), k), None);
         assert_eq!(metadata_value(None, k), None);
-    }
-
-    #[test]
-    fn filters_parse_and_and() {
-        let f = parse_filters(&["a=1".into(), "b=x=y".into()])
-            .unwrap_or_else(|e| panic!("parse filters: {e}"));
-        assert_eq!(
-            f,
-            vec![("a".into(), "1".into()), ("b".into(), "x=y".into())]
-        );
-        assert!(matches_filters(Some(r#"{"a":1,"b":"x=y"}"#), &f));
-        assert!(!matches_filters(Some(r#"{"a":1}"#), &f));
-        assert!(!matches_filters(Some("not json"), &f));
-        assert!(matches_filters(Some("not json"), &[]));
-        assert!(parse_filters(&["novalue".into()]).is_err());
-        assert!(parse_filters(&["=v".into()]).is_err());
     }
 }

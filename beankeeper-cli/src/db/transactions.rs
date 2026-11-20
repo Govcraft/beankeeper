@@ -4,6 +4,7 @@ use rusqlite::{Connection, params};
 
 use super::audit::{self, Actor};
 use super::metadata;
+use super::metadata_filter;
 use super::{EntryRow, TransactionRow};
 use crate::error::CliError;
 
@@ -237,9 +238,9 @@ pub struct ListTransactionParams<'a> {
     pub reference_filter: Option<&'a str>,
     /// Substring search on transaction metadata (case-insensitive).
     pub metadata_like: Option<&'a str>,
-    /// Exact-match filters on top-level metadata keys (`key`, `value`),
-    /// AND-ed together. See [`build_list_query`] for comparison semantics.
-    pub meta_eq: &'a [(String, String)],
+    /// Exact-match filters on top-level metadata keys, AND-ed together
+    /// (the shared rule in [`metadata_filter`]).
+    pub meta_eq: &'a [metadata_filter::MetadataFilter],
     /// Exact match on entry tax category.
     pub tax_category_filter: Option<&'a str>,
     /// Filter entries by direction ("debit" or "credit").
@@ -373,29 +374,15 @@ fn build_list_query(
         param_idx += 1;
     }
 
-    // Exact match on a top-level metadata key. A JSON string matches when it
-    // equals the value exactly (case-sensitive). A JSON number or boolean
-    // matches when its JSON text equals the value (`--meta qty=3` matches
-    // `{"qty":3}`; `--meta paid=true` matches `{"paid":true}`). null, arrays
-    // and objects never match. Non-JSON metadata never matches (and never
-    // errors) thanks to the json_valid guard.
-    for (key, value) in params.meta_eq {
-        let p = param_idx;
-        let v = param_idx + 1;
-        let _ = write!(
-            sql,
-            " AND (CASE WHEN json_valid(t.metadata) THEN \
-               CASE json_type(t.metadata, ?{p}) \
-                 WHEN 'text' THEN json_extract(t.metadata, ?{p}) \
-                 WHEN 'integer' THEN t.metadata -> ?{p} \
-                 WHEN 'real' THEN t.metadata -> ?{p} \
-                 WHEN 'true' THEN 'true' \
-                 WHEN 'false' THEN 'false' \
-               END END) = ?{v}"
-        );
-        param_values.push(Box::new(format!("$.\"{key}\"")));
-        param_values.push(Box::new(value.clone()));
-        param_idx += 2;
+    // Exact match on top-level metadata keys: the shared `--filter-metadata`
+    // rule (see `metadata_filter`).
+    if !params.meta_eq.is_empty() {
+        let pred = metadata_filter::sql_predicate("t.metadata", params.meta_eq, param_idx);
+        let _ = write!(sql, " AND {}", pred.sql);
+        param_idx = pred.next_param;
+        for v in pred.params {
+            param_values.push(Box::new(v));
+        }
     }
 
     (sql, param_values, param_idx)
@@ -1129,9 +1116,12 @@ mod tests {
             .unwrap_or_else(|e| panic!("insert failed: {e}"));
 
         let check = |pairs: &[(&str, &str)], expected: usize| {
-            let owned: Vec<(String, String)> = pairs
+            let owned: Vec<metadata_filter::MetadataFilter> = pairs
                 .iter()
-                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .map(|(k, v)| metadata_filter::MetadataFilter {
+                    key: (*k).to_string(),
+                    value: (*v).to_string(),
+                })
                 .collect();
             let mut lp = ListTransactionParams::for_company("acme");
             lp.meta_eq = &owned;

@@ -44,7 +44,7 @@ Posted transactions cannot be edited or deleted. The entries, amounts, accounts,
 - **Tax category tagging** -- per-entry or account-level defaults, free-form strings mapping to any tax form lines you need
 - **Encryption at rest** -- SQLCipher baked in from the start, not bolted on
 - **Intercompany linking** -- mirror transactions across entities stay paired through bidirectional correlation IDs; `bk txn reconcile` catches orphans
-- **Receivables / payables aging** -- `bk report aging --account <code>` buckets open charges on an asset (AR) or liability (AP) account into Current / 1-30 / 31-60 / 61-90 / 90+ days, FIFO or matched to specific invoices, optionally per customer or vendor from JSON metadata, with an open-item `--detail` view
+- **Receivables / payables aging** -- `bk report aging --account <code>` buckets open charges on asset (AR) or liability (AP) accounts into Current / 1-30 / 31-60 / 61-90 / 90+ days, FIFO or matched to specific invoices, optionally per customer or vendor from JSON metadata, with an open-item `--detail` view. Several sub-ledgers (or a control account and its children) age in one run, and `--filter-metadata status=disputed` shows a tagged slice at its original age
 - **Budgeting and variance analysis** -- set monthly or annual spending/revenue targets per account, then run `bk report budget-variance` to see where actuals land relative to the plan
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
@@ -322,8 +322,8 @@ bk --company personal txn list --currency MXN --json
 bk --company personal txn list --reference "chase-2026-03-15-001" --json
 bk --company personal txn list --metadata "vendor" --json
 
-# Exact match on structured metadata keys (repeatable, AND-ed)
-bk --company personal txn list --meta vendor=AWS --meta project=apollo --json
+# Exact match on structured metadata keys (repeatable, AND-ed; --meta is an alias)
+bk --company personal txn list --filter-metadata vendor=AWS --filter-metadata project=apollo --json
 ```
 
 Transaction metadata is always stored as a JSON object. Free text from `-m` becomes `{"memo": "..."}`, a JSON object passes through unchanged, and `--meta key=value` adds top-level string keys:
@@ -334,7 +334,7 @@ bk --company personal txn post -d "AWS bill" --debit 5000:120 --credit 1000:120 
 # metadata: {"memo":"Q1 cloud","vendor":"AWS","project":"apollo"}
 ```
 
-`--meta` filters compare JSON strings exactly and numbers/booleans by their JSON text (`--meta qty=3` matches `{"qty":3}`). Databases created before schema v9 have any free-text metadata rewritten to `{"memo": "..."}` automatically on first open; this one-off format migration is not recorded in the audit log.
+`--filter-metadata KEY=VALUE` works the same way on every command that reads entries (`txn list`, `report ledger`, `report reconciliation`, `report aging`): it matches a top-level key of the JSON metadata, comparing JSON strings exactly (case-sensitive) and numbers/booleans by their JSON text (`qty=3` matches `{"qty":3}`). `null`, arrays, objects, missing keys and non-JSON metadata never match, and repeated filters are AND-ed. Databases created before schema v9 have any free-text metadata rewritten to `{"memo": "..."}` automatically on first open; this one-off format migration is not recorded in the audit log.
 
 All filters can be combined. Amount filters use the `--currency` value (or `BEANKEEPER_CURRENCY` env, defaulting to USD) for major-to-minor unit conversion.
 
@@ -382,11 +382,14 @@ bk --company personal report ledger --account 1000 --from 2026-01-01 --to 2026-0
 # Pick a currency when the company books in more than one
 bk --company personal report ledger --account 1000 --currency EUR
 
+# Only entries tagged project=apollo (opening and running balances too)
+bk --company personal report ledger --account 5000 --filter-metadata project=apollo
+
 # Flat CSV: one row per entry plus opening/closing rows per account
 bk --company personal --format csv report ledger > ledger.csv
 ```
 
-Without `--currency`, the report uses the company's only transaction currency and fails with a validation error if there are several.
+Without `--currency`, the report uses the company's only transaction currency and fails with a validation error if there are several. With `--filter-metadata`, the opening balance, running balances and closing balance count matching entries only, so the statement stays internally consistent; the table says the filter is active and JSON lists it under `metadata_filters`.
 
 ### Bank Reconciliation
 
@@ -501,6 +504,13 @@ bk --company personal txn post -d "Invoice 102" -r INV-102 --debit 1100:300 --cr
 bk --company personal txn post -d "Payment" --debit 1000:100 --credit 1100:100 \
   -m '{"customer":"Globex","applies_to":"INV-102"}'
 bk --company personal report aging --account 1100 --method specific
+
+# Several receivable sub-ledgers at once, or a control account and its children
+bk --company personal report aging --account 1110 --account 1120
+bk --company personal report aging --account 1100 --include-children
+
+# Disputed receivables only, still at their original age
+bk --company personal report aging --account 1100 --filter-metadata status=disputed
 ```
 
 The ledger has no invoice or due-date model, so the report works from transactions: entries on the account are netted per transaction, each net increase is a **charge** and each net decrease is a **settlement**, and ages are measured from **transaction dates**.
@@ -511,8 +521,10 @@ The ledger has no invoice or due-date model, so the report works from transactio
 - **Net credit.** Settlements beyond the open charges are an *unapplied credit*. A counterparty (or account) in net credit shows a negative `Net` marked `CR` in the table, a negative `net` in CSV, and `"net_credit": true` in JSON.
 - **As-of.** Only transactions dated on or before `--as-of` count, so rerunning for a past period end gives the same answer after later-dated payments are posted.
 - **Counterparties.** `--group-by-metadata KEY` (alias `--group-by`) groups by a key of JSON object metadata; missing keys and non-JSON or non-object metadata go to `(unassigned)`. Matching runs per counterparty.
+- **Several accounts.** Repeat `--account`, or add `--include-children` to also age every account whose code starts with an account's code minus trailing zeros (`1100` takes in `1110`, `1120`, ...). Each account is matched on its own, exactly as in a single-account run, so the totals equal the sum of single-account runs and a payment never settles a charge on another account (a link to one is reported as `other_account`). All accounts must be receivables or all payables. With `--group-by`, counterparties are grouped within each account, followed by an account subtotal; `--group-across-accounts` combines each counterparty's rows across accounts instead. JSON always has both: per-account sections in `accounts[]` and the combined `groups[]`.
+- **Metadata filter.** `--filter-metadata KEY=VALUE` (repeatable) keeps only open charges whose metadata matches. Matching runs on every entry first, so a filtered charge keeps its original age and shows what is still open after its payments. That lets disputed receivables stay in the AR account, tagged `status=disputed`, without resetting their age. Unapplied credit is not shown under a filter.
 
-The totals always reconcile: total open - unapplied credit = account balance as of the date. If the company uses more than one currency, pass `--currency`.
+Without a filter the totals always reconcile: total open - unapplied credit = account balance as of the date (the combined balance with several accounts). If the company uses more than one currency, pass `--currency`.
 
 ### Cash Flow Statement
 

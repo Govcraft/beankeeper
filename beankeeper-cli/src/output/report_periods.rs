@@ -23,22 +23,62 @@ use crate::output::json::{Envelope, EnvelopeError, Meta};
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// An exact percentage, `num / den` percent with `den > 0`, kept as a
+/// fraction so that rounding happens once, at formatting time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Percent {
+    num: i128,
+    den: i128,
+}
+
+impl Percent {
+    /// Decimal text rounded half away from zero to `decimals` places, e.g.
+    /// `33.33` or `-87.5`. A value that rounds to zero has no sign.
+    #[must_use]
+    pub fn to_fixed(self, decimals: u8) -> String {
+        let scale = 10i128.pow(u32::from(decimals));
+        let scaled = round_half_away(self.num * scale, self.den);
+        let sign = if scaled < 0 { "-" } else { "" };
+        let abs = scaled.unsigned_abs();
+        let scale = scale.unsigned_abs();
+        if decimals == 0 {
+            format!("{sign}{abs}")
+        } else {
+            format!(
+                "{sign}{}.{:0width$}",
+                abs / scale,
+                abs % scale,
+                width = usize::from(decimals)
+            )
+        }
+    }
+
+    /// The value rounded to two decimals, as the nearest `f64` (for JSON).
+    #[must_use]
+    pub fn to_json_number(self) -> Option<f64> {
+        self.to_fixed(2).parse().ok()
+    }
+}
+
+/// `n / d` rounded half away from zero (`d > 0`).
+fn round_half_away(n: i128, d: i128) -> i128 {
+    let (q, r) = (n / d, n % d);
+    if 2 * r.abs() >= d { q + n.signum() } else { q }
+}
+
 /// Percentage change from `prior` to `current`, or `None` when `prior` is 0.
 ///
-/// The base is `|prior|`, so a move from -100 to -50 is +50%.
+/// The base is `|prior|`, so a move from -100 to -50 is +50%. Computed in
+/// exact integer arithmetic.
 #[must_use]
-#[allow(clippy::cast_precision_loss)] // ledger amounts are far below 2^52
-pub fn change_percent(current: i64, prior: i64) -> Option<f64> {
+pub fn change_percent(current: i64, prior: i64) -> Option<Percent> {
     if prior == 0 {
         return None;
     }
-    let change = current.saturating_sub(prior) as f64;
-    Some(change / prior.unsigned_abs() as f64 * 100.0)
-}
-
-/// Round to two decimal places (for JSON output).
-fn round2(value: f64) -> f64 {
-    (value * 100.0).round() / 100.0
+    Some(Percent {
+        num: (i128::from(current) - i128::from(prior)) * 100,
+        den: i128::from(prior.unsigned_abs()),
+    })
 }
 
 /// Sum a row of amounts (the Total column of the periods layout).
@@ -92,11 +132,8 @@ fn format_amount(minor_units: i64, decimal_places: u8) -> String {
     }
 }
 
-fn format_percent(pct: Option<f64>) -> String {
-    match pct {
-        Some(p) => format!("{p:.1}%"),
-        None => "n/a".to_string(),
-    }
+fn format_percent(pct: Option<Percent>) -> String {
+    pct.map_or_else(|| "n/a".to_string(), |p| format!("{}%", p.to_fixed(1)))
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -314,7 +351,7 @@ fn values_json(layout: Layout, amounts: &[i64]) -> ValuesJson {
                 current,
                 prior,
                 change: current.saturating_sub(prior),
-                change_percent: change_percent(current, prior).map(round2),
+                change_percent: change_percent(current, prior).and_then(Percent::to_json_number),
             })
         }
     }
@@ -409,7 +446,7 @@ fn csv_values(layout: Layout, amounts: &[i64]) -> Vec<String> {
             let (cur, prior) = current_prior(amounts);
             cells.push(cur.saturating_sub(prior).to_string());
             cells.push(
-                change_percent(cur, prior).map_or_else(|| "n/a".to_string(), |p| format!("{p:.2}")),
+                change_percent(cur, prior).map_or_else(|| "n/a".to_string(), |p| p.to_fixed(2)),
             );
         }
     }
@@ -468,12 +505,39 @@ pub fn render_csv(report: &MultiColumnReport) -> Result<String, CliError> {
 mod tests {
     use super::*;
 
+    fn fixed(current: i64, prior: i64, decimals: u8) -> Option<String> {
+        change_percent(current, prior).map(|p| p.to_fixed(decimals))
+    }
+
     #[test]
     fn percent_change() {
-        assert_eq!(change_percent(150, 100), Some(50.0));
-        assert_eq!(change_percent(50, 100), Some(-50.0));
-        assert_eq!(change_percent(-50, -100), Some(50.0));
-        assert_eq!(change_percent(100, 0), None);
+        assert_eq!(fixed(150, 100, 2).as_deref(), Some("50.00"));
+        assert_eq!(fixed(50, 100, 2).as_deref(), Some("-50.00"));
+        assert_eq!(fixed(-50, -100, 2).as_deref(), Some("50.00"));
+        assert_eq!(fixed(100, 0, 2), None);
+        assert_eq!(
+            change_percent(150, 100).and_then(Percent::to_json_number),
+            Some(50.0)
+        );
+    }
+
+    #[test]
+    fn percent_rounds_once_half_away_from_zero() {
+        assert_eq!(fixed(4, 3, 2).as_deref(), Some("33.33"));
+        assert_eq!(fixed(5, 3, 2).as_deref(), Some("66.67"));
+        assert_eq!(fixed(2, 3, 1).as_deref(), Some("-33.3"));
+        // -87.5% rounds away from zero.
+        assert_eq!(fixed(1, 8, 0).as_deref(), Some("-88"));
+        // 12.345% to one decimal is 12.3 (no double rounding via 12.35).
+        assert_eq!(fixed(112_345, 100_000, 1).as_deref(), Some("12.3"));
+        // A change that rounds to zero carries no sign.
+        assert_eq!(fixed(99_999, 100_000, 1).as_deref(), Some("0.0"));
+        // Extremes do not overflow.
+        assert_eq!(
+            fixed(i64::MAX, 1, 0).map(|s| s.len()),
+            Some(i64::MAX.to_string().len() + 2)
+        );
+        assert_eq!(fixed(i64::MIN, i64::MAX, 2).as_deref(), Some("-200.00"));
     }
 
     #[test]

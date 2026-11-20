@@ -11,7 +11,6 @@ use crate::passphrase;
 /// # Errors
 ///
 /// Returns [`CliError`] if the subcommand fails.
-#[allow(clippy::too_many_lines)] // flat dispatch over every report subcommand
 pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError> {
     let pp = passphrase::resolve_passphrase(
         cli.passphrase.passphrase_fd,
@@ -33,6 +32,39 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
     }
 
     match sub {
+        ReportCommand::TrialBalance { .. }
+        | ReportCommand::Balance { .. }
+        | ReportCommand::IncomeStatement { .. }
+        | ReportCommand::BalanceSheet { .. }
+        | ReportCommand::TaxSummary { .. } => {
+            run_statement_command(cli, &db, company, sub, format, use_color)
+        }
+        ReportCommand::BudgetVariance { .. } | ReportCommand::Reconciliation { .. } => {
+            run_entry_command(cli, &db, company, sub, format, use_color)
+        }
+        ReportCommand::Ledger { .. } => {
+            super::report_ledger::run_command(cli, &db, company, sub, format, use_color)
+        }
+        ReportCommand::Aging { .. } => {
+            super::report_aging::run_command(cli, &db, company, sub, format, use_color)
+        }
+        ReportCommand::CashFlow(args) => {
+            super::report_cash_flow::run(cli, &db, company, args, format, use_color)
+        }
+    }
+}
+
+/// Dispatch the account-balance statements: trial balance, balance, income
+/// statement, balance sheet and tax summary.
+fn run_statement_command(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    match sub {
         ReportCommand::TrialBalance {
             from,
             to,
@@ -41,7 +73,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             ..
         } => run_trial_balance(
             cli,
-            &db,
+            db,
             company,
             from.as_deref(),
             to.as_deref(),
@@ -57,7 +89,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             currency,
         } => run_balance(
             cli,
-            &db,
+            db,
             company,
             account,
             from.as_deref(),
@@ -70,7 +102,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             from, to, currency, ..
         } => run_income_statement(
             cli,
-            &db,
+            db,
             company,
             from.as_deref(),
             to.as_deref(),
@@ -80,7 +112,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
         ),
         ReportCommand::BalanceSheet { to, currency } => run_balance_sheet(
             cli,
-            &db,
+            db,
             company,
             to.as_deref(),
             currency.as_deref(),
@@ -89,7 +121,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
         ),
         ReportCommand::TaxSummary { from, to, currency } => run_tax_summary(
             cli,
-            &db,
+            db,
             company,
             from.as_deref(),
             to.as_deref(),
@@ -97,6 +129,22 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
+        _ => Err(CliError::General(
+            "internal error: not a statement report".to_string(),
+        )),
+    }
+}
+
+/// Dispatch budget variance and reconciliation.
+fn run_entry_command(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    format: OutputFormat,
+    use_color: bool,
+) -> Result<(), CliError> {
+    match sub {
         ReportCommand::BudgetVariance {
             year,
             month,
@@ -107,7 +155,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             include_unbudgeted,
         } => run_budget_variance(
             cli,
-            &db,
+            db,
             company,
             *year,
             *month,
@@ -119,12 +167,6 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
-        ReportCommand::Ledger { .. } => {
-            super::report_ledger::run_command(cli, &db, company, sub, format, use_color)
-        }
-        ReportCommand::Aging { .. } => {
-            super::report_aging::run_command(cli, &db, company, sub, format, use_color)
-        }
         ReportCommand::Reconciliation {
             account,
             to,
@@ -135,7 +177,7 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             currency,
         } => super::report_reconciliation::run(
             cli,
-            &db,
+            db,
             company,
             &super::report_reconciliation::ReconciliationArgs {
                 account,
@@ -149,9 +191,9 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
             format,
             use_color,
         ),
-        ReportCommand::CashFlow(args) => {
-            super::report_cash_flow::run(cli, &db, company, args, format, use_color)
-        }
+        _ => Err(CliError::General(
+            "internal error: not a budget or reconciliation report".to_string(),
+        )),
     }
 }
 
