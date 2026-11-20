@@ -1,0 +1,22 @@
+name: Minimum supported Rust version
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  msrv:
+    name: Check Rust 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install minimum supported Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88.0"
+      - name: Check workspace and test targets with locked dependencies
+        run: cargo check --workspace --all-targets --locked

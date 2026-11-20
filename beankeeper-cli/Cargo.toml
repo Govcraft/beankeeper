@@ -2,7 +2,7 @@
 name = "beankeeper-cli"
 version = "0.9.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Command-line interface for beankeeper double-entry accounting"
 authors = ["Roland <roland@govcraft.ai>"]
 license = "MIT OR Apache-2.0"
