@@ -931,7 +931,8 @@ fn collect_budget_victims(
 ///
 /// # Errors
 ///
-/// Returns `CliError::NotFound` if the account does not exist, or
+/// Returns `CliError::NotFound` if the account does not exist,
+/// `CliError::Validation` if ledger data still references it, or
 /// `CliError::Sqlite` on database errors.
 pub fn delete_account(
     conn: &Connection,
@@ -943,6 +944,22 @@ pub fn delete_account(
         // Reading the row first both yields the snapshot and produces the
         // `NotFound` error when the account is absent.
         let row: AccountRow = super::accounts::get_account(conn, company_slug, code)?;
+
+        let (entries, budgets, attachments): (i64, i64, i64) = conn.query_row(
+            "SELECT \
+                (SELECT COUNT(*) FROM entries WHERE company_slug = ?1 AND account_code = ?2), \
+                (SELECT COUNT(*) FROM budgets WHERE company_slug = ?1 AND account_code = ?2), \
+                (SELECT COUNT(*) FROM attachments a JOIN entries e ON e.id = a.entry_id \
+                    WHERE e.company_slug = ?1 AND e.account_code = ?2)",
+            params![company_slug, code],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        if entries > 0 || budgets > 0 || attachments > 0 {
+            return Err(CliError::Validation(format!(
+                "account {code} cannot be deleted: posted entries={entries}, \
+                 budget entries={budgets}, attachments={attachments} (ledger is append-only)"
+            )));
+        }
 
         conn.execute(
             "DELETE FROM accounts WHERE company_slug = ?1 AND code = ?2",
@@ -974,11 +991,39 @@ pub fn delete_account(
 ///
 /// # Errors
 ///
-/// Returns `CliError::NotFound` if the company does not exist, or
+/// Returns `CliError::NotFound` if the company does not exist,
+/// `CliError::Validation` if ledger data still references it, or
 /// `CliError::Sqlite` on database errors.
 pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<(), CliError> {
     in_savepoint(conn, "sp_company_delete", || {
         let row: CompanyRow = super::companies::get_company(conn, slug)?;
+
+        let dependencies: (i64, i64, i64, i64, i64) = conn.query_row(
+            "SELECT \
+                (SELECT COUNT(*) FROM accounts WHERE company_slug = ?1), \
+                (SELECT COUNT(*) FROM transactions WHERE company_slug = ?1), \
+                (SELECT COUNT(*) FROM entries WHERE company_slug = ?1), \
+                (SELECT COUNT(*) FROM budgets WHERE company_slug = ?1), \
+                (SELECT COUNT(*) FROM attachments WHERE company_slug = ?1)",
+            params![slug],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        let (accounts, transactions, entries, budgets, attachments) = dependencies;
+        if accounts > 0 || transactions > 0 || entries > 0 || budgets > 0 || attachments > 0 {
+            return Err(CliError::Validation(format!(
+                "company '{slug}' cannot be deleted: accounts={accounts}, \
+                 transactions={transactions}, posted entries={entries}, \
+                 budget entries={budgets}, attachments={attachments} (ledger is append-only)"
+            )));
+        }
 
         conn.execute("DELETE FROM companies WHERE slug = ?1", params![slug])?;
 
