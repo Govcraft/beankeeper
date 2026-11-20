@@ -551,7 +551,7 @@ pub enum ScheduleCommand {
         #[arg(long, conflicts_with = "all")]
         due_through: Option<chrono::NaiveDate>,
     },
-    /// Post every due occurrence atomically. Safe to retry.
+    /// Post due occurrences atomically (at most 1000 by default). Safe to retry.
     Run {
         /// Inclusive cutoff date (default: today in local time).
         #[arg(long)]
@@ -559,6 +559,9 @@ pub enum ScheduleCommand {
         /// Preview due occurrences without posting or advancing templates.
         #[arg(long)]
         dry_run: bool,
+        /// Allow posting more than 1000 occurrences in one company run.
+        #[arg(long)]
+        allow_large_run: bool,
     },
     /// Cancel future occurrences, preserving posted transactions.
     Cancel {

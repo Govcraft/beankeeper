@@ -36,14 +36,21 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
                 .collect();
             serde_json::to_value(rows)
         }
-        ScheduleCommand::Run { through, dry_run } => {
+        ScheduleCommand::Run {
+            through,
+            dry_run,
+            allow_large_run,
+        } => {
             let through = through.unwrap_or_else(|| chrono::Local::now().date_naive());
-            serde_json::to_value(schedules::run_due(
+            serde_json::to_value(schedules::run_due_with_options(
                 db.conn(),
                 &actor,
                 company,
                 through,
-                *dry_run,
+                schedules::RunOptions {
+                    dry_run: *dry_run,
+                    allow_large_run: *allow_large_run,
+                },
             )?)
         }
         ScheduleCommand::Cancel { id } => {
@@ -109,6 +116,12 @@ fn render(
     if cli.verbosity.quiet && format != OutputFormat::Json {
         return Ok(());
     }
+    if !cli.verbosity.quiet && matches!(command, ScheduleCommand::Run { dry_run: true, .. }) {
+        let count = data.as_array().map_or(0, Vec::len);
+        eprintln!(
+            "Preview: {count} due occurrences; no transactions posted or schedules advanced."
+        );
+    }
     if format == OutputFormat::Json {
         println!(
             "{}",
@@ -153,9 +166,6 @@ fn render(
                 table.add_row(headers.iter().map(|key| cell(&row[*key])));
             }
             println!("{table}");
-            if matches!(command, ScheduleCommand::Run { dry_run: true, .. }) {
-                eprintln!("Preview only; no transactions posted or schedules advanced.");
-            }
         }
         OutputFormat::Json => unreachable!("JSON handled above"),
     }
