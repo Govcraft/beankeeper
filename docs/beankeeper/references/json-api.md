@@ -329,6 +329,8 @@ summary,net_income,,Net Income,,13000
 
 All amounts are minor units; `balance`, `opening_balance` and `closing_balance`
 are on the account's `normal_balance` side (negative = abnormal side).
+`metadata_filters` lists the `--filter-metadata` pairs as `{ "key", "value" }`
+(`[]` without them); with filters, every balance counts matching entries only.
 
 ```json
 {
@@ -338,6 +340,7 @@ are on the account's `normal_balance` side (negative = abnormal side).
     "currency": "USD",
     "from": "2026-01-01",
     "to": "2026-03-31",
+    "metadata_filters": [],
     "accounts": [
       {
         "code": "1000",
@@ -835,31 +838,89 @@ Amounts are signed minor units (positive = cash inflow).
 
 ### `report aging`
 
-Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) when `--group-by-metadata`/`--group-by` is not used; otherwise it is the metadata value or `"(unassigned)"` (missing key, non-JSON or non-object metadata). `max_days` is `null` for the open-ended last bucket. `totals.net` (= `total_open - unapplied_credit`) always equals `account_balance` (the account's balance in its normal direction as of `as_of`, in `currency`).
+Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) when `--group-by-metadata`/`--group-by` is not used; otherwise it is the metadata value or `"(unassigned)"` (missing key, non-JSON or non-object metadata). `max_days` is `null` for the open-ended last bucket.
 
+The report has two views of the same open items:
+
+- `accounts[]`: one section per aged account (code order), each with its own `groups`, `totals`, `account_balance` and `unmatched_links`. Each section is identical to a single-account run of that account.
+- `groups[]`: the counterparty groups combined across accounts (with one account, the same as that account's `groups`). `--group-across-accounts` only changes table and CSV output; JSON always has both views.
+
+Top-level `totals` are the sums of the per-account totals, `account_balance` is the sum of the accounts' balances (normal direction, as of `as_of`, in `currency`), and `unmatched_links` holds every account's links. Without a metadata filter, `totals.net` (= `total_open - unapplied_credit`) always equals `account_balance`, both overall and per account.
+
+- `include_children` and `group_across_accounts` echo the flags.
+- `metadata_filters` lists the `--filter-metadata` pairs as `{ "key", "value" }` (`[]` without them). With a filter, groups and items contain only matching open charges (after every settlement was applied), groups without matching items are dropped, `unapplied_credit` is `0`, and `account_balance` stays unfiltered, so `totals.net` no longer equals it.
 - `method` is `"fifo"` or `"specific"`; `basis` is `"fifo-by-transaction-date"` or `"specific-then-fifo-by-transaction-date"` accordingly.
 - `link_key` is the metadata key used for links with `"specific"` (default `"applies_to"`), `null` with `"fifo"`.
 - `net` is negative and `net_credit` is `true` when a group (or the totals) is in net credit, i.e. settlements exceed the open charges.
-- `open_items[].reference` is the charge's transaction reference, or `null`. `open_items` is always present (`--detail` only affects table and CSV output).
-- `unmatched_links` lists settlement links that were not honoured (always `[]` with `"fifo"`); each settlement was applied FIFO instead (`fallback: "fifo"`). `link` is the value as found in metadata (string, number, or the raw invalid value). `reason` is one of `not_found`, `not_on_account`, `not_a_charge`, `charge_after_settlement`, `after_as_of`, `other_counterparty`, `invalid` (see `commands.md`). `counterparty` is the settlement's group (`null` when not grouping); `settlement_amount` is its full amount.
+- `open_items[].account` is the account the charge is on; `reference` is the charge's transaction reference, or `null`. `open_items` is always present (`--detail` only affects table and CSV output).
+- `unmatched_links` lists settlement links that were not honoured (always `[]` with `"fifo"`); each settlement was applied FIFO instead (`fallback: "fifo"`). `account` is the account the settlement is on. `link` is the value as found in metadata (string, number, or the raw invalid value). `reason` is one of `not_found`, `not_on_account`, `not_a_charge`, `charge_after_settlement`, `after_as_of`, `other_counterparty`, `other_account`, `invalid` (see `commands.md`). `counterparty` is the settlement's group (`null` when not grouping); `settlement_amount` is its full amount.
+
+Two receivable accounts grouped by customer, filtered to disputed charges (the second account's section and the `Initech` group are elided):
 
 ```json
 {
   "data": {
-    "account": { "code": "1100", "name": "Accounts Receivable", "type": "asset" },
     "kind": "receivable",
-    "as_of": "2026-06-30",
+    "as_of": "2026-03-01",
     "currency": "USD",
+    "include_children": false,
     "group_by": "customer",
+    "group_across_accounts": false,
+    "metadata_filters": [{ "key": "status", "value": "disputed" }],
     "method": "specific",
     "link_key": "applies_to",
     "basis": "specific-then-fifo-by-transaction-date",
     "buckets": [
       { "label": "Current", "min_days": 0, "max_days": 0 },
       { "label": "1-30", "min_days": 1, "max_days": 30 },
-      { "label": "31-60", "min_days": 31, "max_days": 60 },
-      { "label": "61-90", "min_days": 61, "max_days": 90 },
-      { "label": "90+", "min_days": 91, "max_days": null }
+      { "label": "30+", "min_days": 31, "max_days": null }
+    ],
+    "accounts": [
+      {
+        "code": "1210",
+        "name": "AR East",
+        "type": "asset",
+        "groups": [
+          {
+            "counterparty": "Globex",
+            "buckets": [
+              { "label": "Current", "amount": 0 },
+              { "label": "1-30", "amount": 0 },
+              { "label": "30+", "amount": 10000 }
+            ],
+            "total_open": 10000,
+            "unapplied_credit": 0,
+            "net": 10000,
+            "net_credit": false,
+            "open_items": [
+              {
+                "account": "1210",
+                "transaction_id": 1,
+                "date": "2026-01-05",
+                "reference": "INV-1",
+                "description": "Invoice 1",
+                "age_days": 55,
+                "bucket": "30+",
+                "original_amount": 10000,
+                "open_amount": 10000
+              }
+            ]
+          }
+        ],
+        "totals": {
+          "buckets": [
+            { "label": "Current", "amount": 0 },
+            { "label": "1-30", "amount": 0 },
+            { "label": "30+", "amount": 10000 }
+          ],
+          "total_open": 10000,
+          "unapplied_credit": 0,
+          "net": 10000,
+          "net_credit": false
+        },
+        "account_balance": 11000,
+        "unmatched_links": []
+      }
     ],
     "groups": [
       {
@@ -867,9 +928,7 @@ Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) whe
         "buckets": [
           { "label": "Current", "amount": 0 },
           { "label": "1-30", "amount": 0 },
-          { "label": "31-60", "amount": 0 },
-          { "label": "61-90", "amount": 0 },
-          { "label": "90+", "amount": 10000 }
+          { "label": "30+", "amount": 10000 }
         ],
         "total_open": 10000,
         "unapplied_credit": 0,
@@ -877,12 +936,13 @@ Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) whe
         "net_credit": false,
         "open_items": [
           {
+            "account": "1210",
             "transaction_id": 1,
-            "date": "2026-03-01",
-            "reference": "INV-101",
-            "description": "Invoice 101",
-            "age_days": 121,
-            "bucket": "90+",
+            "date": "2026-01-05",
+            "reference": "INV-1",
+            "description": "Invoice 1",
+            "age_days": 55,
+            "bucket": "30+",
             "original_amount": 10000,
             "open_amount": 10000
           }
@@ -892,33 +952,28 @@ Amounts are minor units. `counterparty` is `null` (and `group_by` is `null`) whe
     "totals": {
       "buckets": [
         { "label": "Current", "amount": 0 },
-        { "label": "1-30", "amount": 0 },
-        { "label": "31-60", "amount": 0 },
-        { "label": "61-90", "amount": 0 },
-        { "label": "90+", "amount": 10000 }
+        { "label": "1-30", "amount": 7000 },
+        { "label": "30+", "amount": 10000 }
       ],
-      "total_open": 10000,
+      "total_open": 17000,
       "unapplied_credit": 0,
-      "net": 10000,
+      "net": 17000,
       "net_credit": false
     },
-    "account_balance": 10000,
-    "unmatched_links": []
+    "account_balance": 16000,
+    "unmatched_links": [
+      {
+        "account": "1220",
+        "settlement_transaction_id": 5,
+        "settlement_date": "2026-02-11",
+        "settlement_amount": 2000,
+        "counterparty": "(unassigned)",
+        "link": "INV-1",
+        "reason": "other_account",
+        "fallback": "fifo"
+      }
+    ]
   }
-}
-```
-
-An `unmatched_links` element:
-
-```json
-{
-  "settlement_transaction_id": 7,
-  "settlement_date": "2026-06-11",
-  "settlement_amount": 5000,
-  "counterparty": "Globex",
-  "link": "INV-999",
-  "reason": "not_found",
-  "fallback": "fifo"
 }
 ```
 

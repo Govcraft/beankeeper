@@ -203,6 +203,26 @@ bk --company mybiz audit log --entity entry --json
 BK_ACTOR=nightly-import bk --company mybiz txn clear 50 --entry 99 --status reconciled
 ```
 
+### Track disputed receivables without resetting their age
+
+Keep a disputed invoice in its receivable account and tag it, rather than
+moving it to a separate account (a new posting would start a new age):
+
+```bash
+# Tag the invoice in its metadata
+bk --company mybiz txn post -d "Invoice 102" -r INV-102 \
+  --debit 1110:300 --credit 4000:300 -m '{"customer":"Globex","status":"disputed"}'
+
+# Disputed items only, across every receivable sub-ledger under 1100,
+# at their original age and net of any payments already applied
+bk --company mybiz report aging --account 1100 --include-children \
+  --filter-metadata status=disputed --group-by customer --detail
+
+# The same slice in the ledger and the transaction list
+bk --company mybiz report ledger --account 1110 --filter-metadata status=disputed
+bk --company mybiz txn list --filter-metadata status=disputed --json
+```
+
 ## Budgeting
 
 ### Set up annual budgets

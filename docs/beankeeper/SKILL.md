@@ -162,12 +162,25 @@ bk --company acme report aging --account 2000 --as-of 2026-03-31  # AP
 bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer
 bk --company acme report aging --account 1100 --group-by customer --detail   # list open invoices
 bk --company acme report aging --account 1100 --method specific              # honour applies_to links
+bk --company acme report aging --account 1110 --account 1120                 # several sub-ledgers
+bk --company acme report aging --account 1100 --include-children            # 1100 plus 11xx children
+bk --company acme report aging --account 1100 --filter-metadata status=disputed
 ```
 
 There is no invoice or due-date model: each net increase to the account is a
 charge, each net decrease a settlement, and ages are measured from transaction
 dates. Asset accounts (AR) age debit-side charges and apply credit-side
 settlements; liability accounts (AP) the reverse.
+
+With several accounts, each is matched on its own (totals equal the sum of
+single-account runs; a link to a charge on another account is reported as
+`other_account`), and all must be AR or all AP. `--include-children` adds every
+account whose code starts with the given code minus trailing zeros. With
+`--group-by`, counterparties are grouped per account unless
+`--group-across-accounts` is set; JSON has per-account `accounts[]` and the
+combined `groups[]`. `--filter-metadata` keeps only matching open charges,
+after all settlements were applied, so tagged items (e.g. `status=disputed`)
+keep their original age; unapplied credit is not shown under a filter.
 
 - To age per customer or vendor, post with JSON metadata such as
   `-m '{"customer":"Globex"}'`. Missing keys and non-JSON metadata go to
@@ -263,13 +276,17 @@ bk txn reconcile
 Transaction `metadata` is always `null` or a JSON object. `-m "free text"` is
 stored as `{"memo":"free text"}`; `-m '{"k":"v"}'` is stored unchanged.
 `--meta key=value` (repeatable) adds top-level string keys; duplicates are a
-validation error. Filter with `txn list --meta key=value` (exact, AND-ed) or
-`--metadata TEXT` (substring).
+validation error. Filter with `--filter-metadata key=value` (exact, AND-ed), the
+same rule on `txn list` (where `--meta` is an alias), `report ledger`,
+`report reconciliation` and `report aging`; or `txn list --metadata TEXT`
+(substring). Strings match exactly, numbers and booleans by their JSON text
+(`qty=3` matches `{"qty":3}`); null, arrays, objects and non-JSON never match.
 
 ```bash
 bk --company acme txn post -d "AWS bill" --debit 5000:120 --credit 1000:120 \
   -m "Q1 cloud" --meta vendor=AWS --meta project=apollo
-bk --company acme txn list --meta vendor=AWS --json
+bk --company acme txn list --filter-metadata vendor=AWS --json
+bk --company acme report ledger --account 5000 --filter-metadata project=apollo
 ```
 
 For additional workflow patterns including bank reconciliation and tax reporting, see [`references/workflows.md`](references/workflows.md).
