@@ -673,7 +673,7 @@ fn with_post_params<T>(
     let metadata = metadata.as_deref();
 
     // 4. Look up accounts, resolve tax categories, and build library Entry objects
-    let mut journal = JournalEntry::new(txn_date, description);
+    let mut journal = JournalEntry::new(txn_date, description, currency);
     if let Some(meta) = metadata {
         journal = journal.with_metadata(meta);
     }
@@ -689,7 +689,7 @@ fn with_post_params<T>(
     for (args, debit) in [(&parsed_debits, true), (&parsed_credits, false)] {
         for arg in args {
             let entry = library_entry(db_handle, company, arg, currency, debit, &resolve_tax)?;
-            journal = journal.entry(entry);
+            journal = journal.entry(entry)?;
         }
     }
 

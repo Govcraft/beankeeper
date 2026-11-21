@@ -297,7 +297,7 @@ pub(crate) fn validate_posting(
         .map_err(|error| CliError::Validation(error.to_string()))?;
     let date = chrono::NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
         .map_err(|error| CliError::Validation(error.to_string()))?;
-    let mut journal = beankeeper::core::JournalEntry::new(date, p.description);
+    let mut journal = beankeeper::core::JournalEntry::new(date, p.description, currency);
     for entry in p.entries {
         let account = super::accounts::get_account(conn, p.company_slug, &entry.account_code)?;
         let account = super::accounts::row_to_account(&account)?;
@@ -307,7 +307,7 @@ pub(crate) fn validate_posting(
         } else {
             beankeeper::types::Entry::credit(account, amount)?
         };
-        journal = journal.entry(line);
+        journal = journal.entry(line)?;
     }
     journal.post()?;
     Ok(())

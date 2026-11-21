@@ -28,10 +28,11 @@
 //! let txn = JournalEntry::new(
 //!         NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
 //!         "Sale of goods",
+//!         Currency::USD,
 //!     )
-//!     .debit(&cash, Money::usd(500_00))
+//!     .debit(&cash, Amount::new(500_00))
 //!     .unwrap()
-//!     .credit(&revenue, Money::usd(500_00))
+//!     .credit(&revenue, Amount::new(500_00))
 //!     .unwrap()
 //!     .post()
 //!     .unwrap();
@@ -67,8 +68,8 @@ pub mod prelude {
     pub use crate::reporting::{AccountBalance, TrialBalance};
     pub use crate::types::{
         Account, AccountCode, AccountCodeError, AccountType, AccountTypeError, Amount, AmountError,
-        Currency, CurrencyError, DebitCreditError, DebitOrCredit, DocumentType, DocumentTypeError,
-        Entry, EntryError, IdempotencyKey, IdempotencyKeyError, Money, MoneyError, SourceDocument,
-        SourceDocumentError,
+        ClearedEntry, Currency, CurrencyError, DebitCreditError, DebitOrCredit, DocumentType,
+        DocumentTypeError, Entry, EntryError, IdempotencyKey, IdempotencyKeyError, Money,
+        MoneyError, SourceDocument, SourceDocumentError,
     };
 }

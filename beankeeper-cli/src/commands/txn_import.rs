@@ -321,7 +321,7 @@ fn validate_posting(
     prepared: &mut PreparedTransaction,
 ) -> Result<Vec<transactions::PostEntryParams>, CliError> {
     let currency = parse_currency(&prepared.currency)?;
-    let mut journal = JournalEntry::new(prepared.date, &prepared.description);
+    let mut journal = JournalEntry::new(prepared.date, &prepared.description, currency);
     let mut entries = Vec::new();
     for entry in &mut prepared.entries {
         let row = accounts::get_account(db.conn(), company, &entry.account_code)?;
@@ -339,7 +339,7 @@ fn validate_posting(
         if let Some(category) = &entry.tax_category {
             posting = posting.with_tax_category(category);
         }
-        journal = journal.entry(posting);
+        journal = journal.entry(posting)?;
         entries.push(transactions::PostEntryParams {
             account_code: entry.account_code.clone(),
             direction: entry.direction.as_str().to_string(),

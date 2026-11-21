@@ -1448,10 +1448,11 @@ let revenue = Account::new(AccountCode::new("4000").unwrap(), "Revenue", Account
 let txn = JournalEntry::new(
         NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
         "Cash sale",
+        Currency::USD,
     )
-    .debit(&cash, Money::usd(50_00))
+    .debit(&cash, Amount::new(50_00))
     .unwrap()
-    .credit(&revenue, Money::usd(50_00))
+    .credit(&revenue, Amount::new(50_00))
     .unwrap()
     .post()
     .unwrap();
@@ -1484,12 +1485,13 @@ let tax = Account::new(AccountCode::new("2200").unwrap(), "Tax Withheld", Accoun
 let txn = JournalEntry::new(
         NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
         "March Paycheck",
+        Currency::USD,
     )
-    .debit_with_memo(&salary, Money::usd(5000_00), "Gross salary")
+    .debit_with_memo(&salary, Amount::new(5000_00), "Gross salary")
     .unwrap()
-    .credit_with_memo(&cash, Money::usd(3800_00), "Net pay")
+    .credit_with_memo(&cash, Amount::new(3800_00), "Net pay")
     .unwrap()
-    .credit_with_memo(&tax, Money::usd(1200_00), "Federal withholding")
+    .credit_with_memo(&tax, Amount::new(1200_00), "Federal withholding")
     .unwrap()
     .post()
     .unwrap();
@@ -1514,7 +1516,7 @@ Ten ISO 4217 currencies with correct minor-unit precision:
 | Bahraini Dinar | `BHD` | 3 |
 | Kuwaiti Dinar | `KWD` | 3 |
 
-`JournalEntry::post()` rejects mixed-currency entries at runtime with `TransactionError::CurrencyMismatch`.
+Each journal chooses its currency at construction. Debit and credit amounts are minor units in that currency. Adding a prebuilt entry with a different currency returns `EntryError::CurrencyMismatch`. Posting validates the count and balance, then retains the currency and balanced total in the resulting `Transaction`.
 
 Reports (`trial-balance`, `balance`, `income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `budget-variance`) are always computed in a single currency and never add amounts across currencies. Pass `--currency CODE` to choose it; otherwise it is inferred from the company's transactions (USD when there are none). If a company has transactions in more than one currency, a report without `--currency` fails with a validation error listing the currencies found.
 
@@ -1529,11 +1531,11 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
     let cash = Account::new(AccountCode::new("1000")?, "Cash", AccountType::Asset);
     let revenue = Account::new(AccountCode::new("4000")?, "Revenue", AccountType::Revenue);
     let today = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
-    let txn = JournalEntry::new(today, "Sale")
-        .debit(&cash, Money::usd(50_00))?
-        .credit(&revenue, Money::usd(50_00))?
+    let txn = JournalEntry::new(today, "Sale", Currency::USD)
+        .debit(&cash, Amount::new(50_00))?
+        .credit(&revenue, Amount::new(50_00))?
         .post()?;
-    ledger.post(txn);
+    ledger.post(txn)?;
     Ok(())
 }
 ```

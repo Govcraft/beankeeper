@@ -3,11 +3,15 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::NaiveDate;
 
 use crate::reporting::{AccountBalance, TrialBalance};
-use crate::types::{Account, AccountCode, Amount, DebitOrCredit, Entry, MoneyError};
+use crate::types::{Account, AccountCode, Amount, Currency, DebitOrCredit, Entry, MoneyError};
 
 use super::transaction::Transaction;
 
-/// A general ledger holding posted transactions and providing balance queries.
+/// A single-currency, in-memory scratch ledger for posted transactions.
+///
+/// The first transaction establishes the ledger currency. Account codes are
+/// registered automatically from the posted entries, so callers that require
+/// an authoritative chart of accounts should resolve entries against it first.
 ///
 /// The ledger is append-only: once a transaction is posted, it cannot be
 /// removed. This follows standard accounting practice where corrections
@@ -34,15 +38,16 @@ use super::transaction::Transaction;
 /// let txn = JournalEntry::new(
 ///         NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
 ///         "Sale",
+///         Currency::USD,
 ///     )
-///     .debit(&cash, Money::usd(500_00))
+///     .debit(&cash, Amount::new(500_00))
 ///     .unwrap()
-///     .credit(&revenue, Money::usd(500_00))
+///     .credit(&revenue, Amount::new(500_00))
 ///     .unwrap()
 ///     .post()
 ///     .unwrap();
 ///
-/// ledger.post(txn);
+/// ledger.post(txn).unwrap();
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
@@ -64,7 +69,18 @@ impl Ledger {
     ///
     /// Incrementally updates the internal account index so that subsequent
     /// balance queries remain O(1) lookup + O(k) summation.
-    pub fn post(&mut self, transaction: Transaction) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::CurrencyMismatch`] if the transaction currency
+    /// differs from that of the first posting.
+    pub fn post(&mut self, transaction: Transaction) -> Result<(), MoneyError> {
+        let actual = transaction.currency();
+        if let Some(expected) = self.currency()
+            && expected != actual
+        {
+            return Err(MoneyError::CurrencyMismatch { expected, actual });
+        }
         let txn_idx = self.transactions.len();
         for (entry_idx, entry) in transaction.entries().iter().enumerate() {
             let code = entry.account().code().clone();
@@ -77,6 +93,13 @@ impl Ledger {
                 .push((txn_idx, entry_idx));
         }
         self.transactions.push(transaction);
+        Ok(())
+    }
+
+    /// Returns the ledger currency, or `None` before the first posting.
+    #[must_use]
+    pub fn currency(&self) -> Option<Currency> {
+        self.transactions.first().map(Transaction::currency)
     }
 
     /// Returns all posted transactions.
@@ -317,7 +340,7 @@ impl Ledger {
 mod tests {
     use super::*;
     use crate::core::JournalEntry;
-    use crate::types::{AccountCode, AccountType, Money};
+    use crate::types::{AccountCode, AccountType};
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| panic!("invalid date: {y}-{m}-{d}"))
@@ -348,14 +371,14 @@ mod tests {
     }
 
     fn post_sale_on(ledger: &mut Ledger, amount: i128, on: NaiveDate) {
-        let txn = JournalEntry::new(on, "Sale")
-            .debit(&cash(), Money::usd(amount))
+        let txn = JournalEntry::new(on, "Sale", Currency::USD)
+            .debit(&cash(), Amount::new(amount))
             .unwrap_or_else(|e| panic!("test: {e}"))
-            .credit(&revenue(), Money::usd(amount))
+            .credit(&revenue(), Amount::new(amount))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .post()
             .unwrap_or_else(|e| panic!("test: {e}"));
-        ledger.post(txn);
+        ledger.post(txn).unwrap_or_else(|e| panic!("{e}"));
     }
 
     #[test]
@@ -373,6 +396,30 @@ mod tests {
         assert_eq!(ledger.transaction_count(), 0);
         post_sale(&mut ledger, 500);
         assert_eq!(ledger.transaction_count(), 1);
+    }
+
+    #[test]
+    fn rejects_a_foreign_currency_before_touching_balances() -> Result<(), crate::error::BeanError>
+    {
+        let mut ledger = Ledger::new();
+        assert_eq!(ledger.currency(), None);
+        post_sale(&mut ledger, 500);
+        let foreign = JournalEntry::new(date(2024, 1, 16), "Euro sale", Currency::EUR)
+            .debit(&cash(), Amount::new(700))?
+            .credit(&revenue(), Amount::new(700))?
+            .post()?;
+
+        assert_eq!(
+            ledger.post(foreign),
+            Err(MoneyError::CurrencyMismatch {
+                expected: Currency::USD,
+                actual: Currency::EUR
+            })
+        );
+        assert_eq!(ledger.currency(), Some(Currency::USD));
+        assert_eq!(ledger.transaction_count(), 1);
+        assert_eq!(ledger.balance_for(&cash())?, Amount::new(500));
+        Ok(())
     }
 
     #[test]
@@ -478,14 +525,14 @@ mod tests {
         post_sale(&mut ledger, 1000);
 
         // Pay rent
-        let txn = JournalEntry::new(date(2024, 1, 20), "Rent")
-            .debit(&expense(), Money::usd(500))
+        let txn = JournalEntry::new(date(2024, 1, 20), "Rent", Currency::USD)
+            .debit(&expense(), Amount::new(500))
             .unwrap_or_else(|e| panic!("test: {e}"))
-            .credit(&cash(), Money::usd(500))
+            .credit(&cash(), Amount::new(500))
             .unwrap_or_else(|e| panic!("test: {e}"))
             .post()
             .unwrap_or_else(|e| panic!("test: {e}"));
-        ledger.post(txn);
+        ledger.post(txn).unwrap_or_else(|e| panic!("{e}"));
 
         // Cash should be 1000 - 500 = 500
         let cash_balance = ledger
