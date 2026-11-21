@@ -183,16 +183,24 @@ impl Money {
             .ok_or(MoneyError::Overflow)
     }
 
-    /// Returns this amount with its sign negated.
-    #[must_use]
-    pub fn negate(self) -> Self {
-        Self::new(-self.amount, self.currency)
+    /// Negates this monetary value.
+    /// # Errors
+    /// Returns [`MoneyError::Overflow`] when the result cannot be represented.
+    pub fn checked_neg(self) -> Result<Self, MoneyError> {
+        self.amount
+            .checked_neg()
+            .map(|amount| Self::new(amount, self.currency))
+            .ok_or(MoneyError::Overflow)
     }
 
-    /// Returns the absolute value of this amount.
-    #[must_use]
-    pub fn abs(self) -> Self {
-        Self::new(self.amount.abs(), self.currency)
+    /// Computes the absolute value.
+    /// # Errors
+    /// Returns [`MoneyError::Overflow`] when the magnitude cannot be represented.
+    pub fn checked_abs(self) -> Result<Self, MoneyError> {
+        self.amount
+            .checked_abs()
+            .map(|amount| Self::new(amount, self.currency))
+            .ok_or(MoneyError::Overflow)
     }
 }
 
@@ -380,7 +388,7 @@ mod tests {
     #[test]
     fn negate_positive_money() {
         let m = Money::usd(100);
-        let neg = m.negate();
+        let neg = m.checked_neg().expect("test amount can be negated");
         assert_eq!(neg.amount(), Amount::new(-100));
         assert_eq!(neg.currency(), Currency::USD);
     }
@@ -388,7 +396,7 @@ mod tests {
     #[test]
     fn abs_of_negative_money() {
         let m = Money::usd(-100);
-        assert_eq!(m.abs(), Money::usd(100));
+        assert_eq!(m.checked_abs(), Ok(Money::usd(100)));
     }
 
     #[test]

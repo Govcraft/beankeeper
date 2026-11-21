@@ -1,6 +1,4 @@
 use core::fmt;
-use core::iter::Sum;
-use core::ops::{Add, Mul, Neg, Sub};
 
 /// Error type for monetary amount operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,13 +36,8 @@ impl std::error::Error for AmountError {}
 ///
 /// # Arithmetic
 ///
-/// The [`Add`] and [`Sub`] trait implementations use **saturating arithmetic**
-/// (clamping at `i128::MIN` / `i128::MAX` on overflow). Use [`checked_add`],
-/// [`checked_sub`], and [`checked_mul`] when you need overflow detection.
-///
-/// [`checked_add`]: Amount::checked_add
-/// [`checked_sub`]: Amount::checked_sub
-/// [`checked_mul`]: Amount::checked_mul
+/// Use [`Amount::checked_add`], [`Amount::checked_sub`], and
+/// [`Amount::checked_mul`] to detect values outside the representable range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Amount(i128);
 
@@ -82,13 +75,25 @@ impl Amount {
         self.0 < 0
     }
 
-    /// Returns the absolute value of this amount.
+    /// Checked absolute value. Returns `None` when the magnitude cannot be represented.
     #[must_use]
-    pub const fn abs(self) -> Self {
-        Self(self.0.saturating_abs())
+    pub const fn checked_abs(self) -> Option<Self> {
+        match self.0.checked_abs() {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
     }
 
-    /// Checked addition. Returns `None` on overflow.
+    /// Checked negation. Returns `None` when the result cannot be represented.
+    #[must_use]
+    pub const fn checked_neg(self) -> Option<Self> {
+        match self.0.checked_neg() {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Checked addition. Returns `None` outside the representable range.
     #[must_use]
     pub const fn checked_add(self, rhs: Self) -> Option<Self> {
         match self.0.checked_add(rhs.0) {
@@ -97,7 +102,7 @@ impl Amount {
         }
     }
 
-    /// Checked subtraction. Returns `None` on underflow.
+    /// Checked subtraction. Returns `None` outside the representable range.
     #[must_use]
     pub const fn checked_sub(self, rhs: Self) -> Option<Self> {
         match self.0.checked_sub(rhs.0) {
@@ -130,70 +135,23 @@ impl Amount {
     #[must_use]
     pub fn format_decimal(self, decimal_places: u8) -> String {
         if decimal_places == 0 {
-            return format!("{}", self.0);
+            return self.0.to_string();
         }
 
-        let divisor = 10_i128.pow(u32::from(decimal_places));
-        let is_negative = self.0 < 0;
-        let abs_val = self.0.saturating_abs();
-        let whole = abs_val / divisor;
-        let frac = abs_val % divisor;
-
-        if is_negative {
-            format!("-{whole}.{frac:0>width$}", width = decimal_places as usize)
-        } else {
-            format!("{whole}.{frac:0>width$}", width = decimal_places as usize)
+        let width = usize::from(decimal_places);
+        let magnitude = self.0.unsigned_abs().to_string();
+        let sign = if self.is_negative() { "-" } else { "" };
+        if magnitude.len() <= width {
+            return format!("{sign}0.{magnitude:0>width$}");
         }
+        let (whole, fraction) = magnitude.split_at(magnitude.len() - width);
+        format!("{sign}{whole}.{fraction}")
     }
 }
 
 impl fmt::Display for Amount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-impl Add for Amount {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0.saturating_add(rhs.0))
-    }
-}
-
-impl Sub for Amount {
-    type Output = Self;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self(self.0.saturating_sub(rhs.0))
-    }
-}
-
-impl Mul<i128> for Amount {
-    type Output = Self;
-
-    fn mul(self, rhs: i128) -> Self::Output {
-        Self(self.0.saturating_mul(rhs))
-    }
-}
-
-impl Neg for Amount {
-    type Output = Self;
-
-    fn neg(self) -> Self::Output {
-        Self(self.0.saturating_neg())
-    }
-}
-
-impl Sum for Amount {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Self::ZERO, Add::add)
-    }
-}
-
-impl<'a> Sum<&'a Amount> for Amount {
-    fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-        iter.copied().sum()
     }
 }
 
@@ -234,17 +192,10 @@ mod tests {
     }
 
     #[test]
-    fn add_two_amounts() {
+    fn checked_add_two_amounts() {
         let a = Amount::new(100);
         let b = Amount::new(200);
-        assert_eq!(a + b, Amount::new(300));
-    }
-
-    #[test]
-    fn add_overflow_saturates() {
-        let a = Amount::new(i128::MAX);
-        let b = Amount::new(1);
-        assert_eq!(a + b, Amount::new(i128::MAX));
+        assert_eq!(a.checked_add(b), Some(Amount::new(300)));
     }
 
     #[test]
@@ -257,28 +208,28 @@ mod tests {
     fn sub_two_amounts() {
         let a = Amount::new(300);
         let b = Amount::new(100);
-        assert_eq!(a - b, Amount::new(200));
+        assert_eq!(a.checked_sub(b), Some(Amount::new(200)));
     }
 
     #[test]
     fn negate_positive_becomes_negative() {
         let a = Amount::new(100);
-        assert_eq!(-a, Amount::new(-100));
+        assert_eq!(a.checked_neg(), Some(Amount::new(-100)));
     }
 
     #[test]
     fn negate_zero_stays_zero() {
-        assert_eq!(-Amount::ZERO, Amount::ZERO);
+        assert_eq!(Amount::ZERO.checked_neg(), Some(Amount::ZERO));
     }
 
     #[test]
     fn abs_of_negative() {
-        assert_eq!(Amount::new(-50).abs(), Amount::new(50));
+        assert_eq!(Amount::new(-50).checked_abs(), Some(Amount::new(50)));
     }
 
     #[test]
     fn abs_of_positive() {
-        assert_eq!(Amount::new(50).abs(), Amount::new(50));
+        assert_eq!(Amount::new(50).checked_abs(), Some(Amount::new(50)));
     }
 
     #[test]
@@ -302,10 +253,18 @@ mod tests {
     }
 
     #[test]
-    fn sum_over_iterator() {
-        let amounts = [Amount::new(100), Amount::new(200), Amount::new(300)];
-        let total: Amount = amounts.iter().sum();
-        assert_eq!(total, Amount::new(600));
+    fn signed_minimum_formats_exactly_and_rejects_unrepresentable_magnitude() {
+        let minimum = Amount::new(i128::MIN);
+        assert_eq!(minimum.checked_abs(), None);
+        assert_eq!(minimum.checked_neg(), None);
+        assert_eq!(
+            minimum.format_decimal(2),
+            "-1701411834604692317316873037158841057.28"
+        );
+        assert_eq!(
+            minimum.format_decimal(40),
+            "-0.0170141183460469231731687303715884105728"
+        );
     }
 
     #[test]
@@ -339,7 +298,7 @@ mod tests {
 
     #[test]
     fn mul_by_scalar() {
-        assert_eq!(Amount::new(100) * 3, Amount::new(300));
+        assert_eq!(Amount::new(100).checked_mul(3), Some(Amount::new(300)));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::types::{AccountType, Amount};
+use crate::types::{AccountType, Amount, MoneyError};
 
 use super::account_balance::AccountBalance;
 
@@ -11,13 +11,30 @@ use super::account_balance::AccountBalance;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrialBalance {
     balances: Vec<AccountBalance>,
+    total_debits: Amount,
+    total_credits: Amount,
 }
 
 impl TrialBalance {
-    /// Creates a new trial balance from a list of account balances.
-    #[must_use]
-    pub fn new(balances: Vec<AccountBalance>) -> Self {
-        Self { balances }
+    /// Creates a trial balance from the account balances.
+    /// # Errors
+    /// Returns [`MoneyError::Overflow`] when a total cannot be represented.
+    pub fn new(balances: Vec<AccountBalance>) -> Result<Self, MoneyError> {
+        let mut total_debits = Amount::ZERO;
+        let mut total_credits = Amount::ZERO;
+        for balance in &balances {
+            total_debits = total_debits
+                .checked_add(balance.debit_total())
+                .ok_or(MoneyError::Overflow)?;
+            total_credits = total_credits
+                .checked_add(balance.credit_total())
+                .ok_or(MoneyError::Overflow)?;
+        }
+        Ok(Self {
+            balances,
+            total_debits,
+            total_credits,
+        })
     }
 
     /// Returns all account balances.
@@ -26,16 +43,16 @@ impl TrialBalance {
         &self.balances
     }
 
-    /// Computes the total of all debit balances.
+    /// Returns the total of all debit balances.
     #[must_use]
     pub fn total_debits(&self) -> Amount {
-        self.balances.iter().map(AccountBalance::debit_total).sum()
+        self.total_debits
     }
 
-    /// Computes the total of all credit balances.
+    /// Returns the total of all credit balances.
     #[must_use]
     pub fn total_credits(&self) -> Amount {
-        self.balances.iter().map(AccountBalance::credit_total).sum()
+        self.total_credits
     }
 
     /// Returns `true` if total debits equal total credits.
@@ -112,11 +129,12 @@ mod tests {
                 Amount::ZERO,
             ),
         ])
+        .expect("test totals are representable")
     }
 
     #[test]
     fn empty_trial_balance_is_balanced() {
-        let tb = TrialBalance::new(vec![]);
+        let tb = TrialBalance::new(vec![]).expect("empty trial balance is representable");
         assert!(tb.is_balanced());
     }
 
@@ -134,7 +152,8 @@ mod tests {
             make_account("1000", "Cash", AccountType::Asset),
             Amount::new(100),
             Amount::ZERO,
-        )]);
+        )])
+        .expect("test totals are representable");
         assert!(!tb.is_balanced());
     }
 
@@ -173,7 +192,8 @@ mod tests {
             make_account("1000", "Cash", AccountType::Asset),
             Amount::new(100),
             Amount::ZERO,
-        )]);
+        )])
+        .expect("test totals are representable");
         let display = format!("{tb}");
         assert!(display.contains("UNBALANCED"));
     }

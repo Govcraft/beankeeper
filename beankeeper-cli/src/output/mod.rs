@@ -14,6 +14,39 @@ pub mod table;
 
 use std::io::IsTerminal;
 
+use beankeeper::types::Amount;
+
+use crate::db::BalanceRow;
+use crate::error::CliError;
+
+struct TrialBalanceTotals {
+    debits: i64,
+    credits: i64,
+}
+
+impl TrialBalanceTotals {
+    fn from_rows(balances: &[BalanceRow]) -> Result<Self, CliError> {
+        let mut debits = Amount::ZERO;
+        let mut credits = Amount::ZERO;
+        for row in balances {
+            debits = debits
+                .checked_add(Amount::from(row.debit_total))
+                .ok_or_else(trial_balance_overflow)?;
+            credits = credits
+                .checked_add(Amount::from(row.credit_total))
+                .ok_or_else(trial_balance_overflow)?;
+        }
+        Ok(Self {
+            debits: i64::try_from(debits.minor_units()).map_err(|_| trial_balance_overflow())?,
+            credits: i64::try_from(credits.minor_units()).map_err(|_| trial_balance_overflow())?,
+        })
+    }
+}
+
+fn trial_balance_overflow() -> CliError {
+    CliError::Validation("trial balance exceeds the supported minor-unit range".into())
+}
+
 /// Determine if colors should be used based on environment and flags.
 ///
 /// Colors are disabled when any of the following are true:
@@ -38,6 +71,35 @@ pub fn should_use_color(no_color_flag: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trial_balance_renderers_reject_totals_outside_the_supported_range() {
+        let accounts = [
+            BalanceRow {
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: "asset".into(),
+                debit_total: i64::MAX,
+                credit_total: 0,
+            },
+            BalanceRow {
+                code: "1100".into(),
+                name: "Receivables".into(),
+                account_type: "asset".into(),
+                debit_total: 1,
+                credit_total: 0,
+            },
+        ];
+        let meta = json::meta("report.trial-balance", Some("acme"));
+        assert!(matches!(
+            json::render_trial_balance(&accounts, meta),
+            Err(CliError::Validation(_))
+        ));
+        assert!(matches!(
+            table::render_trial_balance(&accounts, "USD", 2, false, None),
+            Err(CliError::Validation(_))
+        ));
+    }
 
     #[test]
     fn no_color_flag_disables_color() {

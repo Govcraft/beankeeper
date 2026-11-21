@@ -1045,6 +1045,8 @@ fn summary(data: &ComparisonReport) -> String {
 }
 
 fn describe_change(name: &str, row: &ComparisonValues) -> String {
+    let change = row.change.decimal();
+    let magnitude = change.strip_prefix('-').unwrap_or(&change);
     format!(
         "{} {} by {} {} ({} compared with {}).",
         name,
@@ -1053,11 +1055,7 @@ fn describe_change(name: &str, row: &ComparisonValues) -> String {
             std::cmp::Ordering::Less => "decreased",
             std::cmp::Ordering::Equal => "changed",
         },
-        row.change
-            .0
-            .abs()
-            .amount()
-            .format_decimal(row.change.0.currency().minor_units()),
+        magnitude,
         row.change.0.currency().code(),
         row.current.decimal(),
         row.prior.decimal()

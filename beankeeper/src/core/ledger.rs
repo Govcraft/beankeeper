@@ -199,7 +199,7 @@ impl Ledger {
             ));
         }
 
-        Ok(TrialBalance::new(balances))
+        TrialBalance::new(balances)
     }
 
     /// Returns whether the ledger is balanced (total debits == total credits).
@@ -268,7 +268,7 @@ impl Ledger {
             }
         }
 
-        Ok(TrialBalance::new(balances))
+        TrialBalance::new(balances)
     }
 
     /// Iterates `(transaction, entry)` pairs for a given account code via the index.
@@ -456,6 +456,45 @@ mod tests {
             .trial_balance()
             .unwrap_or_else(|e| panic!("test: {e}"));
         assert!(tb.is_balanced());
+    }
+
+    #[test]
+    fn trial_balance_propagates_overflow_across_accounts() -> Result<(), crate::error::BeanError> {
+        let first_date = date(2024, 1, 15);
+        let second_date = date(2024, 1, 16);
+        let second_cash =
+            Account::new(AccountCode::new("1001")?, "Second cash", AccountType::Asset);
+        let second_revenue = Account::new(
+            AccountCode::new("4001")?,
+            "Second revenue",
+            AccountType::Revenue,
+        );
+        let mut ledger = Ledger::new();
+        let amount = Amount::new(i128::MAX);
+        ledger.post(
+            JournalEntry::new(first_date, "First sale", Currency::USD)
+                .debit(&cash(), amount)?
+                .credit(&revenue(), amount)?
+                .post()?,
+        )?;
+        ledger.post(
+            JournalEntry::new(second_date, "Second sale", Currency::USD)
+                .debit(&second_cash, amount)?
+                .credit(&second_revenue, amount)?
+                .post()?,
+        )?;
+
+        assert_eq!(
+            ledger.trial_balance_as_of(first_date)?.total_debits(),
+            amount
+        );
+        assert_eq!(
+            ledger.trial_balance_as_of(second_date),
+            Err(MoneyError::Overflow)
+        );
+        assert_eq!(ledger.trial_balance(), Err(MoneyError::Overflow));
+        assert_eq!(ledger.is_balanced(), Err(MoneyError::Overflow));
+        Ok(())
     }
 
     #[test]

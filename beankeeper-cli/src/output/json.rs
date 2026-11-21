@@ -492,23 +492,22 @@ pub fn render_transactions_with_attachments<
 ///
 /// # Errors
 ///
-/// Returns `CliError::General` if JSON serialisation fails.
+/// Returns `CliError::General` if JSON serialisation fails, or a validation error
+/// when a total cannot be represented.
 pub fn render_trial_balance(balances: &[BalanceRow], meta: Meta) -> Result<String, CliError> {
-    let mut total_debits: i64 = 0;
-    let mut total_credits: i64 = 0;
+    let super::TrialBalanceTotals {
+        debits: total_debits,
+        credits: total_credits,
+    } = super::TrialBalanceTotals::from_rows(balances)?;
 
     let accounts: Vec<TrialBalanceAccountJson> = balances
         .iter()
-        .map(|b| {
-            total_debits = total_debits.saturating_add(b.debit_total);
-            total_credits = total_credits.saturating_add(b.credit_total);
-            TrialBalanceAccountJson {
-                code: b.code.clone(),
-                name: b.name.clone(),
-                r#type: b.account_type.clone(),
-                debit_total: b.debit_total,
-                credit_total: b.credit_total,
-            }
+        .map(|balance| TrialBalanceAccountJson {
+            code: balance.code.clone(),
+            name: balance.name.clone(),
+            r#type: balance.account_type.clone(),
+            debit_total: balance.debit_total,
+            credit_total: balance.credit_total,
         })
         .collect();
 
