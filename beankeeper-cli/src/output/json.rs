@@ -689,6 +689,10 @@ pub fn render_deleted(slug: &str, meta: Meta) -> Result<String, CliError> {
 ///
 /// Returns [`CliError`] on serialisation failure.
 pub fn render_post_result(result: PostResult, meta: Meta) -> Result<String, CliError> {
+    envelope_ok(meta, post_result_data(result)?)
+}
+
+pub(crate) fn post_result_data(result: PostResult) -> Result<serde_json::Value, CliError> {
     #[derive(Serialize)]
     struct PostResultJson {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -714,7 +718,7 @@ pub fn render_post_result(result: PostResult, meta: Meta) -> Result<String, CliE
         },
     };
 
-    envelope_ok(meta, json)
+    serde_json::to_value(json).map_err(|error| CliError::General(error.to_string()))
 }
 
 /// Render a `txn attach` confirmation as an enveloped JSON response.

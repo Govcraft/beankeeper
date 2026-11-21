@@ -220,7 +220,11 @@ fn compact(
 
 pub(crate) fn validate_request(cli: &Cli) -> Result<(), CliError> {
     if !cli.output.chart {
-        return Ok(());
+        return if cli.output.chart_all {
+            Err(CliError::Usage("--chart-all requires --chart".into()))
+        } else {
+            Ok(())
+        };
     }
     if !cli.is_json() {
         return Err(CliError::Usage(

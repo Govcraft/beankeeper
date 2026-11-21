@@ -4,16 +4,19 @@ use std::{borrow::Cow, fmt, marker::PhantomData, num::NonZeroI64, str::FromStr};
 
 use agent_uri::AgentUri;
 use beankeeper::{
-    core::Quantity,
+    core::investments::PositiveQuantity,
     types::{AccountCode, Currency},
 };
 use chrono::NaiveDate;
-use mti::prelude::{MagicTypeId, MagicTypeIdExt};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::commands::{reference::TransactionReference, report_periods::CompareArg};
-use crate::db::{companies::validate_slug, investments::valid_symbol, proposals::ProposalId};
+use crate::db::{
+    companies::validate_slug,
+    investments::{LotId, valid_symbol},
+    proposals::ProposalId,
+};
 use crate::error::CliError;
 
 pub(super) trait TextValue: fmt::Display + FromStr {
@@ -114,7 +117,7 @@ impl TextValue for ProposalId {
     }
 }
 
-impl TextValue for Quantity {
+impl TextValue for PositiveQuantity {
     const NAME: &'static str = "share quantity";
 
     fn schema() -> Schema {
@@ -204,29 +207,6 @@ impl TextValue for CalendarDate {
 
     fn schema() -> Schema {
         json_schema!({"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"})
-    }
-}
-
-/// A validated security lot identifier from an investment report.
-#[derive(Debug)]
-pub(super) struct LotId(MagicTypeId);
-
-impl fmt::Display for LotId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl FromStr for LotId {
-    type Err = CliError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let invalid = || CliError::Validation("expected a lot TypeID".into());
-        let id: MagicTypeId = input.parse().map_err(|_| invalid())?;
-        if id.prefix_str().map_err(|_| invalid())? != "lot" {
-            return Err(invalid());
-        }
-        Ok(Self(id))
     }
 }
 

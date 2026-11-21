@@ -2424,3 +2424,27 @@ fn invalid_chart_requests_keep_each_mcp_tools_error_contract() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn posting_preserves_structured_annotation_keys_and_line_memos() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let mut request = posting("structured-annotations");
+    request["meta"] = json!({"a=b": "c=d"});
+    request["debits"][0]["memo"] = json!("payee: invoice=one");
+    let posted = client.success("txn_post", &request)?;
+    let data = client.success("txn_show", &json!({"company":"acme", "id":posted["id"]}))?;
+    let metadata = data[0]["metadata"]
+        .as_str()
+        .ok_or("stored metadata missing")?;
+    let annotations: Value = serde_json::from_str(metadata)?;
+    assert_eq!(annotations, json!({"a=b": "c=d"}));
+    assert_eq!(data[0]["entries"][0]["memo"], "payee: invoice=one");
+    Ok(())
+}
