@@ -229,13 +229,21 @@ pub enum LotMethod {
     Specific,
 }
 
-impl fmt::Display for LotMethod {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl LotMethod {
+    /// Canonical form stored in a ledger and emitted on the wire.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
             Self::Fifo => "fifo",
             Self::Lifo => "lifo",
             Self::Specific => "specific",
-        })
+        }
+    }
+}
+
+impl fmt::Display for LotMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
     }
 }
 

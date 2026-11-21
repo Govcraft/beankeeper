@@ -53,6 +53,18 @@ pub enum AccountType {
 }
 
 impl AccountType {
+    /// Canonical lowercase code used by ledger storage and machine-readable reports.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Asset => "asset",
+            Self::Liability => "liability",
+            Self::Equity => "equity",
+            Self::Revenue => "revenue",
+            Self::Expense => "expense",
+        }
+    }
+
     /// Returns the normal balance direction for this account type.
     ///
     /// Assets and Expenses have debit normal balances;
