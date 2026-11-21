@@ -1,6 +1,8 @@
 //! Savepoint lifetime for an audited mutation or a nested audited batch.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Params};
+
+use super::{Actor, Creation};
 
 use crate::error::CliError;
 
@@ -18,6 +20,22 @@ impl<'a> AuditedTx<'a> {
             name,
             active: true,
         })
+    }
+
+    pub(super) fn insert(&self, sql: &str, params: impl Params) -> Result<i64, CliError> {
+        self.connection.execute(sql, params)?;
+        Ok(self.connection.last_insert_rowid())
+    }
+
+    pub(super) fn record_insert(
+        &self,
+        actor: &Actor,
+        company: &str,
+        creation: Creation,
+        id: &str,
+        data: &serde_json::Value,
+    ) -> Result<(), CliError> {
+        super::record_insert(self.connection, actor, company, creation, id, data)
     }
 
     fn commit(mut self) -> Result<(), CliError> {

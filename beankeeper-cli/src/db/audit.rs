@@ -31,8 +31,11 @@ use crate::confirmation::Confirmed;
 use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 
+mod attachment;
 mod savepoint;
 pub mod setup;
+
+pub(super) use attachment::store_attachment;
 
 // ---------------------------------------------------------------------------
 // Typed clearance status -- illegal states are unrepresentable
