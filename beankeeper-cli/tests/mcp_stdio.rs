@@ -407,6 +407,9 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "report",
         "financial_summary",
         "ledger_setup_status",
+        "ledger_setup_begin",
+        "ledger_setup_finish",
+        "ledger_setup_revoke",
         "budget_list",
         "budget_set",
         "budget_delete",
@@ -915,6 +918,9 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "txn_reconcile",
         "budget_set",
         "budget_delete",
+        "ledger_setup_begin",
+        "ledger_setup_finish",
+        "ledger_setup_revoke",
     ] {
         assert!(!names.contains(name));
     }
@@ -2058,7 +2064,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let names = tool_names(&listed)?;
     assert_eq!(names.len(), 17);
     assert!(names.contains("ledger_setup_status"));
-    assert!(!tool_names(&listed)?.contains("txn_post"));
+    assert!(!names.contains("txn_post"));
     writer.success("verify", &json!({}))?;
     Ok(())
 }
@@ -2528,5 +2534,68 @@ fn setup_status_matches_cli_for_an_empty_encrypted_ledger() -> TestResult {
     });
     assert_eq!(report["data"], expected);
     assert_eq!(client.success("ledger_setup_status", &json!({}))?, expected);
+    Ok(())
+}
+
+#[test]
+fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
+    use agent_uri_attestation::SigningKey;
+    use beankeeper_cli::db::{Actor, Db};
+
+    let directory = tempdir()?;
+    let path = directory.path().join("setup.db");
+    let passphrase_path = directory.path().join("passphrase");
+    let passphrase: secrecy::SecretString = "mcp-setup-test".into();
+    std::fs::write(&passphrase_path, "mcp-setup-test")?;
+    let db = Db::open(&path, Some(&passphrase))?;
+    beankeeper_cli::identity::init_root(db.conn(), &Actor::new("owner"))?;
+    let owner = proposal_identity(&db, "owner", &["ledger/admin"])?;
+    let owner_token = owner["token"].as_str().ok_or("missing owner token")?;
+    let public_key = SigningKey::generate().verifying_key().to_base64();
+    let mut owner_client = identity_client(&path, &passphrase_path, Some(owner_token), false)?;
+    let started = owner_client.success(
+        "ledger_setup_begin",
+        &json!({ "name": "setup_agent", "public_key": public_key }),
+    )?;
+    assert_eq!(
+        started["credential"]["capabilities"],
+        json!(["ledger/setup"])
+    );
+    assert!(started["credential"].get("private_key").is_none());
+    let setup_token = started["credential"]["token"]
+        .as_str()
+        .ok_or("missing setup token")?;
+    let generation = started["session"]["generation"]
+        .as_i64()
+        .ok_or("missing setup generation")?;
+
+    let mut setup_client = identity_client(&path, &passphrase_path, Some(setup_token), false)?;
+    let listed = setup_client.request("tools/list", &json!({}))?;
+    assert_eq!(
+        tool_names(&listed)?,
+        BTreeSet::from(["ledger_setup_status"])
+    );
+    let status = setup_client.success("ledger_setup_status", &json!({}))?;
+    assert_eq!(status["transactions"], 0);
+
+    let ended = bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_path)
+        .args(["--agent-token", owner_token, "--json", "setup", "finish"])
+        .arg(generation.to_string())
+        .output()?;
+    assert!(
+        ended.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ended.stderr)
+    );
+    let ended: Value = serde_json::from_slice(&ended.stdout)?;
+    assert_eq!(ended["data"]["state"], "finished");
+    assert_eq!(
+        owner_client.success("ledger_setup_finish", &json!({ "generation": generation }))?,
+        ended["data"]
+    );
+    let denied = setup_client.call("ledger_setup_status", &json!({}))?;
+    assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
     Ok(())
 }

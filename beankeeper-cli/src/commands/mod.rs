@@ -181,7 +181,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
-        Command::Setup(setup::SetupCommand::Status) => setup::run_status(cli),
+        Command::Setup(command) => setup::run(cli, command),
         Command::Summary(args) => {
             let company = require_company(cli)?;
             summary::run(cli, &company, args)

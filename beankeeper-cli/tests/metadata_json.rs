@@ -314,7 +314,8 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "DROP TABLE period_locks;
+            "DROP TABLE setup_sessions;
+             DROP TABLE period_locks;
              DROP TRIGGER protect_period_post;
              DROP TABLE txn_proposals;
              DROP TABLE agent_spend_limits;

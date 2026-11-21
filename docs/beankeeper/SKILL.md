@@ -332,6 +332,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 |---------|---------|
 | `bk mcp serve` | Serve MCP stdio, or authenticated HTTP with `--http`; `--read-only` omits writes |
 | `bk init` | Create a new database (`--demo` for sample data, `--encrypt` for passphrase) |
+| `bk setup begin/finish/revoke` | Manage an encrypted ledger's setup session with an owner `ledger/admin` credential |
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/delete` | Manage chart of accounts |

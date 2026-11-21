@@ -13,6 +13,8 @@ pub enum Capability {
     Reconcile,
     Budget,
     Admin,
+    /// Scoped authority for an active ledger setup session.
+    Setup,
     /// Host navigation authority, issued to a separate UI-scoped identity.
     Navigate,
 }
@@ -30,6 +32,7 @@ impl Capability {
             Self::Reconcile => "ledger/reconcile",
             Self::Budget => "ledger/budget",
             Self::Admin => "ledger/admin",
+            Self::Setup => "ledger/setup",
             Self::Navigate => "ui/navigate",
         }
     }

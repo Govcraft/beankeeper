@@ -82,7 +82,7 @@ Check ledger integrity: validates the schema version and database structure. Ret
 
 ```bash
 bk verify
-bk --json verify   # Returns { "data": { "schema_version": 20, "status": "healthy" } }
+bk --json verify   # Returns { "data": { "schema_version": 21, "status": "healthy" } }
 ```
 
 ### `bk export`
@@ -234,6 +234,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 
 | Tool | Arguments / behavior |
 |------|----------------------|
+| `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
@@ -284,6 +285,24 @@ while retaining their data arrays.
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
 not exposed to tools.
 
+### Setup sessions
+
+Use `bk setup status` or `ledger_setup_status` to read readiness. The owner
+authenticates with `ledger/admin` and calls `ledger_setup_begin` with `name`, the agent's
+base64 Ed25519 `public_key`, and an optional `ttl`. The default lifetime is 15
+minutes and the maximum is one hour. The equivalent CLI command is
+`bk --json setup begin NAME --public-key KEY --ttl 15m`.
+
+The response contains the public `session` and the one-time `credential` with
+its bearer token. Store only the setup credential with the agent. It carries
+`ledger/setup` and can read setup readiness. Setup writes require the active
+`session.generation` in the same encrypted ledger.
+
+The owner ends the session with `bk setup finish GENERATION` or
+`bk setup revoke GENERATION`. The matching MCP calls take a positive integer
+`generation`. Repeating the same terminal action returns the existing session.
+Its credential is revoked when the terminal state commits.
+
 ### Report kinds
 
 `report.kind` accepts `trial-balance`, `balance`,
@@ -297,8 +316,8 @@ alias for `1099`.
 Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
 `txn_reject`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
-`investment_sell`, `budget_set`, `budget_delete`, `period_close`, and
-`period_reopen` from the router.
+`investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
+`ledger_setup_begin`, `ledger_setup_finish`, and `ledger_setup_revoke` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement

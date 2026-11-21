@@ -334,6 +334,16 @@ impl TextValue for DecimalAmount {
     }
 }
 
+impl JsonSchema for crate::db::audit::setup::Generation {
+    fn schema_name() -> Cow<'static, str> {
+        "setup generation".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "format": "int64", "minimum": 1})
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
 pub(super) struct NonEmpty<T>(Vec<T>);
