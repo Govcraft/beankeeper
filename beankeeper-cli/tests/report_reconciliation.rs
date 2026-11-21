@@ -529,3 +529,184 @@ fn unknown_account_is_not_found() {
     ]);
     assert_eq!(out.code, Some(5));
 }
+
+fn typed_reconciliation_ledger() -> Ledger {
+    let ledger = new_ledger();
+    ledger.post("2026-01-05", "USD deposit", "1000:25", "3000:25");
+    for (date, reference) in [
+        ("2026-01-08", "BHD-DEPOSIT"),
+        ("2026-02-12", "AFTER-CUTOFF"),
+    ] {
+        ledger.co(&[
+            "txn",
+            "post",
+            "-d",
+            reference,
+            "--date",
+            date,
+            "--debit",
+            "1000:100.125",
+            "--credit",
+            "3000:100.125",
+            "--currency",
+            "BHD",
+            "--reference",
+            reference,
+            "--metadata",
+            r#"{"region":"Gulf","amount":9}"#,
+        ]);
+    }
+    for (statement, amount, date) in [
+        ("S1", "40.005", "2026-01-20"),
+        ("S2", "20.010", "2026-01-25"),
+    ] {
+        ledger.co(&[
+            "txn",
+            "clear",
+            "--reference",
+            "BHD-DEPOSIT",
+            "--account",
+            "1000",
+            "--amount",
+            amount,
+            "--statement",
+            statement,
+            "--date",
+            date,
+        ]);
+    }
+    ledger.co(&[
+        "txn",
+        "clear",
+        "--reference",
+        "BHD-DEPOSIT",
+        "--account",
+        "1000",
+        "--statement",
+        "S1",
+        "--date",
+        "2026-02-10",
+        "--status",
+        "reconciled",
+    ]);
+
+    ledger
+}
+
+#[test]
+fn typed_bank_reconciliation_keeps_as_of_statement_and_currency_independent()
+-> Result<(), Box<dyn std::error::Error>> {
+    use beankeeper::types::{AccountCode, Currency, DebitOrCredit, Money};
+    use beankeeper_cli::commands::report_reconciliation::{
+        ReconciliationRequest, compute_reconciliation,
+    };
+    use beankeeper_cli::db::{ClearingState, connection::Db, metadata_filter};
+    use chrono::NaiveDate;
+
+    let ledger = typed_reconciliation_ledger();
+    let db = Db::open_snapshot(std::path::Path::new(&ledger.db), None)?;
+    let account = AccountCode::new("1000")?;
+    let currency = Currency::from_code("BHD")?;
+    let filters = metadata_filter::parse_filters(&["region=Gulf".to_owned()])?;
+    let as_of = NaiveDate::from_ymd_opt(2026, 1, 31);
+    let bhd = |units| Money::from_minor(units, currency);
+    let mut request = ReconciliationRequest::new(&account, currency);
+    request.as_of = as_of;
+    request.statement = Some("S1");
+    request.filters = &filters;
+    request.group_by_metadata = Some("region");
+    let request = request.with_statement_balance(bhd(40_005))?;
+    let report = compute_reconciliation(&db, CO, &request)?;
+    assert_eq!(report.as_of, as_of);
+    assert_eq!(report.normal_balance, DebitOrCredit::Debit);
+    assert_eq!(report.book_balance, bhd(100_125));
+    assert_eq!(report.cleared_balance, bhd(40_005));
+    assert_eq!(report.total_cleared_balance, bhd(60_015));
+    assert_eq!(report.reconciled_balance, bhd(0));
+    assert_eq!(report.uncleared_total, bhd(40_110));
+    assert_eq!(report.difference(), Some(bhd(0)));
+    assert_eq!(
+        report
+            .groups
+            .as_deref()
+            .map(|groups| groups[0].uncleared_total),
+        Some(bhd(40_110))
+    );
+    let [entry] = report.uncleared.as_slice() else {
+        panic!("expected one BHD entry")
+    };
+    assert_eq!(entry.remaining_amount, bhd(40_110));
+    assert_eq!(entry.clearings.len(), 2);
+    assert_eq!(entry.clearings[0].amount, bhd(40_005));
+    assert_eq!(entry.clearings[0].state, ClearingState::Cleared);
+
+    let cli = ledger.report(&[
+        "--account",
+        "1000",
+        "--currency",
+        "BHD",
+        "--to",
+        "2026-01-31",
+        "--statement",
+        "S1",
+        "--statement-balance",
+        "40.005",
+        "--filter-metadata",
+        "region=Gulf",
+        "--group-by-metadata",
+        "region",
+    ]);
+    assert_eq!(serde_json::to_value(&report)?, cli);
+    assert_eq!(cli["cleared_balance_display"], "40.005");
+    assert_eq!(
+        cli["uncleared_entries"][0]["clearings"][0]["amount_display"],
+        "40.005"
+    );
+    assert!(
+        cli["uncleared_entries"][0]["metadata"]
+            .get("amount_display")
+            .is_none()
+    );
+
+    assert!(matches!(
+        ReconciliationRequest::new(&account, currency).with_statement_balance(Money::usd(40_005)),
+        Err(beankeeper_cli::error::CliError::Usage(_))
+    ));
+    assert!(matches!(
+        ReconciliationRequest::new(&account, currency).with_statement_balance(bhd(i128::MAX)),
+        Err(beankeeper_cli::error::CliError::Usage(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn typed_reconciliation_looks_up_existing_account_keys_verbatim()
+-> Result<(), Box<dyn std::error::Error>> {
+    use beankeeper::types::{Currency, Money};
+    use beankeeper_cli::commands::report_reconciliation::{
+        ReconciliationRequest, compute_reconciliation,
+    };
+    use beankeeper_cli::db::connection::Db;
+    use beankeeper_cli::error::CliError;
+
+    let ledger = new_ledger();
+    let path = std::path::Path::new(&ledger.db);
+    rusqlite::Connection::open(path)?.execute(
+        "INSERT INTO accounts (company_slug, code, name, type) VALUES (?1, 'BANK-OPERATING', 'Operating bank', 'asset')",
+        [CO],
+    )?;
+    let db = Db::open_snapshot(path, None)?;
+    let request = ReconciliationRequest::for_existing_account("BANK-OPERATING", Currency::USD);
+    let report = compute_reconciliation(&db, CO, &request)?;
+    assert_eq!(report.code, "BANK-OPERATING");
+    assert_eq!(report.book_balance, Money::usd(0));
+
+    for key in ["bank-operating", "BANK-MISSING"] {
+        let request = ReconciliationRequest::for_existing_account(key, Currency::USD);
+        assert!(matches!(
+            compute_reconciliation(&db, CO, &request),
+            Err(CliError::NotFound(_))
+        ));
+    }
+    Ok(())
+}

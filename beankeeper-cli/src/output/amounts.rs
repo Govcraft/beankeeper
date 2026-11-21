@@ -35,8 +35,30 @@ impl MoneyField {
 impl Serialize for MoneyField {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut values = serializer.serialize_map(Some(2))?;
+        self.write_to(&mut values)?;
+        values.end()
+    }
+}
+
+impl MoneyField {
+    pub(crate) fn write_to<S: SerializeMap>(self, values: &mut S) -> Result<(), S::Error> {
         values.serialize_entry(self.key, &self.minor_units())?;
-        values.serialize_entry(&DisplayKey(self.key), &self.decimal())?;
+        values.serialize_entry(&DisplayKey(self.key), &self.decimal())
+    }
+}
+
+/// An optional money field with both companion values present, even when null.
+pub(crate) struct OptionalMoneyField(pub(crate) &'static str, pub(crate) Option<Money>);
+
+impl Serialize for OptionalMoneyField {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut values = serializer.serialize_map(Some(2))?;
+        if let Some(money) = self.1 {
+            MoneyField::new(self.0, money).write_to(&mut values)?;
+        } else {
+            values.serialize_entry(self.0, &None::<i128>)?;
+            values.serialize_entry(&DisplayKey(self.0), &None::<String>)?;
+        }
         values.end()
     }
 }

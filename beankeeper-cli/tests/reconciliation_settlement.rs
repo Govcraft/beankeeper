@@ -563,3 +563,45 @@ fn multiple_entries_on_account_are_netted_before_linking() {
     assert_eq!(d["charges"][0]["remaining"], 6000);
     assert_eq!(d["uncleared_entries"][0]["direction"], "debit");
 }
+
+#[test]
+fn typed_settlement_exposes_charge_and_payment_money() -> Result<(), Box<dyn std::error::Error>> {
+    use beankeeper::types::{AccountCode, Currency, Money};
+    use beankeeper_cli::commands::report_reconciliation::{
+        ReconciliationRequest, compute_settlement_reconciliation,
+    };
+    use beankeeper_cli::db::connection::Db;
+    use chrono::NaiveDate;
+
+    let ledger = Ledger::new(false);
+    ledger.post("P1", "100", false, "", "2026-10-01");
+    ledger.post("PAY", "90", true, r#"{"applies_to":"P1"}"#, "2026-10-25");
+    ledger.clear("P1", "90", "S1", "2026-10-31");
+    let db = Db::open_snapshot(std::path::Path::new(&ledger.path), None)?;
+    let account = AccountCode::new("1200")?;
+    let mut request = ReconciliationRequest::new(&account, Currency::USD);
+    request.as_of = NaiveDate::from_ymd_opt(2026, 10, 31);
+    request.statement = Some("S1");
+    let request = request.with_statement_balance(Money::usd(9_000))?;
+    let report = compute_settlement_reconciliation(&db, "co", &request, None)?;
+    let details = report
+        .settlement
+        .as_ref()
+        .ok_or("missing settlement details")?;
+    let [charge] = details.charges.as_slice() else {
+        panic!("expected one charge")
+    };
+    let [payment] = details.applied_settlements.as_slice() else {
+        panic!("expected one payment")
+    };
+    assert_eq!(charge.expected, Money::usd(10_000));
+    assert_eq!(charge.short_pay, Money::usd(1_000));
+    assert_eq!(payment.amount, Money::usd(9_000));
+    assert_eq!(payment.charge_transaction_ids, [charge.transaction_id]);
+    assert_eq!(report.uncleared_total, charge.short_pay);
+    let cli = ledger.report("90", &[]);
+    assert_eq!(serde_json::to_value(&report)?, cli);
+    assert_eq!(cli["charges"][0]["short_pay_display"], "10.00");
+    assert_eq!(cli["applied_settlements"][0]["amount_display"], "90.00");
+    Ok(())
+}
