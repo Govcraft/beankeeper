@@ -1197,6 +1197,16 @@ with integer minor-unit `amounts` and decimal-string `amounts_display`. CSV has
 `report` tool accepts `kind: "trend"` with the same metric, dates, period and
 currency options.
 
+### Agent-drawn charts
+
+Use `--json --chart` with `summary`, `report trend`, `report income-statement`,
+`report cash-flow`, or period/comparison trial balances to add versioned
+`data.chart` data. MCP `financial_summary` and `report` accept `chart: true`.
+Charts carry exact major-unit decimal strings, currency, labels, account codes
+and optional Desktop detail targets. They default to eight categories/series
+plus Other; `--chart-all` / `chart_all: true` returns all. Existing report fields
+are retained. See the [schema and worked example](docs/chart-data.md).
+
 ### Period-over-Period Reports
 
 The income statement and trial balance can be broken into columns or compared with an earlier range. Both options need `--from` and `--to`, and they cannot be combined:
