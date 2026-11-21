@@ -1181,10 +1181,10 @@ bk --company acme report budget-variance --year 2026 --include-unbudgeted
 ### Multi-column reports: `--period` and `--compare`
 
 `report income-statement` and `report trial-balance` accept two options that
-turn the single-column report into a multi-column one. Both require `--from`
-and `--to` (a missing date is a validation error, exit code 3), and they
-cannot be combined (usage error, exit code 2). Without either option the
-output is unchanged.
+turn the single-column report into a multi-column one. Missing `--to` defaults
+to today, and missing `--from` defaults to January 1 of the effective end year.
+The options cannot be combined (usage error, exit code 2). Without either option
+the output is unchanged.
 
 ```bash
 # One column per month, plus a Total column and a Net Income row per month
@@ -1574,3 +1574,17 @@ with broader grants. Restart stdio MCP to refresh discovery after a policy chang
 Back up before the schema v18 migration: v1/v2 audit hashes are preserved, but
 new v3 audit rows block older binaries from appending, even with enforcement off.
 See [identity setup and limits](../../agent-identity.md).
+
+### What changed: comparisons and explanations
+
+`income-statement`, `trial-balance`, `trend`, `cash-flow`, `balance` and
+`balance-sheet` accept `--compare previous|year-ago|YYYY-MM-DD..YYYY-MM-DD`.
+`prior-period` and `prior-year` remain aliases. `--explain-change ACCOUNT_CODE`
+requires comparison and returns ranked transactions and payees for that line.
+The MCP `report` tool accepts strings `compare` and `explain_change` with the
+same semantics. For spending by category select `trend --metric spending`.
+
+[Full comparison contract](../../comparisons.md) covers date defaults, activity
+versus snapshots, currency handling, zero bases, movers, CSV rows and Desktop
+links. `--period` remains exclusive with `--compare` on income/trial reports;
+trend comparison compares the full selected range rather than calendar buckets.

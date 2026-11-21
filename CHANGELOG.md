@@ -14,6 +14,28 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   targets. Missing invoice due dates are explicit; age-based open items are
   reported separately. ([#116](https://github.com/Govcraft/beankeeper/issues/116))
 
+## [0.28.0] - Unreleased
+
+### Added
+
+- Period comparisons and what-changed answers for income statements, trial
+  balances, spending/net-worth trends, cash flow, account balances and balance
+  sheets through CLI and MCP. `--compare previous|year-ago|START..END` returns
+  ranked movers, chartable current/prior/change values, nullable percentages,
+  plain summaries and optional Desktop register links. `--explain-change CODE`
+  ranks signed transaction and recorded-payee contributions. Existing
+  `prior-period` and `prior-year` names remain accepted. (#117)
+
+### Changed
+
+- Comparison CSV uses a `row_type` column for accounts, totals, movers and
+  explanation rows. Non-comparison output formats are unchanged.
+
+### Fixed
+
+- Multi-column and cash-flow aggregation reject arithmetic overflow instead of
+  silently saturating amounts used in comparison answers.
+
 ## [0.27.0] - 2026-11-20
 
 Released as [beankeeper-cli-v0.27.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.27.0).

@@ -810,6 +810,23 @@ reconciliation, the original keeps its cleared/remaining amounts and the
 reversal appears separately as an outstanding opposite posting from its
 own date. Reversal does not automatically clear or reconcile either side.
 
+### Period comparisons and what changed
+
+Ask “why is spending up?”, “how does this quarter compare to last year?” or
+“what changed in this account?” through the CLI or MCP `report` tool:
+
+```sh
+bk --json --company acme report trend --metric spending --from 2026-10-01 --to 2026-10-31 --compare previous
+bk --json --company acme report income-statement --from 2026-07-01 --to 2026-09-30 --compare year-ago --explain-change 5000
+```
+
+Comparisons include current/prior amounts, changes, nullable percentages, ranked
+movers, a plain-language summary and optional Desktop register links. Account
+explanations rank the transactions and recorded payees contributing to the
+difference. Cash flow and balances support the same options. Mixed currencies
+require `--currency`; currencies are never added together or silently converted.
+See [comparison examples and semantics](docs/comparisons.md).
+
 ### CSV Bank Statement and JSON Bulk Import
 
 `bk txn import` accepts CSV, JSON, OFX, and QFX files. File extensions select

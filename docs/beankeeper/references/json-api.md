@@ -634,10 +634,13 @@ units); `total` is their sum. `totals` holds `total_revenue`,
 ```
 
 CSV output for these modes has the columns `code,name,type,<period labels...>,total`
-(periods) or `code,name,type,current,prior,change,change_percent` (compare),
-with amounts in minor units. Summary rows follow the accounts with an empty
-`code`, the summary key (e.g. `net_income`) in `name` and `type` set to
-`total`; `change_percent` is `n/a` when the prior amount is 0.
+(periods). Comparison CSV uses
+`row_type,code,name,current,prior,change,change_percent`,
+with amounts in minor units. Period summary rows have an empty `code`, the
+summary key in `name` and `type` set to `total`. Comparison totals use
+`row_type: total` and the summary key in `name`; other row types identify
+accounts, movers, explanations
+and summary/link rows; `change_percent` is empty when the prior amount is 0.
 
 ### `report reconciliation`
 
@@ -1377,3 +1380,23 @@ are `FORBIDDEN`, naming the required capability in the message. Before enabling,
 issue an admin token; subsequent policy changes require `ledger/admin` and are
 audited as `policy_change`. See the [capability map](commands.md#capability-policy).
 Agent write signatures and proof of private-key possession remain out of scope.
+
+## Period comparison answers
+
+Supported report kinds accept `compare` and `explain_change` via MCP, or
+`--compare` and `--explain-change` via CLI. See the
+[comparison contract](../../comparisons.md) for dates, currency rules and signs.
+
+Comparison `data.accounts[]` entries carry `code`, `name`, `type`, `current`,
+`prior`, `change`, `change_percent` and amount `_display` companions.
+`data.totals` maps named totals to the same amount/percent fields. `current` and
+`prior` at the report level describe the effective windows. Existing income
+and trial comparison fields retain their names.
+
+`movers[]` repeats changed account lines, adding one-based `rank` and
+`direction`, ordered by absolute change then code. `summary` is a plain-language
+answer. Optional `explanation` contains the selected `account`, reconciled
+`change`, ranked `transactions[]` (transaction_id, date, description, reference,
+payee, amount and signed change) and `payees[]` (payee and signed change).
+`desktop_view` supplies current/prior filtered register states and relative
+Desktop URLs, without requiring a Desktop server to run the report.
