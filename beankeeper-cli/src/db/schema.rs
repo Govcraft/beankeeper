@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = 21;
+pub(crate) const CURRENT_VERSION: i64 = 22;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -129,6 +129,9 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < 21 {
         apply_v21(conn)?;
+    }
+    if version < 22 {
+        apply_v22(conn)?;
     }
 
     debug_assert_eq!(
@@ -1316,6 +1319,34 @@ fn apply_v21(conn: &Connection) -> Result<(), CliError> {
              CREATE UNIQUE INDEX idx_setup_sessions_active
                  ON setup_sessions(state) WHERE state = 'active';
              INSERT INTO schema_version(version) VALUES (21);",
+        )?;
+        Ok(())
+    })
+}
+
+fn apply_v22(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.execute_batch(
+            "CREATE TABLE setup_book_profiles (
+                revision INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_slug TEXT NOT NULL REFERENCES companies(slug) ON DELETE CASCADE,
+                purpose TEXT NOT NULL CHECK (purpose IN ('personal', 'business')),
+                base_currency TEXT NOT NULL,
+                fiscal_year_start TEXT NOT NULL,
+                supersedes INTEGER UNIQUE REFERENCES setup_book_profiles(revision),
+                generation INTEGER NOT NULL REFERENCES setup_sessions(generation)
+             );
+             CREATE UNIQUE INDEX idx_setup_book_initial
+                 ON setup_book_profiles(company_slug) WHERE supersedes IS NULL;
+             CREATE INDEX idx_setup_book_revisions
+                 ON setup_book_profiles(company_slug, revision DESC);
+             CREATE TABLE setup_requests (
+                reference TEXT PRIMARY KEY NOT NULL,
+                generation INTEGER NOT NULL REFERENCES setup_sessions(generation),
+                fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64),
+                outcome TEXT NOT NULL CHECK (json_valid(outcome))
+             );
+             INSERT INTO schema_version(version) VALUES (22);",
         )?;
         Ok(())
     })
