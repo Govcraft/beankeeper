@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use beankeeper::core::{Frequency, RecurrenceError, occurrence_date};
+use beankeeper::core::{RecurrenceError, occurrence_date};
 use chrono::{Days, NaiveDate};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -132,20 +132,16 @@ fn recurring(context: &AttentionContext<'_>) -> Result<Value, CliError> {
     let mut total = 0;
     for schedule in schedules
         .iter()
-        .filter(|s| s.status == "pending" && s.currency == context.currency)
+        .filter(|s| s.state.next_due().is_some() && s.currency == context.currency)
     {
-        let frequency = schedule
-            .frequency
-            .parse::<Frequency>()
-            .map_err(|error| CliError::Database(error.to_string()))?;
-        let mut index = first_future_index(schedule, frequency, context.as_of)?;
+        let mut index = first_future_index(schedule, context.as_of)?;
         let amount = schedule
             .entries
             .iter()
             .filter(|entry| entry.direction == "debit")
             .try_fold(0, |sum, entry| add(sum, entry.amount))?;
         let before = count;
-        while let Some(date) = future_occurrence(schedule, frequency, index)? {
+        while let Some(date) = future_occurrence(schedule, index)? {
             if date > through {
                 break;
             }
@@ -172,14 +168,13 @@ fn date_overflow() -> CliError {
 /// to the template start, preserving month-end and leap-year rules.
 fn first_future_index(
     schedule: &db::schedules::Schedule,
-    frequency: Frequency,
     as_of: NaiveDate,
 ) -> Result<u32, CliError> {
     let mut low = schedule.occurrence_index;
     let mut high = u32::MAX;
     while low < high {
         let middle = low + (high - low) / 2;
-        if future_occurrence(schedule, frequency, middle)?.is_some_and(|date| date <= as_of) {
+        if future_occurrence(schedule, middle)?.is_some_and(|date| date <= as_of) {
             low = middle.checked_add(1).ok_or_else(date_overflow)?;
         } else {
             high = middle;
@@ -190,10 +185,9 @@ fn first_future_index(
 
 fn future_occurrence(
     schedule: &db::schedules::Schedule,
-    frequency: Frequency,
     index: u32,
 ) -> Result<Option<NaiveDate>, CliError> {
-    match occurrence_date(schedule.start_date, frequency, index) {
+    match occurrence_date(schedule.start_date, schedule.frequency, index) {
         Ok(date) => Ok(date.filter(|date| schedule.end_date.is_none_or(|end| *date <= end))),
         Err(RecurrenceError::DateOverflow) => Ok(None),
         Err(error) => Err(CliError::Database(error.to_string())),
@@ -283,6 +277,7 @@ fn load_movements(
 mod tests {
     use super::*;
     use crate::db::{Actor, PostEntryParams, PostTransactionParams, connection::Db};
+    use beankeeper::core::Frequency;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -452,7 +447,7 @@ mod tests {
         assert_eq!(facts["recurring_due"]["total"], 1400);
         assert_eq!(db.conn().total_changes(), before);
         let schedules = db::schedules::list_schedules(db.conn(), "co")?;
-        assert_eq!(schedules[0].next_due, Some("2020-01-01".parse()?));
+        assert_eq!(schedules[0].state.next_due(), Some("2020-01-01".parse()?));
         Ok(())
     }
 

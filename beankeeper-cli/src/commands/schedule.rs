@@ -29,9 +29,11 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
         ScheduleCommand::List { all, due_through } => {
             let rows: Vec<_> = schedules::list_schedules(db.conn(), company)?
                 .into_iter()
-                .filter(|row| *all || row.status == "pending")
+                .filter(|row| *all || row.state.next_due().is_some())
                 .filter(|row| {
-                    due_through.is_none_or(|cutoff| row.next_due.is_some_and(|date| date <= cutoff))
+                    due_through.is_none_or(|cutoff| {
+                        row.state.next_due().is_some_and(|date| date <= cutoff)
+                    })
                 })
                 .collect();
             serde_json::to_value(rows)

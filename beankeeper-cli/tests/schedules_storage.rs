@@ -4,7 +4,7 @@ use beankeeper::core::Frequency;
 use beankeeper_cli::{
     db::{
         Actor, Db, PostEntryParams, accounts, audit, companies,
-        schedules::{self, CreateScheduleParams, DEFAULT_RUN_LIMIT},
+        schedules::{self, CreateScheduleParams, DEFAULT_RUN_LIMIT, ScheduleState},
     },
     error::CliError,
 };
@@ -106,7 +106,9 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
             .all(|occurrence| occurrence.transaction_id.is_none())
     );
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        schedules::list_schedules(db.conn(), "acme")?[0]
+            .state
+            .next_due(),
         Some(date("2026-01-31")?)
     );
     let count: i64 = db
@@ -127,8 +129,8 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
             .all(|occurrence| occurrence.transaction_id.is_some())
     );
     let completed = &schedules::list_schedules(db.conn(), "acme")?[0];
-    assert_eq!(completed.status, "completed");
-    assert_eq!(completed.next_due, None);
+    assert_eq!(completed.state, ScheduleState::Completed);
+    assert_eq!(completed.state.next_due(), None);
     assert!(schedules::run_due(db.conn(), &actor, "acme", date("2027-01-01")?, false)?.is_empty());
     audit::verify_hash_chain(db.conn())?;
     audit::verify_creations(db.conn())?;
@@ -151,7 +153,9 @@ fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        schedules::list_schedules(db.conn(), "acme")?[0]
+            .state
+            .next_due(),
         Some(date("2026-01-31")?)
     );
     let audit_count: i64 = db
@@ -177,7 +181,9 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        schedules::list_schedules(db.conn(), "acme")?[0]
+            .state
+            .next_due(),
         Some(date("2026-01-31")?)
     );
     audit::verify_hash_chain(db.conn())?;
@@ -195,8 +201,8 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     let posted = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-31")?, false)?;
     assert_eq!(posted.len(), 1);
     let cancelled = schedules::cancel_schedule(db.conn(), &actor, "acme", &schedule.id)?;
-    assert_eq!(cancelled.status, "cancelled");
-    assert_eq!(cancelled.next_due, None);
+    assert_eq!(cancelled.state, ScheduleState::Cancelled);
+    assert_eq!(cancelled.state.next_due(), None);
     schedules::cancel_schedule(db.conn(), &actor, "acme", &schedule.id)?;
     assert!(schedules::run_due(db.conn(), &actor, "acme", date("2027-01-01")?, false)?.is_empty());
     let count: i64 = db
@@ -229,7 +235,9 @@ fn invalid_persisted_template_is_rejected_before_posting() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0].next_due,
+        schedules::list_schedules(db.conn(), "acme")?[0]
+            .state
+            .next_due(),
         Some(date("2026-01-31")?)
     );
     Ok(())
@@ -302,8 +310,8 @@ fn finite_schedules_complete_at_the_supported_date_boundary() -> TestResult {
         assert_eq!(posted.len(), 1);
         assert_eq!(posted[0].date, start_date);
         let completed = &schedules::list_schedules(db.conn(), "acme")?[0];
-        assert_eq!(completed.status, "completed");
-        assert_eq!(completed.next_due, None);
+        assert_eq!(completed.state, ScheduleState::Completed);
+        assert_eq!(completed.state.next_due(), None);
         assert!(schedules::run_due(db.conn(), &actor, "acme", NaiveDate::MAX, false)?.is_empty());
         audit::verify_hash_chain(db.conn())?;
         audit::verify_creations(db.conn())?;
@@ -330,7 +338,9 @@ fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
     assert_eq!(posted.len(), DEFAULT_RUN_LIMIT);
     assert!(posted.iter().all(|row| row.transaction_id.is_some()));
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0].status,
+        schedules::list_schedules(db.conn(), "acme")?[0]
+            .state
+            .code(),
         "completed"
     );
     assert!(schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, false)?.is_empty());
@@ -394,7 +404,9 @@ fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> Te
     let posted = schedules::run_due(db.conn(), &actor, "acme", date("2020-01-01")?, false)?;
     assert_eq!(posted.len(), 1);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "other")?[0].next_due,
+        schedules::list_schedules(db.conn(), "other")?[0]
+            .state
+            .next_due(),
         Some(params.start_date)
     );
     let remaining = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, true)?;
