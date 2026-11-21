@@ -16,7 +16,12 @@ SQLite (optionally encrypted with SQLCipher) is the source of truth, not a `.jou
 
 ### The agent cannot create an unbalanced transaction
 
-A `Transaction` can only be constructed through `JournalEntry::post()`, which checks at runtime that there are at least two entries, all in one currency, and that total debits equal total credits. Invalid entries return a `TransactionError`; the type's private fields prevent callers from bypassing those checks when constructing a `Transaction`. The CLI validates postings through this API before saving them and reports validation failures as `VALIDATION` errors (exit code 3).
+The CLI’s private transaction writer requires a validated `Transaction` and proof
+that its company’s posting date falls in an open period. `JournalEntry` checks
+entry currency as entries are added, and `JournalEntry::post()` requires at least
+two entries with equal debit and credit totals. Account lookup, journal
+validation, and the period check run in the savepoint that writes the posting.
+Balance and closed-period failures return `VALIDATION` (exit code 3).
 
 ### Retries are safe
 

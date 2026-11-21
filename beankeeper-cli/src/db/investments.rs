@@ -4,11 +4,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use beankeeper::{
-    core::{
-        JournalEntry,
-        investments::{
-            InvestmentError, LotMethod, PositiveQuantity, Quantity, allocate_cost, market_value,
-        },
+    core::investments::{
+        InvestmentError, LotMethod, PositiveQuantity, Quantity, allocate_cost, market_value,
     },
     types::{
         Account, AccountType, Currency, DebitOrCredit, Money, MoneyError, NonNegativeMoney,
@@ -561,15 +558,10 @@ struct TradePosting<'a> {
 }
 
 fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
-    let mut journal = JournalEntry::new(p.date, p.description, p.currency);
     let mut entries = Vec::with_capacity(p.entries.len());
     for entry in p.entries {
         let money = entry.amount.money();
         require_currency(money, p.currency)?;
-        journal = match entry.direction {
-            DebitOrCredit::Debit => journal.debit(entry.account, money.amount()),
-            DebitOrCredit::Credit => journal.credit(entry.account, money.amount()),
-        }?;
         entries.push(PostEntryParams {
             account_code: entry.account.code().as_str().into(),
             direction: entry.direction.code().into(),
@@ -578,7 +570,6 @@ fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
             tax_category: None,
         });
     }
-    journal.post()?;
     match super::post_transaction(
         conn,
         &PostTransactionParams {
