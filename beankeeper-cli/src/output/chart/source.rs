@@ -107,7 +107,7 @@ pub(crate) fn summary(
         .iter()
         .map(|row| {
             let (label, values) = row.chart_series();
-            Row::new(label, None, values, currency)
+            Row::from_money(label, None, values)
         })
         .collect();
     Chart::new(

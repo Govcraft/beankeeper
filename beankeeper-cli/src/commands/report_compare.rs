@@ -8,8 +8,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use rusqlite::params;
-use rust_decimal::{Decimal, RoundingStrategy, prelude::ToPrimitive};
-use serde::{Serialize, Serializer};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use super::report::ReportOutput;
 use super::report_dates::DateWindow;
@@ -17,8 +16,10 @@ use super::report_periods::{CompareArg, MultiReportKind, prior_range, range_labe
 use crate::cli::{Cli, OutputFormat, ReportCommand};
 use crate::db::{self, connection::Db};
 use crate::error::CliError;
+use crate::output::amounts::{MoneyField, format_money};
 use crate::output::chart::{self, ComparisonView};
 use crate::output::json::serialize_display;
+use crate::percent::Percent;
 
 struct Context<'a> {
     cli: &'a Cli,
@@ -63,9 +64,7 @@ impl ReportMoney {
     }
 
     fn decimal(self) -> String {
-        self.0
-            .amount()
-            .format_decimal(self.0.currency().minor_units())
+        format_money(self.0)
     }
 }
 
@@ -76,27 +75,21 @@ fn money_error(error: &MoneyError) -> CliError {
     }
 }
 
-impl Serialize for ReportMoney {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_i128(self.minor())
-    }
-}
-
 fn account_type<S: Serializer, T: std::fmt::Display>(value: &T, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&value.to_string().to_lowercase())
 }
 
 // Retain the unrounded ratio so each output format rounds only once.
 #[derive(Debug, Clone, Copy)]
-struct ChangePercent(Decimal);
+struct ChangePercent(Percent);
 
 impl Serialize for ChangePercent {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let value = self
             .0
-            .round_dp(2)
-            .to_f64()
-            .ok_or_else(|| serde::ser::Error::custom("percentage is not representable"))?;
+            .to_fixed_half_even(2)
+            .parse::<f64>()
+            .map_err(serde::ser::Error::custom)?;
         serializer.serialize_f64(value)
     }
 }
@@ -105,7 +98,7 @@ impl Serialize for ChangePercent {
 #[serde(transparent)]
 struct Totals(BTreeMap<TotalKey, ComparisonValues>);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 struct ComparisonValues {
     current: ReportMoney,
     prior: ReportMoney,
@@ -113,18 +106,25 @@ struct ComparisonValues {
     change_percent: Option<ChangePercent>,
 }
 
+impl Serialize for ComparisonValues {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(7))?;
+        MoneyField::new("current", self.current.0).write_to(&mut fields)?;
+        MoneyField::new("prior", self.prior.0).write_to(&mut fields)?;
+        MoneyField::new("change", self.change.0).write_to(&mut fields)?;
+        fields.serialize_entry("change_percent", &self.change_percent)?;
+        fields.end()
+    }
+}
+
 impl ComparisonValues {
     fn new(current: ReportMoney, prior: ReportMoney) -> Result<Self, CliError> {
         let change = current.subtract(prior)?;
-        let change_percent = if prior.minor() == 0 {
-            None
-        } else {
-            Some(ChangePercent(
-                Decimal::from_i128_with_scale(change.minor(), 0)
-                    / Decimal::from_i128_with_scale(prior.minor(), 0).abs()
-                    * Decimal::from(100),
-            ))
-        };
+        let change_percent = Percent::of(
+            i64::try_from(change.minor()).map_err(|_| overflow())?,
+            i64::try_from(prior.minor()).map_err(|_| overflow())?,
+        )
+        .map(ChangePercent);
         Ok(Self {
             current,
             prior,
@@ -236,7 +236,7 @@ struct Mover {
     direction: Direction,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct TransactionContribution {
     transaction_id: i64,
     date: NaiveDate,
@@ -247,20 +247,54 @@ struct TransactionContribution {
     change: ReportMoney,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct PayeeContribution {
     payee: String,
     change: ReportMoney,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct Explanation {
-    #[serde(serialize_with = "serialize_display")]
     account: LedgerAccountCode,
     change: ReportMoney,
     transactions: Vec<TransactionContribution>,
     payees: Vec<PayeeContribution>,
     basis: &'static str,
+}
+
+impl Serialize for TransactionContribution {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(9))?;
+        fields.serialize_entry("transaction_id", &self.transaction_id)?;
+        fields.serialize_entry("date", &self.date)?;
+        fields.serialize_entry("description", &self.description)?;
+        fields.serialize_entry("reference", &self.reference)?;
+        fields.serialize_entry("payee", &self.payee)?;
+        MoneyField::new("amount", self.amount.0).write_to(&mut fields)?;
+        MoneyField::new("change", self.change.0).write_to(&mut fields)?;
+        fields.end()
+    }
+}
+
+impl Serialize for PayeeContribution {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(3))?;
+        fields.serialize_entry("payee", &self.payee)?;
+        MoneyField::new("change", self.change.0).write_to(&mut fields)?;
+        fields.end()
+    }
+}
+
+impl Serialize for Explanation {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(6))?;
+        fields.serialize_entry("account", self.account.as_str())?;
+        fields.serialize_entry("transactions", &self.transactions)?;
+        fields.serialize_entry("payees", &self.payees)?;
+        fields.serialize_entry("basis", &self.basis)?;
+        MoneyField::new("change", self.change.0).write_to(&mut fields)?;
+        fields.end()
+    }
 }
 
 #[derive(Serialize)]
@@ -1351,15 +1385,9 @@ fn period_comparison_table(data: &ComparisonReport, use_color: bool) -> String {
     );
     table.set_header(header);
     let value_cells = |values: &ComparisonValues, is_total| {
-        let percent = values.change_percent.map_or_else(
-            || "n/a".to_owned(),
-            |p| {
-                format!(
-                    "{:.1}%",
-                    p.0.round_dp_with_strategy(1, RoundingStrategy::MidpointAwayFromZero)
-                )
-            },
-        );
+        let percent = values
+            .change_percent
+            .map_or_else(|| "n/a".to_owned(), |p| format!("{}%", p.0.to_fixed(1)));
         let values = [values.current, values.prior, values.change].map(|amount| {
             crate::output::report_periods::format_amount(
                 amount.minor(),
@@ -1440,8 +1468,10 @@ fn table_cells(code: &str, name: &str, row: &ComparisonValues) -> Vec<String> {
         row.current.decimal(),
         row.prior.decimal(),
         row.change.decimal(),
-        row.change_percent
-            .map_or_else(|| "n/a".into(), |p| format!("{:.2}%", p.0.round_dp(2))),
+        row.change_percent.map_or_else(
+            || "n/a".into(),
+            |p| format!("{}%", p.0.to_fixed_half_even(2)),
+        ),
     ]
 }
 
@@ -1557,7 +1587,12 @@ fn csv_line<W: std::io::Write>(
                 .map_or_else(String::new, |v| v.minor().to_string()),
             values
                 .and_then(|v| v.change_percent)
-                .map_or_else(String::new, |v| v.0.round_dp(2).normalize().to_string()),
+                .map_or_else(String::new, |v| {
+                    v.0.to_fixed_half_even(2)
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_owned()
+                }),
         ])
         .map_err(|error| csv_error(&error))
 }
@@ -1650,6 +1685,21 @@ mod tests {
                 .is_none()
         );
         assert!(usd(i64::MAX).add(usd(1)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn comparison_projects_currency_and_ties_without_the_envelope() -> Result<(), CliError> {
+        for (current, expected) in [(33, 3.12), (31, -3.12), (35, 9.38)] {
+            let bhd = |minor| ReportMoney::from_minor(minor, Currency::BHD);
+            let values = ComparisonValues::new(bhd(current), bhd(32))?;
+            let json = serde_json::to_value(values)
+                .map_err(|error| CliError::General(error.to_string()))?;
+            assert_eq!(json["current"], current);
+            assert_eq!(json["current_display"], format!("0.{current:03}"));
+            assert_eq!(json["prior_display"], "0.032");
+            assert_eq!(json["change_percent"], expected);
+        }
         Ok(())
     }
 

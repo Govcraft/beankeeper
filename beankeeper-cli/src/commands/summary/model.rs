@@ -1,52 +1,74 @@
 //! Pure comparisons, stable view targets and brief factual wording.
 
-use beankeeper::types::{Amount, Currency};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
-use serde::Serialize;
-use serde_json::{Value, json};
+use beankeeper::types::{Currency, Money};
+use serde::{Serialize, Serializer, ser::SerializeMap};
+use serde_json::{Number, Value, json};
 
-use super::{Periods, net, sub, sum};
+use super::{Periods, Standing, SummaryReport, money, net, sub, sum};
 use crate::db::BalanceRow;
 use crate::error::CliError;
+use crate::output::amounts::{MoneyField, format_money};
+use crate::percent::{Percent, change_percent};
 
-#[derive(Serialize)]
 pub(crate) struct Comparison {
     id: String,
     label: String,
-    current: i64,
-    prior: i64,
-    change: i64,
-    change_percent: Option<f64>,
+    current: MoneyField,
+    prior: MoneyField,
+    change: MoneyField,
+    change_percent: Option<Percent>,
 }
 
 impl Comparison {
-    fn new(id: &str, label: &str, current: i64, prior: i64) -> Result<Self, CliError> {
-        let change = sub(current, prior)?;
-        let change_percent = if prior == 0 {
-            None
-        } else {
-            (Decimal::from(change) * Decimal::from(100) / Decimal::from(prior).abs())
-                .round_dp(1)
-                .to_f64()
-        };
+    fn new(
+        id: &str,
+        label: &str,
+        current: i64,
+        prior: i64,
+        currency: Currency,
+    ) -> Result<Self, CliError> {
         Ok(Self {
             id: id.into(),
             label: label.into(),
-            current,
-            prior,
-            change,
-            change_percent,
+            current: MoneyField::new("current", money(current, currency)),
+            prior: MoneyField::new("prior", money(prior, currency)),
+            change: MoneyField::new("change", money(sub(current, prior)?, currency)),
+            change_percent: change_percent(current, prior),
         })
     }
 
-    pub(crate) fn chart_series(&self) -> (&str, [i64; 2]) {
-        (&self.label, [self.prior, self.current])
+    pub(crate) fn chart_series(&self) -> (&str, [Money; 2]) {
+        (&self.label, [self.prior.money(), self.current.money()])
+    }
+}
+
+fn percent_number(percent: Option<Percent>) -> Option<Number> {
+    percent.and_then(|percent| {
+        percent
+            .to_fixed_half_even(1)
+            .parse()
+            .ok()
+            .and_then(Number::from_f64)
+    })
+}
+
+impl Serialize for Comparison {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(9))?;
+        fields.serialize_entry("id", &self.id)?;
+        fields.serialize_entry("label", &self.label)?;
+        self.current.write_to(&mut fields)?;
+        self.prior.write_to(&mut fields)?;
+        self.change.write_to(&mut fields)?;
+        fields.serialize_entry("change_percent", &percent_number(self.change_percent))?;
+        fields.end()
     }
 }
 
 pub(super) fn comparison(
     current: &[BalanceRow],
     prior: &[BalanceRow],
+    currency: Currency,
 ) -> Result<Vec<Comparison>, CliError> {
     let total =
         |rows: &[BalanceRow], kind: &str| sum(rows.iter().filter(|row| row.account_type == kind));
@@ -55,13 +77,14 @@ pub(super) fn comparison(
     let spending = total(current, "expense")?;
     let last_spending = total(prior, "expense")?;
     Ok(vec![
-        Comparison::new("income", "Income", income, last_income)?,
-        Comparison::new("spending", "Spending", spending, last_spending)?,
+        Comparison::new("income", "Income", income, last_income, currency)?,
+        Comparison::new("spending", "Spending", spending, last_spending, currency)?,
         Comparison::new(
             "left_over",
             "Left over",
             sub(income, spending)?,
             sub(last_income, last_spending)?,
+            currency,
         )?,
     ])
 }
@@ -69,6 +92,7 @@ pub(super) fn comparison(
 pub(super) fn movers(
     current: &[BalanceRow],
     prior: &[BalanceRow],
+    currency: Currency,
 ) -> Result<Vec<Comparison>, CliError> {
     let mut changes = current
         .iter()
@@ -80,14 +104,15 @@ pub(super) fn movers(
                 .map(net)
                 .transpose()?
                 .unwrap_or(0);
-            Comparison::new(&row.code, &row.name, net(row)?, prior)
+            Comparison::new(&row.code, &row.name, net(row)?, prior, currency)
         })
         .collect::<Result<Vec<_>, CliError>>()?;
-    changes.retain(|row| row.change != 0);
+    changes.retain(|row| !row.change.money().is_zero());
     changes.sort_by(|a, b| {
         b.change
+            .minor_units()
             .unsigned_abs()
-            .cmp(&a.change.unsigned_abs())
+            .cmp(&a.change.minor_units().unsigned_abs())
             .then_with(|| a.id.cmp(&b.id))
     });
     changes.truncate(5);
@@ -192,65 +217,55 @@ fn legacy_view_uri(state: &ViewState<'_>) -> String {
     uri
 }
 
-fn money(amount: i64, currency: Currency) -> String {
-    format!(
-        "{} {}",
-        currency.code(),
-        Amount::new(i128::from(amount)).format_decimal(currency.minor_units())
-    )
+fn amount_with_currency(amount: Money) -> String {
+    format!("{} {}", amount.currency().code(), format_money(amount))
 }
 
-fn change_fact(row: &Comparison, currency: Currency) -> String {
-    let value = money(row.current, currency);
-    if row.change == 0 {
+fn change_fact(row: &Comparison) -> String {
+    let value = amount_with_currency(row.current.money());
+    let change = row.change.minor_units();
+    if change == 0 {
         return format!(
             "{} was {value}, unchanged from the comparison period.",
             row.label
         );
     }
-    let direction = if row.change > 0 { "up" } else { "down" };
-    let difference =
-        Amount::new(i128::from(row.change).abs()).format_decimal(currency.minor_units());
+    let direction = if change > 0 { "up" } else { "down" };
+    // The checked source change is an i64, so its magnitude fits in i128.
+    let difference = amount_with_currency(Money::from_minor(
+        change.abs(),
+        row.change.money().currency(),
+    ));
     match row.change_percent {
         Some(percent) => format!(
-            "{} was {value}, {direction} {} {difference} ({:.1}%) from the comparison period.",
+            "{} was {value}, {direction} {difference} ({}%) from the comparison period.",
             row.label,
-            currency.code(),
-            percent.abs()
+            percent.to_fixed_half_even(1).trim_start_matches('-'),
         ),
         None => format!(
-            "{} was {value}, {direction} {} {difference} from zero in the comparison period.",
+            "{} was {value}, {direction} {difference} from zero in the comparison period.",
             row.label,
-            currency.code()
         ),
     }
 }
 
 pub(super) fn highlights(
-    standing: &Value,
+    standing: &Standing,
     comparison: &[Comparison],
     movers: &[Comparison],
-    currency: Currency,
 ) -> Vec<String> {
-    let amount = |key| standing[key].as_i64().unwrap_or(0);
-    let cash_known = standing["cash_accounts"]
-        .as_array()
-        .is_some_and(|rows| !rows.is_empty());
-    let receivables_known = standing["receivable_accounts"]
-        .as_array()
-        .is_some_and(|rows| !rows.is_empty());
-    let cash_fact = if cash_known {
+    let cash_fact = if standing.cash_accounts_identified {
         format!(
             "Cash on hand in the selected accounts is {}.",
-            money(amount("cash_on_hand"), currency)
+            amount_with_currency(standing.cash_on_hand.money()),
         )
     } else {
         "No cash accounts were identified; select your cash accounts to get a cash total.".into()
     };
-    let owed_fact = if receivables_known {
+    let owed_fact = if standing.receivable_accounts_identified {
         format!(
             "You are owed {} in the selected accounts.",
-            money(amount("owed_to_you"), currency)
+            amount_with_currency(standing.owed_to_you.money()),
         )
     } else {
         "No accounts for money owed to you were identified.".into()
@@ -258,57 +273,46 @@ pub(super) fn highlights(
     let mut facts = vec![
         format!(
             "{cash_fact} Net worth is {} at recorded book values.",
-            money(amount("net_worth"), currency)
+            amount_with_currency(standing.net_worth.money()),
         ),
         format!(
             "{owed_fact} You owe {} in total.",
-            money(amount("you_owe"), currency)
+            amount_with_currency(standing.you_owe.money()),
         ),
     ];
-    facts.extend(comparison.iter().map(|row| change_fact(row, currency)));
-    facts.extend(movers.iter().take(2).map(|row| change_fact(row, currency)));
+    facts.extend(comparison.iter().map(change_fact));
+    facts.extend(movers.iter().take(2).map(change_fact));
     facts
 }
 
-pub(super) fn plain(data: &Value) -> String {
+pub(super) fn plain(report: &SummaryReport) -> String {
+    let periods = &report.periods;
     let mut lines = vec![format!(
         "Your money, {} to {} (compared with {} to {})",
-        text(&data["periods"]["current"]["from"]),
-        text(&data["periods"]["current"]["to"]),
-        text(&data["periods"]["prior"]["from"]),
-        text(&data["periods"]["prior"]["to"])
+        periods.current.from, periods.current.to, periods.prior.from, periods.prior.to,
     )];
-    if let Some(facts) = data["highlights"].as_array() {
-        lines.extend(facts.iter().filter_map(Value::as_str).map(str::to_owned));
-    }
-    if let Some(items) = data["needs_attention"]["items"].as_object() {
-        for (name, item) in items {
-            if let Some(count) = item["count"].as_u64()
-                && count > 0
-            {
-                lines.push(format!(
-                    "{}: {count}; total {} {}. {}",
-                    name.replace('_', " "),
-                    text(&data["currency"]),
-                    text(&item["total_display"]),
-                    text(&item["reason"])
-                ));
-            }
+    lines.extend(report.highlights.iter().cloned());
+    for (name, item) in &report.attention {
+        if let (Some(count), Some(total)) = (item.count, item.total())
+            && count > 0
+        {
+            lines.push(format!(
+                "{}: {count}; total {}. {}",
+                name.replace('_', " "),
+                amount_with_currency(total),
+                item.reason,
+            ));
         }
     }
     lines.push("Payment due dates are unavailable; older open items do not prove that a payment is overdue.".into());
     lines.push(format!(
         "Optional Desktop view: {}",
-        text(&data["desktop_view"]["uri"])
+        report.view["uri"].as_str().unwrap_or(""),
     ));
     lines.join("\n")
 }
 
-fn text(value: &Value) -> &str {
-    value.as_str().unwrap_or("")
-}
-
-pub(super) fn csv(data: &Value) -> Result<String, CliError> {
+pub(super) fn csv(report: &SummaryReport) -> Result<String, CliError> {
     let mut writer = csv::Writer::from_writer(Vec::new());
     let header = [
         "section",
@@ -326,15 +330,20 @@ pub(super) fn csv(data: &Value) -> Result<String, CliError> {
     writer
         .write_record(header)
         .map_err(|error| csv_error(&error))?;
-    let currency = text(&data["currency"]);
-    for id in ["cash_on_hand", "owed_to_you", "you_owe", "net_worth"] {
+    let currency = report.currency.code();
+    for (id, amount) in [
+        ("cash_on_hand", report.standing.cash_on_hand),
+        ("owed_to_you", report.standing.owed_to_you),
+        ("you_owe", report.standing.you_owe),
+        ("net_worth", report.standing.net_worth),
+    ] {
         writer
             .write_record([
                 "standing",
                 id,
                 &id.replace('_', " "),
-                currency,
-                &data["standing"][id].to_string(),
+                amount.money().currency().code(),
+                &amount.minor_units().to_string(),
                 "",
                 "",
                 "",
@@ -344,59 +353,54 @@ pub(super) fn csv(data: &Value) -> Result<String, CliError> {
             ])
             .map_err(|error| csv_error(&error))?;
     }
-    for section in ["comparison", "biggest_movers"] {
-        if let Some(series) = data[section]["series"].as_array() {
-            for row in series {
-                let number = |key| {
-                    if row[key].is_null() {
-                        String::new()
-                    } else {
-                        row[key].to_string()
-                    }
-                };
-                writer
-                    .write_record([
-                        section,
-                        text(&row["id"]),
-                        text(&row["label"]),
-                        currency,
-                        "",
-                        &number("current"),
-                        &number("prior"),
-                        &number("change"),
-                        &number("change_percent"),
-                        "",
-                        "",
-                    ])
-                    .map_err(|error| csv_error(&error))?;
-            }
-        }
-    }
-    if let Some(items) = data["needs_attention"]["items"].as_object() {
-        for (id, item) in items {
-            let number = |key| {
-                if item[key].is_null() {
-                    String::new()
-                } else {
-                    item[key].to_string()
-                }
-            };
+    for (section, series) in [
+        ("comparison", &report.comparison),
+        ("biggest_movers", &report.movers),
+    ] {
+        for row in series {
             writer
                 .write_record([
-                    "needs_attention",
-                    id,
-                    &id.replace('_', " "),
-                    currency,
-                    &number("total"),
+                    section,
+                    &row.id,
+                    &row.label,
+                    row.current.money().currency().code(),
+                    "",
+                    &row.current.minor_units().to_string(),
+                    &row.prior.minor_units().to_string(),
+                    &row.change.minor_units().to_string(),
+                    &percent_number(row.change_percent)
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
                     "",
                     "",
-                    "",
-                    "",
-                    &number("count"),
-                    &number("available"),
                 ])
                 .map_err(|error| csv_error(&error))?;
         }
+    }
+    for (&id, item) in &report.attention {
+        let total = item
+            .total()
+            .map(|value| value.amount().minor_units().to_string())
+            .unwrap_or_default();
+        let count = item
+            .count
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        writer
+            .write_record([
+                "needs_attention",
+                id,
+                &id.replace('_', " "),
+                currency,
+                &total,
+                "",
+                "",
+                "",
+                "",
+                &count,
+                if item.available { "true" } else { "false" },
+            ])
+            .map_err(|error| csv_error(&error))?;
     }
     let bytes = writer
         .into_inner()
@@ -413,18 +417,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn comparison_projects_exact_ties_and_currency_without_the_envelope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (current, expected) in [(17, 6.2), (15, -6.2), (19, 18.8)] {
+            let row = Comparison::new("x", "x", current, 16, Currency::BHD)?;
+            let json = serde_json::to_value(&row)?;
+            assert_eq!(json["current"], current);
+            assert_eq!(json["current_display"], format!("0.{current:03}"));
+            assert_eq!(json["prior_display"], "0.016");
+            assert_eq!(json["change_percent"], expected);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn percentages_handle_zero_negative_and_minimum_baselines() -> Result<(), CliError> {
-        assert_eq!(Comparison::new("x", "x", 1, 0)?.change_percent, None);
-        assert_eq!(Comparison::new("x", "x", 0, 0)?.change_percent, None);
+        let percentage = |current, prior| -> Result<Option<Number>, CliError> {
+            let row = Comparison::new("x", "x", current, prior, Currency::USD)?;
+            Ok(percent_number(row.change_percent))
+        };
+        assert_eq!(percentage(1, 0)?, None);
+        assert_eq!(percentage(0, 0)?, None);
+        assert_eq!(percentage(10, -10)?.and_then(|p| p.as_f64()), Some(200.0));
         assert_eq!(
-            Comparison::new("x", "x", 10, -10)?.change_percent,
-            Some(200.0)
-        );
-        assert_eq!(
-            Comparison::new("x", "x", i64::MIN, i64::MIN)?.change_percent,
+            percentage(i64::MIN, i64::MIN)?.and_then(|p| p.as_f64()),
             Some(0.0)
         );
-        assert!(Comparison::new("x", "x", i64::MAX, -1).is_err());
+        assert!(percentage(i64::MAX, -1).is_err());
         assert_eq!(encode("a/b &c"), "a%2Fb%20%26c");
         assert_eq!(super::super::add(1, 1)?, 2);
         Ok(())

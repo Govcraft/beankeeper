@@ -1,15 +1,17 @@
 //! Read-only attention facts, with explicit limits where the ledger lacks a model.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use beankeeper::core::{RecurrenceError, occurrence_date};
+use beankeeper::types::{Currency, Money};
 use chrono::{Days, NaiveDate};
 use rusqlite::{Connection, params};
-use serde_json::{Value, json};
+use serde::Serialize;
 
 use crate::commands::report_aging::{self, Movement};
 use crate::db;
 use crate::error::CliError;
+use crate::output::amounts::OptionalMoneyField;
 
 use super::{add, sub};
 
@@ -17,32 +19,97 @@ use super::{add, sub};
 pub(super) struct AttentionContext<'a> {
     pub conn: &'a Connection,
     pub company: &'a str,
-    pub currency: &'a str,
+    pub currency: Currency,
     pub as_of: NaiveDate,
     pub cash: &'a [String],
     pub receivables: &'a [String],
     pub payables: &'a [String],
 }
 
-/// Aggregate facts without posting schedules, changing clearings or writing audit
-/// records. A missing due-date model remains explicit rather than implying zero.
-pub(super) fn compute(context: &AttentionContext<'_>) -> Result<Value, CliError> {
-    let unavailable = json!({
-        "available": false, "count": null, "total": null,
-        "reason": "The ledger has no invoice due dates. Older open items are shown separately; their payment deadlines are unknown."
-    });
-    Ok(json!({
-        "uncategorized": uncategorized(context)?,
-        "unreconciled_accounts": unreconciled(context)?,
-        "recurring_due": recurring(context)?,
-        "aged_receivables": aged(context, context.receivables, false)?,
-        "aged_payables": aged(context, context.payables, true)?,
-        "overdue_receivables": unavailable,
-        "overdue_payables": unavailable,
-    }))
+pub(super) type Attention = BTreeMap<&'static str, AttentionItem>;
+
+#[derive(Serialize)]
+pub(super) struct AttentionItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<&'static str>,
+    pub available: bool,
+    pub count: Option<usize>,
+    #[serde(flatten)]
+    total: OptionalMoneyField,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    basis: Option<&'static str>,
+    pub reason: &'static str,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    details: Option<Details>,
 }
 
-fn uncategorized(context: &AttentionContext<'_>) -> Result<Value, CliError> {
+impl AttentionItem {
+    fn available(
+        id: &'static str,
+        count: usize,
+        total: Money,
+        basis: &'static str,
+        reason: &'static str,
+    ) -> Self {
+        Self {
+            id: Some(id),
+            available: true,
+            count: Some(count),
+            total: OptionalMoneyField("total", Some(total)),
+            basis: Some(basis),
+            reason,
+            details: None,
+        }
+    }
+
+    pub(super) fn total(&self) -> Option<Money> {
+        self.total.1
+    }
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Details {
+    Entries {
+        entry_count: usize,
+    },
+    Schedules {
+        from: NaiveDate,
+        to: NaiveDate,
+        schedule_count: usize,
+    },
+    Aged {
+        older_than_days: u8,
+    },
+}
+
+/// Aggregate facts without posting schedules, changing clearings or writing audit
+/// records. A missing due-date model remains explicit rather than implying zero.
+pub(super) fn compute(context: &AttentionContext<'_>) -> Result<Attention, CliError> {
+    let unavailable = || AttentionItem {
+        id: None,
+        available: false,
+        count: None,
+        total: OptionalMoneyField("total", None),
+        basis: None,
+        reason: "The ledger has no invoice due dates. Older open items are shown separately; their payment deadlines are unknown.",
+        details: None,
+    };
+    Ok(BTreeMap::from([
+        ("uncategorized", uncategorized(context)?),
+        ("unreconciled_accounts", unreconciled(context)?),
+        ("recurring_due", recurring(context)?),
+        (
+            "aged_receivables",
+            aged(context, context.receivables, false)?,
+        ),
+        ("aged_payables", aged(context, context.payables, true)?),
+        ("overdue_receivables", unavailable()),
+        ("overdue_payables", unavailable()),
+    ]))
+}
+
+fn uncategorized(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
     let mut statement = context.conn.prepare(
         "SELECT t.id, e.account_code, SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE -e.amount END)
          FROM transactions t JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
@@ -52,7 +119,11 @@ fn uncategorized(context: &AttentionContext<'_>) -> Result<Value, CliError> {
          GROUP BY t.id, e.account_code ORDER BY t.id, e.account_code",
     )?;
     let rows = statement.query_map(
-        params![context.company, context.currency, context.as_of.to_string()],
+        params![
+            context.company,
+            context.currency.code(),
+            context.as_of.to_string()
+        ],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(2)?)),
     )?;
     let mut transactions = BTreeSet::new();
@@ -64,12 +135,13 @@ fn uncategorized(context: &AttentionContext<'_>) -> Result<Value, CliError> {
             total = add(total, absolute(amount)?)?;
         }
     }
-    Ok(json!({
-        "id": "uncategorized", "available": true,
-        "count": transactions.len(), "total": total,
-        "basis": "activity-on-named-uncategorized-or-suspense-accounts",
-        "reason": "Counts transactions touching accounts named Uncategorized or Suspense, including historical corrections. This is activity to review, not a guaranteed count of unresolved transactions."
-    }))
+    Ok(AttentionItem::available(
+        "uncategorized",
+        transactions.len(),
+        super::money(total, context.currency),
+        "activity-on-named-uncategorized-or-suspense-accounts",
+        "Counts transactions touching accounts named Uncategorized or Suspense, including historical corrections. This is activity to review, not a guaranteed count of unresolved transactions.",
+    ))
 }
 
 fn absolute(amount: i64) -> Result<i64, CliError> {
@@ -78,7 +150,7 @@ fn absolute(amount: i64) -> Result<i64, CliError> {
     })
 }
 
-fn unreconciled(context: &AttentionContext<'_>) -> Result<Value, CliError> {
+fn unreconciled(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
     let mut statement = context.conn.prepare(
         "SELECT e.amount, COALESCE(SUM(CASE WHEN c.status = 'reconciled'
              AND c.cleared_date <= ?4 AND c.reconciled_date <= ?4 THEN c.amount ELSE 0 END), 0)
@@ -94,7 +166,7 @@ fn unreconciled(context: &AttentionContext<'_>) -> Result<Value, CliError> {
         let rows = statement.query_map(
             params![
                 context.company,
-                context.currency,
+                context.currency.code(),
                 account,
                 context.as_of.to_string()
             ],
@@ -112,15 +184,18 @@ fn unreconciled(context: &AttentionContext<'_>) -> Result<Value, CliError> {
         }
         count += usize::from(pending);
     }
-    Ok(json!({
-        "id": "unreconciled_accounts", "available": true,
-        "count": count, "entry_count": entry_count, "total": total,
-        "basis": "gross-unreconciled-entry-amounts-on-selected-cash-accounts",
-        "reason": "Amounts not reconciled by the as-of date, including amounts already cleared. Incoming and outgoing amounts are added without cancelling each other."
-    }))
+    let mut item = AttentionItem::available(
+        "unreconciled_accounts",
+        count,
+        super::money(total, context.currency),
+        "gross-unreconciled-entry-amounts-on-selected-cash-accounts",
+        "Amounts not reconciled by the as-of date, including amounts already cleared. Incoming and outgoing amounts are added without cancelling each other.",
+    );
+    item.details = Some(Details::Entries { entry_count });
+    Ok(item)
 }
 
-fn recurring(context: &AttentionContext<'_>) -> Result<Value, CliError> {
+fn recurring(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
     let from = context.as_of.succ_opt().ok_or_else(date_overflow)?;
     let through = context
         .as_of
@@ -132,7 +207,7 @@ fn recurring(context: &AttentionContext<'_>) -> Result<Value, CliError> {
     let mut total = 0;
     for schedule in schedules
         .iter()
-        .filter(|s| s.state.next_due().is_some() && s.currency.code() == context.currency)
+        .filter(|s| s.state.next_due().is_some() && s.currency == context.currency)
     {
         let mut index = first_future_index(schedule, context.as_of)?;
         let amount = schedule
@@ -151,13 +226,19 @@ fn recurring(context: &AttentionContext<'_>) -> Result<Value, CliError> {
         }
         schedule_count += usize::from(count != before);
     }
-    Ok(json!({
-        "id": "recurring_due", "available": true,
-        "from": from, "to": through, "count": count,
-        "schedule_count": schedule_count, "total": total,
-        "basis": "unposted-occurrences-summed-on-one-side-of-each-balanced-template",
-        "reason": "Includes every pending occurrence in the next 14 days, excluding today. Amounts are scheduled transaction volume, which can include income and noncash postings. Schedule status reflects its current state."
-    }))
+    let mut item = AttentionItem::available(
+        "recurring_due",
+        count,
+        super::money(total, context.currency),
+        "unposted-occurrences-summed-on-one-side-of-each-balanced-template",
+        "Includes every pending occurrence in the next 14 days, excluding today. Amounts are scheduled transaction volume, which can include income and noncash postings. Schedule status reflects its current state.",
+    );
+    item.details = Some(Details::Schedules {
+        from,
+        to: through,
+        schedule_count,
+    });
+    Ok(item)
 }
 
 fn date_overflow() -> CliError {
@@ -198,7 +279,7 @@ fn aged(
     context: &AttentionContext<'_>,
     accounts: &[String],
     payable: bool,
-) -> Result<Value, CliError> {
+) -> Result<AttentionItem, CliError> {
     let mut count = 0_usize;
     let mut total = 0;
     for account in accounts {
@@ -211,13 +292,21 @@ fn aged(
             }
         }
     }
-    Ok(json!({
-        "id": if payable { "aged_payables" } else { "aged_receivables" },
-        "available": true, "count": count, "total": total,
-        "older_than_days": 30,
-        "basis": "open-charges-by-transaction-date-specific-then-fifo",
-        "reason": "Open charges more than 30 days old after linked settlements and FIFO matching. Age does not establish that payment is overdue."
-    }))
+    let mut item = AttentionItem::available(
+        if payable {
+            "aged_payables"
+        } else {
+            "aged_receivables"
+        },
+        count,
+        super::money(total, context.currency),
+        "open-charges-by-transaction-date-specific-then-fifo",
+        "Open charges more than 30 days old after linked settlements and FIFO matching. Age does not establish that payment is overdue.",
+    );
+    item.details = Some(Details::Aged {
+        older_than_days: 30,
+    });
+    Ok(item)
 }
 
 fn load_movements(
@@ -236,7 +325,7 @@ fn load_movements(
     let rows = statement.query_map(
         params![
             context.company,
-            context.currency,
+            context.currency.code(),
             account,
             context.as_of.to_string()
         ],
@@ -278,6 +367,7 @@ mod tests {
     use super::*;
     use crate::db::{Actor, PostEntryParams, PostTransactionParams, connection::Db};
     use beankeeper::core::Frequency;
+    use serde_json::Value;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -339,17 +429,18 @@ mod tests {
     }
 
     fn attention(db: &Db, as_of: &str) -> Result<Value, CliError> {
-        compute(&AttentionContext {
+        let facts = compute(&AttentionContext {
             conn: db.conn(),
             company: "co",
-            currency: "USD",
+            currency: Currency::USD,
             as_of: as_of
                 .parse()
                 .map_err(|error: chrono::ParseError| CliError::Validation(error.to_string()))?,
             cash: &["1000".into()],
             receivables: &["1100".into()],
             payables: &["2000".into()],
-        })
+        })?;
+        serde_json::to_value(facts).map_err(|error| CliError::General(error.to_string()))
     }
 
     #[test]
