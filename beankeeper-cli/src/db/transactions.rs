@@ -261,7 +261,9 @@ fn build_metadata(
     correlate: Option<i64>,
 ) -> Result<Option<String>, CliError> {
     match correlate {
-        None => Ok(user_metadata.and_then(metadata::normalize)),
+        None => Ok(user_metadata
+            .and_then(metadata::normalize)
+            .map(metadata::NormalizedMetadata::into_string)),
         Some(cid) => metadata::with_correlate(user_metadata, cid).map(Some),
     }
 }

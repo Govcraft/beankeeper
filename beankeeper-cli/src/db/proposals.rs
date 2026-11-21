@@ -301,10 +301,11 @@ impl<'a> PendingProposal<'a> {
         let mut payload = self.before.payload.clone();
         validate_posting(self.conn, &payload.params(&self.before.company_slug, actor))?;
         let (existing, proposal_id) = (payload.metadata.as_deref(), self.before.id.as_str());
-        let mut metadata: serde_json::Value = existing
-            .and_then(super::metadata::normalize)
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
+        let mut metadata: serde_json::Value =
+            existing.and_then(super::metadata::normalize).map_or_else(
+                || serde_json::json!({}),
+                super::metadata::NormalizedMetadata::into_value,
+            );
         metadata["proposal_id"] = serde_json::json!(proposal_id);
         payload.metadata = Some(metadata.to_string());
         let posting = ApprovedPosting {
