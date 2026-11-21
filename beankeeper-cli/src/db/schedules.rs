@@ -181,7 +181,7 @@ pub fn create_schedule(
             conn,
             actor,
             company,
-            "schedule",
+            audit::Creation::Schedule,
             &schedule.id.to_string(),
             &serde_json::json!(&schedule),
         )?;
@@ -365,7 +365,7 @@ pub fn cancel_schedule(
         let mut after = before.clone();
         after.status = "cancelled".into();
         after.next_due = None;
-        audit::change_schedule(conn, actor, &before, &after, "schedule_cancel")?;
+        audit::change_schedule(conn, actor, &before, &after, audit::ScheduleChange::Cancel)?;
         Ok(after)
     })
 }
@@ -540,7 +540,7 @@ fn execute_schedule(
         advance_schedule(&mut after, frequency)?;
     }
     if !dry_run && before.occurrence_index != after.occurrence_index {
-        audit::change_schedule(conn, actor, before, &after, "schedule_run")?;
+        audit::change_schedule(conn, actor, before, &after, audit::ScheduleChange::Run)?;
     }
     Ok(())
 }

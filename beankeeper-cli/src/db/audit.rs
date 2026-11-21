@@ -175,107 +175,179 @@ impl Actor {
 // Audit row classification
 // ---------------------------------------------------------------------------
 
-/// The kind of entity an audit row concerns. Maps to the `entity` CHECK
-/// constraint on `audit_log`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuditEntity {
-    Period,
-    Proposal,
-    SpendLimit,
-    Policy,
+/// A label that is outside the audit vocabulary.
+#[derive(Debug)]
+pub struct AuditLabelError {
+    kind: &'static str,
+    value: String,
+}
+
+impl std::fmt::Display for AuditLabelError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unknown audit {} {:?}", self.kind, self.value)
+    }
+}
+
+impl std::error::Error for AuditLabelError {}
+
+// Use the same canonical label for signed rows, SQL, and all output formats.
+// Parser aliases retain the forms existing CLI and MCP callers can send.
+macro_rules! audit_labels {
+    (
+        $(#[$meta:meta])* $name:ident, $kind:literal {
+            $($variant:ident => $label:literal $(| $alias:literal)?),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, clap::ValueEnum)]
+        pub enum $name {
+            $(
+                #[serde(rename = $label $(, alias = $alias)?)]
+                #[value(name = $label $(, alias = $alias)?)]
+                $variant,
+            )+
+        }
+
+        impl $name {
+            /// Canonical label stored in SQLite and used in audit hashes and output.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $label,)+
+                }
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = AuditLabelError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                match value {
+                    $($label => Ok(Self::$variant),)+
+                    _ => Err(AuditLabelError { kind: $kind, value: value.to_owned() }),
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.pad(self.as_str())
+            }
+        }
+
+        impl rusqlite::types::FromSql for $name {
+            fn column_result(
+                value: rusqlite::types::ValueRef<'_>,
+            ) -> rusqlite::types::FromSqlResult<Self> {
+                value.as_str()?.parse().map_err(|error| rusqlite::types::FromSqlError::Other(Box::new(error)))
+            }
+        }
+    };
+}
+
+audit_labels! {
+    /// The entity classification stored in the audit trail.
+    AuditEntity, "entity" {
+        Period => "period",
+        Proposal => "proposal",
+        SpendLimit => "spend_limit" | "spend-limit",
+        Policy => "policy",
+        Security => "security",
+        Lot => "lot",
+        Price => "price",
+        Schedule => "schedule",
+        Rule => "rule",
+        Entry => "entry",
+        Transaction => "transaction",
+        Budget => "budget",
+        Account => "account",
+        Company => "company",
+        Key => "key",
+        Agent => "agent",
+    }
+}
+
+audit_labels! {
+    /// The action classification stored in the audit trail.
+    AuditAction, "action" {
+        PeriodClose => "period_close" | "period-close",
+        PeriodReopen => "period_reopen" | "period-reopen",
+        ProposalApprove => "proposal_approve" | "proposal-approve",
+        ProposalReject => "proposal_reject" | "proposal-reject",
+        LimitSet => "limit_set" | "limit-set",
+        PolicyChange => "policy_change" | "policy-change",
+        ScheduleRun => "schedule_run" | "schedule-run",
+        ScheduleCancel => "schedule_cancel" | "schedule-cancel",
+        MetadataSet => "metadata_set" | "metadata-set",
+        MetadataUnset => "metadata_unset" | "metadata-unset",
+        RuleDelete => "rule_delete" | "rule-delete",
+        Create => "create",
+        StatusChange => "status_change" | "status-change",
+        Correlate => "correlate",
+        Reverse => "reverse",
+        BudgetSet => "budget_set" | "budget-set",
+        BudgetDelete => "budget_delete" | "budget-delete",
+        AccountDelete => "account_delete" | "account-delete",
+        CompanyDelete => "company_delete" | "company-delete",
+        KeyInit => "key_init" | "key-init",
+        TokenIssue => "token_issue" | "token-issue",
+        TokenRevoke => "token_revoke" | "token-revoke",
+        Attach => "attach",
+    }
+}
+
+/// The only creation/attachment kinds accepted by the insert recorder.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Creation {
     Security,
     Lot,
     Price,
     Schedule,
     Rule,
-    Entry,
-    Transaction,
-    Budget,
-    Account,
     Company,
-    Key,
-    Agent,
+    Account,
+    Attachment,
 }
 
-impl AuditEntity {
-    fn as_str(self) -> &'static str {
+impl Creation {
+    fn classification(self) -> (AuditEntity, AuditAction) {
+        let entity = match self {
+            Self::Security => AuditEntity::Security,
+            Self::Lot => AuditEntity::Lot,
+            Self::Price => AuditEntity::Price,
+            Self::Schedule => AuditEntity::Schedule,
+            Self::Rule => AuditEntity::Rule,
+            Self::Company => AuditEntity::Company,
+            Self::Account => AuditEntity::Account,
+            Self::Attachment => return (AuditEntity::Transaction, AuditAction::Attach),
+        };
+        (entity, AuditAction::Create)
+    }
+}
+
+/// An identity event exported without secret material.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum IdentityEvent {
+    KeyInitialized,
+    TokenIssued,
+    TokenRevoked,
+}
+
+impl IdentityEvent {
+    fn classification(self) -> (AuditEntity, AuditAction) {
         match self {
-            Self::Period => "period",
-            Self::Proposal => "proposal",
-            Self::SpendLimit => "spend_limit",
-            Self::Policy => "policy",
-            Self::Security => "security",
-            Self::Lot => "lot",
-            Self::Price => "price",
-            Self::Schedule => "schedule",
-            Self::Rule => "rule",
-            Self::Entry => "entry",
-            Self::Transaction => "transaction",
-            Self::Budget => "budget",
-            Self::Account => "account",
-            Self::Company => "company",
-            Self::Key => "key",
-            Self::Agent => "agent",
+            Self::KeyInitialized => (AuditEntity::Key, AuditAction::KeyInit),
+            Self::TokenIssued => (AuditEntity::Agent, AuditAction::TokenIssue),
+            Self::TokenRevoked => (AuditEntity::Agent, AuditAction::TokenRevoke),
         }
     }
 }
 
-/// The kind of change recorded. Maps to the `action` CHECK constraint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuditAction {
-    PeriodClose,
-    PeriodReopen,
-    ProposalApprove,
-    ProposalReject,
-    LimitSet,
-    PolicyChange,
-    ScheduleRun,
-    ScheduleCancel,
-    MetadataSet,
-    MetadataUnset,
-    RuleDelete,
-    Create,
-    StatusChange,
-    Correlate,
-    Reverse,
-    BudgetSet,
-    BudgetDelete,
-    AccountDelete,
-    CompanyDelete,
-    KeyInit,
-    TokenIssue,
-    TokenRevoke,
-    Attach,
-}
-
-impl AuditAction {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::PeriodClose => "period_close",
-            Self::PeriodReopen => "period_reopen",
-            Self::ProposalApprove => "proposal_approve",
-            Self::ProposalReject => "proposal_reject",
-            Self::LimitSet => "limit_set",
-            Self::PolicyChange => "policy_change",
-            Self::ScheduleRun => "schedule_run",
-            Self::ScheduleCancel => "schedule_cancel",
-            Self::MetadataSet => "metadata_set",
-            Self::MetadataUnset => "metadata_unset",
-            Self::RuleDelete => "rule_delete",
-            Self::Create => "create",
-            Self::StatusChange => "status_change",
-            Self::Correlate => "correlate",
-            Self::Reverse => "reverse",
-            Self::BudgetSet => "budget_set",
-            Self::BudgetDelete => "budget_delete",
-            Self::AccountDelete => "account_delete",
-            Self::CompanyDelete => "company_delete",
-            Self::KeyInit => "key_init",
-            Self::TokenIssue => "token_issue",
-            Self::TokenRevoke => "token_revoke",
-            Self::Attach => "attach",
-        }
-    }
+/// Audited progress change to an existing recurring schedule.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ScheduleChange {
+    Run,
+    Cancel,
 }
 
 /// A single recorded change, returned by [`list_audit`].
@@ -285,9 +357,9 @@ pub struct AuditLogRow {
     pub changed_at: String,
     pub actor: String,
     pub company_slug: Option<String>,
-    pub entity: String,
+    pub entity: AuditEntity,
     pub entity_id: String,
-    pub action: String,
+    pub action: AuditAction,
     pub before: Option<String>,
     pub after: Option<String>,
     pub prev_hash: String,
@@ -315,9 +387,9 @@ fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
         serde_json::json!(row.changed_at),
         serde_json::json!(row.actor),
         serde_json::json!(row.company_slug),
-        serde_json::json!(row.entity),
+        serde_json::json!(row.entity.as_str()),
         serde_json::json!(row.entity_id),
-        serde_json::json!(row.action),
+        serde_json::json!(row.action.as_str()),
         serde_json::json!(row.before),
         serde_json::json!(row.after),
     ];
@@ -493,9 +565,9 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         changed_at,
         actor: actor.name().to_string(),
         company_slug: company_slug.map(str::to_string),
-        entity: entity.as_str().to_string(),
+        entity,
         entity_id: entity_id.to_string(),
-        action: action.as_str().to_string(),
+        action,
         before: snapshots.0.map(str::to_string),
         after: snapshots.1.map(str::to_string),
         prev_hash,
@@ -911,16 +983,11 @@ fn pending_proposal(
 pub(crate) fn record_identity(
     conn: &Connection,
     actor: &Actor,
-    action: &str,
+    event: IdentityEvent,
     id: &str,
     data: &serde_json::Value,
 ) -> Result<(), CliError> {
-    let (entity, action) = match action {
-        "key_init" => (AuditEntity::Key, AuditAction::KeyInit),
-        "token_issue" => (AuditEntity::Agent, AuditAction::TokenIssue),
-        "token_revoke" => (AuditEntity::Agent, AuditAction::TokenRevoke),
-        _ => return Err(CliError::Validation("invalid identity event".into())),
-    };
+    let (entity, action) = event.classification();
     record(
         conn,
         actor,
@@ -942,21 +1009,11 @@ pub(crate) fn record_insert(
     conn: &Connection,
     actor: &Actor,
     company: &str,
-    entity: &str,
+    creation: Creation,
     id: &str,
     data: &serde_json::Value,
 ) -> Result<(), CliError> {
-    let (entity, action) = match entity {
-        "security" => (AuditEntity::Security, AuditAction::Create),
-        "lot" => (AuditEntity::Lot, AuditAction::Create),
-        "price" => (AuditEntity::Price, AuditAction::Create),
-        "schedule" => (AuditEntity::Schedule, AuditAction::Create),
-        "rule" => (AuditEntity::Rule, AuditAction::Create),
-        "company" => (AuditEntity::Company, AuditAction::Create),
-        "account" => (AuditEntity::Account, AuditAction::Create),
-        "attachment" => (AuditEntity::Transaction, AuditAction::Attach),
-        _ => return Err(CliError::Validation("invalid creation event".into())),
-    };
+    let (entity, action) = creation.classification();
     record(
         conn,
         actor,
@@ -2241,12 +2298,11 @@ pub(crate) fn change_schedule(
     actor: &Actor,
     before: &super::schedules::Schedule,
     after: &super::schedules::Schedule,
-    action: &str,
+    change: ScheduleChange,
 ) -> Result<(), CliError> {
-    let action = match action {
-        "schedule_run" => AuditAction::ScheduleRun,
-        "schedule_cancel" => AuditAction::ScheduleCancel,
-        _ => return Err(CliError::Validation("invalid schedule change".into())),
+    let action = match change {
+        ScheduleChange::Run => AuditAction::ScheduleRun,
+        ScheduleChange::Cancel => AuditAction::ScheduleCancel,
     };
     conn.execute(
         "UPDATE schedules SET occurrence_index = ?1, next_due = ?2, status = ?3
@@ -2280,8 +2336,8 @@ pub(crate) fn change_schedule(
 pub struct ListAuditParams<'a> {
     pub agent_uri: Option<&'a str>,
     pub company_slug: Option<&'a str>,
-    pub entity: Option<&'a str>,
-    pub action: Option<&'a str>,
+    pub entity: Option<AuditEntity>,
+    pub action: Option<AuditAction>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -2294,8 +2350,8 @@ fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::V
     for (column, value) in [
         ("agent_uri", params.agent_uri),
         ("company_slug", params.company_slug),
-        ("entity", params.entity),
-        ("action", params.action),
+        ("entity", params.entity.map(AuditEntity::as_str)),
+        ("action", params.action.map(AuditAction::as_str)),
     ] {
         if let Some(value) = value {
             let _ = write!(sql, " AND {column} = ?");
@@ -2486,6 +2542,59 @@ fn reject_investment_reversal(conn: &Connection, id: i64) -> Result<(), CliError
 mod tests {
     use super::*;
     use crate::db::Db;
+
+    #[test]
+    fn typed_audit_labels_round_trip_through_storage_and_filters() -> Result<(), CliError> {
+        let db = Db::open_in_memory()?;
+        let actor = Actor::new("test");
+        record_insert(
+            db.conn(),
+            &actor,
+            "acme",
+            Creation::Attachment,
+            "10",
+            &serde_json::json!({"attachment_id":1}),
+        )?;
+        record_identity(
+            db.conn(),
+            &actor,
+            IdentityEvent::TokenRevoked,
+            "token",
+            &serde_json::json!({"token_jti":"token"}),
+        )?;
+        let filters = ListAuditParams {
+            agent_uri: None,
+            company_slug: Some("acme"),
+            entity: Some(AuditEntity::Transaction),
+            action: Some(AuditAction::Attach),
+            limit: 10,
+            offset: 0,
+        };
+        let records = list_audit(db.conn(), &filters)?;
+        assert_eq!(count_audit(db.conn(), &filters)?, 1);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].entity, AuditEntity::Transaction);
+        assert_eq!(records[0].action, AuditAction::Attach);
+        assert_eq!(serde_json::json!(records[0].action), "attach");
+        verify_hash_chain(db.conn())
+    }
+
+    #[test]
+    fn legacy_filter_aliases_round_trip_to_canonical_labels() {
+        assert_eq!(
+            <AuditAction as clap::ValueEnum>::from_str("schedule-run", false).ok(),
+            Some(AuditAction::ScheduleRun)
+        );
+        assert_eq!(
+            serde_json::from_str::<AuditAction>(r#""status-change""#).ok(),
+            Some(AuditAction::StatusChange)
+        );
+        assert_eq!(
+            serde_json::json!(AuditAction::StatusChange),
+            "status_change"
+        );
+        assert!(<AuditAction as FromStr>::from_str("other").is_err());
+    }
 
     fn seed() -> Db {
         let db = Db::open_in_memory().expect("open in-memory db");

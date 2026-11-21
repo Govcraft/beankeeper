@@ -1097,7 +1097,7 @@ fn run_attach(
             db_handle.conn(),
             &cli.principal(),
             company,
-            "attachment",
+            db::audit::Creation::Attachment,
             &transaction_id.to_string(),
             &serde_json::json!({"attachment_id": id, "entry_id": entry_id, "uri": uri, "hash": hash.as_str(), "document_type": doc_type.as_str()}),
         )?;

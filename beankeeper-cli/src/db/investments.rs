@@ -414,7 +414,7 @@ pub fn create_security(
             conn,
             actor,
             company,
-            "security",
+            audit::Creation::Security,
             &p.symbol,
             &serde_json::json!(&security),
         )?;
@@ -470,7 +470,7 @@ pub fn record_price(
             conn,
             actor,
             company,
-            "price",
+            audit::Creation::Price,
             price.id.as_str(),
             &serde_json::json!(&price),
         )?;
@@ -667,7 +667,7 @@ pub fn buy(
             conn,
             actor,
             company,
-            "lot",
+            audit::Creation::Lot,
             lot.id.as_str(),
             &serde_json::json!(&lot),
         )?;
@@ -855,7 +855,7 @@ fn record_reliefs(
             conn,
             actor,
             company,
-            "lot",
+            audit::Creation::Lot,
             id.as_str(),
             &serde_json::json!({"relief": allocation, "date": date, "transaction_id": transaction_id}),
         )?;

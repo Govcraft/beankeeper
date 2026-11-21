@@ -259,7 +259,13 @@ pub fn init_root(conn: &Connection, actor: &Actor) -> Result<Value, CliError> {
         conn.execute("INSERT INTO identity_root (singleton, kid, trust_root, private_key, public_key) VALUES (1, ?1, ?2, ?3, ?4)",
             params![kid.to_string(), root, seed.expose_secret().as_slice(), public])?;
         let data = json!({"kid": kid.to_string(), "trust_root": root, "public_key": public});
-        crate::db::audit::record_identity(conn, actor, "key_init", kid.as_str(), &data)?;
+        crate::db::audit::record_identity(
+            conn,
+            actor,
+            crate::db::audit::IdentityEvent::KeyInitialized,
+            kid.as_str(),
+            &data,
+        )?;
         Ok(data)
     })
 }
@@ -333,7 +339,13 @@ pub fn issue(
     crate::db::audit::atomically(conn, || {
         conn.execute("INSERT INTO agent_tokens (jti, agent_uri, agent_key, capabilities, issued_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![claims.jti, claims.agent_uri, claims.agent_key, serde_json::to_string(&claims.capabilities).map_err(|e| CliError::General(e.to_string()))?, claims.iat.to_rfc3339(), claims.exp.to_rfc3339()])?;
-        crate::db::audit::record_identity(conn, actor, "token_issue", &claims.jti, &public_data)
+        crate::db::audit::record_identity(
+            conn,
+            actor,
+            crate::db::audit::IdentityEvent::TokenIssued,
+            &claims.jti,
+            &public_data,
+        )
     })?;
     let mut result = public_data;
     result["token"] = json!(token);
@@ -417,7 +429,7 @@ pub fn revoke(conn: &Connection, actor: &Actor, target: &str) -> Result<Value, C
                 crate::db::audit::record_identity(
                     conn,
                     actor,
-                    "token_revoke",
+                    crate::db::audit::IdentityEvent::TokenRevoked,
                     id,
                     &json!({"token_jti": id}),
                 )?;

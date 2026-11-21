@@ -91,7 +91,7 @@ fn compute(
                     db.conn(),
                     actor,
                     company,
-                    "account",
+                    db::audit::Creation::Account,
                     code,
                     &serde_json::json!({"code": row.code, "name": row.name, "type": row.account_type, "company_slug": row.company_slug, "default_tax_category": row.default_tax_category, "created_at": row.created_at}),
                 )?;

@@ -28,7 +28,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
                     db.conn(),
                     &cli.principal(),
                     slug,
-                    "company",
+                    crate::db::audit::Creation::Company,
                     slug,
                     &serde_json::json!({"slug": row.slug, "name": row.name, "description": row.description, "created_at": row.created_at}),
                 )?;

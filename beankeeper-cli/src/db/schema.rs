@@ -1526,7 +1526,7 @@ mod tests {
         super::super::audit::record_identity(
             &conn,
             &super::super::Actor::new("v17"),
-            "token_revoke",
+            crate::db::audit::IdentityEvent::TokenRevoked,
             "legacy",
             &serde_json::json!({}),
         )?;
@@ -1593,7 +1593,7 @@ mod tests {
                 super::super::audit::record_identity(
                     &conn,
                     &super::super::Actor::new("v17"),
-                    "token_revoke",
+                    crate::db::audit::IdentityEvent::TokenRevoked,
                     "still-v17",
                     &serde_json::json!({}),
                 )?;
@@ -1778,7 +1778,7 @@ mod tests {
         audit::record_identity(
             &conn,
             &Actor::new("v13"),
-            "token_revoke",
+            crate::db::audit::IdentityEvent::TokenRevoked,
             "test",
             &serde_json::json!({}),
         )?;
@@ -1899,7 +1899,7 @@ mod tests {
         super::super::audit::record_identity(
             &conn,
             &super::super::Actor::new("new"),
-            "token_revoke",
+            crate::db::audit::IdentityEvent::TokenRevoked,
             "test",
             &serde_json::json!({}),
         )?;
