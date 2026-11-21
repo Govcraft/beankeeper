@@ -1,5 +1,6 @@
 //! Local bearer attestations and optional per-ledger capability enforcement.
 
+use std::marker::PhantomData;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -24,6 +25,8 @@ pub struct VerifiedAgent {
     uri: String,
     jti: MagicTypeId,
     capabilities: Vec<String>,
+    agent_key: String,
+    expires_at: DateTime<Utc>,
 }
 
 impl VerifiedAgent {
@@ -77,6 +80,76 @@ impl VerifiedAgent {
             &self.capabilities,
             &path,
         ))
+    }
+}
+
+mod sealed {
+    pub trait GrantKind {
+        const REQUIRED: crate::capability::Capability;
+    }
+}
+
+pub(crate) enum Approve {}
+
+impl sealed::GrantKind for Approve {
+    const REQUIRED: Capability = Capability::Approve;
+}
+
+/// Authorization for a single capability, bound to this ledger and principal.
+pub(crate) struct Granted<'a, C> {
+    conn: &'a Connection,
+    actor: &'a Actor,
+    capability: PhantomData<C>,
+}
+
+impl<'a, C: sealed::GrantKind> Granted<'a, C> {
+    // Call inside the same audited savepoint as the operation.
+    pub(crate) fn check(conn: &'a Connection, actor: &'a Actor) -> Result<Self, CliError> {
+        let enforce = crate::db::policy::get(conn)?.enforce;
+        if let Some(agent) = actor.identity() {
+            agent.check_live(conn)?;
+            if enforce && !agent.allows(C::REQUIRED)? {
+                return Err(CliError::Forbidden(format!(
+                    "operation requires capability {}",
+                    C::REQUIRED.path()
+                )));
+            }
+        } else if enforce {
+            return Err(CliError::Unauthorized(
+                "ledger enforcement requires an agent token".into(),
+            ));
+        }
+        Ok(Self {
+            conn,
+            actor,
+            capability: PhantomData,
+        })
+    }
+
+    pub(crate) const fn connection(&self) -> &'a Connection {
+        self.conn
+    }
+
+    pub(crate) const fn actor(&self) -> &'a Actor {
+        self.actor
+    }
+}
+
+impl VerifiedAgent {
+    fn check_live(&self, conn: &Connection) -> Result<(), CliError> {
+        if self.expires_at <= Utc::now() {
+            return Err(unauthorized());
+        }
+        let live = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM agent_tokens t
+                WHERE t.jti = ?1 AND t.agent_uri = ?2 AND t.agent_key = ?3
+                AND NOT EXISTS(SELECT 1 FROM agent_revocations r WHERE r.jti = t.jti)
+             )",
+            params![self.jti(), self.uri(), self.agent_key],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if live { Ok(()) } else { Err(unauthorized()) }
     }
 }
 
@@ -219,6 +292,8 @@ fn verify_required(
         uri: uri.to_string(),
         jti: MagicTypeId::from_str(&claims.jti).map_err(|_| unauthorized())?,
         capabilities: claims.capabilities,
+        agent_key: claims.agent_key,
+        expires_at: claims.exp,
     })
 }
 
@@ -555,4 +630,48 @@ pub fn parse_ttl(input: &str) -> Result<Duration, CliError> {
         .filter(|&n| n > 0 && n <= 30 * 86400)
         .ok_or_else(invalid)?;
     Ok(Duration::from_secs(seconds))
+}
+
+#[cfg(test)]
+mod capability_witness_tests {
+    use super::*;
+    use crate::db::Db;
+
+    #[test]
+    fn approval_witness_rechecks_ledger_registration_and_revocation() -> Result<(), CliError> {
+        let directory = tempfile::tempdir()?;
+        let passphrase: secrecy::SecretString = "ephemeral test ledger".into();
+        let ledger = Db::open(&directory.path().join("books.db"), Some(&passphrase))?;
+        let owner = Actor::new("owner");
+        init_root(ledger.conn(), &owner)?;
+        let issued = issue(
+            ledger.conn(),
+            &owner,
+            &IssueRequest {
+                name: "reviewer",
+                capabilities: &["ledger/approve".into()],
+                ttl: Duration::from_mins(15),
+                public_key: None,
+                generate_key: true,
+            },
+        )?;
+        let token = issued["token"]
+            .as_str()
+            .ok_or_else(|| CliError::General("missing test token".into()))?;
+        let identity = verify(ledger.conn(), token)?;
+        let actor = Actor::new("reviewer").with_identity(identity.clone());
+
+        assert!(Granted::<Approve>::check(ledger.conn(), &actor).is_ok());
+        let foreign = Db::open_in_memory()?;
+        assert!(matches!(
+            Granted::<Approve>::check(foreign.conn(), &actor),
+            Err(CliError::Unauthorized(_))
+        ));
+        revoke(ledger.conn(), &owner, identity.jti())?;
+        assert!(matches!(
+            Granted::<Approve>::check(ledger.conn(), &actor),
+            Err(CliError::Unauthorized(_))
+        ));
+        Ok(())
+    }
 }
