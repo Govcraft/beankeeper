@@ -1,7 +1,74 @@
 //! Additive monetary presentation shared by CLI envelopes and MCP results.
 
-use beankeeper::types::{Amount, Currency};
+use beankeeper::types::{Currency, Money};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::Value;
+
+/// One currency-bearing amount and its legacy companion field.
+#[derive(Clone, Copy)]
+pub(crate) struct MoneyField {
+    key: &'static str,
+    money: Money,
+}
+
+impl MoneyField {
+    pub(crate) const fn new(key: &'static str, money: Money) -> Self {
+        Self { key, money }
+    }
+
+    pub(crate) const fn minor_units(self) -> i128 {
+        self.money.amount().minor_units()
+    }
+
+    pub(crate) fn decimal(self) -> String {
+        format_money(self.money)
+    }
+}
+
+impl Serialize for MoneyField {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut values = serializer.serialize_map(Some(2))?;
+        values.serialize_entry(self.key, &self.minor_units())?;
+        values.serialize_entry(&DisplayKey(self.key), &self.decimal())?;
+        values.end()
+    }
+}
+
+/// The decimal companion label always derives from the integer key.
+struct DisplayKey(&'static str);
+
+impl Serialize for DisplayKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("{}_display", self.0))
+    }
+}
+
+pub(crate) fn format_money(money: Money) -> String {
+    money
+        .amount()
+        .format_decimal(money.currency().minor_units())
+}
+
+pub(crate) fn format_money_grouped(money: Money) -> String {
+    let decimal = format_money(money);
+    let whole_end = decimal.find('.').unwrap_or(decimal.len());
+    let whole_start = usize::from(decimal.starts_with('-'));
+    let whole = &decimal[whole_start..whole_end];
+    if whole.len() <= 3 {
+        return decimal;
+    }
+
+    let mut grouped = String::with_capacity(decimal.len() + (whole.len() - 1) / 3);
+    grouped.push_str(&decimal[..whole_start]);
+    for (index, digit) in whole.bytes().enumerate() {
+        if index > 0 && (whole.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(char::from(digit));
+    }
+    grouped.push_str(&decimal[whole_end..]);
+    grouped
+}
 
 /// Add `<field>_display` decimal strings to monetary fields, retaining integers.
 ///
@@ -34,7 +101,10 @@ pub fn with_amount_displays(mut value: Value, currency: Option<Currency>) -> Val
                     *value = with_amount_displays(value.take(), currency);
                 }
             }
-            object.extend(displays);
+            // During migration, an explicitly typed companion takes precedence.
+            for (key, value) in displays {
+                object.entry(key).or_insert(value);
+            }
         }
         _ => {}
     }
@@ -46,9 +116,10 @@ fn display(value: &Value, currency: Option<Currency>) -> Value {
         return Value::Array(values.iter().map(|v| display(v, currency)).collect());
     }
     match (value.as_i64(), currency) {
-        (Some(amount), Some(currency)) => {
-            Value::String(Amount::new(i128::from(amount)).format_decimal(currency.minor_units()))
-        }
+        (Some(amount), Some(currency)) => Value::String(format_money(Money::from_minor(
+            i128::from(amount),
+            currency,
+        ))),
         _ => Value::Null,
     }
 }
@@ -142,6 +213,24 @@ fn monetary_field(key: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn flattened_money_uses_its_own_currency_for_the_companion() -> Result<(), serde_json::Error> {
+        #[derive(Serialize)]
+        struct Row {
+            #[serde(flatten)]
+            amount: MoneyField,
+        }
+        let value = serde_json::to_value(Row {
+            amount: MoneyField::new("amount", Money::from_minor(1234, Currency::BHD)),
+        })?;
+        assert_eq!(value, json!({"amount":1234, "amount_display":"1.234"}));
+        assert_eq!(
+            with_amount_displays(value.clone(), Some(Currency::USD)),
+            value
+        );
+        Ok(())
+    }
 
     #[test]
     fn investment_money_uses_security_currency_and_preserves_exact_quantities() {

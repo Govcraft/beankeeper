@@ -1,7 +1,7 @@
 //! Stateless monthly loan calculator and audited payment helper.
 
 use beankeeper::loan::{AmortizationSchedule, AnnualRate, LoanPayment, LoanTerm, LoanTerms};
-use beankeeper::types::{Amount, Currency};
+use beankeeper::types::{Amount, Currency, Money};
 use serde::Serialize;
 
 use crate::cli::{
@@ -9,27 +9,30 @@ use crate::cli::{
     resolve_format,
 };
 use crate::error::CliError;
+use crate::output::amounts::MoneyField;
 use crate::output::json;
 
 #[derive(Serialize)]
 struct PaymentData {
     number: u32,
-    payment: i64,
-    principal: i64,
-    interest: i64,
-    balance: i64,
+    #[serde(flatten)]
+    payment: MoneyField,
+    #[serde(flatten)]
+    principal: MoneyField,
+    #[serde(flatten)]
+    interest: MoneyField,
+    #[serde(flatten)]
+    balance: MoneyField,
 }
 
-impl TryFrom<&LoanPayment> for PaymentData {
-    type Error = CliError;
-
-    fn try_from(row: &LoanPayment) -> Result<Self, Self::Error> {
+impl PaymentData {
+    fn from_payment(row: &LoanPayment, currency: Currency) -> Result<Self, CliError> {
         Ok(Self {
             number: row.number,
-            payment: minor(row.payment)?,
-            principal: minor(row.principal)?,
-            interest: minor(row.interest)?,
-            balance: minor(row.balance)?,
+            payment: MoneyField::new("payment", checked_money(row.payment, currency)?),
+            principal: MoneyField::new("principal", checked_money(row.principal, currency)?),
+            interest: MoneyField::new("interest", checked_money(row.interest, currency)?),
+            balance: MoneyField::new("balance", checked_money(row.balance, currency)?),
         })
     }
 }
@@ -37,12 +40,16 @@ impl TryFrom<&LoanPayment> for PaymentData {
 #[derive(Serialize)]
 struct ScheduleData {
     currency: String,
-    principal: i64,
+    #[serde(flatten)]
+    principal: MoneyField,
     annual_rate: String,
     months: u32,
-    regular_payment: i64,
-    total_interest: i64,
-    total_paid: i64,
+    #[serde(flatten)]
+    regular_payment: MoneyField,
+    #[serde(flatten)]
+    total_interest: MoneyField,
+    #[serde(flatten)]
+    total_paid: MoneyField,
     payments: Vec<PaymentData>,
 }
 
@@ -50,19 +57,20 @@ fn validation(error: impl std::fmt::Display) -> CliError {
     CliError::Validation(error.to_string())
 }
 
-fn minor(amount: Amount) -> Result<i64, CliError> {
+fn checked_money(amount: Amount, currency: Currency) -> Result<Money, CliError> {
     i64::try_from(amount.minor_units()).map_err(|_| {
         CliError::Validation("loan payment or total exceeds the CLI's i64 minor-unit range".into())
-    })
+    })?;
+    Ok(Money::new(amount, currency))
 }
 
 fn calculate(args: &LoanCalculationArgs) -> Result<(Currency, ScheduleData), CliError> {
     let currency = Currency::from_code(&args.currency).map_err(validation)?;
     let principal = super::txn::parse_amount_to_minor(&args.principal, currency)?;
+    let principal = Amount::new(i128::from(principal));
     let rate: AnnualRate = args.rate.parse().map_err(validation)?;
     let term = LoanTerm::new(args.months).map_err(validation)?;
-    let terms =
-        LoanTerms::new(Amount::new(i128::from(principal)), rate, term).map_err(validation)?;
+    let terms = LoanTerms::new(principal, rate, term).map_err(validation)?;
     let AmortizationSchedule {
         regular_payment,
         total_interest,
@@ -74,15 +82,21 @@ fn calculate(args: &LoanCalculationArgs) -> Result<(Currency, ScheduleData), Cli
         currency,
         ScheduleData {
             currency: currency.to_string(),
-            principal,
+            principal: MoneyField::new("principal", Money::new(principal, currency)),
             annual_rate: rate.to_string(),
             months: args.months,
-            regular_payment: minor(regular_payment)?,
-            total_interest: minor(total_interest)?,
-            total_paid: minor(total_paid)?,
+            regular_payment: MoneyField::new(
+                "regular_payment",
+                checked_money(regular_payment, currency)?,
+            ),
+            total_interest: MoneyField::new(
+                "total_interest",
+                checked_money(total_interest, currency)?,
+            ),
+            total_paid: MoneyField::new("total_paid", checked_money(total_paid, currency)?),
             payments: payments
                 .iter()
-                .map(PaymentData::try_from)
+                .map(|row| PaymentData::from_payment(row, currency))
                 .collect::<Result<_, _>>()?,
         },
     ))
@@ -109,11 +123,11 @@ pub fn run(cli: &Cli, command: &LoanCommand) -> Result<(), CliError> {
                 OutputFormat::Table => {
                     println!(
                         "Monthly payment: {} {currency}; total interest: {}; total paid: {}",
-                        display(schedule.regular_payment, currency),
-                        display(schedule.total_interest, currency),
-                        display(schedule.total_paid, currency)
+                        schedule.regular_payment.decimal(),
+                        schedule.total_interest.decimal(),
+                        schedule.total_paid.decimal()
                     );
-                    print_table(&schedule.payments, currency);
+                    print_table(&schedule.payments);
                 }
             }
             Ok(())
@@ -155,18 +169,14 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         (&args.liability, row.principal),
         (&args.interest_account, row.interest),
     ] {
-        if amount > 0 {
-            debit.push(format!("{code}:{}", display(amount, currency)));
+        if amount.minor_units() > 0 {
+            debit.push(format!("{code}:{}", amount.decimal()));
         }
     }
     let post = TxnCommand::Post {
         description: format!("Loan payment {} ({})", row.number, args.reference.trim()),
         debit,
-        credit: vec![format!(
-            "{}:{}",
-            args.paying_account,
-            display(row.payment, currency)
-        )],
+        credit: vec![format!("{}:{}", args.paying_account, row.payment.decimal())],
         metadata: None,
         meta: Vec::new(),
         currency: currency.to_string(),
@@ -207,10 +217,6 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn display(amount: i64, currency: Currency) -> String {
-    Amount::new(i128::from(amount)).format_decimal(currency.minor_units())
-}
-
 fn print_csv(rows: &[PaymentData]) -> Result<(), CliError> {
     let mut writer = csv::WriterBuilder::new()
         .has_headers(false)
@@ -220,23 +226,29 @@ fn print_csv(rows: &[PaymentData]) -> Result<(), CliError> {
         .map_err(|error| CliError::General(error.to_string()))?;
     for row in rows {
         writer
-            .serialize(row)
+            .write_record([
+                row.number.to_string(),
+                row.payment.minor_units().to_string(),
+                row.principal.minor_units().to_string(),
+                row.interest.minor_units().to_string(),
+                row.balance.minor_units().to_string(),
+            ])
             .map_err(|error| CliError::General(error.to_string()))?;
     }
     writer.flush()?;
     Ok(())
 }
 
-fn print_table(rows: &[PaymentData], currency: Currency) {
+fn print_table(rows: &[PaymentData]) {
     let mut table = comfy_table::Table::new();
     table.set_header(["Payment #", "Payment", "Principal", "Interest", "Balance"]);
     for row in rows {
         table.add_row([
             row.number.to_string(),
-            display(row.payment, currency),
-            display(row.principal, currency),
-            display(row.interest, currency),
-            display(row.balance, currency),
+            row.payment.decimal(),
+            row.principal.decimal(),
+            row.interest.decimal(),
+            row.balance.decimal(),
         ]);
     }
     println!("{table}");

@@ -122,6 +122,21 @@ pub struct BudgetRow {
     pub created_at: String,
 }
 
+impl BudgetRow {
+    /// Interpret the stored amount in the row's own currency.
+    ///
+    /// # Errors
+    /// Returns a database error for an unsupported persisted currency.
+    pub(crate) fn money(&self) -> Result<beankeeper::types::Money, CliError> {
+        use beankeeper::types::{Currency, Money};
+
+        let currency = Currency::from_code(&self.currency).map_err(|error| {
+            CliError::Database(format!("invalid stored budget currency: {error}"))
+        })?;
+        Ok(Money::from_minor(i128::from(self.amount), currency))
+    }
+}
+
 /// A computed row for the budget-variance report.
 #[derive(Debug, Clone)]
 pub struct BudgetVarianceRow {
@@ -131,7 +146,7 @@ pub struct BudgetVarianceRow {
     pub budget_amount: i64,
     pub actual_amount: i64,
     pub variance_amount: i64,
-    pub variance_percent: Option<f64>,
+    pub variance_percent: Option<crate::percent::Percent>,
     pub favorable: bool,
 }
 

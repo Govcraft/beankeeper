@@ -865,7 +865,8 @@ struct BudgetJson {
     currency: String,
     year: i32,
     month: i32,
-    amount: i64,
+    #[serde(flatten)]
+    amount: super::amounts::MoneyField,
     #[serde(skip_serializing_if = "Option::is_none")]
     notes: Option<String>,
     created_at: String,
@@ -875,21 +876,23 @@ struct BudgetJson {
 ///
 /// # Errors
 ///
-/// Returns [`CliError`] on serialisation failure.
+/// Returns [`CliError`] on invalid stored currency or serialisation failure.
 pub fn render_budgets(rows: &[crate::db::BudgetRow], meta: Meta) -> Result<String, CliError> {
-    let json_rows: Vec<BudgetJson> = rows
+    let json_rows = rows
         .iter()
-        .map(|r| BudgetJson {
-            id: r.id,
-            account_code: r.account_code.clone(),
-            currency: r.currency.clone(),
-            year: r.year,
-            month: r.month,
-            amount: r.amount,
-            notes: r.notes.clone(),
-            created_at: r.created_at.clone(),
+        .map(|row| {
+            Ok(BudgetJson {
+                id: row.id,
+                account_code: row.account_code.clone(),
+                currency: row.currency.clone(),
+                year: row.year,
+                month: row.month,
+                amount: super::amounts::MoneyField::new("amount", row.money()?),
+                notes: row.notes.clone(),
+                created_at: row.created_at.clone(),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, CliError>>()?;
 
     envelope_ok(meta, json_rows)
 }
@@ -950,7 +953,7 @@ pub fn render_budget_variance(
                 budget: r.budget_amount,
                 actual: r.actual_amount,
                 variance: r.variance_amount,
-                variance_percent: r.variance_percent,
+                variance_percent: r.variance_percent.and_then(|percent| percent.to_number(1)),
                 favorable: r.favorable,
             }
         })
