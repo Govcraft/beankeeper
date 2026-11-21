@@ -1,6 +1,7 @@
 use std::io::Write;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{AccountType, Currency};
+use chrono::{Month, NaiveDate};
 use serde::Serialize;
 
 use crate::cli::{AccountTypeArg, Cli, OutputFormat, ReportCommand, resolve_format};
@@ -11,6 +12,8 @@ use crate::error::CliError;
 use crate::output;
 use crate::output::chart::{self, Chart, WithChart};
 use crate::output::json::{Envelope, Meta, serialize_payload};
+
+pub use super::report_dates::DateRange;
 
 /// Run a `bk report` subcommand.
 ///
@@ -451,80 +454,76 @@ fn run_income_statement(
     let StatementOptions {
         from, to, currency, ..
     } = *opts;
-    let dates =
-        super::report_dates::DateRange::resolve(from, to, chrono::Local::now().date_naive())?;
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let stmt = compute_income_statement(db, company, dates, currency)?;
-
-    let minor_units = currency.minor_units();
+    let dates = DateRange::resolve(from, to, chrono::Local::now().date_naive())?;
+    let stmt = db::audit::atomically(db.conn(), || {
+        let currency = resolve_report_currency(db.conn(), company, currency)?;
+        compute_income_statement(db, company, dates, currency)
+    })?;
 
     match output.format {
         OutputFormat::Table => {
             let title = build_period_title(
                 "Income Statement",
-                currency.code(),
-                stmt.from.as_deref(),
-                stmt.to.as_deref(),
+                stmt.currency().code(),
+                Some(&stmt.dates().from().to_string()),
+                Some(&stmt.dates().to().to_string()),
             );
-            let rendered = output::statements::render_income_statement_table(
-                &stmt,
-                &title,
-                minor_units,
-                output.use_color,
-            );
+            let rendered =
+                output::statements::render_income_statement_table(&stmt, &title, output.use_color);
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = cli
                 .meta("report.income-statement", Some(company))
-                .with_currency(currency);
+                .with_currency(stmt.currency());
             let chart = chart::requested(cli, || {
-                chart::income_statement(company, currency, dates, &stmt, cli.output.chart_all)
+                chart::income_statement(company, &stmt, cli.output.chart_all)
             })?;
-            output.write_json(
-                meta,
-                output::statements::income_statement_json(&stmt),
-                chart,
-            )?;
+            output.write_json(meta, &stmt, chart)?;
         }
         OutputFormat::Csv => {
             let rendered = output::statements::render_income_statement_csv(&stmt)?;
             write!(output.writer, "{rendered}")?;
         }
     }
-
     if !cli.verbosity.quiet {
         eprintln!("[ok] income statement generated");
     }
-
     Ok(())
 }
 
-fn compute_income_statement(
+/// Compute an income statement on an already-open ledger using explicit scope.
+///
+/// # Errors
+/// Returns [`CliError`] for an unknown company, database errors or overflow.
+pub fn compute_income_statement(
     db: &Db,
     company: &str,
-    dates: super::report_dates::DateRange,
+    dates: DateRange,
     currency: Currency,
 ) -> Result<output::statements::IncomeStatement, CliError> {
-    use super::report_periods::{MultiReportKind, fetch_window_rows};
-
-    let mut revenue = fetch_window_rows(
-        db.conn(),
-        company,
-        MultiReportKind::IncomeStatement,
-        None,
-        currency.code(),
-        (dates.from(), dates.to()),
-    )?;
-    // The shared query returns revenues followed by expenses.
-    let first_expense = revenue.partition_point(|row| row.account_type == "revenue");
-    let expenses = revenue.split_off(first_expense);
-    Ok(output::statements::build_income_statement(
-        Some(&dates.from().to_string()),
-        Some(&dates.to().to_string()),
-        &revenue,
-        &expenses,
-    ))
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        db::companies::get_company(conn, company)?;
+        let from = dates.from().to_string();
+        let to = dates.to().to_string();
+        let load = |kind: AccountType| {
+            db::compute_trial_balance(
+                conn,
+                company,
+                Some(kind.code()),
+                Some(&from),
+                Some(&to),
+                Some(currency.code()),
+            )
+        };
+        output::statements::build_income_statement(
+            dates,
+            currency,
+            load(AccountType::Revenue)?,
+            load(AccountType::Expense)?,
+        )
+    })
 }
 
 /// Execute the `report balance-sheet` subcommand.
@@ -541,59 +540,78 @@ fn run_balance_sheet(
     currency: Option<&str>,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let code = Some(currency.code());
-    let asset_balances =
-        db::compute_trial_balance(db.conn(), company, Some("asset"), None, to, code)?;
-    let liability_balances =
-        db::compute_trial_balance(db.conn(), company, Some("liability"), None, to, code)?;
-    let equity_balances =
-        db::compute_trial_balance(db.conn(), company, Some("equity"), None, to, code)?;
-    let revenue_balances =
-        db::compute_trial_balance(db.conn(), company, Some("revenue"), None, to, code)?;
-    let expense_balances =
-        db::compute_trial_balance(db.conn(), company, Some("expense"), None, to, code)?;
-
-    let sheet = output::statements::build_balance_sheet(&output::statements::BalanceSheetInputs {
-        as_of: to,
-        assets: &asset_balances,
-        liabilities: &liability_balances,
-        equity: &equity_balances,
-        revenue: &revenue_balances,
-        expenses: &expense_balances,
-    });
-
-    let minor_units = currency.minor_units();
+    let as_of = to
+        .map(|raw| super::report_dates::parse_date("--to", raw))
+        .transpose()?
+        .unwrap_or_else(|| chrono::Local::now().date_naive());
+    let sheet = db::audit::atomically(db.conn(), || {
+        let currency = resolve_report_currency(db.conn(), company, currency)?;
+        compute_balance_sheet(db, company, as_of, currency)
+    })?;
 
     match output.format {
         OutputFormat::Table => {
-            let title = build_period_title("Balance Sheet", currency.code(), None, to);
-            let rendered = output::statements::render_balance_sheet_table(
-                &sheet,
-                &title,
-                minor_units,
-                output.use_color,
+            let title = build_period_title(
+                "Balance Sheet",
+                sheet.currency().code(),
+                None,
+                Some(&sheet.as_of().to_string()),
             );
+            let rendered =
+                output::statements::render_balance_sheet_table(&sheet, &title, output.use_color);
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = cli
                 .meta("report.balance-sheet", Some(company))
-                .with_currency(currency);
-            let rendered = output::statements::render_balance_sheet_json(&sheet, meta)?;
-            writeln!(output.writer, "{rendered}")?;
+                .with_currency(sheet.currency());
+            output.write_json(meta, &sheet, None)?;
         }
         OutputFormat::Csv => {
             let rendered = output::statements::render_balance_sheet_csv(&sheet)?;
             write!(output.writer, "{rendered}")?;
         }
     }
-
     if !cli.verbosity.quiet {
         eprintln!("[ok] balance sheet generated");
     }
-
     Ok(())
+}
+
+/// Compute an as-of balance sheet on an already-open ledger using explicit scope.
+///
+/// # Errors
+/// Returns [`CliError`] for an unknown company, database errors or overflow.
+pub fn compute_balance_sheet(
+    db: &Db,
+    company: &str,
+    as_of: NaiveDate,
+    currency: Currency,
+) -> Result<output::statements::BalanceSheet, CliError> {
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        db::companies::get_company(conn, company)?;
+        let to = as_of.to_string();
+        let load = |kind: AccountType| {
+            db::compute_trial_balance(
+                conn,
+                company,
+                Some(kind.code()),
+                None,
+                Some(&to),
+                Some(currency.code()),
+            )
+        };
+        output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
+            as_of,
+            currency,
+            assets: load(AccountType::Asset)?,
+            liabilities: load(AccountType::Liability)?,
+            equity: load(AccountType::Equity)?,
+            revenue: load(AccountType::Revenue)?,
+            expenses: load(AccountType::Expense)?,
+        })
+    })
 }
 
 /// Replace a renderer's plain heading with its effective date window.
@@ -691,104 +709,86 @@ fn run_budget_variance(
         currency,
         include_unbudgeted,
     } = *opts;
-    // Resolve month range
-    let (from_month, to_month) = if let Some(m) = month {
-        if !(1..=12).contains(&m) {
-            return Err(CliError::Validation(format!("month must be 1-12, got {m}")));
-        }
-        (m, m)
-    } else {
-        let f = from.unwrap_or(1);
-        let t = to.unwrap_or(12);
-        if !(1..=12).contains(&f) || !(1..=12).contains(&t) {
-            return Err(CliError::Validation(
-                "from/to months must be 1-12".to_string(),
-            ));
-        }
-        if f > t {
-            return Err(CliError::Validation(format!(
-                "from month ({f}) must be <= to month ({t})"
-            )));
-        }
-        (f, t)
-    };
-
-    let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
+    let months = budget_months(year, month, from, to)?;
+    let account_type = account_type.copied().map(AccountTypeArg::to_library_type);
     let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let currency_code = currency.code();
-    let minor_units = currency.minor_units();
-
-    let rows = db::compute_budget_variance(
+    let coverage = if include_unbudgeted {
+        db::BudgetCoverage::IncludeUnbudgeted
+    } else {
+        db::BudgetCoverage::Budgeted
+    };
+    let report = db::compute_budget_variance(
         db.conn(),
         &db::BudgetVarianceParams {
             company_slug: company,
-            currency: currency_code,
-            year,
-            from_month,
-            to_month,
-            account_type: type_filter.as_deref(),
-            include_unbudgeted,
+            currency,
+            months,
+            account_type,
+            coverage,
         },
     )?;
 
     match output.format {
         OutputFormat::Table => {
-            let title = build_variance_title(currency_code, year, from_month, to_month);
-            let rendered =
-                output::table::render_budget_variance(&rows, &title, minor_units, output.use_color);
+            let title = build_variance_title(&report);
+            let rendered = output::table::render_budget_variance(&report, &title, output.use_color);
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = cli
                 .meta("report.budget-variance", Some(company))
-                .with_currency(currency);
-            let rendered = output::json::render_budget_variance(
-                &rows,
-                year,
-                from_month,
-                to_month,
-                currency_code,
-                meta,
-            )?;
-            writeln!(output.writer, "{rendered}")?;
+                .with_currency(report.currency());
+            output.write_json(meta, &report, None)?;
         }
         OutputFormat::Csv => {
-            let rendered = output::csv::render_budget_variance(&rows)?;
+            let rendered = output::csv::render_budget_variance(&report)?;
             write!(output.writer, "{rendered}")?;
         }
     }
 
     if !cli.verbosity.quiet {
-        eprintln!("[ok] budget variance generated ({} accounts)", rows.len());
+        eprintln!(
+            "[ok] budget variance generated ({} accounts)",
+            report.rows().len()
+        );
     }
-
     Ok(())
 }
 
-/// Return the three-letter English name for a 1-based month number.
-///
-/// Out-of-range inputs (outside `1..=12`) fall back to `"?"` rather than
-/// panicking on an out-of-bounds index or a sign-losing cast.
-fn month_name(month: i32) -> &'static str {
-    static MONTH_NAMES: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-
-    usize::try_from(month - 1)
-        .ok()
-        .and_then(|i| MONTH_NAMES.get(i))
-        .copied()
-        .unwrap_or("?")
+fn budget_months(
+    year: i32,
+    month: Option<i32>,
+    from: Option<i32>,
+    to: Option<i32>,
+) -> Result<db::BudgetMonths, CliError> {
+    let parse = |month: i32| {
+        u8::try_from(month)
+            .ok()
+            .and_then(|month| Month::try_from(month).ok())
+    };
+    if let Some(number) = month {
+        let month = parse(number)
+            .ok_or_else(|| CliError::Validation(format!("month must be 1-12, got {number}")))?;
+        return db::BudgetMonths::new(year, month, month);
+    }
+    let range_error = || CliError::Validation("from/to months must be 1-12".into());
+    let from = parse(from.unwrap_or(1)).ok_or_else(range_error)?;
+    let to = parse(to.unwrap_or(12)).ok_or_else(range_error)?;
+    db::BudgetMonths::new(year, from, to)
 }
 
 /// Build a title for the budget-variance report.
-fn build_variance_title(currency: &str, year: i32, from_month: i32, to_month: i32) -> String {
-    let from_name = month_name(from_month);
-    let to_name = month_name(to_month);
+fn build_variance_title(report: &db::BudgetVarianceReport) -> String {
+    let months = report.months();
+    let year = months.year();
+    let currency = report.currency();
+    let (from, to) = months.dates();
+    let from_name = from.format("%b");
+    let to_name = to.format("%b");
 
-    if from_month == to_month {
+    if months.from() == months.to() {
         format!("Budget vs. Actual -- {year} {from_name} ({currency})")
-    } else if from_month == 1 && to_month == 12 {
+    } else if months.from() == Month::January && months.to() == Month::December {
         format!("Budget vs. Actual -- {year} ({currency})")
     } else {
         format!("Budget vs. Actual -- {year} {from_name}-{to_name} ({currency})")

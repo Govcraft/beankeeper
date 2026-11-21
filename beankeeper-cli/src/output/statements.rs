@@ -10,17 +10,22 @@
 //! to the as-of date. Beankeeper has no closing entries, so without this line
 //! any revenue or expense activity would leave the sheet unbalanced.
 //!
-//! The statement is built once ([`build_income_statement`],
-//! [`build_balance_sheet`]) and then rendered as a table, JSON, or CSV so all
-//! three formats carry the same structure.
+//! Compute the statements through [`compute_income_statement`] and
+//! [`compute_balance_sheet`], then render the same typed result as a table,
+//! JSON, or CSV.
+//!
+//! [`compute_income_statement`]: crate::commands::report::compute_income_statement
+//! [`compute_balance_sheet`]: crate::commands::report::compute_balance_sheet
 
+use beankeeper::types::{AccountType, Amount, Currency, DebitOrCredit, Money};
+use chrono::NaiveDate;
 use comfy_table::{Cell, CellAlignment};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
+use super::amounts::{MoneyField, format_money_grouped};
 use super::json::{Meta, envelope_ok};
-use super::table::{
-    bold_style, cyan_style, format_amount, green_style, new_table, red_bold_style, styled,
-};
+use super::table::{bold_style, cyan_style, green_style, new_table, red_bold_style, styled};
+use crate::commands::report::DateRange;
 use crate::db::BalanceRow;
 use crate::error::CliError;
 
@@ -32,227 +37,415 @@ pub const COMPUTED_EARNINGS_NAME: &str = "Retained Earnings (computed)";
 // ---------------------------------------------------------------------------
 
 /// A single line of a statement section.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct StatementLine {
-    /// Account code, or `None` for a computed line.
-    pub code: Option<String>,
-    /// Account (or computed line) name.
-    pub name: String,
-    /// Lowercase account type (e.g. `"asset"`).
-    #[serde(rename = "type")]
-    pub account_type: String,
-    /// Signed balance on the account's normal side, in minor units.
-    pub amount: i64,
-    /// `true` for lines derived by the report rather than read from an account.
-    pub computed: bool,
+    /// Account code, or `None` for the computed earnings line.
+    code: Option<String>,
+    /// Account or computed line name.
+    name: String,
+    /// Type of the represented account.
+    account_type: AccountType,
+    /// Signed balance on the normal side.
+    amount: Money,
 }
 
-/// A titled group of statement lines with a subtotal.
-#[derive(Debug, Clone, Serialize)]
+impl StatementLine {
+    /// Account code for a ledger row.
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
+    }
+
+    /// Account or computed line name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Type of the represented account.
+    #[must_use]
+    pub const fn account_type(&self) -> AccountType {
+        self.account_type
+    }
+
+    /// Signed account balance in the report currency.
+    #[must_use]
+    pub const fn amount(&self) -> Money {
+        self.amount
+    }
+
+    /// Whether the line was computed by the report.
+    #[must_use]
+    pub const fn is_computed(&self) -> bool {
+        self.code.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SectionKind {
+    Assets,
+    Liabilities,
+    Equity,
+    Revenue,
+    Expenses,
+}
+
+impl SectionKind {
+    const fn account_type(self) -> AccountType {
+        match self {
+            Self::Assets => AccountType::Asset,
+            Self::Liabilities => AccountType::Liability,
+            Self::Equity => AccountType::Equity,
+            Self::Revenue => AccountType::Revenue,
+            Self::Expenses => AccountType::Expense,
+        }
+    }
+
+    const fn labels(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Assets => ("assets", "Assets"),
+            Self::Liabilities => ("liabilities", "Liabilities"),
+            Self::Equity => ("equity", "Equity"),
+            Self::Revenue => ("revenue", "Revenue"),
+            Self::Expenses => ("expenses", "Expenses"),
+        }
+    }
+}
+
+/// Accounts and subtotal for one statement section.
+#[derive(Debug, Clone)]
 pub struct StatementSection {
-    /// Stable machine key (`"revenue"`, `"expenses"`, `"assets"`, ...).
-    pub key: &'static str,
-    /// Human-readable heading.
-    pub title: &'static str,
-    /// Normal-balance side of the accounts in this section.
-    pub normal_balance: &'static str,
+    kind: SectionKind,
     /// Lines in this section.
-    pub accounts: Vec<StatementLine>,
-    /// Sum of `amount` over all lines.
-    pub total: i64,
+    accounts: Vec<StatementLine>,
+    /// Subtotal in the statement currency.
+    total: Money,
 }
 
 impl StatementSection {
     fn new(
-        key: &'static str,
-        title: &'static str,
-        normal_balance: &'static str,
+        kind: SectionKind,
+        currency: Currency,
         accounts: Vec<StatementLine>,
-    ) -> Self {
-        let total = accounts
-            .iter()
-            .fold(0i64, |acc, l| acc.saturating_add(l.amount));
-        Self {
-            key,
-            title,
-            normal_balance,
+    ) -> Result<Self, CliError> {
+        let total = sum_amounts(accounts.iter().map(|line| line.amount.amount()))?;
+        Ok(Self {
+            kind,
             accounts,
-            total,
-        }
+            total: report_money(total, currency)?,
+        })
     }
 
-    /// Label used for this section's subtotal row.
+    fn from_rows(
+        kind: SectionKind,
+        currency: Currency,
+        rows: Vec<BalanceRow>,
+    ) -> Result<Self, CliError> {
+        Self::new(
+            kind,
+            currency,
+            account_lines(kind.account_type(), currency, rows)?,
+        )
+    }
+
+    /// Account type represented by this section.
+    #[must_use]
+    pub const fn kind(&self) -> AccountType {
+        self.kind.account_type()
+    }
+
+    /// Stable key used in JSON and CSV.
+    #[must_use]
+    pub const fn key(&self) -> &'static str {
+        self.kind.labels().0
+    }
+
+    /// Heading suitable for presenting the section.
+    #[must_use]
+    pub const fn title(&self) -> &'static str {
+        self.kind.labels().1
+    }
+
+    /// Ledgers and computed lines in this section.
+    #[must_use]
+    pub fn accounts(&self) -> &[StatementLine] {
+        &self.accounts
+    }
+
+    /// Sum of this section's lines.
+    #[must_use]
+    pub const fn total(&self) -> Money {
+        self.total
+    }
+
+    /// Direction that increases the section's balance.
+    #[must_use]
+    pub const fn normal_balance(&self) -> DebitOrCredit {
+        self.kind().normal_balance()
+    }
+
     fn total_label(&self) -> String {
-        format!("Total {}", self.title)
+        format!("Total {}", self.title())
     }
 }
 
-/// An income statement for a period.
+/// An income statement for one calendar range and currency.
 #[derive(Debug, Clone)]
 pub struct IncomeStatement {
-    /// Inclusive start date of the period, if any.
-    pub from: Option<String>,
-    /// Inclusive end date of the period, if any.
-    pub to: Option<String>,
-    /// Revenue accounts (credit-normal).
-    pub revenue: StatementSection,
-    /// Expense accounts (debit-normal).
-    pub expenses: StatementSection,
-    /// Total revenue minus total expenses; negative means a net loss.
-    pub net_income: i64,
+    dates: DateRange,
+    currency: Currency,
+    /// Revenue accounts on their normal side.
+    revenue: StatementSection,
+    /// Expense accounts on their normal side.
+    expenses: StatementSection,
+    /// Total revenue minus total expenses, negative for a net loss.
+    net_income: Money,
 }
 
-/// A balance sheet as of a date.
+impl IncomeStatement {
+    /// Revenue accounts on their normal side.
+    #[must_use]
+    pub const fn revenue(&self) -> &StatementSection {
+        &self.revenue
+    }
+
+    /// Expense accounts on their normal side.
+    #[must_use]
+    pub const fn expenses(&self) -> &StatementSection {
+        &self.expenses
+    }
+
+    /// Total revenue minus total expenses.
+    #[must_use]
+    pub const fn net_income(&self) -> Money {
+        self.net_income
+    }
+
+    /// Inclusive bounds of the statement.
+    #[must_use]
+    pub const fn dates(&self) -> DateRange {
+        self.dates
+    }
+
+    /// Currency of the statement and its lines.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.currency
+    }
+}
+
+/// A balance sheet as of one date and in one currency.
 #[derive(Debug, Clone)]
 pub struct BalanceSheet {
-    /// Inclusive as-of date, if any.
-    pub as_of: Option<String>,
+    /// Latest date included.
+    as_of: NaiveDate,
+    currency: Currency,
     /// Asset accounts.
-    pub assets: StatementSection,
+    assets: StatementSection,
     /// Liability accounts.
-    pub liabilities: StatementSection,
-    /// Equity accounts plus the computed retained-earnings line.
-    pub equity: StatementSection,
-    /// Cumulative revenue minus expenses up to `as_of`.
-    pub computed_earnings: i64,
+    liabilities: StatementSection,
+    /// Equity accounts and the computed retained earnings line.
+    equity: StatementSection,
+    /// Cumulative revenue minus expenses through the report date.
+    computed_earnings: Money,
     /// Total liabilities plus total equity.
-    pub total_liabilities_and_equity: i64,
+    total_liabilities_and_equity: Money,
+    difference: Money,
 }
 
 impl BalanceSheet {
-    /// Total assets minus total liabilities and equity (zero when balanced).
+    /// Latest date included.
     #[must_use]
-    pub fn difference(&self) -> i64 {
-        self.assets
-            .total
-            .saturating_sub(self.total_liabilities_and_equity)
+    pub const fn as_of(&self) -> NaiveDate {
+        self.as_of
+    }
+
+    /// Asset accounts.
+    #[must_use]
+    pub const fn assets(&self) -> &StatementSection {
+        &self.assets
+    }
+
+    /// Liability accounts.
+    #[must_use]
+    pub const fn liabilities(&self) -> &StatementSection {
+        &self.liabilities
+    }
+
+    /// Equity accounts and the computed retained earnings line.
+    #[must_use]
+    pub const fn equity(&self) -> &StatementSection {
+        &self.equity
+    }
+
+    /// Cumulative revenue less expenses.
+    #[must_use]
+    pub const fn computed_earnings(&self) -> Money {
+        self.computed_earnings
+    }
+
+    /// Total liabilities plus total equity.
+    #[must_use]
+    pub const fn total_liabilities_and_equity(&self) -> Money {
+        self.total_liabilities_and_equity
+    }
+
+    /// Currency of the statement and its lines.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.currency
+    }
+
+    /// Total assets minus total liabilities and equity.
+    #[must_use]
+    pub const fn difference(&self) -> Money {
+        self.difference
     }
 
     /// Whether Assets = Liabilities + Equity.
     #[must_use]
     pub fn balanced(&self) -> bool {
-        self.difference() == 0
+        self.difference.amount().minor_units() == 0
     }
 }
 
-/// Normal-balance side for a lowercase account type.
-fn normal_side(account_type: &str) -> &'static str {
-    match account_type {
-        "asset" | "expense" => "debit",
-        _ => "credit",
-    }
+fn overflow() -> CliError {
+    CliError::Validation("financial statement exceeds the supported minor-unit range".into())
 }
 
-/// Signed balance of a row on its account type's normal side.
-fn signed_amount(row: &BalanceRow) -> i64 {
-    if normal_side(&row.account_type) == "debit" {
-        row.debit_total.saturating_sub(row.credit_total)
+fn report_money(amount: Amount, currency: Currency) -> Result<Money, CliError> {
+    i64::try_from(amount.minor_units()).map_err(|_| overflow())?;
+    Ok(Money::new(amount, currency))
+}
+
+fn signed_amount(kind: AccountType, row: &BalanceRow) -> Amount {
+    let debit = i128::from(row.debit_total);
+    let credit = i128::from(row.credit_total);
+    Amount::new(if kind.is_debit_normal() {
+        debit - credit
     } else {
-        row.credit_total.saturating_sub(row.debit_total)
-    }
+        credit - debit
+    })
 }
 
-fn account_lines(rows: &[BalanceRow]) -> Vec<StatementLine> {
-    rows.iter()
-        .map(|r| StatementLine {
-            code: Some(r.code.clone()),
-            name: r.name.clone(),
-            account_type: r.account_type.clone(),
-            amount: signed_amount(r),
-            computed: false,
+fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<Amount, CliError> {
+    amounts
+        .into_iter()
+        .try_fold(Amount::new(0), |total, amount| {
+            total.checked_add(amount).ok_or_else(overflow)
+        })
+}
+
+fn account_lines(
+    kind: AccountType,
+    currency: Currency,
+    rows: Vec<BalanceRow>,
+) -> Result<Vec<StatementLine>, CliError> {
+    rows.into_iter()
+        .map(|row| {
+            let amount = report_money(signed_amount(kind, &row), currency)?;
+            Ok(StatementLine {
+                code: Some(row.code),
+                name: row.name,
+                account_type: kind,
+                amount,
+            })
         })
         .collect()
 }
 
-fn sum_signed(rows: &[BalanceRow]) -> i64 {
-    rows.iter()
-        .fold(0i64, |acc, r| acc.saturating_add(signed_amount(r)))
-}
-
-/// Build an income statement from revenue and expense balances for a period.
-#[must_use]
-pub fn build_income_statement(
-    from: Option<&str>,
-    to: Option<&str>,
-    revenue: &[BalanceRow],
-    expenses: &[BalanceRow],
-) -> IncomeStatement {
-    let revenue = StatementSection::new("revenue", "Revenue", "credit", account_lines(revenue));
-    let expenses = StatementSection::new("expenses", "Expenses", "debit", account_lines(expenses));
-    let net_income = revenue.total.saturating_sub(expenses.total);
-    IncomeStatement {
-        from: from.map(str::to_string),
-        to: to.map(str::to_string),
+pub(crate) fn build_income_statement(
+    dates: DateRange,
+    currency: Currency,
+    revenue: Vec<BalanceRow>,
+    expenses: Vec<BalanceRow>,
+) -> Result<IncomeStatement, CliError> {
+    let revenue = StatementSection::from_rows(SectionKind::Revenue, currency, revenue)?;
+    let expenses = StatementSection::from_rows(SectionKind::Expenses, currency, expenses)?;
+    let net_income = revenue
+        .total
+        .amount()
+        .checked_sub(expenses.total.amount())
+        .ok_or_else(overflow)?;
+    Ok(IncomeStatement {
+        dates,
+        currency,
         revenue,
         expenses,
-        net_income,
-    }
+        net_income: report_money(net_income, currency)?,
+    })
 }
 
-/// Inputs for [`build_balance_sheet`]: cumulative balances up to the as-of date.
-pub struct BalanceSheetInputs<'a> {
-    /// Inclusive as-of date, if any.
-    pub as_of: Option<&'a str>,
-    /// Asset account balances.
-    pub assets: &'a [BalanceRow],
-    /// Liability account balances.
-    pub liabilities: &'a [BalanceRow],
-    /// Equity account balances.
-    pub equity: &'a [BalanceRow],
-    /// Revenue account balances (used for computed retained earnings).
-    pub revenue: &'a [BalanceRow],
-    /// Expense account balances (used for computed retained earnings).
-    pub expenses: &'a [BalanceRow],
+pub(crate) struct BalanceSheetInputs {
+    pub as_of: NaiveDate,
+    pub currency: Currency,
+    pub assets: Vec<BalanceRow>,
+    pub liabilities: Vec<BalanceRow>,
+    pub equity: Vec<BalanceRow>,
+    pub revenue: Vec<BalanceRow>,
+    pub expenses: Vec<BalanceRow>,
 }
 
-/// Build a balance sheet, adding a computed retained-earnings equity line equal
-/// to cumulative revenue minus expenses.
-#[must_use]
-pub fn build_balance_sheet(inputs: &BalanceSheetInputs<'_>) -> BalanceSheet {
-    let computed_earnings = sum_signed(inputs.revenue).saturating_sub(sum_signed(inputs.expenses));
+pub(crate) fn build_balance_sheet(inputs: BalanceSheetInputs) -> Result<BalanceSheet, CliError> {
+    let currency = inputs.currency;
+    let computed_earnings = sum_amounts(
+        inputs
+            .revenue
+            .iter()
+            .map(|row| signed_amount(AccountType::Revenue, row)),
+    )?
+    .checked_sub(sum_amounts(
+        inputs
+            .expenses
+            .iter()
+            .map(|row| signed_amount(AccountType::Expense, row)),
+    )?)
+    .ok_or_else(overflow)?;
+    let computed_earnings = report_money(computed_earnings, currency)?;
 
-    let mut equity_lines = account_lines(inputs.equity);
+    let mut equity_lines = account_lines(AccountType::Equity, currency, inputs.equity)?;
     equity_lines.push(StatementLine {
         code: None,
-        name: COMPUTED_EARNINGS_NAME.to_string(),
-        account_type: "equity".to_string(),
+        name: COMPUTED_EARNINGS_NAME.into(),
+        account_type: AccountType::Equity,
         amount: computed_earnings,
-        computed: true,
     });
 
-    let assets = StatementSection::new("assets", "Assets", "debit", account_lines(inputs.assets));
-    let liabilities = StatementSection::new(
-        "liabilities",
-        "Liabilities",
-        "credit",
-        account_lines(inputs.liabilities),
-    );
-    let equity = StatementSection::new("equity", "Equity", "credit", equity_lines);
-    let total_liabilities_and_equity = liabilities.total.saturating_add(equity.total);
+    let assets = StatementSection::from_rows(SectionKind::Assets, currency, inputs.assets)?;
+    let liabilities =
+        StatementSection::from_rows(SectionKind::Liabilities, currency, inputs.liabilities)?;
+    let equity = StatementSection::new(SectionKind::Equity, currency, equity_lines)?;
+    let total_liabilities_and_equity = liabilities
+        .total
+        .amount()
+        .checked_add(equity.total.amount())
+        .ok_or_else(overflow)?;
+    let difference = assets
+        .total
+        .amount()
+        .checked_sub(total_liabilities_and_equity)
+        .ok_or_else(overflow)?;
 
-    BalanceSheet {
-        as_of: inputs.as_of.map(str::to_string),
+    Ok(BalanceSheet {
+        as_of: inputs.as_of,
+        currency,
         assets,
         liabilities,
         equity,
         computed_earnings,
-        total_liabilities_and_equity,
-    }
+        total_liabilities_and_equity: report_money(total_liabilities_and_equity, currency)?,
+        difference: report_money(difference, currency)?,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Table
 // ---------------------------------------------------------------------------
 
-fn push_section_rows(
-    table: &mut comfy_table::Table,
-    section: &StatementSection,
-    minor_units: u8,
-    use_color: bool,
-) {
+fn push_section_rows(table: &mut comfy_table::Table, section: &StatementSection, use_color: bool) {
     table.add_row(vec![
         Cell::new(""),
-        Cell::new(styled(section.title, bold_style(), use_color)),
+        Cell::new(styled(section.title(), bold_style(), use_color)),
         Cell::new(""),
     ]);
     for line in &section.accounts {
@@ -260,30 +453,18 @@ fn push_section_rows(
         table.add_row(vec![
             Cell::new(styled(code, cyan_style(), use_color)),
             Cell::new(format!("  {}", line.name)),
-            Cell::new(format_amount(line.amount, minor_units)).set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(line.amount)).set_alignment(CellAlignment::Right),
         ]);
     }
-    push_total_row(
-        table,
-        &section.total_label(),
-        section.total,
-        minor_units,
-        use_color,
-    );
+    push_total_row(table, &section.total_label(), section.total, use_color);
 }
 
-fn push_total_row(
-    table: &mut comfy_table::Table,
-    label: &str,
-    amount: i64,
-    minor_units: u8,
-    use_color: bool,
-) {
+fn push_total_row(table: &mut comfy_table::Table, label: &str, amount: Money, use_color: bool) {
     table.add_row(vec![
         Cell::new(""),
         Cell::new(styled(label, bold_style(), use_color)),
         Cell::new(styled(
-            &format_amount(amount, minor_units),
+            &format_money_grouped(amount),
             bold_style(),
             use_color,
         ))
@@ -306,15 +487,15 @@ fn new_statement_table(use_color: bool) -> comfy_table::Table {
 pub fn render_income_statement_table(
     stmt: &IncomeStatement,
     title: &str,
-    minor_units: u8,
     use_color: bool,
 ) -> String {
     let mut table = new_statement_table(use_color);
-    push_section_rows(&mut table, &stmt.revenue, minor_units, use_color);
-    push_section_rows(&mut table, &stmt.expenses, minor_units, use_color);
+    push_section_rows(&mut table, &stmt.revenue, use_color);
+    push_section_rows(&mut table, &stmt.expenses, use_color);
 
-    let net_str = format_amount(stmt.net_income.saturating_abs(), minor_units);
-    let bottom = if stmt.net_income >= 0 {
+    let net = stmt.net_income.amount().minor_units();
+    let net_str = format_money_grouped(Money::from_minor(net.abs(), stmt.currency()));
+    let bottom = if net >= 0 {
         styled(&format!("Net Income: {net_str}"), green_style(), use_color)
     } else {
         styled(&format!("Net Loss: {net_str}"), red_bold_style(), use_color)
@@ -332,21 +513,15 @@ pub fn render_income_statement_table(
 
 /// Render a balance sheet as a sectioned table followed by the balance check.
 #[must_use]
-pub fn render_balance_sheet_table(
-    sheet: &BalanceSheet,
-    title: &str,
-    minor_units: u8,
-    use_color: bool,
-) -> String {
+pub fn render_balance_sheet_table(sheet: &BalanceSheet, title: &str, use_color: bool) -> String {
     let mut table = new_statement_table(use_color);
-    push_section_rows(&mut table, &sheet.assets, minor_units, use_color);
-    push_section_rows(&mut table, &sheet.liabilities, minor_units, use_color);
-    push_section_rows(&mut table, &sheet.equity, minor_units, use_color);
+    push_section_rows(&mut table, &sheet.assets, use_color);
+    push_section_rows(&mut table, &sheet.liabilities, use_color);
+    push_section_rows(&mut table, &sheet.equity, use_color);
     push_total_row(
         &mut table,
         "Total Liabilities + Equity",
         sheet.total_liabilities_and_equity,
-        minor_units,
         use_color,
     );
 
@@ -357,7 +532,8 @@ pub fn render_balance_sheet_table(
             use_color,
         )
     } else {
-        let diff_str = format_amount(sheet.difference().saturating_abs(), minor_units);
+        let difference = sheet.difference().amount().minor_units().abs();
+        let diff_str = format_money_grouped(Money::from_minor(difference, sheet.currency()));
         styled(
             &format!("[!!] UNBALANCED (difference: {diff_str})"),
             red_bold_style(),
@@ -379,72 +555,135 @@ pub fn render_balance_sheet_table(
 // JSON
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
-struct IncomeStatementJson<'a> {
-    from: Option<&'a str>,
-    to: Option<&'a str>,
-    sections: [&'a StatementSection; 2],
-    total_revenue: i64,
-    total_expenses: i64,
-    net_income: i64,
+impl Serialize for StatementLine {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Line<'a> {
+            code: Option<&'a str>,
+            name: &'a str,
+            #[serde(rename = "type")]
+            account_type: &'static str,
+            #[serde(flatten)]
+            amount: MoneyField,
+            computed: bool,
+        }
+
+        Line {
+            code: self.code(),
+            name: self.name(),
+            account_type: self.account_type().code(),
+            amount: MoneyField::new("amount", self.amount()),
+            computed: self.is_computed(),
+        }
+        .serialize(serializer)
+    }
 }
 
-#[derive(Serialize)]
-struct BalanceSheetJson<'a> {
-    as_of: Option<&'a str>,
-    sections: [&'a StatementSection; 3],
-    total_assets: i64,
-    total_liabilities: i64,
-    total_equity: i64,
-    computed_earnings: i64,
-    total_liabilities_and_equity: i64,
-    difference: i64,
-    balanced: bool,
+impl Serialize for StatementSection {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Section<'a> {
+            key: &'static str,
+            title: &'static str,
+            normal_balance: &'static str,
+            accounts: &'a [StatementLine],
+            #[serde(flatten)]
+            total: MoneyField,
+        }
+
+        Section {
+            key: self.key(),
+            title: self.title(),
+            normal_balance: self.normal_balance().code(),
+            accounts: self.accounts(),
+            total: MoneyField::new("total", self.total()),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl Serialize for IncomeStatement {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Data<'a> {
+            #[serde(flatten)]
+            dates: DateRange,
+            sections: [&'a StatementSection; 2],
+            #[serde(flatten)]
+            total_revenue: MoneyField,
+            #[serde(flatten)]
+            total_expenses: MoneyField,
+            #[serde(flatten)]
+            net_income: MoneyField,
+        }
+
+        Data {
+            dates: self.dates(),
+            sections: [self.revenue(), self.expenses()],
+            total_revenue: MoneyField::new("total_revenue", self.revenue().total()),
+            total_expenses: MoneyField::new("total_expenses", self.expenses().total()),
+            net_income: MoneyField::new("net_income", self.net_income()),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl Serialize for BalanceSheet {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Data<'a> {
+            as_of: NaiveDate,
+            sections: [&'a StatementSection; 3],
+            #[serde(flatten)]
+            total_assets: MoneyField,
+            #[serde(flatten)]
+            total_liabilities: MoneyField,
+            #[serde(flatten)]
+            total_equity: MoneyField,
+            #[serde(flatten)]
+            computed_earnings: MoneyField,
+            #[serde(flatten)]
+            total_liabilities_and_equity: MoneyField,
+            #[serde(flatten)]
+            difference: MoneyField,
+            balanced: bool,
+        }
+
+        Data {
+            as_of: self.as_of(),
+            sections: [self.assets(), self.liabilities(), self.equity()],
+            total_assets: MoneyField::new("total_assets", self.assets().total()),
+            total_liabilities: MoneyField::new("total_liabilities", self.liabilities().total()),
+            total_equity: MoneyField::new("total_equity", self.equity().total()),
+            computed_earnings: MoneyField::new("computed_earnings", self.computed_earnings()),
+            total_liabilities_and_equity: MoneyField::new(
+                "total_liabilities_and_equity",
+                self.total_liabilities_and_equity(),
+            ),
+            difference: MoneyField::new("difference", self.difference()),
+            balanced: self.balanced(),
+        }
+        .serialize(serializer)
+    }
 }
 
 /// Render an income statement as an enveloped JSON response.
 ///
 /// # Errors
-///
-/// Returns `CliError::General` if JSON serialisation fails.
+/// Returns [`CliError`] if JSON serialization fails.
 pub fn render_income_statement_json(
     stmt: &IncomeStatement,
     meta: Meta,
 ) -> Result<String, CliError> {
-    envelope_ok(meta, income_statement_json(stmt))
-}
-
-pub(crate) fn income_statement_json(stmt: &IncomeStatement) -> impl Serialize + '_ {
-    IncomeStatementJson {
-        from: stmt.from.as_deref(),
-        to: stmt.to.as_deref(),
-        sections: [&stmt.revenue, &stmt.expenses],
-        total_revenue: stmt.revenue.total,
-        total_expenses: stmt.expenses.total,
-        net_income: stmt.net_income,
-    }
+    envelope_ok(meta, stmt)
 }
 
 /// Render a balance sheet as an enveloped JSON response.
 ///
 /// # Errors
-///
-/// Returns `CliError::General` if JSON serialisation fails.
+/// Returns [`CliError`] if JSON serialization fails.
 pub fn render_balance_sheet_json(sheet: &BalanceSheet, meta: Meta) -> Result<String, CliError> {
-    envelope_ok(
-        meta,
-        BalanceSheetJson {
-            as_of: sheet.as_of.as_deref(),
-            sections: [&sheet.assets, &sheet.liabilities, &sheet.equity],
-            total_assets: sheet.assets.total,
-            total_liabilities: sheet.liabilities.total,
-            total_equity: sheet.equity.total,
-            computed_earnings: sheet.computed_earnings,
-            total_liabilities_and_equity: sheet.total_liabilities_and_equity,
-            difference: sheet.difference(),
-            balanced: sheet.balanced(),
-        },
-    )
+    envelope_ok(meta, sheet)
 }
 
 // ---------------------------------------------------------------------------
@@ -477,23 +716,27 @@ impl StatementCsv {
 
     fn section(&mut self, section: &StatementSection) -> Result<(), CliError> {
         for line in &section.accounts {
-            let line_type = if line.computed { "computed" } else { "account" };
+            let line_type = if line.is_computed() {
+                "computed"
+            } else {
+                "account"
+            };
             self.row([
-                section.key,
+                section.key(),
                 line_type,
                 line.code.as_deref().unwrap_or(""),
                 &line.name,
-                &line.account_type,
-                &line.amount.to_string(),
+                line.account_type.code(),
+                &line.amount.amount().minor_units().to_string(),
             ])?;
         }
         self.row([
-            section.key,
+            section.key(),
             "subtotal",
             "",
             &section.total_label(),
             "",
-            &section.total.to_string(),
+            &section.total.amount().minor_units().to_string(),
         ])
     }
 
@@ -524,12 +767,16 @@ pub fn render_income_statement_csv(stmt: &IncomeStatement) -> Result<String, Cli
     let mut out = StatementCsv::new()?;
     out.section(&stmt.revenue)?;
     out.section(&stmt.expenses)?;
-    let label = if stmt.net_income >= 0 {
+    let label = if stmt.net_income.amount().minor_units() >= 0 {
         "Net Income"
     } else {
         "Net Loss"
     };
-    out.summary("net_income", label, &stmt.net_income.to_string())?;
+    out.summary(
+        "net_income",
+        label,
+        &stmt.net_income.amount().minor_units().to_string(),
+    )?;
     out.finish()
 }
 
@@ -551,9 +798,17 @@ pub fn render_balance_sheet_csv(sheet: &BalanceSheet) -> Result<String, CliError
     out.summary(
         "total",
         "Total Liabilities + Equity",
-        &sheet.total_liabilities_and_equity.to_string(),
+        &sheet
+            .total_liabilities_and_equity
+            .amount()
+            .minor_units()
+            .to_string(),
     )?;
-    out.summary("difference", "Difference", &sheet.difference().to_string())?;
+    out.summary(
+        "difference",
+        "Difference",
+        &sheet.difference().amount().minor_units().to_string(),
+    )?;
     out.summary(
         "balanced",
         "Balanced",
@@ -576,40 +831,74 @@ mod tests {
         }
     }
 
+    fn dates() -> Result<DateRange, CliError> {
+        DateRange::new(NaiveDate::default(), NaiveDate::default())
+    }
+
     #[test]
-    fn income_statement_signs_amounts_on_normal_side() {
+    fn income_statement_signs_amounts_on_normal_side() -> Result<(), CliError> {
         let stmt = build_income_statement(
-            None,
-            None,
-            &[row("4000", "revenue", 0, 10_000)],
-            &[row("5000", "expense", 2_500, 0)],
-        );
-        assert_eq!(stmt.revenue.total, 10_000);
-        assert_eq!(stmt.expenses.total, 2_500);
-        assert_eq!(stmt.net_income, 7_500);
+            dates()?,
+            Currency::USD,
+            vec![row("4000", "revenue", 0, 10_000)],
+            vec![row("5000", "expense", 2_500, 0)],
+        )?;
+        assert_eq!(stmt.revenue().total(), Money::usd(10_000));
+        assert_eq!(stmt.expenses().total(), Money::usd(2_500));
+        assert_eq!(stmt.net_income(), Money::usd(7_500));
+        Ok(())
     }
 
     #[test]
-    fn balance_sheet_balances_with_computed_earnings() {
-        let sheet = build_balance_sheet(&BalanceSheetInputs {
-            as_of: None,
-            assets: &[row("1000", "asset", 10_000, 2_500)],
-            liabilities: &[],
-            equity: &[],
-            revenue: &[row("4000", "revenue", 0, 10_000)],
-            expenses: &[row("5000", "expense", 2_500, 0)],
-        });
-        assert_eq!(sheet.computed_earnings, 7_500);
-        assert_eq!(sheet.equity.total, 7_500);
+    fn balance_sheet_balances_with_computed_earnings() -> Result<(), CliError> {
+        let sheet = build_balance_sheet(BalanceSheetInputs {
+            as_of: NaiveDate::default(),
+            currency: Currency::USD,
+            assets: vec![row("1000", "asset", 10_000, 2_500)],
+            liabilities: Vec::new(),
+            equity: Vec::new(),
+            revenue: vec![row("4000", "revenue", 0, 10_000)],
+            expenses: vec![row("5000", "expense", 2_500, 0)],
+        })?;
+        assert_eq!(sheet.computed_earnings(), Money::usd(7_500));
+        assert_eq!(sheet.equity().total(), Money::usd(7_500));
         assert!(sheet.balanced());
-        assert!(sheet.equity.accounts.iter().any(|l| l.computed));
+        assert!(
+            sheet
+                .equity()
+                .accounts()
+                .iter()
+                .any(StatementLine::is_computed)
+        );
+        Ok(())
     }
 
     #[test]
-    fn net_loss_is_negative() {
-        let stmt = build_income_statement(None, None, &[], &[row("5000", "expense", 100, 0)]);
-        assert_eq!(stmt.net_income, -100);
-        let csv = render_income_statement_csv(&stmt).unwrap_or_default();
+    fn net_loss_is_negative() -> Result<(), CliError> {
+        let stmt = build_income_statement(
+            dates()?,
+            Currency::USD,
+            Vec::new(),
+            vec![row("5000", "expense", 100, 0)],
+        )?;
+        assert_eq!(stmt.net_income(), Money::usd(-100));
+        let csv = render_income_statement_csv(&stmt)?;
         assert!(csv.contains("summary,net_income,,Net Loss,,-100"));
+        Ok(())
+    }
+
+    #[test]
+    fn income_statement_rejects_unrepresentable_subtotals() -> Result<(), CliError> {
+        let result = build_income_statement(
+            dates()?,
+            Currency::USD,
+            vec![
+                row("4000", "revenue", 0, i64::MAX),
+                row("4001", "revenue", 0, 1),
+            ],
+            Vec::new(),
+        );
+        assert!(matches!(result, Err(CliError::Validation(_))));
+        Ok(())
     }
 }

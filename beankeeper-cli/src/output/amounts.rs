@@ -4,15 +4,6 @@ use beankeeper::types::{Currency, Money};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::Value;
 
-/// Serialize the canonical alphabetic code of a typed currency.
-pub(crate) struct CurrencyCode(pub(crate) Currency);
-
-impl Serialize for CurrencyCode {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.0.code())
-    }
-}
-
 /// One currency-bearing amount and its legacy companion field.
 #[derive(Clone, Copy)]
 pub(crate) struct MoneyField {

@@ -39,6 +39,15 @@ pub enum DebitOrCredit {
 }
 
 impl DebitOrCredit {
+    /// Canonical lowercase code used by ledger storage and machine-readable reports.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Debit => "debit",
+            Self::Credit => "credit",
+        }
+    }
+
     /// Returns the opposite direction.
     #[must_use]
     pub const fn opposite(self) -> Self {

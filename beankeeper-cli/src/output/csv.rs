@@ -354,7 +354,9 @@ pub fn render_budgets(rows: &[crate::db::BudgetRow]) -> Result<String, CliError>
 /// # Errors
 ///
 /// Returns `CliError::General` if CSV serialisation fails.
-pub fn render_budget_variance(rows: &[crate::db::BudgetVarianceRow]) -> Result<String, CliError> {
+pub fn render_budget_variance(
+    report: &crate::db::BudgetVarianceReport,
+) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
     wtr.write_record([
         "code",
@@ -368,15 +370,15 @@ pub fn render_budget_variance(rows: &[crate::db::BudgetVarianceRow]) -> Result<S
     ])
     .map_err(|e| csv_err(&e))?;
 
-    for r in rows {
-        let budget = r.budget_amount.to_string();
-        let actual = r.actual_amount.to_string();
-        let variance = r.variance_amount.to_string();
+    for r in report.rows() {
+        let budget = r.budget_amount.amount().minor_units().to_string();
+        let actual = r.actual_amount.amount().minor_units().to_string();
+        let variance = r.variance_amount.amount().minor_units().to_string();
         let pct = match r.variance_percent {
             Some(p) => p.to_fixed(1),
             None => String::new(),
         };
-        let status = if r.variance_amount == 0 {
+        let status = if r.variance_amount.amount().minor_units() == 0 {
             "ON BUDGET"
         } else if r.favorable {
             "FAV"
@@ -386,7 +388,7 @@ pub fn render_budget_variance(rows: &[crate::db::BudgetVarianceRow]) -> Result<S
         wtr.write_record([
             r.code.as_str(),
             r.name.as_str(),
-            r.account_type.as_str(),
+            r.account_type.code(),
             budget.as_str(),
             actual.as_str(),
             variance.as_str(),

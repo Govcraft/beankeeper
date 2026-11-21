@@ -12,9 +12,9 @@ use super::report::ReportOutput;
 use crate::cli::{Cli, OutputFormat, ReportCommand};
 use crate::db::connection::Db;
 use crate::error::CliError;
-use crate::output::amounts::CurrencyCode;
+use crate::output::json::serialize_display;
 
-pub use super::report_dates::Period;
+pub use super::report_dates::DateRange as Period;
 pub use schedule::{ScheduleRow, ScheduleSummary, render_csv as render_schedule_c_csv};
 pub use vendors::{VendorRow, VendorSummary, VendorThreshold, render_csv as render_vendors_csv};
 
@@ -61,7 +61,8 @@ struct TaxEntry {
 pub struct TaxReport<T> {
     #[serde(flatten)]
     period: Period,
-    currency: CurrencyCode,
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
     #[serde(flatten)]
     summary: T,
 }
@@ -76,7 +77,7 @@ impl<T> TaxReport<T> {
     /// Currency of every monetary amount in the summary.
     #[must_use]
     pub const fn currency(&self) -> Currency {
-        self.currency.0
+        self.currency
     }
 
     /// Report-specific rows and totals.
@@ -102,7 +103,7 @@ pub fn build_schedule_c(
         let entries = load_entries(db, company, period, currency)?;
         Ok(TaxReport {
             period,
-            currency: CurrencyCode(currency),
+            currency,
             summary: schedule::build(&entries, currency)?,
         })
     })
@@ -128,7 +129,7 @@ pub fn build_vendors(
         let entries = load_entries(db, company, period, currency)?;
         Ok(TaxReport {
             period,
-            currency: CurrencyCode(currency),
+            currency,
             summary: vendors::build(&entries, threshold)?,
         })
     })
