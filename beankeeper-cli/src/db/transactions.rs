@@ -118,9 +118,14 @@ pub(super) fn post_approved_transaction(
     post(approval.connection(), &Posting::Approved(approval))
 }
 
+pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<PostResult, CliError> {
+    post(reversal.connection(), &Posting::Reversal(reversal))
+}
+
 enum Posting<'a> {
     Direct(&'a PostTransactionParams<'a>),
     Approved(super::proposals::ApprovedPosting<'a>),
+    Reversal(audit::ReversalPosting<'a>),
 }
 
 fn post(conn: &Connection, posting: &Posting<'_>) -> Result<PostResult, CliError> {
@@ -145,6 +150,7 @@ fn post_transaction_inner(
     let approved;
     let p = match posting {
         Posting::Direct(params) => *params,
+        Posting::Reversal(reversal) => reversal.params(),
         Posting::Approved(approval) => {
             approved = approval.params();
             &approved
@@ -174,17 +180,25 @@ fn post_transaction_inner(
         }
     }
 
-    if let Posting::Direct(_) = posting {
-        super::proposals::reject_reserved_metadata(p.metadata)?;
+    if !matches!(posting, Posting::Approved(_)) {
         if let Some(reference) = p.reference {
             super::proposals::check_reference(conn, p.company_slug, reference)?;
         }
         super::spend_limits::check(conn, p)?;
     }
 
-    let posting = ValidatedPosting::build(conn, p)?;
-    let effective_metadata = build_metadata(p.metadata, p.correlate)?;
-    persist_posting(posting, effective_metadata.as_deref())
+    let validated = ValidatedPosting::build(conn, p)?;
+    let metadata = match posting {
+        Posting::Direct(_) => metadata::UserAnnotations::parse(p.metadata)?
+            .map(metadata::UserAnnotations::into_normalized),
+        Posting::Approved(_) => p.metadata.and_then(metadata::normalize),
+        Posting::Reversal(reversal) => Some(metadata::reversal_link(reversal.original_id())?),
+    };
+    let effective_metadata = match p.correlate {
+        None => metadata.map(metadata::NormalizedMetadata::into_string),
+        Some(partner_id) => Some(metadata::with_correlation(metadata, partner_id)?),
+    };
+    persist_posting(validated, effective_metadata.as_deref())
 }
 
 /// The only input to the posting insert. The validated journal and open
@@ -319,23 +333,6 @@ fn persist_posting(
     audit::record_creation(conn, p.actor, company, txn_id)?;
 
     Ok(PostResult::Created(txn_id))
-}
-
-/// Build the stored metadata from user metadata and an optional correlate ID.
-///
-/// The result is always `None` or a JSON object (see [`metadata`] for the
-/// normalization rules), so every writer that goes through `post_transaction`
-/// -- `txn post`, the OFX importer, demo data -- stores the same shape.
-fn build_metadata(
-    user_metadata: Option<&str>,
-    correlate: Option<i64>,
-) -> Result<Option<String>, CliError> {
-    match correlate {
-        None => Ok(user_metadata
-            .and_then(metadata::normalize)
-            .map(metadata::NormalizedMetadata::into_string)),
-        Some(cid) => metadata::with_correlate(user_metadata, cid).map(Some),
-    }
 }
 
 /// Currency and optional entry amount bounds for a transaction search.
@@ -923,6 +920,30 @@ mod tests {
         ] {
             let mut request = make_params(entries, "Invalid", None, "2026-01-05");
             request.currency = currency;
+            assert!(matches!(
+                post_transaction(db.conn(), &request),
+                Err(CliError::Validation(_))
+            ));
+        }
+        assert_eq!(count()?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_post_rejects_reserved_links_before_writing() -> Result<(), CliError> {
+        let db = setup();
+        let count = || -> rusqlite::Result<i64> {
+            db.conn().query_row(
+            "SELECT (SELECT COUNT(*) FROM transactions) + (SELECT COUNT(*) FROM entries) + (SELECT COUNT(*) FROM audit_log)",
+            [],
+            |row| row.get(0),
+        )
+        };
+        let before = count()?;
+        let entries = sample_entries();
+        for key in ["correlate", "reverses", "reversed_by", "proposal_id"] {
+            let metadata = format!(r#"{{"{key}":999}}"#);
+            let request = make_params(&entries, "Forged link", Some(&metadata), "2024-01-15");
             assert!(matches!(
                 post_transaction(db.conn(), &request),
                 Err(CliError::Validation(_))

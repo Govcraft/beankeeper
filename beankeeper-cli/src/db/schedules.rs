@@ -205,11 +205,8 @@ pub fn create_schedule(
                 next_due: params.start_date,
             },
             entries,
-            metadata: params
-                .metadata
-                .as_deref()
-                .and_then(super::metadata::normalize)
-                .map(super::metadata::NormalizedMetadata::into_string),
+            metadata: super::metadata::UserAnnotations::parse(params.metadata.as_deref())?
+                .map(super::metadata::UserAnnotations::into_string),
             occurrence_index: 0,
         };
         conn.execute(

@@ -44,6 +44,7 @@ pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
         let reader = db.read();
         crate::db::verification::verify_accounting(reader)?;
         crate::db::audit::verify_creations(db.conn())?;
+        crate::db::verification::verify_links(reader)?;
 
         // Foreign key integrity check
         let fk_errors: Vec<String> = {

@@ -301,12 +301,13 @@ impl<'a> PendingProposal<'a> {
         let mut payload = self.before.payload.clone();
         validate_posting(self.conn, &payload.params(&self.before.company_slug, actor))?;
         let (existing, proposal_id) = (payload.metadata.as_deref(), self.before.id.as_str());
-        let mut metadata: serde_json::Value =
-            existing.and_then(super::metadata::normalize).map_or_else(
+        let mut metadata = super::metadata::UserAnnotations::parse(existing)?
+            .map(super::metadata::UserAnnotations::into_normalized)
+            .map_or_else(
                 || serde_json::json!({}),
                 super::metadata::NormalizedMetadata::into_value,
             );
-        metadata["proposal_id"] = serde_json::json!(proposal_id);
+        metadata[super::metadata::PROPOSAL_KEY] = serde_json::json!(proposal_id);
         payload.metadata = Some(metadata.to_string());
         let posting = ApprovedPosting {
             conn: self.conn,
@@ -526,7 +527,7 @@ pub fn create(
     })?;
     audit::atomically(conn, || {
         audit::require_capability(conn, p.actor, Capability::Propose)?;
-        reject_reserved_metadata(p.metadata)?;
+        super::metadata::UserAnnotations::parse(p.metadata)?;
         validate_posting(conn, p)?;
         if let Some(reference) = p.reference {
             let posted: Option<i64> = conn
@@ -569,22 +570,6 @@ pub fn create(
         serde_json::to_value(get(conn, p.company_slug, id.as_str())?)
             .map_err(|error| CliError::General(error.to_string()))
     })
-}
-
-/// Reject attempts to forge the approval relationship through posting metadata.
-///
-/// # Errors
-/// Returns a validation error if a reserved approval key is present, even null.
-pub(crate) fn reject_reserved_metadata(metadata: Option<&str>) -> Result<(), CliError> {
-    if let Some(object) = metadata.and_then(|raw| {
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw).ok()
-    }) && object.contains_key("proposal_id")
-    {
-        return Err(CliError::Validation(
-            "metadata key 'proposal_id' is reserved for approvals".into(),
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn check_reference(
