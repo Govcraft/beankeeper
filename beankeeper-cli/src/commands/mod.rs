@@ -25,6 +25,7 @@ pub mod report_tax;
 pub mod report_trend;
 pub mod rule;
 pub mod schedule;
+pub mod setup;
 pub mod summary;
 pub mod txn;
 pub mod txn_clear;
@@ -51,6 +52,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
 pub fn operation(cmd: &Command) -> Operation {
     match cmd {
         Command::Summary(_) => Operation::Summary,
+        Command::Setup(command) => command.operation(),
         Command::Security(args) => args.command.operation(),
         Command::Investment(args) => args.command.operation(),
         Command::Schedule(args) => args.command.operation(),
@@ -165,7 +167,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     crate::output::chart::validate_request(cli)?;
     if !matches!(
         cli.command,
-        Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. }
+        Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. } | Command::Setup(_)
     ) {
         // Preserve standalone loan calculation without an existing ledger.
         let standalone = matches!(&cli.command, Command::Loan(args) if matches!(args.command, crate::cli::LoanCommand::Schedule(_)))
@@ -179,6 +181,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Setup(setup::SetupCommand::Status) => setup::run_status(cli),
         Command::Summary(args) => {
             let company = require_company(cli)?;
             summary::run(cli, &company, args)

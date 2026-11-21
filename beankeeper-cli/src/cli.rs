@@ -408,6 +408,10 @@ pub enum Command {
     /// Answer how your finances are doing, with facts, comparisons and optional Desktop links.
     Summary(crate::commands::summary::SummaryArgs),
 
+    /// Inspect the ledger's readiness for guided setup.
+    #[command(subcommand)]
+    Setup(crate::commands::setup::SetupCommand),
+
     /// Close, reopen, or inspect a company posting cutoff.
     #[command(subcommand)]
     Period(PeriodCommand),
