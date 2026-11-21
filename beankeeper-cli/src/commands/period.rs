@@ -3,15 +3,20 @@
 use crate::cli::{Cli, OutputFormat, PeriodCommand, resolve_format};
 use crate::db::{Actor, Db, audit, periods};
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output::json;
 
 /// Canonical command name used for authorization and JSON envelopes.
 #[must_use]
 pub fn command_name(command: &PeriodCommand) -> &'static str {
+    operation(command).name()
+}
+
+pub(crate) const fn operation(command: &PeriodCommand) -> Operation {
     match command {
-        PeriodCommand::Close { .. } => "period.close",
-        PeriodCommand::Reopen { .. } => "period.reopen",
-        PeriodCommand::List => "period.list",
+        PeriodCommand::Close { .. } => Operation::PeriodClose,
+        PeriodCommand::Reopen { .. } => Operation::PeriodReopen,
+        PeriodCommand::List => Operation::PeriodList,
     }
 }
 

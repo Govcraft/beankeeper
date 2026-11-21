@@ -37,102 +37,122 @@ use crate::cli::{
     TxnCommand, require_company,
 };
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output::json::Meta;
 
-/// Map a parsed `Command` to its dot-notation command name.
+/// Return the canonical name of a parsed command.
 #[must_use]
 pub fn command_name(cmd: &Command) -> &'static str {
-    if let Some(id) = report_periods::command_id(cmd) {
-        return id;
-    }
+    operation(cmd).name()
+}
+
+/// Return the authorization operation represented by a parsed command.
+#[must_use]
+pub fn operation(cmd: &Command) -> Operation {
     match cmd {
-        Command::Summary(_) => "summary",
-        Command::Security(args) => args.command.command_name(),
-        Command::Investment(args) => args.command.command_name(),
-        Command::Schedule(args) => args.command.command_name(),
+        Command::Summary(_) => Operation::Summary,
+        Command::Security(args) => args.command.operation(),
+        Command::Investment(args) => args.command.operation(),
+        Command::Schedule(args) => args.command.operation(),
         Command::Loan(args) => match &args.command {
-            crate::cli::LoanCommand::Schedule(_) => "loan.schedule",
-            crate::cli::LoanCommand::Pay(_) => "loan.pay",
+            crate::cli::LoanCommand::Schedule(_) => Operation::LoanSchedule,
+            crate::cli::LoanCommand::Pay(_) => Operation::LoanPay,
         },
         Command::Rule(args) => match &args.command {
-            crate::cli::RuleCommand::Create { .. } => "rule.create",
-            crate::cli::RuleCommand::List => "rule.list",
-            crate::cli::RuleCommand::Delete { .. } => "rule.delete",
+            crate::cli::RuleCommand::Create { .. } => Operation::RuleCreate,
+            crate::cli::RuleCommand::List => Operation::RuleList,
+            crate::cli::RuleCommand::Delete { .. } => Operation::RuleDelete,
         },
-        Command::Period(command) => period::command_name(command),
-        Command::Mcp(_) => "mcp.serve",
+        Command::Period(command) => period::operation(command),
+        Command::Mcp(_) => Operation::McpServe,
         Command::Policy(sub) => match sub {
-            crate::cli::PolicyCommand::Show => "policy.show",
-            crate::cli::PolicyCommand::Set { .. } => "policy.set",
+            crate::cli::PolicyCommand::Show => Operation::PolicyShow,
+            crate::cli::PolicyCommand::Set { .. } => Operation::PolicySet,
         },
-        Command::Key(_) => "key.init",
+        Command::Key(_) => Operation::KeyInit,
         Command::Agent(sub) => match sub {
-            crate::cli::AgentCommand::Issue { .. } => "agent.issue",
+            crate::cli::AgentCommand::Issue { .. } => Operation::AgentIssue,
             crate::cli::AgentCommand::Limit(sub) => match sub {
-                crate::cli::AgentLimitCommand::Set { .. } => "agent.limit.set",
-                crate::cli::AgentLimitCommand::Show { .. } => "agent.limit.show",
-                crate::cli::AgentLimitCommand::Clear { .. } => "agent.limit.clear",
+                crate::cli::AgentLimitCommand::Set { .. } => Operation::AgentLimitSet,
+                crate::cli::AgentLimitCommand::Show { .. } => Operation::AgentLimitShow,
+                crate::cli::AgentLimitCommand::Clear { .. } => Operation::AgentLimitClear,
             },
-            crate::cli::AgentCommand::List => "agent.list",
-            crate::cli::AgentCommand::Revoke { .. } => "agent.revoke",
+            crate::cli::AgentCommand::List => Operation::AgentList,
+            crate::cli::AgentCommand::Revoke { .. } => Operation::AgentRevoke,
         },
-        Command::Init { .. } => "init",
-        Command::Backup { .. } => "backup",
-        Command::Restore { .. } => "restore",
-        Command::Verify => "verify",
-        Command::Export { .. } => "export",
+        Command::Init { .. } => Operation::Init,
+        Command::Backup { .. } => Operation::Backup,
+        Command::Restore { .. } => Operation::Restore,
+        Command::Verify => Operation::Verify,
+        Command::Export { .. } => Operation::Export,
         Command::Company(sub) => match sub {
-            CompanyCommand::Create { .. } => "company.create",
-            CompanyCommand::List => "company.list",
-            CompanyCommand::Show { .. } => "company.show",
-            CompanyCommand::Delete { .. } => "company.delete",
+            CompanyCommand::Create { .. } => Operation::CompanyCreate,
+            CompanyCommand::List => Operation::CompanyList,
+            CompanyCommand::Show { .. } => Operation::CompanyShow,
+            CompanyCommand::Delete { .. } => Operation::CompanyDelete,
         },
         Command::Account(args) => match &args.command {
-            AccountCommand::Create { .. } => "account.create",
-            AccountCommand::List { .. } => "account.list",
-            AccountCommand::Show { .. } => "account.show",
-            AccountCommand::Delete { .. } => "account.delete",
+            AccountCommand::Create { .. } => Operation::AccountCreate,
+            AccountCommand::List { .. } => Operation::AccountList,
+            AccountCommand::Show { .. } => Operation::AccountShow,
+            AccountCommand::Delete { .. } => Operation::AccountDelete,
         },
         Command::Budget(args) => match &args.command {
-            BudgetCommand::Set(_) => "budget.set",
-            BudgetCommand::List { .. } => "budget.list",
-            BudgetCommand::Delete { .. } => "budget.delete",
+            BudgetCommand::Set(_) => Operation::BudgetSet,
+            BudgetCommand::List { .. } => Operation::BudgetList,
+            BudgetCommand::Delete { .. } => Operation::BudgetDelete,
         },
         Command::Txn(args) => match args.command.as_ref() {
-            TxnCommand::Meta(sub) => sub.command_name(),
-            TxnCommand::Post(_) => "txn.post",
+            TxnCommand::Meta(sub) => sub.operation(),
+            TxnCommand::Post(_) => Operation::TxnPost,
             TxnCommand::Proposal(command) => match command {
-                crate::cli::TxnProposalCommand::Propose(_) => "txn.propose",
-                crate::cli::TxnProposalCommand::Proposals { .. } => "txn.proposals",
-                crate::cli::TxnProposalCommand::Approve { .. } => "txn.approve",
-                crate::cli::TxnProposalCommand::Reject { .. } => "txn.reject",
+                crate::cli::TxnProposalCommand::Propose(_) => Operation::TxnPropose,
+                crate::cli::TxnProposalCommand::Proposals { .. } => Operation::TxnProposals,
+                crate::cli::TxnProposalCommand::Approve { .. } => Operation::TxnApprove,
+                crate::cli::TxnProposalCommand::Reject { .. } => Operation::TxnReject,
             },
-            TxnCommand::List(_) => "txn.list",
-            TxnCommand::Show { .. } => "txn.show",
-            TxnCommand::Reverse(_) => "txn.reverse",
-            TxnCommand::Import(_) => "txn.import",
-            TxnCommand::Attach(_) => "txn.attach",
-            TxnCommand::Clear(_) => "txn.clear",
-            TxnCommand::Reconcile => "txn.reconcile",
+            TxnCommand::List(_) => Operation::TxnList,
+            TxnCommand::Show { .. } => Operation::TxnShow,
+            TxnCommand::Reverse(_) => Operation::TxnReverse,
+            TxnCommand::Import(_) => Operation::TxnImport,
+            TxnCommand::Attach(_) => Operation::TxnAttach,
+            TxnCommand::Clear(_) => Operation::TxnClear,
+            TxnCommand::Reconcile => Operation::TxnReconcile,
         },
-        Command::Report(args) => match &args.command {
-            ReportCommand::TrialBalance { .. } => "report.trial-balance",
-            ReportCommand::Balance { .. } => "report.balance",
-            ReportCommand::IncomeStatement { .. } => "report.income-statement",
-            ReportCommand::BalanceSheet { .. } => "report.balance-sheet",
-            ReportCommand::TaxSummary { .. } => "report.tax-summary",
-            ReportCommand::ScheduleC(_) => "report.schedule-c",
-            ReportCommand::Vendor1099(_) => "report.1099",
-            ReportCommand::BudgetVariance { .. } => "report.budget-variance",
-            ReportCommand::Ledger { .. } => "report.ledger",
-            ReportCommand::Aging { .. } => "report.aging",
-            ReportCommand::Reconciliation { .. } => "report.reconciliation",
-            ReportCommand::CashFlow(_) => "report.cash-flow",
-            ReportCommand::Trend(_) => "report.trend",
-        },
+        Command::Report(args) => report_operation(&args.command),
         Command::Audit(args) => match &args.command {
-            AuditCommand::Log { .. } => "audit.log",
+            AuditCommand::Log { .. } => Operation::AuditLog,
         },
+    }
+}
+
+fn report_operation(command: &ReportCommand) -> Operation {
+    match command {
+        ReportCommand::TrialBalance {
+            period: Some(_), ..
+        } => Operation::ReportTrialBalancePeriods,
+        ReportCommand::TrialBalance {
+            compare: Some(_), ..
+        } => Operation::ReportTrialBalanceCompare,
+        ReportCommand::TrialBalance { .. } => Operation::ReportTrialBalance,
+        ReportCommand::Balance { .. } => Operation::ReportBalance,
+        ReportCommand::IncomeStatement {
+            period: Some(_), ..
+        } => Operation::ReportIncomeStatementPeriods,
+        ReportCommand::IncomeStatement {
+            compare: Some(_), ..
+        } => Operation::ReportIncomeStatementCompare,
+        ReportCommand::IncomeStatement { .. } => Operation::ReportIncomeStatement,
+        ReportCommand::BalanceSheet { .. } => Operation::ReportBalanceSheet,
+        ReportCommand::TaxSummary { .. } => Operation::ReportTaxSummary,
+        ReportCommand::ScheduleC(_) => Operation::ReportScheduleC,
+        ReportCommand::Vendor1099(_) => Operation::ReportVendor1099,
+        ReportCommand::BudgetVariance { .. } => Operation::ReportBudgetVariance,
+        ReportCommand::Ledger { .. } => Operation::ReportLedger,
+        ReportCommand::Aging { .. } => Operation::ReportAging,
+        ReportCommand::Reconciliation { .. } => Operation::ReportReconciliation,
+        ReportCommand::CashFlow(_) => Operation::ReportCashFlow,
+        ReportCommand::Trend(_) => Operation::ReportTrend,
     }
 }
 

@@ -37,10 +37,10 @@ pub fn run(
         TxnCommand::Proposal(args) => {
             let data = db::audit::atomically(db_handle.conn(), || {
                 use secrecy::ExposeSecret;
-                crate::identity::authorize_operation(
+                crate::identity::authorize_known_operation(
                     db_handle.conn(),
                     cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
-                    super::command_name(&cli.command),
+                    super::operation(&cli.command),
                 )?;
                 execute_proposal(&db_handle, company, args, &cli.principal())
             })?;

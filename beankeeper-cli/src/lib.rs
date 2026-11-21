@@ -12,5 +12,6 @@ pub mod db;
 pub mod error;
 pub mod identity;
 pub mod mcp;
+pub mod operation;
 pub mod output;
 pub mod passphrase;

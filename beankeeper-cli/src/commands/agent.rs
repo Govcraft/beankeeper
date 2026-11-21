@@ -60,10 +60,10 @@ fn run_limit(
     use crate::db::{audit, spend_limits};
     use secrecy::ExposeSecret;
     audit::atomically(db.conn(), || {
-        identity::authorize_operation(
+        identity::authorize_known_operation(
             db.conn(),
             cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
-            super::command_name(&cli.command),
+            super::operation(&cli.command),
         )?;
         let value = match sub {
             AgentLimitCommand::Set {

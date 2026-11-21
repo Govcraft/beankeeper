@@ -6,6 +6,7 @@ use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, pars
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::CliError;
+use crate::operation::Operation;
 
 /// Double-entry accounting on the command line.
 #[derive(Parser, Debug)]
@@ -191,10 +192,10 @@ impl Cli {
             let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
             let _ = self.verified_agent.set(identity);
         }
-        crate::identity::authorize_operation(
+        crate::identity::authorize_known_operation(
             db.conn(),
             self.agent_token.as_ref().map(ExposeSecret::expose_secret),
-            crate::commands::command_name(&self.command),
+            crate::commands::operation(&self.command),
         )?;
         Ok(())
     }
@@ -584,10 +585,14 @@ impl SecurityCommand {
     /// Stable JSON command identifier.
     #[must_use]
     pub fn command_name(&self) -> &'static str {
+        self.operation().name()
+    }
+
+    pub(crate) const fn operation(&self) -> Operation {
         match self {
-            Self::Create { .. } => "security.create",
-            Self::List => "security.list",
-            Self::Price { .. } => "security.price",
+            Self::Create { .. } => Operation::SecurityCreate,
+            Self::List => Operation::SecurityList,
+            Self::Price { .. } => Operation::SecurityPrice,
         }
     }
 }
@@ -674,11 +679,15 @@ impl InvestmentCommand {
     /// Stable JSON command identifier.
     #[must_use]
     pub fn command_name(&self) -> &'static str {
+        self.operation().name()
+    }
+
+    pub(crate) const fn operation(&self) -> Operation {
         match self {
-            Self::Buy { .. } => "investment.buy",
-            Self::Sell { .. } => "investment.sell",
-            Self::Lots { .. } => "investment.lots",
-            Self::Holdings { .. } => "investment.holdings",
+            Self::Buy { .. } => Operation::InvestmentBuy,
+            Self::Sell { .. } => Operation::InvestmentSell,
+            Self::Lots { .. } => Operation::InvestmentLots,
+            Self::Holdings { .. } => Operation::InvestmentHoldings,
         }
     }
 }
@@ -766,11 +775,15 @@ impl ScheduleCommand {
     /// Stable JSON command identifier.
     #[must_use]
     pub fn command_name(&self) -> &'static str {
+        self.operation().name()
+    }
+
+    pub(crate) const fn operation(&self) -> Operation {
         match self {
-            Self::Create { .. } => "schedule.create",
-            Self::List { .. } => "schedule.list",
-            Self::Run { .. } => "schedule.run",
-            Self::Cancel { .. } => "schedule.cancel",
+            Self::Create { .. } => Operation::ScheduleCreate,
+            Self::List { .. } => Operation::ScheduleList,
+            Self::Run { .. } => Operation::ScheduleRun,
+            Self::Cancel { .. } => Operation::ScheduleCancel,
         }
     }
 }
@@ -2620,9 +2633,13 @@ impl TxnMetaCommand {
     /// JSON envelope command identifier.
     #[must_use]
     pub fn command_name(&self) -> &'static str {
+        self.operation().name()
+    }
+
+    pub(crate) const fn operation(&self) -> Operation {
         match self {
-            Self::Set { .. } => "txn.meta.set",
-            Self::Unset { .. } => "txn.meta.unset",
+            Self::Set { .. } => Operation::TxnMetaSet,
+            Self::Unset { .. } => Operation::TxnMetaUnset,
         }
     }
 }
