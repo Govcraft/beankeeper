@@ -1,14 +1,8 @@
 //! Table, JSON and CSV rendering for multi-column reports (issue #22).
 //!
 //! See [`crate::commands::report_periods`] for how the report is computed.
-//! Two layouts are supported:
-//!
-//! - **Periods**: one amount column per period followed by a `Total` column.
-//! - **Compare**: current and prior columns followed by `Change` and
-//!   `Change %` (percent is `n/a` / `null` when the prior amount is zero).
-//!
-//! Amounts are net amounts on each account's normal side. JSON and CSV carry
-//! integer minor units, like the single-column reports.
+//! One amount column per period followed by a Total. Amounts use each
+//! account's normal side. JSON and CSV carry integer minor units.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +11,7 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use serde::Serialize;
 
-use crate::commands::report_periods::{Column, Layout, MultiColumnReport, ReportColumns};
+use crate::commands::report_periods::{Column, MultiColumnReport};
 use crate::error::CliError;
 use crate::output::json::{Meta, envelope_ok};
 
@@ -88,14 +82,6 @@ fn row_total(amounts: &[i64]) -> i64 {
     amounts.iter().fold(0i64, |acc, a| acc.saturating_add(*a))
 }
 
-/// `(current, prior)` amounts of a compare-layout row.
-fn current_prior(amounts: &[i64]) -> (i64, i64) {
-    (
-        amounts.first().copied().unwrap_or(0),
-        amounts.get(1).copied().unwrap_or(0),
-    )
-}
-
 fn normal_balance_for(account_type: &str) -> &'static str {
     match account_type {
         "asset" | "expense" => "debit",
@@ -135,10 +121,6 @@ pub(crate) fn format_amount(minor_units: impl Into<i128>, decimal_places: u8) ->
     }
 }
 
-fn format_percent(pct: Option<Percent>) -> String {
-    pct.map_or_else(|| "n/a".to_string(), |p| format!("{}%", p.to_fixed(1)))
-}
-
 fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -159,27 +141,14 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
 fn value_cells(report: &MultiColumnReport, amounts: &[i64]) -> Vec<String> {
     let mu = report.currency.minor_units();
     let mut cells: Vec<String> = amounts.iter().map(|a| format_amount(*a, mu)).collect();
-    match report.layout() {
-        Layout::Periods(_) => cells.push(format_amount(row_total(amounts), mu)),
-        Layout::Compare(_) => {
-            let (cur, prior) = current_prior(amounts);
-            cells.push(format_amount(cur.saturating_sub(prior), mu));
-            cells.push(format_percent(change_percent(cur, prior)));
-        }
-    }
+    cells.push(format_amount(row_total(amounts), mu));
     cells
 }
 
 /// Header labels for the amount columns.
 fn value_headers(report: &MultiColumnReport) -> Vec<String> {
-    let mut headers: Vec<String> = report.columns().iter().map(|c| c.label.clone()).collect();
-    match report.layout() {
-        Layout::Periods(_) => headers.push("Total".to_string()),
-        Layout::Compare(_) => {
-            headers.push("Change".to_string());
-            headers.push("Change %".to_string());
-        }
-    }
+    let mut headers: Vec<String> = report.columns.iter().map(|c| c.label.clone()).collect();
+    headers.push("Total".to_string());
     headers
 }
 
@@ -192,18 +161,12 @@ fn value_headers(report: &MultiColumnReport) -> Vec<String> {
 pub fn title(report: &MultiColumnReport) -> String {
     let base = report.kind.title();
     let currency = report.currency.code();
-    match report.report_columns() {
-        ReportColumns::Periods(p, _) => format!(
-            "{base} by {} ({} to {}) ({currency})",
-            capitalize_first(p.as_str()),
-            report.from,
-            report.to
-        ),
-        ReportColumns::Compare(_, [_, prior]) => format!(
-            "{base} ({} to {} vs. {} to {}) ({currency})",
-            report.from, report.to, prior.from, prior.to,
-        ),
-    }
+    format!(
+        "{base} by {} ({} to {}) ({currency})",
+        capitalize_first(report.period.as_str()),
+        report.from,
+        report.to
+    )
 }
 
 /// Render a multi-column report as a styled table.
@@ -289,71 +252,39 @@ struct PeriodValuesJson {
 }
 
 #[derive(Serialize)]
-struct CompareValuesJson {
-    current: i64,
-    prior: i64,
-    change: i64,
-    change_percent: Option<f64>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum ValuesJson {
-    Periods(PeriodValuesJson),
-    Compare(CompareValuesJson),
-}
-
-#[derive(Serialize)]
 struct AccountJson {
     code: String,
     name: String,
     r#type: String,
     normal_balance: &'static str,
     #[serde(flatten)]
-    values: ValuesJson,
+    values: PeriodValuesJson,
 }
 
 #[derive(Serialize)]
 struct ReportJson {
     report: &'static str,
     mode: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    period: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compare: Option<&'static str>,
+    period: &'static str,
     from: String,
     to: String,
     currency: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    columns: Option<Vec<ColumnJson>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    current: Option<ColumnJson>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prior: Option<ColumnJson>,
+    columns: Vec<ColumnJson>,
     accounts: Vec<AccountJson>,
-    totals: BTreeMap<&'static str, ValuesJson>,
+    totals: BTreeMap<&'static str, PeriodValuesJson>,
 }
 
-fn values_json(layout: Layout, amounts: &[i64]) -> ValuesJson {
-    match layout {
-        Layout::Periods(_) => ValuesJson::Periods(PeriodValuesJson {
-            amounts: amounts.to_vec(),
-            total: row_total(amounts),
-        }),
-        Layout::Compare(_) => {
-            let (current, prior) = current_prior(amounts);
-            ValuesJson::Compare(CompareValuesJson {
-                current,
-                prior,
-                change: current.saturating_sub(prior),
-                change_percent: change_percent(current, prior).and_then(Percent::to_json_number),
-            })
-        }
+fn values_json(amounts: &[i64]) -> PeriodValuesJson {
+    PeriodValuesJson {
+        amounts: amounts.to_vec(),
+        total: row_total(amounts),
     }
 }
 
-/// Render a multi-column report inside the standard JSON envelope.
+/// Render a period report inside the standard JSON envelope.
+///
 /// # Errors
+///
 /// Returns `CliError::General` if serialisation fails.
 pub fn render_json(report: &MultiColumnReport, meta: Meta) -> Result<String, CliError> {
     envelope_ok(meta, report_json(report))
@@ -368,46 +299,24 @@ pub(crate) fn report_json(report: &MultiColumnReport) -> impl Serialize {
             name: a.name.clone(),
             r#type: a.account_type.clone(),
             normal_balance: normal_balance_for(&a.account_type),
-            values: values_json(report.layout(), &a.amounts),
+            values: values_json(&a.amounts),
         })
         .collect();
 
     let totals = report
         .summary
         .iter()
-        .map(|line| (line.key, values_json(report.layout(), &line.amounts)))
+        .map(|line| (line.key, values_json(&line.amounts)))
         .collect();
-
-    let (mode, period, compare, columns, current, prior) = match report.report_columns() {
-        ReportColumns::Periods(p, columns) => (
-            "periods",
-            Some(p.as_str()),
-            None,
-            Some(columns.iter().map(ColumnJson::from).collect()),
-            None,
-            None,
-        ),
-        ReportColumns::Compare(c, [current, prior]) => (
-            "compare",
-            None,
-            Some(c.as_str()),
-            None,
-            Some(ColumnJson::from(current)),
-            Some(ColumnJson::from(prior)),
-        ),
-    };
 
     ReportJson {
         report: report.kind.as_str(),
-        mode,
-        period,
-        compare,
+        mode: "periods",
+        period: report.period.as_str(),
         from: report.from.to_string(),
         to: report.to.to_string(),
         currency: report.currency.code().into(),
-        columns,
-        current,
-        prior,
+        columns: report.columns.iter().map(ColumnJson::from).collect(),
         accounts,
         totals,
     }
@@ -422,26 +331,16 @@ fn csv_err(e: &csv::Error) -> CliError {
 }
 
 /// Raw (machine-readable) value cells for one CSV row.
-fn csv_values(layout: Layout, amounts: &[i64]) -> Vec<String> {
+fn csv_values(amounts: &[i64]) -> Vec<String> {
     let mut cells: Vec<String> = amounts.iter().map(ToString::to_string).collect();
-    match layout {
-        Layout::Periods(_) => cells.push(row_total(amounts).to_string()),
-        Layout::Compare(_) => {
-            let (cur, prior) = current_prior(amounts);
-            cells.push(cur.saturating_sub(prior).to_string());
-            cells.push(
-                change_percent(cur, prior).map_or_else(|| "n/a".to_string(), |p| p.to_fixed(2)),
-            );
-        }
-    }
+    cells.push(row_total(amounts).to_string());
     cells
 }
 
 /// Render a multi-column report as CSV.
 ///
-/// Periods columns: `code`, `name`, `type`, one column per period label,
-/// `total`. Compare columns: `code`, `name`, `type`, `current`, `prior`,
-/// `change`, `change_percent`. Amounts are integer minor units. Summary rows
+/// Columns: `code`, `name`, `type`, one column per period label,
+/// `total`. Amounts are integer minor units. Summary rows
 /// (e.g. `net_income`) follow the account rows with an empty `code`, the
 /// summary key in `name` and `type` set to `total`.
 ///
@@ -452,15 +351,8 @@ pub fn render_csv(report: &MultiColumnReport) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
 
     let mut header: Vec<String> = vec!["code".into(), "name".into(), "type".into()];
-    match report.layout() {
-        Layout::Periods(_) => {
-            header.extend(report.columns().iter().map(|c| c.label.clone()));
-            header.push("total".into());
-        }
-        Layout::Compare(_) => {
-            header.extend(["current", "prior", "change", "change_percent"].map(String::from));
-        }
-    }
+    header.extend(report.columns.iter().map(|c| c.label.clone()));
+    header.push("total".into());
     wtr.write_record(&header).map_err(|e| csv_err(&e))?;
 
     for line in &report.accounts {
@@ -469,12 +361,12 @@ pub fn render_csv(report: &MultiColumnReport) -> Result<String, CliError> {
             line.name.clone(),
             line.account_type.clone(),
         ];
-        record.extend(csv_values(report.layout(), &line.amounts));
+        record.extend(csv_values(&line.amounts));
         wtr.write_record(&record).map_err(|e| csv_err(&e))?;
     }
     for line in &report.summary {
         let mut record = vec![String::new(), line.key.to_string(), "total".to_string()];
-        record.extend(csv_values(report.layout(), &line.amounts));
+        record.extend(csv_values(&line.amounts));
         wtr.write_record(&record).map_err(|e| csv_err(&e))?;
     }
 

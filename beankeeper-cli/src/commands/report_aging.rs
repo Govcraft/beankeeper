@@ -58,8 +58,8 @@
 //! age and shows what is still open after every settlement applied to it.
 //! Unapplied credit cannot be attributed to a charge and is not shown.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::num::{NonZeroI64, NonZeroU32};
 
 use beankeeper::types::Currency;
 use chrono::NaiveDate;
@@ -240,17 +240,90 @@ pub enum LinkSpec {
     Invalid(Value),
 }
 
-/// One transaction's net effect on the account: positive is a charge,
-/// negative is a settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PositiveAmount(NonZeroI64);
+
+impl PositiveAmount {
+    fn get(self) -> i64 {
+        self.0.get()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgedMovement {
+    Charge(PositiveAmount),
+    Settlement {
+        amount: PositiveAmount,
+        links: LinkSpec,
+    },
+    /// Occupies a linkable transaction identity without opening or closing a charge.
+    Neutral,
+}
+
+/// One transaction's net effect on the account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Movement {
     pub transaction_id: i64,
     pub date: NaiveDate,
     pub description: String,
     pub reference: Option<String>,
-    pub amount: i64,
-    /// Links to charges (only used for settlements with the specific method).
-    pub links: LinkSpec,
+    kind: AgedMovement,
+}
+
+impl Movement {
+    /// Classifies the account-normal net amount and retains links on settlements.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::Validation`] when the settlement magnitude exceeds the supported amount.
+    pub fn new(
+        transaction_id: i64,
+        date: NaiveDate,
+        description: String,
+        reference: Option<String>,
+        amount: i64,
+        links: LinkSpec,
+    ) -> Result<Self, CliError> {
+        let magnitude = amount.checked_abs().ok_or_else(aging_overflow)?;
+        let kind = match NonZeroI64::new(magnitude).map(PositiveAmount) {
+            Some(magnitude) if amount > 0 => AgedMovement::Charge(magnitude),
+            Some(magnitude) => AgedMovement::Settlement {
+                amount: magnitude,
+                links,
+            },
+            None => AgedMovement::Neutral,
+        };
+        Ok(Self {
+            transaction_id,
+            date,
+            description,
+            reference,
+            kind,
+        })
+    }
+
+    fn signed_amount(&self) -> i64 {
+        match self.kind {
+            AgedMovement::Charge(amount) => amount.get(),
+            AgedMovement::Settlement { amount, .. } => -amount.get(),
+            AgedMovement::Neutral => 0,
+        }
+    }
+
+    pub(super) const fn is_charge(&self) -> bool {
+        matches!(self.kind, AgedMovement::Charge(_))
+    }
+
+    pub(super) fn settlement(&self) -> Option<(i64, &LinkSpec)> {
+        match &self.kind {
+            AgedMovement::Settlement { amount, links } => Some((amount.get(), links)),
+            AgedMovement::Charge(_) | AgedMovement::Neutral => None,
+        }
+    }
+}
+
+fn aging_overflow() -> CliError {
+    CliError::Validation("aging amount exceeds the supported minor-unit range".to_string())
 }
 
 /// A charge with a remaining open amount after settlement.
@@ -354,7 +427,7 @@ pub struct MatchResult {
     /// Charges with a non-zero open amount, oldest first.
     pub open_items: Vec<OpenItem>,
     /// Settlements in excess of the open charges (non-negative).
-    pub unapplied_credit: i64,
+    pub unapplied_credit: i128,
     /// Links that could not be honoured (specific method only).
     pub unmatched_links: Vec<UnmatchedLink>,
 }
@@ -362,8 +435,8 @@ pub struct MatchResult {
 impl MatchResult {
     /// Sum of all open amounts.
     #[must_use]
-    pub fn total_open(&self) -> i64 {
-        self.open_items.iter().map(|i| i.open).sum()
+    pub fn total_open(&self) -> i128 {
+        self.open_items.iter().map(|i| i128::from(i.open)).sum()
     }
 }
 
@@ -374,25 +447,37 @@ impl MatchResult {
 /// is the youngest, so it is settled last either way.
 fn sorted_movements(movements: &[Movement]) -> Vec<&Movement> {
     let mut sorted: Vec<&Movement> = movements.iter().collect();
-    sorted.sort_by_key(|m| (m.date, m.amount <= 0, m.transaction_id));
+    sorted.sort_by_key(|m| (m.date, !m.is_charge(), m.transaction_id));
     sorted
 }
 
 /// Lookup of link targets among a set of movements.
-pub(super) struct TargetIndex {
-    by_reference: HashMap<String, usize>,
-    by_id: HashMap<i64, usize>,
+pub(super) struct TargetIndex<'a> {
+    by_reference: HashMap<&'a str, &'a Movement>,
+    by_id: HashMap<i64, &'a Movement>,
 }
 
-impl TargetIndex {
-    pub(super) fn new<'a>(movements: impl IntoIterator<Item = &'a Movement>) -> Self {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct ResolvedCharge {
+    pub(super) transaction_id: i64,
+    amount: PositiveAmount,
+}
+
+impl ResolvedCharge {
+    pub(super) fn amount(self) -> i64 {
+        self.amount.get()
+    }
+}
+
+impl<'a> TargetIndex<'a> {
+    pub(super) fn new(movements: impl IntoIterator<Item = &'a Movement>) -> Self {
         let mut by_reference = HashMap::new();
         let mut by_id = HashMap::new();
-        for (i, m) in movements.into_iter().enumerate() {
-            if let Some(r) = &m.reference {
-                by_reference.entry(r.clone()).or_insert(i);
+        for movement in movements {
+            if let Some(reference) = movement.reference.as_deref() {
+                by_reference.entry(reference).or_insert(movement);
             }
-            by_id.insert(m.transaction_id, i);
+            by_id.insert(movement.transaction_id, movement);
         }
         Self {
             by_reference,
@@ -400,13 +485,12 @@ impl TargetIndex {
         }
     }
 
-    /// Position of the movement a target names: a reference match wins over
-    /// an id match.
-    fn find(&self, target: &LinkTarget) -> Option<usize> {
+    /// A reference match wins over an id match.
+    fn find(&self, target: &LinkTarget) -> Option<&'a Movement> {
         if let LinkTarget::Reference(r) = target
-            && let Some(&i) = self.by_reference.get(r)
+            && let Some(&movement) = self.by_reference.get(r.as_str())
         {
-            return Some(i);
+            return Some(movement);
         }
         target
             .fallback_id()
@@ -418,16 +502,18 @@ impl TargetIndex {
         &self,
         target: &LinkTarget,
         settlement: &Movement,
-        movements: &[&Movement],
-    ) -> Result<usize, UnmatchedReason> {
-        let i = self.find(target).ok_or(UnmatchedReason::NotFound)?;
-        let charge = movements.get(i).ok_or(UnmatchedReason::NotFound)?;
-        if charge.amount <= 0 {
-            Err(UnmatchedReason::NotACharge)
-        } else if charge.date > settlement.date {
+    ) -> Result<ResolvedCharge, UnmatchedReason> {
+        let charge = self.find(target).ok_or(UnmatchedReason::NotFound)?;
+        let AgedMovement::Charge(amount) = charge.kind else {
+            return Err(UnmatchedReason::NotACharge);
+        };
+        if charge.date > settlement.date {
             Err(UnmatchedReason::ChargeAfterSettlement)
         } else {
-            Ok(i)
+            Ok(ResolvedCharge {
+                transaction_id: charge.transaction_id,
+                amount,
+            })
         }
     }
 }
@@ -435,21 +521,22 @@ impl TargetIndex {
 /// Mutable state of a matching run.
 struct Matcher<'a> {
     sorted: Vec<&'a Movement>,
-    index: Option<TargetIndex>,
+    index: Option<TargetIndex<'a>>,
     /// Charges in processing order (including fully settled ones).
     charges: Vec<OpenItem>,
     /// Transaction id -> index into `charges`.
     charge_pos: HashMap<i64, usize>,
     /// All charges before this index have nothing open.
     fifo_start: usize,
-    unapplied: i64,
+    unapplied: i128,
     unmatched: Vec<UnmatchedLink>,
 }
 
 impl<'a> Matcher<'a> {
     fn new(movements: &'a [Movement], method: MatchMethod) -> Self {
         let sorted = sorted_movements(movements);
-        let index = (method == MatchMethod::Specific).then(|| TargetIndex::new(sorted.clone()));
+        let index =
+            (method == MatchMethod::Specific).then(|| TargetIndex::new(sorted.iter().copied()));
         Self {
             sorted,
             index,
@@ -462,14 +549,11 @@ impl<'a> Matcher<'a> {
     }
 
     fn run(mut self) -> MatchResult {
-        for pos in 0..self.sorted.len() {
-            let Some(&m) = self.sorted.get(pos) else {
-                break;
-            };
-            match m.amount.cmp(&0) {
-                Ordering::Greater => self.charge(m),
-                Ordering::Less => self.settle(m),
-                Ordering::Equal => {}
+        for movement in std::mem::take(&mut self.sorted) {
+            match &movement.kind {
+                AgedMovement::Charge(amount) => self.charge(movement, *amount),
+                AgedMovement::Settlement { amount, links } => self.settle(movement, *amount, links),
+                AgedMovement::Neutral => {}
             }
         }
         MatchResult {
@@ -479,24 +563,27 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    fn charge(&mut self, m: &Movement) {
-        let consumed = m.amount.min(self.unapplied);
-        self.unapplied -= consumed;
+    fn charge(&mut self, m: &Movement, amount: PositiveAmount) {
+        let amount = amount.get();
+        // At most one charge's worth can be consumed here. The remaining
+        // credit stays wide until the completed report is projected.
+        let consumed = amount.min(i64::try_from(self.unapplied).unwrap_or(i64::MAX));
+        self.unapplied -= i128::from(consumed);
         self.charge_pos.insert(m.transaction_id, self.charges.len());
         self.charges.push(OpenItem {
             transaction_id: m.transaction_id,
             date: m.date,
             description: m.description.clone(),
             reference: m.reference.clone(),
-            original: m.amount,
-            open: m.amount - consumed,
+            original: amount,
+            open: amount - consumed,
         });
     }
 
-    fn settle(&mut self, m: &Movement) {
-        let mut payment = m.amount.saturating_neg();
+    fn settle(&mut self, m: &Movement, amount: PositiveAmount, links: &LinkSpec) {
+        let mut payment = amount.get();
         if self.index.is_some() {
-            payment = self.apply_links(m, payment);
+            payment = self.apply_links(m, amount, links);
         }
         while payment > 0 {
             let Some(c) = self.charges.get_mut(self.fifo_start) else {
@@ -509,16 +596,22 @@ impl<'a> Matcher<'a> {
                 self.fifo_start += 1;
             }
         }
-        self.unapplied = self.unapplied.saturating_add(payment);
+        self.unapplied += i128::from(payment);
     }
 
     /// Apply `payment` to the settlement's linked charges; returns the excess.
-    fn apply_links(&mut self, m: &Movement, mut payment: i64) -> i64 {
-        let targets = match &m.links {
+    fn apply_links(&mut self, m: &Movement, amount: PositiveAmount, links: &LinkSpec) -> i64 {
+        let mut payment = amount.get();
+        let targets = match links {
             LinkSpec::None => return payment,
             LinkSpec::Invalid(raw) => {
-                self.unmatched
-                    .push(unmatched(m, raw.clone(), None, UnmatchedReason::Invalid));
+                self.unmatched.push(unmatched(
+                    m,
+                    amount,
+                    raw.clone(),
+                    None,
+                    UnmatchedReason::Invalid,
+                ));
                 return payment;
             }
             LinkSpec::Targets(targets) => targets,
@@ -527,13 +620,10 @@ impl<'a> Matcher<'a> {
             let found = self
                 .index
                 .as_ref()
-                .map_or(Err(UnmatchedReason::NotFound), |ix| {
-                    ix.resolve(target, m, &self.sorted)
-                });
+                .map_or(Err(UnmatchedReason::NotFound), |ix| ix.resolve(target, m));
             let reason = match found {
                 Err(reason) => Some(reason),
-                Ok(i) => {
-                    let t = self.sorted[i];
+                Ok(t) => {
                     let charge = self
                         .charge_pos
                         .get(&t.transaction_id)
@@ -549,8 +639,13 @@ impl<'a> Matcher<'a> {
                 }
             };
             if let Some(reason) = reason {
-                self.unmatched
-                    .push(unmatched(m, target.to_json(), Some(target.clone()), reason));
+                self.unmatched.push(unmatched(
+                    m,
+                    amount,
+                    target.to_json(),
+                    Some(target.clone()),
+                    reason,
+                ));
             }
         }
         payment
@@ -559,6 +654,7 @@ impl<'a> Matcher<'a> {
 
 fn unmatched(
     m: &Movement,
+    amount: PositiveAmount,
     link: Value,
     target: Option<LinkTarget>,
     reason: UnmatchedReason,
@@ -566,7 +662,7 @@ fn unmatched(
     UnmatchedLink {
         settlement_transaction_id: m.transaction_id,
         settlement_date: m.date,
-        settlement_amount: m.amount.saturating_neg(),
+        settlement_amount: amount.get(),
         link,
         target,
         reason,
@@ -605,77 +701,143 @@ pub fn apply_specific(movements: &[Movement]) -> MatchResult {
 /// `max_days` is `None`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Bucket {
-    pub label: String,
-    pub min_days: i64,
-    pub max_days: Option<i64>,
+    label: String,
+    min_days: i64,
+    max_days: Option<i64>,
 }
 
-/// Parse a `--buckets` spec such as `30,60,90` into strictly ascending
-/// positive integers.
-///
-/// # Errors
-///
-/// Returns [`CliError::Validation`] for empty, non-numeric, non-positive or
-/// non-ascending values.
-pub fn parse_buckets(spec: &str) -> Result<Vec<u32>, CliError> {
-    let mut bounds: Vec<u32> = Vec::new();
-    for part in spec.split(',') {
-        let part = part.trim();
-        let value: u32 = part.parse().map_err(|_| {
-            CliError::Validation(format!(
-                "invalid --buckets value '{part}': expected positive integers like 30,60,90"
-            ))
-        })?;
-        if value == 0 {
-            return Err(CliError::Validation(
-                "--buckets values must be positive integers".to_string(),
-            ));
+impl Bucket {
+    fn range(&self) -> BucketRange {
+        BucketRange {
+            start: self.min_days,
+            end: self.max_days,
         }
-        if bounds.last().is_some_and(|&prev| value <= prev) {
-            return Err(CliError::Validation(format!(
-                "--buckets values must be strictly ascending (got '{spec}')"
-            )));
+    }
+}
+
+/// Validated aging buckets covering every non-negative age.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Buckets {
+    current: Bucket,
+    bounded: Vec<Bucket>,
+    tail: Bucket,
+}
+
+impl std::str::FromStr for Buckets {
+    type Err = CliError;
+
+    fn from_str(spec: &str) -> Result<Self, Self::Err> {
+        let mut bounded = Vec::new();
+        let mut lower = 1;
+        for part in spec.split(',') {
+            let part = part.trim();
+            let upper = i64::from(parse_bucket_bound(part)?.get());
+            if upper < lower {
+                return Err(CliError::Validation(format!(
+                    "--buckets values must be strictly ascending (got '{spec}')"
+                )));
+            }
+            bounded.push(Bucket {
+                label: format!("{lower}-{upper}"),
+                min_days: lower,
+                max_days: Some(upper),
+            });
+            lower = upper + 1;
         }
-        bounds.push(value);
+        Ok(Self {
+            current: Bucket {
+                label: "Current".to_string(),
+                min_days: 0,
+                max_days: Some(0),
+            },
+            bounded,
+            tail: Bucket {
+                label: format!("{}+", lower - 1),
+                min_days: lower,
+                max_days: None,
+            },
+        })
     }
-    Ok(bounds)
 }
 
-/// Build bucket definitions: `Current` (age 0), then one bucket per bound,
-/// then an open-ended bucket past the last bound.
-#[must_use]
-pub fn build_buckets(bounds: &[u32]) -> Vec<Bucket> {
-    let mut buckets = vec![Bucket {
-        label: "Current".to_string(),
-        min_days: 0,
-        max_days: Some(0),
-    }];
-    let mut lower: i64 = 1;
-    for &b in bounds {
-        let upper = i64::from(b);
-        buckets.push(Bucket {
-            label: format!("{lower}-{upper}"),
-            min_days: lower,
-            max_days: Some(upper),
-        });
-        lower = upper + 1;
-    }
-    let last = bounds.last().map_or(0, |&b| i64::from(b));
-    buckets.push(Bucket {
-        label: format!("{last}+"),
-        min_days: lower,
-        max_days: None,
-    });
-    buckets
+fn parse_bucket_bound(part: &str) -> Result<NonZeroU32, CliError> {
+    let value = part.parse().map_err(|_| {
+        CliError::Validation(format!(
+            "invalid --buckets value '{part}': expected positive integers like 30,60,90"
+        ))
+    })?;
+    NonZeroU32::new(value).ok_or_else(|| {
+        CliError::Validation("--buckets values must be positive integers".to_string())
+    })
 }
 
-/// Index of the bucket an age (in days) falls into.
-#[must_use]
-pub fn bucket_index(buckets: &[Bucket], age_days: i64) -> usize {
-    buckets
+impl Buckets {
+    fn iter(&self) -> impl Iterator<Item = &Bucket> {
+        std::iter::once(&self.current)
+            .chain(&self.bounded)
+            .chain(std::iter::once(&self.tail))
+    }
+
+    fn classify(&self, age_days: i64) -> &Bucket {
+        if age_days <= 0 {
+            return &self.current;
+        }
+        self.bounded
+            .iter()
+            .find(|bucket| bucket.max_days.is_some_and(|max| age_days <= max))
+            .unwrap_or(&self.tail)
+    }
+
+    fn amounts<'a>(&'a self, totals: &BucketTotals) -> impl Iterator<Item = (&'a Bucket, i64)> {
+        self.iter().map(|bucket| (bucket, totals.amount(bucket)))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct BucketRange {
+    start: i64,
+    end: Option<i64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct BucketTotals(BTreeMap<BucketRange, i64>);
+
+impl BucketTotals {
+    fn amount(&self, bucket: &Bucket) -> i64 {
+        self.0.get(&bucket.range()).copied().unwrap_or_default()
+    }
+
+    fn add(&mut self, bucket: BucketRange, amount: i64) -> Result<(), CliError> {
+        let total = self.0.entry(bucket).or_default();
+        *total = total.checked_add(amount).ok_or_else(aging_overflow)?;
+        Ok(())
+    }
+
+    fn merge(&mut self, other: &Self) -> Result<(), CliError> {
+        for (&bucket, &amount) in &other.0 {
+            self.add(bucket, amount)?;
+        }
+        Ok(())
+    }
+
+    fn sum(&self) -> Result<i64, CliError> {
+        checked_sum(self.0.values().copied())
+    }
+}
+
+fn checked_sum(amounts: impl Iterator<Item = i64>) -> Result<i64, CliError> {
+    // The maximum number of i64 values in a Rust collection cannot overflow i128.
+    let total = amounts.map(i128::from).sum::<i128>();
+    i64::try_from(total).map_err(|_| aging_overflow())
+}
+
+fn bucket_ages(buckets: &Buckets, items: &[AgedItem]) -> Result<BucketTotals, CliError> {
+    items
         .iter()
-        .position(|b| b.max_days.is_none_or(|max| age_days <= max))
-        .unwrap_or(buckets.len().saturating_sub(1))
+        .try_fold(BucketTotals::default(), |mut totals, item| {
+            totals.add(buckets.classify(item.age_days).range(), item.item.open)?;
+            Ok(totals)
+        })
 }
 
 /// The value under `key` when `metadata` is a JSON object (lenient: free
@@ -741,7 +903,6 @@ pub fn parse_link_spec(metadata: Option<&str>, key: &str) -> LinkSpec {
 pub struct AgedItem {
     pub item: OpenItem,
     pub age_days: i64,
-    pub bucket: usize,
 }
 
 /// Aging result for one counterparty (or the single ungrouped group).
@@ -750,7 +911,7 @@ pub struct GroupAging {
     /// `None` when the report is not grouped.
     pub counterparty: Option<String>,
     pub items: Vec<AgedItem>,
-    pub bucket_totals: Vec<i64>,
+    bucket_totals: BucketTotals,
     pub total_open: i64,
     pub unapplied_credit: i64,
 }
@@ -767,9 +928,9 @@ impl GroupAging {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgingReport {
     pub method: MatchMethod,
-    pub buckets: Vec<Bucket>,
+    buckets: Buckets,
     pub groups: Vec<GroupAging>,
-    pub bucket_totals: Vec<i64>,
+    bucket_totals: BucketTotals,
     pub total_open: i64,
     pub unapplied_credit: i64,
     /// Net movements of the account (normal direction) as of the date.
@@ -779,6 +940,12 @@ pub struct AgingReport {
 }
 
 impl AgingReport {
+    /// The validated bucket definitions shared by this report's rows.
+    #[must_use]
+    pub const fn buckets(&self) -> &Buckets {
+        &self.buckets
+    }
+
     /// `total_open - unapplied_credit`; always equals `account_balance`.
     #[must_use]
     pub fn net(&self) -> i64 {
@@ -792,22 +959,24 @@ impl AgingReport {
 /// that is not found in its own group but names a transaction of another
 /// group is reported as [`UnmatchedReason::OtherCounterparty`] (or
 /// [`UnmatchedReason::NotACharge`]).
-#[must_use]
+///
+/// # Errors
+///
+/// Returns [`CliError::Validation`] if an amount exceeds the supported range.
 pub fn build_report(
     grouped: Vec<(Option<String>, Movement)>,
     as_of: NaiveDate,
-    buckets: Vec<Bucket>,
+    buckets: Buckets,
     method: MatchMethod,
-) -> AgingReport {
+) -> Result<AgingReport, CliError> {
     let mut by_group: BTreeMap<Option<String>, Vec<Movement>> = BTreeMap::new();
-    let mut account_balance: i64 = 0;
+    let mut account_balance: i128 = 0;
     for (key, m) in grouped {
-        account_balance += m.amount;
+        account_balance += i128::from(m.signed_amount());
         by_group.entry(key).or_default().push(m);
     }
 
-    let n = buckets.len();
-    let mut bucket_totals = vec![0i64; n];
+    let mut bucket_totals = BucketTotals::default();
     let mut groups = Vec::with_capacity(by_group.len());
     let mut unmatched_links = Vec::new();
 
@@ -816,34 +985,27 @@ pub fn build_report(
             MatchMethod::Fifo => apply_fifo(movements),
             MatchMethod::Specific => apply_specific(movements),
         };
-        let mut g_totals = vec![0i64; n];
         let items: Vec<AgedItem> = result
             .open_items
-            .iter()
+            .into_iter()
             .map(|item| {
                 let age_days = (as_of - item.date).num_days().max(0);
-                let bucket = bucket_index(&buckets, age_days);
-                g_totals[bucket] += item.open;
-                AgedItem {
-                    item: item.clone(),
-                    age_days,
-                    bucket,
-                }
+                AgedItem { item, age_days }
             })
             .collect();
-        for (total, g) in bucket_totals.iter_mut().zip(&g_totals) {
-            *total += g;
-        }
-        unmatched_links.extend(result.unmatched_links.iter().cloned().map(|mut u| {
+        let g_totals = bucket_ages(&buckets, &items)?;
+        bucket_totals.merge(&g_totals)?;
+        unmatched_links.extend(result.unmatched_links.into_iter().map(|mut u| {
             u.counterparty.clone_from(counterparty);
             u
         }));
         groups.push(GroupAging {
             counterparty: counterparty.clone(),
             items,
+            total_open: g_totals.sum()?,
             bucket_totals: g_totals,
-            total_open: result.total_open(),
-            unapplied_credit: result.unapplied_credit,
+            unapplied_credit: i64::try_from(result.unapplied_credit)
+                .map_err(|_| aging_overflow())?,
         });
     }
 
@@ -852,19 +1014,19 @@ pub fn build_report(
     }
     unmatched_links.sort_by_key(|u| (u.settlement_date, u.settlement_transaction_id));
 
-    let total_open = groups.iter().map(|g| g.total_open).sum();
-    let unapplied_credit = groups.iter().map(|g| g.unapplied_credit).sum();
+    let total_open = bucket_totals.sum()?;
+    let unapplied_credit = checked_sum(groups.iter().map(|g| g.unapplied_credit))?;
 
-    AgingReport {
+    Ok(AgingReport {
         method,
         buckets,
         groups,
         bucket_totals,
         total_open,
         unapplied_credit,
-        account_balance,
+        account_balance: i64::try_from(account_balance).map_err(|_| aging_overflow())?,
         unmatched_links,
-    }
+    })
 }
 
 /// Re-classify `NotFound` links whose target sits in another group.
@@ -872,19 +1034,14 @@ fn classify_cross_group(
     by_group: &BTreeMap<Option<String>, Vec<Movement>>,
     unmatched: &mut [UnmatchedLink],
 ) {
-    let all: Vec<&Movement> = by_group.values().flatten().collect();
-    let index = TargetIndex::new(all.iter().copied());
+    let index = TargetIndex::new(by_group.values().flatten());
     for u in unmatched
         .iter_mut()
         .filter(|u| u.reason == UnmatchedReason::NotFound)
     {
-        let found = u
-            .target
-            .as_ref()
-            .and_then(|t| index.find(t))
-            .and_then(|i| all.get(i));
+        let found = u.target.as_ref().and_then(|t| index.find(t));
         if let Some(m) = found {
-            u.reason = if m.amount > 0 {
+            u.reason = if m.is_charge() {
                 UnmatchedReason::OtherCounterparty
             } else {
                 UnmatchedReason::NotACharge
@@ -980,28 +1137,28 @@ pub fn common_kind(accounts: &[db::AccountRow]) -> Result<AgingKind, CliError> {
 /// original age and the amount still open after settlements. Unapplied
 /// credit cannot be attributed to a charge and is dropped, as are groups
 /// left without items. `account_balance` and `unmatched_links` are kept.
-pub fn restrict_to_charges(report: &mut AgingReport, keep: impl Fn(i64) -> bool) {
-    let n = report.buckets.len();
+///
+/// # Errors
+///
+/// Returns [`CliError::Validation`] if a restricted total exceeds the supported range.
+pub fn restrict_to_charges(
+    report: &mut AgingReport,
+    keep: impl Fn(i64) -> bool,
+) -> Result<(), CliError> {
     for g in &mut report.groups {
         g.items.retain(|a| keep(a.item.transaction_id));
-        g.bucket_totals = vec![0; n];
-        for a in &g.items {
-            if let Some(total) = g.bucket_totals.get_mut(a.bucket) {
-                *total += a.item.open;
-            }
-        }
-        g.total_open = g.items.iter().map(|a| a.item.open).sum();
+        g.bucket_totals = bucket_ages(&report.buckets, &g.items)?;
+        g.total_open = g.bucket_totals.sum()?;
         g.unapplied_credit = 0;
     }
     report.groups.retain(|g| !g.items.is_empty());
-    report.bucket_totals = vec![0; n];
+    report.bucket_totals = BucketTotals::default();
     for g in &report.groups {
-        for (total, v) in report.bucket_totals.iter_mut().zip(&g.bucket_totals) {
-            *total += v;
-        }
+        report.bucket_totals.merge(&g.bucket_totals)?;
     }
-    report.total_open = report.groups.iter().map(|g| g.total_open).sum();
+    report.total_open = report.bucket_totals.sum()?;
     report.unapplied_credit = 0;
+    Ok(())
 }
 
 /// One account's aging inside a multi-account report.
@@ -1017,7 +1174,7 @@ pub struct CombinedGroup {
     pub counterparty: Option<String>,
     /// `(account code, item)`, ordered by date then transaction id.
     pub items: Vec<(String, AgedItem)>,
-    pub bucket_totals: Vec<i64>,
+    bucket_totals: BucketTotals,
     pub total_open: i64,
     pub unapplied_credit: i64,
 }
@@ -1035,12 +1192,12 @@ impl CombinedGroup {
 pub struct MultiAgingReport {
     pub kind: AgingKind,
     pub method: MatchMethod,
-    pub buckets: Vec<Bucket>,
+    buckets: Buckets,
     /// Per-account reports, ordered by account code.
     pub accounts: Vec<AccountAging>,
     /// Counterparty groups combined across accounts.
     pub groups: Vec<CombinedGroup>,
-    pub bucket_totals: Vec<i64>,
+    bucket_totals: BucketTotals,
     pub total_open: i64,
     pub unapplied_credit: i64,
     /// Sum of the accounts' balances (normal direction) as of the date.
@@ -1050,6 +1207,12 @@ pub struct MultiAgingReport {
 }
 
 impl MultiAgingReport {
+    /// The validated bucket definitions shared by this report's rows.
+    #[must_use]
+    pub const fn buckets(&self) -> &Buckets {
+        &self.buckets
+    }
+
     /// `total_open - unapplied_credit`.
     #[must_use]
     pub fn net(&self) -> i64 {
@@ -1059,28 +1222,34 @@ impl MultiAgingReport {
 
 /// Combine per-account reports: totals are the sums of the accounts' totals,
 /// and each counterparty's groups are merged across accounts.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns [`CliError::Validation`] if accounts use different bucket ranges
+/// or a combined total exceeds the supported amount range.
 pub fn combine(
     kind: AgingKind,
     method: MatchMethod,
-    buckets: Vec<Bucket>,
+    buckets: Buckets,
     accounts: Vec<AccountAging>,
-) -> MultiAgingReport {
-    let n = buckets.len();
-    let mut bucket_totals = vec![0i64; n];
+) -> Result<MultiAgingReport, CliError> {
+    let mut bucket_totals = BucketTotals::default();
     let mut by_group: BTreeMap<Option<String>, CombinedGroup> = BTreeMap::new();
     let mut unmatched_links = Vec::new();
     for a in &accounts {
-        for (total, v) in bucket_totals.iter_mut().zip(&a.report.bucket_totals) {
-            *total += v;
+        if a.report.buckets != buckets {
+            return Err(CliError::Validation(
+                "cannot combine aging reports with different bucket ranges".to_string(),
+            ));
         }
+        bucket_totals.merge(&a.report.bucket_totals)?;
         for g in &a.report.groups {
             let c = by_group
                 .entry(g.counterparty.clone())
                 .or_insert_with(|| CombinedGroup {
                     counterparty: g.counterparty.clone(),
                     items: Vec::new(),
-                    bucket_totals: vec![0; n],
+                    bucket_totals: BucketTotals::default(),
                     total_open: 0,
                     unapplied_credit: 0,
                 });
@@ -1089,11 +1258,15 @@ pub fn combine(
                     .iter()
                     .map(|item| (a.account.code.clone(), item.clone())),
             );
-            for (total, v) in c.bucket_totals.iter_mut().zip(&g.bucket_totals) {
-                *total += v;
-            }
-            c.total_open += g.total_open;
-            c.unapplied_credit += g.unapplied_credit;
+            c.bucket_totals.merge(&g.bucket_totals)?;
+            c.total_open = c
+                .total_open
+                .checked_add(g.total_open)
+                .ok_or_else(aging_overflow)?;
+            c.unapplied_credit = c
+                .unapplied_credit
+                .checked_add(g.unapplied_credit)
+                .ok_or_else(aging_overflow)?;
         }
         unmatched_links.extend(a.report.unmatched_links.iter().cloned());
     }
@@ -1106,18 +1279,18 @@ pub fn combine(
         })
         .collect();
     unmatched_links.sort_by_key(|u| (u.settlement_date, u.settlement_transaction_id));
-    MultiAgingReport {
+    Ok(MultiAgingReport {
         kind,
         method,
         buckets,
-        total_open: accounts.iter().map(|a| a.report.total_open).sum(),
-        unapplied_credit: accounts.iter().map(|a| a.report.unapplied_credit).sum(),
-        account_balance: accounts.iter().map(|a| a.report.account_balance).sum(),
+        total_open: bucket_totals.sum()?,
+        unapplied_credit: checked_sum(accounts.iter().map(|a| a.report.unapplied_credit))?,
+        account_balance: checked_sum(accounts.iter().map(|a| a.report.account_balance))?,
         bucket_totals,
         groups,
         accounts,
         unmatched_links,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,7 +1537,7 @@ struct AgingScope<'a> {
     as_of: NaiveDate,
     as_of_str: String,
     currency: Currency,
-    buckets: Vec<Bucket>,
+    buckets: Buckets,
     method: MatchMethod,
     group_by: Option<&'a str>,
     link_key: Option<&'a str>,
@@ -1401,20 +1574,20 @@ fn age_account(
         });
         grouped.push((
             key,
-            Movement {
-                transaction_id: r.id,
+            Movement::new(
+                r.id,
                 date,
-                description: r.description,
-                reference: r.reference,
-                amount: scope.kind.charge_amount(r.debit_total, r.credit_total),
+                r.description,
+                r.reference,
+                scope.kind.charge_amount(r.debit_total, r.credit_total),
                 links,
-            },
+            )?,
         ));
     }
 
-    let mut report = build_report(grouped, scope.as_of, scope.buckets.clone(), scope.method);
+    let mut report = build_report(grouped, scope.as_of, scope.buckets.clone(), scope.method)?;
     if !scope.filters.is_empty() {
-        restrict_to_charges(&mut report, |id| keep.contains(&id));
+        restrict_to_charges(&mut report, |id| keep.contains(&id))?;
     }
     classify_with_db(
         conn,
@@ -1461,7 +1634,7 @@ pub(crate) fn run_to(
         Some(d) => parse_date(d, "--as-of date")?,
         None => chrono::Local::now().date_naive(),
     };
-    let buckets = build_buckets(&parse_buckets(opts.buckets)?);
+    let buckets = opts.buckets.parse()?;
     let link_key = resolve_link_key(opts.method, opts.link_key)?;
     let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
 
@@ -1486,7 +1659,7 @@ pub(crate) fn run_to(
         .into_iter()
         .map(|a| age_account(db.conn(), company, a, &scope))
         .collect::<Result<Vec<_>, _>>()?;
-    let report = combine(kind, opts.method, scope.buckets.clone(), per_account);
+    let report = combine(kind, opts.method, scope.buckets.clone(), per_account)?;
 
     let ctx = RenderContext {
         kind,
@@ -1573,7 +1746,7 @@ struct SummaryRow<'a> {
     account: Option<&'a db::AccountRow>,
     /// Counterparty label (grouped reports only).
     counterparty: Option<&'a str>,
-    bucket_totals: &'a [i64],
+    bucket_totals: &'a BucketTotals,
     total_open: i64,
     unapplied_credit: i64,
     /// `(account code, item)` for leaf rows; empty for subtotals.
@@ -1851,9 +2024,9 @@ fn render_summary_table(
             .map(|t| Cell::new(cell(t)))
             .collect();
         cells.extend(
-            row.bucket_totals
-                .iter()
-                .map(|&v| right(cell(format_amount(v, mu)))),
+            r.buckets
+                .amounts(row.bucket_totals)
+                .map(|(_, value)| right(cell(format_amount(value, mu)))),
         );
         cells.push(right(cell(format_amount(row.total_open, mu))));
         cells.push(right(cell(format_amount(row.unapplied_credit, mu))));
@@ -1932,7 +2105,7 @@ fn render_detail(
                     Cell::new(a.item.reference.as_deref().unwrap_or("")),
                     Cell::new(&a.item.description),
                     right(a.age_days.to_string()),
-                    Cell::new(bucket_label(&r.buckets, a.bucket)),
+                    Cell::new(&r.buckets.classify(a.age_days).label),
                     right(format_amount(a.item.original, mu)),
                     right(format_amount(a.item.open, mu)),
                 ]);
@@ -2122,7 +2295,7 @@ struct AgingJson<'a> {
     method: MatchMethod,
     link_key: Option<&'a str>,
     basis: &'static str,
-    buckets: &'a [Bucket],
+    buckets: Vec<&'a Bucket>,
     accounts: Vec<AccountAgingJson<'a>>,
     groups: Vec<GroupJson<'a>>,
     totals: TotalsJson<'a>,
@@ -2130,22 +2303,17 @@ struct AgingJson<'a> {
     unmatched_links: Vec<UnmatchedLinkJson<'a>>,
 }
 
-fn bucket_amounts<'a>(buckets: &'a [Bucket], amounts: &[i64]) -> Vec<BucketAmountJson<'a>> {
+fn bucket_amounts<'a>(buckets: &'a Buckets, amounts: &BucketTotals) -> Vec<BucketAmountJson<'a>> {
     buckets
-        .iter()
-        .zip(amounts)
-        .map(|(b, &amount)| BucketAmountJson {
+        .amounts(amounts)
+        .map(|(b, amount)| BucketAmountJson {
             label: &b.label,
             amount,
         })
         .collect()
 }
 
-fn bucket_label(buckets: &[Bucket], index: usize) -> &str {
-    buckets.get(index).map_or("", |b| b.label.as_str())
-}
-
-fn item_json<'a>(buckets: &'a [Bucket], account: &'a str, a: &'a AgedItem) -> OpenItemJson<'a> {
+fn item_json<'a>(buckets: &'a Buckets, account: &'a str, a: &'a AgedItem) -> OpenItemJson<'a> {
     OpenItemJson {
         account,
         transaction_id: a.item.transaction_id,
@@ -2153,15 +2321,15 @@ fn item_json<'a>(buckets: &'a [Bucket], account: &'a str, a: &'a AgedItem) -> Op
         reference: a.item.reference.as_deref(),
         description: &a.item.description,
         age_days: a.age_days,
-        bucket: bucket_label(buckets, a.bucket),
+        bucket: &buckets.classify(a.age_days).label,
         original_amount: a.item.original,
         open_amount: a.item.open,
     }
 }
 
 fn totals_json<'a>(
-    buckets: &'a [Bucket],
-    bucket_totals: &[i64],
+    buckets: &'a Buckets,
+    bucket_totals: &BucketTotals,
     total_open: i64,
     unapplied_credit: i64,
 ) -> TotalsJson<'a> {
@@ -2191,7 +2359,7 @@ fn unmatched_json(links: &[UnmatchedLink]) -> Vec<UnmatchedLinkJson<'_>> {
         .collect()
 }
 
-fn account_json<'a>(buckets: &'a [Bucket], a: &'a AccountAging) -> AccountAgingJson<'a> {
+fn account_json<'a>(buckets: &'a Buckets, a: &'a AccountAging) -> AccountAgingJson<'a> {
     let r = &a.report;
     let code = a.account.code.as_str();
     AccountAgingJson {
@@ -2265,7 +2433,7 @@ fn render_json(
         method: r.method,
         link_key: ctx.link_key,
         basis: r.method.basis(),
-        buckets: b,
+        buckets: b.iter().collect(),
         accounts: r.accounts.iter().map(|a| account_json(b, a)).collect(),
         groups,
         totals: totals_json(b, &r.bucket_totals, r.total_open, r.unapplied_credit),
@@ -2318,7 +2486,6 @@ const ITEM_COLUMNS: [&str; 8] = [
 /// bucket column) precede the row that totals them.
 fn render_csv(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
-    let n = r.buckets.len();
     let item_cols = if ctx.detail { ITEM_COLUMNS.len() } else { 0 };
 
     let mut header = vec!["row_type", "account", "counterparty"];
@@ -2337,6 +2504,7 @@ fn render_csv(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> Result<String, C
     for row in summary_rows(r, ctx) {
         if ctx.detail && row.kind == leaf {
             for (code, a) in &row.items {
+                let item_bucket = r.buckets.classify(a.age_days);
                 let mut rec = vec![
                     "item".to_string(),
                     (*code).to_string(),
@@ -2346,12 +2514,12 @@ fn render_csv(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> Result<String, C
                     a.item.reference.clone().unwrap_or_default(),
                     a.item.description.clone(),
                     a.age_days.to_string(),
-                    bucket_label(&r.buckets, a.bucket).to_string(),
+                    item_bucket.label.clone(),
                     a.item.original.to_string(),
                     a.item.open.to_string(),
                 ];
-                rec.extend((0..n).map(|i| {
-                    if i == a.bucket {
+                rec.extend(r.buckets.iter().map(|bucket| {
+                    if bucket == item_bucket {
                         a.item.open.to_string()
                     } else {
                         String::new()
@@ -2367,7 +2535,11 @@ fn render_csv(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> Result<String, C
             row.counterparty.unwrap_or_default().to_string(),
         ];
         rec.extend(std::iter::repeat_n(String::new(), item_cols));
-        rec.extend(row.bucket_totals.iter().map(ToString::to_string));
+        rec.extend(
+            r.buckets
+                .amounts(row.bucket_totals)
+                .map(|(_, value)| value.to_string()),
+        );
         rec.push(row.total_open.to_string());
         rec.push(row.unapplied_credit.to_string());
         rec.push(row.net().to_string());
@@ -2389,22 +2561,24 @@ mod tests {
     }
 
     fn mv(id: i64, date: &str, amount: i64) -> Movement {
-        Movement {
-            transaction_id: id,
-            date: d(date),
-            description: format!("txn {id}"),
-            reference: Some(format!("R{id}")),
+        movement_with_links(id, date, amount, LinkSpec::None)
+    }
+
+    fn movement_with_links(id: i64, date: &str, amount: i64, links: LinkSpec) -> Movement {
+        Movement::new(
+            id,
+            d(date),
+            format!("txn {id}"),
+            Some(format!("R{id}")),
             amount,
-            links: LinkSpec::None,
-        }
+            links,
+        )
+        .unwrap_or_else(|error| panic!("test movement: {error}"))
     }
 
     /// A settlement linked to the given targets.
     fn linked(id: i64, date: &str, amount: i64, targets: Vec<LinkTarget>) -> Movement {
-        Movement {
-            links: LinkSpec::Targets(targets),
-            ..mv(id, date, amount)
-        }
+        movement_with_links(id, date, amount, LinkSpec::Targets(targets))
     }
 
     fn by_ref(r: &str) -> LinkTarget {
@@ -2418,8 +2592,27 @@ mod tests {
             .collect()
     }
 
-    fn default_buckets() -> Vec<Bucket> {
-        build_buckets(&[30, 60, 90])
+    fn test_buckets(spec: &str) -> Buckets {
+        spec.parse()
+            .unwrap_or_else(|error| panic!("test buckets: {error}"))
+    }
+
+    fn default_buckets() -> Buckets {
+        test_buckets("30,60,90")
+    }
+
+    fn bucket_values(buckets: &Buckets, totals: &BucketTotals) -> Vec<i64> {
+        buckets.amounts(totals).map(|(_, value)| value).collect()
+    }
+
+    fn report_for(
+        grouped: Vec<(Option<String>, Movement)>,
+        as_of: NaiveDate,
+        buckets: Buckets,
+        method: MatchMethod,
+    ) -> AgingReport {
+        build_report(grouped, as_of, buckets, method)
+            .unwrap_or_else(|error| panic!("test aging report: {error}"))
     }
 
     #[test]
@@ -2484,7 +2677,10 @@ mod tests {
             ],
         ];
         for movements in cases {
-            let balance: i64 = movements.iter().map(|m| m.amount).sum();
+            let balance: i128 = movements
+                .iter()
+                .map(|m| i128::from(m.signed_amount()))
+                .sum();
             let r = apply_fifo(&movements);
             assert_eq!(r.total_open() - r.unapplied_credit, balance);
             assert!(r.total_open() == 0 || r.unapplied_credit == 0);
@@ -2493,43 +2689,108 @@ mod tests {
 
     #[test]
     fn default_buckets_labels_and_ranges() {
-        let labels: Vec<String> = default_buckets().into_iter().map(|b| b.label).collect();
+        let buckets = default_buckets();
+        let labels: Vec<&str> = buckets.iter().map(|b| b.label.as_str()).collect();
         assert_eq!(labels, ["Current", "1-30", "31-60", "61-90", "90+"]);
     }
 
     #[test]
     fn bucket_boundaries() {
         let b = default_buckets();
-        assert_eq!(bucket_index(&b, 0), 0);
-        assert_eq!(bucket_index(&b, 1), 1);
-        assert_eq!(bucket_index(&b, 30), 1);
-        assert_eq!(bucket_index(&b, 31), 2);
-        assert_eq!(bucket_index(&b, 60), 2);
-        assert_eq!(bucket_index(&b, 61), 3);
-        assert_eq!(bucket_index(&b, 90), 3);
-        assert_eq!(bucket_index(&b, 91), 4);
-        assert_eq!(bucket_index(&b, 10_000), 4);
+        assert_eq!(b.classify(0).label, "Current");
+        assert_eq!(b.classify(1).label, "1-30");
+        assert_eq!(b.classify(30).label, "1-30");
+        assert_eq!(b.classify(31).label, "31-60");
+        assert_eq!(b.classify(60).label, "31-60");
+        assert_eq!(b.classify(61).label, "61-90");
+        assert_eq!(b.classify(90).label, "61-90");
+        assert_eq!(b.classify(91).label, "90+");
+        assert_eq!(b.classify(10_000).label, "90+");
     }
 
     #[test]
     fn custom_buckets() {
-        let b = build_buckets(&[15, 45]);
+        let b = test_buckets("15,45");
         let labels: Vec<&str> = b.iter().map(|b| b.label.as_str()).collect();
         assert_eq!(labels, ["Current", "1-15", "16-45", "45+"]);
-        assert_eq!(bucket_index(&b, 16), 2);
-        assert_eq!(bucket_index(&b, 46), 3);
+        assert_eq!(b.classify(16).label, "16-45");
+        assert_eq!(b.classify(46).label, "45+");
     }
 
     #[test]
     fn parse_buckets_validation() {
-        assert_eq!(parse_buckets("30,60,90").ok(), Some(vec![30, 60, 90]));
-        assert_eq!(parse_buckets(" 7 , 14 ").ok(), Some(vec![7, 14]));
+        assert_eq!(test_buckets(" 7 , 14 "), test_buckets("7,14"));
         for bad in ["", "0,30", "30,30", "60,30", "abc", "-5", "30,,60"] {
             assert!(
-                matches!(parse_buckets(bad), Err(CliError::Validation(_))),
+                matches!(bad.parse::<Buckets>(), Err(CliError::Validation(_))),
                 "expected validation error for {bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn aging_rejects_overflow_instead_of_wrapping_bucket_total() {
+        let result = build_report(
+            vec![
+                (None, mv(1, "2026-01-01", i64::MAX)),
+                (None, mv(2, "2026-01-01", 1)),
+            ],
+            d("2026-02-01"),
+            default_buckets(),
+            MatchMethod::Fifo,
+        );
+        assert!(matches!(result, Err(CliError::Validation(_))));
+    }
+
+    #[test]
+    fn large_intermediate_credit_is_retained_until_matching_completes() {
+        let report = report_for(
+            vec![
+                (None, mv(1, "2026-01-01", -i64::MAX)),
+                (None, mv(2, "2026-01-02", -i64::MAX)),
+                (None, mv(3, "2026-01-03", i64::MAX)),
+                (None, mv(4, "2026-01-04", i64::MAX)),
+            ],
+            d("2026-02-01"),
+            default_buckets(),
+            MatchMethod::Fifo,
+        );
+        assert_eq!(report.total_open, 0);
+        assert_eq!(report.unapplied_credit, 0);
+        assert_eq!(report.account_balance, 0);
+    }
+
+    #[test]
+    fn neutral_movement_is_a_known_target_but_cannot_be_settled() {
+        let result = apply_specific(&[
+            mv(1, "2026-01-01", 0),
+            linked(2, "2026-01-02", -10, vec![LinkTarget::TransactionId(1)]),
+        ]);
+        assert_eq!(result.unapplied_credit, 10);
+        assert_eq!(
+            result.unmatched_links[0].reason,
+            UnmatchedReason::NotACharge
+        );
+    }
+
+    #[test]
+    fn combine_rejects_different_ranges_even_when_bucket_counts_match() {
+        let account = AccountAging {
+            account: account("1110", "asset"),
+            report: report_for(
+                vec![(None, mv(1, "2026-01-01", 100))],
+                d("2026-02-01"),
+                test_buckets("20,40,60"),
+                MatchMethod::Fifo,
+            ),
+        };
+        let result = combine(
+            AgingKind::Receivable,
+            MatchMethod::Fifo,
+            default_buckets(),
+            vec![account],
+        );
+        assert!(matches!(result, Err(CliError::Validation(_))));
     }
 
     #[test]
@@ -2574,23 +2835,29 @@ mod tests {
             (Some("B".to_string()), mv(5, "2026-06-01", -450)), // pays 4 + 50 over
             (Some("A".to_string()), mv(6, "2026-06-15", -100)), // pays half of 3
         ];
-        let r = build_report(grouped, as_of, default_buckets(), MatchMethod::Fifo);
+        let r = report_for(grouped, as_of, default_buckets(), MatchMethod::Fifo);
 
         assert_eq!(r.groups.len(), 2);
         let a = &r.groups[0];
         assert_eq!(a.counterparty.as_deref(), Some("A"));
-        assert_eq!(a.bucket_totals, vec![100, 200, 0, 200, 0]);
+        assert_eq!(
+            bucket_values(&r.buckets, &a.bucket_totals),
+            vec![100, 200, 0, 200, 0]
+        );
         assert_eq!(a.unapplied_credit, 0);
         let b = &r.groups[1];
-        assert_eq!(b.bucket_totals, vec![0; 5]);
+        assert_eq!(bucket_values(&r.buckets, &b.bucket_totals), vec![0; 5]);
         assert_eq!(b.unapplied_credit, 50);
 
-        assert_eq!(r.bucket_totals, vec![100, 200, 0, 200, 0]);
+        assert_eq!(
+            bucket_values(&r.buckets, &r.bucket_totals),
+            vec![100, 200, 0, 200, 0]
+        );
         assert_eq!(r.total_open, 500);
         assert_eq!(r.unapplied_credit, 50);
         assert_eq!(r.account_balance, 450);
         assert_eq!(r.net(), r.account_balance);
-        assert_eq!(r.bucket_totals.iter().sum::<i64>(), r.total_open);
+        assert_eq!(r.bucket_totals.sum().ok(), Some(r.total_open));
     }
 
     #[test]
@@ -2606,11 +2873,11 @@ mod tests {
             ]
         };
         let as_of = d("2026-03-01");
-        let ungrouped = build_report(rows(false), as_of, default_buckets(), MatchMethod::Fifo);
+        let ungrouped = report_for(rows(false), as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(ungrouped.groups.len(), 1);
         assert_eq!(ungrouped.groups[0].items[0].item.transaction_id, 2);
 
-        let grouped = build_report(rows(true), as_of, default_buckets(), MatchMethod::Fifo);
+        let grouped = report_for(rows(true), as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(grouped.groups.len(), 2);
         assert_eq!(grouped.groups[0].items[0].item.transaction_id, 1);
         assert_eq!(grouped.groups[1].items, Vec::<AgedItem>::new());
@@ -2733,10 +3000,8 @@ mod tests {
 
     #[test]
     fn specific_invalid_links_fall_back_to_fifo() {
-        let invalid = Movement {
-            links: LinkSpec::Invalid(Value::Bool(true)),
-            ..mv(9, "2026-04-04", -10)
-        };
+        let invalid =
+            movement_with_links(9, "2026-04-04", -10, LinkSpec::Invalid(Value::Bool(true)));
         let r = apply_specific(&[
             mv(1, "2026-01-01", 100),
             mv(2, "2026-02-01", 100),
@@ -2799,7 +3064,10 @@ mod tests {
             mv(6, "2026-01-05", 120),
             linked(7, "2026-01-06", -4, vec![LinkTarget::TransactionId(6)]),
         ];
-        let balance: i64 = movements.iter().map(|m| m.amount).sum();
+        let balance: i128 = movements
+            .iter()
+            .map(|m| i128::from(m.signed_amount()))
+            .sum();
         let r = apply_specific(&movements);
         assert_eq!(r.total_open() - r.unapplied_credit, balance);
         assert!(r.total_open() == 0 || r.unapplied_credit == 0);
@@ -2862,7 +3130,7 @@ mod tests {
             (b(), linked(5, "2026-01-05", -10, vec![by_ref("R9")])),
             (a(), linked(6, "2026-01-06", -1, vec![by_ref("R3")])),
         ];
-        let r = build_report(
+        let r = report_for(
             grouped,
             d("2026-02-01"),
             default_buckets(),
@@ -2895,7 +3163,7 @@ mod tests {
 
     #[test]
     fn group_net_credit() {
-        let r = build_report(
+        let r = report_for(
             vec![
                 (Some("A".to_string()), mv(1, "2026-01-01", 100)),
                 (Some("A".to_string()), mv(2, "2026-01-02", -130)),
@@ -3057,9 +3325,10 @@ mod tests {
             (Some("A".to_string()), mv(4, "2026-06-25", -150)), // FIFO -> 1
             (Some("C".to_string()), mv(5, "2026-06-25", -70)),  // credit only
         ];
-        let mut r = build_report(grouped, as_of, default_buckets(), MatchMethod::Fifo);
+        let mut r = report_for(grouped, as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(r.unapplied_credit, 70);
-        restrict_to_charges(&mut r, |id| id == 1 || id == 5);
+        restrict_to_charges(&mut r, |id| id == 1 || id == 5)
+            .unwrap_or_else(|error| panic!("restrict test report: {error}"));
 
         // Only charge 1 survives: still 180 days old, net of the payment.
         assert_eq!(r.groups.len(), 1);
@@ -3067,8 +3336,14 @@ mod tests {
         assert_eq!(r.groups[0].items.len(), 1);
         assert_eq!(r.groups[0].items[0].age_days, 180);
         assert_eq!(r.groups[0].items[0].item.open, 250);
-        assert_eq!(r.groups[0].bucket_totals, vec![0, 0, 0, 0, 250]);
-        assert_eq!(r.bucket_totals, vec![0, 0, 0, 0, 250]);
+        assert_eq!(
+            bucket_values(&r.buckets, &r.groups[0].bucket_totals),
+            vec![0, 0, 0, 0, 250]
+        );
+        assert_eq!(
+            bucket_values(&r.buckets, &r.bucket_totals),
+            vec![0, 0, 0, 0, 250]
+        );
         assert_eq!(r.total_open, 250);
         // Unapplied credit is not attributable to a charge.
         assert_eq!(r.unapplied_credit, 0);
@@ -3078,7 +3353,7 @@ mod tests {
     #[test]
     fn combine_sums_accounts_and_merges_counterparties() {
         let as_of = d("2026-06-30");
-        let east = build_report(
+        let east = report_for(
             vec![
                 (Some("A".to_string()), mv(1, "2026-06-30", 100)),
                 (Some("B".to_string()), mv(2, "2026-01-01", 50)),
@@ -3087,7 +3362,7 @@ mod tests {
             default_buckets(),
             MatchMethod::Fifo,
         );
-        let west = build_report(
+        let west = report_for(
             vec![
                 (Some("A".to_string()), mv(3, "2026-06-10", 30)),
                 (Some("A".to_string()), mv(4, "2026-06-20", -40)),
@@ -3111,12 +3386,16 @@ mod tests {
             MatchMethod::Fifo,
             default_buckets(),
             accounts,
-        );
+        )
+        .unwrap_or_else(|error| panic!("combine test reports: {error}"));
         assert_eq!(r.total_open, east.total_open + west.total_open);
         assert_eq!(r.unapplied_credit, 10);
         assert_eq!(r.account_balance, 140);
         assert_eq!(r.net(), r.account_balance);
-        assert_eq!(r.bucket_totals, vec![100, 0, 0, 0, 50]);
+        assert_eq!(
+            bucket_values(&r.buckets, &r.bucket_totals),
+            vec![100, 0, 0, 0, 50]
+        );
 
         let a = &r.groups[0];
         assert_eq!(a.counterparty.as_deref(), Some("A"));

@@ -1,5 +1,7 @@
 //! Historical spending activity and period-end net worth.
 
+use std::collections::BTreeMap;
+
 use beankeeper::types::{Amount, Currency};
 use chrono::NaiveDate;
 use clap::{Args, ValueEnum};
@@ -163,11 +165,13 @@ fn compute(db: &Db, company: &str, args: &TrendArgs) -> Result<TrendReport, CliE
         company,
         args.currency.as_deref(),
     )?;
-    let mut series = Vec::new();
-    for (index, column) in columns.iter().enumerate() {
-        let rows = column_rows(db, company, args.metric, currency.code(), column)?;
-        append_column(&mut series, args.metric, &rows, index)?;
-    }
+    let rows = columns
+        .iter()
+        .map(|column| column_rows(db, company, args.metric, currency.code(), column));
+    let series = match args.metric {
+        TrendMetric::Spending => spending_series(rows)?,
+        TrendMetric::NetWorth => net_worth_series(rows)?,
+    };
     Ok(TrendReport {
         metric: args.metric,
         period: args.period,
@@ -221,56 +225,82 @@ fn total<'a>(rows: impl Iterator<Item = &'a BalanceRow>) -> Result<i64, CliError
     })
 }
 
-/// Pure aggregation: activity for expenses, cumulative balances for net worth.
-fn append_column(
-    series: &mut Vec<Series>,
-    metric: TrendMetric,
-    rows: &[BalanceRow],
-    index: usize,
-) -> Result<(), CliError> {
-    match metric {
-        TrendMetric::Spending => {
-            if index == 0 {
-                series.extend(rows.iter().map(|row| Series {
-                    code: Some(row.code.clone()),
-                    name: row.name.clone(),
-                    amounts: Vec::new(),
-                }));
-                series.push(Series {
-                    code: None,
-                    name: "Total Spending".into(),
-                    amounts: Vec::new(),
-                });
-            }
-            for (series, row) in series.iter_mut().zip(rows) {
-                series.amounts.push(net(row)?);
-            }
-            if let Some(summary) = series.last_mut() {
-                summary.amounts.push(total(rows.iter())?);
-            }
-        }
-        TrendMetric::NetWorth => {
-            let assets = total(rows.iter().filter(|row| row.account_type == "asset"))?;
-            let liabilities = total(rows.iter().filter(|row| row.account_type == "liability"))?;
-            if index == 0 {
-                series.extend(
-                    ["Total Assets", "Total Liabilities", "Net Worth"].map(|name| Series {
-                        code: None,
-                        name: name.into(),
-                        amounts: Vec::new(),
-                    }),
-                );
-            }
-            for (series, amount) in series.iter_mut().zip([
-                assets,
-                liabilities,
-                assets.checked_sub(liabilities).ok_or_else(overflow)?,
-            ]) {
-                series.amounts.push(amount);
-            }
+struct AccountTrend {
+    name: String,
+    amounts: Vec<i64>,
+}
+
+impl Series {
+    fn summary(name: &str, amounts: Vec<i64>) -> Self {
+        Self {
+            code: None,
+            name: name.into(),
+            amounts,
         }
     }
-    Ok(())
+}
+
+fn spending_series(
+    columns: impl Iterator<Item = Result<Vec<BalanceRow>, CliError>>,
+) -> Result<Vec<Series>, CliError> {
+    let mut accounts = BTreeMap::<String, AccountTrend>::new();
+    let mut totals = Vec::new();
+    for rows in columns {
+        let completed_periods = totals.len();
+        let mut total = 0_i64;
+        for row in rows? {
+            let amount = net(&row)?;
+            let series = accounts.entry(row.code).or_insert_with(|| AccountTrend {
+                name: row.name,
+                amounts: Vec::new(),
+            });
+            if series.amounts.len() > completed_periods {
+                return Err(CliError::Database(format!(
+                    "duplicate account in spending trend period: {}",
+                    series.name
+                )));
+            }
+            series.amounts.resize(completed_periods, 0);
+            series.amounts.push(amount);
+            total = total.checked_add(amount).ok_or_else(overflow)?;
+        }
+        totals.push(total);
+    }
+
+    let mut series: Vec<Series> = accounts
+        .into_iter()
+        .map(|(code, mut account)| {
+            account.amounts.resize(totals.len(), 0);
+            Series {
+                code: Some(code),
+                name: account.name,
+                amounts: account.amounts,
+            }
+        })
+        .collect();
+    series.push(Series::summary("Total Spending", totals));
+    Ok(series)
+}
+
+fn net_worth_series(
+    columns: impl Iterator<Item = Result<Vec<BalanceRow>, CliError>>,
+) -> Result<Vec<Series>, CliError> {
+    let mut asset_series = Vec::new();
+    let mut liability_series = Vec::new();
+    let mut net_worth_series = Vec::new();
+    for rows in columns {
+        let rows = rows?;
+        let assets = total(rows.iter().filter(|row| row.account_type == "asset"))?;
+        let liabilities = total(rows.iter().filter(|row| row.account_type == "liability"))?;
+        asset_series.push(assets);
+        liability_series.push(liabilities);
+        net_worth_series.push(assets.checked_sub(liabilities).ok_or_else(overflow)?);
+    }
+    Ok(vec![
+        Series::summary("Total Assets", asset_series),
+        Series::summary("Total Liabilities", liability_series),
+        Series::summary("Net Worth", net_worth_series),
+    ])
 }
 
 fn render_table(report: &TrendReport, minor_units: u8) -> String {
@@ -343,18 +373,50 @@ mod tests {
     fn aggregation_rejects_amount_overflow() {
         assert!(net(&row("expense", i64::MIN, 1)).is_err());
         assert!(total([row("asset", i64::MAX, 0), row("asset", 1, 0)].iter()).is_err());
-        let rows = [row("asset", i64::MAX, 0), row("liability", 1, 0)];
-        assert!(append_column(&mut Vec::new(), TrendMetric::NetWorth, &rows, 0).is_err());
+        let rows = vec![row("asset", i64::MAX, 0), row("liability", 1, 0)];
+        assert!(net_worth_series(std::iter::once(Ok(rows))).is_err());
     }
 
     #[test]
     fn contra_balances_preserve_signs() -> Result<(), CliError> {
-        let mut series = Vec::new();
-        let rows = [row("asset", 0, 10), row("liability", 20, 0)];
-        append_column(&mut series, TrendMetric::NetWorth, &rows, 0)?;
+        let rows = vec![row("asset", 0, 10), row("liability", 20, 0)];
+        let series = net_worth_series(std::iter::once(Ok(rows)))?;
         assert_eq!(series[0].amounts, [-10]);
         assert_eq!(series[1].amounts, [-20]);
         assert_eq!(series[2].amounts, [10]);
+        Ok(())
+    }
+
+    #[test]
+    fn spending_aligns_reordered_added_and_missing_accounts() -> Result<(), CliError> {
+        let expense = |code: &str, amount| BalanceRow {
+            code: code.to_string(),
+            name: code.to_string(),
+            ..row("expense", amount, 0)
+        };
+        let columns = [
+            vec![expense("5000", 10), expense("5100", 20)],
+            vec![
+                expense("5100", 200),
+                expense("5000", 100),
+                expense("5200", 300),
+            ],
+            vec![expense("5200", 3000), expense("5100", 2000)],
+        ];
+        let series = spending_series(columns.into_iter().map(Ok))?;
+        let rows: Vec<_> = series
+            .iter()
+            .map(|series| (series.code.as_deref(), series.amounts.as_slice()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (Some("5000"), &[10, 100, 0][..]),
+                (Some("5100"), &[20, 200, 2000][..]),
+                (Some("5200"), &[0, 300, 3000][..]),
+                (None, &[30, 600, 5000][..]),
+            ]
+        );
         Ok(())
     }
 
