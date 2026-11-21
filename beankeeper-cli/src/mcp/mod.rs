@@ -341,6 +341,48 @@ impl LedgerServer {
             .await
     }
 
+    #[tool(description = "Create a personal or business book in an active setup generation.")]
+    async fn ledger_setup_book_create(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupBookCreate>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupBookCreate(input), context)
+            .await
+    }
+
+    #[tool(description = "Supersede a book profile during an active setup generation.")]
+    async fn ledger_setup_book_update(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupBookUpdate>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupBookUpdate(input), context)
+            .await
+    }
+
+    #[tool(
+        description = "Apply a versioned chart template to a setup book and return the created accounts."
+    )]
+    async fn ledger_setup_chart_apply(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupChartApply>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupChartApply(input), context)
+            .await
+    }
+
+    #[tool(description = "Add the owner's named account to a setup book.")]
+    async fn ledger_setup_account_add(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupAccountAdd>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupAccountAdd(input), context)
+            .await
+    }
+
     #[tool(description = "List companies in the ledger.")]
     async fn company_list(
         &self,

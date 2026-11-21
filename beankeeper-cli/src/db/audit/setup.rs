@@ -1,5 +1,8 @@
 //! Audited lifecycle for credentials limited to the active setup session.
 
+pub(crate) mod books;
+mod requests;
+
 use std::num::NonZeroI64;
 use std::str::FromStr;
 use std::time::Duration;
@@ -223,6 +226,7 @@ pub fn end(db: &Db, owner: &Actor, generation: Generation, end: End) -> Result<S
 
 /// Proof of a checked setup generation within its audited transaction.
 pub struct ActiveSession<'a> {
+    connection: &'a Connection,
     session: &'a Session,
     actor: &'a Actor,
 }
@@ -267,6 +271,7 @@ pub fn with_active_session<T>(
                 CliError::Forbidden("setup credential is not active for this generation".into())
             })?;
         write(&ActiveSession {
+            connection: conn,
             session: &session,
             actor,
         })

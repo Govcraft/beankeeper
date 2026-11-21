@@ -411,6 +411,10 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "ledger_setup_begin",
         "ledger_setup_finish",
         "ledger_setup_revoke",
+        "ledger_setup_book_create",
+        "ledger_setup_book_update",
+        "ledger_setup_chart_apply",
+        "ledger_setup_account_add",
         "budget_list",
         "budget_set",
         "budget_delete",
@@ -922,6 +926,10 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "ledger_setup_begin",
         "ledger_setup_finish",
         "ledger_setup_revoke",
+        "ledger_setup_book_create",
+        "ledger_setup_book_update",
+        "ledger_setup_chart_apply",
+        "ledger_setup_account_add",
     ] {
         assert!(!names.contains(name));
     }
@@ -2594,10 +2602,54 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     let listed = setup_client.request("tools/list", &json!({}))?;
     assert_eq!(
         tool_names(&listed)?,
-        BTreeSet::from(["ledger_setup_status"])
+        BTreeSet::from([
+            "ledger_setup_status",
+            "ledger_setup_book_create",
+            "ledger_setup_book_update",
+            "ledger_setup_chart_apply",
+            "ledger_setup_account_add",
+        ])
     );
     let status = setup_client.success("ledger_setup_status", &json!({}))?;
     assert_eq!(status["transactions"], 0);
+
+    let book = exercise_setup_books(&mut setup_client, &db, generation)?;
+    let replay = bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_path)
+        .args([
+            "--agent-token",
+            setup_token,
+            "--json",
+            "setup",
+            "book-create",
+            "home",
+            "Home",
+        ])
+        .args([
+            "--generation",
+            &generation.to_string(),
+            "--reference",
+            "home-book",
+        ])
+        .args([
+            "--purpose",
+            "personal",
+            "--base-currency",
+            "USD",
+            "--fiscal-year-start",
+            "01-01",
+        ])
+        .output()?;
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay.stdout)?["data"],
+        book
+    );
 
     let ended = bk(&path)?
         .arg("--passphrase-file")
@@ -2618,5 +2670,130 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     );
     let denied = setup_client.call("ledger_setup_status", &json!({}))?;
     assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
+    Ok(())
+}
+
+fn exercise_setup_books(
+    client: &mut Client,
+    db: &beankeeper_cli::db::Db,
+    generation: i64,
+) -> Result<Value, Box<dyn Error>> {
+    let initial = json!({
+        "target": setup_book_target("home", generation, "home-book"),
+        "name": "Home",
+        "settings": {"purpose": "personal", "base_currency":"USD", "fiscal_year_start":"01-01"}
+    });
+    let book = client.success("ledger_setup_book_create", &initial)?;
+    assert_eq!(book["profile"]["company"], "home");
+    assert_eq!(book["profile"]["purpose"], "personal");
+    let count = setup_audit_count(db)?;
+    assert_eq!(client.success("ledger_setup_book_create", &initial)?, book);
+    assert_eq!(setup_audit_count(db)?, count);
+    let mut bad = initial.clone();
+    bad["target"]["generation"] = json!(generation + 1);
+    assert_eq!(
+        payload(&client.call("ledger_setup_book_create", &bad)?)?["code"],
+        "FORBIDDEN"
+    );
+    bad["target"]["generation"] = json!(generation);
+    bad["settings"]["base_currency"] = json!("CAD");
+    assert_eq!(
+        payload(&client.call("ledger_setup_book_create", &bad)?)?["code"],
+        "VALIDATION"
+    );
+
+    let chart = json!({"target": setup_book_target("home", generation, "home-chart"), "template": "personal-v1"});
+    let chart_result = client.success("ledger_setup_chart_apply", &chart)?;
+    assert_eq!(
+        chart_result["accounts"]
+            .as_array()
+            .ok_or("missing accounts")?
+            .len(),
+        5
+    );
+    let receipt_count = setup_audit_count(db)?;
+    assert_eq!(
+        client.success("ledger_setup_chart_apply", &chart)?,
+        chart_result
+    );
+    assert_eq!(setup_audit_count(db)?, receipt_count);
+
+    let named = json!({
+        "target": setup_book_target("home", generation, "home-checking"),
+        "code":"1010", "name":"Chase Checking", "account_type":"asset"
+    });
+    let account = client.success("ledger_setup_account_add", &named)?;
+    assert_eq!(account["name"], "Chase Checking");
+    assert_eq!(client.success("ledger_setup_account_add", &named)?, account);
+
+    let revised = json!({
+        "target": setup_book_target("home", generation, "home-profile-change"),
+        "supersedes": book["profile"]["revision"],
+        "settings": {"purpose":"personal", "base_currency":"CAD", "fiscal_year_start":"07-01"}
+    });
+    let update = client.success("ledger_setup_book_update", &revised)?;
+    assert_eq!(update["supersedes"], book["profile"]["revision"]);
+    assert_eq!(update["base_currency"], "CAD");
+    assert_eq!(
+        client.success("ledger_setup_book_update", &revised)?,
+        update
+    );
+    let mut stale = revised;
+    stale["target"]["reference"] = json!("home-profile-stale");
+    assert_eq!(
+        payload(&client.call("ledger_setup_book_update", &stale)?)?["code"],
+        "VALIDATION"
+    );
+
+    assert_setup_chart_collision_rolls_back(client, db, generation)?;
+    beankeeper_cli::db::audit::verify_hash_chain(db.conn())?;
+    Ok(book)
+}
+
+fn setup_book_target(company: &str, generation: i64, reference: &str) -> Value {
+    json!({ "company": company, "generation": generation, "reference": reference })
+}
+
+fn setup_audit_count(db: &beankeeper_cli::db::Db) -> rusqlite::Result<i64> {
+    db.conn()
+        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+}
+
+fn assert_setup_chart_collision_rolls_back(
+    client: &mut Client,
+    db: &beankeeper_cli::db::Db,
+    generation: i64,
+) -> TestResult {
+    client.success(
+        "ledger_setup_book_create",
+        &json!({
+            "target": setup_book_target("studio", generation, "studio-book"),
+            "name": "Studio",
+            "settings":{"purpose":"business", "base_currency":"USD", "fiscal_year_start":"01-01"}
+        }),
+    )?;
+    client.success(
+        "ledger_setup_account_add",
+        &json!({
+            "target": setup_book_target("studio", generation, "studio-payables"),
+            "code":"2000", "name":"Trade Payables", "account_type":"liability"
+        }),
+    )?;
+    let count = setup_audit_count(db)?;
+    let failed = client.call(
+        "ledger_setup_chart_apply",
+        &json!({
+            "target": setup_book_target("studio", generation, "studio-chart"),
+            "template": "business-v1"
+        }),
+    )?;
+    assert_eq!(payload(&failed)?["code"], "VALIDATION");
+    let count_accounts: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM accounts WHERE company_slug = 'studio'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count_accounts, 1);
+    assert_eq!(setup_audit_count(db)?, count);
     Ok(())
 }

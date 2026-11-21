@@ -1,12 +1,20 @@
 //! Readiness for the selected ledger's onboarding flow.
 
-use clap::Subcommand;
+use beankeeper::types::{AccountCode, AccountType, Currency};
+use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::cli::{Cli, OutputFormat, resolve_format};
 use crate::db::{
     Actor, Db,
-    audit::setup::{self, End, Generation},
+    audit::setup::{
+        self, End, Generation,
+        books::{
+            self, BookChange, BookPurpose, BookSettings, ChartTemplate, FiscalYearStart,
+            ProfileRevision, SetupReference,
+        },
+    },
+    companies::CompanySlug,
 };
 use crate::error::CliError;
 use crate::identity;
@@ -36,6 +44,14 @@ pub enum SetupCommand {
         /// Setup generation returned by begin.
         generation: Generation,
     },
+    /// Create a personal or business book and its first profile.
+    BookCreate(BookCreateArgs),
+    /// Record a new profile revision for a book.
+    BookUpdate(BookUpdateArgs),
+    /// Create the accounts from a versioned chart template.
+    ChartApply(ChartApplyArgs),
+    /// Add a real account to a book.
+    AccountAdd(AccountAddArgs),
     /// Cancel a setup generation and deactivate its credential.
     Revoke {
         /// Setup generation returned by begin.
@@ -50,8 +66,109 @@ impl SetupCommand {
             Self::Begin { .. } => Operation::LedgerSetupBegin,
             Self::Finish { .. } => Operation::LedgerSetupFinish,
             Self::Revoke { .. } => Operation::LedgerSetupRevoke,
+            Self::BookCreate(_) => Operation::LedgerSetupBookCreate,
+            Self::BookUpdate(_) => Operation::LedgerSetupBookUpdate,
+            Self::ChartApply(_) => Operation::LedgerSetupChartApply,
+            Self::AccountAdd(_) => Operation::LedgerSetupAccountAdd,
         }
     }
+}
+
+#[derive(Debug, Args)]
+struct BookTarget {
+    /// Company slug for the book.
+    company: CompanySlug,
+    /// Active generation returned by setup begin.
+    #[arg(long)]
+    generation: Generation,
+    /// Stable request reference. Reuse it when retrying this request.
+    #[arg(long)]
+    reference: SetupReference,
+}
+
+impl BookTarget {
+    fn apply(
+        &self,
+        db: &Db,
+        actor: &Actor,
+        change: BookChange<'_>,
+    ) -> Result<serde_json::Value, CliError> {
+        books::apply(
+            db,
+            actor,
+            self.generation,
+            &self.reference,
+            &self.company,
+            change,
+        )
+    }
+}
+
+#[derive(Debug, Args)]
+struct BookSettingsArgs {
+    /// Personal or business.
+    #[arg(long)]
+    purpose: BookPurpose,
+    /// Currency used to prepare the book's accounts.
+    #[arg(long)]
+    base_currency: Currency,
+    /// First day of the fiscal year, as MM-DD.
+    #[arg(long)]
+    fiscal_year_start: FiscalYearStart,
+}
+
+impl From<&BookSettingsArgs> for BookSettings {
+    fn from(args: &BookSettingsArgs) -> Self {
+        Self {
+            purpose: args.purpose,
+            base_currency: args.base_currency,
+            fiscal_year_start: args.fiscal_year_start,
+        }
+    }
+}
+
+/// Arguments to create a book.
+#[derive(Debug, Args)]
+pub struct BookCreateArgs {
+    #[command(flatten)]
+    target: BookTarget,
+    /// Name of the personal or business book.
+    name: String,
+    #[command(flatten)]
+    settings: BookSettingsArgs,
+}
+
+/// Arguments to supersede a book profile.
+#[derive(Debug, Args)]
+pub struct BookUpdateArgs {
+    #[command(flatten)]
+    target: BookTarget,
+    /// Current profile revision being superseded.
+    #[arg(long)]
+    supersedes: ProfileRevision,
+    #[command(flatten)]
+    settings: BookSettingsArgs,
+}
+
+/// Arguments to apply a chart template.
+#[derive(Debug, Args)]
+pub struct ChartApplyArgs {
+    #[command(flatten)]
+    target: BookTarget,
+    /// Versioned chart for this book's purpose.
+    template: ChartTemplate,
+}
+
+/// Arguments to add an account during setup.
+#[derive(Debug, Args)]
+pub struct AccountAddArgs {
+    #[command(flatten)]
+    target: BookTarget,
+    code: AccountCode,
+    name: String,
+    /// Accounting classification of this account.
+    #[arg(long = "type")]
+    account_type: AccountType,
 }
 
 /// Persisted setup facts for the selected ledger.
@@ -166,6 +283,35 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
         } => begin_json(&db, &actor, name, public_key, ttl)?,
         SetupCommand::Finish { generation } => end_json(&db, &actor, *generation, End::Finish)?,
         SetupCommand::Revoke { generation } => end_json(&db, &actor, *generation, End::Revoke)?,
+        SetupCommand::BookCreate(args) => args.target.apply(
+            &db,
+            &actor,
+            BookChange::Create {
+                name: &args.name,
+                settings: (&args.settings).into(),
+            },
+        )?,
+        SetupCommand::BookUpdate(args) => args.target.apply(
+            &db,
+            &actor,
+            BookChange::Supersede {
+                revision: args.supersedes,
+                settings: (&args.settings).into(),
+            },
+        )?,
+        SetupCommand::ChartApply(args) => {
+            args.target
+                .apply(&db, &actor, BookChange::ApplyChart(args.template))?
+        }
+        SetupCommand::AccountAdd(args) => args.target.apply(
+            &db,
+            &actor,
+            BookChange::AddAccount {
+                code: &args.code,
+                name: &args.name,
+                account_type: args.account_type,
+            },
+        )?,
         SetupCommand::Status => return run_status(cli),
     };
     if cli.is_json() {

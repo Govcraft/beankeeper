@@ -82,7 +82,7 @@ Check ledger integrity: validates the schema version and database structure. Ret
 
 ```bash
 bk verify
-bk --json verify   # Returns { "data": { "schema_version": 21, "status": "healthy" } }
+bk --json verify   # Returns { "data": { "schema_version": 22, "status": "healthy" } }
 ```
 
 ### `bk export`
@@ -235,6 +235,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | Tool | Arguments / behavior |
 |------|----------------------|
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
+| `ledger_setup_book_create`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Apply book, profile, chart, and account setup requests using a live generation and request reference |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
@@ -303,6 +304,37 @@ The owner ends the session with `bk setup finish GENERATION` or
 `generation`. Repeating the same terminal action returns the existing session.
 Its credential is revoked when the terminal state commits.
 
+### Books, profiles, and charts
+
+A personal book and a business book use separate company slugs. Supply
+`target` with `company`, `generation`, and a stable `reference` of up to 128
+bytes on each MCP request. Reuse the same reference with the same inputs to
+recover the original response. Changing the inputs under that reference
+returns `VALIDATION`.
+
+| Tool | Additional inputs |
+|------|-------------------|
+| `ledger_setup_book_create` | `name` and `settings` containing `purpose` (`personal` or `business`), `base_currency` and `fiscal_year_start` (`MM-DD`) |
+| `ledger_setup_book_update` | `supersedes` with the current profile revision and the new `settings` |
+| `ledger_setup_chart_apply` | `template`, either `personal-v1` or `business-v1`, matching the book's purpose |
+| `ledger_setup_account_add` | `code`, `name`, and `account_type` |
+
+Supply the active setup credential through the usual agent token option to
+create a calendar-year personal book in USD.
+
+```bash
+bk --json setup book-create home "Home" --generation 1 --reference home-book \
+  --purpose personal --base-currency USD --fiscal-year-start 01-01
+bk --json setup chart-apply home personal-v1 --generation 1 --reference home-chart
+bk --json setup account-add home 1010 "Chase Checking" --type asset \
+  --generation 1 --reference home-checking
+```
+
+Use `bk setup book-update COMPANY --supersedes REVISION` with the new
+profile flags, active generation and a fresh reference to record a correction.
+The chart operation commits all its accounts together. Choose a separate
+account code for each real account.
+
 ### Report kinds
 
 `report.kind` accepts `trial-balance`, `balance`,
@@ -317,7 +349,9 @@ Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve
 `txn_reject`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
-`ledger_setup_begin`, `ledger_setup_finish`, and `ledger_setup_revoke` from the router.
+`ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
+`ledger_setup_book_create`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
+and `ledger_setup_account_add` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement

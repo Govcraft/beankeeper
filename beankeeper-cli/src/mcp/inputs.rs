@@ -2,7 +2,7 @@
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, Currency},
+    types::{AccountCode, AccountType, Currency},
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -14,6 +14,12 @@ use super::input_values::{
     SecuritySymbol, Text,
 };
 use crate::commands::{reference::TransactionReference, report_periods::CompareArg};
+use crate::db::audit::setup::{
+    Generation,
+    books::{
+        BookPurpose, BookSettings, ChartTemplate, FiscalYearStart, ProfileRevision, SetupReference,
+    },
+};
 use crate::db::{
     ids::{EntryId, TransactionId},
     investments::LotId,
@@ -263,6 +269,68 @@ pub(super) struct LedgerSetupBegin {
 #[serde(deny_unknown_fields)]
 pub(super) struct LedgerSetupEnd {
     pub generation: crate::db::audit::setup::Generation,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SetupTarget {
+    /// Company slug of the book being set up.
+    pub company: Company,
+    /// Active setup generation.
+    pub generation: Generation,
+    /// Stable reference to reuse when retrying this request.
+    pub reference: Text<SetupReference>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SetupSettings {
+    pub purpose: BookPurpose,
+    pub base_currency: CurrencyCode,
+    pub fiscal_year_start: Text<FiscalYearStart>,
+}
+
+impl From<SetupSettings> for BookSettings {
+    fn from(settings: SetupSettings) -> Self {
+        Self {
+            purpose: settings.purpose,
+            base_currency: settings.base_currency.into_inner(),
+            fiscal_year_start: settings.fiscal_year_start.into_inner(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupBookCreate {
+    pub target: SetupTarget,
+    pub name: String,
+    pub settings: SetupSettings,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupBookUpdate {
+    pub target: SetupTarget,
+    /// Current profile revision being superseded.
+    pub supersedes: ProfileRevision,
+    pub settings: SetupSettings,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupChartApply {
+    pub target: SetupTarget,
+    pub template: ChartTemplate,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupAccountAdd {
+    pub target: SetupTarget,
+    pub code: Account,
+    pub name: String,
+    pub account_type: Text<AccountType>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

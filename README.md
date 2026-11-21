@@ -463,6 +463,7 @@ mutation tools are absent and cannot be called.
 | Tools | Purpose |
 | --- | --- |
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
+| `ledger_setup_book_create`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure personal and business books, charts, and accounts with an active setup grant |
 | `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `company_list`, `company_show` | Inspect companies |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |

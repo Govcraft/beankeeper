@@ -12,6 +12,7 @@ use crate::cli::{
 };
 use crate::commands;
 use crate::commands::txn::{PostingMode, PostingRequest};
+use crate::db::audit::setup::books::{self, BookChange};
 use crate::db::{Actor, Db, audit::MetadataTarget, metadata};
 use crate::error::CliError;
 use crate::operation::Operation;
@@ -40,6 +41,10 @@ requests! {
     LedgerSetupBegin(LedgerSetupBegin),
     LedgerSetupFinish(LedgerSetupEnd),
     LedgerSetupRevoke(LedgerSetupEnd),
+    LedgerSetupBookCreate(LedgerSetupBookCreate),
+    LedgerSetupBookUpdate(LedgerSetupBookUpdate),
+    LedgerSetupChartApply(LedgerSetupChartApply),
+    LedgerSetupAccountAdd(LedgerSetupAccountAdd),
     SecurityCreate(SecurityCreate),
     SecurityList(CompanyScope),
     SecurityPrice(SecurityPrice),
@@ -104,6 +109,40 @@ impl Request {
                 input.generation,
                 crate::db::audit::setup::End::Revoke,
             )),
+            Self::LedgerSetupBookCreate(input) => setup_book_change(
+                db,
+                actor,
+                input.target,
+                BookChange::Create {
+                    name: &input.name,
+                    settings: input.settings.into(),
+                },
+            ),
+            Self::LedgerSetupBookUpdate(input) => setup_book_change(
+                db,
+                actor,
+                input.target,
+                BookChange::Supersede {
+                    revision: input.supersedes,
+                    settings: input.settings.into(),
+                },
+            ),
+            Self::LedgerSetupChartApply(input) => setup_book_change(
+                db,
+                actor,
+                input.target,
+                BookChange::ApplyChart(input.template),
+            ),
+            Self::LedgerSetupAccountAdd(input) => setup_book_change(
+                db,
+                actor,
+                input.target,
+                BookChange::AddAccount {
+                    code: &input.code.into_inner(),
+                    name: &input.name,
+                    account_type: input.account_type.into_inner(),
+                },
+            ),
             Self::Report(input) => super::report_input::execute(db, input),
             Self::SecurityCreate(input) => call_security_create(db, actor, input),
             Self::SecurityList(input) => call_security_list(db, actor, input),
@@ -139,6 +178,22 @@ impl Request {
             Self::AuditLog(input) => audit_log(db, input),
         }
     }
+}
+
+fn setup_book_change(
+    db: &Db,
+    actor: &Actor,
+    target: inputs::SetupTarget,
+    change: BookChange<'_>,
+) -> Response {
+    unpaged(books::apply(
+        db,
+        actor,
+        target.generation,
+        &target.reference.into_inner(),
+        &target.company.into_inner(),
+        change,
+    ))
 }
 
 fn call_security_create(db: &Db, actor: &Actor, input: inputs::SecurityCreate) -> Response {
