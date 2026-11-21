@@ -573,8 +573,8 @@ fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
     let command = AuditCommand::Log {
         agent: optional_text(input.agent),
         company: optional_text(input.company),
-        entity: input.entity.map(Into::into),
-        action: input.action.map(Into::into),
+        entity: input.entity,
+        action: input.action,
         limit: input.limit.as_ref().map_or(50, PageLimit::get),
         offset: input.offset.as_ref().map_or(0, PageOffset::get),
     };
@@ -774,11 +774,6 @@ convert!(OnConflictArg => cli::OnConflictArg { Error, Skip });
 convert!(AccountTypeArg => cli::AccountTypeArg { Asset, Liability, Equity, Revenue, Expense });
 convert!(DirectionArg => cli::DirectionArg { Debit, Credit });
 convert!(ClearanceArg => cli::ClearanceArg { Uncleared, Cleared, Reconciled });
-convert!(AuditEntityArg => cli::AuditEntityArg { Period, Policy, Entry, Transaction, Budget, Account, Company });
-convert!(AuditActionArg => cli::AuditActionArg {
-    PeriodClose, PeriodReopen, PolicyChange, MetadataSet, MetadataUnset, Create, StatusChange,
-    Reverse, Correlate, BudgetSet, BudgetDelete, AccountDelete, CompanyDelete,
-});
 convert!(PeriodArg => commands::report_periods::PeriodArg { Month, Quarter, Year });
 convert!(TrendMetricArg => commands::report_trend::TrendMetric { Spending, NetWorth });
 convert!(AgingMethodArg => cli::AgingMethodArg { Fifo, Specific });
