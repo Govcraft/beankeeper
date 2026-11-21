@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, Sha256Hex};
 use chrono::{SecondsFormat, Utc};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
@@ -257,17 +257,17 @@ fn entry_json(e: &EntryRow, clearings: Option<&[Clearing]>) -> EntryJson {
 }
 
 #[derive(Serialize)]
-pub struct AttachmentJson {
+pub struct AttachmentJson<'a> {
     id: i64,
-    document_type: String,
-    uri: String,
-    hash: Option<String>,
-    original_filename: Option<String>,
-    attached_at: String,
+    document_type: &'static str,
+    uri: &'a str,
+    hash: Option<&'a str>,
+    original_filename: Option<&'a str>,
+    attached_at: &'a str,
 }
 
 #[derive(Serialize)]
-struct TransactionWithAttachmentsJson {
+struct TransactionWithAttachmentsJson<'a> {
     id: i64,
     description: String,
     metadata: Option<String>,
@@ -278,7 +278,7 @@ struct TransactionWithAttachmentsJson {
     currency: String,
     date: String,
     entries: Vec<EntryJson>,
-    attachments: Vec<AttachmentJson>,
+    attachments: Vec<AttachmentJson<'a>>,
 }
 
 #[derive(Serialize)]
@@ -424,7 +424,7 @@ pub fn render_transactions_with_attachments<
     clearings_map: &HashMap<i64, Vec<Clearing>, U>,
     meta: Meta,
 ) -> Result<String, CliError> {
-    let rows: Vec<TransactionWithAttachmentsJson> = transactions
+    let rows: Vec<_> = transactions
         .iter()
         .map(|txn| {
             let entries = entries_map
@@ -445,11 +445,11 @@ pub fn render_transactions_with_attachments<
                     rows.iter()
                         .map(|a| AttachmentJson {
                             id: a.id,
-                            document_type: a.document_type.clone(),
-                            uri: a.uri.clone(),
-                            hash: a.hash.clone(),
-                            original_filename: a.original_filename.clone(),
-                            attached_at: a.attached_at.clone(),
+                            document_type: a.document_type.as_str(),
+                            uri: &a.uri,
+                            hash: a.hash.as_ref().map(Sha256Hex::as_str),
+                            original_filename: a.original_filename.as_deref(),
+                            attached_at: &a.attached_at,
                         })
                         .collect()
                 })

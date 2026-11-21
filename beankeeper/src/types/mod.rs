@@ -22,7 +22,9 @@ pub use amount::{Amount, AmountError};
 pub use clearance::{ClearanceStatus, ParseClearanceError};
 pub use currency::{Currency, CurrencyError};
 pub use debit_credit::{DebitCreditError, DebitOrCredit};
-pub use document::{DocumentType, DocumentTypeError, SourceDocument, SourceDocumentError};
+pub use document::{
+    DocumentType, DocumentTypeError, Sha256Hex, Sha256HexError, SourceDocument, SourceDocumentError,
+};
 pub use entry::{ClearedEntry, Entry, EntryError};
 pub use idempotency::{IdempotencyKey, IdempotencyKeyError};
 pub use money::{Money, MoneyError};

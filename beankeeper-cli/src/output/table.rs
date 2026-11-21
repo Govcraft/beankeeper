@@ -614,18 +614,15 @@ pub fn render_attachments(attachments: &[AttachmentRow], use_color: bool) -> Str
     for att in attachments {
         let hash_suffix = att
             .hash
-            .as_deref()
-            .map(|h| {
-                let short = &h[..h.len().min(12)];
-                format!("  ({short})")
-            })
+            .as_ref()
+            .map(|hash| format!("  ({})", hash.short()))
             .unwrap_or_default();
 
         let filename = att.original_filename.as_deref().unwrap_or("(no filename)");
 
         lines.push(format!(
             "    [{doc_type}] {filename}{hash_suffix}",
-            doc_type = styled(&att.document_type, cyan_style(), use_color),
+            doc_type = styled(att.document_type.as_str(), cyan_style(), use_color),
         ));
     }
 
