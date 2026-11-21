@@ -81,7 +81,10 @@ fn run_limit(
             } => {
                 let company = company
                     .as_deref()
-                    .or(cli.company.as_deref())
+                    .or(cli
+                        .company
+                        .as_ref()
+                        .map(crate::db::companies::CompanySlug::as_str))
                     .ok_or_else(|| CliError::Usage("agent limit set requires --company".into()))?;
                 let currency = currency.resolve()?;
                 let parse = |value: &String| super::txn::parse_amount_to_minor(value, currency);
@@ -102,7 +105,10 @@ fn run_limit(
                 let limits = spend_limits::list(
                     db.conn(),
                     parse_agent_uri(agent_uri)?.as_str(),
-                    company.as_deref().or(cli.company.as_deref()),
+                    company.as_deref().or(cli
+                        .company
+                        .as_ref()
+                        .map(crate::db::companies::CompanySlug::as_str)),
                 )?;
                 serde_json::to_value(limits.iter().map(SpendLimitJson::from).collect::<Vec<_>>())
             }
@@ -111,7 +117,10 @@ fn run_limit(
                     db.conn(),
                     actor,
                     parse_agent_uri(agent_uri)?.as_str(),
-                    company.as_deref().or(cli.company.as_deref()),
+                    company.as_deref().or(cli
+                        .company
+                        .as_ref()
+                        .map(crate::db::companies::CompanySlug::as_str)),
                 )?;
                 return Ok(serde_json::json!({"cleared": cleared}));
             }

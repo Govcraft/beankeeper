@@ -289,7 +289,7 @@ mod tests {
             "1000",
         ])
         .map_err(|error| CliError::Usage(error.to_string()))?;
-        assert_eq!(crate::cli::require_company(&cli)?, "acme");
+        assert_eq!(crate::cli::require_company(&cli)?.as_str(), "acme");
         let Command::Investment(args) = cli.command else {
             return Err(CliError::General("expected investment command".into()));
         };

@@ -183,27 +183,27 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     match &cli.command {
         Command::Setup(command) => setup::run(cli, command),
         Command::Summary(args) => {
-            let company = require_company(cli)?;
-            summary::run(cli, &company, args)
+            let company = require_company(cli)?.as_str();
+            summary::run(cli, company, args)
         }
         Command::Period(command) => {
-            let company = require_company(cli)?;
-            period::run(cli, &company, command)
+            let company = require_company(cli)?.as_str();
+            period::run(cli, company, command)
         }
         Command::Backup { output, force } => backup::backup(cli, output, *force),
         Command::Restore { input, force } => backup::restore(cli, input, *force),
         Command::Security(_) | Command::Investment(_) => {
-            let company = require_company(cli)?;
-            investment::run(cli, &company)
+            let company = require_company(cli)?.as_str();
+            investment::run(cli, company)
         }
         Command::Schedule(args) => {
-            let company = require_company(cli)?;
-            schedule::run(cli, &company, &args.command)
+            let company = require_company(cli)?.as_str();
+            schedule::run(cli, company, &args.command)
         }
         Command::Loan(args) => loan::run(cli, &args.command),
         Command::Rule(args) => {
-            let company = require_company(cli)?;
-            rule::run(cli, &company, &args.command)
+            let company = require_company(cli)?.as_str();
+            rule::run(cli, company, &args.command)
         }
         Command::Key(_) | Command::Agent(_) => agent::run(cli),
         Command::Policy(command) => policy::run(cli, command),
@@ -235,8 +235,8 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         Command::Company(sub) => company::run(cli, sub),
 
         Command::Account(args) => {
-            let company = require_company(cli)?;
-            account::run(cli, &company, &args.command)
+            let company = require_company(cli)?.as_str();
+            account::run(cli, company, &args.command)
         }
 
         Command::Txn(args) => {
@@ -244,19 +244,19 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             if matches!(args.command.as_ref(), crate::cli::TxnCommand::Reconcile) {
                 txn::run_reconcile_all(cli, crate::db::companies::AllCompanies)
             } else {
-                let company = require_company(cli)?;
-                txn::run(cli, &company, args.command.as_ref(), meta)
+                let company = require_company(cli)?.as_str();
+                txn::run(cli, company, args.command.as_ref(), meta)
             }
         }
 
         Command::Budget(args) => {
-            let company = require_company(cli)?;
-            budget::run(cli, &company, &args.command)
+            let company = require_company(cli)?.as_str();
+            budget::run(cli, company, &args.command)
         }
 
         Command::Report(args) => {
-            let company = require_company(cli)?;
-            report::run(cli, &company, &args.command)
+            let company = require_company(cli)?.as_str();
+            report::run(cli, company, &args.command)
         }
 
         // Audit is cross-company by design, so --company is not required.

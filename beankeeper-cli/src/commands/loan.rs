@@ -148,15 +148,15 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
                 schedule.payments.len()
             ))
         })?;
-    let company = require_company(cli)?;
+    let company = require_company(cli)?.as_str();
     let db = cli.open_db()?;
-    crate::db::get_company(db.conn(), &company)?;
+    crate::db::get_company(db.conn(), company)?;
     for (code, expected) in [
         (&args.liability, "liability"),
         (&args.interest_account, "expense"),
         (&args.paying_account, "asset"),
     ] {
-        let account = crate::db::accounts::get_account(db.conn(), &company, code)?;
+        let account = crate::db::accounts::get_account(db.conn(), company, code)?;
         if account.account_type != expected {
             return Err(CliError::Validation(format!(
                 "loan account '{code}' must have type {expected}, found {}",
@@ -186,7 +186,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         on_conflict: args.on_conflict,
         tax: Vec::new(),
     });
-    let result = super::txn::execute_json(cli, &db, &company, &post, &cli.principal())?;
+    let result = super::txn::execute_json(cli, &db, company, &post, &cli.principal())?;
     // On a skipped reference the existing transaction may have different terms;
     // return only its identity/status, never claim that it contains this split.
     if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {
@@ -200,7 +200,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
     match resolve_format(None, cli) {
         OutputFormat::Json => println!(
             "{}",
-            json::envelope_ok(cli.meta("loan.pay", Some(&company)), &result,)?
+            json::envelope_ok(cli.meta("loan.pay", Some(company)), &result,)?
         ),
         OutputFormat::Table => println!("{status} transaction #{id}"),
         OutputFormat::Csv => {

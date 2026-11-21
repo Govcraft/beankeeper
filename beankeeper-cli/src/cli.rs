@@ -6,6 +6,7 @@ use beankeeper::types::{Currency, CurrencyError};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::db::companies::CompanySlug;
 use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 use crate::operation::Operation;
@@ -40,7 +41,7 @@ pub struct Cli {
 
     /// Company slug.
     #[arg(long, env = "BEANKEEPER_COMPANY")]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 
     /// Principal recorded in the audit trail for mutating operations.
     ///
@@ -583,7 +584,7 @@ pub struct SecurityArgs {
     pub command: SecurityCommand,
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Create securities and record their dated prices.
@@ -643,7 +644,7 @@ pub struct InvestmentArgs {
     pub command: InvestmentCommand,
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Inputs common to purchases and sales.
@@ -738,7 +739,7 @@ pub struct ScheduleArgs {
     pub command: ScheduleCommand,
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Create, inspect, post, and cancel scheduled obligations.
@@ -829,7 +830,7 @@ pub struct LoanArgs {
     pub command: LoanCommand,
     /// Company slug (required for pay).
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Original fixed-rate loan terms, shared by schedule and pay.
@@ -898,7 +899,7 @@ pub struct RuleArgs {
     pub command: RuleCommand,
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Literal description rules applied to CSV and OFX bank imports.
@@ -1005,7 +1006,7 @@ pub struct AccountArgs {
 
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Arguments for transaction commands.
@@ -1031,7 +1032,7 @@ pub struct TxnArgs {
 
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Arguments for report commands.
@@ -1057,7 +1058,7 @@ pub struct ReportArgs {
 
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Arguments for budget commands.
@@ -1083,7 +1084,7 @@ pub struct BudgetArgs {
 
     /// Company slug.
     #[arg(long, global = true)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 }
 
 /// Budget subcommands.
@@ -2651,7 +2652,7 @@ pub fn resolve_format(command_format: Option<OutputFormat>, cli: &Cli) -> Output
 ///
 /// Returns [`CliError::Usage`] when neither `--company` flag nor
 /// `BEANKEEPER_COMPANY` env var is set.
-pub fn require_company(cli: &Cli) -> Result<String, CliError> {
+pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
     let cmd_company = match &cli.command {
         Command::Security(args) => args.company.as_ref(),
         Command::Investment(args) => args.company.as_ref(),
@@ -2665,11 +2666,7 @@ pub fn require_company(cli: &Cli) -> Result<String, CliError> {
         _ => None,
     };
 
-    if let Some(slug) = cmd_company {
-        return Ok(slug.clone());
-    }
-
-    cli.company.clone().ok_or_else(|| {
+    cmd_company.or(cli.company.as_ref()).ok_or_else(|| {
         CliError::Usage("missing required --company flag or BEANKEEPER_COMPANY env var".into())
     })
 }
@@ -2710,7 +2707,27 @@ mod tests {
         let cli = Cli::parse_from(["bk", "--company", "acme", "verify"]);
         let result = require_company(&cli);
         assert!(result.is_ok());
-        assert_eq!(result.ok(), Some("acme".into()));
+        assert_eq!(result.ok().map(CompanySlug::as_str), Some("acme"));
+    }
+
+    #[test]
+    fn company_options_parse_the_same_slug_type() -> Result<(), CliError> {
+        for args in [
+            ["bk", "--company", "acme-1", "account", "list"],
+            ["bk", "account", "--company", "acme-1", "list"],
+        ] {
+            let cli = Cli::parse_from(args);
+            let company: &CompanySlug = require_company(&cli)?;
+            assert_eq!(company.as_str(), "acme-1");
+        }
+
+        for args in [
+            ["bk", "--company", "ACME", "account", "list"],
+            ["bk", "account", "--company", "ACME", "list"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        Ok(())
     }
 
     #[test]
