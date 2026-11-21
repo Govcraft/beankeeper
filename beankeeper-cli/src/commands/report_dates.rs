@@ -133,24 +133,24 @@ pub(super) fn resolve(sub: &ReportCommand, today: NaiveDate) -> Result<ReportCom
         ReportCommand::TaxSummary { from, to, .. } => {
             resolve_bounds(from, to, true, today)?;
         }
-        ReportCommand::BalanceSheet { to, .. } | ReportCommand::Reconciliation { to, .. } => {
+        ReportCommand::BalanceSheet { to, .. } => {
             resolve_bounds(&mut None, to, false, today)?;
         }
-        ReportCommand::Aging { as_of, .. } => {
+        ReportCommand::Reconciliation(args) => {
+            resolve_bounds(&mut None, &mut args.to, false, today)?;
+        }
+        ReportCommand::Aging(args) => {
+            let as_of = &mut args.as_of;
             if let Some(value) = as_of.as_deref() {
                 parse_date("--as-of", value)?;
             } else {
                 *as_of = Some(today.to_string());
             }
         }
-        ReportCommand::ScheduleC(args) => {
-            resolve_bounds(&mut args.from, &mut args.to, true, today)?;
-        }
-        ReportCommand::Vendor1099(args) => {
-            resolve_bounds(&mut args.period.from, &mut args.period.to, true, today)?;
-        }
-        // These reports resolve and retain typed date ranges in their computations.
-        ReportCommand::IncomeStatement { .. }
+        // These commands resolve their own date or month windows.
+        ReportCommand::ScheduleC(_)
+        | ReportCommand::Vendor1099(_)
+        | ReportCommand::IncomeStatement { .. }
         | ReportCommand::TrialBalance { .. }
         | ReportCommand::Trend(_)
         | ReportCommand::CashFlow(_)

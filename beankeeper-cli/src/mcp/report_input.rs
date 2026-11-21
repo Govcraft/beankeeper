@@ -208,7 +208,7 @@ fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
             "aging requires at least one account".into(),
         ));
     }
-    Ok(ReportCommand::Aging {
+    Ok(ReportCommand::Aging(crate::cli::AgingCommandArgs {
         account: text_list(input.account),
         include_children: input.include_children,
         as_of: optional_text(input.as_of),
@@ -220,11 +220,11 @@ fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
         detail: input.detail,
         group_across_accounts: input.group_across_accounts,
         filter_metadata: input.filter_metadata,
-    })
+    }))
 }
 
 fn reconciliation(input: ReconciliationInput) -> ReportCommand {
-    ReportCommand::Reconciliation {
+    ReportCommand::Reconciliation(crate::cli::ReconciliationCommandArgs {
         mode: input.mode.map(Into::into).unwrap_or_default(),
         link_key: input.link_key,
         account: input.account.to_string(),
@@ -234,7 +234,7 @@ fn reconciliation(input: ReconciliationInput) -> ReportCommand {
         filter_metadata: input.filter_metadata,
         group_by_metadata: input.group_by_metadata,
         currency: optional_text(input.currency),
-    }
+    })
 }
 
 fn cash_flow(input: CashFlowInput) -> Result<ReportCommand, CliError> {

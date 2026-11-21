@@ -99,53 +99,6 @@ pub struct LedgerReport {
     pub accounts: Vec<LedgerAccount>,
 }
 
-/// Dispatch entry point for `bk report ledger` from the report subcommand router.
-///
-/// # Errors
-///
-/// Returns [`CliError`] if `sub` is not a ledger subcommand or the report fails.
-pub fn run_command(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    sub: &crate::cli::ReportCommand,
-    format: OutputFormat,
-    use_color: bool,
-) -> Result<(), CliError> {
-    let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    run_command_to(cli, db, company, sub, &mut output)
-}
-
-pub(crate) fn run_command_to(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    sub: &crate::cli::ReportCommand,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let crate::cli::ReportCommand::Ledger {
-        account,
-        from,
-        to,
-        currency,
-        filter_metadata,
-    } = sub
-    else {
-        return Err(CliError::General(
-            "expected report ledger subcommand".into(),
-        ));
-    };
-    let opts = LedgerOptions {
-        accounts: account,
-        from: from.as_deref(),
-        to: to.as_deref(),
-        currency: currency.as_deref(),
-        filter_metadata,
-    };
-    run_to(cli, db, company, &opts, output)
-}
-
 /// Execute `bk report ledger`.
 ///
 /// # Errors

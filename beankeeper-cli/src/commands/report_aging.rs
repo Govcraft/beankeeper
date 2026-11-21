@@ -1485,50 +1485,45 @@ pub fn run_command(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
-    let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    run_command_to(cli, db, company, sub, &mut output)
-}
-
-pub(crate) fn run_command_to(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    sub: &ReportCommand,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let ReportCommand::Aging {
-        account,
-        include_children,
-        as_of,
-        buckets,
-        group_by_metadata,
-        currency,
-        method,
-        link_key,
-        detail,
-        group_across_accounts,
-        filter_metadata,
-    } = sub
-    else {
+    let ReportCommand::Aging(args) = sub else {
         return Err(CliError::General(
-            "internal error: not an aging subcommand".to_string(),
+            "internal error: not an aging subcommand".into(),
         ));
     };
-    let opts = AgingOptions {
-        accounts: account,
-        include_children: *include_children,
-        as_of: as_of.as_deref(),
-        buckets,
-        group_by_metadata: group_by_metadata.as_deref(),
-        currency: currency.as_deref(),
-        method: (*method).into(),
-        link_key: link_key.as_deref(),
-        detail: *detail,
-        group_across_accounts: *group_across_accounts,
-        filter_metadata,
-    };
-    run_to(cli, db, company, &opts, output)
+    let mut stdout = std::io::stdout().lock();
+    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
+    run_to(cli, db, company, &args.into(), &mut output)
+}
+
+impl<'a> From<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
+    fn from(args: &'a crate::cli::AgingCommandArgs) -> Self {
+        let crate::cli::AgingCommandArgs {
+            account,
+            include_children,
+            as_of,
+            buckets,
+            group_by_metadata,
+            currency,
+            method,
+            link_key,
+            detail,
+            group_across_accounts,
+            filter_metadata,
+        } = args;
+        Self {
+            accounts: account,
+            include_children: *include_children,
+            as_of: as_of.as_deref(),
+            buckets,
+            group_by_metadata: group_by_metadata.as_deref(),
+            currency: currency.as_deref(),
+            method: (*method).into(),
+            link_key: link_key.as_deref(),
+            detail: *detail,
+            group_across_accounts: *group_across_accounts,
+            filter_metadata,
+        }
+    }
 }
 
 /// Everything shared by the per-account aging runs.

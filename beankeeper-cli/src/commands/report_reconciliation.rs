@@ -28,7 +28,7 @@ use chrono::NaiveDate;
 use rusqlite::{Connection, types::Type};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use crate::cli::{Cli, OutputFormat, ReconciliationMode, ReportCommand};
+use crate::cli::{Cli, OutputFormat, ReconciliationMode};
 
 mod settlement;
 use crate::commands::txn::parse_amount_to_minor;
@@ -328,10 +328,10 @@ pub(crate) fn run_command_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    sub: &ReportCommand,
+    command: &crate::cli::ReconciliationCommandArgs,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let ReportCommand::Reconciliation {
+    let crate::cli::ReconciliationCommandArgs {
         account,
         to,
         statement_balance,
@@ -341,10 +341,7 @@ pub(crate) fn run_command_to(
         currency,
         mode,
         link_key,
-    } = sub
-    else {
-        return Err(CliError::General("expected reconciliation command".into()));
-    };
+    } = command;
     let args = ReconciliationArgs {
         account,
         to: to.as_deref(),
