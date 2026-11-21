@@ -6,6 +6,14 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Added
+
+- Read-only `bk summary` and `financial_summary` MCP snapshots with matching JSON
+  envelopes: standing balances, period comparisons, spending movers, attention
+  counts/totals, plain-language highlights, chartable data and optional Desktop
+  targets. Missing invoice due dates are explicit; age-based open items are
+  reported separately. ([#116](https://github.com/Govcraft/beankeeper/issues/116))
+
 ## [0.27.0] - 2026-11-20
 
 Released as [beankeeper-cli-v0.27.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.27.0).

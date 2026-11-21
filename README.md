@@ -470,6 +470,7 @@ mutation tools are absent and cannot be called.
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
 | `investment_buy`, `investment_sell`, `investment_lots`, `investment_holdings` | Trade, inspect lots and value holdings |
+| `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `report` | Run CLI reports |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
@@ -499,7 +500,8 @@ are accepted conflict strategies. Inputs use decimal major-unit strings, and res
 use the same data payload and integer minor units as `bk --json`. Results are
 available as JSON text content and, where the negotiated MCP protocol permits the
 payload's shape, `structuredContent`. Tool failures set `isError: true` with
-`{code, message}`. Audited writes use `mcp:<client name>` from the MCP handshake,
+`{code, message}`. `financial_summary` instead returns the full CLI envelope on
+both success and failure. Audited writes use `mcp:<client name>` from the MCP handshake,
 with a sanitized name or `mcp:unknown`. Creation auditing is unchanged.
 
 Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and a
@@ -1128,6 +1130,19 @@ Batches are atomic (all lines or none) and report what was cleared and what was 
 Reconciling records a **reconciled date**: with `--status reconciled`, `--date` (default today) is the day the clearings were locked in. Promoting a statement's clearings keeps their cleared date and sets the reconciled date (it may not be before the cleared date); a clearing created directly as reconciled gets the same cleared and reconciled date. Reconciled clearings are locked: `--status cleared` on them is an error. To redo one, remove it with `--status uncleared` (plus `--statement`), then clear it again.
 
 An entry's status is derived from its clearings: `cleared` once fully cleared, `reconciled` once fully cleared by reconciled clearings, `uncleared` otherwise (including partially cleared items). Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field. `bk txn show` also lists each entry's id, cleared and remaining amounts, and individual clearings (amount, cleared date, reconciled date, statement, status).
+
+### Financial Summary
+
+Ask the agent "How am I doing?" It can call `financial_summary` with a `company`,
+or run `bk --company personal summary --json`, to get plain-language highlights,
+standing balances, income/spending comparisons, spending movers and attention
+counts with chartable amounts and an optional Desktop target. No app is required.
+The default is this month to date versus the full previous calendar month.
+`--from`, `--to`, `--compare-from`, `--compare-to` and `--currency` select the scope.
+
+The CLI and MCP tool return the same full envelope. Overdue status is explicitly
+unavailable because the ledger has no payment due dates; older open items are
+reported separately. See the [summary contract and limitations](docs/financial-summary.md).
 
 ### Historical Trends
 

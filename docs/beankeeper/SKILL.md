@@ -25,6 +25,26 @@ for artifact/bundle names, exact release-tag identity, issuer, and manual
 `cosign verify-blob` / `gh attestation verify` commands. Sigstore signing does
 not replace Apple notarization or Windows Authenticode.
 
+## Answering "How am I doing?"
+
+Call `financial_summary` with `{"company":"SLUG"}` or run
+`bk --company SLUG summary --json`. Use its brief `data.highlights` as the factual
+starting point for your answer, then explain relevant attention counts and totals.
+The default compares this month to date with the full last calendar month;
+state the returned dates. Optional `from`, `to`, `compare_from`, `compare_to`,
+`currency`, and account selector arrays use the same CLI/MCP calculation.
+
+Draw charts from `standing`, `comparison.series`, `biggest_movers.series` and
+`needs_attention.items`; monetary values are minor units with `_display`
+companions. Supply your own advisor voice, and offer `desktop_view` only if a
+visual would help. Do not send the owner to a dashboard to get the answer.
+Overdue status is unavailable without invoice due dates. Older open items,
+named suspense activity and scheduled posting volume carry explicit limits;
+do not present them as overdue bills or unresolved transaction counts.
+The MCP tool returns the full `{ok, meta, data}` or `{ok, meta, error}` CLI
+envelope and is available in read-only mode with `ledger/read`.
+See [financial summary details](../financial-summary.md).
+
 ## Core Concepts
 
 - **Double-entry**: Postings are validated at runtime before saving. Unbalanced or mixed-currency entries are rejected; the library's `Transaction` type can only be constructed through `JournalEntry::post()` after validation.
@@ -326,6 +346,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk budget set` | Create or update monthly/annual budgets |
 | `bk budget list` | List budget entries |
 | `bk budget delete` | Remove budget entries |
+| `bk summary` | Answer how finances are doing with facts, chartable comparisons and optional Desktop targets |
 | `bk report trial-balance` | All accounts with debit/credit totals |
 | `bk report balance` | Single account balance |
 | `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |
