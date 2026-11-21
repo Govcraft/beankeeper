@@ -14,6 +14,7 @@ pub mod policy;
 pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;
+mod report_compare;
 pub mod report_currency;
 mod report_dates;
 pub mod report_ledger;

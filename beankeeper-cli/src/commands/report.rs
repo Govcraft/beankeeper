@@ -77,6 +77,10 @@ fn run_to(
     let resolved = super::report_dates::resolve(sub, chrono::Local::now().date_naive())?;
     let sub = &resolved;
 
+    if let Some(result) = super::report_compare::try_run_to(cli, db, company, sub, output) {
+        return result;
+    }
+
     // `--period` / `--compare` multi-column modes (issue #22).
     let multi = super::report_periods::try_run_to(cli, db, company, sub, output);
     if let Some(result) = multi {
@@ -141,6 +145,7 @@ fn run_statement_command(
             from,
             to,
             currency,
+            ..
         } => run_balance(
             cli,
             db,
@@ -168,7 +173,7 @@ fn run_statement_command(
             },
             output,
         ),
-        ReportCommand::BalanceSheet { to, currency } => {
+        ReportCommand::BalanceSheet { to, currency, .. } => {
             run_balance_sheet(cli, db, company, to.as_deref(), currency.as_deref(), output)
         }
         ReportCommand::TaxSummary { from, to, currency } => run_tax_summary(

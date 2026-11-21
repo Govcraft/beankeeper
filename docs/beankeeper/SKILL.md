@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.27.0
+version: 0.28.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -889,3 +889,26 @@ For detailed information beyond this overview:
 - **[`references/commands.md`](references/commands.md)** -- Complete command reference with all flags, arguments, and examples
 - **[`references/json-api.md`](references/json-api.md)** -- JSON envelope format, field types, and programmatic usage patterns
 - **[`references/workflows.md`](references/workflows.md)** -- Multi-step workflow recipes for common bookkeeping tasks
+
+## Answering what changed
+
+For “why is spending up?” use `report trend --metric spending --compare previous`.
+For “how does this quarter compare to last year?” supply the quarter's inclusive
+`--from` and `--to` with `--compare year-ago` on `report income-statement`.
+For “what changed in rent?” add `--explain-change <expense-account-code>`.
+The MCP `report` tool accepts the same `compare` and `explain_change` fields for
+income-statement, trial-balance, trend, cash-flow, balance and balance-sheet.
+
+Lead with `summary`, then use `movers`, `accounts` and `totals` for follow-ups or
+charts. Each line includes current/prior/change minor-unit integers, decimal
+displays, and a nullable `change_percent`. A zero prior amount means no meaningful
+percent; never describe null as zero or infinity. Explain transaction and payee
+contributions as recorded differences, not proof of a real-world cause.
+
+Offer the optional `desktop_view.url` and `comparison_url` register links after
+the answer. Resolve these origin-relative URLs against the owner's configured
+Desktop origin; do not invent a hostname or require Desktop to answer. The
+`view_id`, `state` and `comparison_state` also fit Desktop navigation tools.
+Links select the explained account, otherwise the balance account or largest
+mover. [Comparison semantics and examples](../comparisons.md) document date
+windows, cash attribution, currency isolation and CSV rows.

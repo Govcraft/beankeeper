@@ -60,6 +60,12 @@ pub struct CashFlowArgs {
     /// (USD when there are no transactions).
     #[arg(long)]
     pub currency: Option<String>,
+    /// Compare the full range with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
+    #[arg(long)]
+    pub compare: Option<super::report_periods::CompareArg>,
+    /// Explain the change for one account code.
+    #[arg(long, requires = "compare")]
+    pub explain_change: Option<String>,
 }
 
 /// Cash flow section, determined by the counter-account type.
@@ -294,7 +300,7 @@ fn is_default_cash_name(name: &str) -> bool {
 }
 
 /// Resolve the set of cash accounts (explicit or by the default rule).
-fn resolve_cash_accounts(
+pub(super) fn resolve_cash_accounts(
     conn: &Connection,
     company: &str,
     explicit: &[String],
@@ -359,7 +365,7 @@ struct EntryFact {
 }
 
 /// Compute the statement from the database.
-fn compute_cash_flow(
+pub(super) fn compute_cash_flow(
     conn: &Connection,
     company: &str,
     from: &str,
@@ -406,7 +412,10 @@ fn compute_cash_flow(
         .collect();
     for ((section, _), line) in lines {
         if let Some(sec) = sections.get_mut(&section) {
-            sec.total = sec.total.saturating_add(line.amount);
+            sec.total = sec
+                .total
+                .checked_add(line.amount)
+                .ok_or_else(amount_overflow)?;
             sec.lines.push(line);
         }
     }
@@ -422,11 +431,17 @@ fn compute_cash_flow(
 
     let net_change = operating
         .total
-        .saturating_add(investing.total)
-        .saturating_add(financing.total);
+        .checked_add(investing.total)
+        .and_then(|amount| amount.checked_add(financing.total))
+        .ok_or_else(amount_overflow)?;
     let opening_cash = cash_balance(conn, company, currency, &cash_codes, false, from)?;
     let closing_cash = cash_balance(conn, company, currency, &cash_codes, true, to)?;
-    let difference = closing_cash.saturating_sub(opening_cash.saturating_add(net_change));
+    let expected = opening_cash
+        .checked_add(net_change)
+        .ok_or_else(amount_overflow)?;
+    let difference = closing_cash
+        .checked_sub(expected)
+        .ok_or_else(amount_overflow)?;
 
     Ok(CashFlowStatement {
         from: from.to_string(),
@@ -462,8 +477,9 @@ fn attribute_cash(
         let cash_net: i64 = entries
             .iter()
             .filter(|e| cash_codes.contains(e.code.as_str()))
-            .map(|e| e.signed)
-            .sum();
+            .try_fold(0_i64, |sum, entry| {
+                sum.checked_add(entry.signed).ok_or_else(amount_overflow)
+            })?;
         if cash_net == 0 {
             // No cash touched, or a cash-to-cash transfer: no cash flow.
             continue;
@@ -487,11 +503,18 @@ fn attribute_cash(
                     amount: 0,
                 });
             // A credit to the counter-account is a cash inflow.
-            line.amount = line.amount.saturating_sub(entry.signed);
+            line.amount = line
+                .amount
+                .checked_sub(entry.signed)
+                .ok_or_else(amount_overflow)?;
         }
     }
 
     Ok(lines)
+}
+
+fn amount_overflow() -> CliError {
+    CliError::Validation("cash flow amount exceeds the supported minor-unit range".into())
 }
 
 /// Sum of debits minus credits on the cash accounts for transactions whose
@@ -516,7 +539,7 @@ fn cash_balance(
         let bal: i64 = stmt.query_row(params![company, currency.code(), code, date], |row| {
             row.get(0)
         })?;
-        total = total.saturating_add(bal);
+        total = total.checked_add(bal).ok_or_else(amount_overflow)?;
     }
     Ok(total)
 }
@@ -722,6 +745,24 @@ fn render_csv(s: &CashFlowStatement) -> Result<String, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attribution_rejects_overflow_across_balanced_transactions() {
+        let fact = |txn_id, code: &str, kind: &str, signed| EntryFact {
+            txn_id,
+            code: code.into(),
+            name: code.into(),
+            account_type: kind.into(),
+            signed,
+        };
+        let facts = [
+            fact(1, "1000", "asset", i64::MAX),
+            fact(1, "4000", "revenue", -i64::MAX),
+            fact(2, "1000", "asset", 1),
+            fact(2, "4000", "revenue", -1),
+        ];
+        assert!(attribute_cash(&facts, &BTreeSet::from(["1000"])).is_err());
+    }
 
     #[test]
     fn default_cash_name_rule() {

@@ -103,9 +103,10 @@ fn normal_balance_for(account_type: &str) -> &'static str {
 }
 
 /// Format minor units with thousands separators and decimal places.
-fn format_amount(minor_units: i64, decimal_places: u8) -> String {
+pub(crate) fn format_amount(minor_units: impl Into<i128>, decimal_places: u8) -> String {
+    let minor_units = minor_units.into();
     let abs_units = minor_units.unsigned_abs();
-    let divisor = 10u64.pow(u32::from(decimal_places));
+    let divisor = 10u128.pow(u32::from(decimal_places));
     let whole = (abs_units / divisor).to_string();
     let frac = abs_units % divisor;
 

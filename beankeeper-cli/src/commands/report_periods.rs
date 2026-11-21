@@ -54,14 +54,50 @@ impl PeriodArg {
     }
 }
 
+/// An inclusive comparison range whose start cannot follow its end.
+///
+/// Private fields prevent callers from bypassing [`Self::new`].
+///
+/// ```compile_fail
+/// use beankeeper_cli::commands::report_periods::ComparisonRange;
+/// use chrono::NaiveDate;
+///
+/// let range = ComparisonRange {
+///     from: NaiveDate::default(),
+///     to: NaiveDate::default(),
+/// };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComparisonRange {
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+impl ComparisonRange {
+    /// Construct an inclusive range, rejecting reversed boundaries.
+    ///
+    /// # Errors
+    /// Returns a validation error when `from` is after `to`.
+    pub fn new(from: NaiveDate, to: NaiveDate) -> Result<Self, CliError> {
+        if from > to {
+            return Err(CliError::Validation(format!(
+                "comparison start ({from}) must be on or before its end ({to})"
+            )));
+        }
+        Ok(Self { from, to })
+    }
+}
+
 /// Earlier range used by `--compare`.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareArg {
     /// The range of equal length immediately before `--from`. Ranges made of
     /// whole calendar months shift back by that many months (Q2 -> Q1).
     PriorPeriod,
     /// The same range one year earlier.
     PriorYear,
+    /// An explicit inclusive comparison window.
+    Custom(ComparisonRange),
 }
 
 impl CompareArg {
@@ -71,6 +107,29 @@ impl CompareArg {
         match self {
             Self::PriorPeriod => "prior-period",
             Self::PriorYear => "prior-year",
+            Self::Custom(..) => "custom",
+        }
+    }
+}
+
+impl std::str::FromStr for CompareArg {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "previous" | "prior-period" => Ok(Self::PriorPeriod),
+            "year-ago" | "prior-year" => Ok(Self::PriorYear),
+            _ => {
+                let (from, to) = value.split_once("..").ok_or_else(|| {
+                    CliError::Usage(
+                        "--compare expects previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD".into(),
+                    )
+                })?;
+                Ok(Self::Custom(ComparisonRange::new(
+                    parse_date("--compare start", from)?,
+                    parse_date("--compare end", to)?,
+                )?))
+            }
         }
     }
 }
@@ -477,6 +536,7 @@ pub fn prior_range(
     compare: CompareArg,
 ) -> Result<(NaiveDate, NaiveDate), CliError> {
     match compare {
+        CompareArg::Custom(range) => Ok((range.from, range.to)),
         CompareArg::PriorYear => {
             let year = Months::new(12);
             Ok((
@@ -526,7 +586,7 @@ pub fn normal_side_net(row: &db::BalanceRow) -> i64 {
 }
 
 /// Fetch the balance rows for one column window.
-fn fetch_column_rows(
+pub(super) fn fetch_column_rows(
     conn: &rusqlite::Connection,
     company: &str,
     kind: MultiReportKind,
@@ -591,12 +651,24 @@ fn build_lines(
         let rows = fetch_column_rows(conn, company, kind, type_filter, currency, col)?;
 
         for row in &rows {
-            let net = normal_side_net(row);
-            debits[i] = debits[i].saturating_add(row.debit_total);
-            credits[i] = credits[i].saturating_add(row.credit_total);
+            let overflow = || {
+                CliError::Validation("report amount exceeds the supported minor-unit range".into())
+            };
+            let (positive, negative) = if matches!(row.account_type.as_str(), "asset" | "expense") {
+                (row.debit_total, row.credit_total)
+            } else {
+                (row.credit_total, row.debit_total)
+            };
+            let net = positive.checked_sub(negative).ok_or_else(overflow)?;
+            debits[i] = debits[i]
+                .checked_add(row.debit_total)
+                .ok_or_else(overflow)?;
+            credits[i] = credits[i]
+                .checked_add(row.credit_total)
+                .ok_or_else(overflow)?;
             match row.account_type.as_str() {
-                "revenue" => revenue[i] = revenue[i].saturating_add(net),
-                "expense" => expenses[i] = expenses[i].saturating_add(net),
+                "revenue" => revenue[i] = revenue[i].checked_add(net).ok_or_else(overflow)?,
+                "expense" => expenses[i] = expenses[i].checked_add(net).ok_or_else(overflow)?,
                 _ => {}
             }
             let pos = *index.entry(row.code.clone()).or_insert_with(|| {
@@ -629,8 +701,14 @@ fn build_lines(
             let net_income = revenue
                 .iter()
                 .zip(&expenses)
-                .map(|(r, e)| r.saturating_sub(*e))
-                .collect();
+                .map(|(r, e)| {
+                    r.checked_sub(*e).ok_or_else(|| {
+                        CliError::Validation(
+                            "report amount exceeds the supported minor-unit range".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             vec![
                 SummaryLine {
                     key: "total_revenue",
@@ -728,6 +806,27 @@ mod tests {
             prior_range(d("2024-02-01"), d("2024-02-29"), CompareArg::PriorYear)?,
             (d("2023-02-01"), d("2023-02-28"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn custom_ranges_validate_order_and_preserve_inclusive_boundaries() -> Result<(), CliError> {
+        let start = d("2024-02-01");
+        let end = d("2024-02-29");
+        assert!(ComparisonRange::new(end, start).is_err());
+        assert!("2024-02-29..2024-02-01".parse::<CompareArg>().is_err());
+        assert!("2024-02-30..2024-03-01".parse::<CompareArg>().is_err());
+        for (input, from, to) in [
+            ("2024-02-01..2024-02-29", start, end),
+            ("2024-02-29..2024-02-29", end, end),
+        ] {
+            let comparison = input.parse::<CompareArg>()?;
+            assert_eq!(
+                comparison,
+                CompareArg::Custom(ComparisonRange::new(from, to)?)
+            );
+            assert_eq!(prior_range(start, end, comparison)?, (from, to));
+        }
         Ok(())
     }
 

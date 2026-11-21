@@ -2042,3 +2042,103 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
     assert!(unknown.get("error").is_some() || unknown["result"]["isError"] == true);
     Ok(())
 }
+
+#[test]
+fn comparisons_and_explanations_match_cli_on_read_only_stdio() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("compare.db");
+    seed(&path)?;
+    bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "account",
+            "create",
+            "5000",
+            "Rent",
+            "--type",
+            "expense",
+        ])
+        .assert()
+        .success();
+    for (date, amount) in [("2024-01-15", "100"), ("2024-02-15", "160")] {
+        bk(&path)?
+            .args([
+                "--company",
+                "acme",
+                "txn",
+                "post",
+                "-d",
+                "Rent",
+                "--date",
+                date,
+                "--debit",
+                &format!("5000:{amount}"),
+                "--credit",
+                &format!("1000:{amount}"),
+            ])
+            .assert()
+            .success();
+    }
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    for (kind, extra_cli, extra_json) in [
+        ("income-statement", vec![], json!({})),
+        ("trial-balance", vec![], json!({})),
+        (
+            "trend",
+            vec!["--metric", "spending"],
+            json!({"metric":"spending"}),
+        ),
+        (
+            "trend",
+            vec!["--metric", "net-worth"],
+            json!({"metric":"net-worth"}),
+        ),
+        ("cash-flow", vec![], json!({})),
+        (
+            "balance",
+            vec!["--account", "1000"],
+            json!({"account":"1000"}),
+        ),
+        ("balance-sheet", vec![], json!({})),
+    ] {
+        let explain =
+            if matches!(kind, "balance" | "balance-sheet") || extra_json["metric"] == "net-worth" {
+                "1000"
+            } else {
+                "5000"
+            };
+        let mut input = json!({"company":"acme","kind":kind,"to":"2024-02-29","compare":"previous","explain_change":explain});
+        input
+            .as_object_mut()
+            .ok_or("missing input")?
+            .extend(extra_json.as_object().ok_or("missing extras")?.clone());
+        let mut args = vec![
+            "--json",
+            "--company",
+            "acme",
+            "report",
+            kind,
+            "--to",
+            "2024-02-29",
+            "--compare",
+            "previous",
+            "--explain-change",
+            explain,
+        ];
+        args.extend(extra_cli);
+        let output = bk(&path)?.args(args).output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cli: Value = serde_json::from_slice(&output.stdout)?;
+        let mcp = client.success("report", &input)?;
+        assert_eq!(mcp, cli["data"], "{kind}: {input}");
+    }
+    Ok(())
+}
