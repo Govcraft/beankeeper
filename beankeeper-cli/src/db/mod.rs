@@ -37,7 +37,9 @@ pub use budgets::{
     BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,
     compute_budget_variance, list_budgets,
 };
-pub use clearings::{ClearingStatus, EntryTarget, find_entry_by_reference, get_entry_target};
+pub use clearings::{
+    ClearingState, ClearingStatus, EntryTarget, find_entry_by_reference, get_entry_target,
+};
 pub use companies::{company_exists, create_company, get_company, list_companies};
 pub use connection::Db;
 pub use schema::{ensure_schema, get_schema_version};
@@ -105,7 +107,7 @@ pub struct EntryRow {
     pub amount: i64,
     pub memo: Option<String>,
     pub tax_category: Option<String>,
-    pub status: String,
+    pub status: EntryStatus,
 }
 
 /// A row from the `budgets` table.

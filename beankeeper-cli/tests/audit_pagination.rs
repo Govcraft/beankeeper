@@ -243,7 +243,7 @@ fn clearing_audit_resolves_immutable_entry_currency() -> TestResult {
                 transaction_id,
                 entry_id,
                 amount: Some(100),
-                date: "2026-01-31",
+                date: "2026-01-31".parse()?,
                 statement: Some("S1"),
                 status: db::ClearingStatus::Cleared,
             },

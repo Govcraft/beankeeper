@@ -245,7 +245,7 @@ fn seed_settlement(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
                     transaction_id: id,
                     entry_id: entry.id,
                     amount: Some(162_000),
-                    date: "2025-03-31",
+                    date: date("2025-03-31")?,
                     statement: Some("DEMO-2025-03"),
                     status: db::clearings::ClearingStatus::Cleared,
                 },

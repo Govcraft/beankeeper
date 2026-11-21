@@ -25,8 +25,9 @@ use serde::Serialize;
 
 use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnClearArgs, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
+use crate::db::clearings::SkipReason;
 use crate::db::connection::Db;
-use crate::db::{self, Actor, ClearOutcome, ClearRequest, EntryTarget};
+use crate::db::{self, Actor, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
 use crate::error::CliError;
 use crate::output;
 
@@ -156,7 +157,7 @@ enum ClearedItems<'a> {
 }
 
 struct Execution<'a> {
-    date: String,
+    date: NaiveDate,
     statement: Option<&'a str>,
     status: ClearanceArg,
     items: ClearedItems<'a>,
@@ -168,7 +169,7 @@ impl Execution<'_> {
             conn: db.conn(),
             actor,
             company,
-            date: &self.date,
+            date: self.date,
             statement: self.statement,
             status: self.status,
         }
@@ -193,7 +194,7 @@ fn compute<'a>(
         conn: db_handle.conn(),
         actor: actor.clone(),
         company,
-        date: &date,
+        date,
         statement,
         status,
     };
@@ -253,26 +254,24 @@ struct Ctx<'a> {
     company: &'a str,
     /// `--date`: the cleared date of new clearings and, with
     /// `--status reconciled`, the reconciled date.
-    date: &'a str,
+    date: NaiveDate,
     statement: Option<&'a str>,
     status: ClearanceArg,
 }
 
 impl Ctx<'_> {
     /// The reconciled date this invocation sets, if any.
-    fn reconciled_date(&self) -> Option<&str> {
+    fn reconciled_date(&self) -> Option<NaiveDate> {
         (self.status == ClearanceArg::Reconciled).then_some(self.date)
     }
 }
 
-fn resolve_date(date: Option<&str>) -> Result<String, CliError> {
+fn resolve_date(date: Option<&str>) -> Result<NaiveDate, CliError> {
     match date {
-        Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d")
-            .map(|n| n.format("%Y-%m-%d").to_string())
-            .map_err(|_| {
-                CliError::Validation(format!("invalid --date '{d}': expected YYYY-MM-DD"))
-            }),
-        None => Ok(chrono::Local::now().format("%Y-%m-%d").to_string()),
+        Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| {
+            CliError::Validation(format!("invalid --date '{d}': expected YYYY-MM-DD"))
+        }),
+        None => Ok(chrono::Local::now().date_naive()),
     }
 }
 
@@ -465,7 +464,7 @@ struct Item {
     reference: Option<String>,
     transaction_id: i64,
     entry_id: i64,
-    action: &'static str,
+    action: ClearAction,
     clearing_id: Option<i64>,
     currency: String,
     /// Amount cleared (or removed) by this call, minor units.
@@ -474,9 +473,9 @@ struct Item {
     cleared_amount: i64,
     remaining_amount: i64,
     partially_cleared: bool,
-    previous_status: &'static str,
-    entry_status: &'static str,
-    skip_reason: Option<&'static str>,
+    previous_status: EntryStatus,
+    entry_status: EntryStatus,
+    skip_reason: Option<SkipReason>,
 }
 
 impl Item {
@@ -486,7 +485,7 @@ impl Item {
             reference: target.reference.clone(),
             transaction_id: o.transaction_id,
             entry_id: o.entry_id,
-            action: o.action.as_str(),
+            action: o.action,
             clearing_id: o.clearing_id,
             currency: target.currency.clone(),
             amount: o.amount,
@@ -494,14 +493,14 @@ impl Item {
             cleared_amount: o.cleared_amount,
             remaining_amount: o.remaining_amount,
             partially_cleared: o.cleared_amount > 0 && o.remaining_amount > 0,
-            previous_status: o.previous_status.as_str(),
-            entry_status: o.entry_status.as_str(),
-            skip_reason: o.skip_reason.map(db::clearings::SkipReason::as_str),
+            previous_status: o.previous_status,
+            entry_status: o.entry_status,
+            skip_reason: o.skip_reason,
         }
     }
 
     fn skipped(&self) -> bool {
-        self.action == "skipped"
+        self.action == ClearAction::Skipped
     }
 }
 
@@ -541,14 +540,17 @@ fn to_csv(ctx: &Ctx<'_>, items: &[Item]) -> Result<String, CliError> {
             i.reference.clone().unwrap_or_default(),
             i.transaction_id.to_string(),
             i.entry_id.to_string(),
-            i.action.to_string(),
+            i.action.as_str().to_string(),
             i.amount.to_string(),
             i.cleared_amount.to_string(),
             i.remaining_amount.to_string(),
             i.entry_status.to_string(),
             ctx.date.to_string(),
             ctx.statement.unwrap_or_default().to_string(),
-            i.skip_reason.unwrap_or_default().to_string(),
+            i.skip_reason
+                .map(SkipReason::as_str)
+                .unwrap_or_default()
+                .to_string(),
         ])
         .map_err(csv_err)?;
     }
@@ -566,13 +568,13 @@ fn describe(i: &Item) -> Result<String, CliError> {
     let status = if i.partially_cleared {
         "partially cleared"
     } else {
-        i.entry_status
+        i.entry_status.as_str()
     };
     Ok(match i.skip_reason {
-        Some(reason) => format!("[skip] {what}: {reason}"),
+        Some(reason) => format!("[skip] {what}: {}", reason.as_str()),
         None => format!(
             "[ok] {what} {} ({} {currency}); cleared {} of {} {currency}, entry now {status}",
-            i.action,
+            i.action.as_str(),
             amount(i.amount),
             amount(i.cleared_amount),
             amount(i.entry_amount)
@@ -587,9 +589,9 @@ fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError
         item: &'a Item,
         /// The requested status (pre-#25 field).
         status: &'static str,
-        cleared_date: &'a str,
+        cleared_date: NaiveDate,
         /// `--date` when `--status reconciled`.
-        reconciled_date: Option<&'a str>,
+        reconciled_date: Option<NaiveDate>,
         statement: Option<&'a str>,
     }
 
@@ -631,9 +633,9 @@ fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json
     struct Batch<'a> {
         account: &'a str,
         status: &'static str,
-        cleared_date: &'a str,
+        cleared_date: NaiveDate,
         /// `--date` when `--status reconciled`.
-        reconciled_date: Option<&'a str>,
+        reconciled_date: Option<NaiveDate>,
         statement: Option<&'a str>,
         count: usize,
         cleared_count: usize,
@@ -750,8 +752,8 @@ mod tests {
     #[test]
     fn date_validation() {
         assert_eq!(
-            resolve_date(Some("2026-03-31")).ok().as_deref(),
-            Some("2026-03-31")
+            resolve_date(Some("2026-03-31")).ok(),
+            NaiveDate::from_ymd_opt(2026, 3, 31)
         );
         assert!(resolve_date(Some("31/03/2026")).is_err());
         assert!(resolve_date(None).is_ok());

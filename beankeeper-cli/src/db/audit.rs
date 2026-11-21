@@ -81,6 +81,15 @@ impl std::fmt::Display for EntryStatus {
     }
 }
 
+impl rusqlite::types::FromSql for EntryStatus {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|error: CliError| rusqlite::types::FromSqlError::Other(Box::new(error)))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Actor -- the principal recorded against every change
 // ---------------------------------------------------------------------------
@@ -1102,7 +1111,7 @@ pub fn set_entry_status(
         EntryStatus::Cleared => ClearingStatus::Cleared,
         EntryStatus::Reconciled => ClearingStatus::Reconciled,
     };
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = chrono::Local::now().date_naive();
     clear_entry(
         conn,
         actor,
@@ -1111,7 +1120,7 @@ pub fn set_entry_status(
             transaction_id,
             entry_id,
             amount: None,
-            date: &today,
+            date: today,
             statement: None,
             status,
         },
@@ -1130,7 +1139,7 @@ pub struct ClearRequest<'a> {
     /// `YYYY-MM-DD`: the cleared date of a new clearing and, with status
     /// reconciled, the reconciled date of every clearing created or promoted.
     /// Must not be before the transaction date.
-    pub date: &'a str,
+    pub date: chrono::NaiveDate,
     pub statement: Option<&'a str>,
     pub status: ClearingStatus,
 }
@@ -1216,11 +1225,28 @@ fn clearing_json(c: &Clearing) -> serde_json::Value {
     serde_json::json!({
         "id": c.id,
         "amount": c.amount,
-        "cleared_date": c.cleared_date,
-        "reconciled_date": c.reconciled_date,
+        "cleared_date": c.cleared_on(),
+        "reconciled_date": c.state().reconciled_on(),
         "statement": c.statement_ref,
-        "status": c.status.as_str(),
+        "status": c.state().status(),
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ClearingChangeKind {
+    Clear,
+    Reconcile,
+    Unclear,
+}
+
+struct ClearingChange<'a> {
+    company_slug: &'a str,
+    entry_id: i64,
+    operation: ClearingChangeKind,
+    before: (EntryStatus, i64),
+    after: (EntryStatus, i64),
+    affected: &'a [Clearing],
 }
 
 /// Records one `status_change` audit row for an entry's clearing change.
@@ -1228,39 +1254,57 @@ fn clearing_json(c: &Clearing) -> serde_json::Value {
 /// Payload: `before`/`after` carry `status` (the derived entry status, as
 /// before #25) and `cleared_amount`; `after` adds `op` (`clear`,
 /// `reconcile`, `unclear`) and `clearings` (the affected clearing rows).
-#[allow(clippy::too_many_arguments)]
 fn record_clearing_change(
     conn: &Connection,
     actor: &Actor,
-    company_slug: &str,
-    entry_id: i64,
-    op: &str,
-    before: (EntryStatus, i64),
-    after: (EntryStatus, i64),
-    affected: &[Clearing],
+    change: &ClearingChange<'_>,
 ) -> Result<(), CliError> {
     record(
         conn,
         actor,
         AuditChange {
-            company_slug: Some(company_slug),
+            company_slug: Some(change.company_slug),
             entity: AuditEntity::Entry,
-            entity_id: &entry_id.to_string(),
+            entity_id: &change.entry_id.to_string(),
             action: AuditAction::StatusChange,
             snapshots: (
                 Some(&snapshot(&serde_json::json!({
-                    "status": before.0.as_str(),
-                    "cleared_amount": before.1,
+                    "status": change.before.0,
+                    "cleared_amount": change.before.1,
                 }))),
                 Some(&snapshot(&serde_json::json!({
-                    "status": after.0.as_str(),
-                    "cleared_amount": after.1,
-                    "op": op,
-                    "clearings": affected.iter().map(clearing_json).collect::<Vec<_>>(),
+                    "status": change.after.0,
+                    "cleared_amount": change.after.1,
+                    "op": change.operation,
+                    "clearings": change.affected.iter().map(clearing_json).collect::<Vec<_>>(),
                 }))),
             ),
         },
     )
+}
+
+fn insert_clearing(
+    conn: &Connection,
+    req: &ClearRequest<'_>,
+    amount: i64,
+) -> Result<i64, CliError> {
+    let state = req.status.on(req.date);
+    let date = req.date.to_string();
+    conn.execute(
+        "INSERT INTO entry_clearings \
+         (entry_id, company_slug, amount, cleared_date, statement_ref, status, reconciled_date) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            req.entry_id,
+            req.company_slug,
+            amount,
+            date,
+            req.statement,
+            state.status().as_str(),
+            state.reconciled_on().map(|_| date.as_str()),
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 
 /// Clears (part of) an entry, keeping `entries.status` in sync and recording
@@ -1292,7 +1336,7 @@ pub fn clear_entry(
                 status: req.status,
                 statement: req.statement,
                 date: req.date,
-                txn_date: &target.date,
+                txn_date: target.date,
             },
         )?;
 
@@ -1313,36 +1357,23 @@ pub fn clear_entry(
                 });
             }
             ClearPlan::Insert { amount, promote } => {
-                conn.execute(
-                    "INSERT INTO entry_clearings \
-                     (entry_id, company_slug, amount, cleared_date, statement_ref, status, \
-                      reconciled_date) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        req.entry_id,
-                        req.company_slug,
-                        amount,
-                        req.date,
-                        req.statement,
-                        req.status.as_str(),
-                        (req.status == ClearingStatus::Reconciled).then_some(req.date),
-                    ],
-                )?;
+                let id = insert_clearing(conn, req, amount)?;
                 let action = if promote.is_empty() {
                     ClearAction::Cleared
                 } else {
                     ClearAction::Reconciled
                 };
-                (action, Some(conn.last_insert_rowid()), amount, promote)
+                (action, Some(id), amount, promote)
             }
             ClearPlan::Promote { ids } => (ClearAction::Reconciled, None, 0, ids),
         };
 
+        let date = req.date.to_string();
         for id in &promote {
             conn.execute(
                 "UPDATE entry_clearings SET status = 'reconciled', reconciled_date = ?2 \
                  WHERE id = ?1",
-                params![id, req.date],
+                params![id, date],
             )?;
         }
 
@@ -1353,19 +1384,21 @@ pub fn clear_entry(
             .filter(|c| Some(c.id) == inserted || promote.contains(&c.id))
             .collect();
         let op = if action == ClearAction::Reconciled {
-            "reconcile"
+            ClearingChangeKind::Reconcile
         } else {
-            "clear"
+            ClearingChangeKind::Clear
         };
         record_clearing_change(
             conn,
             actor,
-            req.company_slug,
-            req.entry_id,
-            op,
-            (before_status, before_sum),
-            (status, after_sum),
-            &affected,
+            &ClearingChange {
+                company_slug: req.company_slug,
+                entry_id: req.entry_id,
+                operation: op,
+                before: (before_status, before_sum),
+                after: (status, after_sum),
+                affected: &affected,
+            },
         )?;
 
         Ok(ClearOutcome {
@@ -1434,12 +1467,14 @@ pub fn unclear_entry(
         record_clearing_change(
             conn,
             actor,
-            company_slug,
-            entry_id,
-            "unclear",
-            (before_status, before_sum),
-            (status, after_sum),
-            &removed,
+            &ClearingChange {
+                company_slug,
+                entry_id,
+                operation: ClearingChangeKind::Unclear,
+                before: (before_status, before_sum),
+                after: (status, after_sum),
+                affected: &removed,
+            },
         )?;
 
         Ok(ClearOutcome {
@@ -2572,13 +2607,13 @@ mod tests {
         assert!(before.unwrap_or_default().contains("Cash"));
     }
 
-    fn req<'a>(amount: Option<i64>, date: &'a str, stmt: Option<&'a str>) -> ClearRequest<'a> {
+    fn req<'a>(amount: Option<i64>, date: &str, stmt: Option<&'a str>) -> ClearRequest<'a> {
         ClearRequest {
             company_slug: "acme",
             transaction_id: 1,
             entry_id: 1,
             amount,
-            date,
+            date: date.parse().expect("test clearing date"),
             statement: stmt,
             status: ClearingStatus::Cleared,
         }
@@ -2692,8 +2727,15 @@ mod tests {
         let o = clear_entry(db.conn(), &actor, &r).expect("promote S1");
         assert_eq!(o.action, ClearAction::Reconciled);
         let rows = list_clearings(db.conn(), 1).expect("list");
-        assert_eq!(rows[0].cleared_date, "2026-01-31");
-        assert_eq!(rows[0].reconciled_date.as_deref(), Some("2026-02-10"));
+        assert_eq!(rows[0].cleared_on().to_string(), "2026-01-31");
+        assert_eq!(
+            rows[0]
+                .state()
+                .reconciled_on()
+                .map(|date| date.to_string())
+                .as_deref(),
+            Some("2026-02-10")
+        );
 
         let after: String = db
             .conn()
@@ -2712,8 +2754,15 @@ mod tests {
         r.status = ClearingStatus::Reconciled;
         clear_entry(db.conn(), &actor, &r).expect("reconcile S2");
         let rows = list_clearings(db.conn(), 1).expect("list");
-        assert_eq!(rows[1].cleared_date, "2026-03-01");
-        assert_eq!(rows[1].reconciled_date.as_deref(), Some("2026-03-01"));
+        assert_eq!(rows[1].cleared_on().to_string(), "2026-03-01");
+        assert_eq!(
+            rows[1]
+                .state()
+                .reconciled_on()
+                .map(|date| date.to_string())
+                .as_deref(),
+            Some("2026-03-01")
+        );
         assert_eq!(entry_status(&db), "reconciled");
 
         // Locked: a cleared request on the reconciled entry fails, no audit.

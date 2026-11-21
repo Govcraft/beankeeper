@@ -182,11 +182,7 @@ fn charge(posting: &Posting, report: &ReconciliationReport, expected: i64) -> Ch
         remaining: 0,
         short_pay: 0,
         overpay: 0,
-        age_days: report
-            .as_of
-            .as_deref()
-            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-            .map(|d| (d - posting.movement.date).num_days()),
+        age_days: report.as_of.map(|d| (d - posting.movement.date).num_days()),
     }
 }
 
@@ -211,7 +207,7 @@ pub(super) fn build_report(
             "--mode settlement requires an asset (AR) or liability (AP) account".into(),
         ));
     }
-    let (all, selected) = load_postings(conn, company, args, &report, link_key)?;
+    let (all, selected) = load_postings(conn, company, &report, link_key)?;
     let index = TargetIndex::new(all.iter().map(|p| &p.movement));
     let mut charges: BTreeMap<i64, Charge> = all
         .iter()
@@ -268,7 +264,7 @@ pub(super) fn build_report(
         if c.remaining > 0 {
             report
                 .uncleared
-                .push(outstanding(conn, posting, &c, args.to)?);
+                .push(outstanding(conn, posting, &c, report.as_of)?);
         }
         details.charges.push(c);
     }
@@ -292,14 +288,13 @@ pub(super) fn build_report(
 fn load_postings(
     conn: &Connection,
     company: &str,
-    args: &ReconciliationArgs<'_>,
     report: &ReconciliationReport,
     link_key: &str,
 ) -> Result<(Vec<Posting>, HashSet<i64>), CliError> {
     let query = EntryQuery {
         code: &report.code,
         currency: report.currency,
-        to: args.to,
+        to: report.as_of,
         statement: report.statement.as_deref(),
         filters: &report.filters,
     };
@@ -388,7 +383,7 @@ fn outstanding(
     conn: &Connection,
     posting: &Posting,
     c: &Charge,
-    to: Option<&str>,
+    to: Option<NaiveDate>,
 ) -> Result<UnclearedEntry, CliError> {
     let row = &posting.row;
     Ok(UnclearedEntry {

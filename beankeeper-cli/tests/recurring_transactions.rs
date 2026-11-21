@@ -185,11 +185,8 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
         assert_eq!(metadata["lease"], "office");
         assert_eq!(metadata["building"], "north");
         assert_eq!(entries.len(), 2);
-        assert!(
-            entries
-                .iter()
-                .all(|entry| entry.amount == 1250 && entry.status == "uncleared")
-        );
+        assert!(entries.iter().all(|entry| entry.amount == 1250
+            && entry.status == beankeeper_cli::db::EntryStatus::Uncleared));
         let debit = entries
             .iter()
             .find(|entry| entry.direction == "debit")
