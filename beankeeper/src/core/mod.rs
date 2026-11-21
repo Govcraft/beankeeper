@@ -9,7 +9,9 @@ pub mod ledger;
 pub mod recurrence;
 pub mod transaction;
 
-pub use investments::{InvestmentError, LotMethod, Quantity, allocate_cost, market_value};
+pub use investments::{
+    InvestmentError, LotMethod, PositiveQuantity, Quantity, allocate_cost, market_value,
+};
 pub use journal_entry::JournalEntry;
 pub use ledger::Ledger;
 pub use recurrence::{Frequency, RecurrenceError, occurrence_date};

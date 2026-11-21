@@ -27,4 +27,4 @@ pub use document::{
 };
 pub use entry::{ClearedEntry, Entry, EntryError};
 pub use idempotency::{IdempotencyKey, IdempotencyKeyError};
-pub use money::{Money, MoneyError};
+pub use money::{Money, MoneyError, NonNegativeMoney, PositiveMoney};

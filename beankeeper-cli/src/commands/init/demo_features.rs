@@ -1,9 +1,9 @@
 //! Fixed Q1 2025 examples for the demo walkthrough, using audited domain APIs.
 
 use beankeeper::core::Frequency;
-use beankeeper::core::investments::{LotMethod, Quantity};
+use beankeeper::core::investments::PositiveQuantity;
 use beankeeper::loan::{AnnualRate, LoanTerm, LoanTerms};
-use beankeeper::types::Amount;
+use beankeeper::types::{Amount, Currency, Money, NonNegativeMoney, PositiveMoney};
 use chrono::NaiveDate;
 use rusqlite::Connection;
 
@@ -115,7 +115,7 @@ fn seed_investments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         &investments::SecurityParams {
             symbol: "DEMO".into(),
             name: "Fictional Demo Fund".into(),
-            currency: "USD".into(),
+            currency: Currency::USD,
         },
     )?;
     for (reference, acquired, quantity, cost) in [
@@ -129,9 +129,10 @@ fn seed_investments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
             &investments::BuyParams {
                 symbol: "DEMO".into(),
                 quantity: quantity
-                    .parse::<Quantity>()
+                    .parse::<PositiveQuantity>()
                     .map_err(|error| CliError::Bean(error.into()))?,
-                cost,
+                cost: PositiveMoney::new(Money::usd(cost))
+                    .map_err(|error| CliError::Bean(error.into()))?,
                 date: date(acquired)?,
                 asset: "1200".into(),
                 cash: "1100".into(),
@@ -146,15 +147,15 @@ fn seed_investments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         &investments::SellParams {
             symbol: "DEMO".into(),
             quantity: "4"
-                .parse::<Quantity>()
+                .parse::<PositiveQuantity>()
                 .map_err(|error| CliError::Bean(error.into()))?,
-            proceeds: 52_000,
+            proceeds: NonNegativeMoney::new(Money::usd(52_000))
+                .map_err(|error| CliError::Bean(error.into()))?,
             date: date("2025-03-10")?,
             asset: "1200".into(),
             cash: "1100".into(),
             gain: "4100".into(),
-            method: LotMethod::Fifo,
-            lot: None,
+            selection: investments::LotSelection::Fifo,
             reference: Some("PR-SELL-001".into()),
         },
     )?;
@@ -165,7 +166,8 @@ fn seed_investments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         &investments::PriceParams {
             symbol: "DEMO".into(),
             date: date("2025-03-31")?,
-            price: 13_000,
+            price: NonNegativeMoney::new(Money::usd(13_000))
+                .map_err(|error| CliError::Bean(error.into()))?,
         },
     )?;
     Ok(())

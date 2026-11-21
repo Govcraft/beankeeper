@@ -16,6 +16,10 @@ pub enum MoneyError {
     },
     /// Arithmetic overflow.
     Overflow,
+    /// This monetary value must be nonnegative.
+    NegativeAmount,
+    /// This monetary value must be strictly positive.
+    ZeroAmount,
 }
 
 impl fmt::Display for MoneyError {
@@ -25,6 +29,8 @@ impl fmt::Display for MoneyError {
                 write!(f, "currency mismatch: expected {expected}, got {actual}")
             }
             Self::Overflow => write!(f, "monetary arithmetic overflow"),
+            Self::NegativeAmount => write!(f, "monetary amount must not be negative"),
+            Self::ZeroAmount => write!(f, "monetary amount must be positive"),
         }
     }
 }
@@ -195,6 +201,134 @@ impl fmt::Display for Money {
         let decimal_places = self.currency.minor_units();
         let formatted = self.amount.format_decimal(decimal_places);
         write!(f, "{} {formatted}", self.currency)
+    }
+}
+
+/// Money known to be zero or positive, retaining its currency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NonNegativeMoney(Money);
+
+impl NonNegativeMoney {
+    /// Validates that the amount is nonnegative.
+    ///
+    /// # Errors
+    /// Returns [`MoneyError::NegativeAmount`] for negative money.
+    pub const fn new(money: Money) -> Result<Self, MoneyError> {
+        if money.is_negative() {
+            Err(MoneyError::NegativeAmount)
+        } else {
+            Ok(Self(money))
+        }
+    }
+
+    /// Returns zero in the supplied currency.
+    #[must_use]
+    pub const fn zero(currency: Currency) -> Self {
+        Self(Money::new(Amount::ZERO, currency))
+    }
+
+    /// Returns the underlying monetary value.
+    #[must_use]
+    pub const fn money(self) -> Money {
+        self.0
+    }
+
+    /// Returns a strictly positive value when the amount is nonzero.
+    #[must_use]
+    pub const fn positive(self) -> Option<PositiveMoney> {
+        if self.0.is_zero() {
+            None
+        } else {
+            Some(PositiveMoney(self))
+        }
+    }
+
+    /// Adds two nonnegative amounts of the same currency.
+    ///
+    /// # Errors
+    /// Returns a currency mismatch or overflow error.
+    pub fn checked_add(self, other: Self) -> Result<Self, MoneyError> {
+        self.0.checked_add(other.0).map(Self)
+    }
+
+    /// Subtracts an amount of the same currency while keeping the result nonnegative.
+    ///
+    /// # Errors
+    /// Returns a currency mismatch error or an error if the result would be negative.
+    pub fn checked_sub(self, other: Self) -> Result<Self, MoneyError> {
+        Self::new(self.0.checked_sub(other.0)?)
+    }
+}
+
+impl TryFrom<Money> for NonNegativeMoney {
+    type Error = MoneyError;
+
+    fn try_from(money: Money) -> Result<Self, Self::Error> {
+        Self::new(money)
+    }
+}
+
+impl From<NonNegativeMoney> for Money {
+    fn from(value: NonNegativeMoney) -> Self {
+        value.money()
+    }
+}
+
+impl fmt::Display for NonNegativeMoney {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Money with a strictly positive amount and a known currency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PositiveMoney(NonNegativeMoney);
+
+impl PositiveMoney {
+    /// Validates that the amount is strictly positive.
+    ///
+    /// # Errors
+    /// Returns [`MoneyError::NegativeAmount`] or [`MoneyError::ZeroAmount`] for an invalid amount.
+    pub const fn new(money: Money) -> Result<Self, MoneyError> {
+        match NonNegativeMoney::new(money) {
+            Ok(value) => match value.positive() {
+                Some(value) => Ok(value),
+                None => Err(MoneyError::ZeroAmount),
+            },
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Returns the underlying monetary value.
+    #[must_use]
+    pub const fn money(self) -> Money {
+        self.0.money()
+    }
+
+    /// Widens this value to the nonnegative type.
+    #[must_use]
+    pub const fn nonnegative(self) -> NonNegativeMoney {
+        self.0
+    }
+}
+
+impl TryFrom<Money> for PositiveMoney {
+    type Error = MoneyError;
+
+    fn try_from(money: Money) -> Result<Self, Self::Error> {
+        Self::new(money)
+    }
+}
+
+impl From<PositiveMoney> for Money {
+    fn from(value: PositiveMoney) -> Self {
+        value.money()
+    }
+}
+
+impl fmt::Display for PositiveMoney {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 

@@ -563,7 +563,7 @@ pub enum SecurityCommand {
         name: String,
         /// Quotation currency code.
         #[arg(long, default_value = "USD")]
-        currency: String,
+        currency: beankeeper::types::Currency,
     },
     /// List company securities.
     List,
@@ -614,7 +614,7 @@ pub struct TradeArgs {
     pub symbol: String,
     /// Positive shares, with at most eight decimal places.
     #[arg(long)]
-    pub quantity: beankeeper::core::investments::Quantity,
+    pub quantity: beankeeper::core::investments::PositiveQuantity,
     /// Acquisition or disposal date (YYYY-MM-DD).
     #[arg(long)]
     pub date: chrono::NaiveDate,
@@ -655,7 +655,7 @@ pub enum InvestmentCommand {
         method: beankeeper::core::investments::LotMethod,
         /// Lot ID required with --method specific.
         #[arg(long)]
-        lot: Option<String>,
+        lot: Option<crate::db::investments::LotId>,
     },
     /// List acquisition lots and remaining quantities and basis.
     Lots {

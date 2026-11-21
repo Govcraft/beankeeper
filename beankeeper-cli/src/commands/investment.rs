@@ -1,6 +1,6 @@
 //! Security master, exact investment trades, and holdings reports.
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Money, NonNegativeMoney, PositiveMoney};
 use serde_json::Value;
 
 use crate::cli::{Cli, Command, InvestmentCommand, OutputFormat, SecurityCommand, resolve_format};
@@ -56,7 +56,7 @@ pub fn execute_security(
             &investments::SecurityParams {
                 symbol: symbol.clone(),
                 name: name.clone(),
-                currency: currency.clone(),
+                currency: *currency,
             },
         )?),
         SecurityCommand::List => {
@@ -67,7 +67,8 @@ pub fn execute_security(
             date,
             price,
         } => {
-            let price = amount(db, company, symbol, price)?;
+            let price = NonNegativeMoney::new(amount(db, company, symbol, price)?)
+                .map_err(|_| CliError::Validation("price must not be negative".into()))?;
             serde_json::to_value(investments::record_price(
                 db.conn(),
                 actor,
@@ -97,7 +98,10 @@ pub fn execute_investment(
     crate::db::companies::get_company(db.conn(), company)?;
     let data = match command {
         InvestmentCommand::Buy { trade, cost } => {
-            let cost = amount(db, company, &trade.symbol, cost)?;
+            let cost =
+                PositiveMoney::new(amount(db, company, &trade.symbol, cost)?).map_err(|_| {
+                    CliError::Validation("buy quantity and cost must be positive".into())
+                })?;
             serde_json::to_value(investments::buy(
                 db.conn(),
                 actor,
@@ -120,7 +124,8 @@ pub fn execute_investment(
             method,
             lot,
         } => {
-            let proceeds = amount(db, company, &trade.symbol, proceeds)?;
+            let proceeds = NonNegativeMoney::new(amount(db, company, &trade.symbol, proceeds)?)
+                .map_err(|_| CliError::Validation("sell proceeds must be nonnegative".into()))?;
             serde_json::to_value(investments::sell(
                 db.conn(),
                 actor,
@@ -133,8 +138,7 @@ pub fn execute_investment(
                     asset: trade.asset.clone(),
                     cash: trade.cash.clone(),
                     gain: gain.clone(),
-                    method: *method,
-                    lot: lot.clone(),
+                    selection: investments::LotSelection::from_flags(*method, lot.clone())?,
                     reference: normalized_reference(trade.reference.as_deref())?,
                 },
             )?)
@@ -159,11 +163,10 @@ fn normalized_reference(value: Option<&str>) -> Result<Option<String>, CliError>
         .map(super::reference::TransactionReference::into_string))
 }
 
-fn amount(db: &Db, company: &str, symbol: &str, value: &str) -> Result<i64, CliError> {
-    let security = investments::get_security(db.conn(), company, symbol)?;
-    let currency = Currency::from_code(&security.currency)
-        .map_err(|error| CliError::Validation(error.to_string()))?;
-    super::txn::parse_amount_to_minor(value, currency)
+fn amount(db: &Db, company: &str, symbol: &str, value: &str) -> Result<Money, CliError> {
+    let currency = investments::get_security(db.conn(), company, symbol)?.currency;
+    let minor = super::txn::parse_amount_to_minor(value, currency)?;
+    Ok(Money::from_minor(i128::from(minor), currency))
 }
 
 fn headers(name: &str) -> &'static [&'static str] {
