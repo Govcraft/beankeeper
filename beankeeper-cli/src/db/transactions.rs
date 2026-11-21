@@ -1,8 +1,9 @@
 use std::fmt::Write;
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::core::{JournalEntry, Transaction};
+use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
 use chrono::NaiveDate;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::audit::{self, Actor};
 use super::companies::{AllCompanies, Company};
@@ -96,8 +97,8 @@ pub enum PostResult {
 ///
 /// # Errors
 ///
-/// Returns `CliError::Validation` if entries is empty or a direction is
-/// invalid. Returns `CliError::Sqlite` on database errors (e.g. FK violations).
+/// Returns `CliError::Validation` for invalid dates, currency, accounts or
+/// entries. Returns `CliError::Sqlite` for storage errors.
 pub fn post_transaction(
     conn: &Connection,
     params: &PostTransactionParams<'_>,
@@ -157,7 +158,7 @@ fn post_transaction_inner(
                 params![p.company_slug, ref_str],
                 |row| row.get(0),
             )
-            .ok();
+            .optional()?;
 
         if let Some(existing_id) = existing {
             match p.on_conflict {
@@ -181,29 +182,105 @@ fn post_transaction_inner(
         super::spend_limits::check(conn, p)?;
     }
 
-    let date = chrono::NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
-        .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?;
-    let period = super::periods::check_posting(conn, p.company_slug, date)?;
-
-    // Build the metadata string, merging --correlate and --metadata if both present.
+    let posting = ValidatedPosting::build(conn, p)?;
     let effective_metadata = build_metadata(p.metadata, p.correlate)?;
-    persist_posting(period, p, effective_metadata.as_deref())
+    persist_posting(posting, effective_metadata.as_deref())
+}
+
+/// The only input to the posting insert. The validated journal and open
+/// period both come from this request and connection.
+struct ValidatedPosting<'a> {
+    journal: Transaction,
+    period: super::periods::OpenPeriod<'a>,
+    request: &'a PostTransactionParams<'a>,
+}
+
+impl<'a> ValidatedPosting<'a> {
+    fn build(
+        conn: &'a Connection,
+        request: &'a PostTransactionParams<'a>,
+    ) -> Result<Self, CliError> {
+        let date = chrono::NaiveDate::parse_from_str(request.date, "%Y-%m-%d")
+            .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?;
+        let currency = Currency::from_code(request.currency).map_err(invalid)?;
+        if currency.code() != request.currency {
+            return Err(CliError::Validation(format!(
+                "transaction currency must use the canonical code {}",
+                currency.code(),
+            )));
+        }
+        let mut journal = JournalEntry::new(date, request.description, currency);
+        for entry in request.entries {
+            let account =
+                super::accounts::get_account(conn, request.company_slug, &entry.account_code)
+                    .map_err(|error| match error {
+                        CliError::NotFound(message) => CliError::Validation(message),
+                        other => other,
+                    })?;
+            let account = super::accounts::row_to_account(&account)?;
+            journal = journal
+                .entry(posting_entry(entry, account, currency)?)
+                .map_err(invalid)?;
+        }
+        let journal = journal.post().map_err(invalid)?;
+        let period = super::periods::check_posting(conn, request.company_slug, journal.date())?;
+        Ok(Self {
+            journal,
+            period,
+            request,
+        })
+    }
+}
+
+fn invalid(error: impl std::fmt::Display) -> CliError {
+    CliError::Validation(error.to_string())
+}
+
+fn posting_entry(
+    raw: &PostEntryParams,
+    account: beankeeper::types::Account,
+    currency: Currency,
+) -> Result<Entry, CliError> {
+    let direction = if raw.direction.eq_ignore_ascii_case("debit") {
+        DebitOrCredit::Debit
+    } else if raw.direction.eq_ignore_ascii_case("credit") {
+        DebitOrCredit::Credit
+    } else {
+        return Err(CliError::Validation(format!(
+            "invalid direction '{}'; expected 'debit' or 'credit'",
+            raw.direction,
+        )));
+    };
+    let money = Money::from_minor(i128::from(raw.amount), currency);
+    let entry = match &raw.memo {
+        Some(memo) => Entry::with_memo(account, money, direction, memo),
+        None => Entry::new(account, money, direction),
+    }
+    .map_err(invalid)?;
+    Ok(match &raw.tax_category {
+        Some(category) => entry.with_tax_category(category),
+        None => entry,
+    })
 }
 
 fn persist_posting(
-    period: super::periods::OpenPeriod<'_>,
-    p: &PostTransactionParams<'_>,
+    posting: ValidatedPosting<'_>,
     effective_metadata: Option<&str>,
 ) -> Result<PostResult, CliError> {
+    let ValidatedPosting {
+        journal,
+        period,
+        request: p,
+    } = posting;
     let (conn, company, date) = period.into_parts();
     conn.execute(
         "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by, agent_uri, token_jti) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             company,
-            p.description,
+            journal.description(),
             effective_metadata,
-            p.currency,
+            journal.currency().code(),
             date.to_string(),
             p.reference,
             p.actor.name(),
@@ -214,27 +291,20 @@ fn persist_posting(
 
     let txn_id = conn.last_insert_rowid();
 
-    for entry in p.entries {
-        let dir_lower = entry.direction.to_lowercase();
-        if dir_lower != "debit" && dir_lower != "credit" {
-            return Err(CliError::Validation(format!(
-                "invalid direction '{}'; expected 'debit' or 'credit'",
-                entry.direction
-            )));
-        }
-
+    for entry in journal.entries() {
+        let minor = i64::try_from(entry.amount().amount().minor_units()).map_err(invalid)?;
         conn.execute(
             "INSERT INTO entries \
              (transaction_id, account_code, company_slug, direction, amount, memo, tax_category, status) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'uncleared')",
             params![
                 txn_id,
-                entry.account_code,
+                entry.account().code().as_str(),
                 company,
-                dir_lower,
-                entry.amount,
-                entry.memo,
-                entry.tax_category
+                entry.direction().code(),
+                minor,
+                entry.memo(),
+                entry.tax_category()
             ],
         )?;
     }
@@ -796,6 +866,40 @@ mod tests {
         let (txn, _) =
             get_transaction(db.conn(), "acme", id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(txn.metadata.as_deref(), Some(r#"{"ref":"INV-001"}"#));
+    }
+
+    #[test]
+    fn storage_rejects_invalid_journals_before_writing() -> Result<(), CliError> {
+        let db = setup();
+        let count = || -> rusqlite::Result<i64> {
+            db.conn().query_row(
+            "SELECT (SELECT COUNT(*) FROM transactions) + (SELECT COUNT(*) FROM entries) + (SELECT COUNT(*) FROM audit_log)",
+            [],
+            |row| row.get(0),
+        )
+        };
+        let before = count()?;
+        let mut unbalanced = sample_entries();
+        unbalanced[0].amount += 1;
+        let mut two_debits = sample_entries();
+        two_debits[1].direction = "debit".into();
+        let balanced = sample_entries();
+        for (entries, currency) in [
+            (unbalanced.as_slice(), "USD"),
+            (two_debits.as_slice(), "USD"),
+            (&balanced[..1], "USD"),
+            (balanced.as_slice(), "ZZZ"),
+            (balanced.as_slice(), "usd"),
+        ] {
+            let mut request = make_params(entries, "Invalid", None, "2026-01-05");
+            request.currency = currency;
+            assert!(matches!(
+                post_transaction(db.conn(), &request),
+                Err(CliError::Validation(_))
+            ));
+        }
+        assert_eq!(count()?, before);
+        Ok(())
     }
 
     #[test]
