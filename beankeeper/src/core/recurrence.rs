@@ -19,15 +19,23 @@ pub enum Frequency {
     Yearly,
 }
 
-impl fmt::Display for Frequency {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl Frequency {
+    /// Canonical form stored in a ledger and emitted on the wire.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
             Self::Once => "once",
             Self::Daily => "daily",
             Self::Weekly => "weekly",
             Self::Monthly => "monthly",
             Self::Yearly => "yearly",
-        })
+        }
+    }
+}
+
+impl fmt::Display for Frequency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
     }
 }
 

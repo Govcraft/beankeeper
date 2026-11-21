@@ -47,6 +47,9 @@
 //! - [`reporting`] — Trial balances and account balance summaries
 //! - [`error`] — Top-level error type aggregating all domain errors
 
+#[cfg(any(feature = "serde", feature = "rusqlite"))]
+mod codecs;
+
 pub mod core;
 pub mod error;
 pub mod loan;

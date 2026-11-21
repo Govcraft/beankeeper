@@ -16,7 +16,13 @@ include = ["/src/**", "/tests/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACH
 chrono = { version = "0.4.44", default-features = false }
 data-encoding = { version = "2.10.0", default-features = false, features = ["alloc"] }
 num-bigint = "0.5.1"
+rusqlite = { version = "0.39.0", default-features = false, optional = true }
+serde = { version = "1.0.229", optional = true }
 sha2 = { version = "0.10.9", default-features = false }
 
 [lints]
 workspace = true
+
+[features]
+serde = ["dep:serde"]
+rusqlite = ["dep:rusqlite"]
