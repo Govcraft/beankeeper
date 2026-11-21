@@ -210,7 +210,10 @@ fn read_grant_allows_reads_and_denies_all_mutations_without_side_effects() -> Te
     for (args, capability) in [
         (posting().to_vec(), "ledger/post"),
         (vec!["txn", "reverse", "1"], "ledger/reverse"),
-        (vec!["txn", "clear", "1"], "ledger/reconcile"),
+        (
+            vec!["txn", "clear", "1", "--entry", "1"],
+            "ledger/reconcile",
+        ),
         (vec!["txn", "reconcile"], "ledger/reconcile"),
         (
             vec!["budget", "set", "5000", "--year", "2026", "--annual", "100"],

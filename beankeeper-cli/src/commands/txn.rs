@@ -5,7 +5,10 @@ use std::path::Path;
 use beankeeper::core::{JournalEntry, TransactionError};
 use beankeeper::types::{Currency, DocumentType, Money};
 
-use crate::cli::{Cli, OutputFormat, TxnCommand, resolve_format};
+use crate::cli::{
+    Cli, OutputFormat, PostingArgs, TxnAttachArgs, TxnCommand, TxnImportArgs, TxnListArgs,
+    TxnProposalCommand, TxnReverseArgs, resolve_format,
+};
 use crate::db::connection::Db;
 use crate::db::transactions::TransactionValueFilter;
 use crate::db::{self, accounts, attachments, transactions};
@@ -31,10 +34,7 @@ pub fn run(
     let format = resolve_format(None, cli);
 
     match sub {
-        TxnCommand::Propose { .. }
-        | TxnCommand::Proposals { .. }
-        | TxnCommand::Approve { .. }
-        | TxnCommand::Reject { .. } => {
+        TxnCommand::Proposal(args) => {
             let data = db::audit::atomically(db_handle.conn(), || {
                 use secrecy::ExposeSecret;
                 crate::identity::authorize_operation(
@@ -42,7 +42,7 @@ pub fn run(
                     cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
                     super::command_name(&cli.command),
                 )?;
-                execute_proposal(&db_handle, company, sub, &cli.principal())
+                execute_proposal(&db_handle, company, args, &cli.principal())
             })?;
             let data = crate::output::json::with_amount_displays(data, None);
             if format == OutputFormat::Json {
@@ -60,16 +60,16 @@ pub fn run(
             Ok(())
         }
         TxnCommand::Meta(sub) => super::txn_meta::run(cli, &db_handle, company, sub),
-        TxnCommand::Post { .. } => {
+        TxnCommand::Post(args) => {
             let actor = cli.principal();
-            let result = execute_post(&db_handle, company, sub, &actor)?;
+            let result = execute_post(&db_handle, company, args, &actor)?;
             print_post_result(cli, company, result)
         }
-        TxnCommand::List { .. } => run_list_or_count(
+        TxnCommand::List(args) => run_list_or_count(
             cli,
             &db_handle,
             company,
-            sub,
+            args,
             (format, use_color),
             &mut std::io::stdout(),
         ),
@@ -81,10 +81,10 @@ pub fn run(
             &mut std::io::stdout(),
             cli.meta("txn.show", Some(company)),
         ),
-        TxnCommand::Reverse { .. } => run_reverse(cli, &db_handle, company, sub),
-        TxnCommand::Clear { .. } => super::txn_clear::run(cli, &db_handle, company, sub, meta),
-        TxnCommand::Import { .. } => run_import(cli, &db_handle, company, sub),
-        TxnCommand::Attach { .. } => run_attach(cli, &db_handle, company, sub),
+        TxnCommand::Reverse(args) => run_reverse(cli, &db_handle, company, args),
+        TxnCommand::Clear(args) => super::txn_clear::run(cli, &db_handle, company, args, meta),
+        TxnCommand::Import(args) => run_import(cli, &db_handle, company, args),
+        TxnCommand::Attach(args) => run_attach(cli, &db_handle, company, args),
         TxnCommand::Reconcile => run_reconcile(
             &db_handle,
             format,
@@ -96,13 +96,16 @@ pub fn run(
 }
 
 /// Execute an atomic reversal and report its new or existing transaction ID.
-fn run_reverse(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
-    let TxnCommand::Reverse { id, .. } = sub else {
-        return Err(CliError::General("expected txn reverse subcommand".into()));
-    };
+fn run_reverse(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    args: &TxnReverseArgs,
+) -> Result<(), CliError> {
+    let id = args.id;
     let format = resolve_format(None, cli);
     let actor = cli.principal();
-    let result = execute_reverse(db_handle, company, sub, &actor)?;
+    let result = execute_reverse(db_handle, company, args, &actor)?;
     if format == OutputFormat::Json {
         println!(
             "{}",
@@ -126,18 +129,15 @@ fn run_reverse(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Re
 fn execute_reverse(
     db_handle: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &TxnReverseArgs,
     actor: &db::Actor,
 ) -> Result<transactions::PostResult, CliError> {
-    let TxnCommand::Reverse {
+    let TxnReverseArgs {
         id,
         date,
         description,
         reference,
-    } = sub
-    else {
-        return Err(CliError::General("expected txn reverse subcommand".into()));
-    };
+    } = args;
     let date = date
         .clone()
         .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
@@ -199,27 +199,24 @@ pub fn execute_json_with_pagination(
     }
     let mut out = Vec::new();
     match sub {
-        TxnCommand::Propose { .. }
-        | TxnCommand::Proposals { .. }
-        | TxnCommand::Approve { .. }
-        | TxnCommand::Reject { .. } => {
-            return execute_proposal(db_handle, company, sub, actor)
+        TxnCommand::Proposal(args) => {
+            return execute_proposal(db_handle, company, args, actor)
                 .map(|data| (crate::output::json::with_amount_displays(data, None), None));
         }
         TxnCommand::Meta(sub) => {
             return super::txn_meta::execute_json(db_handle, company, sub, actor)
                 .map(|data| (data, None));
         }
-        TxnCommand::Post { .. } => {
-            let result = execute_post(db_handle, company, sub, actor)?;
+        TxnCommand::Post(args) => {
+            let result = execute_post(db_handle, company, args, actor)?;
             let meta = cli.meta("txn.post", Some(company));
             out = output::json::render_post_result(result, meta)?.into_bytes();
         }
-        TxnCommand::List { .. } => run_list_or_count(
+        TxnCommand::List(args) => run_list_or_count(
             cli,
             db_handle,
             company,
-            sub,
+            args,
             (OutputFormat::Json, false),
             &mut out,
         )?,
@@ -236,16 +233,16 @@ pub fn execute_json_with_pagination(
         TxnCommand::Reconcile => {
             return execute_reconcile_json(db_handle).map(|data| (data, None));
         }
-        TxnCommand::Clear { .. } => {
-            return super::txn_clear::execute_json(db_handle, company, sub, actor, None)
+        TxnCommand::Clear(args) => {
+            return super::txn_clear::execute_json(db_handle, company, args, actor, None)
                 .map(|data| (data, None));
         }
-        TxnCommand::Reverse { .. } => {
-            let result = execute_reverse(db_handle, company, sub, actor)?;
+        TxnCommand::Reverse(args) => {
+            let result = execute_reverse(db_handle, company, args, actor)?;
             let meta = cli.meta("txn.reverse", Some(company));
             out = output::json::render_post_result(result, meta)?.into_bytes();
         }
-        TxnCommand::Import { .. } | TxnCommand::Attach { .. } => {
+        TxnCommand::Import(_) | TxnCommand::Attach(_) => {
             return Err(CliError::Usage(
                 "transaction operation is not available over MCP".into(),
             ));
@@ -269,8 +266,13 @@ pub(crate) fn execute_reconcile_json(db_handle: &Db) -> Result<serde_json::Value
 }
 
 /// Execute the `txn import` subcommand.
-fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
-    let TxnCommand::Import {
+fn run_import(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    args: &TxnImportArgs,
+) -> Result<(), CliError> {
+    let TxnImportArgs {
         file,
         format: import_format,
         dry_run,
@@ -278,10 +280,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
         suspense,
         on_conflict,
         ..
-    } = sub
-    else {
-        return Err(CliError::General("expected txn import subcommand".into()));
-    };
+    } = args;
 
     let effective_format = match import_format {
         Some(f) => *f,
@@ -317,7 +316,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
             )
         }
         crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => {
-            super::txn_import::run(cli, db_handle, company, sub, effective_format)
+            super::txn_import::run(cli, db_handle, company, args, effective_format)
         }
     }
 }
@@ -327,12 +326,12 @@ fn run_list_or_count(
     cli: &Cli,
     db_handle: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &TxnListArgs,
     presentation: (OutputFormat, bool),
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
     let (format, use_color) = presentation;
-    let TxnCommand::List {
+    let TxnListArgs {
         account,
         from,
         to,
@@ -349,17 +348,14 @@ fn run_list_or_count(
         tax_category,
         direction,
         count,
-    } = sub
-    else {
-        unreachable!("run_list_or_count called with non-List variant");
-    };
+    } = args;
 
     let mut lp = transactions::ListTransactionParams::for_company(company);
     lp.account_filter = account.as_deref();
     lp.from_date = from.as_deref();
     lp.to_date = to.as_deref();
-    lp.limit = *limit;
-    lp.offset = *offset;
+    lp.limit = limit.sql_limit();
+    lp.offset = i64::from(*offset);
     lp.description_like = description.as_deref();
     lp.reference_filter = reference.as_deref();
     lp.metadata_like = metadata.as_deref();
@@ -587,31 +583,25 @@ fn validate_journal(journal: JournalEntry, currency: Currency) -> Result<(), Cli
 fn execute_proposal(
     db: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &TxnProposalCommand,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
-    let value =
-        match sub {
-            TxnCommand::Propose { .. } => {
-                return with_post_params(db, company, sub, actor, |params| {
-                    db::proposals::create(db.conn(), params)
-                });
-            }
-            TxnCommand::Proposals { include_rejected } => serde_json::to_value(
-                db::proposals::list(db.conn(), company, actor, *include_rejected)?,
-            ),
-            TxnCommand::Approve { id } => {
-                serde_json::to_value(db::audit::approve_proposal(db.conn(), actor, company, id)?)
-            }
-            TxnCommand::Reject { id, reason } => serde_json::to_value(db::audit::reject_proposal(
-                db.conn(),
-                actor,
-                company,
-                id,
-                reason.as_deref(),
-            )?),
-            _ => return Err(CliError::Usage("expected a proposal operation".into())),
-        };
+    let value = match args {
+        TxnProposalCommand::Propose(args) => {
+            return with_post_params(db, company, args, actor, |params| {
+                db::proposals::create(db.conn(), params)
+            });
+        }
+        TxnProposalCommand::Proposals { include_rejected } => serde_json::to_value(
+            db::proposals::list(db.conn(), company, actor, *include_rejected)?,
+        ),
+        TxnProposalCommand::Approve { id } => {
+            serde_json::to_value(db::audit::approve_proposal(db.conn(), actor, company, id)?)
+        }
+        TxnProposalCommand::Reject { id, reason } => serde_json::to_value(
+            db::audit::reject_proposal(db.conn(), actor, company, id, reason.as_deref())?,
+        ),
+    };
     value.map_err(|error| CliError::General(error.to_string()))
 }
 
@@ -619,10 +609,10 @@ fn execute_proposal(
 fn execute_post(
     db: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &PostingArgs,
     actor: &db::Actor,
 ) -> Result<transactions::PostResult, CliError> {
-    with_post_params(db, company, sub, actor, |params| {
+    with_post_params(db, company, args, actor, |params| {
         transactions::post_transaction(db.conn(), params)
     })
 }
@@ -631,11 +621,11 @@ fn execute_post(
 fn with_post_params<T>(
     db_handle: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &PostingArgs,
     actor: &db::Actor,
     action: impl FnOnce(&transactions::PostTransactionParams<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    let (TxnCommand::Post {
+    let PostingArgs {
         description,
         debit: debit_args,
         credit: credit_args,
@@ -647,23 +637,7 @@ fn with_post_params<T>(
         reference,
         on_conflict,
         tax: tax_args,
-    }
-    | TxnCommand::Propose {
-        description,
-        debit: debit_args,
-        credit: credit_args,
-        metadata,
-        meta: meta_args,
-        currency: currency_code,
-        date,
-        correlate,
-        reference,
-        on_conflict,
-        tax: tax_args,
-    }) = sub
-    else {
-        return Err(CliError::General("expected txn post subcommand".into()));
-    };
+    } = args;
     let date = date.as_deref();
     let metadata = metadata.as_deref();
     let reference = reference.as_deref();
@@ -1000,16 +974,18 @@ fn run_show(
 }
 
 /// Execute the `txn attach` subcommand.
-fn run_attach(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
-    let TxnCommand::Attach {
+fn run_attach(
+    cli: &Cli,
+    db_handle: &Db,
+    company: &str,
+    args: &TxnAttachArgs,
+) -> Result<(), CliError> {
+    let TxnAttachArgs {
         transaction_id,
         file_path,
         document_type: document_type_str,
         entry: entry_id,
-    } = sub
-    else {
-        return Err(CliError::General("expected txn attach subcommand".into()));
-    };
+    } = args;
     let transaction_id = *transaction_id;
     let entry_id = *entry_id;
     // 1. Validate document type
@@ -1296,7 +1272,7 @@ mod tests {
                 ],
             )?;
         }
-        let sub = TxnCommand::Clear {
+        let sub = crate::cli::TxnClearArgs {
             transaction_id: None,
             entry: None,
             reference: None,

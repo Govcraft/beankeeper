@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::reference::TransactionReference;
-use crate::cli::{Cli, ImportFormat, OnConflictArg, OutputFormat, TxnCommand};
+use crate::cli::{Cli, ImportFormat, OnConflictArg, OutputFormat, TxnImportArgs};
 use crate::db::connection::Db;
 use crate::db::{self, accounts, transactions};
 use crate::error::CliError;
@@ -494,10 +494,10 @@ pub fn run(
     cli: &Cli,
     db: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &TxnImportArgs,
     format: ImportFormat,
 ) -> Result<(), CliError> {
-    let TxnCommand::Import {
+    let TxnImportArgs {
         file,
         dry_run,
         options,
@@ -505,10 +505,7 @@ pub fn run(
         suspense,
         on_conflict,
         ..
-    } = sub
-    else {
-        return Err(CliError::Usage("expected txn import".into()));
-    };
+    } = args;
     let strategy = match on_conflict {
         OnConflictArg::Error => transactions::ConflictStrategy::Error,
         OnConflictArg::Skip => transactions::ConflictStrategy::Skip,

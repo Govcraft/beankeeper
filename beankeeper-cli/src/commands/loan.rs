@@ -5,8 +5,8 @@ use beankeeper::types::{Amount, Currency};
 use serde::Serialize;
 
 use crate::cli::{
-    Cli, LoanCalculationArgs, LoanCommand, LoanPayArgs, OutputFormat, TxnCommand, require_company,
-    resolve_format,
+    Cli, LoanCalculationArgs, LoanCommand, LoanPayArgs, OutputFormat, PostingArgs, TxnCommand,
+    require_company, resolve_format,
 };
 use crate::error::CliError;
 use crate::output::json;
@@ -159,7 +159,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
             debit.push(format!("{code}:{}", display(amount, currency)));
         }
     }
-    let post = TxnCommand::Post {
+    let post = TxnCommand::Post(PostingArgs {
         description: format!("Loan payment {} ({})", row.number, args.reference.trim()),
         debit,
         credit: vec![format!(
@@ -175,7 +175,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         reference: Some(args.reference.clone()),
         on_conflict: args.on_conflict,
         tax: Vec::new(),
-    };
+    });
     let result = super::txn::execute_json(cli, &db, &company, &post, &cli.principal())?;
     // On a skipped reference the existing transaction may have different terms;
     // return only its identity/status, never claim that it contains this split.

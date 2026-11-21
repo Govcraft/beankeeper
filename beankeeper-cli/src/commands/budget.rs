@@ -4,7 +4,7 @@ use std::io::IsTerminal;
 
 use beankeeper::types::Currency;
 
-use crate::cli::{BudgetCommand, Cli, OutputFormat, resolve_format};
+use crate::cli::{BudgetCommand, BudgetMonth, BudgetSetArgs, Cli, OutputFormat, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db;
 use crate::db::connection::Db;
@@ -30,7 +30,7 @@ pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError
     {
         let scope = month.map_or_else(
             || format!("{account} for all of {year}"),
-            |month| format!("{account} for {year}-{month:02}"),
+            |month| format!("{account} for {year}-{:02}", month.get()),
         );
         eprint!("Delete budget for {scope}? [y/N] ");
         let mut input = String::new();
@@ -45,21 +45,21 @@ pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError
     render(cli, company, sub, &result)?;
     if !cli.verbosity.quiet {
         match sub {
-            BudgetCommand::Set {
+            BudgetCommand::Set(BudgetSetArgs {
                 account,
                 year,
                 annual: Some(_),
                 ..
-            } => {
+            }) => {
                 eprintln!("[ok] annual budget set for {account} in {year} (12 months)");
             }
-            BudgetCommand::Set {
+            BudgetCommand::Set(BudgetSetArgs {
                 account,
                 year,
                 month: Some(month),
                 ..
-            } => {
-                eprintln!("[ok] budget set for {account} in {year}-{month:02}");
+            }) => {
+                eprintln!("[ok] budget set for {account} in {year}-{:02}", month.get());
             }
             BudgetCommand::List { .. } => {
                 if let BudgetData::Rows(rows) = &result {
@@ -90,7 +90,7 @@ fn compute(
 ) -> Result<BudgetData, CliError> {
     db::companies::get_company(db.conn(), company)?;
     match sub {
-        BudgetCommand::Set { .. } => set(db, company, sub, actor).map(BudgetData::Rows),
+        BudgetCommand::Set(args) => set(db, company, args, actor).map(BudgetData::Rows),
         BudgetCommand::List {
             year,
             account,
@@ -101,7 +101,7 @@ fn compute(
                 company_slug: company,
                 year: *year,
                 account_code: account.as_deref(),
-                month: *month,
+                month: month.map(BudgetMonth::get),
             },
         )
         .map(BudgetData::Rows),
@@ -111,18 +111,26 @@ fn compute(
             month,
             currency,
             ..
-        } => db::delete_budget(db.conn(), actor, company, account, currency, *year, *month)
-            .map(BudgetData::Deleted),
+        } => db::delete_budget(
+            db.conn(),
+            actor,
+            company,
+            account,
+            currency,
+            *year,
+            month.map(BudgetMonth::get),
+        )
+        .map(BudgetData::Deleted),
     }
 }
 
 fn set(
     db: &Db,
     company: &str,
-    sub: &BudgetCommand,
+    args: &BudgetSetArgs,
     actor: &db::Actor,
 ) -> Result<Vec<db::BudgetRow>, CliError> {
-    let BudgetCommand::Set {
+    let BudgetSetArgs {
         account,
         year,
         month,
@@ -130,10 +138,7 @@ fn set(
         annual,
         currency,
         notes,
-    } = sub
-    else {
-        return Err(CliError::Usage("expected budget set".into()));
-    };
+    } = args;
     if !db::account_exists(db.conn(), company, account)? {
         return Err(CliError::NotFound(format!(
             "account '{account}' not found in company '{company}'"
@@ -141,13 +146,20 @@ fn set(
     }
     let parsed_currency = Currency::from_code(currency)
         .map_err(|_| CliError::Validation(format!("unknown currency: {currency}")))?;
-    if annual.is_some() && (month.is_some() || amount.is_some()) {
-        return Err(CliError::Usage(
-            "annual conflicts with month and amount".into(),
-        ));
-    }
-    if let Some(annual) = annual {
-        return db::set_annual_budget(
+    let scope = match (month, amount.as_deref(), annual.as_deref()) {
+        (Some(month), Some(amount), None) => BudgetScope::Monthly {
+            month: *month,
+            amount,
+        },
+        (None, None, Some(amount)) => BudgetScope::Annual(amount),
+        _ => {
+            return Err(CliError::Usage(
+                "provide --month and --amount together, or --annual".into(),
+            ));
+        }
+    };
+    match scope {
+        BudgetScope::Annual(annual) => db::set_annual_budget(
             db.conn(),
             actor,
             &db::SetAnnualBudgetParams {
@@ -158,39 +170,32 @@ fn set(
                 annual_amount: parse_amount_to_minor(annual, parsed_currency)?,
                 notes: notes.as_deref(),
             },
-        );
+        ),
+        BudgetScope::Monthly { month, amount } => db::set_budget(
+            db.conn(),
+            actor,
+            &db::SetBudgetParams {
+                company_slug: company,
+                account_code: account,
+                currency,
+                year: *year,
+                month: month.get(),
+                amount: parse_amount_to_minor(amount, parsed_currency)?,
+                notes: notes.as_deref(),
+            },
+        )
+        .map(|row| vec![row]),
     }
-    let Some(amount) = amount else {
-        return Err(CliError::Usage(
-            "either --month/--amount or --annual must be provided".into(),
-        ));
-    };
-    let month =
-        month.ok_or_else(|| CliError::Usage("--month is required when using --amount".into()))?;
-    if !(1..=12).contains(&month) {
-        return Err(CliError::Validation(format!(
-            "month must be 1-12, got {month}"
-        )));
-    }
-    let row = db::set_budget(
-        db.conn(),
-        actor,
-        &db::SetBudgetParams {
-            company_slug: company,
-            account_code: account,
-            currency,
-            year: *year,
-            month,
-            amount: parse_amount_to_minor(amount, parsed_currency)?,
-            notes: notes.as_deref(),
-        },
-    )?;
-    Ok(vec![row])
+}
+
+enum BudgetScope<'a> {
+    Monthly { month: BudgetMonth, amount: &'a str },
+    Annual(&'a str),
 }
 
 fn command(sub: &BudgetCommand) -> &'static str {
     match sub {
-        BudgetCommand::Set { .. } => "budget.set",
+        BudgetCommand::Set(_) => "budget.set",
         BudgetCommand::List { .. } => "budget.list",
         BudgetCommand::Delete { .. } => "budget.delete",
     }
@@ -276,16 +281,16 @@ mod tests {
         Ok(db)
     }
 
-    fn monthly(month: i32) -> BudgetCommand {
-        BudgetCommand::Set {
+    fn monthly(amount: &str) -> BudgetCommand {
+        BudgetCommand::Set(BudgetSetArgs {
             account: "5000".into(),
             year: 2026,
-            month: Some(month),
-            amount: Some("12.34".into()),
+            month: Some("3".parse().unwrap_or_else(|error| panic!("{error}"))),
+            amount: Some(amount.into()),
             annual: None,
             currency: "USD".into(),
             notes: Some("Office".into()),
-        }
+        })
     }
 
     #[test]
@@ -294,7 +299,7 @@ mod tests {
         let actor = db::Actor::new("mcp:test-client");
         let companies = super::super::company::execute_json(&db, &CompanyCommand::List)?;
         assert_eq!(companies[0]["slug"], "acme");
-        let set = execute_json(&db, "acme", &monthly(3), &actor)?;
+        let set = execute_json(&db, "acme", &monthly("12.34"), &actor)?;
         assert_eq!(set[0]["amount"], 1234);
         let listed = execute_json(
             &db,
@@ -351,11 +356,11 @@ mod tests {
         };
         let before = super::super::audit::execute_json(&db, &log)?;
         assert!(matches!(
-            execute_json(&db, "acme", &monthly(13), &actor),
+            execute_json(&db, "acme", &monthly("999999999999999999999999999"), &actor),
             Err(CliError::Validation(_))
         ));
         assert!(matches!(
-            execute_json(&db, "unknown", &monthly(3), &actor),
+            execute_json(&db, "unknown", &monthly("12.34"), &actor),
             Err(CliError::NotFound(_))
         ));
         let after = super::super::audit::execute_json(&db, &log)?;

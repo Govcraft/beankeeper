@@ -1152,35 +1152,7 @@ EXAMPLES:\n  \
     Set with a note and specific currency:\n    \
     $ bk --company acme budget set 5000 --year 2026 --annual 30000 --currency MXN --notes \"Office lease\"\
 ")]
-    Set {
-        /// Account code to budget.
-        account: String,
-
-        /// Budget year (e.g. 2026).
-        #[arg(long)]
-        year: i32,
-
-        /// Budget month (1-12). Use with --amount. Mutually exclusive with --annual.
-        #[arg(long, requires = "amount", conflicts_with = "annual")]
-        month: Option<i32>,
-
-        /// Budget amount in major units (e.g. dollars). Required with --month.
-        #[arg(long, conflicts_with = "annual")]
-        amount: Option<String>,
-
-        /// Annual budget in major units, distributed evenly across 12 months.
-        /// Mutually exclusive with --month/--amount.
-        #[arg(long, conflicts_with_all = ["month", "amount"])]
-        annual: Option<String>,
-
-        /// Currency code (default: USD or `BEANKEEPER_CURRENCY`).
-        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-        currency: String,
-
-        /// Optional note for the budget line.
-        #[arg(long)]
-        notes: Option<String>,
-    },
+    Set(BudgetSetArgs),
 
     /// List budgets.
     #[command(after_help = "\
@@ -1205,7 +1177,7 @@ EXAMPLES:\n  \
 
         /// Filter by month (1-12).
         #[arg(long)]
-        month: Option<i32>,
+        month: Option<BudgetMonth>,
     },
 
     /// Delete budget entries for an account.
@@ -1230,7 +1202,7 @@ EXAMPLES:\n  \
 
         /// Specific month to delete (1-12). Omit to delete all months.
         #[arg(long)]
-        month: Option<i32>,
+        month: Option<BudgetMonth>,
 
         /// Currency code.
         #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
@@ -1240,6 +1212,63 @@ EXAMPLES:\n  \
         #[arg(long)]
         force: bool,
     },
+}
+
+/// Arguments for one monthly budget or one annual budget.
+#[derive(Args, Debug)]
+#[command(group(clap::ArgGroup::new("budget_scope").required(true).args(["month", "annual"])))]
+pub struct BudgetSetArgs {
+    /// Account code to budget.
+    pub account: String,
+
+    /// Budget year (e.g. 2026).
+    #[arg(long)]
+    pub year: i32,
+
+    /// Budget month (1-12). Use with --amount. Mutually exclusive with --annual.
+    #[arg(long, requires = "amount")]
+    pub month: Option<BudgetMonth>,
+
+    /// Budget amount in major units (e.g. dollars). Required with --month.
+    #[arg(long, requires = "month")]
+    pub amount: Option<String>,
+
+    /// Annual budget in major units, distributed evenly across 12 months.
+    /// Mutually exclusive with --month/--amount.
+    #[arg(long)]
+    pub annual: Option<String>,
+
+    /// Currency code (default: USD or `BEANKEEPER_CURRENCY`).
+    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+    pub currency: String,
+
+    /// Optional note for the budget line.
+    #[arg(long)]
+    pub notes: Option<String>,
+}
+
+/// A validated month number from January (1) through December (12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BudgetMonth(i32);
+
+impl BudgetMonth {
+    /// Month number for the ledger's budget records.
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
+impl std::str::FromStr for BudgetMonth {
+    type Err = CliError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        raw.parse::<i32>()
+            .ok()
+            .filter(|month| (1..=12).contains(month))
+            .map(Self)
+            .ok_or_else(|| CliError::Validation(format!("month must be 1-12, got {raw}")))
+    }
 }
 
 /// Company subcommands.
@@ -1468,122 +1497,11 @@ EXAMPLES:\n  \
     $ bk --company acme txn post -d \"AWS bill\" --debit 5000:120 --credit 1000:120 \\\n      \
     -m \"Q1 cloud\" --meta vendor=AWS --meta project=apollo\
 ")]
-    Post {
-        /// Transaction description.
-        #[arg(short = 'd', long = "description")]
-        description: String,
+    Post(PostingArgs),
 
-        /// Debit entry as `account_code:amount` (repeatable).
-        #[arg(long, required = true, num_args = 1)]
-        debit: Vec<String>,
-
-        /// Credit entry as `account_code:amount` (repeatable).
-        #[arg(long, required = true, num_args = 1)]
-        credit: Vec<String>,
-
-        /// Free-text memo or a JSON object. Text (and non-object JSON) is
-        /// stored as `{"memo": ...}`; a JSON object is stored unchanged.
-        #[arg(short = 'm', long)]
-        metadata: Option<String>,
-
-        /// Set a top-level metadata key as `key=value` (repeatable). Values are
-        /// stored as JSON strings and merged with `-m`. Duplicate keys are an
-        /// error; `correlate` is reserved (use --correlate).
-        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
-        meta: Vec<String>,
-
-        /// Currency code.
-        #[arg(long, default_value = "USD")]
-        currency: String,
-
-        /// Transaction date (YYYY-MM-DD). Defaults to today.
-        #[arg(long)]
-        date: Option<String>,
-
-        /// Correlate with an existing transaction in another company (intercompany linking).
-        #[arg(long)]
-        correlate: Option<i64>,
-
-        /// Idempotency key -- rejects duplicate posts with the same reference per company.
-        #[arg(short = 'r', long)]
-        reference: Option<String>,
-
-        /// Conflict resolution strategy for duplicate references.
-        #[arg(long, value_enum, default_value_t = OnConflictArg::Error)]
-        on_conflict: OnConflictArg,
-
-        /// Tax category for specific entries. Format: `account_code=category` (repeatable).
-        /// Entries without a --tax flag inherit the account's `default_tax_category`.
-        #[arg(long = "tax", num_args = 1)]
-        tax: Vec<String>,
-    },
-
-    /// Store a balanced posting for approval without posting it. Requires a verified agent.
-    Propose {
-        /// Transaction description.
-        #[arg(short = 'd', long = "description")]
-        description: String,
-
-        /// Debit entry as `account_code:amount` (repeatable).
-        #[arg(long, required = true, num_args = 1)]
-        debit: Vec<String>,
-
-        /// Credit entry as `account_code:amount` (repeatable).
-        #[arg(long, required = true, num_args = 1)]
-        credit: Vec<String>,
-
-        /// Free-text memo or a JSON object. Text (and non-object JSON) is
-        /// stored as `{"memo": ...}`; a JSON object is stored unchanged.
-        #[arg(short = 'm', long)]
-        metadata: Option<String>,
-
-        /// Set a top-level metadata key as `key=value` (repeatable). Values are
-        /// stored as JSON strings and merged with `-m`. Duplicate keys are an
-        /// error; `correlate` is reserved (use --correlate).
-        #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
-        meta: Vec<String>,
-
-        /// Currency code.
-        #[arg(long, default_value = "USD")]
-        currency: String,
-
-        /// Transaction date (YYYY-MM-DD). Defaults to today.
-        #[arg(long)]
-        date: Option<String>,
-
-        /// Correlate with an existing transaction in another company (intercompany linking).
-        #[arg(long)]
-        correlate: Option<i64>,
-
-        /// Idempotency key -- rejects duplicate posts with the same reference per company.
-        #[arg(short = 'r', long)]
-        reference: Option<String>,
-
-        /// Conflict resolution strategy for duplicate references.
-        #[arg(long, value_enum, default_value_t = OnConflictArg::Error)]
-        on_conflict: OnConflictArg,
-
-        /// Tax category for specific entries. Format: `account_code=category` (repeatable).
-        /// Entries without a --tax flag inherit the account's `default_tax_category`.
-        #[arg(long = "tax", num_args = 1)]
-        tax: Vec<String>,
-    },
-
-    /// List pending proposals visible to the caller.
-    Proposals {
-        /// Also include approved, rejected and withdrawn proposals.
-        #[arg(long)]
-        include_rejected: bool,
-    },
-    /// Approve a pending proposal and atomically post it.
-    Approve { id: String },
-    /// Reject a proposal, or withdraw your own pending proposal.
-    #[command(alias = "withdraw")]
-    Reject {
-        id: String,
-        #[arg(long)]
-        reason: Option<String>,
-    },
+    /// Manage postings awaiting approval.
+    #[command(flatten)]
+    Proposal(TxnProposalCommand),
 
     /// List and search transactions.
     #[command(
@@ -1612,78 +1530,7 @@ EXAMPLES:\n  \
     $ bk --company acme txn search -d \"invoice\"\
 "
     )]
-    List {
-        /// Filter by account code.
-        #[arg(long)]
-        account: Option<String>,
-
-        /// Start date (inclusive).
-        #[arg(long)]
-        from: Option<String>,
-
-        /// End date (inclusive).
-        #[arg(long)]
-        to: Option<String>,
-
-        /// Maximum number of transactions to return.
-        #[arg(long, default_value = "50")]
-        limit: i64,
-
-        /// Number of transactions to skip.
-        #[arg(long, default_value = "0")]
-        offset: i64,
-
-        /// Search by description (substring, case-insensitive).
-        #[arg(short = 'd', long)]
-        description: Option<String>,
-
-        /// Minimum entry amount (exclusive, in major units e.g. dollars).
-        #[arg(long)]
-        amount_gt: Option<String>,
-
-        /// Maximum entry amount (exclusive, in major units e.g. dollars).
-        #[arg(long)]
-        amount_lt: Option<String>,
-
-        /// Exact entry amount (in major units e.g. dollars).
-        #[arg(long)]
-        amount_eq: Option<String>,
-
-        /// Filter by currency code. Required for amount filters when the company has multiple currencies.
-        #[arg(long)]
-        currency: Option<String>,
-
-        /// Filter by idempotency reference key.
-        #[arg(long)]
-        reference: Option<String>,
-
-        /// Search in metadata field (substring, case-insensitive).
-        #[arg(long)]
-        metadata: Option<String>,
-
-        /// Exact match on a top-level metadata key, as `KEY=VALUE` (repeatable,
-        /// AND-ed). Matches JSON strings exactly, and numbers/booleans by their
-        /// JSON text (`qty=3` matches `{"qty":3}`). `--meta` is an alias.
-        #[arg(
-            long = "filter-metadata",
-            visible_alias = "meta",
-            value_name = "KEY=VALUE",
-            num_args = 1
-        )]
-        meta: Vec<String>,
-
-        /// Filter by tax category on entries.
-        #[arg(long)]
-        tax_category: Option<String>,
-
-        /// Filter entries by direction.
-        #[arg(long, value_enum)]
-        direction: Option<DirectionArg>,
-
-        /// Return only the count of matching transactions.
-        #[arg(long)]
-        count: bool,
-    },
+    List(TxnListArgs),
 
     /// Show transaction details.
     #[command(after_help = "\
@@ -1704,19 +1551,7 @@ EXAMPLES:\n  \
         visible_alias = "void",
         after_help = "EXAMPLES:\n  bk --company acme txn reverse 42\n  bk --company acme txn reverse 42 --date 2026-11-19 --reference VOID-42\n\nReconciled originals cannot be reversed. Existing clearings stay on the original;\nnew entries start uncleared. Retry with the same explicit --reference to skip."
     )]
-    Reverse {
-        /// Transaction ID in the selected company.
-        id: i64,
-        /// Reversal date (YYYY-MM-DD), on or after the original. Defaults to today.
-        #[arg(long)]
-        date: Option<String>,
-        /// Description. Defaults to "Reversal of #ID: ORIGINAL DESCRIPTION".
-        #[arg(short, long)]
-        description: Option<String>,
-        /// Idempotency reference. Defaults to reversal-of-ID.
-        #[arg(short, long)]
-        reference: Option<String>,
-    },
+    Reverse(TxnReverseArgs),
 
     /// Import transactions from file or stdin.
     #[command(after_help = "\
@@ -1733,46 +1568,7 @@ EXAMPLES:\n  \
     Import OFX from stdin with explicit format:\n    \
     $ cat statement.ofx | bk --company acme txn import --file - --input-format ofx --account 1000 --suspense 9000\
 ")]
-    Import {
-        /// Input file path. Use `-` for stdin.
-        #[arg(long, default_value = "-")]
-        file: InputSource,
-
-        /// Input format. Auto-detected from file extension when omitted.
-        #[arg(
-            id = "import_format",
-            long = "input-format",
-            alias = "format",
-            value_enum
-        )]
-        format: Option<ImportFormat>,
-
-        // Keep the propagated output value typed independently from the input
-        // format; --format remains a compatibility alias for --input-format.
-        /// Output format for command responses.
-        #[arg(id = "format", long = "response-format", hide = true, value_enum)]
-        response_format: Option<OutputFormat>,
-
-        /// Validate without persisting.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// CSV column mappings, sign convention, and default currency.
-        #[command(flatten)]
-        options: crate::commands::txn_import::ImportOptions,
-
-        /// Bank/asset account code (required for OFX and CSV import).
-        #[arg(long)]
-        account: Option<String>,
-
-        /// Suspense/clearing contra account code (required for OFX and CSV import).
-        #[arg(long)]
-        suspense: Option<String>,
-
-        /// Conflict resolution strategy for duplicate references.
-        #[arg(long, value_enum, default_value_t = OnConflictArg::Skip)]
-        on_conflict: OnConflictArg,
-    },
+    Import(TxnImportArgs),
 
     /// Attach a document to a transaction.
     #[command(after_help = "\
@@ -1783,21 +1579,7 @@ EXAMPLES:\n  \
     Attach an invoice to a specific entry within a transaction:\n    \
     $ bk --company acme txn attach 42 invoice.pdf --type invoice --entry 5\
 ")]
-    Attach {
-        /// Transaction ID.
-        transaction_id: i64,
-
-        /// Path to the file to attach.
-        file_path: String,
-
-        /// Document type (receipt, invoice, statement, contract, other).
-        #[arg(long = "type")]
-        document_type: String,
-
-        /// Optional entry ID for entry-level attachments.
-        #[arg(long)]
-        entry: Option<i64>,
-    },
+    Attach(TxnAttachArgs),
 
     /// Find orphaned intercompany correlations.
     #[command(after_help = "\
@@ -1854,43 +1636,308 @@ EXAMPLES:\n  \
     Mark an entry as reconciled:\n    \
     $ bk --company acme txn clear 42 --entry 5 --status reconciled\
 ")]
-    Clear {
-        /// Transaction ID (with --entry).
-        #[arg(conflicts_with_all = ["reference", "from_file"])]
-        transaction_id: Option<i64>,
+    Clear(TxnClearArgs),
+}
 
-        /// Entry ID to clear (with a transaction ID).
-        #[arg(long, requires = "transaction_id")]
-        entry: Option<i64>,
+/// Arguments accepted by `bk txn post`.
+#[derive(Args, Debug)]
+pub struct PostingArgs {
+    /// Transaction description.
+    #[arg(short = 'd', long = "description")]
+    pub description: String,
 
-        /// Transaction reference; the entry is picked by --account.
-        #[arg(long, requires = "account", conflicts_with = "from_file")]
-        reference: Option<String>,
+    /// Debit entry as `account_code:amount` (repeatable).
+    #[arg(long, required = true, num_args = 1)]
+    pub debit: Vec<String>,
 
-        /// Account code selecting the entry (with --reference or --from-file).
+    /// Credit entry as `account_code:amount` (repeatable).
+    #[arg(long, required = true, num_args = 1)]
+    pub credit: Vec<String>,
+
+    /// Free-text memo or a JSON object. Text (and non-object JSON) is
+    /// stored as `{"memo": ...}`; a JSON object is stored unchanged.
+    #[arg(short = 'm', long)]
+    pub metadata: Option<String>,
+
+    /// Set a top-level metadata key as `key=value` (repeatable). Values are
+    /// stored as JSON strings and merged with `-m`. Duplicate keys are an
+    /// error; `correlate` is reserved (use --correlate).
+    #[arg(long = "meta", value_name = "KEY=VALUE", num_args = 1)]
+    pub meta: Vec<String>,
+
+    /// Currency code.
+    #[arg(long, default_value = "USD")]
+    pub currency: String,
+
+    /// Transaction date (YYYY-MM-DD). Defaults to today.
+    #[arg(long)]
+    pub date: Option<String>,
+
+    /// Correlate with an existing transaction in another company (intercompany linking).
+    #[arg(long)]
+    pub correlate: Option<i64>,
+
+    /// Idempotency key -- rejects duplicate posts with the same reference per company.
+    #[arg(short = 'r', long)]
+    pub reference: Option<String>,
+
+    /// Conflict resolution strategy for duplicate references.
+    #[arg(long, value_enum, default_value_t = OnConflictArg::Error)]
+    pub on_conflict: OnConflictArg,
+
+    /// Tax category for specific entries. Format: `account_code=category` (repeatable).
+    /// Entries without a --tax flag inherit the account's `default_tax_category`.
+    #[arg(long = "tax", num_args = 1)]
+    pub tax: Vec<String>,
+}
+
+/// Arguments accepted by `bk txn list`.
+#[derive(Args, Debug)]
+pub struct TxnListArgs {
+    /// Filter by account code.
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// Start date (inclusive).
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// End date (inclusive).
+    #[arg(long)]
+    pub to: Option<String>,
+
+    /// Maximum number of transactions to return. Use -1 for all matches.
+    #[arg(long, default_value = "50", allow_negative_numbers = true)]
+    pub limit: TxnPageLimit,
+
+    /// Number of transactions to skip.
+    #[arg(long, default_value = "0")]
+    pub offset: u32,
+
+    /// Search by description (substring, case-insensitive).
+    #[arg(short = 'd', long)]
+    pub description: Option<String>,
+
+    /// Minimum entry amount (exclusive, in major units e.g. dollars).
+    #[arg(long)]
+    pub amount_gt: Option<String>,
+
+    /// Maximum entry amount (exclusive, in major units e.g. dollars).
+    #[arg(long)]
+    pub amount_lt: Option<String>,
+
+    /// Exact entry amount (in major units e.g. dollars).
+    #[arg(long)]
+    pub amount_eq: Option<String>,
+
+    /// Filter by currency code. Required for amount filters when the company has multiple currencies.
+    #[arg(long)]
+    pub currency: Option<String>,
+
+    /// Filter by idempotency reference key.
+    #[arg(long)]
+    pub reference: Option<String>,
+
+    /// Search in metadata field (substring, case-insensitive).
+    #[arg(long)]
+    pub metadata: Option<String>,
+
+    /// Exact match on a top-level metadata key, as `KEY=VALUE` (repeatable,
+    /// AND-ed). Matches JSON strings exactly, and numbers/booleans by their
+    /// JSON text (`qty=3` matches `{"qty":3}`). `--meta` is an alias.
+    #[arg(
+        long = "filter-metadata",
+        visible_alias = "meta",
+        value_name = "KEY=VALUE",
+        num_args = 1
+    )]
+    pub meta: Vec<String>,
+
+    /// Filter by tax category on entries.
+    #[arg(long)]
+    pub tax_category: Option<String>,
+
+    /// Filter entries by direction.
+    #[arg(long, value_enum)]
+    pub direction: Option<DirectionArg>,
+
+    /// Return only the count of matching transactions.
+    #[arg(long)]
+    pub count: bool,
+}
+
+/// Transaction page size selected by the CLI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxnPageLimit {
+    /// Return all matching rows.
+    All,
+    /// Return up to this number of matching rows.
+    Rows(u32),
+}
+
+impl TxnPageLimit {
+    /// Convert to the limit parameter used by SQLite.
+    #[must_use]
+    pub fn sql_limit(self) -> i64 {
+        match self {
+            Self::All => -1,
+            Self::Rows(limit) => i64::from(limit),
+        }
+    }
+}
+
+impl std::str::FromStr for TxnPageLimit {
+    type Err = CliError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        if raw == "-1" {
+            return Ok(Self::All);
+        }
+        raw.parse().map(Self::Rows).map_err(|_| {
+            CliError::Usage("limit must be a nonnegative row count or -1 for all matches".into())
+        })
+    }
+}
+
+/// Arguments accepted by `bk txn reverse`.
+#[derive(Args, Debug)]
+pub struct TxnReverseArgs {
+    /// Transaction ID in the selected company.
+    pub id: i64,
+    /// Reversal date (YYYY-MM-DD), on or after the original. Defaults to today.
+    #[arg(long)]
+    pub date: Option<String>,
+    /// Description. Defaults to "Reversal of #ID: ORIGINAL DESCRIPTION".
+    #[arg(short, long)]
+    pub description: Option<String>,
+    /// Idempotency reference. Defaults to reversal-of-ID.
+    #[arg(short, long)]
+    pub reference: Option<String>,
+}
+
+/// Arguments accepted by `bk txn import`.
+#[derive(Args, Debug)]
+pub struct TxnImportArgs {
+    /// Input file path. Use `-` for stdin.
+    #[arg(long, default_value = "-")]
+    pub file: InputSource,
+
+    /// Input format. Auto-detected from file extension when omitted.
+    #[arg(
+        id = "import_format",
+        long = "input-format",
+        alias = "format",
+        value_enum
+    )]
+    pub format: Option<ImportFormat>,
+
+    // Keep the propagated output value typed independently from the input
+    // format; --format remains a compatibility alias for --input-format.
+    /// Output format for command responses.
+    #[arg(id = "format", long = "response-format", hide = true, value_enum)]
+    pub response_format: Option<OutputFormat>,
+
+    /// Validate without persisting.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// CSV column mappings, sign convention, and default currency.
+    #[command(flatten)]
+    pub options: crate::commands::txn_import::ImportOptions,
+
+    /// Bank/asset account code (required for OFX and CSV import).
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// Suspense/clearing contra account code (required for OFX and CSV import).
+    #[arg(long)]
+    pub suspense: Option<String>,
+
+    /// Conflict resolution strategy for duplicate references.
+    #[arg(long, value_enum, default_value_t = OnConflictArg::Skip)]
+    pub on_conflict: OnConflictArg,
+}
+
+/// Arguments accepted by `bk txn attach`.
+#[derive(Args, Debug)]
+pub struct TxnAttachArgs {
+    /// Transaction ID.
+    pub transaction_id: i64,
+
+    /// Path to the file to attach.
+    pub file_path: String,
+
+    /// Document type (receipt, invoice, statement, contract, other).
+    #[arg(long = "type")]
+    pub document_type: String,
+
+    /// Optional entry ID for entry-level attachments.
+    #[arg(long)]
+    pub entry: Option<i64>,
+}
+
+/// Arguments accepted by `bk txn clear`.
+#[derive(Args, Debug)]
+#[command(group(clap::ArgGroup::new("target").required(true).args(["transaction_id", "reference", "from_file"])))]
+pub struct TxnClearArgs {
+    /// Transaction ID (with --entry).
+    #[arg(requires = "entry", conflicts_with = "account")]
+    pub transaction_id: Option<i64>,
+
+    /// Entry ID to clear (with a transaction ID).
+    #[arg(long, requires = "transaction_id")]
+    pub entry: Option<i64>,
+
+    /// Transaction reference; the entry is picked by --account.
+    #[arg(long, requires = "account")]
+    pub reference: Option<String>,
+
+    /// Account code selecting the entry (with --reference or --from-file).
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// Batch file of `reference[,amount]` lines; `-` reads stdin.
+    #[arg(long, requires = "account", conflicts_with = "amount")]
+    pub from_file: Option<InputSource>,
+
+    /// Amount to clear in major units (default: the full remaining amount).
+    #[arg(long)]
+    pub amount: Option<String>,
+
+    /// Cleared date, or reconciled date with --status reconciled
+    /// (YYYY-MM-DD). Defaults to today; not before the transaction date.
+    #[arg(long)]
+    pub date: Option<String>,
+
+    /// Statement id stored on the clearing (idempotency key with the entry).
+    #[arg(long)]
+    pub statement: Option<String>,
+
+    /// Status to apply.
+    #[arg(long, value_enum, default_value_t = ClearanceArg::Cleared)]
+    pub status: ClearanceArg,
+}
+
+/// Transaction proposal commands exposed directly under `bk txn`.
+#[derive(Subcommand, Debug)]
+pub enum TxnProposalCommand {
+    /// Store a balanced posting for approval without posting it. Requires a verified agent.
+    Propose(PostingArgs),
+
+    /// List pending proposals visible to the caller.
+    Proposals {
+        /// Also include approved, rejected and withdrawn proposals.
         #[arg(long)]
-        account: Option<String>,
-
-        /// Batch file of `reference[,amount]` lines; `-` reads stdin.
-        #[arg(long, requires = "account", conflicts_with = "amount")]
-        from_file: Option<InputSource>,
-
-        /// Amount to clear in major units (default: the full remaining amount).
+        include_rejected: bool,
+    },
+    /// Approve a pending proposal and atomically post it.
+    Approve { id: String },
+    /// Reject a proposal, or withdraw your own pending proposal.
+    #[command(alias = "withdraw")]
+    Reject {
+        id: String,
         #[arg(long)]
-        amount: Option<String>,
-
-        /// Cleared date, or reconciled date with --status reconciled
-        /// (YYYY-MM-DD). Defaults to today; not before the transaction date.
-        #[arg(long)]
-        date: Option<String>,
-
-        /// Statement id stored on the clearing (idempotency key with the entry).
-        #[arg(long)]
-        statement: Option<String>,
-
-        /// Status to apply.
-        #[arg(long, value_enum, default_value_t = ClearanceArg::Cleared)]
-        status: ClearanceArg,
+        reason: Option<String>,
     },
 }
 
