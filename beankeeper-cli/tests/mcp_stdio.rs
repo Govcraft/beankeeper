@@ -2329,6 +2329,18 @@ fn requested_charts_over_read_only_stdio_match_cli_and_are_discoverable() -> Tes
     assert!(output.status.success());
     let expected: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(actual["data"], expected["data"]);
+    Ok(())
+}
+
+#[test]
+fn invalid_chart_requests_keep_each_mcp_tools_error_contract() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("chart.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
     for (tool, input) in [
         (
             "report",
