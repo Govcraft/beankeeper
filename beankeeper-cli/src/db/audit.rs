@@ -28,6 +28,8 @@ use super::metadata;
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
 use crate::error::CliError;
 
+mod savepoint;
+
 // ---------------------------------------------------------------------------
 // Typed clearance status -- illegal states are unrepresentable
 // ---------------------------------------------------------------------------
@@ -516,17 +518,7 @@ fn in_savepoint<T>(
     name: &'static str,
     f: impl FnOnce() -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    conn.execute_batch(&format!("SAVEPOINT {name}"))?;
-    match f() {
-        Ok(value) => {
-            conn.execute_batch(&format!("RELEASE {name}"))?;
-            Ok(value)
-        }
-        Err(e) => {
-            let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
-            Err(e)
-        }
-    }
+    savepoint::with_audited_tx(conn, name, |_| f())
 }
 
 #[derive(Clone, Copy)]

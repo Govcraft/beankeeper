@@ -1433,7 +1433,7 @@ mod tests {
         assert!(periods::check_posting(&conn, "legacy", "2026-01-31").is_err());
         audit::verify_hash_chain(&conn)?;
         audit::verify_creations(&conn)?;
-        verification::verify_accounting(&conn)?;
+        verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
         periods::verify(&conn)?;
         assert_eq!(history(&conn)?.last().map(|row| row.0), Some(4));
         ensure_schema(&conn)?;
