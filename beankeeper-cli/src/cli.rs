@@ -1604,7 +1604,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         amount_eq: Option<String>,
 
-        /// Filter by currency code (e.g. USD, MXN).
+        /// Filter by currency code. Required for amount filters when the company has multiple currencies.
         #[arg(long)]
         currency: Option<String>,
 

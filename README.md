@@ -1067,7 +1067,11 @@ bk --company personal txn post -d "AWS bill" --debit 5000:120 --credit 1000:120 
 
 `--filter-metadata KEY=VALUE` works the same way on every command that reads entries (`txn list`, `report ledger`, `report reconciliation`, `report aging`): it matches a top-level key of the JSON metadata, comparing JSON strings exactly (case-sensitive) and numbers/booleans by their JSON text (`qty=3` matches `{"qty":3}`). `null`, arrays, objects, missing keys and non-JSON metadata never match, and repeated filters are AND-ed. Databases created before schema v9 have any free-text metadata rewritten to `{"memo": "..."}` automatically on first open; this one-off format migration is not recorded in the audit log.
 
-All filters can be combined. Amount filters use the `--currency` value (or `BEANKEEPER_CURRENCY` env, defaulting to USD) for major-to-minor unit conversion.
+All filters can be combined. Amount filters use major units and match only
+transactions in the selected currency. A company with multiple transaction
+currencies requires `--currency` (MCP: `currency`). With no selection,
+`bk` uses the company's sole transaction currency, or USD if the company has
+no transactions. `BEANKEEPER_CURRENCY` does not select a currency for this query.
 
 `bk account list` can include balances in a single query:
 
@@ -1359,7 +1363,7 @@ For enveloped responses, the `meta` block is present on both success and error. 
 |----------|---------|
 | `BEANKEEPER_DB` | Database file path (default: `./beankeeper.db`) |
 | `BEANKEEPER_COMPANY` | Default company slug (avoids `--company` on every command) |
-| `BEANKEEPER_CURRENCY` | Default currency code for amount filters (default: `USD`) and for `report budget-variance` (inferred from transactions when unset) |
+| `BEANKEEPER_CURRENCY` | Default currency code for commands such as posting, importing and `report budget-variance` |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase |
 | `BK_ACTOR` | Named poster and audit actor |
 | `BK_AGENT_TOKEN` | Optional local agent attestation; overridden by `--agent-token` |

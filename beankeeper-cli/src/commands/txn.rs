@@ -7,6 +7,7 @@ use beankeeper::types::{Currency, DocumentType, Money};
 
 use crate::cli::{Cli, OutputFormat, TxnCommand, resolve_format};
 use crate::db::connection::Db;
+use crate::db::transactions::TransactionValueFilter;
 use crate::db::{self, accounts, attachments, transactions};
 use crate::error::CliError;
 use crate::output;
@@ -345,19 +346,6 @@ fn run_list_or_count(
         unreachable!("run_list_or_count called with non-List variant");
     };
 
-    // Determine currency for amount conversion (filter amounts are in major units).
-    let env_currency = std::env::var("BEANKEEPER_CURRENCY").ok();
-    let currency_code = currency
-        .as_deref()
-        .or(env_currency.as_deref())
-        .unwrap_or("USD");
-    let amount_currency = Currency::from_code(currency_code)
-        .map_err(|e| CliError::Validation(format!("invalid currency for amount filter: {e}")))?;
-
-    let to_minor = |s: &str| parse_amount_to_minor(s, amount_currency);
-
-    let dir_str = direction.map(crate::cli::DirectionArg::as_str);
-
     let mut lp = transactions::ListTransactionParams::for_company(company);
     lp.account_filter = account.as_deref();
     lp.from_date = from.as_deref();
@@ -365,22 +353,62 @@ fn run_list_or_count(
     lp.limit = *limit;
     lp.offset = *offset;
     lp.description_like = description.as_deref();
-    lp.amount_gt = amount_gt.as_deref().map(to_minor).transpose()?;
-    lp.amount_lt = amount_lt.as_deref().map(to_minor).transpose()?;
-    lp.amount_eq = amount_eq.as_deref().map(to_minor).transpose()?;
-    lp.currency_filter = currency.as_deref();
     lp.reference_filter = reference.as_deref();
     lp.metadata_like = metadata.as_deref();
     let meta_eq = db::metadata_filter::parse_filters(meta)?;
     lp.meta_eq = &meta_eq;
     lp.tax_category_filter = tax_category.as_deref();
-    lp.direction_filter = dir_str;
+    lp.direction_filter = direction.map(crate::cli::DirectionArg::as_str);
 
-    if *count {
-        run_count(cli, db_handle, &lp, format, out)
-    } else {
-        run_list(cli, db_handle, &lp, format, use_color, out)
+    db::audit::atomically(db_handle.conn(), || {
+        lp.value_filter = list_value_filter(
+            db_handle.conn(),
+            company,
+            currency.as_deref(),
+            [
+                amount_gt.as_deref(),
+                amount_lt.as_deref(),
+                amount_eq.as_deref(),
+            ],
+        )?;
+
+        if *count {
+            run_count(cli, db_handle, &lp, format, out)
+        } else {
+            run_list(cli, db_handle, &lp, format, use_color, out)
+        }
+    })
+}
+
+fn list_value_filter(
+    conn: &rusqlite::Connection,
+    company: &str,
+    currency: Option<&str>,
+    [gt, lt, eq]: [Option<&str>; 3],
+) -> Result<Option<TransactionValueFilter>, CliError> {
+    let currency = currency
+        .map(Currency::from_code)
+        .transpose()
+        .map_err(|error| {
+            CliError::Validation(format!("invalid currency for transaction filter: {error}"))
+        })?;
+    if gt.is_none() && lt.is_none() && eq.is_none() {
+        return Ok(currency.map(TransactionValueFilter::by_currency));
     }
+
+    let currency = match currency {
+        Some(explicit) => explicit,
+        None => super::report_currency::infer_company_currency(conn, company, CliError::Usage)?,
+    };
+    let parse = |s| {
+        parse_amount_to_minor(s, currency)
+            .map(|minor| Money::from_minor(i128::from(minor), currency))
+    };
+    TransactionValueFilter::from_bounds(
+        gt.map(parse).transpose()?,
+        lt.map(parse).transpose()?,
+        eq.map(parse).transpose()?,
+    )
 }
 
 /// Parse `--tax` flag arguments into a map of `account_code` -> `tax_category`.

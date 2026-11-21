@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use beankeeper::types::{Currency, Money};
 use rusqlite::{Connection, params};
 
 use super::audit::{self, Actor};
@@ -243,6 +244,69 @@ fn build_metadata(
     }
 }
 
+/// Currency and optional entry amount bounds for a transaction search.
+///
+/// The bounds share one currency by construction. Only the SQL binding
+/// exposes their minor-unit integers.
+#[derive(Debug)]
+pub struct TransactionValueFilter {
+    currency: Currency,
+    gt: Option<i64>,
+    lt: Option<i64>,
+    eq: Option<i64>,
+}
+
+impl TransactionValueFilter {
+    /// Filter transactions by currency alone.
+    #[must_use]
+    pub const fn by_currency(currency: Currency) -> Self {
+        Self {
+            currency,
+            gt: None,
+            lt: None,
+            eq: None,
+        }
+    }
+
+    /// Require entries to meet the supplied exclusive or equality bounds.
+    ///
+    /// Returns `None` when no bounds were supplied.
+    ///
+    /// # Errors
+    /// Returns [`CliError::Validation`] if bounds use different currencies
+    /// or cannot be represented by the ledger's signed SQLite integers.
+    pub fn from_bounds(
+        gt: Option<Money>,
+        lt: Option<Money>,
+        eq: Option<Money>,
+    ) -> Result<Option<Self>, CliError> {
+        let Some(first) = gt.or(lt).or(eq) else {
+            return Ok(None);
+        };
+        let currency = first.currency();
+        let to_minor = |value: Money| {
+            if value.currency() != currency {
+                return Err(CliError::Validation(
+                    "transaction amount bounds must use the same currency".into(),
+                ));
+            }
+            i64::try_from(value.amount().minor_units()).map_err(|_| {
+                CliError::Validation("transaction amount bound is outside the ledger range".into())
+            })
+        };
+        Ok(Some(Self {
+            currency,
+            gt: gt.map(to_minor).transpose()?,
+            lt: lt.map(to_minor).transpose()?,
+            eq: eq.map(to_minor).transpose()?,
+        }))
+    }
+
+    fn has_bounds(&self) -> bool {
+        self.gt.is_some() || self.lt.is_some() || self.eq.is_some()
+    }
+}
+
 /// Parameters for listing/searching transactions.
 pub struct ListTransactionParams<'a> {
     /// Company slug to scope the query.
@@ -259,14 +323,8 @@ pub struct ListTransactionParams<'a> {
     pub offset: i64,
     /// Substring search on transaction description (case-insensitive).
     pub description_like: Option<&'a str>,
-    /// Minimum entry amount in minor units (exclusive).
-    pub amount_gt: Option<i64>,
-    /// Maximum entry amount in minor units (exclusive).
-    pub amount_lt: Option<i64>,
-    /// Exact entry amount in minor units.
-    pub amount_eq: Option<i64>,
-    /// Exact match on transaction currency code.
-    pub currency_filter: Option<&'a str>,
+    /// Match a currency, with optional entry amount bounds in that currency.
+    pub value_filter: Option<TransactionValueFilter>,
     /// Exact match on transaction reference (idempotency key).
     pub reference_filter: Option<&'a str>,
     /// Substring search on transaction metadata (case-insensitive).
@@ -292,10 +350,7 @@ impl<'a> ListTransactionParams<'a> {
             limit: 50,
             offset: 0,
             description_like: None,
-            amount_gt: None,
-            amount_lt: None,
-            amount_eq: None,
-            currency_filter: None,
+            value_filter: None,
             reference_filter: None,
             metadata_like: None,
             meta_eq: &[],
@@ -307,9 +362,10 @@ impl<'a> ListTransactionParams<'a> {
     /// Returns `true` if any filter requires joining the entries table.
     fn needs_entries_join(&self) -> bool {
         self.account_filter.is_some()
-            || self.amount_gt.is_some()
-            || self.amount_lt.is_some()
-            || self.amount_eq.is_some()
+            || self
+                .value_filter
+                .as_ref()
+                .is_some_and(TransactionValueFilter::has_bounds)
             || self.tax_category_filter.is_some()
             || self.direction_filter.is_some()
     }
@@ -340,22 +396,18 @@ fn build_list_query(
         param_idx += 1;
     }
 
-    if let Some(amount) = params.amount_gt {
-        let _ = write!(sql, " AND e.amount > ?{param_idx}");
-        param_values.push(Box::new(amount));
+    if let Some(filter) = &params.value_filter {
+        let _ = write!(sql, " AND t.currency = ?{param_idx}");
+        param_values.push(Box::new(filter.currency.code().to_owned()));
         param_idx += 1;
-    }
 
-    if let Some(amount) = params.amount_lt {
-        let _ = write!(sql, " AND e.amount < ?{param_idx}");
-        param_values.push(Box::new(amount));
-        param_idx += 1;
-    }
-
-    if let Some(amount) = params.amount_eq {
-        let _ = write!(sql, " AND e.amount = ?{param_idx}");
-        param_values.push(Box::new(amount));
-        param_idx += 1;
+        for (operator, bound) in [(">", filter.gt), ("<", filter.lt), ("=", filter.eq)] {
+            if let Some(amount) = bound {
+                let _ = write!(sql, " AND e.amount {operator} ?{param_idx}");
+                param_values.push(Box::new(amount));
+                param_idx += 1;
+            }
+        }
     }
 
     if let Some(tax_cat) = params.tax_category_filter {
@@ -386,12 +438,6 @@ fn build_list_query(
     if let Some(desc) = params.description_like {
         let _ = write!(sql, " AND t.description LIKE '%' || ?{param_idx} || '%'");
         param_values.push(Box::new(desc.to_string()));
-        param_idx += 1;
-    }
-
-    if let Some(currency) = params.currency_filter {
-        let _ = write!(sql, " AND t.currency = ?{param_idx}");
-        param_values.push(Box::new(currency.to_string()));
         param_idx += 1;
     }
 
@@ -888,6 +934,19 @@ mod tests {
     }
 
     #[test]
+    fn transaction_amount_filter_rejects_mixed_currencies_and_unbindable_amounts() {
+        for (gt, lt) in [
+            (Money::usd(100), Money::jpy(200)),
+            (Money::usd(100), Money::usd(i128::from(i64::MAX) + 1)),
+        ] {
+            assert!(matches!(
+                TransactionValueFilter::from_bounds(Some(gt), Some(lt), None),
+                Err(CliError::Validation(_))
+            ));
+        }
+    }
+
+    #[test]
     fn list_transactions_with_amount_gt() {
         let db = setup();
         let small_entries = vec![
@@ -928,7 +987,8 @@ mod tests {
         assert!(post_transaction(db.conn(), &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
-        lp.amount_gt = Some(10000);
+        lp.value_filter = TransactionValueFilter::from_bounds(Some(Money::usd(10000)), None, None)
+            .unwrap_or_else(|error| panic!("{error}"));
         lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
@@ -943,13 +1003,15 @@ mod tests {
         assert!(post_transaction(db.conn(), &p1).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
-        lp.amount_eq = Some(5000);
+        lp.value_filter = TransactionValueFilter::from_bounds(None, None, Some(Money::usd(5000)))
+            .unwrap_or_else(|error| panic!("{error}"));
         lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
 
         let mut lp2 = ListTransactionParams::for_company("acme");
-        lp2.amount_eq = Some(9999);
+        lp2.value_filter = TransactionValueFilter::from_bounds(None, None, Some(Money::usd(9999)))
+            .unwrap_or_else(|error| panic!("{error}"));
         lp2.limit = 100;
         let list2 = list_transactions(db.conn(), &lp2).unwrap_or_default();
         assert_eq!(list2.len(), 0);

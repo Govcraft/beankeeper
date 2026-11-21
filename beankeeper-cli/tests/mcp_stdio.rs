@@ -450,6 +450,106 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
 }
 
 #[test]
+fn amount_filters_require_and_match_one_currency_across_cli_and_mcp() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command
+        .env("BEANKEEPER_CURRENCY", "USD")
+        .args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let mut yen = posting("yen-sale");
+    yen["currency"] = json!("JPY");
+    yen["debits"][0]["amount"] = json!("5000");
+    yen["credits"][0]["amount"] = json!("5000");
+    let yen_id = client.success("txn_post", &yen)?["id"].clone();
+
+    let cli_list = || -> Result<Command, Box<dyn Error>> {
+        let mut command = bk(&path)?;
+        command.env("BEANKEEPER_CURRENCY", "USD").args([
+            "--json",
+            "--company",
+            "acme",
+            "txn",
+            "list",
+        ]);
+        Ok(command)
+    };
+    let cli = cli_list()?.args(["--amount-gt", "100"]).output()?;
+    assert!(cli.status.success());
+    let inferred: Value = serde_json::from_slice(&cli.stdout)?;
+    assert_eq!(inferred["data"][0]["id"], yen_id);
+    assert_eq!(
+        client.success("txn_list", &json!({"company":"acme", "amount_gt":"100"}))?,
+        inferred["data"]
+    );
+
+    // Both transactions have 5000 minor units, in different currencies.
+    let mut dollar = posting("dollar-sale");
+    dollar["debits"][0]["amount"] = json!("50");
+    dollar["credits"][0]["amount"] = json!("50");
+    client.success("txn_post", &dollar)?;
+
+    for count in [false, true] {
+        let mut cli = cli_list()?;
+        cli.args(["--amount-gt", "100"]);
+        if count {
+            cli.arg("--count");
+        }
+        let output = cli.output()?;
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.stdout, [] as [u8; 0]);
+        let envelope: Value = serde_json::from_slice(&output.stderr)?;
+        assert_eq!(envelope["error"]["code"], "USAGE");
+
+        let response = client.call(
+            "txn_list",
+            &json!({"company":"acme", "amount_gt":"100", "count":count}),
+        )?;
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(payload(&response)?["code"], "USAGE");
+
+        let mut cli = cli_list()?;
+        cli.args([
+            "--currency",
+            "JPY",
+            "--amount-gt",
+            "100",
+            "--amount-lt",
+            "6000",
+            "--amount-eq",
+            "5000",
+        ]);
+        if count {
+            cli.arg("--count");
+        }
+        let output = cli.output()?;
+        assert!(output.status.success());
+        let envelope: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(
+            client.success(
+                "txn_list",
+                &json!({
+                    "company":"acme", "currency":"JPY", "amount_gt":"100",
+                    "amount_lt":"6000", "amount_eq":"5000", "count":count
+                })
+            )?,
+            envelope["data"]
+        );
+        if count {
+            assert_eq!(envelope["data"]["count"], 1);
+        } else {
+            assert_eq!(envelope["data"][0]["id"], yen_id);
+            assert_eq!(envelope["meta"]["pagination"]["total"], 1);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn tools_preserve_data_arrays_and_expose_pagination_and_currency_displays() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");

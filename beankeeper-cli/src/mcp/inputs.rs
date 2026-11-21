@@ -137,9 +137,13 @@ pub(super) struct TxnList {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub description: Option<String>,
+    /// Exclusive minimum entry amount in major units.
     pub amount_gt: Option<String>,
+    /// Exclusive maximum entry amount in major units.
     pub amount_lt: Option<String>,
+    /// Exact entry amount in major units.
     pub amount_eq: Option<String>,
+    /// Currency code. Required with an amount filter if the company uses multiple currencies.
     pub currency: Option<String>,
     pub reference: Option<String>,
     pub metadata: Option<String>,
