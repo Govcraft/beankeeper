@@ -1,9 +1,7 @@
-use crate::db::CreateAccountParams;
-use std::io::IsTerminal;
-
 use crate::cli::{AccountCommand, Cli, CurrencyArg, OutputFormat, resolve_format};
+use crate::confirmation::confirm_deletion;
 use crate::db::connection::Db;
-use crate::db::{self, AccountBalanceWindow, accounts};
+use crate::db::{self, AccountBalanceWindow, CreateAccountParams, accounts};
 use crate::error::CliError;
 use crate::output;
 
@@ -177,22 +175,12 @@ fn run_delete(
     force: bool,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    if !force {
-        if !std::io::stdin().is_terminal() {
-            return Err(CliError::Usage(
-                "use --force to confirm deletion when stdin is not a terminal".into(),
-            ));
-        }
-        eprint!("Delete account '{code}'? [y/N] ");
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        if !answer.trim().eq_ignore_ascii_case("y") {
-            eprintln!("Aborted.");
-            return Ok(());
-        }
-    }
+    let Some(confirmed) = confirm_deletion(force, &format!("account '{code}'"))? else {
+        eprintln!("Aborted.");
+        return Ok(());
+    };
     let actor = cli.principal();
-    crate::db::delete_account(db.conn(), &actor, company, code)?;
+    crate::db::delete_account(db.conn(), &actor, company, code, confirmed)?;
     if format == OutputFormat::Json {
         let meta = cli.meta("account.delete", Some(company));
         let rendered = output::json::render_deleted(code, meta)?;

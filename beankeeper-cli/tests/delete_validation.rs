@@ -204,3 +204,51 @@ fn missing_entities_keep_not_found_errors() {
         );
     }
 }
+
+#[test]
+fn budget_and_rule_deletions_require_force_outside_a_terminal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let books = Books::new();
+    books.account("5000");
+    books.ok(&[
+        "budget", "set", "5000", "--year", "2026", "--month", "3", "--amount", "100",
+    ]);
+    books.ok(&["rule", "create", "--contains", "rent", "--account", "5000"]);
+    let db = Connection::open(&books.path)?;
+    let rule_id: String =
+        db.query_row("SELECT id FROM categorization_rules", [], |row| row.get(0))?;
+    let budget = ["budget", "delete", "5000", "--year", "2026", "--month", "3"];
+    let rule = ["rule", "delete", rule_id.as_str()];
+    let before = books.row_counts();
+    for args in [budget.as_slice(), rule.as_slice()] {
+        let output = books.run(args);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("use --force to confirm deletion when stdin is not a terminal")
+        );
+    }
+    assert_eq!(books.row_counts(), before);
+    let rule_count: i64 = db.query_row("SELECT COUNT(*) FROM categorization_rules", [], |row| {
+        row.get(0)
+    })?;
+    assert_eq!(rule_count, 1);
+    for args in [budget.as_slice(), rule.as_slice()] {
+        let mut forced = args.to_vec();
+        forced.push("--force");
+        books.ok(&forced);
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM budgets", [], |row| row
+            .get::<_, i64>(0))?,
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM categorization_rules", [], |row| row
+            .get::<_, i64>(
+            0
+        ))?,
+        0
+    );
+    Ok(())
+}

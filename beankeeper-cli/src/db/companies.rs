@@ -327,7 +327,15 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(crate::db::delete_company(db.conn(), &actor, "acme").is_ok());
+        assert!(
+            crate::db::delete_company(
+                db.conn(),
+                &actor,
+                "acme",
+                crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
+            )
+            .is_ok()
+        );
         assert!(!company_exists(db.conn(), "acme").unwrap_or(true));
     }
 
@@ -335,7 +343,12 @@ mod tests {
     fn delete_missing_company_is_not_found() {
         let db = setup();
         let actor = crate::db::Actor::new("test");
-        let result = crate::db::delete_company(db.conn(), &actor, "nope");
+        let result = crate::db::delete_company(
+            db.conn(),
+            &actor,
+            "nope",
+            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+        );
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 

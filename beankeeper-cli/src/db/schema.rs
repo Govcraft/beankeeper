@@ -1825,7 +1825,13 @@ mod tests {
             "4000",
             0,
         )?;
-        audit::delete_rule(&conn, &Actor::new("v14"), "legacy", &rule.id)?;
+        audit::delete_rule(
+            &conn,
+            &Actor::new("v14"),
+            "legacy",
+            &rule.id,
+            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+        )?;
         assert_eq!(&hashes(&conn)?[..2], before.as_slice());
         audit::verify_hash_chain(&conn)?;
         audit::verify_creations(&conn)?;

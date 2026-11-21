@@ -142,7 +142,16 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
     assert!(schedules::run_due(db.conn(), &actor, "acme", date("2027-01-01")?, false)?.is_empty());
     audit::verify_hash_chain(db.conn())?;
     audit::verify_creations(db.conn())?;
-    assert!(audit::delete_account(db.conn(), &actor, "acme", "1000").is_err());
+    assert!(
+        audit::delete_account(
+            db.conn(),
+            &actor,
+            "acme",
+            "1000",
+            beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -221,7 +230,15 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
         |row| row.get(0),
     )?;
     assert_eq!(count, 1);
-    assert!(audit::delete_company(db.conn(), &actor, "acme").is_err());
+    assert!(
+        audit::delete_company(
+            db.conn(),
+            &actor,
+            "acme",
+            beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
+        )
+        .is_err()
+    );
     audit::verify_hash_chain(db.conn())?;
     Ok(())
 }
