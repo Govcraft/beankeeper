@@ -277,6 +277,65 @@ fn typed_cash_flow_reuses_currency_scope_and_cli_payload() -> Result<(), Box<dyn
     Ok(())
 }
 
+#[test]
+fn typed_trend_uses_report_dates_and_currency_in_every_value() -> Result<(), Box<dyn Error>> {
+    use beankeeper::types::{Currency, Money};
+    use beankeeper_cli::commands::report::DateRange;
+    use beankeeper_cli::commands::report_periods::PeriodArg;
+    use beankeeper_cli::commands::report_trend::{TrendMetric, TrendRequest, compute_trend};
+    use beankeeper_cli::db::Db;
+    use chrono::NaiveDate;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("trends.db");
+    seed(&path, "BHD")?;
+    let db = Db::open_snapshot(&path, None)?;
+    let from = NaiveDate::parse_from_str("2026-03-01", "%Y-%m-%d")?;
+    let to = NaiveDate::parse_from_str("2026-04-30", "%Y-%m-%d")?;
+    let dates = DateRange::new(from, to)?;
+    let currency = Currency::BHD;
+    let request = TrendRequest {
+        dates,
+        currency,
+        metric: TrendMetric::NetWorth,
+        period: PeriodArg::Month,
+    };
+    let report = compute_trend(&db, "co", request)?;
+    assert_eq!(report.dates(), dates);
+    assert_eq!(report.currency(), currency);
+    assert_eq!(report.columns()[0].label, "2026-03");
+    let net_worth = report.series().last().ok_or("missing net worth")?;
+    assert_eq!(net_worth.name(), "Net Worth");
+    assert_eq!(
+        net_worth.amounts(),
+        &[Money::from_minor(1_800_000, currency); 2]
+    );
+    let typed_data = serde_json::to_value(&report)?;
+    assert_eq!(
+        typed_data["series"][2]["amounts_display"],
+        serde_json::json!(["1800.000", "1800.000"])
+    );
+    let cli = run(
+        &path,
+        &[
+            "--company",
+            "co",
+            "report",
+            "trend",
+            "--metric",
+            "net-worth",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-04-30",
+            "--currency",
+            "BHD",
+        ],
+    )?;
+    assert_eq!(cli["data"], typed_data);
+    Ok(())
+}
+
 fn seed(db: &Path, currency: &str) -> Result<(), Box<dyn Error>> {
     run(db, &["init"])?;
     run(db, &["company", "create", "co", "Company"])?;

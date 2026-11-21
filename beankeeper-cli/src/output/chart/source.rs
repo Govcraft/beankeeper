@@ -174,15 +174,22 @@ pub(crate) fn trend(company: &str, trend: &TrendReport, all: bool) -> Result<Cha
     let currency = trend.currency();
     let spending = matches!(trend.metric(), TrendMetric::Spending);
     let target = Target::Trend(TrendState {
-        range: range(company, currency, trend.bounds().into(), None),
+        range: range(company, currency, trend.dates().into(), None),
         period: trend.period(),
         metric: trend.metric(),
     });
     // The spending total overlaps the categories. Net worth keeps all three balances.
     let rows = trend
-        .amounts()
-        .filter(|(_, code, _)| !spending || code.is_some())
-        .map(|(name, code, amounts)| Row::new(name, code, amounts.iter().copied(), currency))
+        .series()
+        .iter()
+        .filter(|series| !spending || series.code().is_some())
+        .map(|series| {
+            Row::from_money(
+                series.name(),
+                series.code(),
+                series.amounts().iter().copied(),
+            )
+        })
         .collect();
     Chart::new(
         Kind::Line,

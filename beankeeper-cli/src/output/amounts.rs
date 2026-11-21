@@ -1,7 +1,10 @@
 //! Additive monetary presentation shared by CLI envelopes and MCP results.
 
 use beankeeper::types::{Currency, Money};
-use serde::{Serialize, Serializer, ser::SerializeMap};
+use serde::{
+    Serialize, Serializer,
+    ser::{SerializeMap, SerializeSeq},
+};
 use serde_json::Value;
 
 /// One currency-bearing amount and its legacy companion field.
@@ -35,6 +38,58 @@ impl Serialize for MoneyField {
         values.serialize_entry(self.key, &self.minor_units())?;
         values.serialize_entry(&DisplayKey(self.key), &self.decimal())?;
         values.end()
+    }
+}
+
+/// One ordered monetary slice and its corresponding display array.
+pub(crate) struct MoneySequence<'a> {
+    key: &'static str,
+    values: &'a [Money],
+}
+
+impl<'a> MoneySequence<'a> {
+    pub(crate) const fn new(key: &'static str, values: &'a [Money]) -> Self {
+        Self { key, values }
+    }
+}
+
+impl Serialize for MoneySequence<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(2))?;
+        fields.serialize_entry(
+            self.key,
+            &ProjectedMoney {
+                values: self.values,
+                project: |money: Money| money.amount().minor_units(),
+            },
+        )?;
+        fields.serialize_entry(
+            &DisplayKey(self.key),
+            &ProjectedMoney {
+                values: self.values,
+                project: format_money,
+            },
+        )?;
+        fields.end()
+    }
+}
+
+struct ProjectedMoney<'a, F> {
+    values: &'a [Money],
+    project: F,
+}
+
+impl<F, T> Serialize for ProjectedMoney<'_, F>
+where
+    F: Fn(Money) -> T,
+    T: Serialize,
+{
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.values.len()))?;
+        for money in self.values {
+            sequence.serialize_element(&(self.project)(*money))?;
+        }
+        sequence.end()
     }
 }
 

@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use beankeeper::types::{Amount, Currency};
+use beankeeper::types::{AccountType, Currency, Money};
 use chrono::NaiveDate;
 use clap::{Args, ValueEnum};
 use comfy_table::{Cell, CellAlignment, Table};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use super::report::ReportOutput;
 use super::report_dates::DateRange;
@@ -14,6 +14,7 @@ use super::report_periods::{Column, PeriodArg, period_columns};
 use crate::cli::{Cli, OutputFormat};
 use crate::db::{self, BalanceRow, connection::Db};
 use crate::error::CliError;
+use crate::output::amounts::{MoneySequence, format_money};
 use crate::output::chart;
 
 /// Financial quantity tracked over calendar periods.
@@ -61,62 +62,155 @@ pub struct TrendArgs {
     pub explain_change: Option<String>,
 }
 
-#[derive(Serialize)]
-struct TrendColumn {
-    label: String,
-    from: NaiveDate,
-    to: NaiveDate,
+/// Typed inputs to a trend computation on an already-open ledger.
+#[derive(Debug, Clone, Copy)]
+pub struct TrendRequest {
+    /// Inclusive date window.
+    pub dates: DateRange,
+    /// Currency of balances and movement.
+    pub currency: Currency,
+    /// Financial quantity to track.
+    pub metric: TrendMetric,
+    /// Calendar granularity for values.
+    pub period: PeriodArg,
 }
 
-#[derive(Serialize)]
-struct Series {
+/// One inclusive calendar interval on the report's axis.
+#[derive(Debug, Serialize)]
+pub struct TrendColumn {
+    /// Interval label.
+    pub label: String,
+    /// First included day.
+    pub from: NaiveDate,
+    /// Last included day.
+    pub to: NaiveDate,
+}
+
+/// An account or summary series ordered by report column.
+#[derive(Debug)]
+pub struct TrendSeries {
     code: Option<String>,
     name: String,
-    amounts: Vec<i64>,
+    amounts: Vec<Money>,
 }
 
-#[derive(Serialize)]
-pub(crate) struct TrendReport {
-    metric: TrendMetric,
-    period: PeriodArg,
-    from: NaiveDate,
-    to: NaiveDate,
-    #[serde(serialize_with = "crate::output::json::serialize_display")]
-    currency: Currency,
+impl TrendSeries {
+    /// Account code when this series represents a ledger account.
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
+    }
+
+    /// Account or summary label.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Currency-bearing values in the report's column order.
+    #[must_use]
+    pub fn amounts(&self) -> &[Money] {
+        &self.amounts
+    }
+}
+
+impl Serialize for TrendSeries {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Row<'a> {
+            code: Option<&'a str>,
+            name: &'a str,
+            #[serde(flatten)]
+            amounts: MoneySequence<'a>,
+        }
+        Row {
+            code: self.code(),
+            name: self.name(),
+            amounts: MoneySequence::new("amounts", self.amounts()),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// Historical spending or net worth in the request's currency.
+#[derive(Debug)]
+pub struct TrendReport {
+    request: TrendRequest,
     columns: Vec<TrendColumn>,
-    series: Vec<Series>,
+    series: Vec<TrendSeries>,
 }
 
 impl TrendReport {
-    pub(crate) fn metric(&self) -> TrendMetric {
-        self.metric
+    /// Selected metric.
+    #[must_use]
+    pub const fn metric(&self) -> TrendMetric {
+        self.request.metric
     }
 
-    pub(crate) fn period(&self) -> PeriodArg {
-        self.period
+    /// Calendar granularity.
+    #[must_use]
+    pub const fn period(&self) -> PeriodArg {
+        self.request.period
     }
 
-    pub(crate) fn currency(&self) -> Currency {
-        self.currency
+    /// Currency of all values.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.request.currency
     }
 
-    pub(crate) fn bounds(&self) -> (NaiveDate, NaiveDate) {
-        (self.from, self.to)
+    /// Resolved inclusive date window.
+    #[must_use]
+    pub const fn dates(&self) -> DateRange {
+        self.request.dates
+    }
+
+    /// Calendar intervals in series order.
+    #[must_use]
+    pub fn columns(&self) -> &[TrendColumn] {
+        &self.columns
+    }
+
+    /// Series with one value per column, in stable report order.
+    #[must_use]
+    pub fn series(&self) -> &[TrendSeries] {
+        &self.series
     }
 
     pub(crate) fn labels(&self) -> impl Iterator<Item = &str> {
         self.columns.iter().map(|column| column.label.as_str())
     }
+}
 
-    pub(crate) fn amounts(&self) -> impl Iterator<Item = (&str, Option<&str>, &[i64])> {
-        self.series.iter().map(|row| {
-            (
-                row.name.as_str(),
-                row.code.as_deref(),
-                row.amounts.as_slice(),
-            )
-        })
+impl Serialize for TrendReport {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Data<'a> {
+            metric: TrendMetric,
+            period: PeriodArg,
+            #[serde(flatten)]
+            dates: DateRange,
+            #[serde(serialize_with = "crate::output::json::serialize_display")]
+            currency: Currency,
+            columns: &'a [TrendColumn],
+            series: &'a [TrendSeries],
+        }
+        Data {
+            metric: self.metric(),
+            period: self.period(),
+            dates: self.dates(),
+            currency: self.currency(),
+            columns: self.columns(),
+            series: self.series(),
+        }
+        .serialize(serializer)
     }
+}
+
+struct Series {
+    code: Option<String>,
+    name: String,
+    amounts: Vec<i64>,
 }
 
 pub(crate) fn run_to(
@@ -131,16 +225,12 @@ pub(crate) fn run_to(
         OutputFormat::Json => {
             let meta = cli
                 .meta("report.trend", Some(company))
-                .with_currency(report.currency);
+                .with_currency(report.currency());
             let chart =
                 chart::requested(cli, || chart::trend(company, &report, cli.output.chart_all))?;
             output.write_json(meta, &report, chart)?;
         }
-        OutputFormat::Table => writeln!(
-            output.writer,
-            "{}",
-            render_table(&report, report.currency.minor_units())
-        )?,
+        OutputFormat::Table => writeln!(output.writer, "{}", render_table(&report))?,
         OutputFormat::Csv => writeln!(output.writer, "{}", render_csv(&report)?)?,
     }
     if !cli.verbosity.quiet {
@@ -159,34 +249,69 @@ fn compute(db: &Db, company: &str, args: &TrendArgs) -> Result<TrendReport, CliE
         args.to.as_deref(),
         chrono::Local::now().date_naive(),
     )?;
-    let columns = period_columns(dates.from(), dates.to(), args.period)?;
-    let currency = super::report_currency::resolve_report_currency(
-        db.conn(),
-        company,
-        args.currency.as_deref(),
-    )?;
-    let rows = columns
-        .iter()
-        .map(|column| column_rows(db, company, args.metric, currency.code(), column));
-    let series = match args.metric {
-        TrendMetric::Spending => spending_series(rows)?,
-        TrendMetric::NetWorth => net_worth_series(rows)?,
-    };
-    Ok(TrendReport {
-        metric: args.metric,
-        period: args.period,
-        from: dates.from(),
-        to: dates.to(),
-        currency,
-        columns: columns
+    db::audit::atomically(db.conn(), || {
+        let currency = super::report_currency::resolve_report_currency(
+            db.conn(),
+            company,
+            args.currency.as_deref(),
+        )?;
+        compute_trend(
+            db,
+            company,
+            TrendRequest {
+                dates,
+                currency,
+                metric: args.metric,
+                period: args.period,
+            },
+        )
+    })
+}
+
+/// Compute a trend in one currency on an already-open ledger.
+///
+/// # Errors
+/// Returns [`CliError`] for unknown companies, unsupported dates, arithmetic
+/// overflow, or database failures.
+pub fn compute_trend(
+    db: &Db,
+    company: &str,
+    request: TrendRequest,
+) -> Result<TrendReport, CliError> {
+    db::audit::atomically(db.conn(), || {
+        db::companies::get_company(db.conn(), company)?;
+        let columns = period_columns(request.dates.from(), request.dates.to(), request.period)?;
+        let rows = columns
+            .iter()
+            .map(|column| column_rows(db, company, request.metric, request.currency, column));
+        let raw = match request.metric {
+            TrendMetric::Spending => spending_series(rows)?,
+            TrendMetric::NetWorth => net_worth_series(rows)?,
+        };
+        let series = raw
             .into_iter()
-            .map(|column| TrendColumn {
-                label: column.label,
-                from: column.from,
-                to: column.to,
+            .map(|series| TrendSeries {
+                code: series.code,
+                name: series.name,
+                amounts: series
+                    .amounts
+                    .into_iter()
+                    .map(|minor| Money::from_minor(i128::from(minor), request.currency))
+                    .collect(),
             })
-            .collect(),
-        series,
+            .collect();
+        Ok(TrendReport {
+            request,
+            columns: columns
+                .into_iter()
+                .map(|column| TrendColumn {
+                    label: column.label,
+                    from: column.from,
+                    to: column.to,
+                })
+                .collect(),
+            series,
+        })
     })
 }
 
@@ -194,35 +319,53 @@ fn column_rows(
     db: &Db,
     company: &str,
     metric: TrendMetric,
-    currency: &str,
+    currency: Currency,
     column: &Column,
 ) -> Result<Vec<BalanceRow>, CliError> {
     let from = column.from.to_string();
     let to = column.to.to_string();
     let (filter, from) = match metric {
-        TrendMetric::Spending => (Some("expense"), Some(from.as_str())),
+        TrendMetric::Spending => (Some(AccountType::Expense.code()), Some(from.as_str())),
         TrendMetric::NetWorth => (None, None),
     };
-    db::compute_trial_balance(db.conn(), company, filter, from, Some(&to), Some(currency))
+    db::compute_trial_balance(
+        db.conn(),
+        company,
+        filter,
+        from,
+        Some(&to),
+        Some(currency.code()),
+    )
 }
 
 fn overflow() -> CliError {
     CliError::Validation("trend amount exceeds the supported minor-unit range".to_string())
 }
 
-fn net(row: &BalanceRow) -> Result<i64, CliError> {
-    let (positive, negative) = if row.account_type == "liability" {
-        (row.credit_total, row.debit_total)
-    } else {
+fn net(row: &BalanceRow, account_type: AccountType) -> Result<i64, CliError> {
+    let (positive, negative) = if account_type.is_debit_normal() {
         (row.debit_total, row.credit_total)
+    } else {
+        (row.credit_total, row.debit_total)
     };
     positive.checked_sub(negative).ok_or_else(overflow)
 }
 
-fn total<'a>(rows: impl Iterator<Item = &'a BalanceRow>) -> Result<i64, CliError> {
-    rows.map(net).try_fold(0_i64, |sum, amount| {
-        sum.checked_add(amount?).ok_or_else(overflow)
-    })
+fn worth_totals(rows: &[BalanceRow]) -> Result<(i64, i64), CliError> {
+    let mut assets = 0_i64;
+    let mut liabilities = 0_i64;
+    for row in rows {
+        let kind = row.account_type.parse().map_err(|error| {
+            CliError::Database(format!("invalid stored account type in trend: {error}"))
+        })?;
+        let total = match kind {
+            AccountType::Asset => &mut assets,
+            AccountType::Liability => &mut liabilities,
+            _ => continue,
+        };
+        *total = total.checked_add(net(row, kind)?).ok_or_else(overflow)?;
+    }
+    Ok((assets, liabilities))
 }
 
 struct AccountTrend {
@@ -249,7 +392,7 @@ fn spending_series(
         let completed_periods = totals.len();
         let mut total = 0_i64;
         for row in rows? {
-            let amount = net(&row)?;
+            let amount = net(&row, AccountType::Expense)?;
             let series = accounts.entry(row.code).or_insert_with(|| AccountTrend {
                 name: row.name,
                 amounts: Vec::new(),
@@ -289,9 +432,7 @@ fn net_worth_series(
     let mut liability_series = Vec::new();
     let mut net_worth_series = Vec::new();
     for rows in columns {
-        let rows = rows?;
-        let assets = total(rows.iter().filter(|row| row.account_type == "asset"))?;
-        let liabilities = total(rows.iter().filter(|row| row.account_type == "liability"))?;
+        let (assets, liabilities) = worth_totals(&rows?)?;
         asset_series.push(assets);
         liability_series.push(liabilities);
         net_worth_series.push(assets.checked_sub(liabilities).ok_or_else(overflow)?);
@@ -303,7 +444,7 @@ fn net_worth_series(
     ])
 }
 
-fn render_table(report: &TrendReport, minor_units: u8) -> String {
+fn render_table(report: &TrendReport) -> String {
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::UTF8_FULL);
     let mut headers = vec!["Code".to_string(), "Category".to_string()];
@@ -314,23 +455,29 @@ fn render_table(report: &TrendReport, minor_units: u8) -> String {
             Cell::new(series.code.as_deref().unwrap_or("")),
             Cell::new(&series.name),
         ];
-        cells.extend(series.amounts.iter().map(|amount| {
-            Cell::new(Amount::new(i128::from(*amount)).format_decimal(minor_units))
-                .set_alignment(CellAlignment::Right)
-        }));
+        cells.extend(
+            series
+                .amounts
+                .iter()
+                .map(|amount| Cell::new(format_money(*amount)).set_alignment(CellAlignment::Right)),
+        );
         table.add_row(cells);
     }
     format!(
         "{} by {} ({} to {}) ({})\n\n{table}",
-        report.metric.title(),
-        report.period.as_str(),
-        report.from,
-        report.to,
-        report.currency
+        report.metric().title(),
+        report.period().as_str(),
+        report.dates().from(),
+        report.dates().to(),
+        report.currency()
     )
 }
 
-fn render_csv(report: &TrendReport) -> Result<String, CliError> {
+/// Export a typed trend report with minor-unit integers.
+///
+/// # Errors
+/// Returns [`CliError`] if CSV serialization fails.
+pub fn render_csv(report: &TrendReport) -> Result<String, CliError> {
     let mut writer = csv::Writer::from_writer(Vec::new());
     let mut header = vec!["code".to_string(), "name".to_string()];
     header.extend(report.columns.iter().map(|column| column.label.clone()));
@@ -339,7 +486,12 @@ fn render_csv(report: &TrendReport) -> Result<String, CliError> {
         .map_err(|error| csv_error(&error))?;
     for series in &report.series {
         let mut row = vec![series.code.clone().unwrap_or_default(), series.name.clone()];
-        row.extend(series.amounts.iter().map(ToString::to_string));
+        row.extend(
+            series
+                .amounts()
+                .iter()
+                .map(|money| money.amount().minor_units().to_string()),
+        );
         writer
             .write_record(row)
             .map_err(|error| csv_error(&error))?;
@@ -371,8 +523,8 @@ mod tests {
 
     #[test]
     fn aggregation_rejects_amount_overflow() {
-        assert!(net(&row("expense", i64::MIN, 1)).is_err());
-        assert!(total([row("asset", i64::MAX, 0), row("asset", 1, 0)].iter()).is_err());
+        assert!(net(&row("expense", i64::MIN, 1), AccountType::Expense).is_err());
+        assert!(worth_totals(&[row("asset", i64::MAX, 0), row("asset", 1, 0)]).is_err());
         let rows = vec![row("asset", i64::MAX, 0), row("liability", 1, 0)];
         assert!(net_worth_series(std::iter::once(Ok(rows))).is_err());
     }
@@ -421,25 +573,27 @@ mod tests {
     }
 
     #[test]
-    fn chart_rejects_a_trend_series_that_does_not_fill_its_axis() {
+    fn chart_rejects_a_trend_series_that_does_not_fill_its_axis() -> Result<(), CliError> {
         let date = NaiveDate::default();
         let report = TrendReport {
-            metric: TrendMetric::NetWorth,
-            period: PeriodArg::Month,
-            from: date,
-            to: date,
-            currency: Currency::KWD,
+            request: TrendRequest {
+                metric: TrendMetric::NetWorth,
+                period: PeriodArg::Month,
+                dates: DateRange::new(date, date)?,
+                currency: Currency::KWD,
+            },
             columns: vec![TrendColumn {
                 label: "2024-01".into(),
                 from: date,
                 to: date,
             }],
-            series: vec![Series {
+            series: vec![TrendSeries {
                 code: None,
                 name: "Net worth".into(),
                 amounts: vec![],
             }],
         };
         assert!(chart::trend("co", &report, false).is_err());
+        Ok(())
     }
 }
