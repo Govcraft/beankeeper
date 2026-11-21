@@ -2309,8 +2309,8 @@ pub(crate) fn change_schedule(
          WHERE id = ?4 AND company_slug = ?5",
         params![
             after.occurrence_index,
-            after.next_due.map(|date| date.to_string()),
-            after.status,
+            after.state.next_due().map(|date| date.to_string()),
+            after.state.code(),
             after.id.to_string(),
             after.company_slug
         ],

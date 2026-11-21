@@ -51,6 +51,70 @@ impl Serialize for ScheduleId {
     }
 }
 
+/// Stored execution state. Pending schedules always carry their next due date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleState {
+    /// At least one future occurrence remains.
+    Pending {
+        /// Next occurrence under this template.
+        next_due: NaiveDate,
+    },
+    /// No future occurrence remains.
+    Completed,
+    /// Future occurrences were explicitly cancelled.
+    Cancelled,
+}
+
+impl ScheduleState {
+    fn from_row(status: &str, next_due: Option<String>) -> Result<Self, CliError> {
+        match (status, next_due) {
+            ("pending", Some(date)) => Ok(Self::Pending {
+                next_due: parse_stored_date(&date)?,
+            }),
+            ("completed", None) => Ok(Self::Completed),
+            ("cancelled", None) => Ok(Self::Cancelled),
+            _ => Err(CliError::Database(format!(
+                "invalid stored schedule state '{status}' and due date"
+            ))),
+        }
+    }
+
+    /// The persisted status label.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Pending { .. } => "pending",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// The next occurrence for a pending schedule.
+    #[must_use]
+    pub const fn next_due(self) -> Option<NaiveDate> {
+        match self {
+            Self::Pending { next_due } => Some(next_due),
+            Self::Completed | Self::Cancelled => None,
+        }
+    }
+}
+
+impl Serialize for ScheduleState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut wire = serializer.serialize_struct("ScheduleState", 2)?;
+        wire.serialize_field("next_due", &self.next_due())?;
+        wire.serialize_field("status", self.code())?;
+        wire.end()
+    }
+}
+
+fn parse_stored_date(date: &str) -> Result<NaiveDate, CliError> {
+    date.parse()
+        .map_err(|error| CliError::Database(format!("invalid stored schedule date: {error}")))
+}
+
 /// A validated template and its pending/completed/cancelled execution state.
 #[derive(Debug, Clone, Serialize)]
 pub struct Schedule {
@@ -59,10 +123,11 @@ pub struct Schedule {
     pub description: String,
     pub currency: String,
     pub start_date: NaiveDate,
-    pub frequency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    pub frequency: Frequency,
     pub end_date: Option<NaiveDate>,
-    pub next_due: Option<NaiveDate>,
-    pub status: String,
+    #[serde(flatten)]
+    pub state: ScheduleState,
     pub entries: Vec<PostEntryParams>,
     pub metadata: Option<String>,
     pub(crate) occurrence_index: u32,
@@ -133,10 +198,11 @@ pub fn create_schedule(
             description: params.description.clone(),
             currency: params.currency.clone(),
             start_date: params.start_date,
-            frequency: params.frequency.to_string(),
+            frequency: params.frequency,
             end_date: params.end_date,
-            next_due: Some(params.start_date),
-            status: "pending".into(),
+            state: ScheduleState::Pending {
+                next_due: params.start_date,
+            },
             entries,
             metadata: params
                 .metadata
@@ -146,17 +212,18 @@ pub fn create_schedule(
         };
         conn.execute(
             "INSERT INTO schedules (id, company_slug, description, currency, start_date, frequency,
-             end_date, metadata, next_due, status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'pending')",
+             end_date, metadata, next_due, status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 schedule.id.to_string(),
                 company,
                 schedule.description,
                 schedule.currency,
                 schedule.start_date.to_string(),
-                schedule.frequency,
+                schedule.frequency.to_string(),
                 schedule.end_date.map(|d| d.to_string()),
                 schedule.metadata,
-                schedule.start_date.to_string()
+                schedule.state.next_due().map(|date| date.to_string()),
+                schedule.state.code()
             ],
         )?;
         for (position, entry) in schedule.entries.iter().enumerate() {
@@ -298,7 +365,16 @@ pub(crate) fn get_schedule(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get_ref(3)?
+                        .as_str()?
+                        .parse::<Frequency>()
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, String>(6)?,
@@ -326,20 +402,15 @@ pub(crate) fn get_schedule(
             })
         })?
         .collect::<Result<_, _>>()?;
-    let parse_date = |date: String| {
-        date.parse::<NaiveDate>()
-            .map_err(|e| CliError::Database(format!("invalid stored schedule date: {e}")))
-    };
     Ok(Schedule {
         id: id.clone(),
         company_slug: company.into(),
         description: row.0,
         currency: row.1,
-        start_date: parse_date(row.2)?,
+        start_date: parse_stored_date(&row.2)?,
         frequency: row.3,
-        end_date: row.4.map(parse_date).transpose()?,
-        next_due: row.5.map(parse_date).transpose()?,
-        status: row.6,
+        end_date: row.4.as_deref().map(parse_stored_date).transpose()?,
+        state: ScheduleState::from_row(&row.6, row.5)?,
         metadata: row.7,
         occurrence_index: row.8,
         entries,
@@ -359,12 +430,11 @@ pub fn cancel_schedule(
     audit::atomically(conn, || {
         audit::lock_schedule_writer(conn)?;
         let before = get_schedule(conn, company, id)?;
-        if before.status != "pending" {
+        if before.state.next_due().is_none() {
             return Ok(before);
         }
         let mut after = before.clone();
-        after.status = "cancelled".into();
-        after.next_due = None;
+        after.state = ScheduleState::Cancelled;
         audit::change_schedule(conn, actor, &before, &after, audit::ScheduleChange::Cancel)?;
         Ok(after)
     })
@@ -420,7 +490,7 @@ pub fn run_due_with_options(
         }
         let schedules: Vec<_> = list_schedules(conn, company)?
             .into_iter()
-            .filter(|schedule| schedule.status == "pending")
+            .filter(|schedule| schedule.state.next_due().is_some())
             .collect();
         if !options.dry_run && !options.allow_large_run {
             enforce_run_limit(&schedules, through)?;
@@ -449,11 +519,8 @@ fn enforce_run_limit(schedules: &[Schedule], through: NaiveDate) -> Result<(), C
     let mut count = 0;
     for before in schedules {
         let mut after = before.clone();
-        let frequency = after
-            .frequency
-            .parse::<Frequency>()
-            .map_err(|e| CliError::Database(e.to_string()))?;
-        while after.next_due.is_some_and(|date| date <= through) {
+
+        while after.state.next_due().is_some_and(|date| date <= through) {
             count += 1;
             if count > DEFAULT_RUN_LIMIT {
                 return Err(CliError::Validation(format!(
@@ -462,27 +529,30 @@ fn enforce_run_limit(schedules: &[Schedule], through: NaiveDate) -> Result<(), C
                      or pass --allow-large-run to post all due occurrences"
                 )));
             }
-            advance_schedule(&mut after, frequency)?;
+            advance_schedule(&mut after)?;
         }
     }
     Ok(())
 }
 
-fn advance_schedule(schedule: &mut Schedule, frequency: Frequency) -> Result<(), CliError> {
+fn advance_schedule(schedule: &mut Schedule) -> Result<(), CliError> {
     schedule.occurrence_index = schedule
         .occurrence_index
         .checked_add(1)
         .ok_or_else(|| CliError::Validation("schedule occurrence counter overflow".into()))?;
-    schedule.next_due =
-        match occurrence_date(schedule.start_date, frequency, schedule.occurrence_index) {
-            Ok(next) => next.filter(|date| schedule.end_date.is_none_or(|end| *date <= end)),
-            // An overflowing future occurrence is beyond every finite end date.
-            Err(RecurrenceError::DateOverflow) if schedule.end_date.is_some() => None,
-            Err(error) => return Err(CliError::Validation(error.to_string())),
-        };
-    if schedule.next_due.is_none() {
-        schedule.status = "completed".into();
-    }
+    let next_due = match occurrence_date(
+        schedule.start_date,
+        schedule.frequency,
+        schedule.occurrence_index,
+    ) {
+        Ok(next) => next.filter(|date| schedule.end_date.is_none_or(|end| *date <= end)),
+        // An overflowing future occurrence is beyond every finite end date.
+        Err(RecurrenceError::DateOverflow) if schedule.end_date.is_some() => None,
+        Err(error) => return Err(CliError::Validation(error.to_string())),
+    };
+    schedule.state = next_due.map_or(ScheduleState::Completed, |next_due| {
+        ScheduleState::Pending { next_due }
+    });
     Ok(())
 }
 
@@ -503,11 +573,8 @@ fn execute_schedule(
         &before.entries,
     )?;
     let mut after = before.clone();
-    let frequency = after
-        .frequency
-        .parse::<Frequency>()
-        .map_err(|e| CliError::Database(e.to_string()))?;
-    while let Some(date) = after.next_due.filter(|date| *date <= through) {
+
+    while let Some(date) = after.state.next_due().filter(|date| *date <= through) {
         let transaction_id = if dry_run {
             None
         } else {
@@ -537,7 +604,7 @@ fn execute_schedule(
             date,
             transaction_id,
         });
-        advance_schedule(&mut after, frequency)?;
+        advance_schedule(&mut after)?;
     }
     if !dry_run && before.occurrence_index != after.occurrence_index {
         audit::change_schedule(conn, actor, before, &after, audit::ScheduleChange::Run)?;
