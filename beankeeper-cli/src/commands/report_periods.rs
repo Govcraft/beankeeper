@@ -586,7 +586,7 @@ pub fn normal_side_net(row: &db::BalanceRow) -> i64 {
 }
 
 /// Fetch the balance rows for one column window.
-fn fetch_column_rows(
+pub(super) fn fetch_column_rows(
     conn: &rusqlite::Connection,
     company: &str,
     kind: MultiReportKind,

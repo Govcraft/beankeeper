@@ -300,7 +300,7 @@ fn is_default_cash_name(name: &str) -> bool {
 }
 
 /// Resolve the set of cash accounts (explicit or by the default rule).
-fn resolve_cash_accounts(
+pub(super) fn resolve_cash_accounts(
     conn: &Connection,
     company: &str,
     explicit: &[String],
@@ -365,7 +365,7 @@ struct EntryFact {
 }
 
 /// Compute the statement from the database.
-fn compute_cash_flow(
+pub(super) fn compute_cash_flow(
     conn: &Connection,
     company: &str,
     from: &str,

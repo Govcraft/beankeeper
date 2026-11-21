@@ -329,3 +329,48 @@ fn balance_sheet_earnings_and_all_output_formats_preserve_comparison_data() -> T
     assert!(rows.iter().any(|row| row.get(0) == Some("transaction")));
     Ok(())
 }
+
+#[test]
+fn comparison_preserves_existing_alphanumeric_account_codes_and_missing_account_errors()
+-> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.ok(&[
+        "account",
+        "create",
+        "rent-office",
+        "Office rent",
+        "--type",
+        "expense",
+    ])?;
+    for command in [
+        &["income-statement"][..],
+        &["trial-balance"][..],
+        &["trend", "--metric", "spending"][..],
+        &["balance", "--account", "rent-office"][..],
+    ] {
+        let report = ledger.compare(command, &["--explain-change", "rent-office"])?;
+        let line = account(&report, "rent-office");
+        assert_eq!(line["current"], 0);
+        assert_eq!(line["prior"], 0);
+        assert_eq!(line["change"], 0);
+        assert_eq!(report["data"]["explanation"]["change"], 0);
+    }
+    let output = ledger.run(&[
+        "--json",
+        "report",
+        "balance",
+        "--account",
+        "unknown",
+        "--compare",
+        "previous",
+    ])?;
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr)?;
+    assert_eq!(error["error"]["code"], "NOT_FOUND");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("account") && !message.contains("minor-unit"))
+    );
+    Ok(())
+}
