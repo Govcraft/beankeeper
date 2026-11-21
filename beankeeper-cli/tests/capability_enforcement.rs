@@ -1,5 +1,6 @@
 //! Capability policy behavior through the real CLI and persisted ledger.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -31,9 +32,19 @@ impl Ledger {
         std::fs::write(&passphrase_file, "capability-test-passphrase")?;
         let passphrase: SecretString = "capability-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        db::create_company(db.conn(), "acme", "Acme", None)?;
+        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
         for (code, kind) in [("1000", "asset"), ("4000", "revenue"), ("5000", "expense")] {
-            db::create_account(db.conn(), "acme", code, code, kind, None)?;
+            db::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )?;
         }
         identity::init_root(db.conn(), &Actor::new("owner"))?;
         Ok(Self {

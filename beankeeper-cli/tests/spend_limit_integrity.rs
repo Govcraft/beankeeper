@@ -15,7 +15,7 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
         "INSERT INTO agent_spend_limits SELECT agent_uri, company_slug, 'EUR', max_post, daily_limit FROM agent_spend_limits",
     ] {
         let db = Db::open_in_memory()?;
-        db::create_company(db.conn(), "acme", "Acme", None)?;
+        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;
         let limit = SpendLimit::new(

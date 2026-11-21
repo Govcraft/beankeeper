@@ -425,6 +425,8 @@ fn build_variance_query_with_unbudgeted(account_type: Option<AccountType>) -> St
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
     use crate::db::{Actor, Db, audit, create_account, create_company, post_transaction};
@@ -467,16 +469,62 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(db.conn(), "acme", "Acme Corp", None)
-            .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        create_account(db.conn(), "acme", "1000", "Cash", "asset", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(db.conn(), "acme", "5000", "Rent Expense", "expense", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(db.conn(), "acme", "5100", "Supplies", "expense", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme Corp",
+            None,
+        )
+        .unwrap_or_else(|e| panic!("company setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "4000",
+                name: "Revenue",
+                account_type: "revenue",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "5000",
+                name: "Rent Expense",
+                account_type: "expense",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "5100",
+                name: "Supplies",
+                account_type: "expense",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
 

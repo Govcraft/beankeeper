@@ -476,7 +476,13 @@ mod tests {
     fn summary_projects_known_and_unknown_money_without_the_envelope()
     -> Result<(), Box<dyn std::error::Error>> {
         let db = Db::open_in_memory()?;
-        db::create_company(db.conn(), "co", "Company", None)?;
+        db::create_company(
+            db.conn(),
+            &db::Actor::new("summary fixture"),
+            "co",
+            "Company",
+            None,
+        )?;
         let args = SummaryArgs {
             to: Some("2024-03-15".into()),
             currency: Some("BHD".into()),

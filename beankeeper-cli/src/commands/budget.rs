@@ -257,7 +257,13 @@ mod tests {
 
     fn ledger() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        db::companies::create_company(db.conn(), "acme", "Acme", None)?;
+        db::companies::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme",
+            None,
+        )?;
         super::super::account::execute_json(
             &db,
             "acme",

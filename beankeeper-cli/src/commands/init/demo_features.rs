@@ -14,6 +14,7 @@ use crate::error::CliError;
 pub(super) fn seed(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
     seed_company_accounts(
         conn,
+        actor,
         "acme-consulting",
         &[
             ("1150", "Settlement Receivables", "asset", None),
@@ -24,6 +25,7 @@ pub(super) fn seed(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
     )?;
     seed_company_accounts(
         conn,
+        actor,
         "personal",
         &[("1200", "Brokerage Investments", "asset", None)],
     )?;

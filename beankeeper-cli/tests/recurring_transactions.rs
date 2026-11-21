@@ -1,11 +1,12 @@
 //! Scheduled obligations and explicit, retry-safe posting through the CLI.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
-use beankeeper_cli::db::{self, Db, accounts, companies, transactions};
+use beankeeper_cli::db::{self, Actor, Db, accounts, companies, transactions};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -22,13 +23,23 @@ impl Ledger {
         let path = dir.path().join("schedules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(db.conn(), company, company, None)?;
+            companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
             for (code, kind, tax) in [
                 ("1000", "asset", None),
                 ("5000", "expense", Some("default-expense")),
                 ("6000", "expense", Some("split-expense")),
             ] {
-                accounts::create_account(db.conn(), company, code, code, kind, tax)?;
+                accounts::create_account(
+                    db.conn(),
+                    &Actor::new("fixture"),
+                    &CreateAccountParams {
+                        company_slug: company,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: tax,
+                    },
+                )?;
             }
         }
         Ok(Self { _dir: dir, path })

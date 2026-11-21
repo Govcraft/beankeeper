@@ -1,5 +1,6 @@
 //! Pending transaction review, attribution, references and proposal visibility.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -35,9 +36,19 @@ impl Ledger {
         let passphrase: SecretString = "proposal-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
         for company in ["acme", "other"] {
-            db::create_company(db.conn(), company, company, None)?;
+            db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
             for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
-                db::create_account(db.conn(), company, code, code, kind, Some("default-tax"))?;
+                db::create_account(
+                    db.conn(),
+                    &Actor::new("fixture"),
+                    &CreateAccountParams {
+                        company_slug: company,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: Some("default-tax"),
+                    },
+                )?;
             }
         }
         identity::init_root(db.conn(), &Actor::new("owner"))?;

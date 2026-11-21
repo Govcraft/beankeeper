@@ -1,11 +1,12 @@
 //! OFX import outcomes retain the statement currency for decimal presentation.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::cargo::CommandCargoExt;
-use beankeeper_cli::db::{accounts, companies, connection::Db};
+use beankeeper_cli::db::{Actor, accounts, companies, connection::Db};
 use serde_json::Value;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -50,9 +51,19 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(db.conn(), "acme", "Acme", None)?;
+    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
     for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
-        accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+        accounts::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code,
+                name: code,
+                account_type: kind,
+                default_tax_category: None,
+            },
+        )?;
     }
     for (currency, amount, minor) in [
         ("USD", "12.34", 1234),
@@ -83,9 +94,19 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(db.conn(), "acme", "Acme", None)?;
+    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
     for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
-        accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+        accounts::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code,
+                name: code,
+                account_type: kind,
+                default_tax_category: None,
+            },
+        )?;
     }
     beankeeper_cli::db::audit::change_period(
         db.conn(),

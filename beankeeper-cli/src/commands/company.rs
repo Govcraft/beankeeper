@@ -22,18 +22,13 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             name,
             description,
         } => {
-            let row = crate::db::audit::atomically(db.conn(), || {
-                let row = companies::create_company(db.conn(), slug, name, description.as_deref())?;
-                crate::db::audit::record_insert(
-                    db.conn(),
-                    &cli.principal(),
-                    slug,
-                    crate::db::audit::Creation::Company,
-                    slug,
-                    &serde_json::json!({"slug": row.slug, "name": row.name, "description": row.description, "created_at": row.created_at}),
-                )?;
-                Ok(row)
-            })?;
+            let row = companies::create_company(
+                db.conn(),
+                &cli.principal(),
+                slug,
+                name,
+                description.as_deref(),
+            )?;
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
             }
@@ -166,7 +161,13 @@ mod tests {
             execute_json(&db, &CompanyCommand::List)?,
             serde_json::json!([])
         );
-        companies::create_company(db.conn(), "acme", "Acme", None)?;
+        companies::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme",
+            None,
+        )?;
         let delete = CompanyCommand::Delete {
             slug: "acme".into(),
             force: true,

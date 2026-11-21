@@ -1,11 +1,12 @@
 //! Pagination remains additive to transaction arrays and counts matching rows.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
-use beankeeper_cli::db::{accounts, companies, connection::Db};
+use beankeeper_cli::db::{Actor, accounts, companies, connection::Db};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -21,9 +22,19 @@ impl Ledger {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
-        companies::create_company(db.conn(), "acme", "Acme", None)?;
+        companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
         for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
-            accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+            accounts::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )?;
         }
         let journals: Vec<_> = (0..51)
             .map(|index| {

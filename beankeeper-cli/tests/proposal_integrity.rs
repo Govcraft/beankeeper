@@ -12,7 +12,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn pending() -> Result<(Db, String), Box<dyn Error>> {
     let db = Db::open_in_memory()?;
-    db::create_company(db.conn(), "acme", "Acme", None)?;
+    db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
     let id = "proposal".create_type_id::<V7>().to_string();
     let payload = PostingPayload {
         description: "Review".into(),

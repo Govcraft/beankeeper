@@ -1,5 +1,6 @@
 //! Inclusive company cutoffs, audited reopening, and atomic posting failures.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -25,9 +26,19 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            db::create_company(db.conn(), company, company, None)?;
+            db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
             for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
-                db::create_account(db.conn(), company, code, code, kind, None)?;
+                db::create_account(
+                    db.conn(),
+                    &Actor::new("fixture"),
+                    &CreateAccountParams {
+                        company_slug: company,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: None,
+                    },
+                )?;
             }
         }
         Ok(Self { dir, path, db })

@@ -3,7 +3,7 @@
 use beankeeper::{core::Frequency, types::Currency};
 use beankeeper_cli::{
     db::{
-        Actor, Db, PostEntryParams, accounts, audit, companies,
+        Actor, CreateAccountParams, Db, PostEntryParams, accounts, audit, companies,
         schedules::{self, CreateScheduleParams, DEFAULT_RUN_LIMIT, ScheduleState},
     },
     error::CliError,
@@ -18,11 +18,26 @@ fn date(value: &str) -> Result<NaiveDate, CliError> {
         .map_err(|error| CliError::Validation(format!("{error}")))
 }
 
+fn audit_count(db: &Db) -> rusqlite::Result<i64> {
+    db.conn()
+        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+}
+
 fn fixture() -> Result<Db, CliError> {
     let db = Db::open_in_memory()?;
-    companies::create_company(db.conn(), "acme", "Acme", None)?;
+    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
     for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
-        accounts::create_account(db.conn(), "acme", code, code, kind, Some("default-tax"))?;
+        accounts::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code,
+                name: code,
+                account_type: kind,
+                default_tax_category: Some("default-tax"),
+            },
+        )?;
     }
     Ok(db)
 }
@@ -51,6 +66,7 @@ fn template() -> Result<CreateScheduleParams, CliError> {
 #[test]
 fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     let db = fixture()?;
+    let before_audit = audit_count(&db)?;
     let actor = Actor::new("schedule-test");
     let mut cases = Vec::new();
     let mut invalid = template()?;
@@ -79,16 +95,14 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
         assert!(schedules::create_schedule(db.conn(), &actor, "acme", &invalid).is_err());
     }
     assert!(schedules::list_schedules(db.conn(), "acme")?.is_empty());
-    let count: i64 = db
-        .conn()
-        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
-    assert_eq!(count, 0);
+    assert_eq!(audit_count(&db)?, before_audit);
     Ok(())
 }
 
 #[test]
 fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResult {
     let db = fixture()?;
+    let before_audit = audit_count(&db)?;
     let actor = Actor::new("schedule-test");
     let schedule = schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
     assert_eq!(
@@ -108,10 +122,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
             .next_due(),
         Some(date("2026-01-31")?)
     );
-    let count: i64 = db
-        .conn()
-        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
-    assert_eq!(count, 1);
+    assert_eq!(audit_count(&db)?, before_audit + 1);
     let posted = schedules::run_due(db.conn(), &actor, "acme", date("2026-03-31")?, false)?;
     assert_eq!(
         posted
@@ -138,6 +149,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
 #[test]
 fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
     let db = fixture()?;
+    let before_audit = audit_count(&db)?;
     let actor = Actor::new("schedule-test");
     schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
     db.conn().execute_batch(
@@ -155,10 +167,7 @@ fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
             .next_due(),
         Some(date("2026-01-31")?)
     );
-    let audit_count: i64 = db
-        .conn()
-        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
-    assert_eq!(audit_count, 1);
+    assert_eq!(audit_count(&db)?, before_audit + 1);
     audit::verify_hash_chain(db.conn())?;
     Ok(())
 }
@@ -191,7 +200,7 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
 fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("schedule-test");
-    companies::create_company(db.conn(), "other", "Other", None)?;
+    companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
     let schedule = schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
     assert!(schedules::list_schedules(db.conn(), "other")?.is_empty());
     assert!(schedules::cancel_schedule(db.conn(), &actor, "other", &schedule.id).is_err());
@@ -246,9 +255,19 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("concurrent.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(db.conn(), "acme", "Acme", None)?;
+    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
     for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
-        accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+        accounts::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code,
+                name: code,
+                account_type: kind,
+                default_tax_category: None,
+            },
+        )?;
     }
     schedules::create_schedule(db.conn(), &Actor::new("creator"), "acme", &template()?)?;
     drop(db);
@@ -349,6 +368,7 @@ fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
 #[test]
 fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     let db = fixture()?;
+    let before_audit = audit_count(&db)?;
     let actor = Actor::new("schedule-limit-test");
     for count in [500, 501] {
         schedules::create_schedule(db.conn(), &actor, "acme", &daily_template(count)?)?;
@@ -369,14 +389,15 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
         serde_json::json!(schedules::list_schedules(db.conn(), "acme")?),
         before
     );
-    for (table, expected) in [("transactions", 0), ("entries", 0), ("audit_log", 2)] {
+    for table in ["transactions", "entries"] {
         let count: i64 =
             db.conn()
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                     row.get(0)
                 })?;
-        assert_eq!(count, expected);
+        assert_eq!(count, 0);
     }
+    assert_eq!(audit_count(&db)?, before_audit + 2);
     audit::verify_hash_chain(db.conn())?;
     Ok(())
 }
@@ -385,9 +406,19 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
 fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("schedule-limit-test");
-    companies::create_company(db.conn(), "other", "Other", None)?;
+    companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
     for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
-        accounts::create_account(db.conn(), "other", code, code, kind, None)?;
+        accounts::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "other",
+                code,
+                name: code,
+                account_type: kind,
+                default_tax_category: None,
+            },
+        )?;
     }
     let params = daily_template(1_001)?;
     schedules::create_schedule(db.conn(), &actor, "other", &params)?;

@@ -6,6 +6,7 @@ use std::process::Command;
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::cli::{Cli, Command as BkCommand};
 use beankeeper_cli::commands::report;
+use beankeeper_cli::db::Actor;
 use beankeeper_cli::db::connection::Db;
 use clap::Parser;
 use serde_json::Value;
@@ -162,7 +163,13 @@ fn in_process_reports_match_every_cli_report_payload() -> TestResult {
 #[test]
 fn in_process_reports_preserve_validation_and_missing_company_errors() -> TestResult {
     let db = Db::open_in_memory()?;
-    beankeeper_cli::db::companies::create_company(db.conn(), "test", "Test", None)?;
+    beankeeper_cli::db::companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        "test",
+        "Test",
+        None,
+    )?;
     let cli = Cli::try_parse_from(["bk", "report", "trial-balance", "--from", "invalid"])?;
     let BkCommand::Report(args) = &cli.command else {
         return Err("expected report command".into());

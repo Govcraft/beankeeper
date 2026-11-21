@@ -1,5 +1,6 @@
 //! Storage protections, creation attribution, and independent tamper detection.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -23,9 +24,29 @@ impl Ledger {
         let dir = tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
-        db::create_company(db.conn(), "acme", "Acme", None)?;
-        db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
-        db::create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)?;
+        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )?;
+        db::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "4000",
+                name: "Revenue",
+                account_type: "revenue",
+                default_tax_category: None,
+            },
+        )?;
         Ok(Self { dir, path, db })
     }
 
@@ -182,7 +203,14 @@ fn posts_and_reversals_record_creators_and_skip_retries_without_new_audit_rows()
     success(&result)?;
     let output = ledger
         .command()?
-        .args(["audit", "log", "--action", "create"])
+        .args([
+            "audit",
+            "log",
+            "--entity",
+            "transaction",
+            "--action",
+            "create",
+        ])
         .output()?;
     let rows = success(&output)?;
     assert_eq!(
@@ -207,14 +235,16 @@ fn posts_and_reversals_record_creators_and_skip_retries_without_new_audit_rows()
 #[test]
 fn creation_audit_failure_rolls_back_posting_and_chain_sequence() -> TestResult {
     let ledger = Ledger::new()?;
+    let creations = ledger.count("audit_log")?;
     ledger.db.conn().execute_batch(
         "CREATE TRIGGER fail_creation BEFORE INSERT ON audit_log
         WHEN NEW.action = 'create' BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
     )?;
     assert!(ledger.post("original").is_err());
-    for table in ["transactions", "entries", "audit_log"] {
+    for table in ["transactions", "entries"] {
         assert_eq!(ledger.count(table)?, 0);
     }
+    assert_eq!(ledger.count("audit_log")?, creations);
     ledger
         .db
         .conn()
@@ -227,7 +257,7 @@ fn creation_audit_failure_rolls_back_posting_and_chain_sequence() -> TestResult 
 #[test]
 fn verify_reports_first_modified_hash_link_for_each_canonical_field() -> TestResult {
     for assignment in [
-        "id = 5",
+        "id = 100",
         "changed_at = 'changed'",
         "actor = 'imposter'",
         "company_slug = NULL",
@@ -260,7 +290,10 @@ fn verify_detects_deleted_prefix_middle_tail_and_entire_chain() -> TestResult {
     for (condition, expected) in [
         ("id = 1", "broken at row #2"),
         ("id = 2", "broken at row #3"),
-        ("id = 3", "tail missing after row #2"),
+        (
+            "id = (SELECT MAX(id) FROM audit_log)",
+            "tail missing after row #5",
+        ),
         ("1 = 1", "tail missing after row #0"),
     ] {
         let ledger = Ledger::new()?;
@@ -355,6 +388,7 @@ fn allowed_clearing_and_metadata_mutations_keep_verification_healthy() -> TestRe
 #[test]
 fn cli_post_and_every_import_format_honor_explicit_actor_and_environment() -> TestResult {
     let ledger = Ledger::new()?;
+    let creations = ledger.count("audit_log")?;
     let post = ledger
         .command()?
         .env("BK_ACTOR", "environment-agent")
@@ -397,7 +431,7 @@ fn cli_post_and_every_import_format_honor_explicit_actor_and_environment() -> Te
         posters,
         ["environment-agent", "json-agent", "csv-agent", "ofx-agent"]
     );
-    assert_eq!(ledger.count("audit_log")?, 4);
+    assert_eq!(ledger.count("audit_log")?, creations + 4);
     success(&ledger.verify()?)?;
     Ok(())
 }
@@ -407,14 +441,23 @@ fn posting_after_tail_removal_fails_without_hiding_evidence() -> TestResult {
     let ledger = Ledger::new()?;
     ledger.post("first")?;
     ledger.post("second")?;
+    let last_retained: i64 =
+        ledger
+            .db
+            .conn()
+            .query_row("SELECT MAX(id) - 1 FROM audit_log", [], |row| row.get(0))?;
+    let audit_count = ledger.count("audit_log")?;
     ledger.db.conn().execute_batch(
         "DROP TRIGGER protect_audit_delete;
-        DELETE FROM audit_log WHERE id = 2;",
+        DELETE FROM audit_log WHERE id = (SELECT MAX(id) FROM audit_log);",
     )?;
     assert!(ledger.post("third").is_err());
     assert_eq!(ledger.count("transactions")?, 2);
-    assert_eq!(ledger.count("audit_log")?, 1);
-    failure(&ledger.verify()?, "tail missing after row #1")
+    assert_eq!(ledger.count("audit_log")?, audit_count - 1);
+    failure(
+        &ledger.verify()?,
+        &format!("tail missing after row #{last_retained}"),
+    )
 }
 
 #[test]
@@ -435,6 +478,7 @@ fn verify_detects_deleted_posting_and_erased_poster_against_creation_audit() -> 
 #[test]
 fn dry_runs_and_skipped_imports_leave_creation_history_unchanged() -> TestResult {
     let ledger = Ledger::new()?;
+    let creations = ledger.count("audit_log")?;
     let file = ledger.dir.path().join("import.csv");
     std::fs::write(&file, "date,description,amount\n2026-01-01,Sale,1\n")?;
     for extra in [vec!["--dry-run"], vec![], vec!["--on-conflict", "skip"]] {
@@ -448,7 +492,7 @@ fn dry_runs_and_skipped_imports_leave_creation_history_unchanged() -> TestResult
         success(&output)?;
         assert_eq!(
             ledger.count("audit_log")?,
-            i64::from(extra != ["--dry-run"])
+            creations + i64::from(extra != ["--dry-run"])
         );
         success(&ledger.verify()?)?;
     }

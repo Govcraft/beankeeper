@@ -1,6 +1,7 @@
 use rusqlite::{Connection, params};
 
 use super::CompanyRow;
+use super::audit::{self, Actor, Creation};
 use crate::error::CliError;
 
 /// A company slug validated before use in a company-scoped operation.
@@ -105,7 +106,7 @@ fn validate_slug(slug: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Creates a new company and returns the inserted row.
+/// Creates a company and records its attribution in the same savepoint.
 ///
 /// # Errors
 ///
@@ -113,24 +114,41 @@ fn validate_slug(slug: &str) -> Result<(), CliError> {
 /// Returns `CliError::Sqlite` on database errors.
 pub fn create_company(
     conn: &Connection,
+    actor: &Actor,
     slug: &str,
     name: &str,
     description: Option<&str>,
 ) -> Result<CompanyRow, CliError> {
     validate_slug(slug)?;
 
-    if company_exists(conn, slug)? {
-        return Err(CliError::Validation(format!(
-            "company '{slug}' already exists"
-        )));
-    }
+    audit::atomically(conn, || {
+        if company_exists(conn, slug)? {
+            return Err(CliError::Validation(format!(
+                "company '{slug}' already exists"
+            )));
+        }
 
-    conn.execute(
-        "INSERT INTO companies (slug, name, description) VALUES (?1, ?2, ?3)",
-        params![slug, name, description],
-    )?;
+        conn.execute(
+            "INSERT INTO companies (slug, name, description) VALUES (?1, ?2, ?3)",
+            params![slug, name, description],
+        )?;
 
-    get_company(conn, slug)
+        let row = get_company(conn, slug)?;
+        audit::record_insert(
+            conn,
+            actor,
+            slug,
+            Creation::Company,
+            slug,
+            &serde_json::json!({
+                "slug": row.slug,
+                "name": row.name,
+                "description": row.description,
+                "created_at": row.created_at,
+            }),
+        )?;
+        Ok(row)
+    })
 }
 
 /// Lists all companies ordered by slug.
@@ -209,7 +227,13 @@ mod tests {
     #[test]
     fn create_and_get_company() {
         let db = setup();
-        let row = create_company(db.conn(), "acme", "Acme Corp", None);
+        let row = create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme Corp",
+            None,
+        );
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.slug, "acme");
@@ -222,8 +246,23 @@ mod tests {
     #[test]
     fn duplicate_slug_is_validation_error() {
         let db = setup();
-        assert!(create_company(db.conn(), "acme", "Acme Corp", None).is_ok());
-        let result = create_company(db.conn(), "acme", "Acme 2", None);
+        assert!(
+            create_company(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                "acme",
+                "Acme Corp",
+                None
+            )
+            .is_ok()
+        );
+        let result = create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme 2",
+            None,
+        );
         assert!(result.is_err());
         if let Err(CliError::Validation(msg)) = result {
             assert!(msg.contains("already exists"));
@@ -248,8 +287,26 @@ mod tests {
     #[test]
     fn list_companies_ordered() {
         let db = setup();
-        assert!(create_company(db.conn(), "beta", "Beta", None).is_ok());
-        assert!(create_company(db.conn(), "alpha", "Alpha", None).is_ok());
+        assert!(
+            create_company(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                "beta",
+                "Beta",
+                None
+            )
+            .is_ok()
+        );
+        assert!(
+            create_company(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                "alpha",
+                "Alpha",
+                None
+            )
+            .is_ok()
+        );
         let list = list_companies(db.conn()).unwrap_or_default();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].slug, "alpha");
@@ -260,7 +317,16 @@ mod tests {
     fn delete_company_removes_row() {
         let db = setup();
         let actor = crate::db::Actor::new("test");
-        assert!(create_company(db.conn(), "acme", "Acme", None).is_ok());
+        assert!(
+            create_company(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                "acme",
+                "Acme",
+                None
+            )
+            .is_ok()
+        );
         assert!(crate::db::delete_company(db.conn(), &actor, "acme").is_ok());
         assert!(!company_exists(db.conn(), "acme").unwrap_or(true));
     }
