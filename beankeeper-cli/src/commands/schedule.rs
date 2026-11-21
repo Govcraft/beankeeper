@@ -122,16 +122,9 @@ fn render(
             "Preview: {count} due occurrences; no transactions posted or schedules advanced."
         );
     }
-    if format == OutputFormat::Json {
-        println!(
-            "{}",
-            json::envelope_ok(cli.meta(command.command_name(), Some(company)), data)?
-        );
-        return Ok(());
-    }
     let rows = match data {
-        Value::Array(rows) => rows.iter().collect::<Vec<_>>(),
-        row => vec![row],
+        Value::Array(rows) => rows.as_slice(),
+        row => std::slice::from_ref(row),
     };
     let occurrence = matches!(command, ScheduleCommand::Run { .. });
     let headers: &[&str] = if occurrence {
@@ -167,7 +160,12 @@ fn render(
             }
             println!("{table}");
         }
-        OutputFormat::Json => unreachable!("JSON handled above"),
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                json::envelope_ok(cli.meta(command.command_name(), Some(company)), data)?
+            );
+        }
     }
     Ok(())
 }

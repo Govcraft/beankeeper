@@ -7,7 +7,7 @@ use serde::Serialize;
 use tempfile::NamedTempFile;
 
 use crate::cli::Cli;
-use crate::db::{Db, schema};
+use crate::db::Db;
 use crate::error::CliError;
 
 #[derive(Serialize)]
@@ -47,7 +47,10 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
 /// # Errors
 /// Returns an error without replacing the destination if validation fails.
 pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
-    validate_destination(input, &cli.db, force)?;
+    let destination = cli
+        .explicit_db()
+        .ok_or_else(|| CliError::Usage("restore requires an explicit --db destination".into()))?;
+    validate_destination(input, destination, force)?;
     if !input.try_exists()? {
         return Err(CliError::NotFound(format!(
             "snapshot '{}' not found",
@@ -55,7 +58,7 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
         )));
     }
     reject_sidecars(input)?;
-    let directory = staging_directory(&cli.db)?;
+    let directory = staging_directory(destination)?;
     let mut staged = NamedTempFile::new_in(directory.path())?;
     // Copy into the private staging file, retaining its owner-only permissions.
     std::io::copy(&mut File::open(input)?, staged.as_file_mut())?;
@@ -64,20 +67,23 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
     let version = super::verify::verify(&snapshot)?;
     let encrypted = is_encrypted(&snapshot);
     drop(snapshot);
-    if cli.db.try_exists()? {
+    if destination.try_exists()? {
         // Inspect a private copy: even read-only SQLite connections can create
         // WAL sidecars on the original destination and prevent publication.
         // The destination has its own trust boundary, independent of the snapshot.
         let mut destination_copy = NamedTempFile::new_in(directory.path())?;
-        std::io::copy(&mut File::open(&cli.db)?, destination_copy.as_file_mut())?;
+        std::io::copy(
+            &mut File::open(destination)?,
+            destination_copy.as_file_mut(),
+        )?;
         let existing = Db::open_snapshot(destination_copy.path(), cli.resolve_passphrase()?)
             .or_else(|error| Db::open_snapshot(destination_copy.path(), None).map_err(|_| error))?;
         if crate::db::policy::get(existing.conn())?.enforce {
             return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before restore".into()));
         }
     }
-    publish(staged, input, &cli.db, force)?;
-    report(cli, "restore", &cli.db, version, encrypted)
+    publish(staged, input, destination, force)?;
+    report(cli, "restore", destination, version, encrypted)
 }
 
 fn is_encrypted(db: &Db) -> bool {
@@ -212,7 +218,6 @@ fn report(
         schema_version: version,
         encrypted,
     };
-    debug_assert_eq!(version, schema::CURRENT_VERSION);
     if cli.is_json() {
         println!(
             "{}",

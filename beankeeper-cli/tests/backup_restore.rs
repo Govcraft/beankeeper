@@ -5,7 +5,10 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use assert_cmd::prelude::*;
+use beankeeper_cli::cli::Cli;
 use beankeeper_cli::db::Db;
+use beankeeper_cli::{commands, error::CliError};
+use clap::Parser as _;
 use secrecy::SecretString;
 use serde_json::Value;
 use tempfile::tempdir;
@@ -387,6 +390,35 @@ fn required_paths_missing_sources_and_self_overwrites_are_rejected() -> TestResu
         bk(&source, None)?.args(args).arg(&source).assert().code(3);
     }
     data(&source, None, &["verify"])?;
+    Ok(())
+}
+
+#[test]
+fn embedded_restore_requires_a_command_line_destination() -> TestResult {
+    let dir = tempdir()?;
+    let snapshot = dir.path().join("missing.db");
+    let destination = dir.path().join("restore.db");
+    let restore = [
+        "bk".as_ref(),
+        "restore".as_ref(),
+        "--input".as_ref(),
+        snapshot.as_os_str(),
+    ];
+    let cli = Cli::try_parse_from(restore)?;
+    assert!(matches!(
+        commands::dispatch(&cli, None),
+        Err(CliError::Usage(message)) if message.contains("explicit --db")
+    ));
+
+    let explicit = restore
+        .into_iter()
+        .chain(["--db".as_ref(), destination.as_os_str()]);
+    let cli = Cli::try_parse_from(explicit)?;
+    assert!(matches!(
+        commands::dispatch(&cli, None),
+        Err(CliError::NotFound(_))
+    ));
+    assert!(!destination.exists());
     Ok(())
 }
 

@@ -56,7 +56,38 @@ struct Settlement {
     charge_transaction_ids: Vec<i64>,
     /// Unallocated amount, including excess on the last linked charge.
     excess: i64,
-    reasons: Vec<String>,
+    reasons: Vec<SettlementReason>,
+}
+
+impl Settlement {
+    fn reason_codes(&self, separator: &str) -> String {
+        self.reasons
+            .iter()
+            .map(|reason| reason.code())
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SettlementReason {
+    MissingLink,
+    Unmatched(UnmatchedReason),
+}
+
+impl SettlementReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::MissingLink => "missing_link",
+            Self::Unmatched(reason) => reason.code(),
+        }
+    }
+}
+
+impl Serialize for SettlementReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
 }
 
 struct Posting {
@@ -410,11 +441,13 @@ fn match_settlement(
     };
     let targets = match &posting.movement.links {
         LinkSpec::None => {
-            result.reasons.push("missing_link".into());
+            result.reasons.push(SettlementReason::MissingLink);
             return Ok(result);
         }
         LinkSpec::Invalid(_) => {
-            result.reasons.push("invalid".into());
+            result
+                .reasons
+                .push(SettlementReason::Unmatched(UnmatchedReason::Invalid));
             return Ok(result);
         }
         LinkSpec::Targets(targets) => targets,
@@ -442,13 +475,7 @@ fn match_settlement(
                         UnmatchedReason::NotOnAccount
                     };
                 }
-                result.reasons.push(
-                    serde_json::to_value(reason)
-                        .map_err(|e| CliError::General(e.to_string()))?
-                        .as_str()
-                        .unwrap_or("invalid")
-                        .into(),
-                );
+                result.reasons.push(SettlementReason::Unmatched(reason));
             }
         }
     }
@@ -506,7 +533,7 @@ impl SettlementDetails {
                     money(s.amount),
                     s.charge_transaction_ids,
                     money(s.excess),
-                    s.reasons.join(", ")
+                    s.reason_codes(", ")
                 );
             }
         }
@@ -553,7 +580,7 @@ impl SettlementDetails {
                         &s.transaction_id.to_string(),
                         &s.date,
                         s.reference.as_deref().unwrap_or(""),
-                        &format!("{} {}", s.description, s.reasons.join(",")),
+                        &format!("{} {}", s.description, s.reason_codes(",")),
                         &s.amount.to_string(),
                         "",
                         &s.excess.to_string(),

@@ -143,9 +143,8 @@ fn execute_reverse(
         .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
     let reference = reference
         .as_deref()
-        .map(normalize_reference)
-        .transpose()
-        .map_err(|e| CliError::Validation(e.to_string()))?;
+        .map(str::parse::<super::reference::TransactionReference>)
+        .transpose()?;
     db::audit::reverse_transaction(
         db_handle.conn(),
         &db::audit::ReverseTransactionParams {
@@ -153,7 +152,9 @@ fn execute_reverse(
             id: *id,
             date: &date,
             description: description.as_deref(),
-            reference: reference.as_deref(),
+            reference: reference
+                .as_ref()
+                .map(super::reference::TransactionReference::as_str),
             actor,
         },
     )
@@ -232,13 +233,9 @@ pub fn execute_json_with_pagination(
                 cli.meta("txn.show", Some(company)),
             )?;
         }
-        TxnCommand::Reconcile => run_reconcile(
-            db_handle,
-            OutputFormat::Json,
-            false,
-            &mut out,
-            cli.meta("txn.reconcile", None),
-        )?,
+        TxnCommand::Reconcile => {
+            return execute_reconcile_json(db_handle).map(|data| (data, None));
+        }
         TxnCommand::Clear { .. } => {
             return super::txn_clear::execute_json(db_handle, company, sub, actor, None)
                 .map(|data| (data, None));
@@ -262,6 +259,15 @@ pub fn execute_json_with_pagination(
     ))
 }
 
+pub(crate) fn execute_reconcile_json(db_handle: &Db) -> Result<serde_json::Value, CliError> {
+    let orphans = transactions::find_orphaned_correlations(db_handle.conn())?;
+    if orphans.is_empty() {
+        Ok(serde_json::Value::Array(Vec::new()))
+    } else {
+        Err(orphaned_correlations(orphans.len()))
+    }
+}
+
 /// Execute the `txn import` subcommand.
 fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Result<(), CliError> {
     let TxnCommand::Import {
@@ -279,9 +285,11 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
 
     let effective_format = match import_format {
         Some(f) => *f,
-        None => match file.as_deref() {
-            Some(path) if path != "-" => crate::commands::import_ofx::detect_format(path)?,
-            _ => {
+        None => match file {
+            crate::cli::InputSource::Path(path) => {
+                crate::commands::import_ofx::detect_format(path)?
+            }
+            crate::cli::InputSource::Stdin => {
                 return Err(CliError::Usage(
                     "cannot detect format from stdin; specify --input-format".into(),
                 ));
@@ -301,7 +309,7 @@ fn run_import(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
                 cli,
                 db_handle,
                 company,
-                file.as_deref(),
+                file,
                 acct,
                 susp,
                 *dry_run,
@@ -551,23 +559,6 @@ pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, 
     Ok(if negative { -magnitude } else { magnitude })
 }
 
-/// Normalize a user-supplied transaction reference for storage.
-///
-/// Trims surrounding whitespace and rejects empty input. The returned value is
-/// stored verbatim in the `reference` column so that it round-trips through
-/// `txn list --reference <KEY>`.
-///
-/// # Errors
-///
-/// Returns an error message if the reference is empty or whitespace-only.
-pub(super) fn normalize_reference(input: &str) -> Result<String, &'static str> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("reference must not be empty");
-    }
-    Ok(trimmed.to_string())
-}
-
 /// Validate a posting and retain the input currency in balance diagnostics.
 fn validate_journal(journal: JournalEntry, currency: Currency) -> Result<(), CliError> {
     match journal.post() {
@@ -738,7 +729,7 @@ fn with_post_params<T>(
     // idempotency/dedup key, so the raw value is also what conflict checks
     // compare against.
     let reference = reference
-        .map(normalize_reference)
+        .map(str::parse::<super::reference::TransactionReference>)
         .transpose()
         .map_err(|e| CliError::Validation(format!("invalid reference: {e}")))?;
 
@@ -750,7 +741,9 @@ fn with_post_params<T>(
         date: &effective_date,
         entries: &db_entries,
         correlate: *correlate,
-        reference: reference.as_deref(),
+        reference: reference
+            .as_ref()
+            .map(super::reference::TransactionReference::as_str),
         on_conflict: conflict_strategy(*on_conflict),
         actor,
     };
@@ -1123,10 +1116,11 @@ fn run_reconcile(
     }
 
     // Exit code 3 (validation error) when orphans found — useful in pipelines.
-    Err(CliError::Validation(format!(
-        "{} orphaned correlation(s) found",
-        orphans.len()
-    )))
+    Err(orphaned_correlations(orphans.len()))
+}
+
+fn orphaned_correlations(count: usize) -> CliError {
+    CliError::Validation(format!("{count} orphaned correlation(s) found"))
 }
 
 #[cfg(test)]
@@ -1307,7 +1301,7 @@ mod tests {
             entry: None,
             reference: None,
             account: Some("1000".into()),
-            from_file: Some("-".into()),
+            from_file: Some(crate::cli::InputSource::Stdin),
             amount: None,
             date: Some("2026-03-02".into()),
             statement: Some("batch-statement".into()),
@@ -1335,31 +1329,6 @@ mod tests {
         )?;
         assert!(actors >= 2);
         Ok(())
-    }
-
-    #[test]
-    fn normalize_reference_stores_verbatim() {
-        // Regression for issue #12: the user key must be stored as-is, not
-        // hashed into a txnref_ token.
-        assert_eq!(
-            normalize_reference("RENT-2026-03").as_deref(),
-            Ok("RENT-2026-03")
-        );
-    }
-
-    #[test]
-    fn normalize_reference_trims_whitespace() {
-        assert_eq!(normalize_reference("  INV-001  ").as_deref(), Ok("INV-001"));
-    }
-
-    #[test]
-    fn normalize_reference_rejects_empty() {
-        assert!(normalize_reference("").is_err());
-    }
-
-    #[test]
-    fn normalize_reference_rejects_whitespace_only() {
-        assert!(normalize_reference("   ").is_err());
     }
 
     #[test]

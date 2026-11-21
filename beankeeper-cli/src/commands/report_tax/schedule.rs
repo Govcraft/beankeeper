@@ -10,50 +10,61 @@ use serde::Serialize;
 use super::{TaxEntry, TaxReport, add, csv_error, decimal, finish_csv, overflow};
 use crate::error::CliError;
 
+#[derive(Clone, Copy)]
+enum BalanceSign {
+    CreditPositive,
+    DebitPositive,
+}
+
+use BalanceSign::{CreditPositive, DebitPositive};
+
 // Input lines only, excluding computed subtotals. Based on the 2026 IRS form.
-// The final boolean marks credit-positive lines; line 2 is debit-positive.
-const LINES: &[(&str, &str, bool)] = &[
-    ("1", "Gross receipts or sales", true),
-    ("2", "Returns and allowances", false),
-    ("4", "Cost of goods sold", false),
-    ("6", "Other income", true),
-    ("8", "Advertising", false),
-    ("9", "Car and truck expenses", false),
-    ("10", "Commissions and fees", false),
-    ("11", "Contract labor", false),
-    ("12", "Depletion", false),
+const LINES: &[(&str, &str, BalanceSign)] = &[
+    ("1", "Gross receipts or sales", CreditPositive),
+    ("2", "Returns and allowances", DebitPositive),
+    ("4", "Cost of goods sold", DebitPositive),
+    ("6", "Other income", CreditPositive),
+    ("8", "Advertising", DebitPositive),
+    ("9", "Car and truck expenses", DebitPositive),
+    ("10", "Commissions and fees", DebitPositive),
+    ("11", "Contract labor", DebitPositive),
+    ("12", "Depletion", DebitPositive),
     (
         "13",
         "Depreciation and section 179 expense deduction",
-        false,
+        DebitPositive,
     ),
-    ("14", "Employee benefit programs", false),
-    ("15", "Insurance (other than health)", false),
-    ("16a", "Mortgage interest", false),
-    ("16b", "Vehicle loan interest", false),
-    ("16c", "Other interest", false),
-    ("17", "Legal and professional services", false),
-    ("18", "Office expense", false),
-    ("19", "Pension and profit-sharing plans", false),
+    ("14", "Employee benefit programs", DebitPositive),
+    ("15", "Insurance (other than health)", DebitPositive),
+    ("16a", "Mortgage interest", DebitPositive),
+    ("16b", "Vehicle loan interest", DebitPositive),
+    ("16c", "Other interest", DebitPositive),
+    ("17", "Legal and professional services", DebitPositive),
+    ("18", "Office expense", DebitPositive),
+    ("19", "Pension and profit-sharing plans", DebitPositive),
     (
         "20a",
         "Rent or lease: vehicles, machinery, and equipment",
-        false,
+        DebitPositive,
     ),
-    ("20b", "Rent or lease: other business property", false),
-    ("21", "Repairs and maintenance", false),
-    ("22", "Supplies", false),
-    ("23", "Taxes and licenses", false),
-    ("24a", "Travel", false),
-    ("24b", "Deductible meals", false),
-    ("25", "Utilities", false),
-    ("26", "Wages", false),
+    (
+        "20b",
+        "Rent or lease: other business property",
+        DebitPositive,
+    ),
+    ("21", "Repairs and maintenance", DebitPositive),
+    ("22", "Supplies", DebitPositive),
+    ("23", "Taxes and licenses", DebitPositive),
+    ("24a", "Travel", DebitPositive),
+    ("24b", "Deductible meals", DebitPositive),
+    ("25", "Utilities", DebitPositive),
+    ("26", "Wages", DebitPositive),
     (
         "27a",
         "Energy efficient commercial buildings deduction",
-        false,
+        DebitPositive,
     ),
-    ("27b", "Other expenses", false),
+    ("27b", "Other expenses", DebitPositive),
 ];
 
 #[derive(Serialize)]
@@ -76,7 +87,7 @@ struct ScheduleRow {
 }
 
 impl ScheduleRow {
-    fn add(&mut self, entry: &TaxEntry, credit_positive: bool) -> Result<(), CliError> {
+    fn add(&mut self, entry: &TaxEntry, sign: BalanceSign) -> Result<(), CliError> {
         match entry.direction.as_str() {
             "debit" => add(&mut self.debit_total, entry.amount)?,
             "credit" => add(&mut self.credit_total, entry.amount)?,
@@ -86,10 +97,9 @@ impl ScheduleRow {
                 ));
             }
         }
-        self.net = if credit_positive {
-            self.credit_total.checked_sub(self.debit_total)
-        } else {
-            self.debit_total.checked_sub(self.credit_total)
+        self.net = match sign {
+            CreditPositive => self.credit_total.checked_sub(self.debit_total),
+            DebitPositive => self.debit_total.checked_sub(self.credit_total),
         }
         .ok_or_else(overflow)?;
         Ok(())
@@ -108,7 +118,7 @@ pub(super) fn build(entries: &[TaxEntry]) -> Result<ScheduleSummary, CliError> {
                 .and_then(|id| LINES.iter().position(|line| line.0 == id))
         });
         if let Some(index) = mapped {
-            let (id, title, credit_positive) = LINES[index];
+            let (id, title, sign) = LINES[index];
             let row = lines.entry(index).or_insert_with(|| ScheduleRow {
                 line: Some(id),
                 title: title.into(),
@@ -119,7 +129,7 @@ pub(super) fn build(entries: &[TaxEntry]) -> Result<ScheduleSummary, CliError> {
                 credit_total: 0,
                 net: 0,
             });
-            row.add(entry, credit_positive)?;
+            row.add(entry, sign)?;
         } else if entry.tax_category.is_some()
             || matches!(entry.account_type.as_str(), "revenue" | "expense")
         {
@@ -140,13 +150,11 @@ pub(super) fn build(entries: &[TaxEntry]) -> Result<ScheduleSummary, CliError> {
                     credit_total: 0,
                     net: 0,
                 });
-            row.add(
-                entry,
-                matches!(
-                    entry.account_type.as_str(),
-                    "revenue" | "liability" | "equity"
-                ),
-            )?;
+            let sign = match entry.account_type.as_str() {
+                "revenue" | "liability" | "equity" => CreditPositive,
+                _ => DebitPositive,
+            };
+            row.add(entry, sign)?;
         }
     }
     Ok(ScheduleSummary {

@@ -1,8 +1,8 @@
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::Path;
 use std::process;
 
-use secrecy::SecretString;
+use secrecy::{SecretString, zeroize::Zeroizing};
 
 use crate::error::CliError;
 
@@ -91,16 +91,13 @@ fn read_from_fd(fd: i32) -> Result<SecretString, CliError> {
         )));
     };
 
-    let mut buf = String::new();
-    std::fs::File::open(&path)
-        .and_then(|mut f| f.read_to_string(&mut buf))
+    let contents = std::fs::File::open(&path)
+        .and_then(read_secret)
         .map_err(|e| CliError::General(format!("failed to read from fd {fd}: {e}")))?;
 
-    let trimmed = buf.trim_end_matches('\n').to_owned();
-    if trimmed.is_empty() {
-        return Err(CliError::Usage(format!("passphrase from fd {fd} is empty")));
-    }
-    Ok(SecretString::from(trimmed))
+    nonempty_secret(contents.trim_end_matches('\n'), || {
+        format!("passphrase from fd {fd} is empty")
+    })
 }
 
 #[cfg(not(unix))]
@@ -112,59 +109,102 @@ fn read_from_fd(fd: i32) -> Result<SecretString, CliError> {
 
 /// Read a passphrase from a file, trimming the trailing newline.
 fn read_from_file(path: &Path) -> Result<SecretString, CliError> {
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        CliError::General(format!(
-            "failed to read passphrase file {}: {e}",
-            path.display()
-        ))
-    })?;
+    let contents = std::fs::File::open(path)
+        .and_then(read_secret)
+        .map_err(|e| {
+            CliError::General(format!(
+                "failed to read passphrase file {}: {e}",
+                path.display()
+            ))
+        })?;
 
-    let trimmed = contents.trim_end_matches('\n').to_owned();
-    if trimmed.is_empty() {
-        return Err(CliError::Usage(format!(
-            "passphrase file {} is empty",
-            path.display()
-        )));
-    }
-    Ok(SecretString::from(trimmed))
+    nonempty_secret(contents.trim_end_matches('\n'), || {
+        format!("passphrase file {} is empty", path.display())
+    })
 }
 
 /// Execute a shell command and capture its stdout as the passphrase.
 fn run_passphrase_command(cmd: &str) -> Result<SecretString, CliError> {
-    let output = process::Command::new("sh")
+    let mut child = process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::piped())
         .stderr(process::Stdio::inherit())
-        .output()
+        .spawn()
         .map_err(|e| CliError::General(format!("failed to execute passphrase command: {e}")))?;
 
-    if !output.status.success() {
+    let contents = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("stdout pipe unavailable"))
+        .and_then(read_secret);
+    let status = child
+        .wait()
+        .map_err(|e| CliError::General(format!("failed to wait for passphrase command: {e}")))?;
+    if !status.success() {
         return Err(CliError::General(format!(
-            "passphrase command exited with status {}",
-            output.status
+            "passphrase command exited with status {status}"
         )));
     }
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| CliError::General(format!("passphrase command output is not UTF-8: {e}")))?;
+    let contents = contents
+        .map_err(|e| CliError::General(format!("failed to read passphrase command output: {e}")))?;
 
-    let trimmed = stdout.trim_end_matches('\n').to_owned();
-    if trimmed.is_empty() {
-        return Err(CliError::Usage(
-            "passphrase command produced empty output".into(),
-        ));
-    }
-    Ok(SecretString::from(trimmed))
+    nonempty_secret(contents.trim_end_matches('\n'), || {
+        "passphrase command produced empty output".into()
+    })
 }
 
 /// Prompt for a passphrase on the TTY.
 fn prompt_passphrase(prompt: &str) -> Result<SecretString, CliError> {
-    let pass = rpassword::prompt_password(prompt).map_err(CliError::Io)?;
+    // rpassword zeroizes its input buffer and transfers ownership of the result.
+    let pass = Zeroizing::new(rpassword::prompt_password(prompt).map_err(CliError::Io)?);
+    nonempty_secret(&pass, || "passphrase cannot be empty".into())
+}
 
+fn read_secret(mut reader: impl Read) -> io::Result<Zeroizing<String>> {
+    let mut contents = Zeroizing::new(String::new());
+    reader.read_to_string(&mut contents)?;
+    Ok(contents)
+}
+
+fn nonempty_secret(pass: &str, empty: impl FnOnce() -> String) -> Result<SecretString, CliError> {
     if pass.is_empty() {
-        return Err(CliError::Usage("passphrase cannot be empty".into()));
+        return Err(CliError::Usage(empty()));
     }
     Ok(SecretString::from(pass))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use secrecy::ExposeSecret;
+
+    use super::*;
+
+    #[test]
+    fn passphrase_file_trims_only_trailing_newlines() -> Result<(), CliError> {
+        let mut file = tempfile::NamedTempFile::new()?;
+        file.write_all(b" \nsecret \n\n")?;
+        assert_eq!(read_from_file(file.path())?.expose_secret(), " \nsecret ");
+        Ok(())
+    }
+
+    #[test]
+    fn empty_and_non_utf8_passphrase_files_are_rejected() -> Result<(), CliError> {
+        let file = tempfile::NamedTempFile::new()?;
+        std::fs::write(file.path(), b"\n\n")?;
+        assert!(matches!(
+            read_from_file(file.path()),
+            Err(CliError::Usage(_))
+        ));
+        std::fs::write(file.path(), [0xff])?;
+        assert!(matches!(
+            read_from_file(file.path()),
+            Err(CliError::General(_))
+        ));
+        Ok(())
+    }
 }

@@ -21,7 +21,7 @@ use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, PostResult,
     TransactionRow,
 };
-use crate::error::CliError;
+use crate::error::{CliError, ErrorCode};
 
 // ---------------------------------------------------------------------------
 // Envelope types
@@ -118,7 +118,7 @@ pub use super::amounts::with_amount_displays;
 /// Error payload within the envelope.
 #[derive(Serialize)]
 pub struct EnvelopeError {
-    pub code: String,
+    pub code: ErrorCode,
     pub message: String,
 }
 

@@ -268,8 +268,7 @@ pub struct OpenItem {
 
 /// Why a settlement's link was not honoured (the settlement then falls back
 /// to FIFO).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnmatchedReason {
     /// No transaction in the company has that reference or id.
     NotFound,
@@ -294,6 +293,19 @@ pub enum UnmatchedReason {
 }
 
 impl UnmatchedReason {
+    pub(super) const fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::NotOnAccount => "not_on_account",
+            Self::NotACharge => "not_a_charge",
+            Self::ChargeAfterSettlement => "charge_after_settlement",
+            Self::AfterAsOf => "after_as_of",
+            Self::OtherCounterparty => "other_counterparty",
+            Self::OtherAccount => "other_account",
+            Self::Invalid => "invalid",
+        }
+    }
+
     fn describe(self) -> &'static str {
         match self {
             Self::NotFound => "no transaction has that reference or id",
@@ -309,6 +321,12 @@ impl UnmatchedReason {
                 "the link must be a reference string, a transaction id, or an array of these"
             }
         }
+    }
+}
+
+impl Serialize for UnmatchedReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
     }
 }
 

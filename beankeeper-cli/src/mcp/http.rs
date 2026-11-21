@@ -70,7 +70,7 @@ fn rejection(error: &CliError) -> Response {
         CliError::Forbidden(_) => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    let body = json!({"code": error.error_code(), "message": error.to_string()}).to_string();
+    let body = json!({"code": error.code(), "message": error.to_string()}).to_string();
     let mut response = (status, [(header::CONTENT_TYPE, "application/json")], body).into_response();
     if status == StatusCode::UNAUTHORIZED {
         response.headers_mut().insert(
@@ -84,7 +84,7 @@ fn rejection(error: &CliError) -> Response {
 pub(super) fn protocol_error(error: &CliError) -> rmcp::ErrorData {
     rmcp::ErrorData::internal_error(
         error.error_code(),
-        Some(json!({"code": error.error_code(), "message": error.to_string()})),
+        Some(json!({"code": error.code(), "message": error.to_string()})),
     )
 }
 
@@ -267,8 +267,7 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
     let tools = catalog(host.tools(), read_only)?;
     let host = Arc::new(host);
     let db = Db::open_existing(&cli.db, passphrase)?;
-    let mut server = LedgerServer::new(db, read_only);
-    server.require_request_token = true;
+    let server = LedgerServer::with_credentials(db, read_only.into(), super::Credentials::Http);
     let authentication = Authentication {
         db: server.db.clone(),
         fallback: cli.agent_token.clone(),
