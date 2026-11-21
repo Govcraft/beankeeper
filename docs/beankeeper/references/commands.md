@@ -1,6 +1,6 @@
 # Command Reference
 
-For beankeeper-cli 0.26.1 (`bk`).
+For beankeeper-cli 0.27.0 (`bk`).
 
 All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`, `--agent-token TOKEN`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
 

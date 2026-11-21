@@ -6,18 +6,39 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-20
+
+Released as [beankeeper-cli-v0.27.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.27.0).
+This release includes the changes previously tracked under 0.24.0, 0.25.0,
+0.26.0 and 0.26.1, none of which shipped separately. It adds three schema
+migrations (v18, v19, v20); each makes older binaries refuse to append to an
+upgraded ledger. Back up the full database before upgrading.
+
 ### Added
 
-- UI-scoped `ui/navigate` tokens and authenticated HTTP host tool composition
-  through `http_router_with_host_tools` and `HostToolHandler`. Host discovery
-  and calls require explicit current-request grants, live verification, and
-  the read-only ceiling; existing ledger tokens retain their scope.
-  ([#110](https://github.com/Govcraft/beankeeper/issues/110))
-
-- Public `beankeeper_cli::mcp::http_router_with_passphrase` factory for sharing
-  one resolved in-memory secret with a read-only snapshot across platforms.
-  The existing CLI-source factory delegates to it and preserves authentication.
-  ([#109](https://github.com/Govcraft/beankeeper/issues/109))
+- Per-ledger capability enforcement through `bk policy show` and
+  `bk policy set --enforce on|off`, defaulting to off. Once enabled, CLI and MCP
+  require valid tokens and explicit read/post/reverse/reconcile/budget/admin
+  grants. Missing credentials return `UNAUTHORIZED` (exit 6); insufficient
+  grants return `FORBIDDEN` (exit 7). Policy changes are audited.
+  ([#72](https://github.com/Govcraft/beankeeper/issues/72))
+- Authenticated MCP Streamable HTTP at `/mcp` with `bk mcp serve --http`,
+  defaulting to `127.0.0.1:8750`. `--bind` selects an address; non-loopback binds
+  require `--allow-remote` and serve plaintext HTTP without TLS.
+- Every HTTP request verifies an `Authorization: Bearer` agent token, even when
+  ledger enforcement is off. Process credentials are a fallback for absent
+  headers. Discovery and tool authorization use the current requesting token and
+  policy, with live expiry/revocation checks and the existing read-only ceiling.
+  Stdio remains the default.
+  ([#74](https://github.com/Govcraft/beankeeper/issues/74))
+- Per-agent, per-company/currency spend limits through `agent limit set/show/clear`,
+  enforced inside the shared posting savepoint. Total debits measure each posting;
+  transaction-date daily buckets include approved proposals charged to the proposer.
+- Pending posting review with `txn propose/proposals/approve/reject`, the `withdraw`
+  alias, and matching MCP tools. Sibling `ledger/propose` and `ledger/approve` grants
+  control ownership and review; approval posts atomically with approver attribution,
+  a reserved proposal link, and the complete proposer request in the audit trail.
+  ([#73](https://github.com/Govcraft/beankeeper/issues/73))
 - Company-scoped period close/reopen/list commands and MCP tools. Inclusive
   cutoffs reject backdated posts, imports, schedule occurrences, loan payments,
   investment trades, reversals, and proposal approvals. Reopen requires an
@@ -28,6 +49,15 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   transport configuration and control cancellation; the CLI keeps its existing
   credential, capability, read-only and bind behavior.
   ([#106](https://github.com/Govcraft/beankeeper/issues/106))
+- Public `beankeeper_cli::mcp::http_router_with_passphrase` factory for sharing
+  one resolved in-memory secret with a read-only snapshot across platforms.
+  The existing CLI-source factory delegates to it and preserves authentication.
+  ([#109](https://github.com/Govcraft/beankeeper/issues/109))
+- UI-scoped `ui/navigate` tokens and authenticated HTTP host tool composition
+  through `http_router_with_host_tools` and `HostToolHandler`. Host discovery
+  and calls require explicit current-request grants, live verification, and
+  the read-only ceiling; existing ledger tokens retain their scope.
+  ([#110](https://github.com/Govcraft/beankeeper/issues/110))
 - Release archives and `checksums-sha256.txt` receive Sigstore keyless signing
   bundles (`<artifact>.sigstore`) and GitHub build provenance attestations.
   The installer verifies both bundles when cosign is available and stops on
@@ -36,88 +66,39 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Changed
 
+- Schema v18 preserves historical audit hashes and adds default-off policy
+  storage. New v3 audit records block older binaries from appending, including
+  when enforcement is off.
+- MCP discovery reflects startup grants, with live policy and capability checks
+  on every call. Bare `ledger` grants are rejected. Forced initialization cannot
+  overwrite an enforced or unreadable ledger. Backup and restore require
+  `ledger/admin` when source enforcement is on; restore also requires destination
+  enforcement to be disabled before replacement.
+- Schema v19 preserves policy and historical audit hashes while adding proposals,
+  reference reservations, spend buckets and audited resolutions/limit changes.
+- Importers preserve authorization error codes on spend denial. Posting dates are
+  canonicalized so alternate date spellings cannot split the same day's bucket.
+- Schema v20 preserves existing policy, proposals, and historical audit hashes.
+  New v4 audit records prevent older binaries from appending. `verify`, backup,
+  and restore detect missing or changed period lock state.
 - The CLI is no longer published to crates.io (`publish = false`); it ships only
   as GitHub Release binaries through `install.sh`, AUR, or manual download. The
   release workflow publishes only the `beankeeper` library, and `cargo binstall`
   metadata was removed.
 - Feature and docs PRs keep crate and skill versions unchanged and collect notes
-  here. Tagged release preflight now requires a matching dated changelog section;
-  versions are assigned once during release preparation.
+  under Unreleased. Tagged release preflight requires a matching dated changelog
+  section; versions are assigned once during release preparation.
   ([#91](https://github.com/Govcraft/beankeeper/issues/91))
-- Schema v20 preserves existing policy, proposals, and historical audit hashes.
-  New v4 audit records prevent older binaries from appending. `verify`, backup,
-  and restore detect missing or changed period lock state.
-
-## [0.26.1] - Unreleased
 
 ### Fixed
 
+- MCP `--read-only` now hides `txn_reconcile` along with all other write tools.
 - Refreshed `init --demo` with Q1 2025 examples for budgets, import rules,
   recurring schedules, investment purchases and a partial sale, mapped tax
   expenses and contractor payments, a funded loan and first payment, and a
   short-pay settlement. The README walkthrough uses matching dates and covers
   these examples; `--demo` help now describes multi-company data.
   ([#84](https://github.com/Govcraft/beankeeper/issues/84))
-
-## [0.26.0] - Unreleased
-
-### Added
-
-- Per-agent, per-company/currency spend limits through `agent limit set/show/clear`,
-  enforced inside the shared posting savepoint. Total debits measure each posting;
-  transaction-date daily buckets include approved proposals charged to the proposer.
-- Pending posting review with `txn propose/proposals/approve/reject`, the `withdraw`
-  alias, and matching MCP tools. Sibling `ledger/propose` and `ledger/approve` grants
-  control ownership and review; approval posts atomically with approver attribution,
-  a reserved proposal link, and the complete proposer request in the audit trail.
-  ([#73](https://github.com/Govcraft/beankeeper/issues/73))
-
-### Changed
-
-- Schema v19 preserves policy and historical audit hashes while adding proposals,
-  reference reservations, spend buckets and audited resolutions/limit changes.
-- Importers preserve authorization error codes on spend denial. Posting dates are
-  canonicalized so alternate date spellings cannot split the same day's bucket.
-
-## [0.25.0] - Unreleased
-
-### Added
-
-- Authenticated MCP Streamable HTTP at `/mcp` with `bk mcp serve --http`,
-  defaulting to `127.0.0.1:8750`. `--bind` selects an address; non-loopback binds
-  require `--allow-remote` and serve plaintext HTTP without TLS.
-- Every HTTP request verifies an `Authorization: Bearer` agent token, even when
-  ledger enforcement is off. Process credentials are a fallback for absent
-  headers. Discovery and tool authorization use the current requesting token and
-  policy, with live expiry/revocation checks and the existing read-only ceiling.
-  Stdio remains the default. No schema migration is added.
-  ([#74](https://github.com/Govcraft/beankeeper/issues/74))
-
-## [0.24.0] - Unreleased
-
-### Added
-
-- Per-ledger capability enforcement through `bk policy show` and
-  `bk policy set --enforce on|off`, defaulting to off. Once enabled, CLI and MCP
-  require valid tokens and explicit read/post/reverse/reconcile/budget/admin
-  grants. Missing credentials return `UNAUTHORIZED` (exit 6); insufficient
-  grants return `FORBIDDEN` (exit 7). Policy changes are audited.
-  ([#72](https://github.com/Govcraft/beankeeper/issues/72))
-
-### Changed
-
-- MCP discovery reflects startup grants, with live policy and capability checks
-  on every call. Bare `ledger` grants are rejected. Forced initialization cannot
-  overwrite an enforced or unreadable ledger. Backup and restore require
-  `ledger/admin` when source enforcement is on; restore also requires destination
-  enforcement to be disabled before replacement.
-- Schema v18 preserves historical audit hashes and adds default-off policy
-  storage. New v3 audit records block older binaries from appending, including
-  when enforcement is off. Back up the full database before upgrading.
-
-### Fixed
-
-- MCP `--read-only` now hides `txn_reconcile` along with all other write tools.
 
 ## [0.23.0] - 2026-11-20
 
