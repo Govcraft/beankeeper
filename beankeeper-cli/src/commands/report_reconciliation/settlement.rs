@@ -4,60 +4,104 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{AccountType, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use super::{EntryQuery, EntryRow, ReconciliationArgs, ReconciliationReport, UnclearedEntry};
+use super::{EntryQuery, EntryRow, ReconciliationReport, UnclearedEntry, minor, money, sum_money};
 use crate::commands::report_aging::{self, LinkSpec, Movement, TargetIndex, UnmatchedReason};
 use crate::db::companies::Company;
 use crate::error::CliError;
+use crate::output::amounts::{MoneyField, format_money_grouped};
 
-/// Additional settlement-mode output. Amounts are minor units.
+/// Additional statement-scoped receivables or payables reconciliation data.
 #[derive(Debug, Clone, Serialize)]
 pub struct SettlementDetails {
     mode: &'static str,
-    link_key: String,
-    charges: Vec<Charge>,
-    negative_charges: Vec<Charge>,
-    applied_settlements: Vec<Settlement>,
-    unmatched_settlements: Vec<Settlement>,
+    pub link_key: String,
+    pub charges: Vec<Charge>,
+    pub negative_charges: Vec<Charge>,
+    pub applied_settlements: Vec<Settlement>,
+    pub unmatched_settlements: Vec<Settlement>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct Charge {
-    entry_id: i64,
-    transaction_id: i64,
-    date: String,
-    reference: Option<String>,
-    description: String,
-    metadata: Option<serde_json::Value>,
-    group: Option<String>,
-    expected: i64,
-    applied_this_statement: i64,
-    applied_total: i64,
-    reconciled_this_statement: i64,
-    remaining: i64,
-    short_pay: i64,
-    overpay: i64,
-    age_days: Option<i64>,
+/// One payable or receivable posting with its settlement totals.
+#[derive(Debug, Clone)]
+pub struct Charge {
+    pub entry_id: i64,
+    pub transaction_id: i64,
+    pub date: NaiveDate,
+    pub reference: Option<String>,
+    pub description: String,
+    pub metadata: Option<serde_json::Value>,
+    pub group: Option<String>,
+    pub expected: Money,
+    pub applied_this_statement: Money,
+    pub applied_total: Money,
+    pub reconciled_this_statement: Money,
+    pub remaining: Money,
+    pub short_pay: Money,
+    pub overpay: Money,
+    pub age_days: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct Settlement {
-    entry_id: i64,
-    transaction_id: i64,
-    date: String,
-    reference: Option<String>,
-    description: String,
-    metadata: Option<serde_json::Value>,
-    amount: i64,
+/// A payment or credit and the charge transactions it was applied to.
+#[derive(Debug, Clone)]
+pub struct Settlement {
+    pub entry_id: i64,
+    pub transaction_id: i64,
+    pub date: NaiveDate,
+    pub reference: Option<String>,
+    pub description: String,
+    pub metadata: Option<serde_json::Value>,
+    pub amount: Money,
     /// Charge transaction ids, in link order.
-    charge_transaction_ids: Vec<i64>,
+    pub charge_transaction_ids: Vec<i64>,
     /// Unallocated amount, including excess on the last linked charge.
-    excess: i64,
-    reasons: Vec<SettlementReason>,
+    pub excess: Money,
+    pub reasons: Vec<SettlementReason>,
+}
+
+impl Serialize for Charge {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut row = serializer.serialize_map(Some(22))?;
+        row.serialize_entry("entry_id", &self.entry_id)?;
+        row.serialize_entry("transaction_id", &self.transaction_id)?;
+        row.serialize_entry("date", &self.date)?;
+        row.serialize_entry("reference", &self.reference)?;
+        row.serialize_entry("description", &self.description)?;
+        row.serialize_entry("metadata", &self.metadata)?;
+        row.serialize_entry("group", &self.group)?;
+        row.serialize_entry("age_days", &self.age_days)?;
+        MoneyField::new("expected", self.expected).write_to(&mut row)?;
+        MoneyField::new("applied_this_statement", self.applied_this_statement)
+            .write_to(&mut row)?;
+        MoneyField::new("applied_total", self.applied_total).write_to(&mut row)?;
+        MoneyField::new("reconciled_this_statement", self.reconciled_this_statement)
+            .write_to(&mut row)?;
+        MoneyField::new("remaining", self.remaining).write_to(&mut row)?;
+        MoneyField::new("short_pay", self.short_pay).write_to(&mut row)?;
+        MoneyField::new("overpay", self.overpay).write_to(&mut row)?;
+        row.end()
+    }
+}
+
+impl Serialize for Settlement {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut row = serializer.serialize_map(Some(12))?;
+        row.serialize_entry("entry_id", &self.entry_id)?;
+        row.serialize_entry("transaction_id", &self.transaction_id)?;
+        row.serialize_entry("date", &self.date)?;
+        row.serialize_entry("reference", &self.reference)?;
+        row.serialize_entry("description", &self.description)?;
+        row.serialize_entry("metadata", &self.metadata)?;
+        row.serialize_entry("charge_transaction_ids", &self.charge_transaction_ids)?;
+        row.serialize_entry("reasons", &self.reasons)?;
+        MoneyField::new("amount", self.amount).write_to(&mut row)?;
+        MoneyField::new("excess", self.excess).write_to(&mut row)?;
+        row.end()
+    }
 }
 
 impl Settlement {
@@ -70,14 +114,16 @@ impl Settlement {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SettlementReason {
+/// Why a settlement did not apply to a particular charge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettlementReason {
     MissingLink,
     Unmatched(UnmatchedReason),
 }
 
 impl SettlementReason {
-    const fn code(self) -> &'static str {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
         match self {
             Self::MissingLink => "missing_link",
             Self::Unmatched(reason) => reason.code(),
@@ -102,7 +148,11 @@ fn sum(a: i64, b: i64) -> Result<i64, CliError> {
 
 /// Net all entries on the account per transaction, like aging does. Keeping a
 /// representative entry id allows the existing outstanding-item shape to stay.
-fn postings(rows: Vec<EntryRow>, normal: &str, link_key: &str) -> Result<Vec<Posting>, CliError> {
+fn postings(
+    rows: Vec<EntryRow>,
+    normal: DebitOrCredit,
+    link_key: &str,
+) -> Result<Vec<Posting>, CliError> {
     let mut grouped: BTreeMap<i64, Vec<EntryRow>> = BTreeMap::new();
     for row in rows {
         grouped.entry(row.transaction_id).or_default().push(row);
@@ -127,8 +177,7 @@ fn postings(rows: Vec<EntryRow>, normal: &str, link_key: &str) -> Result<Vec<Pos
         row.reconciled_stmt = reconciled_stmt;
         let movement = Movement::new(
             row.transaction_id,
-            NaiveDate::parse_from_str(&row.date, "%Y-%m-%d")
-                .map_err(|e| CliError::Validation(format!("invalid transaction date: {e}")))?,
+            row.date,
             row.description.clone(),
             row.reference.clone(),
             row.amount,
@@ -148,7 +197,7 @@ fn postings(rows: Vec<EntryRow>, normal: &str, link_key: &str) -> Result<Vec<Pos
 
 fn net_total(
     rows: &[EntryRow],
-    normal: &str,
+    normal: DebitOrCredit,
     value: impl Fn(&EntryRow) -> i64,
 ) -> Result<i64, CliError> {
     rows.iter().try_fold(0, |total, row| {
@@ -165,10 +214,11 @@ fn reversal_target(row: &EntryRow) -> Option<i64> {
 
 fn charge(posting: &Posting, report: &ReconciliationReport, expected: i64) -> Charge {
     let row = &posting.row;
+    let currency = report.currency;
     Charge {
         entry_id: row.entry_id,
         transaction_id: row.transaction_id,
-        date: row.date.clone(),
+        date: row.date,
         reference: row.reference.clone(),
         description: row.description.clone(),
         metadata: super::metadata_for_output(row.metadata.as_deref()),
@@ -176,24 +226,22 @@ fn charge(posting: &Posting, report: &ReconciliationReport, expected: i64) -> Ch
             .group_by
             .as_deref()
             .and_then(|k| super::metadata_value(row.metadata.as_deref(), k)),
-        expected,
-        applied_this_statement: row.cleared_stmt,
-        applied_total: row.cleared_all,
-        reconciled_this_statement: row.reconciled_stmt,
-        remaining: 0,
-        short_pay: 0,
-        overpay: 0,
+        expected: money(expected, currency),
+        applied_this_statement: money(row.cleared_stmt, currency),
+        applied_total: money(row.cleared_all, currency),
+        reconciled_this_statement: money(row.reconciled_stmt, currency),
+        remaining: money(0, currency),
+        short_pay: money(0, currency),
+        overpay: money(0, currency),
         age_days: report.as_of.map(|d| (d - posting.movement.date).num_days()),
     }
 }
 
-pub(super) fn build_report(
-    conn: &Connection,
-    company: &str,
-    args: &ReconciliationArgs<'_>,
-    link_key: Option<&str>,
-) -> Result<ReconciliationReport, CliError> {
-    if args.statement.is_none_or(|s| s.trim().is_empty()) {
+pub(super) fn resolve_link_key<'a>(
+    statement: Option<&str>,
+    link_key: Option<&'a str>,
+) -> Result<&'a str, CliError> {
+    if super::normalize_statement(statement).is_none() {
         return Err(CliError::Usage(
             "--mode settlement requires a non-empty --statement".into(),
         ));
@@ -202,14 +250,26 @@ pub(super) fn build_report(
     if link_key.is_empty() {
         return Err(CliError::Usage("--link-key must not be empty".into()));
     }
-    let mut report = super::build_report(conn, company, args)?;
-    if !matches!(report.account_type.as_str(), "asset" | "liability") {
+    Ok(link_key)
+}
+
+pub(super) fn apply(
+    conn: &Connection,
+    company: &Company<'_>,
+    mut report: ReconciliationReport,
+    link_key: &str,
+) -> Result<ReconciliationReport, CliError> {
+    if !matches!(
+        report.account_type,
+        AccountType::Asset | AccountType::Liability
+    ) {
         return Err(CliError::Usage(
             "--mode settlement requires an asset (AR) or liability (AP) account".into(),
         ));
     }
-    let company_scope = Company::resolve(conn, company)?;
-    let (all, selected) = load_postings(conn, company, &report, link_key)?;
+    let currency = report.currency;
+    let slug = company.slug().as_str();
+    let (all, selected) = load_postings(conn, slug, &report, link_key)?;
     let index = TargetIndex::new(all.iter().map(|p| &p.movement));
     let mut charges: BTreeMap<i64, Charge> = all
         .iter()
@@ -226,16 +286,16 @@ pub(super) fn build_report(
     };
     let ctx = MatchContext {
         conn,
-        company,
+        company: slug,
         all: &all,
         index: &index,
         account: &report.code,
         currency: report.currency,
     };
     let linked = apply_settlements(&ctx, &selected, &report, &mut details, &mut charges)?;
-    report.cleared_balance = 0;
-    report.total_cleared_balance = 0;
-    report.reconciled_balance = 0;
+    report.cleared_balance = money(0, currency);
+    report.total_cleared_balance = money(0, currency);
+    report.reconciled_balance = money(0, currency);
     report.uncleared.clear();
     for posting in all
         .iter()
@@ -246,42 +306,50 @@ pub(super) fn build_report(
         };
         // Clearings and payment postings are two views of the same application,
         // so use their maximum, never their sum.
-        c.applied_total = c
-            .applied_total
-            .max(linked.get(&c.transaction_id).copied().unwrap_or(0));
-        let net = c
-            .expected
-            .checked_sub(c.applied_total)
-            .ok_or_else(super::overflow)?;
-        c.remaining = net.max(0);
-        c.short_pay = if c.applied_this_statement > 0 {
+        let linked_amount = i128::from(linked.get(&c.transaction_id).copied().unwrap_or(0));
+        c.applied_total = Money::from_minor(minor(c.applied_total).max(linked_amount), currency);
+        let net = i64::try_from(minor(c.expected) - minor(c.applied_total))
+            .map_err(|_| super::overflow())?;
+        c.remaining = money(net.max(0), currency);
+        c.short_pay = if c.applied_this_statement.is_positive() {
             c.remaining
         } else {
-            0
+            money(0, currency)
         };
-        c.overpay = net.checked_neg().ok_or_else(super::overflow)?.max(0);
-        report.cleared_balance = sum(report.cleared_balance, c.applied_this_statement)?;
-        report.total_cleared_balance = sum(report.total_cleared_balance, posting.row.cleared_all)?;
-        report.reconciled_balance = sum(report.reconciled_balance, posting.row.reconciled_stmt)?;
-        if c.remaining > 0 {
+        c.overpay = money(
+            net.checked_neg().ok_or_else(super::overflow)?.max(0),
+            currency,
+        );
+        report.cleared_balance = sum_money(report.cleared_balance, c.applied_this_statement)?;
+        report.total_cleared_balance = sum_money(
+            report.total_cleared_balance,
+            money(posting.row.cleared_all, currency),
+        )?;
+        report.reconciled_balance = sum_money(
+            report.reconciled_balance,
+            money(posting.row.reconciled_stmt, currency),
+        )?;
+        if c.remaining.is_positive() {
             report
                 .uncleared
-                .push(outstanding(&company_scope, posting, &c, report.as_of)?);
+                .push(outstanding(company, posting, &c, report.as_of)?);
         }
         details.charges.push(c);
     }
     for c in &details.negative_charges {
-        report.cleared_balance = sum(report.cleared_balance, c.applied_this_statement)?;
-        report.total_cleared_balance = sum(report.total_cleared_balance, c.applied_total)?;
-        report.reconciled_balance = sum(report.reconciled_balance, c.reconciled_this_statement)?;
+        report.cleared_balance = sum_money(report.cleared_balance, c.applied_this_statement)?;
+        report.total_cleared_balance = sum_money(report.total_cleared_balance, c.applied_total)?;
+        report.reconciled_balance =
+            sum_money(report.reconciled_balance, c.reconciled_this_statement)?;
     }
     report.uncleared_total = report
         .uncleared
         .iter()
-        .try_fold(0, |n, e| sum(n, e.signed_remaining))?;
-    report.groups = args
-        .group_by_metadata
-        .map(|_| super::group_items(&report.uncleared))
+        .try_fold(money(0, currency), |n, e| sum_money(n, e.signed_remaining))?;
+    report.groups = report
+        .group_by
+        .as_ref()
+        .map(|_| super::group_items(&report.uncleared, currency))
         .transpose()?;
     report.settlement = Some(details);
     Ok(report)
@@ -343,8 +411,11 @@ fn apply_settlements(
         if let Some(original) = reversal_target(&posting.row)
             && let Some(c) = charges.get_mut(&original)
         {
-            c.expected = sum(c.expected, posting.row.amount)?;
-            c.applied_total = sum(c.applied_total, posting.row.cleared_all)?;
+            c.expected = sum_money(c.expected, money(posting.row.amount, ctx.currency))?;
+            c.applied_total = sum_money(
+                c.applied_total,
+                money(posting.row.cleared_all, ctx.currency),
+            )?;
             if selected.contains(&original) {
                 details
                     .negative_charges
@@ -391,20 +462,20 @@ fn outstanding(
     Ok(UnclearedEntry {
         entry_id: row.entry_id,
         transaction_id: row.transaction_id,
-        date: row.date.clone(),
+        date: row.date,
         reference: row.reference.clone(),
         description: row.description.clone(),
         memo: row.memo.clone(),
         metadata: c.metadata.clone(),
-        direction: row.direction.clone(),
+        direction: row.direction,
         amount: c.expected,
         signed_amount: c.expected,
         cleared_amount: c.applied_total,
-        reconciled_amount: row.reconciled_all,
+        reconciled_amount: money(row.reconciled_all, c.expected.currency()),
         remaining_amount: c.remaining,
         signed_remaining: c.remaining,
-        partially_cleared: c.applied_total > 0,
-        clearings: super::clearings_as_of(company, row.entry_id, to)?,
+        partially_cleared: c.applied_total.is_positive(),
+        clearings: super::clearings_as_of(company, row.entry_id, to, c.expected.currency())?,
         group: c.group.clone(),
     })
 }
@@ -429,13 +500,13 @@ fn match_settlement(
     let mut result = Settlement {
         entry_id: row.entry_id,
         transaction_id: row.transaction_id,
-        date: row.date.clone(),
+        date: row.date,
         reference: row.reference.clone(),
         description: row.description.clone(),
         metadata: super::metadata_for_output(row.metadata.as_deref()),
-        amount,
+        amount: money(amount, currency),
         charge_transaction_ids: Vec::new(),
-        excess: amount,
+        excess: money(amount, currency),
         reasons: Vec::new(),
     };
     let targets = match link_spec {
@@ -464,7 +535,7 @@ fn match_settlement(
                     && let Some(id) = report_aging::find_link_target(conn, company, target)?
                 {
                     let on_account: bool = conn.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM entries e JOIN transactions t ON t.id=e.transaction_id WHERE t.id=?1 AND e.account_code=?2 AND t.currency=?3)",
+                        "SELECT EXISTS(SELECT 1 FROM entries e JOIN transactions t ON t.id=e.transaction_id AND t.company_slug=e.company_slug WHERE t.id=?1 AND e.account_code=?2 AND t.currency=?3)",
                         rusqlite::params![id, account, currency.code()],
                         |r| r.get(0),
                     )?;
@@ -478,43 +549,45 @@ fn match_settlement(
             }
         }
     }
+    let mut excess = amount;
     for (pos, &charge) in found.iter().enumerate() {
         let already = linked.get(&charge.transaction_id).copied().unwrap_or(0);
         let expected = charges
             .get(&charge.transaction_id)
-            .map_or_else(|| charge.amount(), |c| c.expected);
+            .map_or(Ok(charge.amount()), |c| i64::try_from(minor(c.expected)))
+            .map_err(|_| super::overflow())?;
         let room = expected.saturating_sub(already).max(0);
         let take = if pos + 1 == found.len() {
-            result.excess
+            excess
         } else {
-            result.excess.min(room)
+            excess.min(room)
         };
         linked.insert(charge.transaction_id, sum(already, take)?);
         result.charge_transaction_ids.push(charge.transaction_id);
-        result.excess -= take;
+        excess -= take;
         if pos + 1 == found.len() {
-            result.excess = take.saturating_sub(room);
+            excess = take.saturating_sub(room);
         }
     }
+    result.excess = money(excess, currency);
     Ok(result)
 }
 
 impl SettlementDetails {
-    pub(super) fn render_table(&self, report: &ReconciliationReport) -> String {
+    pub(super) fn render_table(&self) -> String {
         let mut out =
             String::from("\nSettlement charges (expected / applied this statement / remaining):\n");
-        let money = |v| super::format_amount(v, report.currency.minor_units());
         for c in self.charges.iter().chain(&self.negative_charges) {
             let _ = writeln!(
                 out,
                 "{} {}: {} / {} / {}  short pay {}  overpay {}",
                 c.date,
                 c.reference.as_deref().unwrap_or("(no reference)"),
-                money(c.expected),
-                money(c.applied_this_statement),
-                money(c.remaining),
-                money(c.short_pay),
-                money(c.overpay)
+                format_money_grouped(c.expected),
+                format_money_grouped(c.applied_this_statement),
+                format_money_grouped(c.remaining),
+                format_money_grouped(c.short_pay),
+                format_money_grouped(c.overpay)
             );
         }
         for (label, rows) in [
@@ -528,9 +601,9 @@ impl SettlementDetails {
                     "{} {}: {} -> {:?}, excess {} {}",
                     s.date,
                     s.reference.as_deref().unwrap_or("(no reference)"),
-                    money(s.amount),
+                    format_money_grouped(s.amount),
                     s.charge_transaction_ids,
-                    money(s.excess),
+                    format_money_grouped(s.excess),
                     s.reason_codes(", ")
                 );
             }
@@ -538,29 +611,25 @@ impl SettlementDetails {
         out
     }
 
-    pub(super) fn write_csv(
-        &self,
-        writer: &mut csv::Writer<Vec<u8>>,
-        report: &ReconciliationReport,
-    ) -> Result<(), CliError> {
+    pub(super) fn write_csv(&self, writer: &mut csv::Writer<Vec<u8>>) -> Result<(), CliError> {
         let error = |e: csv::Error| CliError::General(format!("CSV serialization failed: {e}"));
         for c in self.charges.iter().chain(&self.negative_charges) {
             writer
                 .write_record([
-                    if c.expected < 0 {
+                    if c.expected.is_negative() {
                         "negative_charge"
                     } else {
                         "charge"
                     },
                     &c.entry_id.to_string(),
                     &c.transaction_id.to_string(),
-                    &c.date,
+                    &c.date.to_string(),
                     c.reference.as_deref().unwrap_or(""),
                     &c.description,
-                    &c.expected.to_string(),
-                    &c.applied_this_statement.to_string(),
-                    &c.remaining.to_string(),
-                    report.currency.code(),
+                    &minor(c.expected).to_string(),
+                    &minor(c.applied_this_statement).to_string(),
+                    &minor(c.remaining).to_string(),
+                    c.expected.currency().code(),
                     c.group.as_deref().unwrap_or(""),
                     &super::metadata_cell(c.metadata.as_ref()),
                 ])
@@ -576,13 +645,13 @@ impl SettlementDetails {
                         kind,
                         &s.entry_id.to_string(),
                         &s.transaction_id.to_string(),
-                        &s.date,
+                        &s.date.to_string(),
                         s.reference.as_deref().unwrap_or(""),
                         &format!("{} {}", s.description, s.reason_codes(",")),
-                        &s.amount.to_string(),
+                        &minor(s.amount).to_string(),
                         "",
-                        &s.excess.to_string(),
-                        report.currency.code(),
+                        &minor(s.excess).to_string(),
+                        s.amount.currency().code(),
                         "",
                         &super::metadata_cell(s.metadata.as_ref()),
                     ])

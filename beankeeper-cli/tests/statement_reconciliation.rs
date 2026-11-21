@@ -312,6 +312,70 @@ fn to_is_point_in_time_for_clearings() {
 }
 
 #[test]
+fn cutoff_includes_legacy_clearings_with_time_suffixes() -> rusqlite::Result<()> {
+    let ledger = seeded();
+    ledger.clear_ref(
+        "POL-1",
+        &[
+            "--amount",
+            "40",
+            "--date",
+            "2026-01-30",
+            "--statement",
+            "S-LEGACY",
+            "--status",
+            "reconciled",
+        ],
+    );
+    let connection = rusqlite::Connection::open(&ledger.db)?;
+    assert_eq!(
+        connection.execute(
+            "UPDATE entry_clearings
+             SET cleared_date = '2026-01-30 09:30:00',
+                 reconciled_date = '2026-01-31 10:45:00'
+             WHERE statement_ref = 'S-LEGACY'",
+            [],
+        )?,
+        1
+    );
+    // Simulate a transaction stored before the immutable-fields migration.
+    connection.execute_batch("DROP TRIGGER protect_transactions_update")?;
+    assert_eq!(
+        connection.execute(
+            "UPDATE transactions SET date = '2026-01-30T08:00:00' WHERE reference = 'POL-1'",
+            [],
+        )?,
+        1
+    );
+    drop(connection);
+
+    let before = ledger.report(&["--to", "2026-01-29"]);
+    assert_eq!(int(&before, "cleared_balance"), 0);
+    assert_eq!(int(&before, "reconciled_balance"), 0);
+
+    let cleared = ledger.report(&["--to", "2026-01-30"]);
+    assert_eq!(int(&cleared, "cleared_balance"), 4_000);
+    assert_eq!(int(&cleared, "reconciled_balance"), 0);
+    let entries = items(&cleared);
+    let entry =
+        item(&entries, "POL-1").unwrap_or_else(|| panic!("partially cleared entry is listed"));
+    assert_eq!(entry["date"], "2026-01-30");
+    assert_eq!(entry["clearings"][0]["status"], "cleared");
+    assert_eq!(entry["clearings"][0]["cleared_date"], "2026-01-30");
+    assert!(entry["clearings"][0]["reconciled_date"].is_null());
+
+    let reconciled = ledger.report(&["--to", "2026-01-31", "--statement", "S-LEGACY"]);
+    assert_eq!(int(&reconciled, "cleared_balance"), 4_000);
+    assert_eq!(int(&reconciled, "reconciled_balance"), 4_000);
+    let entries = items(&reconciled);
+    let entry =
+        item(&entries, "POL-1").unwrap_or_else(|| panic!("partially reconciled entry is listed"));
+    assert_eq!(entry["clearings"][0]["status"], "reconciled");
+    assert_eq!(entry["clearings"][0]["reconciled_date"], "2026-01-31");
+    Ok(())
+}
+
+#[test]
 fn statement_filter_checks_one_statement() {
     let l = seeded();
     l.clear_ref(

@@ -27,17 +27,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use beankeeper::types::Currency;
-use rusqlite::{Connection, params};
-use serde::Serialize;
+use beankeeper::types::{AccountCode, AccountType, Currency, Money};
+use rusqlite::{Connection, params, types::Type};
+use serde::{Serialize, Serializer};
 
 use super::report_dates::DateRange;
 use crate::cli::{Cli, OutputFormat};
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::output::amounts::{MoneyField, format_money_grouped};
 use crate::output::chart;
-use chrono::NaiveDate;
 
 /// Substrings (lowercase) that mark an asset account as cash by default.
 pub const DEFAULT_CASH_NAME_KEYWORDS: &[&str] = &["cash", "bank", "checking", "savings"];
@@ -85,11 +85,11 @@ pub enum Section {
 impl Section {
     const ALL: [Self; 3] = [Self::Operating, Self::Investing, Self::Financing];
 
-    fn for_account_type(account_type: &str) -> Option<Self> {
+    fn for_account_type(account_type: AccountType) -> Option<Self> {
         match account_type {
-            "revenue" | "expense" => Some(Self::Operating),
-            "asset" => Some(Self::Investing),
-            "liability" | "equity" => Some(Self::Financing),
+            AccountType::Revenue | AccountType::Expense => Some(Self::Operating),
+            AccountType::Asset => Some(Self::Investing),
+            AccountType::Liability | AccountType::Equity => Some(Self::Financing),
             _ => None,
         }
     }
@@ -129,64 +129,208 @@ pub struct CashAccount {
 }
 
 /// Cash attributed to one counter-account.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct CashFlowLine {
-    /// Counter-account code.
-    pub code: String,
-    /// Counter-account name.
-    pub name: String,
-    /// Counter-account type (lowercase).
-    pub account_type: String,
-    /// Net cash movement in minor units (positive = inflow).
-    pub amount: i64,
+    pub(crate) code: String,
+    pub(crate) name: String,
+    pub(crate) account_type: AccountType,
+    pub(crate) amount: Money,
 }
 
-/// One section of the statement.
-#[derive(Debug, Clone, Serialize)]
+impl CashFlowLine {
+    /// Code of the counter-account.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// Name of the counter-account.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Type of the counter-account.
+    #[must_use]
+    pub const fn account_type(&self) -> AccountType {
+        self.account_type
+    }
+
+    /// Net cash movement, positive for inflows.
+    #[must_use]
+    pub const fn amount(&self) -> Money {
+        self.amount
+    }
+}
+
+impl Serialize for CashFlowLine {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Line<'a> {
+            code: &'a str,
+            name: &'a str,
+            account_type: &'static str,
+            #[serde(flatten)]
+            amount: MoneyField,
+        }
+        Line {
+            code: self.code(),
+            name: self.name(),
+            account_type: self.account_type().code(),
+            amount: MoneyField::new("amount", self.amount()),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// One section of the cash flow statement.
+#[derive(Debug, Clone)]
 pub struct CashFlowSection {
-    /// Line items, ordered by account code.
-    pub lines: Vec<CashFlowLine>,
-    /// Section subtotal in minor units.
-    pub total: i64,
+    pub(crate) lines: Vec<CashFlowLine>,
+    pub(crate) total: Money,
+}
+
+impl CashFlowSection {
+    /// Counter-accounts in account-code order.
+    #[must_use]
+    pub fn lines(&self) -> &[CashFlowLine] {
+        &self.lines
+    }
+
+    /// Subtotal in the report currency.
+    #[must_use]
+    pub const fn total(&self) -> Money {
+        self.total
+    }
+}
+
+impl Serialize for CashFlowSection {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct SectionData<'a> {
+            lines: &'a [CashFlowLine],
+            #[serde(flatten)]
+            total: MoneyField,
+        }
+        SectionData {
+            lines: self.lines(),
+            total: MoneyField::new("total", self.total()),
+        }
+        .serialize(serializer)
+    }
 }
 
 /// The computed cash flow statement.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct CashFlowStatement {
-    /// Start date (inclusive).
-    pub from: NaiveDate,
-    /// End date (inclusive).
-    pub to: NaiveDate,
-    /// Report currency code.
-    #[serde(serialize_with = "crate::output::json::serialize_display")]
-    pub currency: Currency,
-    /// Cash accounts used.
-    pub cash_accounts: Vec<CashAccount>,
-    /// Operating activities.
-    pub operating: CashFlowSection,
-    /// Investing activities.
-    pub investing: CashFlowSection,
-    /// Financing activities.
-    pub financing: CashFlowSection,
-    /// Sum of the three section totals.
-    pub net_change: i64,
-    /// Cash balance before `from`.
-    pub opening_cash: i64,
-    /// Cash balance through `to`, computed independently.
-    pub closing_cash: i64,
-    /// Whether `opening_cash + net_change == closing_cash`.
-    pub reconciled: bool,
-    /// `closing_cash - (opening_cash + net_change)`; zero when reconciled.
-    pub difference: i64,
+    dates: DateRange,
+    currency: Currency,
+    pub(crate) cash_accounts: Vec<CashAccount>,
+    pub(crate) operating: CashFlowSection,
+    pub(crate) investing: CashFlowSection,
+    pub(crate) financing: CashFlowSection,
+    pub(crate) net_change: Money,
+    pub(crate) opening_cash: Money,
+    pub(crate) closing_cash: Money,
+    pub(crate) difference: Money,
 }
 
 impl CashFlowStatement {
-    fn section(&self, section: Section) -> &CashFlowSection {
+    /// Inclusive transaction dates.
+    #[must_use]
+    pub const fn dates(&self) -> DateRange {
+        self.dates
+    }
+
+    /// Currency shared by all amounts.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.currency
+    }
+
+    /// Accounts treated as cash in this report.
+    #[must_use]
+    pub fn cash_accounts(&self) -> &[CashAccount] {
+        &self.cash_accounts
+    }
+
+    /// Lines and subtotal for one of the three cash flow sections.
+    #[must_use]
+    pub const fn section(&self, section: Section) -> &CashFlowSection {
         match section {
             Section::Operating => &self.operating,
             Section::Investing => &self.investing,
             Section::Financing => &self.financing,
         }
+    }
+
+    /// Sum of operating, investing and financing movement.
+    #[must_use]
+    pub const fn net_change(&self) -> Money {
+        self.net_change
+    }
+
+    /// Balance before the first included date.
+    #[must_use]
+    pub const fn opening_cash(&self) -> Money {
+        self.opening_cash
+    }
+
+    /// Balance through the last included date, computed independently.
+    #[must_use]
+    pub const fn closing_cash(&self) -> Money {
+        self.closing_cash
+    }
+
+    /// Closing balance minus the opening balance and net movement.
+    #[must_use]
+    pub const fn difference(&self) -> Money {
+        self.difference
+    }
+
+    /// Whether the opening balance plus movement equals the closing balance.
+    #[must_use]
+    pub const fn reconciled(&self) -> bool {
+        self.difference.amount().minor_units() == 0
+    }
+}
+
+impl Serialize for CashFlowStatement {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Data<'a> {
+            #[serde(flatten)]
+            dates: DateRange,
+            #[serde(serialize_with = "crate::output::json::serialize_display")]
+            currency: Currency,
+            cash_accounts: &'a [CashAccount],
+            operating: &'a CashFlowSection,
+            investing: &'a CashFlowSection,
+            financing: &'a CashFlowSection,
+            #[serde(flatten)]
+            net_change: MoneyField,
+            #[serde(flatten)]
+            opening_cash: MoneyField,
+            #[serde(flatten)]
+            closing_cash: MoneyField,
+            reconciled: bool,
+            #[serde(flatten)]
+            difference: MoneyField,
+        }
+        Data {
+            dates: self.dates(),
+            currency: self.currency(),
+            cash_accounts: self.cash_accounts(),
+            operating: self.section(Section::Operating),
+            investing: self.section(Section::Investing),
+            financing: self.section(Section::Financing),
+            net_change: MoneyField::new("net_change", self.net_change()),
+            opening_cash: MoneyField::new("opening_cash", self.opening_cash()),
+            closing_cash: MoneyField::new("closing_cash", self.closing_cash()),
+            reconciled: self.reconciled(),
+            difference: MoneyField::new("difference", self.difference()),
+        }
+        .serialize(serializer)
     }
 }
 
@@ -218,13 +362,12 @@ pub(crate) fn run_to(
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let statement = compute(db, company, args)?;
-    let minor_units = statement.currency.minor_units();
 
     match output.format {
         OutputFormat::Table => writeln!(
             output.writer,
             "{}",
-            render_table(&statement, minor_units, output.use_color)
+            render_table(&statement, output.use_color)
         )?,
         OutputFormat::Json => {
             let meta = cli.meta("report.cash-flow", Some(company));
@@ -237,12 +380,12 @@ pub(crate) fn run_to(
     }
 
     if !cli.verbosity.quiet {
-        if statement.reconciled {
+        if statement.reconciled() {
             eprintln!("[ok] cash flow statement generated");
         } else {
             eprintln!(
                 "[!!] cash flow statement does not reconcile (difference: {})",
-                statement.difference
+                format_money_grouped(statement.difference())
             );
         }
     }
@@ -251,27 +394,63 @@ pub(crate) fn run_to(
 }
 
 fn compute(db: &Db, company: &str, args: &CashFlowArgs) -> Result<CashFlowStatement, CliError> {
-    let conn = db.conn();
-    if !db::company_exists(conn, company)? {
-        return Err(CliError::NotFound(format!("company '{company}' not found")));
-    }
-
     let dates = DateRange::resolve(
         args.from.as_deref(),
         args.to.as_deref(),
         chrono::Local::now().date_naive(),
     )?;
-    let currency =
-        super::report_currency::resolve_report_currency(conn, company, args.currency.as_deref())?;
-    let cash_accounts = resolve_cash_accounts(conn, company, &args.cash_account)?;
-    compute_cash_flow(
-        conn,
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        let currency = super::report_currency::resolve_report_currency(
+            conn,
+            company,
+            args.currency.as_deref(),
+        )?;
+        compute_scoped(
+            db,
+            company,
+            dates,
+            currency,
+            args.cash_account.iter().map(String::as_str),
+        )
+    })
+}
+
+/// Compute a cash flow report on an already-open ledger using explicit dates
+/// and currency. An empty account slice uses the default cash-name rule.
+///
+/// # Errors
+/// Returns [`CliError`] for missing companies or accounts, non-asset cash
+/// accounts, amount overflow, or database errors.
+pub fn compute_cash_flow(
+    db: &Db,
+    company: &str,
+    dates: DateRange,
+    currency: Currency,
+    accounts: &[AccountCode],
+) -> Result<CashFlowStatement, CliError> {
+    compute_scoped(
+        db,
         company,
-        dates.from(),
-        dates.to(),
+        dates,
         currency,
-        cash_accounts,
+        accounts.iter().map(AccountCode::as_str),
     )
+}
+
+pub(super) fn compute_scoped<'a>(
+    db: &Db,
+    company: &str,
+    dates: DateRange,
+    currency: Currency,
+    accounts: impl IntoIterator<Item = &'a str>,
+) -> Result<CashFlowStatement, CliError> {
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        db::companies::get_company(conn, company)?;
+        let cash_accounts = resolve_cash_accounts(conn, company, accounts)?;
+        compute_for_accounts(conn, company, dates, currency, cash_accounts)
+    })
 }
 
 fn is_default_cash_name(name: &str) -> bool {
@@ -281,11 +460,18 @@ fn is_default_cash_name(name: &str) -> bool {
         .any(|kw| lower.contains(kw))
 }
 
+fn read_account_type(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<AccountType> {
+    let value: String = row.get(column)?;
+    value.parse().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
+}
+
 /// Resolve the set of cash accounts (explicit or by the default rule).
-pub(super) fn resolve_cash_accounts(
+fn resolve_cash_accounts<'a>(
     conn: &Connection,
     company: &str,
-    explicit: &[String],
+    explicit: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<CashAccount>, CliError> {
     let mut stmt = conn
         .prepare("SELECT code, name, type FROM accounts WHERE company_slug = ?1 ORDER BY code")?;
@@ -294,15 +480,16 @@ pub(super) fn resolve_cash_accounts(
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
+                read_account_type(row, 2)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    if explicit.is_empty() {
+    let wanted: BTreeSet<_> = explicit.into_iter().collect();
+    if wanted.is_empty() {
         let found: Vec<CashAccount> = accounts
             .into_iter()
-            .filter(|(_, name, ty)| ty == "asset" && is_default_cash_name(name))
+            .filter(|(_, name, ty)| *ty == AccountType::Asset && is_default_cash_name(name))
             .map(|(code, name, _)| CashAccount { code, name })
             .collect();
         if found.is_empty() {
@@ -315,7 +502,6 @@ pub(super) fn resolve_cash_accounts(
         return Ok(found);
     }
 
-    let wanted: BTreeSet<&str> = explicit.iter().map(String::as_str).collect();
     let mut found = Vec::with_capacity(wanted.len());
     for code in wanted {
         let Some((code, name, ty)) = accounts.iter().find(|(c, _, _)| c == code) else {
@@ -323,7 +509,8 @@ pub(super) fn resolve_cash_accounts(
                 "cash account '{code}' not found in company '{company}'"
             )));
         };
-        if ty != "asset" {
+        if *ty != AccountType::Asset {
+            let ty = ty.code();
             return Err(CliError::Validation(format!(
                 "cash account '{code}' ({name}) is a {ty} account; cash accounts must be assets"
             )));
@@ -341,22 +528,21 @@ struct EntryFact {
     txn_id: i64,
     code: String,
     name: String,
-    account_type: String,
+    account_type: AccountType,
     /// Debit = positive, credit = negative.
     signed: i64,
 }
 
 /// Compute the statement from the database.
-pub(super) fn compute_cash_flow(
+fn compute_for_accounts(
     conn: &Connection,
     company: &str,
-    from: NaiveDate,
-    to: NaiveDate,
+    dates: DateRange,
     currency: Currency,
     cash_accounts: Vec<CashAccount>,
 ) -> Result<CashFlowStatement, CliError> {
-    let from_sql = from.to_string();
-    let to_sql = to.to_string();
+    let from_sql = dates.from().to_string();
+    let to_sql = dates.to().to_string();
     let cash_codes: BTreeSet<&str> = cash_accounts.iter().map(|a| a.code.as_str()).collect();
 
     let mut stmt = conn.prepare(
@@ -374,7 +560,7 @@ pub(super) fn compute_cash_flow(
                 txn_id: row.get(0)?,
                 code: row.get(1)?,
                 name: row.get(2)?,
-                account_type: row.get(3)?,
+                account_type: read_account_type(row, 3)?,
                 signed: row.get(4)?,
             })
         })?
@@ -382,36 +568,17 @@ pub(super) fn compute_cash_flow(
 
     let lines = attribute_cash(&facts, &cash_codes)?;
 
-    let mut sections: BTreeMap<Section, CashFlowSection> = Section::ALL
-        .iter()
-        .map(|s| {
-            (
-                *s,
-                CashFlowSection {
-                    lines: Vec::new(),
-                    total: 0,
-                },
-            )
-        })
-        .collect();
+    let mut operating = SectionAccumulator::default();
+    let mut investing = SectionAccumulator::default();
+    let mut financing = SectionAccumulator::default();
     for ((section, _), line) in lines {
-        if let Some(sec) = sections.get_mut(&section) {
-            sec.total = sec
-                .total
-                .checked_add(line.amount)
-                .ok_or_else(amount_overflow)?;
-            sec.lines.push(line);
-        }
+        let accumulator = match section {
+            Section::Operating => &mut operating,
+            Section::Investing => &mut investing,
+            Section::Financing => &mut financing,
+        };
+        accumulator.add(line, currency)?;
     }
-    let mut take = |s: Section| {
-        sections.remove(&s).unwrap_or(CashFlowSection {
-            lines: Vec::new(),
-            total: 0,
-        })
-    };
-    let operating = take(Section::Operating);
-    let investing = take(Section::Investing);
-    let financing = take(Section::Financing);
 
     let net_change = operating
         .total
@@ -427,20 +594,55 @@ pub(super) fn compute_cash_flow(
         .checked_sub(expected)
         .ok_or_else(amount_overflow)?;
 
+    let money = |minor| Money::from_minor(i128::from(minor), currency);
     Ok(CashFlowStatement {
-        from,
-        to,
+        dates,
         currency,
         cash_accounts,
-        operating,
-        investing,
-        financing,
-        net_change,
-        opening_cash,
-        closing_cash,
-        reconciled: difference == 0,
-        difference,
+        operating: operating.finish(currency),
+        investing: investing.finish(currency),
+        financing: financing.finish(currency),
+        net_change: money(net_change),
+        opening_cash: money(opening_cash),
+        closing_cash: money(closing_cash),
+        difference: money(difference),
     })
+}
+
+struct AttributedLine {
+    code: String,
+    name: String,
+    account_type: AccountType,
+    amount: i64,
+}
+
+#[derive(Default)]
+struct SectionAccumulator {
+    lines: Vec<CashFlowLine>,
+    total: i64,
+}
+
+impl SectionAccumulator {
+    fn add(&mut self, line: AttributedLine, currency: Currency) -> Result<(), CliError> {
+        self.total = self
+            .total
+            .checked_add(line.amount)
+            .ok_or_else(amount_overflow)?;
+        self.lines.push(CashFlowLine {
+            code: line.code,
+            name: line.name,
+            account_type: line.account_type,
+            amount: Money::from_minor(i128::from(line.amount), currency),
+        });
+        Ok(())
+    }
+
+    fn finish(self, currency: Currency) -> CashFlowSection {
+        CashFlowSection {
+            lines: self.lines,
+            total: Money::from_minor(i128::from(self.total), currency),
+        }
+    }
 }
 
 /// Attribute each in-range transaction's net cash movement to its non-cash
@@ -448,7 +650,7 @@ pub(super) fn compute_cash_flow(
 fn attribute_cash(
     facts: &[EntryFact],
     cash_codes: &BTreeSet<&str>,
-) -> Result<BTreeMap<(Section, String), CashFlowLine>, CliError> {
+) -> Result<BTreeMap<(Section, String), AttributedLine>, CliError> {
     // Group entries by transaction.
     let mut by_txn: BTreeMap<i64, Vec<&EntryFact>> = BTreeMap::new();
     for fact in facts {
@@ -456,7 +658,7 @@ fn attribute_cash(
     }
 
     // (section, code) -> line
-    let mut lines: BTreeMap<(Section, String), CashFlowLine> = BTreeMap::new();
+    let mut lines: BTreeMap<(Section, String), AttributedLine> = BTreeMap::new();
     for entries in by_txn.values() {
         let cash_net: i64 = entries
             .iter()
@@ -472,7 +674,7 @@ fn attribute_cash(
             .iter()
             .filter(|e| !cash_codes.contains(e.code.as_str()))
         {
-            let section = Section::for_account_type(&entry.account_type).ok_or_else(|| {
+            let section = Section::for_account_type(entry.account_type).ok_or_else(|| {
                 CliError::Validation(format!(
                     "account '{}' has unknown type '{}'",
                     entry.code, entry.account_type
@@ -480,10 +682,10 @@ fn attribute_cash(
             })?;
             let line = lines
                 .entry((section, entry.code.clone()))
-                .or_insert_with(|| CashFlowLine {
+                .or_insert_with(|| AttributedLine {
                     code: entry.code.clone(),
                     name: entry.name.clone(),
-                    account_type: entry.account_type.clone(),
+                    account_type: entry.account_type,
                     amount: 0,
                 });
             // A credit to the counter-account is a cash inflow.
@@ -532,37 +734,6 @@ fn cash_balance(
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// Format minor units with thousands separators and decimal places.
-fn format_amount(minor_units: i64, decimal_places: u8) -> String {
-    let abs_units = minor_units.unsigned_abs();
-    let divisor = 10u64.pow(u32::from(decimal_places));
-    let whole = (abs_units / divisor).to_string();
-    let frac = abs_units % divisor;
-
-    let len = whole.len();
-    let mut whole_str = String::with_capacity(len + len / 3);
-    for (i, ch) in whole.chars().enumerate() {
-        if i > 0 && (len - i).is_multiple_of(3) {
-            whole_str.push(',');
-        }
-        whole_str.push(ch);
-    }
-
-    let formatted = if decimal_places == 0 {
-        whole_str
-    } else {
-        format!(
-            "{whole_str}.{frac:0>width$}",
-            width = usize::from(decimal_places)
-        )
-    };
-    if minor_units < 0 {
-        format!("-{formatted}")
-    } else {
-        formatted
-    }
-}
-
 /// Wrap `text` in ANSI styling if colours are enabled.
 fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     if use_color {
@@ -573,7 +744,7 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
 }
 
 /// Render the statement as a human-readable table.
-fn render_table(s: &CashFlowStatement, minor_units: u8, use_color: bool) -> String {
+fn render_table(s: &CashFlowStatement, use_color: bool) -> String {
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
     use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
@@ -585,15 +756,14 @@ fn render_table(s: &CashFlowStatement, minor_units: u8, use_color: bool) -> Stri
     let red_bold = anstyle::Style::new()
         .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red)))
         .bold();
-    let amount = |v: i64| format_amount(v, minor_units);
 
     let mut out = Vec::new();
     out.push(styled(
         &format!(
             "Cash Flow Statement ({} to {}) ({})",
-            s.from,
-            s.to,
-            s.currency.code()
+            s.dates().from(),
+            s.dates().to(),
+            s.currency().code()
         ),
         bold,
         use_color,
@@ -631,13 +801,13 @@ fn render_table(s: &CashFlowStatement, minor_units: u8, use_color: bool) -> Stri
             table.add_row(vec![
                 Cell::new(styled(&line.code, cyan, use_color)),
                 Cell::new(format!("  {}", line.name)),
-                Cell::new(amount(line.amount)).set_alignment(CellAlignment::Right),
+                Cell::new(format_money_grouped(line.amount)).set_alignment(CellAlignment::Right),
             ]);
         }
         table.add_row(vec![
             Cell::new(""),
             Cell::new(styled(section.total_label(), bold, use_color)),
-            Cell::new(styled(&amount(sec.total), bold, use_color))
+            Cell::new(styled(&format_money_grouped(sec.total), bold, use_color))
                 .set_alignment(CellAlignment::Right),
         ]);
     }
@@ -646,14 +816,17 @@ fn render_table(s: &CashFlowStatement, minor_units: u8, use_color: bool) -> Stri
 
     out.push(format!(
         "Net change in cash:  {}",
-        styled(&amount(s.net_change), bold, use_color)
+        styled(&format_money_grouped(s.net_change()), bold, use_color)
     ));
-    out.push(format!("Opening cash:        {}", amount(s.opening_cash)));
+    out.push(format!(
+        "Opening cash:        {}",
+        format_money_grouped(s.opening_cash())
+    ));
     out.push(format!(
         "Closing cash:        {}",
-        styled(&amount(s.closing_cash), bold, use_color)
+        styled(&format_money_grouped(s.closing_cash()), bold, use_color)
     ));
-    if s.reconciled {
+    if s.reconciled() {
         out.push(styled(
             "[ok] RECONCILED (opening + net change = closing)",
             green,
@@ -663,7 +836,7 @@ fn render_table(s: &CashFlowStatement, minor_units: u8, use_color: bool) -> Stri
         out.push(styled(
             &format!(
                 "[!!] MISMATCH: opening + net change != closing (difference: {})",
-                amount(s.difference)
+                format_money_grouped(s.difference())
             ),
             red_bold,
             use_color,
@@ -676,7 +849,10 @@ fn render_table(s: &CashFlowStatement, minor_units: u8, use_color: bool) -> Stri
 ///
 /// Columns: `row_type,section,code,name,account_type,amount`, where
 /// `row_type` is `line`, `subtotal` or `summary`. Amounts are minor units.
-fn render_csv(s: &CashFlowStatement) -> Result<String, CliError> {
+///
+/// # Errors
+/// Returns [`CliError`] if CSV serialization fails.
+pub fn render_csv(s: &CashFlowStatement) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
     let csv_err = |e: csv::Error| CliError::General(format!("CSV write failed: {e}"));
 
@@ -697,8 +873,8 @@ fn render_csv(s: &CashFlowStatement) -> Result<String, CliError> {
                 section.key(),
                 &line.code,
                 &line.name,
-                &line.account_type,
-                &line.amount.to_string(),
+                line.account_type.code(),
+                &line.amount.amount().minor_units().to_string(),
             ])
             .map_err(csv_err)?;
         }
@@ -708,7 +884,7 @@ fn render_csv(s: &CashFlowStatement) -> Result<String, CliError> {
             "",
             section.total_label(),
             "",
-            &sec.total.to_string(),
+            &sec.total.amount().minor_units().to_string(),
         ])
         .map_err(csv_err)?;
     }
@@ -718,8 +894,15 @@ fn render_csv(s: &CashFlowStatement) -> Result<String, CliError> {
         ("closing_cash", s.closing_cash),
         ("difference", s.difference),
     ] {
-        wtr.write_record(["summary", "", "", key, "", &value.to_string()])
-            .map_err(csv_err)?;
+        wtr.write_record([
+            "summary",
+            "",
+            "",
+            key,
+            "",
+            &value.amount().minor_units().to_string(),
+        ])
+        .map_err(csv_err)?;
     }
 
     let bytes = wtr
@@ -734,18 +917,18 @@ mod tests {
 
     #[test]
     fn attribution_rejects_overflow_across_balanced_transactions() {
-        let fact = |txn_id, code: &str, kind: &str, signed| EntryFact {
+        let fact = |txn_id, code: &str, kind: AccountType, signed| EntryFact {
             txn_id,
             code: code.into(),
             name: code.into(),
-            account_type: kind.into(),
+            account_type: kind,
             signed,
         };
         let facts = [
-            fact(1, "1000", "asset", i64::MAX),
-            fact(1, "4000", "revenue", -i64::MAX),
-            fact(2, "1000", "asset", 1),
-            fact(2, "4000", "revenue", -1),
+            fact(1, "1000", AccountType::Asset, i64::MAX),
+            fact(1, "4000", AccountType::Revenue, -i64::MAX),
+            fact(2, "1000", AccountType::Asset, 1),
+            fact(2, "4000", AccountType::Revenue, -1),
         ];
         assert!(attribute_cash(&facts, &BTreeSet::from(["1000"])).is_err());
     }
@@ -763,30 +946,25 @@ mod tests {
     #[test]
     fn section_classification() {
         assert_eq!(
-            Section::for_account_type("revenue"),
+            Section::for_account_type(AccountType::Revenue),
             Some(Section::Operating)
         );
         assert_eq!(
-            Section::for_account_type("expense"),
+            Section::for_account_type(AccountType::Expense),
             Some(Section::Operating)
         );
-        assert_eq!(Section::for_account_type("asset"), Some(Section::Investing));
         assert_eq!(
-            Section::for_account_type("liability"),
+            Section::for_account_type(AccountType::Asset),
+            Some(Section::Investing)
+        );
+        assert_eq!(
+            Section::for_account_type(AccountType::Liability),
             Some(Section::Financing)
         );
         assert_eq!(
-            Section::for_account_type("equity"),
+            Section::for_account_type(AccountType::Equity),
             Some(Section::Financing)
         );
-        assert_eq!(Section::for_account_type("other"), None);
-    }
-
-    #[test]
-    fn amount_formatting() {
-        assert_eq!(format_amount(123_456, 2), "1,234.56");
-        assert_eq!(format_amount(-5, 2), "-0.05");
-        assert_eq!(format_amount(5000, 0), "5,000");
-        assert_eq!(format_amount(0, 2), "0.00");
+        assert!("other".parse::<AccountType>().is_err());
     }
 }

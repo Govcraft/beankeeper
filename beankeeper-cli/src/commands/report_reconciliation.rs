@@ -23,10 +23,10 @@
 
 use std::collections::BTreeMap;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
-use rusqlite::Connection;
-use serde::Serialize;
+use rusqlite::{Connection, types::Type};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::cli::{Cli, OutputFormat, ReconciliationMode, ReportCommand};
 
@@ -38,6 +38,8 @@ use crate::db::connection::Db;
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
+use crate::output::amounts::{MoneyField, OptionalMoneyField, format_money_grouped};
+pub use settlement::{Charge, Settlement, SettlementDetails, SettlementReason};
 
 /// Group label for outstanding items whose metadata lacks the grouping key.
 pub const NO_GROUP: &str = "(unassigned)";
@@ -61,51 +63,160 @@ pub struct ReconciliationArgs<'a> {
     pub currency: Option<&'a str>,
 }
 
+/// Resolved bank reconciliation options for an already-open ledger.
+///
+/// An as-of date cuts off both transactions and clearings. A statement
+/// reference selects the cleared and reconciled balances to compare, while
+/// outstanding items continue to reflect all clearings through the cutoff.
+pub struct ReconciliationRequest<'a> {
+    account: &'a str,
+    currency: Currency,
+    pub as_of: Option<NaiveDate>,
+    pub statement: Option<&'a str>,
+    statement_balance: Option<Money>,
+    pub filters: &'a [MetadataFilter],
+    pub group_by_metadata: Option<&'a str>,
+}
+
+impl<'a> ReconciliationRequest<'a> {
+    /// Select a canonical account code with no date or statement filters.
+    #[must_use]
+    pub fn new(account: &'a AccountCode, currency: Currency) -> Self {
+        Self::for_existing_account(account.as_str(), currency)
+    }
+
+    /// Select an existing ledger key verbatim, including historical account
+    /// keys that predate [`AccountCode`] validation.
+    ///
+    /// The read resolves the key in the requested company. An absent key
+    /// returns [`CliError::NotFound`].
+    #[must_use]
+    pub const fn for_existing_account(account: &'a str, currency: Currency) -> Self {
+        Self {
+            account,
+            currency,
+            as_of: None,
+            statement: None,
+            statement_balance: None,
+            filters: &[],
+            group_by_metadata: None,
+        }
+    }
+    /// Add a statement balance in the request's currency.
+    ///
+    /// # Errors
+    /// Returns [`CliError::Usage`] for a currency mismatch or a balance outside
+    /// the ledger's signed 64-bit minor-unit range.
+    pub fn with_statement_balance(mut self, balance: Money) -> Result<Self, CliError> {
+        if balance.currency() != self.currency {
+            return Err(CliError::Usage(
+                "statement balance currency must match the reconciliation currency".into(),
+            ));
+        }
+        i64::try_from(minor(balance))
+            .map_err(|_| CliError::Usage("statement balance is out of range".into()))?;
+        self.statement_balance = Some(balance);
+        Ok(self)
+    }
+}
+
+struct ResolvedRequest<'a> {
+    currency: Currency,
+    as_of: Option<NaiveDate>,
+    statement: Option<&'a str>,
+    statement_balance: Option<Money>,
+    filters: Vec<MetadataFilter>,
+    group_by_metadata: Option<&'a str>,
+}
+
 /// An outstanding (not fully cleared) entry in the reconciliation report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct UnclearedEntry {
     pub entry_id: i64,
     pub transaction_id: i64,
-    pub date: String,
+    pub date: NaiveDate,
     pub reference: Option<String>,
     pub description: String,
     pub memo: Option<String>,
     /// Transaction metadata: parsed JSON when valid, else the raw string.
     pub metadata: Option<serde_json::Value>,
-    pub direction: String,
+    pub direction: DebitOrCredit,
     /// Raw (always positive) entry amount in minor units.
-    pub amount: i64,
+    pub amount: Money,
     /// Entry amount signed relative to the account's normal side.
-    pub signed_amount: i64,
+    pub signed_amount: Money,
     /// Raw amount cleared as of the report date (all statements).
-    pub cleared_amount: i64,
+    pub cleared_amount: Money,
     /// Raw amount reconciled as of the report date (all statements).
-    pub reconciled_amount: i64,
+    pub reconciled_amount: Money,
     /// Raw amount still uncleared: `amount - cleared_amount`.
-    pub remaining_amount: i64,
+    pub remaining_amount: Money,
     /// `remaining_amount` signed relative to the account's normal side.
-    pub signed_remaining: i64,
+    pub signed_remaining: Money,
     /// Whether part (but not all) of the entry is cleared.
     pub partially_cleared: bool,
     /// The entry's clearings as of the report date (oldest first).
     pub clearings: Vec<ItemClearing>,
     /// Group value when `--group-by-metadata` is set.
-    #[serde(skip)]
     pub group: Option<String>,
+}
+
+impl Serialize for UnclearedEntry {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut row = serializer.serialize_map(Some(22))?;
+        row.serialize_entry("entry_id", &self.entry_id)?;
+        row.serialize_entry("transaction_id", &self.transaction_id)?;
+        row.serialize_entry("date", &self.date)?;
+        row.serialize_entry("reference", &self.reference)?;
+        row.serialize_entry("description", &self.description)?;
+        row.serialize_entry("memo", &self.memo)?;
+        row.serialize_entry("metadata", &self.metadata)?;
+        row.serialize_entry("direction", self.direction.code())?;
+        MoneyField::new("amount", self.amount).write_to(&mut row)?;
+        MoneyField::new("signed_amount", self.signed_amount).write_to(&mut row)?;
+        MoneyField::new("cleared_amount", self.cleared_amount).write_to(&mut row)?;
+        MoneyField::new("reconciled_amount", self.reconciled_amount).write_to(&mut row)?;
+        MoneyField::new("remaining_amount", self.remaining_amount).write_to(&mut row)?;
+        MoneyField::new("signed_remaining", self.signed_remaining).write_to(&mut row)?;
+        row.serialize_entry("partially_cleared", &self.partially_cleared)?;
+        row.serialize_entry("clearings", &self.clearings)?;
+        row.end()
+    }
 }
 
 /// One clearing of an outstanding entry, as of the report date: a clearing
 /// reconciled after `--to` shows as `cleared` with no `reconciled_date`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ItemClearing {
     pub id: i64,
     /// Raw (always positive) amount in minor units.
-    pub amount: i64,
+    pub amount: Money,
     pub cleared_date: NaiveDate,
-    #[serde(rename = "statement")]
     pub statement_ref: Option<String>,
-    #[serde(flatten)]
     pub state: db::ClearingState,
+}
+
+impl Serialize for ItemClearing {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct ClearingJson<'a> {
+            id: i64,
+            #[serde(flatten)]
+            amount: MoneyField,
+            cleared_date: NaiveDate,
+            statement: Option<&'a str>,
+            #[serde(flatten)]
+            state: db::ClearingState,
+        }
+        ClearingJson {
+            id: self.id,
+            amount: MoneyField::new("amount", self.amount),
+            cleared_date: self.cleared_date,
+            statement: self.statement_ref.as_deref(),
+            state: self.state,
+        }
+        .serialize(serializer)
+    }
 }
 
 /// The clearings of an entry as of `to` (`None`: current state).
@@ -113,6 +224,7 @@ fn clearings_as_of(
     company: &Company<'_>,
     entry_id: i64,
     to: Option<NaiveDate>,
+    currency: Currency,
 ) -> Result<Vec<ItemClearing>, CliError> {
     Ok(db::clearings::list_clearings(company, entry_id)?
         .into_iter()
@@ -122,7 +234,7 @@ fn clearings_as_of(
         })
         .map(|c| ItemClearing {
             id: c.id,
-            amount: c.amount,
+            amount: money(c.amount, currency),
             cleared_date: c.cleared_on(),
             state: c.state(),
             statement_ref: c.statement_ref,
@@ -131,13 +243,24 @@ fn clearings_as_of(
 }
 
 /// Subtotal for one `--group-by-metadata` value.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct GroupTotal {
     pub value: String,
     pub count: usize,
     /// Sum of `signed_remaining` over the group's items.
-    pub uncleared_total: i64,
+    pub uncleared_total: Money,
     pub entry_ids: Vec<i64>,
+}
+
+impl Serialize for GroupTotal {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut row = serializer.serialize_map(Some(5))?;
+        row.serialize_entry("value", &self.value)?;
+        row.serialize_entry("count", &self.count)?;
+        MoneyField::new("uncleared_total", self.uncleared_total).write_to(&mut row)?;
+        row.serialize_entry("entry_ids", &self.entry_ids)?;
+        row.end()
+    }
 }
 
 /// The computed reconciliation report.
@@ -145,39 +268,44 @@ pub struct GroupTotal {
 pub struct ReconciliationReport {
     pub code: String,
     pub name: String,
-    pub account_type: String,
-    pub normal_balance: &'static str,
+    pub account_type: AccountType,
+    pub normal_balance: DebitOrCredit,
     pub currency: Currency,
     pub as_of: Option<NaiveDate>,
     pub statement: Option<String>,
     pub filters: Vec<MetadataFilter>,
     pub group_by: Option<String>,
-    pub book_balance: i64,
+    pub book_balance: Money,
     /// Cleared balance (only `statement`'s clearings when set).
-    pub cleared_balance: i64,
+    pub cleared_balance: Money,
     /// Cleared balance across all statements.
-    pub total_cleared_balance: i64,
-    pub reconciled_balance: i64,
-    pub uncleared_total: i64,
+    pub total_cleared_balance: Money,
+    pub reconciled_balance: Money,
+    pub uncleared_total: Money,
     pub uncleared: Vec<UnclearedEntry>,
     pub groups: Option<Vec<GroupTotal>>,
-    pub statement_balance: Option<i64>,
+    pub statement_balance: Option<Money>,
     /// Extra fields present only for settlement mode.
-    pub settlement: Option<settlement::SettlementDetails>,
+    pub settlement: Option<SettlementDetails>,
 }
 
 impl ReconciliationReport {
     /// `statement - cleared`, when a statement balance was supplied.
     #[must_use]
-    pub fn difference(&self) -> Option<i64> {
-        self.statement_balance
-            .map(|s| s.saturating_sub(self.cleared_balance))
+    pub fn difference(&self) -> Option<Money> {
+        self.statement_balance.map(|statement| {
+            // Preserve the report's signed 64-bit wire range at its endpoints.
+            let units = minor(statement)
+                .saturating_sub(minor(self.cleared_balance))
+                .clamp(i128::from(i64::MIN), i128::from(i64::MAX));
+            Money::from_minor(units, self.currency)
+        })
     }
 
     /// Whether the cleared balance matches the statement balance.
     #[must_use]
     pub fn is_reconciled(&self) -> Option<bool> {
-        self.difference().map(|d| d == 0)
+        self.difference().map(|d| d.is_zero())
     }
 
     /// Number of listed items that are partially cleared.
@@ -232,7 +360,13 @@ pub(crate) fn run_command_to(
         }
         return run_to(cli, db, company, &args, output);
     }
-    let report = settlement::build_report(db.conn(), company, &args, link_key.as_deref())?;
+    let link_key = settlement::resolve_link_key(args.statement, link_key.as_deref())?;
+    let conn = db.conn();
+    let report = db::audit::atomically(conn, || {
+        let company = Company::resolve(conn, company)?;
+        let report = build_cli_report(conn, &company, &args)?;
+        settlement::apply(conn, &company, report, link_key)
+    })?;
     render(cli, company, &report, output)
 }
 
@@ -278,7 +412,7 @@ fn render(
         }
         OutputFormat::Json => {
             let meta = cli.meta("report.reconciliation", Some(company));
-            writeln!(output.writer, "{}", render_json(report, meta)?)?;
+            output.write_json(meta, report, None)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,
     }
@@ -329,7 +463,7 @@ fn metadata_for_output(raw: Option<&str>) -> Option<serde_json::Value> {
 
 /// Group outstanding items by their group value, sorted by value with
 /// [`NO_GROUP`] last.
-fn group_items(items: &[UnclearedEntry]) -> Result<Vec<GroupTotal>, CliError> {
+fn group_items(items: &[UnclearedEntry], currency: Currency) -> Result<Vec<GroupTotal>, CliError> {
     let mut by_value: BTreeMap<(bool, String), GroupTotal> = BTreeMap::new();
     for e in items {
         let value = e.group.clone().unwrap_or_else(|| NO_GROUP.to_string());
@@ -338,14 +472,11 @@ fn group_items(items: &[UnclearedEntry]) -> Result<Vec<GroupTotal>, CliError> {
             .or_insert_with(|| GroupTotal {
                 value,
                 count: 0,
-                uncleared_total: 0,
+                uncleared_total: money(0, currency),
                 entry_ids: Vec::new(),
             });
         g.count += 1;
-        g.uncleared_total = g
-            .uncleared_total
-            .checked_add(e.signed_remaining)
-            .ok_or_else(overflow)?;
+        g.uncleared_total = sum_money(g.uncleared_total, e.signed_remaining)?;
         g.entry_ids.push(e.entry_id);
     }
     Ok(by_value.into_values().collect())
@@ -355,46 +486,144 @@ fn group_items(items: &[UnclearedEntry]) -> Result<Vec<GroupTotal>, CliError> {
 // Computation
 // ---------------------------------------------------------------------------
 
-/// Compute the reconciliation report.
+/// Read bank reconciliation data for a typed request in one snapshot.
 ///
 /// # Errors
+/// Returns [`CliError`] for a missing account, amount overflow, or database
+/// failures.
+pub fn compute_reconciliation(
+    db: &Db,
+    company: &str,
+    request: &ReconciliationRequest<'_>,
+) -> Result<ReconciliationReport, CliError> {
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        let company = Company::resolve(conn, company)?;
+        build_typed_report(conn, &company, request)
+    })
+}
+
+/// Read statement-scoped receivables or payables reconciliation in one snapshot.
+/// An omitted link key uses the ledger's standard charge-link metadata key.
 ///
+/// # Errors
+/// Returns [`CliError`] for a missing statement, unsupported account type,
+/// invalid options, amounts outside the supported range, or database failures.
+pub fn compute_settlement_reconciliation(
+    db: &Db,
+    company: &str,
+    request: &ReconciliationRequest<'_>,
+    link_key: Option<&str>,
+) -> Result<ReconciliationReport, CliError> {
+    let link_key = settlement::resolve_link_key(request.statement, link_key)?;
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        let company = Company::resolve(conn, company)?;
+        let report = build_typed_report(conn, &company, request)?;
+        settlement::apply(conn, &company, report, link_key)
+    })
+}
+
+fn build_typed_report(
+    conn: &Connection,
+    company: &Company<'_>,
+    request: &ReconciliationRequest<'_>,
+) -> Result<ReconciliationReport, CliError> {
+    let account = db::get_account(conn, company.slug().as_str(), request.account)?;
+    build_resolved_report(
+        conn,
+        company,
+        account,
+        ResolvedRequest {
+            currency: request.currency,
+            as_of: request.as_of,
+            statement: normalize_statement(request.statement),
+            statement_balance: request.statement_balance,
+            filters: request.filters.to_vec(),
+            group_by_metadata: request.group_by_metadata,
+        },
+    )
+}
+
+/// Compute the reconciliation report from command options.
+///
+/// # Errors
 /// Returns [`CliError`] for invalid arguments or database failures.
 pub fn build_report(
     conn: &Connection,
     company: &str,
     args: &ReconciliationArgs<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    let to = args
+    db::audit::atomically(conn, || {
+        let company = Company::resolve(conn, company)?;
+        build_cli_report(conn, &company, args)
+    })
+}
+
+fn build_cli_report(
+    conn: &Connection,
+    company: &Company<'_>,
+    args: &ReconciliationArgs<'_>,
+) -> Result<ReconciliationReport, CliError> {
+    let as_of = args
         .to
         .map(|date| super::report_dates::parse_date("--to", date))
         .transpose()?;
     let filters = metadata_filter::parse_filters(args.filter_metadata)?;
-    let statement = args
-        .statement
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-
-    let account = db::get_account(conn, company, args.account)?;
-    let company_scope = Company::resolve(conn, company)?;
-    let currency = resolve_currency(conn, company, args.currency)?;
+    let slug = company.slug().as_str();
+    let account = db::get_account(conn, slug, args.account)?;
+    let currency = resolve_currency(conn, slug, args.currency)?;
     let statement_balance = args
         .statement_balance
-        .map(|s| parse_signed_amount(s, currency))
+        .map(|s| parse_signed_amount(s, currency).map(|units| money(units, currency)))
         .transpose()?;
+    build_resolved_report(
+        conn,
+        company,
+        account,
+        ResolvedRequest {
+            currency,
+            as_of,
+            statement: normalize_statement(args.statement),
+            statement_balance,
+            filters,
+            group_by_metadata: args.group_by_metadata,
+        },
+    )
+}
 
-    let debit_normal = matches!(account.account_type.as_str(), "asset" | "expense");
-    let sign: i64 = if debit_normal { 1 } else { -1 };
+fn normalize_statement(statement: Option<&str>) -> Option<&str> {
+    statement.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn build_resolved_report(
+    conn: &Connection,
+    company: &Company<'_>,
+    account: db::AccountRow,
+    request: ResolvedRequest<'_>,
+) -> Result<ReconciliationReport, CliError> {
+    let ResolvedRequest {
+        currency,
+        as_of: to,
+        statement,
+        statement_balance,
+        filters,
+        group_by_metadata,
+    } = request;
+    let account_type = account
+        .account_type
+        .parse::<AccountType>()
+        .map_err(|e| CliError::Database(e.to_string()))?;
+    let normal_balance = account_type.normal_balance();
 
     let rows = load_entries(
         conn,
-        company,
+        company.slug().as_str(),
         &EntryQuery {
             code: &account.code,
             currency,
             to,
-            statement: statement.as_deref(),
+            statement,
             filters: &filters,
         },
     )?;
@@ -402,7 +631,7 @@ pub fn build_report(
     let (mut book, mut cleared, mut total_cleared, mut reconciled) = (0i64, 0i64, 0i64, 0i64);
     let mut uncleared = Vec::new();
     for r in rows {
-        let dsign = if r.direction == "debit" { sign } else { -sign };
+        let dsign = if r.direction == normal_balance { 1 } else { -1 };
         let (stmt_cleared, stmt_reconciled) = if statement.is_some() {
             (r.cleared_stmt, r.reconciled_stmt)
         } else {
@@ -413,12 +642,10 @@ pub fn build_report(
         cleared = add(cleared, stmt_cleared, dsign)?;
         reconciled = add(reconciled, stmt_reconciled, dsign)?;
 
-        let remaining = r.amount - r.cleared_all;
+        let remaining = r.amount.checked_sub(r.cleared_all).ok_or_else(overflow)?;
         if remaining > 0 {
-            let group = args
-                .group_by_metadata
-                .and_then(|k| metadata_value(r.metadata.as_deref(), k));
-            let clearings = clearings_as_of(&company_scope, r.entry_id, to)?;
+            let group = group_by_metadata.and_then(|k| metadata_value(r.metadata.as_deref(), k));
+            let clearings = clearings_as_of(company, r.entry_id, to, currency)?;
             uncleared.push(UnclearedEntry {
                 entry_id: r.entry_id,
                 transaction_id: r.transaction_id,
@@ -428,12 +655,12 @@ pub fn build_report(
                 memo: r.memo,
                 metadata: metadata_for_output(r.metadata.as_deref()),
                 direction: r.direction,
-                amount: r.amount,
-                signed_amount: r.amount * dsign,
-                cleared_amount: r.cleared_all,
-                reconciled_amount: r.reconciled_all,
-                remaining_amount: remaining,
-                signed_remaining: remaining * dsign,
+                amount: money(r.amount, currency),
+                signed_amount: money(r.amount * dsign, currency),
+                cleared_amount: money(r.cleared_all, currency),
+                reconciled_amount: money(r.reconciled_all, currency),
+                remaining_amount: money(remaining, currency),
+                signed_remaining: money(remaining * dsign, currency),
                 partially_cleared: r.cleared_all > 0,
                 clearings,
                 group,
@@ -441,35 +668,47 @@ pub fn build_report(
         }
     }
 
-    let uncleared_total = uncleared
-        .iter()
-        .try_fold(0i64, |acc, e| acc.checked_add(e.signed_remaining))
-        .ok_or_else(overflow)?;
-    let groups = args
-        .group_by_metadata
-        .map(|_| group_items(&uncleared))
+    let uncleared_total = uncleared.iter().try_fold(money(0, currency), |acc, e| {
+        sum_money(acc, e.signed_remaining)
+    })?;
+    let groups = group_by_metadata
+        .map(|_| group_items(&uncleared, currency))
         .transpose()?;
 
     Ok(ReconciliationReport {
         code: account.code,
         name: account.name,
-        normal_balance: if debit_normal { "debit" } else { "credit" },
-        account_type: account.account_type,
+        normal_balance,
+        account_type,
         currency,
         as_of: to,
-        statement,
+        statement: statement.map(str::to_string),
         filters,
-        group_by: args.group_by_metadata.map(str::to_string),
-        book_balance: book,
-        cleared_balance: cleared,
-        total_cleared_balance: total_cleared,
-        reconciled_balance: reconciled,
+        group_by: group_by_metadata.map(str::to_string),
+        book_balance: money(book, currency),
+        cleared_balance: money(cleared, currency),
+        total_cleared_balance: money(total_cleared, currency),
+        reconciled_balance: money(reconciled, currency),
         uncleared_total,
         uncleared,
         groups,
         statement_balance,
         settlement: None,
     })
+}
+
+fn money(units: i64, currency: Currency) -> Money {
+    Money::from_minor(i128::from(units), currency)
+}
+
+const fn minor(value: Money) -> i128 {
+    value.amount().minor_units()
+}
+
+fn sum_money(lhs: Money, rhs: Money) -> Result<Money, CliError> {
+    let total = lhs.checked_add(rhs).map_err(|_| overflow())?;
+    i64::try_from(minor(total)).map_err(|_| overflow())?;
+    Ok(total)
 }
 
 fn overflow() -> CliError {
@@ -487,12 +726,12 @@ fn add(acc: i64, amount: i64, sign: i64) -> Result<i64, CliError> {
 struct EntryRow {
     entry_id: i64,
     transaction_id: i64,
-    date: String,
+    date: NaiveDate,
     description: String,
     reference: Option<String>,
     metadata: Option<String>,
     memo: Option<String>,
-    direction: String,
+    direction: DebitOrCredit,
     amount: i64,
     cleared_all: i64,
     reconciled_all: i64,
@@ -528,29 +767,31 @@ fn load_entries(
         filters,
     } = *query;
     let filter = metadata_filter::sql_predicate("t.metadata", filters, 6);
+    // Legacy rows can store timestamps. Compare calendar days, like the
+    // typed cutoff used for the individual clearings.
     let mut stmt = conn.prepare(&format!(
-        "SELECT e.id, t.id, t.date, t.description, t.reference, t.metadata, e.memo, \
+        "SELECT e.id, t.id, substr(t.date, 1, 10), t.description, t.reference, t.metadata, e.memo, \
                 e.direction, e.amount, \
                 COALESCE(c.cleared_all, 0), COALESCE(c.reconciled_all, 0), \
                 COALESCE(c.cleared_stmt, 0), COALESCE(c.reconciled_stmt, 0) \
          FROM entries e \
-         JOIN transactions t ON t.id = e.transaction_id \
+         JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
          LEFT JOIN ( \
              SELECT entry_id, \
                     SUM(amount) AS cleared_all, \
                     SUM(CASE WHEN status = 'reconciled' \
-                              AND (?4 IS NULL OR reconciled_date <= ?4) \
+                              AND (?4 IS NULL OR substr(reconciled_date, 1, 10) <= ?4) \
                              THEN amount ELSE 0 END) AS reconciled_all, \
                     SUM(CASE WHEN statement_ref = ?5 THEN amount ELSE 0 END) AS cleared_stmt, \
                     SUM(CASE WHEN statement_ref = ?5 AND status = 'reconciled' \
-                              AND (?4 IS NULL OR reconciled_date <= ?4) \
+                              AND (?4 IS NULL OR substr(reconciled_date, 1, 10) <= ?4) \
                              THEN amount ELSE 0 END) AS reconciled_stmt \
              FROM entry_clearings \
-             WHERE company_slug = ?1 AND (?4 IS NULL OR cleared_date <= ?4) \
+             WHERE company_slug = ?1 AND (?4 IS NULL OR substr(cleared_date, 1, 10) <= ?4) \
              GROUP BY entry_id \
          ) c ON c.entry_id = e.id \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3 \
-           AND (?4 IS NULL OR t.date <= ?4) AND {} \
+           AND (?4 IS NULL OR substr(t.date, 1, 10) <= ?4) AND {} \
          ORDER BY t.date, t.id, e.id",
         filter.sql
     ))?;
@@ -566,12 +807,16 @@ fn load_entries(
         Ok(EntryRow {
             entry_id: row.get(0)?,
             transaction_id: row.get(1)?,
-            date: row.get(2)?,
+            date: NaiveDate::parse_from_str(row.get_ref(2)?.as_str()?, "%Y-%m-%d").map_err(
+                |error| rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error)),
+            )?,
             description: row.get(3)?,
             reference: row.get(4)?,
             metadata: row.get(5)?,
             memo: row.get(6)?,
-            direction: row.get(7)?,
+            direction: row.get_ref(7)?.as_str()?.parse().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+            })?,
             amount: row.get(8)?,
             cleared_all: row.get(9)?,
             reconciled_all: row.get(10)?,
@@ -601,37 +846,6 @@ fn parse_signed_amount(s: &str, currency: Currency) -> Result<i64, CliError> {
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
-
-/// Format minor units with thousands separators and the currency's decimals.
-fn format_amount(minor_units: i64, decimal_places: u8) -> String {
-    let abs_units = minor_units.unsigned_abs();
-    let divisor = 10u64.pow(u32::from(decimal_places));
-    let whole = (abs_units / divisor).to_string();
-    let frac = abs_units % divisor;
-
-    let mut whole_str = String::with_capacity(whole.len() + whole.len() / 3);
-    for (i, ch) in whole.chars().enumerate() {
-        if i > 0 && (whole.len() - i).is_multiple_of(3) {
-            whole_str.push(',');
-        }
-        whole_str.push(ch);
-    }
-
-    let formatted = if decimal_places == 0 {
-        whole_str
-    } else {
-        format!(
-            "{whole_str}.{frac:0>width$}",
-            width = usize::from(decimal_places)
-        )
-    };
-
-    if minor_units < 0 {
-        format!("-{formatted}")
-    } else {
-        formatted
-    }
-}
 
 fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     if use_color {
@@ -665,11 +879,11 @@ fn new_table() -> comfy_table::Table {
 }
 
 /// Amount with the currency code, e.g. `1,234.56 USD`.
-fn with_currency(r: &ReconciliationReport, v: i64) -> String {
+fn with_currency(value: Money) -> String {
     format!(
         "{} {}",
-        format_amount(v, r.currency.minor_units()),
-        r.currency.code()
+        format_money_grouped(value),
+        value.currency().code()
     )
 }
 
@@ -692,7 +906,8 @@ fn header_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
         ),
         format!(
             "Type: {}  Normal balance: {}",
-            r.account_type, r.normal_balance
+            r.account_type.code(),
+            r.normal_balance.code()
         ),
     ];
     if let Some(s) = &r.statement {
@@ -716,10 +931,10 @@ fn balances_table(r: &ReconciliationReport, use_color: bool) -> String {
         Cell::new(styled("Balance", bold, use_color)),
         Cell::new(styled("Amount", bold, use_color)),
     ]);
-    let mut add = |label: &str, value: i64| {
+    let mut add = |label: &str, value: Money| {
         summary.add_row(vec![
             Cell::new(label),
-            Cell::new(with_currency(r, value)).set_alignment(CellAlignment::Right),
+            Cell::new(with_currency(value)).set_alignment(CellAlignment::Right),
         ]);
     };
     add("Book balance", r.book_balance);
@@ -753,7 +968,7 @@ fn balances_table(r: &ReconciliationReport, use_color: bool) -> String {
 }
 
 /// A table of outstanding entries.
-fn items_table(items: &[&UnclearedEntry], minor_units: u8, use_color: bool) -> String {
+fn items_table(items: &[&UnclearedEntry], use_color: bool) -> String {
     use comfy_table::{Cell, CellAlignment};
     let bold = anstyle::Style::new().bold();
     let cyan = color(anstyle::AnsiColor::Cyan);
@@ -774,11 +989,10 @@ fn items_table(items: &[&UnclearedEntry], minor_units: u8, use_color: bool) -> S
         .map(|h| Cell::new(styled(h, bold, use_color)))
         .collect::<Vec<_>>(),
     );
-    let amount =
-        |v: i64| Cell::new(format_amount(v, minor_units)).set_alignment(CellAlignment::Right);
+    let amount = |v: Money| Cell::new(format_money_grouped(v)).set_alignment(CellAlignment::Right);
     for e in items {
         let cleared = if e.partially_cleared {
-            format_amount(e.cleared_amount * e.signed_amount.signum(), minor_units)
+            format_money_grouped(signed_cleared(e))
         } else {
             String::new()
         };
@@ -786,7 +1000,7 @@ fn items_table(items: &[&UnclearedEntry], minor_units: u8, use_color: bool) -> S
             Cell::new(e.entry_id).set_alignment(CellAlignment::Right),
             Cell::new(styled(&e.transaction_id.to_string(), cyan, use_color))
                 .set_alignment(CellAlignment::Right),
-            Cell::new(&e.date),
+            Cell::new(e.date),
             Cell::new(e.reference.as_deref().unwrap_or("")),
             Cell::new(&e.description),
             amount(e.signed_amount),
@@ -801,7 +1015,6 @@ fn items_table(items: &[&UnclearedEntry], minor_units: u8, use_color: bool) -> S
 /// The outstanding entries, grouped when `--group-by-metadata` is set.
 fn uncleared_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
     let bold = anstyle::Style::new().bold();
-    let mu = r.currency.minor_units();
     if r.uncleared.is_empty() {
         return vec!["No uncleared entries.".to_string()];
     }
@@ -829,16 +1042,16 @@ fn uncleared_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
                     "{key} = {} ({} items, subtotal {})",
                     g.value,
                     g.count,
-                    with_currency(r, g.uncleared_total)
+                    with_currency(g.uncleared_total)
                 ),
                 bold,
                 use_color,
             ));
-            lines.push(items_table(&items, mu, use_color));
+            lines.push(items_table(&items, use_color));
         }
     } else {
         let items: Vec<&UnclearedEntry> = r.uncleared.iter().collect();
-        lines.push(items_table(&items, mu, use_color));
+        lines.push(items_table(&items, use_color));
     }
     lines
 }
@@ -862,7 +1075,7 @@ pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
     lines.push(String::new());
     lines.extend(uncleared_lines(r, use_color));
     if let Some(details) = &r.settlement {
-        lines.push(details.render_table(r));
+        lines.push(details.render_table());
     }
     lines.join("\n")
 }
@@ -872,8 +1085,8 @@ struct AccountJson<'a> {
     code: &'a str,
     name: &'a str,
     #[serde(rename = "type")]
-    account_type: &'a str,
-    normal_balance: &'a str,
+    account_type: &'static str,
+    normal_balance: &'static str,
 }
 
 #[derive(Serialize)]
@@ -884,62 +1097,89 @@ struct ReportJson<'a> {
     statement: Option<&'a str>,
     metadata_filters: &'a [MetadataFilter],
     group_by_metadata: Option<&'a str>,
-    book_balance: i64,
-    cleared_balance: i64,
-    total_cleared_balance: i64,
-    reconciled_balance: i64,
-    uncleared_total: i64,
+    #[serde(flatten)]
+    book_balance: MoneyField,
+    #[serde(flatten)]
+    cleared_balance: MoneyField,
+    #[serde(flatten)]
+    total_cleared_balance: MoneyField,
+    #[serde(flatten)]
+    reconciled_balance: MoneyField,
+    #[serde(flatten)]
+    uncleared_total: MoneyField,
     uncleared_count: usize,
     partially_cleared_count: usize,
-    statement_balance: Option<i64>,
-    difference: Option<i64>,
+    #[serde(flatten)]
+    statement_balance: OptionalMoneyField,
+    #[serde(flatten)]
+    difference: OptionalMoneyField,
     reconciled: Option<bool>,
     uncleared_entries: &'a [UnclearedEntry],
     groups: Option<&'a [GroupTotal]>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    settlement: Option<&'a settlement::SettlementDetails>,
+    settlement: Option<&'a SettlementDetails>,
+}
+
+impl<'a> From<&'a ReconciliationReport> for ReportJson<'a> {
+    fn from(r: &'a ReconciliationReport) -> Self {
+        Self {
+            account: AccountJson {
+                code: &r.code,
+                name: &r.name,
+                account_type: r.account_type.code(),
+                normal_balance: r.normal_balance.code(),
+            },
+            currency: r.currency.code(),
+            as_of: r.as_of,
+            statement: r.statement.as_deref(),
+            metadata_filters: &r.filters,
+            group_by_metadata: r.group_by.as_deref(),
+            book_balance: MoneyField::new("book_balance", r.book_balance),
+            cleared_balance: MoneyField::new("cleared_balance", r.cleared_balance),
+            total_cleared_balance: MoneyField::new(
+                "total_cleared_balance",
+                r.total_cleared_balance,
+            ),
+            reconciled_balance: MoneyField::new("reconciled_balance", r.reconciled_balance),
+            uncleared_total: MoneyField::new("uncleared_total", r.uncleared_total),
+            uncleared_count: r.uncleared.len(),
+            partially_cleared_count: r.partially_cleared_count(),
+            statement_balance: OptionalMoneyField("statement_balance", r.statement_balance),
+            difference: OptionalMoneyField("difference", r.difference()),
+            reconciled: r.is_reconciled(),
+            uncleared_entries: &r.uncleared,
+            groups: r.groups.as_deref(),
+            settlement: r.settlement.as_ref(),
+        }
+    }
+}
+
+impl Serialize for ReconciliationReport {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ReportJson::from(self).serialize(serializer)
+    }
 }
 
 /// Render the report as an enveloped JSON document.
 ///
 /// # Errors
-///
-/// Returns [`CliError::General`] on serialisation failure.
+/// Returns [`CliError::General`] on serialization failure.
 pub fn render_json(r: &ReconciliationReport, meta: output::json::Meta) -> Result<String, CliError> {
-    let data = ReportJson {
-        account: AccountJson {
-            code: &r.code,
-            name: &r.name,
-            account_type: &r.account_type,
-            normal_balance: r.normal_balance,
-        },
-        currency: r.currency.code(),
-        as_of: r.as_of,
-        statement: r.statement.as_deref(),
-        metadata_filters: &r.filters,
-        group_by_metadata: r.group_by.as_deref(),
-        book_balance: r.book_balance,
-        cleared_balance: r.cleared_balance,
-        total_cleared_balance: r.total_cleared_balance,
-        reconciled_balance: r.reconciled_balance,
-        uncleared_total: r.uncleared_total,
-        uncleared_count: r.uncleared.len(),
-        partially_cleared_count: r.partially_cleared_count(),
-        statement_balance: r.statement_balance,
-        difference: r.difference(),
-        reconciled: r.is_reconciled(),
-        uncleared_entries: &r.uncleared,
-        groups: r.groups.as_deref(),
-        settlement: r.settlement.as_ref(),
-    };
     let env = output::json::Envelope {
         ok: true,
         meta,
-        data: Some(data),
+        data: Some(r),
         error: None,
     };
     serde_json::to_string_pretty(&env)
         .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+}
+
+fn signed_cleared(entry: &UnclearedEntry) -> Money {
+    Money::from_minor(
+        minor(entry.cleared_amount) * minor(entry.signed_amount).signum(),
+        entry.cleared_amount.currency(),
+    )
 }
 
 /// Render the report as CSV.
@@ -990,13 +1230,13 @@ pub fn render_csv(r: &ReconciliationReport) -> Result<String, CliError> {
             "entry",
             &e.entry_id.to_string(),
             &e.transaction_id.to_string(),
-            &e.date,
+            &e.date.to_string(),
             e.reference.as_deref().unwrap_or(""),
             &e.description,
-            &e.signed_amount.to_string(),
-            &(e.cleared_amount * e.signed_amount.signum()).to_string(),
-            &e.signed_remaining.to_string(),
-            ccy,
+            &minor(e.signed_amount).to_string(),
+            &minor(signed_cleared(e)).to_string(),
+            &minor(e.signed_remaining).to_string(),
+            e.signed_remaining.currency().code(),
             group,
             &metadata_cell(e.metadata.as_ref()),
         ])
@@ -1013,8 +1253,8 @@ pub fn render_csv(r: &ReconciliationReport) -> Result<String, CliError> {
             &g.value,
             "",
             "",
-            &g.uncleared_total.to_string(),
-            ccy,
+            &minor(g.uncleared_total).to_string(),
+            g.uncleared_total.currency().code(),
             &g.value,
             "",
         ])
@@ -1022,23 +1262,23 @@ pub fn render_csv(r: &ReconciliationReport) -> Result<String, CliError> {
     }
 
     if let Some(details) = &r.settlement {
-        details.write_csv(&mut wtr, r)?;
+        details.write_csv(&mut wtr)?;
     }
 
     let as_of = r.as_of.map(|date| date.to_string()).unwrap_or_default();
     let mut summary = vec![
-        ("book_balance", r.book_balance),
-        ("cleared_balance", r.cleared_balance),
-        ("total_cleared_balance", r.total_cleared_balance),
-        ("reconciled_balance", r.reconciled_balance),
-        ("uncleared_total", r.uncleared_total),
+        ("book_balance", minor(r.book_balance)),
+        ("cleared_balance", minor(r.cleared_balance)),
+        ("total_cleared_balance", minor(r.total_cleared_balance)),
+        ("reconciled_balance", minor(r.reconciled_balance)),
+        ("uncleared_total", minor(r.uncleared_total)),
     ];
     if let (Some(stmt), Some(diff), Some(ok)) =
         (r.statement_balance, r.difference(), r.is_reconciled())
     {
-        summary.push(("statement_balance", stmt));
-        summary.push(("difference", diff));
-        summary.push(("reconciled", i64::from(ok)));
+        summary.push(("statement_balance", minor(stmt)));
+        summary.push(("difference", minor(diff)));
+        summary.push(("reconciled", i128::from(ok)));
     }
     for (label, value) in summary {
         wtr.write_record([
@@ -1082,13 +1322,6 @@ mod tests {
         assert_eq!(parse_signed_amount("+5", Currency::USD).ok(), Some(500));
         assert!(parse_signed_amount("1.234", Currency::USD).is_err());
         assert!(parse_signed_amount("abc", Currency::USD).is_err());
-    }
-
-    #[test]
-    fn amount_formatting() {
-        assert_eq!(format_amount(123_456, 2), "1,234.56");
-        assert_eq!(format_amount(-5, 2), "-0.05");
-        assert_eq!(format_amount(1000, 0), "1,000");
     }
 
     #[test]
