@@ -2,7 +2,9 @@
 
 use std::fmt::Write;
 
-use rusqlite::Connection;
+use beankeeper::types::{AccountType, Amount, Currency, Money};
+use chrono::{Month, NaiveDate};
+use rusqlite::{Connection, types::Type};
 
 use crate::db::{BudgetRow, BudgetVarianceRow};
 use crate::error::CliError;
@@ -93,55 +95,194 @@ pub fn list_budgets(
     Ok(results)
 }
 
-/// Parameters for computing budget variance.
-pub struct BudgetVarianceParams<'a> {
-    pub company_slug: &'a str,
-    pub currency: &'a str,
-    pub year: i32,
-    pub from_month: i32,
-    pub to_month: i32,
-    pub account_type: Option<&'a str>,
-    pub include_unbudgeted: bool,
+/// Inclusive month bounds in a single budget year.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetMonths {
+    year: i32,
+    from: Month,
+    to: Month,
+    first_day: NaiveDate,
+    last_day: NaiveDate,
 }
 
-/// Computes budget vs actual variance for a company within a year and month range.
+impl BudgetMonths {
+    /// Validate ordered months in a representable calendar year.
+    ///
+    /// # Errors
+    /// Returns [`CliError::Validation`] for a reversed span or unrepresentable year.
+    pub fn new(year: i32, from: Month, to: Month) -> Result<Self, CliError> {
+        let from_number = from.number_from_month();
+        let to_number = to.number_from_month();
+        if from_number > to_number {
+            return Err(CliError::Validation(format!(
+                "from month ({from_number}) must be <= to month ({to_number})"
+            )));
+        }
+        let invalid_year = || CliError::Validation(format!("unsupported budget year {year}"));
+        let first_day = NaiveDate::from_ymd_opt(year, from_number, 1).ok_or_else(invalid_year)?;
+        let last_day = to
+            .num_days(year)
+            .and_then(|day| NaiveDate::from_ymd_opt(year, to_number, u32::from(day)))
+            .ok_or_else(invalid_year)?;
+        Ok(Self {
+            year,
+            from,
+            to,
+            first_day,
+            last_day,
+        })
+    }
+
+    /// Year of both endpoints.
+    #[must_use]
+    pub const fn year(self) -> i32 {
+        self.year
+    }
+
+    /// First included month.
+    #[must_use]
+    pub const fn from(self) -> Month {
+        self.from
+    }
+
+    /// Last included month.
+    #[must_use]
+    pub const fn to(self) -> Month {
+        self.to
+    }
+
+    /// First and last included calendar dates.
+    #[must_use]
+    pub const fn dates(self) -> (NaiveDate, NaiveDate) {
+        (self.first_day, self.last_day)
+    }
+}
+
+/// Choose which accounts the variance report includes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetCoverage {
+    /// Accounts with budgets in the requested interval.
+    Budgeted,
+    /// Also include accounts with actual activity and no budget.
+    IncludeUnbudgeted,
+}
+
+/// Parameters for computing budget variance.
+pub struct BudgetVarianceParams<'a> {
+    /// Company whose budgets and actuals are being compared.
+    pub company_slug: &'a str,
+    /// Currency of both budgets and actuals.
+    pub currency: Currency,
+    /// Budget month range.
+    pub months: BudgetMonths,
+    /// Optional account type filter.
+    pub account_type: Option<AccountType>,
+    /// Whether actuals without budgets are included.
+    pub coverage: BudgetCoverage,
+}
+
+/// The budget and actual activity for a single currency and month range.
+#[derive(Debug)]
+pub struct BudgetVarianceReport {
+    currency: Currency,
+    months: BudgetMonths,
+    rows: Vec<BudgetVarianceRow>,
+    total_budget: Money,
+    total_actual: Money,
+}
+
+impl BudgetVarianceReport {
+    /// Currency shared by all values in this report.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.currency
+    }
+
+    /// Inclusive covered months.
+    #[must_use]
+    pub const fn months(&self) -> BudgetMonths {
+        self.months
+    }
+
+    /// Per-account results, ordered by account code.
+    #[must_use]
+    pub fn rows(&self) -> &[BudgetVarianceRow] {
+        &self.rows
+    }
+
+    /// Total budget for all included accounts.
+    #[must_use]
+    pub const fn total_budget(&self) -> Money {
+        self.total_budget
+    }
+
+    /// Total actual activity for all included accounts.
+    #[must_use]
+    pub const fn total_actual(&self) -> Money {
+        self.total_actual
+    }
+}
+
+fn report_overflow() -> CliError {
+    CliError::Validation("budget variance total exceeds the supported minor-unit range".into())
+}
+
+/// Compute budget versus actual variance in one currency for the given months.
 ///
-/// Joins `budgets` against aggregated entry totals from `entries`/`transactions`
-/// for the corresponding date range. When `include_unbudgeted` is true, accounts
-/// with actuals but no budget are included (with budget = 0).
-///
-/// Variance direction:
-/// - Expense accounts: Budget - Actual (positive = favorable/underspent)
-/// - All other accounts: Actual - Budget (positive = favorable/exceeded target)
+/// Positive variance means underspending for expenses and exceeding the target
+/// for other account types.
 ///
 /// # Errors
-///
-/// Returns `CliError::Sqlite` on database errors.
+/// Returns [`CliError`] for an unknown company, invalid stored data, arithmetic
+/// overflow, or database errors.
 pub fn compute_budget_variance(
+    conn: &Connection,
+    params: &BudgetVarianceParams<'_>,
+) -> Result<BudgetVarianceReport, CliError> {
+    let rows = super::audit::atomically(conn, || {
+        super::companies::get_company(conn, params.company_slug)?;
+        load_variance_rows(conn, params)
+    })?;
+    let total = |select: fn(&BudgetVarianceRow) -> Money| {
+        let amount = rows.iter().try_fold(Amount::new(0), |total, row| {
+            total
+                .checked_add(select(row).amount())
+                .ok_or_else(report_overflow)
+        })?;
+        i64::try_from(amount.minor_units()).map_err(|_| report_overflow())?;
+        Ok::<_, CliError>(Money::new(amount, params.currency))
+    };
+    Ok(BudgetVarianceReport {
+        currency: params.currency,
+        months: params.months,
+        total_budget: total(|row| row.budget_amount)?,
+        total_actual: total(|row| row.actual_amount)?,
+        rows,
+    })
+}
+
+fn load_variance_rows(
     conn: &Connection,
     p: &BudgetVarianceParams<'_>,
 ) -> Result<Vec<BudgetVarianceRow>, CliError> {
-    let from_date = format!("{}-{:02}-01", p.year, p.from_month);
-    let to_date = last_day_of_month(p.year, p.to_month);
-
-    let sql = if p.include_unbudgeted {
-        build_variance_query_with_unbudgeted(p.account_type)
-    } else {
-        build_variance_query_budget_only(p.account_type)
+    let (from_date, to_date) = p.months.dates();
+    let sql = match p.coverage {
+        BudgetCoverage::Budgeted => build_variance_query_budget_only(p.account_type),
+        BudgetCoverage::IncludeUnbudgeted => build_variance_query_with_unbudgeted(p.account_type),
     };
 
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
         Box::new(p.company_slug.to_string()),
-        Box::new(p.currency.to_string()),
-        Box::new(p.year),
-        Box::new(p.from_month),
-        Box::new(p.to_month),
-        Box::new(from_date),
-        Box::new(to_date.clone()),
+        Box::new(p.currency.code().to_owned()),
+        Box::new(p.months.year()),
+        Box::new(p.months.from().number_from_month()),
+        Box::new(p.months.to().number_from_month()),
+        Box::new(from_date.to_string()),
+        Box::new(to_date.to_string()),
     ];
 
     if let Some(at) = p.account_type {
-        param_values.push(Box::new(at.to_string()));
+        param_values.push(Box::new(at.code()));
     }
 
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -149,15 +290,21 @@ pub fn compute_budget_variance(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
-        let budget_amount = row.get(3)?;
-        let variance_amount = row.get(5)?;
+        let account_type: String = row.get(2)?;
+        let account_type = account_type.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
+        })?;
+        let budget_amount: i64 = row.get(3)?;
+        let actual_amount: i64 = row.get(4)?;
+        let variance_amount: i64 = row.get(5)?;
+        let money = |minor| Money::from_minor(i128::from(minor), p.currency);
         Ok(BudgetVarianceRow {
             code: row.get(0)?,
             name: row.get(1)?,
-            account_type: row.get(2)?,
-            budget_amount,
-            actual_amount: row.get(4)?,
-            variance_amount,
+            account_type,
+            budget_amount: money(budget_amount),
+            actual_amount: money(actual_amount),
+            variance_amount: money(variance_amount),
             variance_percent: crate::percent::Percent::of(variance_amount, budget_amount),
             favorable: row.get(6)?,
         })
@@ -171,7 +318,7 @@ pub fn compute_budget_variance(
 }
 
 /// Build the variance query that only includes accounts with a budget.
-fn build_variance_query_budget_only(account_type: Option<&str>) -> String {
+fn build_variance_query_budget_only(account_type: Option<AccountType>) -> String {
     let type_filter = if account_type.is_some() {
         " AND a.type = ?8"
     } else {
@@ -221,7 +368,7 @@ fn build_variance_query_budget_only(account_type: Option<&str>) -> String {
 }
 
 /// Build the variance query that includes unbudgeted accounts with actuals.
-fn build_variance_query_with_unbudgeted(account_type: Option<&str>) -> String {
+fn build_variance_query_with_unbudgeted(account_type: Option<AccountType>) -> String {
     let type_filter = if account_type.is_some() {
         " AND a.type = ?8"
     } else {
@@ -274,22 +421,6 @@ fn build_variance_query_with_unbudgeted(account_type: Option<&str>) -> String {
         WHERE 1=1{type_filter} \
         ORDER BY a.code"
     )
-}
-
-/// Returns the last day of a given month as a `YYYY-MM-DD` string.
-fn last_day_of_month(year: i32, month: i32) -> String {
-    let days = match month {
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 31,
-    };
-    format!("{year}-{month:02}-{days:02}")
 }
 
 #[cfg(test)]
@@ -451,19 +582,21 @@ mod tests {
 
     fn variance(
         year: i32,
-        from: i32,
-        to: i32,
-        acct_type: Option<&str>,
+        from: Month,
+        to: Month,
+        account_type: Option<AccountType>,
         unbudgeted: bool,
-    ) -> BudgetVarianceParams<'_> {
+    ) -> BudgetVarianceParams<'static> {
         BudgetVarianceParams {
             company_slug: "acme",
-            currency: "USD",
-            year,
-            from_month: from,
-            to_month: to,
-            account_type: acct_type,
-            include_unbudgeted: unbudgeted,
+            currency: Currency::USD,
+            months: BudgetMonths::new(year, from, to).unwrap_or_else(|error| panic!("{error}")),
+            account_type,
+            coverage: if unbudgeted {
+                BudgetCoverage::IncludeUnbudgeted
+            } else {
+                BudgetCoverage::Budgeted
+            },
         }
     }
 
@@ -620,13 +753,17 @@ mod tests {
         set_budget(db.conn(), &budget("5000", 2026, 1, 100_000, None))?;
         post_expense(&db, "2026-01-15", "5000", 80_000);
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, false))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(2026, Month::January, Month::January, None, false),
+        )?;
+        let rows = report.rows();
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
         assert_eq!(r.code, "5000");
-        assert_eq!(r.budget_amount, 100_000);
-        assert_eq!(r.actual_amount, 80_000);
-        assert_eq!(r.variance_amount, 20_000);
+        assert_eq!(r.budget_amount, Money::usd(100_000));
+        assert_eq!(r.actual_amount, Money::usd(80_000));
+        assert_eq!(r.variance_amount, Money::usd(20_000));
         assert!(r.favorable);
         Ok(())
     }
@@ -638,10 +775,17 @@ mod tests {
         post_expense(&db, "2026-01-15", "5000", 15);
 
         for include_unbudgeted in [false, true] {
-            let rows = compute_budget_variance(
+            let report = compute_budget_variance(
                 db.conn(),
-                &variance(2026, 1, 1, None, include_unbudgeted),
+                &variance(
+                    2026,
+                    Month::January,
+                    Month::January,
+                    None,
+                    include_unbudgeted,
+                ),
             )?;
+            let rows = report.rows();
             let percent = rows
                 .iter()
                 .find(|row| row.code == "5000")
@@ -664,9 +808,13 @@ mod tests {
         set_budget(db.conn(), &budget("5000", 2026, 1, 50_000, None))?;
         post_expense(&db, "2026-01-15", "5000", 80_000);
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, false))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(2026, Month::January, Month::January, None, false),
+        )?;
+        let rows = report.rows();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].variance_amount, -30_000);
+        assert_eq!(rows[0].variance_amount, Money::usd(-30_000));
         assert!(!rows[0].favorable);
         Ok(())
     }
@@ -677,14 +825,18 @@ mod tests {
         set_budget(db.conn(), &budget("4000", 2026, 1, 100_000, None))?;
         post_revenue(&db, "2026-01-15", 150_000);
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, false))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(2026, Month::January, Month::January, None, false),
+        )?;
+        let rows = report.rows();
         let r = rows
             .iter()
             .find(|r| r.code == "4000")
             .ok_or_else(|| CliError::General("expected matching row".into()))?;
-        assert_eq!(r.budget_amount, 100_000);
-        assert_eq!(r.actual_amount, 150_000);
-        assert_eq!(r.variance_amount, 50_000);
+        assert_eq!(r.budget_amount, Money::usd(100_000));
+        assert_eq!(r.actual_amount, Money::usd(150_000));
+        assert_eq!(r.variance_amount, Money::usd(50_000));
         assert!(r.favorable);
         Ok(())
     }
@@ -695,12 +847,16 @@ mod tests {
         set_budget(db.conn(), &budget("4000", 2026, 1, 200_000, None))?;
         post_revenue(&db, "2026-01-15", 100_000);
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, false))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(2026, Month::January, Month::January, None, false),
+        )?;
+        let rows = report.rows();
         let r = rows
             .iter()
             .find(|r| r.code == "4000")
             .ok_or_else(|| CliError::General("expected matching row".into()))?;
-        assert_eq!(r.variance_amount, -100_000);
+        assert_eq!(r.variance_amount, Money::usd(-100_000));
         assert!(!r.favorable);
         Ok(())
     }
@@ -715,14 +871,18 @@ mod tests {
         post_expense(&db, "2026-02-15", "5000", 60_000);
         post_expense(&db, "2026-03-15", "5000", 50_000);
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 3, None, false))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(2026, Month::January, Month::March, None, false),
+        )?;
+        let rows = report.rows();
         let r = rows
             .iter()
             .find(|r| r.code == "5000")
             .ok_or_else(|| CliError::General("expected matching row".into()))?;
-        assert_eq!(r.budget_amount, 150_000);
-        assert_eq!(r.actual_amount, 150_000);
-        assert_eq!(r.variance_amount, 0);
+        assert_eq!(r.budget_amount, Money::usd(150_000));
+        assert_eq!(r.actual_amount, Money::usd(150_000));
+        assert_eq!(r.variance_amount, Money::usd(0));
         assert!(r.favorable);
         Ok(())
     }
@@ -734,17 +894,25 @@ mod tests {
         post_expense(&db, "2026-01-15", "5000", 80_000);
         post_expense(&db, "2026-01-20", "5100", 30_000);
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, false))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(2026, Month::January, Month::January, None, false),
+        )?;
+        let rows = report.rows();
         assert_eq!(rows.len(), 1);
 
-        let rows = compute_budget_variance(db.conn(), &variance(2026, 1, 1, None, true))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(2026, Month::January, Month::January, None, true),
+        )?;
+        let rows = report.rows();
         assert!(rows.len() >= 2);
         let supplies = rows
             .iter()
             .find(|r| r.code == "5100")
             .ok_or_else(|| CliError::General("expected matching row".into()))?;
-        assert_eq!(supplies.budget_amount, 0);
-        assert_eq!(supplies.actual_amount, 30_000);
+        assert_eq!(supplies.budget_amount, Money::usd(0));
+        assert_eq!(supplies.actual_amount, Money::usd(30_000));
         assert_eq!(supplies.variance_percent, None);
         Ok(())
     }
@@ -755,19 +923,43 @@ mod tests {
         set_budget(db.conn(), &budget("5000", 2026, 1, 100_000, None))?;
         set_budget(db.conn(), &budget("4000", 2026, 1, 200_000, None))?;
 
-        let rows =
-            compute_budget_variance(db.conn(), &variance(2026, 1, 1, Some("expense"), false))?;
+        let report = compute_budget_variance(
+            db.conn(),
+            &variance(
+                2026,
+                Month::January,
+                Month::January,
+                Some(AccountType::Expense),
+                false,
+            ),
+        )?;
+        let rows = report.rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].code, "5000");
         Ok(())
     }
 
     #[test]
-    fn last_day_of_month_feb_leap() {
-        assert_eq!(last_day_of_month(2024, 2), "2024-02-29");
-        assert_eq!(last_day_of_month(2025, 2), "2025-02-28");
-        assert_eq!(last_day_of_month(2026, 1), "2026-01-31");
-        assert_eq!(last_day_of_month(2026, 4), "2026-04-30");
-        assert_eq!(last_day_of_month(2026, 12), "2026-12-31");
+    fn budget_months_validates_order_and_leap_month_end() -> Result<(), CliError> {
+        let february = BudgetMonths::new(2024, Month::January, Month::February)?;
+        let (first, last) = february.dates();
+        assert_eq!(first.to_string(), "2024-01-01");
+        assert_eq!(last.to_string(), "2024-02-29");
+        assert!(BudgetMonths::new(2026, Month::December, Month::January).is_err());
+        assert!(BudgetMonths::new(i32::MAX, Month::January, Month::January).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn budget_variance_rejects_total_overflow() -> Result<(), CliError> {
+        let db = setup();
+        set_budget(db.conn(), &budget("5000", 2026, 1, i64::MAX, None))?;
+        set_budget(db.conn(), &budget("5100", 2026, 1, 1, None))?;
+        let params = variance(2026, Month::January, Month::January, None, false);
+        assert!(matches!(
+            compute_budget_variance(db.conn(), &params),
+            Err(CliError::Validation(_))
+        ));
+        Ok(())
     }
 }

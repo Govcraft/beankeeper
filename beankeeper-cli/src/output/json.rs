@@ -901,81 +901,73 @@ pub fn render_budgets(rows: &[crate::db::BudgetRow], meta: Meta) -> Result<Strin
 }
 
 #[derive(Serialize)]
-struct BudgetVarianceJson {
-    code: String,
-    name: String,
-    account_type: String,
-    budget: i64,
-    actual: i64,
-    variance: i64,
+struct BudgetVarianceJson<'a> {
+    code: &'a str,
+    name: &'a str,
+    account_type: &'static str,
+    #[serde(flatten)]
+    budget: super::amounts::MoneyField,
+    #[serde(flatten)]
+    actual: super::amounts::MoneyField,
+    #[serde(flatten)]
+    variance: super::amounts::MoneyField,
     variance_percent: Option<f64>,
     favorable: bool,
 }
 
 #[derive(Serialize)]
 struct BudgetVarianceTotals {
-    budget: i64,
-    actual: i64,
+    #[serde(flatten)]
+    budget: super::amounts::MoneyField,
+    #[serde(flatten)]
+    actual: super::amounts::MoneyField,
 }
 
 #[derive(Serialize)]
-struct BudgetVarianceData {
+struct BudgetVarianceData<'a> {
     year: i32,
-    from_month: i32,
-    to_month: i32,
-    currency: String,
-    lines: Vec<BudgetVarianceJson>,
+    from_month: u32,
+    to_month: u32,
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
+    lines: Vec<BudgetVarianceJson<'a>>,
     totals: BudgetVarianceTotals,
 }
 
-/// Render a budget-variance report as an enveloped JSON response.
-///
-/// # Errors
-///
-/// Returns [`CliError`] on serialisation failure.
-pub fn render_budget_variance(
-    rows: &[crate::db::BudgetVarianceRow],
-    year: i32,
-    from_month: i32,
-    to_month: i32,
-    currency: &str,
-    meta: Meta,
-) -> Result<String, CliError> {
-    let mut total_budget: i64 = 0;
-    let mut total_actual: i64 = 0;
+impl Serialize for crate::db::BudgetVarianceReport {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use super::amounts::MoneyField;
 
-    let lines: Vec<BudgetVarianceJson> = rows
-        .iter()
-        .map(|r| {
-            total_budget = total_budget.saturating_add(r.budget_amount);
-            total_actual = total_actual.saturating_add(r.actual_amount);
-            BudgetVarianceJson {
-                code: r.code.clone(),
-                name: r.name.clone(),
-                account_type: r.account_type.clone(),
-                budget: r.budget_amount,
-                actual: r.actual_amount,
-                variance: r.variance_amount,
-                variance_percent: r.variance_percent.and_then(|percent| percent.to_number(1)),
-                favorable: r.favorable,
-            }
-        })
-        .collect();
-
-    envelope_ok(
-        meta,
+        let months = self.months();
+        let lines = self
+            .rows()
+            .iter()
+            .map(|row| BudgetVarianceJson {
+                code: &row.code,
+                name: &row.name,
+                account_type: row.account_type.code(),
+                budget: MoneyField::new("budget", row.budget_amount),
+                actual: MoneyField::new("actual", row.actual_amount),
+                variance: MoneyField::new("variance", row.variance_amount),
+                variance_percent: row
+                    .variance_percent
+                    .and_then(|percent| percent.to_number(1)),
+                favorable: row.favorable,
+            })
+            .collect();
         BudgetVarianceData {
-            year,
-            from_month,
-            to_month,
-            currency: currency.to_string(),
+            year: months.year(),
+            from_month: months.from().number_from_month(),
+            to_month: months.to().number_from_month(),
+            currency: self.currency(),
             lines,
             totals: BudgetVarianceTotals {
-                budget: total_budget,
-                actual: total_actual,
+                budget: MoneyField::new("budget", self.total_budget()),
+                actual: MoneyField::new("actual", self.total_actual()),
             },
-        },
-    )
+        }
+        .serialize(serializer)
+    }
 }
 
 /// Render a budget deletion confirmation as an enveloped JSON response.

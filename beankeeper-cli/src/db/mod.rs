@@ -34,8 +34,8 @@ pub use audit::{
     delete_company, list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
 };
 pub use budgets::{
-    BudgetVarianceParams, ListBudgetParams, SetAnnualBudgetParams, SetBudgetParams,
-    compute_budget_variance, list_budgets,
+    BudgetCoverage, BudgetMonths, BudgetVarianceParams, BudgetVarianceReport, ListBudgetParams,
+    SetAnnualBudgetParams, SetBudgetParams, compute_budget_variance, list_budgets,
 };
 pub use clearings::{
     ClearingState, ClearingStatus, EntryTarget, find_entry_by_reference, get_entry_target,
@@ -144,10 +144,10 @@ impl BudgetRow {
 pub struct BudgetVarianceRow {
     pub code: String,
     pub name: String,
-    pub account_type: String,
-    pub budget_amount: i64,
-    pub actual_amount: i64,
-    pub variance_amount: i64,
+    pub account_type: beankeeper::types::AccountType,
+    pub budget_amount: beankeeper::types::Money,
+    pub actual_amount: beankeeper::types::Money,
+    pub variance_amount: beankeeper::types::Money,
     pub variance_percent: Option<crate::percent::Percent>,
     pub favorable: bool,
 }

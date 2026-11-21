@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use super::amounts::format_money_grouped;
 use crate::db::clearings::{Clearing, cleared_sum};
 use crate::db::{
-    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceRow,
+    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceReport,
     CompanyRow, EntryRow, EntryStatus, TransactionRow,
 };
 use crate::error::CliError;
@@ -773,12 +773,11 @@ pub fn render_budgets(rows: &[BudgetRow], use_color: bool) -> Result<String, Cli
 /// Render a budget-variance report as a table.
 #[must_use]
 pub fn render_budget_variance(
-    rows: &[BudgetVarianceRow],
+    report: &BudgetVarianceReport,
     title: &str,
-    currency_minor_units: u8,
     use_color: bool,
 ) -> String {
-    if rows.is_empty() {
+    if report.rows().is_empty() {
         return "No budget data found for this period.".to_string();
     }
 
@@ -798,19 +797,14 @@ pub fn render_budget_variance(
         Cell::new(styled("Status", bold_style(), use_color)),
     ]);
 
-    let mut total_budget: i64 = 0;
-    let mut total_actual: i64 = 0;
-
-    for row in rows {
-        total_budget = total_budget.saturating_add(row.budget_amount);
-        total_actual = total_actual.saturating_add(row.actual_amount);
-
+    for row in report.rows() {
         let pct_str = match row.variance_percent {
             Some(p) => format!("{}%", p.to_fixed(1)),
             None => "--".to_string(),
         };
 
-        let status = if row.variance_amount == 0 {
+        let on_budget = row.variance_amount.amount().minor_units() == 0;
+        let status = if on_budget {
             "ON BUDGET"
         } else if row.favorable {
             "FAV"
@@ -818,7 +812,7 @@ pub fn render_budget_variance(
             "UNFAV"
         };
 
-        let status_style = if row.variance_amount == 0 {
+        let status_style = if on_budget {
             bold_style()
         } else if row.favorable {
             green_style()
@@ -829,12 +823,10 @@ pub fn render_budget_variance(
         table.add_row(vec![
             Cell::new(styled(&row.code, cyan_style(), use_color)),
             Cell::new(&row.name),
-            Cell::new(capitalize_first(&row.account_type)),
-            Cell::new(format_amount(row.budget_amount, currency_minor_units))
-                .set_alignment(CellAlignment::Right),
-            Cell::new(format_amount(row.actual_amount, currency_minor_units))
-                .set_alignment(CellAlignment::Right),
-            Cell::new(format_amount(row.variance_amount, currency_minor_units))
+            Cell::new(row.account_type.to_string()),
+            Cell::new(format_money_grouped(row.budget_amount)).set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(row.actual_amount)).set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(row.variance_amount))
                 .set_alignment(CellAlignment::Right),
             Cell::new(&pct_str).set_alignment(CellAlignment::Right),
             Cell::new(styled(status, status_style, use_color)),
@@ -844,8 +836,8 @@ pub fn render_budget_variance(
     lines.push(table.to_string());
     lines.push(String::new());
 
-    let budget_str = format_amount(total_budget, currency_minor_units);
-    let actual_str = format_amount(total_actual, currency_minor_units);
+    let budget_str = format_money_grouped(report.total_budget());
+    let actual_str = format_money_grouped(report.total_actual());
     lines.push(format!(
         "Totals:  Budget {b}  Actual {a}",
         b = styled(&budget_str, bold_style(), use_color),

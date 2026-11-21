@@ -73,6 +73,88 @@ fn every_report_and_transaction_uses_its_currency_for_decimal_strings() -> Resul
     Ok(())
 }
 
+#[test]
+fn typed_budget_variance_retains_currency_and_matches_cli() -> Result<(), Box<dyn Error>> {
+    use beankeeper::types::{AccountType, Currency, Money};
+    use beankeeper_cli::db::{
+        BudgetCoverage, BudgetMonths, BudgetVarianceParams, Db, compute_budget_variance,
+    };
+    use chrono::Month;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("budget.db");
+    seed(&path, "BHD")?;
+    for currency in ["BHD", "USD"] {
+        run(
+            &path,
+            &[
+                "--company",
+                "co",
+                "budget",
+                "set",
+                "1000",
+                "--year",
+                "2026",
+                "--month",
+                "3",
+                "--amount",
+                "2000",
+                "--currency",
+                currency,
+            ],
+        )?;
+    }
+    let db = Db::open_snapshot(&path, None)?;
+    let currency = Currency::BHD;
+    let report = compute_budget_variance(
+        db.conn(),
+        &BudgetVarianceParams {
+            company_slug: "co",
+            currency,
+            months: BudgetMonths::new(2026, Month::March, Month::March)?,
+            account_type: Some(AccountType::Asset),
+            coverage: BudgetCoverage::Budgeted,
+        },
+    )?;
+    assert_eq!(report.currency(), currency);
+    assert_eq!(
+        report.total_budget(),
+        Money::from_minor(2_000_000, currency)
+    );
+    assert_eq!(
+        report.total_actual(),
+        Money::from_minor(1_800_000, currency)
+    );
+    let [line] = report.rows() else {
+        return Err("expected one budgeted asset".into());
+    };
+    assert_eq!(line.account_type, AccountType::Asset);
+    assert_eq!(line.variance_amount, Money::from_minor(-200_000, currency));
+    let typed_data = serde_json::to_value(&report)?;
+    assert_eq!(typed_data["lines"][0]["account_type"], "asset");
+    assert_eq!(typed_data["lines"][0]["variance_percent"], -10.0);
+    assert_eq!(typed_data["lines"][0]["variance_display"], "-200.000");
+    let cli = run(
+        &path,
+        &[
+            "--company",
+            "co",
+            "report",
+            "budget-variance",
+            "--year",
+            "2026",
+            "--month",
+            "3",
+            "--type",
+            "asset",
+            "--currency",
+            "BHD",
+        ],
+    )?;
+    assert_eq!(cli["data"], typed_data);
+    Ok(())
+}
+
 fn seed(db: &Path, currency: &str) -> Result<(), Box<dyn Error>> {
     run(db, &["init"])?;
     run(db, &["company", "create", "co", "Company"])?;
