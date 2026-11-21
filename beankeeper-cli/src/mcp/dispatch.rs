@@ -384,8 +384,8 @@ fn call_txn_list(db: &Db, actor: &Actor, input: inputs::TxnList) -> Response {
         input.company.into_inner().as_str(),
         TxnCommand::List(cli::TxnListArgs {
             account: optional_text(input.account),
-            from: optional_text(input.from),
-            to: optional_text(input.to),
+            from: input.from.map(|date| date.into_inner().date()),
+            to: input.to.map(|date| date.into_inner().date()),
             limit: list_limit(input.limit.as_ref())?,
             offset: u32::try_from(input.offset.as_ref().map_or(0, PageOffset::get))
                 .map_err(|_| CliError::Usage("offset must be a nonnegative row count".into()))?,
