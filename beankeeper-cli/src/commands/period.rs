@@ -35,15 +35,13 @@ pub fn execute(
             db.conn(),
             actor,
             company,
-            Some(periods::parse_date(through)?),
-            None,
+            periods::PeriodChange::Close(through.parse()?),
         )?]),
         PeriodCommand::Reopen { reason } => Ok(vec![audit::change_period(
             db.conn(),
             actor,
             company,
-            None,
-            Some(reason),
+            periods::PeriodChange::Reopen(reason.parse()?),
         )?]),
         PeriodCommand::List => periods::list(db.conn(), company),
     }
@@ -69,12 +67,13 @@ pub fn run(cli: &Cli, company: &str, command: &PeriodCommand) -> Result<(), CliE
             let mut table = comfy_table::Table::new();
             table.set_header(["Company", "Closed through", "Changed at", "Actor", "Reason"]);
             for row in &rows {
+                let through = row.closed_through().map(|date| date.to_string());
                 table.add_row([
                     row.company_slug.as_str(),
-                    row.closed_through.as_deref().unwrap_or("open"),
+                    through.as_deref().unwrap_or("open"),
                     &row.changed_at,
                     &row.actor,
-                    row.reason.as_deref().unwrap_or(""),
+                    row.reason().unwrap_or(""),
                 ]);
             }
             println!("{table}");

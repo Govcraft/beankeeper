@@ -296,7 +296,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
             Err(CliError::Database(_))
         ));
         assert!(matches!(
-            periods::check_posting(ledger.db.conn(), "acme", "2026-02-01"),
+            periods::check_posting(ledger.db.conn(), "acme", "2026-02-01".parse()?),
             Err(CliError::Database(_))
         ));
     }

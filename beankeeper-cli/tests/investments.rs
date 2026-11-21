@@ -720,7 +720,12 @@ fn closed_period_blocks_purchases_and_sales_without_lot_side_effects() -> TestRe
         "acme",
         &purchase("2", 200, "2026-01-01")?,
     )?;
-    audit::change_period(db.conn(), &actor, "acme", Some(date("2026-01-31")?), None)?;
+    audit::change_period(
+        db.conn(),
+        &actor,
+        "acme",
+        beankeeper_cli::db::periods::PeriodChange::Close("2026-01-31".parse()?),
+    )?;
     let before = state(&db)?;
     assert!(matches!(
         investments::buy(
