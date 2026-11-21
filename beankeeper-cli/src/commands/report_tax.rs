@@ -3,7 +3,7 @@
 mod schedule;
 mod vendors;
 
-use beankeeper::types::{Amount, Currency};
+use beankeeper::types::{Currency, Money};
 use clap::Args;
 use rusqlite::params;
 use serde::Serialize;
@@ -12,7 +12,11 @@ use super::report::ReportOutput;
 use crate::cli::{Cli, OutputFormat, ReportCommand};
 use crate::db::connection::Db;
 use crate::error::CliError;
-use crate::output::json::{Envelope, EnvelopeError};
+use crate::output::amounts::CurrencyCode;
+
+pub use super::report_dates::Period;
+pub use schedule::{ScheduleRow, ScheduleSummary, render_csv as render_schedule_c_csv};
+pub use vendors::{VendorRow, VendorSummary, VendorThreshold, render_csv as render_vendors_csv};
 
 /// Shared period, currency, and export options for tax-oriented reports.
 #[derive(Debug, Clone, Args)]
@@ -52,13 +56,82 @@ struct TaxEntry {
     amount: i64,
 }
 
+/// A read-only tax book summary with explicit dates and a single currency.
 #[derive(Serialize)]
-struct TaxReport<T> {
-    from: String,
-    to: String,
-    currency: String,
+pub struct TaxReport<T> {
+    #[serde(flatten)]
+    period: Period,
+    currency: CurrencyCode,
     #[serde(flatten)]
     summary: T,
+}
+
+impl<T> TaxReport<T> {
+    /// Inclusive dates covered by the summary.
+    #[must_use]
+    pub const fn period(&self) -> Period {
+        self.period
+    }
+
+    /// Currency of every monetary amount in the summary.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.currency.0
+    }
+
+    /// Report-specific rows and totals.
+    #[must_use]
+    pub const fn summary(&self) -> &T {
+        &self.summary
+    }
+}
+
+/// Compute the Schedule C book summary for an already-open ledger.
+///
+/// # Errors
+/// Returns [`CliError`] for an unknown company, database failures, or report
+/// amounts exceeding the supported minor-unit range.
+pub fn build_schedule_c(
+    db: &Db,
+    company: &str,
+    period: Period,
+    currency: Currency,
+) -> Result<TaxReport<ScheduleSummary>, CliError> {
+    crate::db::audit::atomically(db.conn(), || {
+        crate::db::companies::get_company(db.conn(), company)?;
+        let entries = load_entries(db, company, period, currency)?;
+        Ok(TaxReport {
+            period,
+            currency: CurrencyCode(currency),
+            summary: schedule::build(&entries, currency)?,
+        })
+    })
+}
+
+/// Compute the 1099 vendor book summary for an already-open ledger.
+///
+/// The threshold fixes the report currency. Only vendors that meet the
+/// threshold appear in the result.
+///
+/// # Errors
+/// Returns [`CliError`] for an unknown company, conflicting vendor metadata,
+/// database failures, or report amounts exceeding the supported range.
+pub fn build_vendors(
+    db: &Db,
+    company: &str,
+    period: Period,
+    threshold: VendorThreshold,
+) -> Result<TaxReport<VendorSummary>, CliError> {
+    crate::db::audit::atomically(db.conn(), || {
+        crate::db::companies::get_company(db.conn(), company)?;
+        let currency = threshold.money().currency();
+        let entries = load_entries(db, company, period, currency)?;
+        Ok(TaxReport {
+            period,
+            currency: CurrencyCode(currency),
+            summary: vendors::build(&entries, threshold)?,
+        })
+    })
 }
 
 pub(crate) fn run_to(
@@ -78,35 +151,47 @@ pub(crate) fn run_to(
         company,
         args.currency.as_deref(),
     )?;
-    let entries = load_entries(db, company, args, currency)?;
-    let rendered = match sub {
+    let period = Period::resolve(
+        args.from.as_deref(),
+        args.to.as_deref(),
+        chrono::Local::now().date_naive(),
+    )?;
+    match sub {
         ReportCommand::ScheduleC(_) => {
-            let report = wrap(args, currency, schedule::build(&entries)?)?;
+            let report = build_schedule_c(db, company, period, currency)?;
             match output.format {
                 OutputFormat::Json => {
-                    render_json(cli, company, "report.schedule-c", currency, &report)?
+                    let meta = cli
+                        .meta("report.schedule-c", Some(company))
+                        .with_currency(currency);
+                    output.write_json(meta, &report, None)?;
                 }
-                OutputFormat::Csv => schedule::render_csv(&report)?,
-                OutputFormat::Table => schedule::render_table(&report, currency),
+                OutputFormat::Csv => writeln!(output.writer, "{}", schedule::render_csv(&report)?)?,
+                OutputFormat::Table => {
+                    writeln!(output.writer, "{}", schedule::render_table(&report))?;
+                }
             }
         }
         ReportCommand::Vendor1099(args) => {
             let threshold = super::txn::parse_amount_to_minor(&args.threshold, currency)?;
-            if threshold < 0 {
-                return Err(CliError::Validation(
-                    "--threshold must be nonnegative".into(),
-                ));
-            }
-            let report = wrap(&args.period, currency, vendors::build(&entries, threshold)?)?;
+            let threshold =
+                VendorThreshold::new(Money::from_minor(i128::from(threshold), currency))?;
+            let report = build_vendors(db, company, period, threshold)?;
             match output.format {
-                OutputFormat::Json => render_json(cli, company, "report.1099", currency, &report)?,
-                OutputFormat::Csv => vendors::render_csv(&report)?,
-                OutputFormat::Table => vendors::render_table(&report, currency),
+                OutputFormat::Json => {
+                    let meta = cli
+                        .meta("report.1099", Some(company))
+                        .with_currency(currency);
+                    output.write_json(meta, &report, None)?;
+                }
+                OutputFormat::Csv => writeln!(output.writer, "{}", vendors::render_csv(&report)?)?,
+                OutputFormat::Table => {
+                    writeln!(output.writer, "{}", vendors::render_table(&report))?;
+                }
             }
         }
         _ => return Err(CliError::General("internal error: not a tax report".into())),
-    };
-    writeln!(output.writer, "{rendered}")?;
+    }
     if !cli.verbosity.quiet {
         eprintln!("[ok] tax book summary generated");
     }
@@ -116,7 +201,7 @@ pub(crate) fn run_to(
 fn load_entries(
     db: &Db,
     company: &str,
-    args: &TaxArgs,
+    period: Period,
     currency: Currency,
 ) -> Result<Vec<TaxEntry>, CliError> {
     let mut stmt = db.conn().prepare(
@@ -127,7 +212,12 @@ fn load_entries(
          ORDER BY t.id, e.id",
     )?;
     let rows = stmt.query_map(
-        params![company, currency.code(), args.from, args.to],
+        params![
+            company,
+            currency.code(),
+            period.from().to_string(),
+            period.to().to_string()
+        ],
         |row| {
             Ok(TaxEntry {
                 transaction_id: row.get(0)?,
@@ -144,37 +234,6 @@ fn load_entries(
     rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
 }
 
-fn wrap<T>(args: &TaxArgs, currency: Currency, summary: T) -> Result<TaxReport<T>, CliError> {
-    Ok(TaxReport {
-        from: args
-            .from
-            .clone()
-            .ok_or_else(|| CliError::General("tax report start date was not resolved".into()))?,
-        to: args
-            .to
-            .clone()
-            .ok_or_else(|| CliError::General("tax report end date was not resolved".into()))?,
-        currency: currency.code().into(),
-        summary,
-    })
-}
-
-fn render_json<T: Serialize>(
-    cli: &Cli,
-    company: &str,
-    command: &str,
-    currency: Currency,
-    report: &T,
-) -> Result<String, CliError> {
-    serde_json::to_string_pretty(&Envelope {
-        ok: true,
-        meta: cli.meta(command, Some(company)).with_currency(currency),
-        data: Some(report),
-        error: None::<EnvelopeError>,
-    })
-    .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
-}
-
 fn overflow() -> CliError {
     CliError::Validation("tax summary exceeds the supported minor-unit range".into())
 }
@@ -182,10 +241,6 @@ fn overflow() -> CliError {
 fn add(total: &mut i64, amount: i64) -> Result<(), CliError> {
     *total = total.checked_add(amount).ok_or_else(overflow)?;
     Ok(())
-}
-
-fn decimal(amount: i64, currency: Currency) -> String {
-    Amount::new(i128::from(amount)).format_decimal(currency.minor_units())
 }
 
 fn finish_csv(writer: csv::Writer<Vec<u8>>) -> Result<String, CliError> {

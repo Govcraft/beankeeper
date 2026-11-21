@@ -1,9 +1,61 @@
 //! Shared inclusive date defaults for report commands.
 
 use chrono::{Datelike, NaiveDate};
+use serde::Serialize;
 
 use crate::cli::ReportCommand;
 use crate::error::CliError;
+
+/// An inclusive calendar period with an ordered start and end date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Period {
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+impl Period {
+    /// Validate an inclusive date range.
+    ///
+    /// # Errors
+    /// Returns [`CliError::Validation`] when `from` is later than `to`.
+    pub fn new(from: NaiveDate, to: NaiveDate) -> Result<Self, CliError> {
+        if from > to {
+            return Err(CliError::Validation(format!(
+                "--from ({from}) must be on or before --to ({to})"
+            )));
+        }
+        Ok(Self { from, to })
+    }
+
+    /// The first day included in the report.
+    #[must_use]
+    pub const fn from(self) -> NaiveDate {
+        self.from
+    }
+
+    /// The last day included in the report.
+    #[must_use]
+    pub const fn to(self) -> NaiveDate {
+        self.to
+    }
+
+    pub(super) fn resolve(
+        from: Option<&str>,
+        to: Option<&str>,
+        today: NaiveDate,
+    ) -> Result<Self, CliError> {
+        let to = to
+            .map(|date| parse_date("--to", date))
+            .transpose()?
+            .unwrap_or(today);
+        let from = from
+            .map(|date| parse_date("--from", date))
+            .transpose()?
+            .or_else(|| to.with_ordinal(1))
+            .ok_or_else(|| CliError::Validation("date is out of the supported range".into()))?;
+        Self::new(from, to)
+    }
+}
 
 /// Effective dates, resolved once at the report boundary.
 pub(super) struct DateWindow {
