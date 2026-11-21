@@ -433,124 +433,168 @@ pub(super) struct Report {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum ReportOptions {
-    Trend {
-        metric: TrendMetricArg,
-        from: Option<Date>,
-        to: Option<Date>,
-        period: Option<PeriodArg>,
-        currency: Option<CurrencyCode>,
-        compare: Option<Comparison>,
-        explain_change: Option<Account>,
-    },
-    TrialBalance {
-        from: Option<Date>,
-        to: Option<Date>,
-        account_type: Option<AccountTypeArg>,
-        currency: Option<CurrencyCode>,
-        period: Option<PeriodArg>,
-        compare: Option<Comparison>,
-        explain_change: Option<Account>,
-    },
-    Balance {
-        account: Account,
-        from: Option<Date>,
-        to: Option<Date>,
-        currency: Option<CurrencyCode>,
-        compare: Option<Comparison>,
-        explain_change: Option<Account>,
-    },
-    IncomeStatement {
-        from: Option<Date>,
-        to: Option<Date>,
-        currency: Option<CurrencyCode>,
-        period: Option<PeriodArg>,
-        compare: Option<Comparison>,
-        explain_change: Option<Account>,
-    },
-    BalanceSheet {
-        to: Option<Date>,
-        currency: Option<CurrencyCode>,
-        compare: Option<Comparison>,
-        explain_change: Option<Account>,
-    },
-    ScheduleC {
-        from: Option<Date>,
-        to: Option<Date>,
-        currency: Option<CurrencyCode>,
-    },
+    Trend(TrendInput),
+    TrialBalance(TrialBalanceInput),
+    Balance(BalanceInput),
+    IncomeStatement(IncomeStatementInput),
+    BalanceSheet(BalanceSheetInput),
+    ScheduleC(TaxPeriodInput),
     #[serde(rename = "1099", alias = "1099-nec")]
-    Vendor1099 {
-        from: Option<Date>,
-        to: Option<Date>,
-        currency: Option<CurrencyCode>,
-        /// Nonnegative decimal in major currency units; defaults to "600".
-        threshold: Option<Amount>,
-    },
-    TaxSummary {
-        from: Option<Date>,
-        to: Option<Date>,
-        currency: Option<CurrencyCode>,
-    },
-    Ledger {
-        #[serde(default)]
-        account: Vec<Account>,
-        from: Option<Date>,
-        to: Option<Date>,
-        currency: Option<CurrencyCode>,
-        #[serde(default)]
-        filter_metadata: Vec<String>,
-    },
-    BudgetVariance {
-        year: i32,
-        month: Option<Month>,
-        from: Option<Month>,
-        to: Option<Month>,
-        account_type: Option<AccountTypeArg>,
-        currency: Option<CurrencyCode>,
-        #[serde(default)]
-        include_unbudgeted: bool,
-    },
-    Aging {
-        #[serde(default)]
-        account: Vec<Account>,
-        #[serde(default)]
-        include_children: bool,
-        as_of: Option<Date>,
-        buckets: Option<String>,
-        group_by_metadata: Option<String>,
-        currency: Option<CurrencyCode>,
-        method: Option<AgingMethodArg>,
-        link_key: Option<String>,
-        #[serde(default)]
-        detail: bool,
-        #[serde(default)]
-        group_across_accounts: bool,
-        #[serde(default)]
-        filter_metadata: Vec<String>,
-    },
-    Reconciliation {
-        /// Bank balances (default) or statement-scoped AR/AP settlements.
-        mode: Option<ReconciliationModeArg>,
-        /// Settlement link metadata key; defaults to `applies_to`.
-        link_key: Option<String>,
-        account: Account,
-        to: Option<Date>,
-        statement_balance: Option<Amount>,
-        statement: Option<String>,
-        #[serde(default)]
-        filter_metadata: Vec<String>,
-        group_by_metadata: Option<String>,
-        currency: Option<CurrencyCode>,
-    },
-    CashFlow {
-        from: Option<Date>,
-        to: Option<Date>,
-        #[serde(default)]
-        cash_account: Vec<Account>,
-        currency: Option<CurrencyCode>,
-        compare: Option<Comparison>,
-        explain_change: Option<Account>,
-    },
+    Vendor1099(Vendor1099Input),
+    TaxSummary(TaxPeriodInput),
+    Ledger(LedgerInput),
+    BudgetVariance(BudgetVarianceInput),
+    Aging(AgingInput),
+    Reconciliation(ReconciliationInput),
+    CashFlow(CashFlowInput),
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TrendInput {
+    pub metric: TrendMetricArg,
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    pub period: Option<PeriodArg>,
+    pub currency: Option<CurrencyCode>,
+    pub compare: Option<Comparison>,
+    pub explain_change: Option<Account>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TrialBalanceInput {
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    pub account_type: Option<AccountTypeArg>,
+    pub currency: Option<CurrencyCode>,
+    pub period: Option<PeriodArg>,
+    pub compare: Option<Comparison>,
+    pub explain_change: Option<Account>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BalanceInput {
+    pub account: Account,
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    pub currency: Option<CurrencyCode>,
+    pub compare: Option<Comparison>,
+    pub explain_change: Option<Account>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct IncomeStatementInput {
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    pub currency: Option<CurrencyCode>,
+    pub period: Option<PeriodArg>,
+    pub compare: Option<Comparison>,
+    pub explain_change: Option<Account>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BalanceSheetInput {
+    pub to: Option<Date>,
+    pub currency: Option<CurrencyCode>,
+    pub compare: Option<Comparison>,
+    pub explain_change: Option<Account>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TaxPeriodInput {
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    pub currency: Option<CurrencyCode>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Vendor1099Input {
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    pub currency: Option<CurrencyCode>,
+    /// Nonnegative decimal in major currency units; defaults to "600".
+    pub threshold: Option<Amount>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerInput {
+    #[serde(default)]
+    pub account: Vec<Account>,
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    pub currency: Option<CurrencyCode>,
+    #[serde(default)]
+    pub filter_metadata: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BudgetVarianceInput {
+    pub year: i32,
+    pub month: Option<Month>,
+    pub from: Option<Month>,
+    pub to: Option<Month>,
+    pub account_type: Option<AccountTypeArg>,
+    pub currency: Option<CurrencyCode>,
+    #[serde(default)]
+    pub include_unbudgeted: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgingInput {
+    #[serde(default)]
+    pub account: Vec<Account>,
+    #[serde(default)]
+    pub include_children: bool,
+    pub as_of: Option<Date>,
+    pub buckets: Option<String>,
+    pub group_by_metadata: Option<String>,
+    pub currency: Option<CurrencyCode>,
+    pub method: Option<AgingMethodArg>,
+    pub link_key: Option<String>,
+    #[serde(default)]
+    pub detail: bool,
+    #[serde(default)]
+    pub group_across_accounts: bool,
+    #[serde(default)]
+    pub filter_metadata: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReconciliationInput {
+    /// Bank balances (default) or statement-scoped AR/AP settlements.
+    pub mode: Option<ReconciliationModeArg>,
+    /// Settlement link metadata key; defaults to `applies_to`.
+    pub link_key: Option<String>,
+    pub account: Account,
+    pub to: Option<Date>,
+    pub statement_balance: Option<Amount>,
+    pub statement: Option<String>,
+    #[serde(default)]
+    pub filter_metadata: Vec<String>,
+    pub group_by_metadata: Option<String>,
+    pub currency: Option<CurrencyCode>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CashFlowInput {
+    pub from: Option<Date>,
+    pub to: Option<Date>,
+    #[serde(default)]
+    pub cash_account: Vec<Account>,
+    pub currency: Option<CurrencyCode>,
+    pub compare: Option<Comparison>,
+    pub explain_change: Option<Account>,
 }
 
 /// Quantity tracked by a historical trend report.
@@ -785,6 +829,32 @@ mod tests {
             serde_json::to_value(schemars::schema_for!(TxnMetaUnset))?["type"],
             "object"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn report_payloads_preserve_flat_discriminator() -> Result<(), serde_json::Error> {
+        let body = json!({
+            "company":"acme", "kind":"trend", "metric":"net-worth",
+            "from":"2026-01-01", "period":"month"
+        });
+        let trend: Report = serde_json::from_value(body.clone())?;
+        assert!(matches!(trend.options, ReportOptions::Trend(_)));
+        let wire = serde_json::to_value(trend)?;
+        for key in ["company", "kind", "metric", "from", "period"] {
+            assert_eq!(wire[key], body[key]);
+        }
+        let mut invalid = body;
+        invalid["threshold"] = json!("600.00");
+        assert!(serde_json::from_value::<Report>(invalid).is_err());
+
+        let vendor: Report = serde_json::from_value(json!({
+            "company":"acme", "kind":"1099-nec", "threshold":"600.00"
+        }))?;
+        assert!(matches!(vendor.options, ReportOptions::Vendor1099(_)));
+        let wire = serde_json::to_value(vendor)?;
+        assert_eq!(wire["kind"], "1099");
+        assert_eq!(wire["threshold"], "600.00");
         Ok(())
     }
 }
