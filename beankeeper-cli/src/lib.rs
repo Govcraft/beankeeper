@@ -8,6 +8,7 @@
 pub mod capability;
 pub mod cli;
 pub mod commands;
+pub mod confirmation;
 pub mod db;
 pub mod error;
 pub mod identity;

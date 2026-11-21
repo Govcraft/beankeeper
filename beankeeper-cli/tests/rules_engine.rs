@@ -475,7 +475,16 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     db.conn().execute_batch("DROP TRIGGER fail_rule_audit;")?;
     let rule = rules::create_rule(db.conn(), &actor, "acme", "coffee".parse()?, "5000", 0)?;
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
-    assert!(audit::delete_rule(db.conn(), &actor, "acme", &rule.id).is_err());
+    assert!(
+        audit::delete_rule(
+            db.conn(),
+            &actor,
+            "acme",
+            &rule.id,
+            beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
+        )
+        .is_err()
+    );
     assert_eq!(rules::list_rules(db.conn(), "acme")?.len(), 1);
     audit::verify_hash_chain(db.conn())?;
     Ok(())

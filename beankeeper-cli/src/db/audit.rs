@@ -27,6 +27,7 @@ use super::clearings::{
 use super::companies::Company;
 use super::metadata;
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
+use crate::confirmation::Confirmed;
 use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 
@@ -1906,16 +1907,19 @@ pub fn set_annual_budget(
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-#[allow(clippy::too_many_arguments)]
 pub fn delete_budget(
     conn: &Connection,
     actor: &Actor,
-    company_slug: &str,
-    account_code: &str,
-    currency: beankeeper::types::Currency,
-    year: i32,
-    month: Option<i32>,
+    params: &super::budgets::DeleteBudgetParams<'_>,
+    _confirmed: Confirmed,
 ) -> Result<usize, CliError> {
+    let super::budgets::DeleteBudgetParams {
+        company_slug,
+        account_code,
+        currency,
+        year,
+        month,
+    } = *params;
     let currency = currency.code();
     in_savepoint(conn, "sp_budget_delete", || {
         // Snapshot the rows about to be removed.
@@ -2026,6 +2030,7 @@ pub fn delete_account(
     actor: &Actor,
     company_slug: &str,
     code: &str,
+    _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     in_savepoint(conn, "sp_account_delete", || {
         // Reading the row first both yields the snapshot and produces the
@@ -2107,7 +2112,12 @@ pub fn delete_account(
 /// Returns `CliError::NotFound` if the company does not exist,
 /// `CliError::Validation` if ledger data still references it, or
 /// `CliError::Sqlite` on database errors.
-pub fn delete_company(conn: &Connection, actor: &Actor, slug: &str) -> Result<(), CliError> {
+pub fn delete_company(
+    conn: &Connection,
+    actor: &Actor,
+    slug: &str,
+    _confirmed: Confirmed,
+) -> Result<(), CliError> {
     in_savepoint(conn, "sp_company_delete", || {
         let row: CompanyRow = super::companies::get_company(conn, slug)?;
         let securities: bool = conn.query_row(
@@ -2206,6 +2216,7 @@ pub fn delete_rule(
     actor: &Actor,
     company: &str,
     id: &super::rules::RuleId,
+    _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     atomically(conn, || {
         let rule = super::rules::list_rules(conn, company)?
@@ -2735,7 +2746,14 @@ mod tests {
             },
         )
         .expect("create unused account");
-        delete_account(db.conn(), &actor, "acme", "1100").expect("delete account");
+        delete_account(
+            db.conn(),
+            &actor,
+            "acme",
+            "1100",
+            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+        )
+        .expect("delete account");
 
         let (action, before): (String, Option<String>) = db
             .conn()
@@ -3032,6 +3050,15 @@ mod tests {
     fn delete_account_missing_errors() {
         let db = seed();
         let actor = Actor::new("tester");
-        assert!(delete_account(db.conn(), &actor, "acme", "9999").is_err());
+        assert!(
+            delete_account(
+                db.conn(),
+                &actor,
+                "acme",
+                "9999",
+                crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
+            )
+            .is_err()
+        );
     }
 }

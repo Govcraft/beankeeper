@@ -1,6 +1,5 @@
-use std::io::IsTerminal;
-
 use crate::cli::{Cli, CompanyCommand, OutputFormat, resolve_format};
+use crate::confirmation::confirm_deletion;
 use crate::db::companies;
 use crate::db::connection::Db;
 use crate::error::CliError;
@@ -50,22 +49,12 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             render_companies(&rows, "company.show", format, use_color, cli)?;
         }
         CompanyCommand::Delete { slug, force } => {
-            if !force {
-                if !std::io::stdin().is_terminal() {
-                    return Err(CliError::Usage(
-                        "use --force to confirm deletion when stdin is not a terminal".into(),
-                    ));
-                }
-                eprint!("Delete company '{slug}'? [y/N] ");
-                let mut answer = String::new();
-                std::io::stdin().read_line(&mut answer)?;
-                if !answer.trim().eq_ignore_ascii_case("y") {
-                    eprintln!("Aborted.");
-                    return Ok(());
-                }
-            }
+            let Some(confirmed) = confirm_deletion(*force, &format!("company '{slug}'"))? else {
+                eprintln!("Aborted.");
+                return Ok(());
+            };
             let actor = cli.principal();
-            crate::db::delete_company(db.conn(), &actor, slug)?;
+            crate::db::delete_company(db.conn(), &actor, slug, confirmed)?;
             if format == OutputFormat::Json {
                 let meta = cli.meta("company.delete", None);
                 let rendered = output::json::render_deleted(slug, meta)?;

@@ -30,6 +30,15 @@ pub struct SetAnnualBudgetParams<'a> {
     pub notes: Option<&'a str>,
 }
 
+/// Company, account, currency and calendar selection for a budget deletion.
+pub struct DeleteBudgetParams<'a> {
+    pub company_slug: &'a str,
+    pub account_code: &'a str,
+    pub currency: Currency,
+    pub year: i32,
+    pub month: Option<i32>,
+}
+
 /// Parameters for listing budgets.
 pub struct ListBudgetParams<'a> {
     pub company_slug: &'a str,
@@ -459,11 +468,14 @@ mod tests {
         audit::delete_budget(
             conn,
             &test_actor(),
-            company_slug,
-            account_code,
-            currency,
-            year,
-            month,
+            &DeleteBudgetParams {
+                company_slug,
+                account_code,
+                currency,
+                year,
+                month,
+            },
+            crate::confirmation::Confirmed::forced(true)?,
         )
     }
 

@@ -1,8 +1,7 @@
 //! Manage bank import categorization rules.
 
-use std::io::IsTerminal;
-
 use crate::cli::{Cli, OutputFormat, RuleCommand, resolve_format};
+use crate::confirmation::confirm_deletion;
 use crate::db::{audit, companies, rules};
 use crate::error::CliError;
 use crate::output::json;
@@ -14,17 +13,6 @@ use crate::output::json;
 pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
     companies::get_company(db.conn(), company)?;
-    if let RuleCommand::Delete { id, force: false } = command
-        && std::io::stdin().is_terminal()
-    {
-        eprint!("Delete rule {id}? [y/N] ");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            eprintln!("aborted");
-            return Ok(());
-        }
-    }
     let actor = cli.principal();
     let (name, rows) = match command {
         RuleCommand::Create {
@@ -43,8 +31,12 @@ pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliErr
             )?],
         ),
         RuleCommand::List => ("rule.list", rules::list_rules(db.conn(), company)?),
-        RuleCommand::Delete { id, .. } => {
-            audit::delete_rule(db.conn(), &actor, company, id)?;
+        RuleCommand::Delete { id, force } => {
+            let Some(confirmed) = confirm_deletion(*force, &format!("rule {id}"))? else {
+                eprintln!("aborted");
+                return Ok(());
+            };
+            audit::delete_rule(db.conn(), &actor, company, id, confirmed)?;
             return render_deleted(cli, company, id);
         }
     };

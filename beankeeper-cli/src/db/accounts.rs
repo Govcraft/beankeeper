@@ -484,7 +484,16 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(crate::db::delete_account(db.conn(), &actor, "acme", "1000").is_ok());
+        assert!(
+            crate::db::delete_account(
+                db.conn(),
+                &actor,
+                "acme",
+                "1000",
+                crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
+            )
+            .is_ok()
+        );
         assert!(!account_exists(db.conn(), "acme", "1000").unwrap_or(true));
     }
 
@@ -492,7 +501,13 @@ mod tests {
     fn delete_missing_account_is_not_found() {
         let db = setup();
         let actor = crate::db::Actor::new("test");
-        let result = crate::db::delete_account(db.conn(), &actor, "acme", "9999");
+        let result = crate::db::delete_account(
+            db.conn(),
+            &actor,
+            "acme",
+            "9999",
+            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+        );
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 

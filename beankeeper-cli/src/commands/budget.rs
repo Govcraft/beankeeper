@@ -1,9 +1,8 @@
 //! `bk budget` command handlers.
 
-use std::io::IsTerminal;
-
 use crate::cli::{BudgetCommand, BudgetMonth, BudgetSetArgs, Cli, OutputFormat, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
+use crate::confirmation::confirm_deletion;
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
@@ -17,29 +16,11 @@ use crate::output;
 pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
     db::companies::get_company(db.conn(), company)?;
-    if let BudgetCommand::Delete {
-        account,
-        year,
-        month,
-        force: false,
-        ..
-    } = sub
-        && std::io::stdin().is_terminal()
-    {
-        let scope = month.map_or_else(
-            || format!("{account} for all of {year}"),
-            |month| format!("{account} for {year}-{:02}", month.get()),
-        );
-        eprint!("Delete budget for {scope}? [y/N] ");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            eprintln!("aborted");
-            return Ok(());
-        }
-    }
     let actor = cli.principal();
-    let result = compute(&db, company, sub, &actor)?;
+    let Some(result) = compute(&db, company, sub, &actor)? else {
+        eprintln!("aborted");
+        return Ok(());
+    };
     render(cli, company, sub, &result)?;
     if !cli.verbosity.quiet {
         match sub {
@@ -85,7 +66,7 @@ fn compute(
     company: &str,
     sub: &BudgetCommand,
     actor: &db::Actor,
-) -> Result<BudgetData, CliError> {
+) -> Result<Option<BudgetData>, CliError> {
     db::companies::get_company(db.conn(), company)?;
     match sub {
         BudgetCommand::Set(args) => set(db, company, args, actor).map(BudgetData::Rows),
@@ -108,18 +89,31 @@ fn compute(
             year,
             month,
             currency,
-            ..
-        } => db::delete_budget(
-            db.conn(),
-            actor,
-            company,
-            account,
-            currency.resolve()?,
-            *year,
-            month.map(BudgetMonth::get),
-        )
-        .map(BudgetData::Deleted),
+            force,
+        } => {
+            let scope = month.map_or_else(
+                || format!("{account} for all of {year}"),
+                |month| format!("{account} for {year}-{:02}", month.get()),
+            );
+            let Some(confirmed) = confirm_deletion(*force, &format!("budget for {scope}"))? else {
+                return Ok(None);
+            };
+            db::delete_budget(
+                db.conn(),
+                actor,
+                &db::budgets::DeleteBudgetParams {
+                    company_slug: company,
+                    account_code: account,
+                    currency: currency.resolve()?,
+                    year: *year,
+                    month: month.map(BudgetMonth::get),
+                },
+                confirmed,
+            )
+            .map(BudgetData::Deleted)
+        }
     }
+    .map(Some)
 }
 
 fn set(
@@ -243,7 +237,9 @@ pub fn execute_json(
     sub: &BudgetCommand,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
-    let result = compute(db, company, sub, actor)?;
+    let Some(result) = compute(db, company, sub, actor)? else {
+        return Ok(serde_json::json!({"aborted": true}));
+    };
     super::company::json_data(&json(
         &result,
         output::json::meta(command(sub), Some(company)),
