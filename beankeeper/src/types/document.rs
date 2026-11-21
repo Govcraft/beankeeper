@@ -21,15 +21,23 @@ pub enum DocumentType {
     Other,
 }
 
+impl DocumentType {
+    /// Returns the canonical lowercase document type.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Receipt => "receipt",
+            Self::Invoice => "invoice",
+            Self::Statement => "statement",
+            Self::Contract => "contract",
+            Self::Other => "other",
+        }
+    }
+}
+
 impl fmt::Display for DocumentType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Receipt => write!(f, "receipt"),
-            Self::Invoice => write!(f, "invoice"),
-            Self::Statement => write!(f, "statement"),
-            Self::Contract => write!(f, "contract"),
-            Self::Other => write!(f, "other"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -77,23 +85,103 @@ impl FromStr for DocumentType {
     }
 }
 
+/// A SHA-256 digest encoded as exactly 64 lowercase ASCII hexadecimal characters.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Sha256Hex(String);
+
+/// A hash was not exactly 64 lowercase ASCII hexadecimal characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sha256HexError;
+
+impl fmt::Display for Sha256HexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("expected a SHA-256 hash of 64 lowercase hexadecimal characters")
+    }
+}
+
+impl std::error::Error for Sha256HexError {}
+
+impl Sha256Hex {
+    /// Validates encoded SHA-256 text, reusing the allocation for an owned string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Sha256HexError`] unless the hash is exactly 64 lowercase ASCII hex characters.
+    pub fn new(hash: impl Into<String>) -> Result<Self, Sha256HexError> {
+        let hash = hash.into();
+        Self::validate(&hash)?;
+        Ok(Self(hash))
+    }
+
+    /// Encodes a 32-byte SHA-256 digest.
+    #[must_use]
+    pub fn from_digest(digest: [u8; 32]) -> Self {
+        Self(data_encoding::HEXLOWER.encode(&digest))
+    }
+
+    /// Returns the complete hash in lowercase hexadecimal.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Returns the first 12 hexadecimal characters for display.
+    #[must_use]
+    pub fn short(&self) -> &str {
+        &self.0[..12]
+    }
+
+    fn validate(hash: &str) -> Result<(), Sha256HexError> {
+        if hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            Ok(())
+        } else {
+            Err(Sha256HexError)
+        }
+    }
+}
+
+impl FromStr for Sha256Hex {
+    type Err = Sha256HexError;
+
+    fn from_str(hash: &str) -> Result<Self, Self::Err> {
+        Self::validate(hash)?;
+        Ok(Self(hash.to_owned()))
+    }
+}
+
+impl fmt::Display for Sha256Hex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Error type for constructing a [`SourceDocument`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SourceDocumentError {
     /// The URI was empty.
     EmptyUri,
+    /// The supplied SHA-256 hash was malformed.
+    InvalidHash(Sha256HexError),
 }
 
 impl fmt::Display for SourceDocumentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyUri => write!(f, "source document URI cannot be empty"),
+            Self::InvalidHash(error) => write!(f, "invalid source document hash: {error}"),
         }
     }
 }
 
-impl std::error::Error for SourceDocumentError {}
+impl std::error::Error for SourceDocumentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::EmptyUri => None,
+            Self::InvalidHash(error) => Some(error),
+        }
+    }
+}
 
 /// A reference to a source document supporting a transaction or entry.
 ///
@@ -121,7 +209,7 @@ impl std::error::Error for SourceDocumentError {}
 pub struct SourceDocument {
     uri: String,
     document_type: DocumentType,
-    hash: Option<String>,
+    hash: Option<Sha256Hex>,
     attached_at: NaiveDateTime,
 }
 
@@ -148,27 +236,28 @@ impl SourceDocument {
         })
     }
 
-    /// Creates a new source document reference with an integrity hash.
+    /// Creates a new source document reference with a lowercase hexadecimal SHA-256 hash.
     ///
     /// # Errors
     ///
     /// Returns [`SourceDocumentError::EmptyUri`] if the URI is empty.
+    /// Returns [`SourceDocumentError::InvalidHash`] if the hash is malformed.
     pub fn with_hash(
         uri: impl Into<String>,
         document_type: DocumentType,
         hash: impl Into<String>,
         attached_at: NaiveDateTime,
     ) -> Result<Self, SourceDocumentError> {
-        let uri = uri.into();
-        if uri.is_empty() {
-            return Err(SourceDocumentError::EmptyUri);
-        }
-        Ok(Self {
-            uri,
-            document_type,
-            hash: Some(hash.into()),
-            attached_at,
-        })
+        let document = Self::new(uri, document_type, attached_at)?;
+        let hash = Sha256Hex::new(hash).map_err(SourceDocumentError::InvalidHash)?;
+        Ok(document.with_sha256(hash))
+    }
+
+    /// Sets the document's validated SHA-256 integrity hash.
+    #[must_use]
+    pub fn with_sha256(mut self, hash: Sha256Hex) -> Self {
+        self.hash = Some(hash);
+        self
     }
 
     /// Returns the document URI (path, URL, or content-addressed reference).
@@ -186,7 +275,13 @@ impl SourceDocument {
     /// Returns the optional integrity hash.
     #[must_use]
     pub fn hash(&self) -> Option<&str> {
-        self.hash.as_deref()
+        self.sha256_hash().map(Sha256Hex::as_str)
+    }
+
+    /// Returns the validated SHA-256 integrity hash, if present.
+    #[must_use]
+    pub fn sha256_hash(&self) -> Option<&Sha256Hex> {
+        self.hash.as_ref()
     }
 
     /// Returns when the document was attached.
@@ -199,8 +294,8 @@ impl SourceDocument {
 impl fmt::Display for SourceDocument {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}] {}", self.document_type, self.uri)?;
-        if let Some(ref h) = self.hash {
-            write!(f, " ({})", &h[..h.len().min(12)])?;
+        if let Some(hash) = self.sha256_hash() {
+            write!(f, " ({})", hash.short())?;
         }
         Ok(())
     }
@@ -209,6 +304,8 @@ impl fmt::Display for SourceDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VALID_HASH: &str = "abc123def4567890abc123def4567890abc123def4567890abc123def4567890";
 
     fn test_datetime() -> NaiveDateTime {
         NaiveDateTime::parse_from_str("2024-01-15 10:30:00", "%Y-%m-%d %H:%M:%S")
@@ -280,14 +377,45 @@ mod tests {
     #[test]
     fn source_document_with_hash() {
         let doc = SourceDocument::with_hash(
-            "cas/abc123def456",
+            "cas/receipt.pdf",
             DocumentType::Invoice,
-            "abc123def456789",
+            VALID_HASH,
             test_datetime(),
         )
         .unwrap_or_else(|e| panic!("test: {e}"));
 
-        assert_eq!(doc.hash(), Some("abc123def456789"));
+        assert_eq!(doc.hash(), Some(VALID_HASH));
+        assert_eq!(
+            doc.sha256_hash(),
+            VALID_HASH.parse::<Sha256Hex>().ok().as_ref()
+        );
+    }
+
+    #[test]
+    fn source_document_refuses_hash_that_could_panic_during_display() {
+        let result = SourceDocument::with_hash(
+            "receipt.pdf",
+            DocumentType::Receipt,
+            "aéééééé",
+            test_datetime(),
+        );
+        assert_eq!(
+            result,
+            Err(SourceDocumentError::InvalidHash(Sha256HexError))
+        );
+    }
+
+    #[test]
+    fn sha256_hex_refuses_noncanonical_text() {
+        for invalid in [
+            "ab".repeat(31),
+            "ab".repeat(33),
+            "AB".repeat(32),
+            "é".repeat(32),
+            "g".repeat(64),
+        ] {
+            assert_eq!(invalid.parse::<Sha256Hex>(), Err(Sha256HexError));
+        }
     }
 
     #[test]
@@ -299,7 +427,7 @@ mod tests {
     #[test]
     fn source_document_empty_uri_with_hash_rejected() {
         let result =
-            SourceDocument::with_hash("", DocumentType::Receipt, "abc123", test_datetime());
+            SourceDocument::with_hash("", DocumentType::Receipt, VALID_HASH, test_datetime());
         assert!(matches!(result, Err(SourceDocumentError::EmptyUri)));
     }
 
@@ -314,15 +442,13 @@ mod tests {
 
     #[test]
     fn source_document_display_with_hash() {
-        let doc = SourceDocument::with_hash(
-            "cas/abc123",
-            DocumentType::Receipt,
-            "abc123def456789abcdef",
-            test_datetime(),
-        )
-        .unwrap_or_else(|e| panic!("test: {e}"));
+        let hash = Sha256Hex::from_digest([0xab; 32]);
+        assert_eq!(hash.to_string(), "ab".repeat(32));
+        let doc = SourceDocument::new("cas/receipt.pdf", DocumentType::Receipt, test_datetime())
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .with_sha256(hash);
         let display = format!("{doc}");
-        assert!(display.contains("(abc123def456"));
+        assert_eq!(display, "[receipt] cas/receipt.pdf (abababababab)");
     }
 
     #[test]

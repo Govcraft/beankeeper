@@ -1043,8 +1043,8 @@ fn run_attach(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
         entry_id,
         company_slug: company,
         uri: &uri,
-        document_type: &doc_type.to_string(),
-        hash: Some(hash.as_str()),
+        document_type: doc_type,
+        hash: Some(&hash),
         original_filename: original_filename.as_deref(),
     };
     let att_id = db::audit::atomically(db_handle.conn(), || {
@@ -1055,7 +1055,7 @@ fn run_attach(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
             company,
             "attachment",
             &transaction_id.to_string(),
-            &serde_json::json!({"attachment_id": id, "entry_id": entry_id, "uri": uri, "hash": hash, "document_type": doc_type.to_string()}),
+            &serde_json::json!({"attachment_id": id, "entry_id": entry_id, "uri": uri, "hash": hash.as_str(), "document_type": doc_type.as_str()}),
         )?;
         Ok(id)
     })?;
@@ -1070,7 +1070,7 @@ fn run_attach(cli: &Cli, db_handle: &Db, company: &str, sub: &TxnCommand) -> Res
     if !cli.verbosity.quiet {
         eprintln!(
             "[ok] attachment #{att_id} added to transaction #{transaction_id} ({doc_type}, {hash_short})",
-            hash_short = &hash[..hash.len().min(12)]
+            hash_short = hash.short()
         );
     }
 

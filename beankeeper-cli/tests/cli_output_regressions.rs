@@ -55,6 +55,65 @@ fn setup() -> (TempDir, String) {
 }
 
 #[test]
+fn attachment_hash_retains_full_json_and_abbreviated_table_forms() {
+    let (dir, db) = setup();
+    let posted = run(
+        &db,
+        &[
+            "--company",
+            "acme",
+            "--json",
+            "txn",
+            "post",
+            "-d",
+            "Rent",
+            "--debit",
+            "5000:100",
+            "--credit",
+            "1000:100",
+        ],
+    );
+    success(&posted);
+    let posted: serde_json::Value = serde_json::from_slice(&posted.stdout)
+        .unwrap_or_else(|error| panic!("read posted transaction: {error}"));
+    let transaction = posted["data"]["id"].to_string();
+    let file = dir.path().join("receipt.txt");
+    std::fs::write(&file, b"hello world").unwrap_or_else(|error| panic!("write receipt: {error}"));
+    success(&run(
+        &db,
+        &[
+            "--company",
+            "acme",
+            "txn",
+            "attach",
+            &transaction,
+            &file.to_string_lossy(),
+            "--type",
+            "RECEIPT",
+        ],
+    ));
+
+    let shown = run(
+        &db,
+        &["--company", "acme", "--json", "txn", "show", &transaction],
+    );
+    success(&shown);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout)
+        .unwrap_or_else(|error| panic!("read transaction with attachment: {error}"));
+    let attachment = &shown["data"][0]["attachments"][0];
+    let hash = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+    assert_eq!(attachment["hash"], hash);
+    assert_eq!(attachment["document_type"], "receipt");
+    assert_eq!(attachment["uri"], format!("attachments/{hash}"));
+
+    let shown = run(&db, &["--company", "acme", "txn", "show", &transaction]);
+    success(&shown);
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("[receipt] receipt.txt  (b94d27b9934d)")
+    );
+}
+
+#[test]
 fn budget_tables_honor_color_policy_for_all_render_paths() {
     let (_dir, db) = setup();
     let commands: &[&[&str]] = &[

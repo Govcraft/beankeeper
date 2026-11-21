@@ -70,6 +70,6 @@ pub mod prelude {
         Account, AccountCode, AccountCodeError, AccountType, AccountTypeError, Amount, AmountError,
         ClearedEntry, Currency, CurrencyError, DebitCreditError, DebitOrCredit, DocumentType,
         DocumentTypeError, Entry, EntryError, IdempotencyKey, IdempotencyKeyError, Money,
-        MoneyError, SourceDocument, SourceDocumentError,
+        MoneyError, Sha256Hex, Sha256HexError, SourceDocument, SourceDocumentError,
     };
 }

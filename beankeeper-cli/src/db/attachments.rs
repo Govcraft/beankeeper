@@ -1,9 +1,11 @@
 //! Database operations for document attachments.
 
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
+use beankeeper::types::{DocumentType, Sha256Hex};
+use rusqlite::types::Type;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
@@ -17,8 +19,8 @@ pub struct AttachmentRow {
     pub entry_id: Option<i64>,
     pub company_slug: String,
     pub uri: String,
-    pub document_type: String,
-    pub hash: Option<String>,
+    pub document_type: DocumentType,
+    pub hash: Option<Sha256Hex>,
     pub original_filename: Option<String>,
     pub attached_at: String,
 }
@@ -29,8 +31,8 @@ pub struct StoreAttachmentParams<'a> {
     pub entry_id: Option<i64>,
     pub company_slug: &'a str,
     pub uri: &'a str,
-    pub document_type: &'a str,
-    pub hash: Option<&'a str>,
+    pub document_type: DocumentType,
+    pub hash: Option<&'a Sha256Hex>,
     pub original_filename: Option<&'a str>,
 }
 
@@ -51,8 +53,8 @@ pub fn store_attachment(
             params.entry_id,
             params.company_slug,
             params.uri,
-            params.document_type,
-            params.hash,
+            params.document_type.as_str(),
+            params.hash.map(Sha256Hex::as_str),
             params.original_filename,
         ],
     )?;
@@ -120,8 +122,16 @@ fn row_to_attachment(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentRow>
         entry_id: row.get(2)?,
         company_slug: row.get(3)?,
         uri: row.get(4)?,
-        document_type: row.get(5)?,
-        hash: row.get(6)?,
+        document_type: row.get::<_, String>(5)?.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+        })?,
+        hash: row
+            .get::<_, Option<String>>(6)?
+            .map(Sha256Hex::new)
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+            })?,
         original_filename: row.get(7)?,
         attached_at: row.get(8)?,
     })
@@ -136,12 +146,17 @@ fn row_to_attachment(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentRow>
 /// # Errors
 ///
 /// Returns `CliError::Io` on file system errors.
-pub fn hash_and_store_file(source: &Path, db_path: &Path) -> Result<(String, PathBuf), CliError> {
+pub fn hash_and_store_file(
+    source: &Path,
+    db_path: &Path,
+) -> Result<(Sha256Hex, PathBuf), CliError> {
     let store_dir = attachment_store_dir(db_path);
     fs::create_dir_all(&store_dir)?;
 
-    // Read source and compute SHA-256
+    // Hash the staged bytes so a changing source cannot make the stored file
+    // disagree with its content address.
     let mut file = fs::File::open(source)?;
+    let mut staged = tempfile::NamedTempFile::new_in(&store_dir)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
@@ -149,23 +164,17 @@ pub fn hash_and_store_file(source: &Path, db_path: &Path) -> Result<(String, Pat
         if n == 0 {
             break;
         }
+        staged.write_all(&buf[..n])?;
         hasher.update(&buf[..n]);
     }
-    let hash_bytes = hasher.finalize();
-    let hex_hash = hex_encode(&hash_bytes);
+    let hex_hash = Sha256Hex::from_digest(hasher.finalize().into());
+    let dest = store_dir.join(hex_hash.as_str());
 
-    let dest = store_dir.join(&hex_hash);
-
-    // Only copy if not already present (content-addressed dedup)
-    if !dest.exists() {
-        fs::copy(source, &dest)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&dest, perms).ok();
-        }
+    // An existing address means this content has already been published.
+    if let Err(error) = staged.persist_noclobber(&dest)
+        && error.error.kind() != ErrorKind::AlreadyExists
+    {
+        return Err(error.error.into());
     }
 
     Ok((hex_hash, dest))
@@ -179,20 +188,13 @@ fn attachment_store_dir(db_path: &Path) -> PathBuf {
         .join("attachments")
 }
 
-/// Encode bytes as lowercase hex string.
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::{Db, companies, transactions};
+
+    const HELLO_WORLD_HASH: &str =
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
@@ -246,14 +248,16 @@ mod tests {
     fn store_and_list_attachments() {
         let db = setup();
         let txn_id = post_sample(&db);
+        let hash = Sha256Hex::from_digest([0xab; 32]);
+        let uri = format!("attachments/{hash}");
 
         let params = StoreAttachmentParams {
             transaction_id: txn_id,
             entry_id: None,
             company_slug: "acme",
-            uri: "attachments/abc123",
-            document_type: "receipt",
-            hash: Some("abc123"),
+            uri: &uri,
+            document_type: DocumentType::Receipt,
+            hash: Some(&hash),
             original_filename: Some("receipt.pdf"),
         };
         let att_id =
@@ -263,8 +267,9 @@ mod tests {
         let attachments = list_attachments(db.conn(), "acme", txn_id)
             .unwrap_or_else(|e| panic!("list failed: {e}"));
         assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments[0].uri, "attachments/abc123");
-        assert_eq!(attachments[0].document_type, "receipt");
+        assert_eq!(attachments[0].uri, uri);
+        assert_eq!(attachments[0].document_type, DocumentType::Receipt);
+        assert_eq!(attachments[0].hash.as_ref(), Some(&hash));
         assert_eq!(
             attachments[0].original_filename.as_deref(),
             Some("receipt.pdf")
@@ -280,9 +285,9 @@ mod tests {
             transaction_id: txn_id,
             entry_id: None,
             company_slug: "acme",
-            uri: "attachments/def456",
-            document_type: "invoice",
-            hash: Some("def456"),
+            uri: "invoice.pdf",
+            document_type: DocumentType::Invoice,
+            hash: None,
             original_filename: None,
         };
         let att_id =
@@ -291,7 +296,36 @@ mod tests {
         let att =
             get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.id, att_id);
-        assert_eq!(att.document_type, "invoice");
+        assert_eq!(att.document_type, DocumentType::Invoice);
+        assert!(att.hash.is_none());
+    }
+
+    #[test]
+    fn attachment_rows_validate_existing_hash_text() -> rusqlite::Result<()> {
+        let db = setup();
+        let txn_id = post_sample(&db);
+        let insert =
+            "INSERT INTO attachments (transaction_id, company_slug, uri, document_type, hash)
+                      VALUES (?1, 'acme', 'receipt.pdf', 'receipt', ?2)";
+
+        db.conn()
+            .execute(insert, params![txn_id, HELLO_WORLD_HASH])?;
+        let row = get_attachment(db.conn(), "acme", db.conn().last_insert_rowid())
+            .unwrap_or_else(|e| panic!("read existing attachment: {e}"));
+        assert_eq!(
+            row.hash.as_ref().map(Sha256Hex::as_str),
+            Some(HELLO_WORLD_HASH)
+        );
+
+        db.conn().execute(insert, params![txn_id, "aéééééé"])?;
+        let result = list_attachments(db.conn(), "acme", txn_id);
+        assert!(matches!(
+            result,
+            Err(CliError::Sqlite(rusqlite::Error::FromSqlConversionFailure(6, Type::Text, error)))
+                if error.is::<beankeeper::types::Sha256HexError>()
+        ));
+
+        Ok(())
     }
 
     #[test]
@@ -311,8 +345,8 @@ mod tests {
         let (hash, dest) = hash_and_store_file(&source, &db_path)
             .unwrap_or_else(|e| panic!("hash_and_store: {e}"));
 
-        assert_ne!(hash, "");
-        assert_eq!(hash.len(), 64); // SHA-256 hex is 64 chars
+        assert_eq!(hash.as_str(), HELLO_WORLD_HASH);
+        assert_eq!(dest, dir.path().join("attachments").join(HELLO_WORLD_HASH));
         assert!(dest.exists());
 
         // Verify content matches
@@ -327,18 +361,16 @@ mod tests {
         fs::write(&source, b"duplicate content").unwrap_or_else(|e| panic!("write: {e}"));
 
         let db_path = dir.path().join("test.db");
-        let (hash1, _) =
+        let (hash1, first_path) =
             hash_and_store_file(&source, &db_path).unwrap_or_else(|e| panic!("first store: {e}"));
-        let (hash2, _) =
+        let (hash2, second_path) =
             hash_and_store_file(&source, &db_path).unwrap_or_else(|e| panic!("second store: {e}"));
 
         assert_eq!(hash1, hash2);
-    }
-
-    #[test]
-    fn hex_encode_correctness() {
-        assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
-        assert_eq!(hex_encode(&[0x00, 0xff]), "00ff");
+        assert_eq!(first_path, second_path);
+        let store_entries = fs::read_dir(dir.path().join("attachments"))
+            .unwrap_or_else(|e| panic!("read attachment store: {e}"));
+        assert_eq!(store_entries.count(), 1);
     }
 
     #[test]
@@ -355,9 +387,9 @@ mod tests {
             transaction_id: txn_id,
             entry_id: Some(entry_id),
             company_slug: "acme",
-            uri: "attachments/ghi789",
-            document_type: "statement",
-            hash: Some("ghi789"),
+            uri: "statement.pdf",
+            document_type: DocumentType::Statement,
+            hash: None,
             original_filename: Some("statement.pdf"),
         };
         let att_id =
