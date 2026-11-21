@@ -216,7 +216,7 @@ fn render(
                 output::table::render_budgets(
                     rows,
                     output::should_use_color(cli.verbosity.no_color),
-                )?
+                )
             ),
             OutputFormat::Csv => print!("{}", output::csv::render_budgets(rows)?),
             OutputFormat::Json => {}

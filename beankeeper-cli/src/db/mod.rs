@@ -90,7 +90,7 @@ pub struct TransactionRow {
     pub company_slug: String,
     pub description: String,
     pub metadata: Option<String>,
-    pub currency: String,
+    pub currency: Currency,
     pub date: String,
     pub posted_at: String,
     pub reference: Option<String>,
@@ -120,7 +120,7 @@ pub struct BudgetRow {
     pub id: i64,
     pub company_slug: String,
     pub account_code: String,
-    pub currency: String,
+    pub currency: Currency,
     pub year: i32,
     pub month: i32,
     pub amount: i64,
@@ -130,16 +130,8 @@ pub struct BudgetRow {
 
 impl BudgetRow {
     /// Interpret the stored amount in the row's own currency.
-    ///
-    /// # Errors
-    /// Returns a database error for an unsupported persisted currency.
-    pub(crate) fn money(&self) -> Result<beankeeper::types::Money, CliError> {
-        use beankeeper::types::{Currency, Money};
-
-        let currency = Currency::from_code(&self.currency).map_err(|error| {
-            CliError::Database(format!("invalid stored budget currency: {error}"))
-        })?;
-        Ok(Money::from_minor(i128::from(self.amount), currency))
+    pub(crate) fn money(&self) -> Money {
+        Money::from_minor(i128::from(self.amount), self.currency)
     }
 }
 

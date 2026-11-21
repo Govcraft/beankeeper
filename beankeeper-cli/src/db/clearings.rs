@@ -46,6 +46,7 @@
 
 use std::str::FromStr;
 
+use beankeeper::types::Currency;
 use chrono::NaiveDate;
 use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, params};
@@ -500,7 +501,7 @@ pub struct EntryTarget {
     pub entry_id: EntryId,
     pub account_code: String,
     pub amount: i64,
-    pub currency: String,
+    pub currency: Currency,
     pub reference: Option<String>,
     pub date: NaiveDate,
 }

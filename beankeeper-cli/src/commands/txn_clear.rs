@@ -280,9 +280,7 @@ fn resolve_date(date: Option<&str>) -> Result<NaiveDate, CliError> {
 }
 
 fn parse_amount(s: &str, target: &EntryTarget) -> Result<i64, CliError> {
-    let currency = Currency::from_code(&target.currency)
-        .map_err(|e| CliError::Validation(format!("invalid transaction currency: {e}")))?;
-    let minor = parse_amount_to_minor(s.trim(), currency)?;
+    let minor = parse_amount_to_minor(s.trim(), target.currency)?;
     if minor <= 0 {
         return Err(CliError::Validation(format!(
             "clearing amount must be positive, got '{s}'"
@@ -470,7 +468,8 @@ struct Item {
     entry_id: EntryId,
     action: ClearAction,
     clearing_id: Option<i64>,
-    currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    currency: Currency,
     /// Amount cleared (or removed) by this call, minor units.
     amount: i64,
     entry_amount: i64,
@@ -491,7 +490,7 @@ impl Item {
             entry_id: o.entry_id,
             action: o.action,
             clearing_id: o.clearing_id,
-            currency: target.currency.clone(),
+            currency: target.currency,
             amount: o.amount,
             entry_amount: o.entry_amount,
             cleared_amount: o.cleared_amount,
@@ -564,17 +563,16 @@ fn to_csv(ctx: &Ctx<'_>, items: &[Item]) -> Result<String, CliError> {
     String::from_utf8(bytes).map_err(|e| CliError::General(format!("CSV is not UTF-8: {e}")))
 }
 
-fn describe(i: &Item) -> Result<String, CliError> {
+fn describe(i: &Item) -> String {
     let what = format!("entry #{} of transaction #{}", i.entry_id, i.transaction_id);
-    let currency = Currency::from_code(&i.currency)
-        .map_err(|e| CliError::Validation(format!("invalid transaction currency: {e}")))?;
+    let currency = i.currency;
     let amount = |minor| output::table::format_amount(minor, currency.minor_units());
     let status = if i.partially_cleared {
         "partially cleared"
     } else {
         i.entry_status.as_str()
     };
-    Ok(match i.skip_reason {
+    match i.skip_reason {
         Some(reason) => format!("[skip] {what}: {}", reason.as_str()),
         None => format!(
             "[ok] {what} {} ({} {currency}); cleared {} of {} {currency}, entry now {status}",
@@ -583,7 +581,7 @@ fn describe(i: &Item) -> Result<String, CliError> {
             amount(i.cleared_amount),
             amount(i.entry_amount)
         ),
-    })
+    }
 }
 
 fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError> {
@@ -627,7 +625,7 @@ fn render_single(
         OutputFormat::Table => {}
     }
     if !cli.verbosity.quiet {
-        eprintln!("{}", describe(item)?);
+        eprintln!("{}", describe(item));
     }
     Ok(())
 }
@@ -656,8 +654,9 @@ fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json
     let cleared_total = cleared.iter().map(|i| i.amount).sum();
     let currency = items
         .first()
-        .map(|item| item.currency.as_str())
-        .filter(|currency| items.iter().all(|item| item.currency == *currency));
+        .map(|item| item.currency)
+        .filter(|currency| items.iter().all(|item| item.currency == *currency))
+        .map(|currency| currency.code());
     let data = Batch {
         account,
         status: ctx.status.as_str(),
@@ -695,7 +694,7 @@ fn render_batch(
         OutputFormat::Csv => print!("{}", to_csv(ctx, items)?),
         OutputFormat::Table => {
             for i in items {
-                println!("{}", describe(i)?);
+                println!("{}", describe(i));
             }
         }
     }

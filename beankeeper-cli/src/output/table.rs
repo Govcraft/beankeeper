@@ -14,7 +14,6 @@ use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceReport,
     CompanyRow, EntryRow, EntryStatus, TransactionRow,
 };
-use crate::error::CliError;
 
 // ---------------------------------------------------------------------------
 // Amount formatting
@@ -236,7 +235,7 @@ pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool)
             Cell::new(txn.id).set_alignment(CellAlignment::Right),
             Cell::new(&txn.date),
             Cell::new(&txn.description),
-            Cell::new(&txn.currency),
+            Cell::new(txn.currency.code()),
         ];
         if has_links {
             row.push(Cell::new(link));
@@ -738,12 +737,10 @@ static MONTH_NAMES: [&str; 12] = [
 ];
 
 /// Render budget rows as a table.
-///
-/// # Errors
-/// Returns [`CliError`] if a row contains an invalid stored currency.
-pub fn render_budgets(rows: &[BudgetRow], use_color: bool) -> Result<String, CliError> {
+#[must_use]
+pub fn render_budgets(rows: &[BudgetRow], use_color: bool) -> String {
     if rows.is_empty() {
-        return Ok("No budgets found.".to_string());
+        return "No budgets found.".to_string();
     }
 
     let mut lines = Vec::new();
@@ -767,15 +764,15 @@ pub fn render_budgets(rows: &[BudgetRow], use_color: bool) -> Result<String, Cli
             Cell::new(styled(&row.account_code, cyan_style(), use_color)),
             Cell::new(row.year.to_string()),
             Cell::new(format!("{} ({})", month_name, row.month)),
-            Cell::new(format_money_grouped(row.money()?)).set_alignment(CellAlignment::Right),
-            Cell::new(&row.currency),
+            Cell::new(format_money_grouped(row.money())).set_alignment(CellAlignment::Right),
+            Cell::new(row.currency.code()),
             Cell::new(row.notes.as_deref().unwrap_or("")),
         ]);
     }
 
     lines.push(table.to_string());
 
-    Ok(lines.join("\n"))
+    lines.join("\n")
 }
 
 /// Render a budget-variance report as a table.
@@ -859,28 +856,29 @@ pub fn render_budget_variance(
 
 #[cfg(test)]
 mod tests {
+    use beankeeper::types::Currency;
+
     use super::*;
 
     // -- format_amount --
 
     #[test]
-    fn budgets_use_each_rows_currency() -> Result<(), CliError> {
-        let rows = ["USD", "JPY", "BHD"].map(|currency| BudgetRow {
+    fn budgets_use_each_rows_currency() {
+        let rows = [Currency::USD, Currency::JPY, Currency::BHD].map(|currency| BudgetRow {
             id: 1,
             company_slug: "acme".into(),
             account_code: "5000".into(),
-            currency: currency.into(),
+            currency,
             year: 2026,
             month: 1,
             amount: 1234,
             notes: None,
             created_at: String::new(),
         });
-        let table = render_budgets(&rows, false)?;
+        let table = render_budgets(&rows, false);
         for amount in ["12.34", "1,234", "1.234"] {
             assert!(table.contains(amount), "{table}");
         }
-        Ok(())
     }
 
     #[test]
@@ -1025,7 +1023,7 @@ mod tests {
             company_slug: "acme".into(),
             description: "Test sale".into(),
             metadata: None,
-            currency: "USD".into(),
+            currency: Currency::USD,
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
@@ -1049,7 +1047,7 @@ mod tests {
             company_slug: "acme".into(),
             description: "Cash sale".into(),
             metadata: Some("INV-001".into()),
-            currency: "USD".into(),
+            currency: Currency::USD,
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
@@ -1099,7 +1097,7 @@ mod tests {
             company_slug: "acme".into(),
             description: "Bad".into(),
             metadata: None,
-            currency: "USD".into(),
+            currency: Currency::USD,
             date: "2025-03-15".into(),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
