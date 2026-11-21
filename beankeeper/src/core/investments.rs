@@ -2,22 +2,24 @@
 
 use core::{fmt, str::FromStr};
 
+use num_bigint::BigUint;
+
+use crate::types::{Money, NonNegativeMoney};
+
 /// Error validating investment inputs or calculating their monetary values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum InvestmentError {
-    /// A trade quantity was not a strictly positive plain decimal.
+    /// A quantity was not a nonnegative plain decimal.
     InvalidQuantity,
+    /// A trade quantity was zero.
+    ZeroQuantity,
     /// A quantity contained more than eight fractional digits.
     QuantityPrecision,
     /// Arithmetic exceeded the supported integer or monetary range.
     Overflow,
     /// A quantity subtraction or disposal exceeded the available shares.
     InsufficientQuantity,
-    /// A price or cost basis was negative.
-    NegativeMoney,
-    /// Cost allocation requires positive available and disposed quantities.
-    EmptyDisposal,
     /// A lot-selection method was not FIFO, LIFO, or specific.
     InvalidMethod,
 }
@@ -25,12 +27,11 @@ pub enum InvestmentError {
 impl fmt::Display for InvestmentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::InvalidQuantity => "quantity must be a positive plain decimal",
+            Self::InvalidQuantity => "quantity must be a nonnegative plain decimal",
+            Self::ZeroQuantity => "trade quantity must be positive",
             Self::QuantityPrecision => "quantity supports at most eight decimal places",
             Self::Overflow => "investment quantity or monetary amount overflow",
             Self::InsufficientQuantity => "insufficient shares for disposal",
-            Self::NegativeMoney => "price and cost basis must not be negative",
-            Self::EmptyDisposal => "cost allocation requires positive quantities",
             Self::InvalidMethod => "lot method must be fifo, lifo, or specific",
         })
     }
@@ -40,8 +41,7 @@ impl std::error::Error for InvestmentError {}
 
 /// A nonnegative share quantity with exactly eight decimal places of precision.
 ///
-/// Parsing requires a positive quantity for trade inputs. [`Self::ZERO`] and
-/// [`Self::from_atoms`] also represent exhausted lots and empty holdings.
+/// Includes exhausted lots and empty holdings. Use [`PositiveQuantity`] for trades.
 /// No floating-point conversions or saturating arithmetic are used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Quantity(i128);
@@ -75,6 +75,16 @@ impl Quantity {
     #[must_use]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
+    }
+
+    /// Returns a positive quantity when shares remain.
+    #[must_use]
+    pub const fn positive(self) -> Option<PositiveQuantity> {
+        if self.is_zero() {
+            None
+        } else {
+            Some(PositiveQuantity(self))
+        }
     }
 
     /// Adds quantities without silently saturating.
@@ -132,10 +142,65 @@ impl FromStr for Quantity {
             .checked_mul(Self::SCALE)
             .and_then(|v| v.checked_add(fractional_atoms))
             .ok_or(InvestmentError::Overflow)?;
-        if atoms == 0 {
-            return Err(InvestmentError::InvalidQuantity);
-        }
         Ok(Self(atoms))
+    }
+}
+
+/// A strictly positive share quantity, required by purchases and disposals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PositiveQuantity(Quantity);
+
+impl PositiveQuantity {
+    /// One whole share.
+    pub const ONE: Self = Self(Quantity(Quantity::SCALE));
+
+    /// Constructs a positive quantity from a count of share atoms.
+    ///
+    /// # Errors
+    /// Returns [`InvestmentError::InvalidQuantity`] or [`InvestmentError::ZeroQuantity`]
+    /// for invalid atoms.
+    pub fn from_atoms(atoms: i128) -> Result<Self, InvestmentError> {
+        Quantity::from_atoms(atoms)?.try_into()
+    }
+
+    /// Returns the exact integer count of quantity atoms.
+    #[must_use]
+    pub const fn atoms(self) -> i128 {
+        self.0.atoms()
+    }
+
+    /// Widens the value to a quantity that may also represent zero.
+    #[must_use]
+    pub const fn quantity(self) -> Quantity {
+        self.0
+    }
+}
+
+impl TryFrom<Quantity> for PositiveQuantity {
+    type Error = InvestmentError;
+
+    fn try_from(quantity: Quantity) -> Result<Self, Self::Error> {
+        quantity.positive().ok_or(InvestmentError::ZeroQuantity)
+    }
+}
+
+impl From<PositiveQuantity> for Quantity {
+    fn from(quantity: PositiveQuantity) -> Self {
+        quantity.quantity()
+    }
+}
+
+impl FromStr for PositiveQuantity {
+    type Err = InvestmentError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<Quantity>()?.try_into()
+    }
+}
+
+impl fmt::Display for PositiveQuantity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -187,22 +252,18 @@ impl FromStr for LotMethod {
     }
 }
 
-/// Values shares at an integer price per whole share in currency minor units.
+/// Values shares at a price per whole share, retaining the price's currency.
 ///
 /// Rounds to the nearest minor unit, with exact halves rounded up. A zero price
 /// or quantity produces a zero valuation.
 ///
 /// # Errors
-/// Rejects negative prices and integer or monetary overflow.
-pub fn market_value(quantity: Quantity, price_minor: i64) -> Result<i64, InvestmentError> {
-    if price_minor < 0 {
-        return Err(InvestmentError::NegativeMoney);
-    }
-    let numerator = quantity
-        .atoms()
-        .checked_mul(i128::from(price_minor))
-        .ok_or(InvestmentError::Overflow)?;
-    rounded_ratio(numerator, Quantity::SCALE)
+/// Returns [`InvestmentError::Overflow`] if the rounded result overflows.
+pub fn market_value(
+    quantity: Quantity,
+    price: NonNegativeMoney,
+) -> Result<NonNegativeMoney, InvestmentError> {
+    rounded_product_ratio(quantity, price, PositiveQuantity::ONE)
 }
 
 /// Allocates a remaining lot's cost basis to shares being disposed.
@@ -212,46 +273,63 @@ pub fn market_value(quantity: Quantity, price_minor: i64) -> Result<i64, Investm
 /// basis, so repeated disposals conserve the original cost exactly.
 ///
 /// # Errors
-/// Rejects negative basis, zero available or disposed shares, overselling, and
-/// arithmetic overflow.
+/// Rejects a disposal greater than the remaining quantity or an overflowing result.
 pub fn allocate_cost(
-    remaining: Quantity,
-    remaining_basis: i64,
-    sold: Quantity,
-) -> Result<i64, InvestmentError> {
-    if remaining_basis < 0 {
-        return Err(InvestmentError::NegativeMoney);
-    }
-    if remaining.is_zero() || sold.is_zero() {
-        return Err(InvestmentError::EmptyDisposal);
-    }
+    remaining: PositiveQuantity,
+    remaining_basis: NonNegativeMoney,
+    sold: PositiveQuantity,
+) -> Result<NonNegativeMoney, InvestmentError> {
     if sold > remaining {
         return Err(InvestmentError::InsufficientQuantity);
     }
     if sold == remaining {
         return Ok(remaining_basis);
     }
-    let numerator = sold
-        .atoms()
-        .checked_mul(i128::from(remaining_basis))
-        .ok_or(InvestmentError::Overflow)?;
-    rounded_ratio(numerator, remaining.atoms())
+    rounded_product_ratio(sold.quantity(), remaining_basis, remaining)
 }
 
-fn rounded_ratio(numerator: i128, denominator: i128) -> Result<i64, InvestmentError> {
-    let whole = numerator / denominator;
-    let remainder = numerator % denominator;
+fn rounded_product_ratio(
+    quantity: Quantity,
+    money: NonNegativeMoney,
+    divisor: PositiveQuantity,
+) -> Result<NonNegativeMoney, InvestmentError> {
+    let amount = money.money();
+    let minor = amount.amount().minor_units();
+    let denominator = divisor.atoms();
     // Compare against ceil(denominator / 2) without doubling the remainder.
-    let round_up = remainder >= denominator / 2 + denominator % 2;
+    let midpoint = denominator / 2 + denominator % 2;
+    let (whole, round_up) = if let Some(numerator) = quantity.atoms().checked_mul(minor) {
+        (numerator / denominator, numerator % denominator >= midpoint)
+    } else {
+        let numerator = BigUint::from(quantity.atoms().unsigned_abs()) * minor.unsigned_abs();
+        let denominator = denominator.unsigned_abs();
+        let whole =
+            i128::try_from(&numerator / denominator).map_err(|_| InvestmentError::Overflow)?;
+        let round_up = numerator % denominator >= BigUint::from(midpoint.unsigned_abs());
+        (whole, round_up)
+    };
     let rounded = whole
         .checked_add(i128::from(round_up))
         .ok_or(InvestmentError::Overflow)?;
-    i64::try_from(rounded).map_err(|_| InvestmentError::Overflow)
+    NonNegativeMoney::new(Money::from_minor(rounded, amount.currency()))
+        .map_err(|_| InvestmentError::Overflow)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{MoneyError, PositiveMoney};
+
+    fn positive(value: &str) -> PositiveQuantity {
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("test positive quantity: {error}"))
+    }
+
+    fn usd(minor: i128) -> NonNegativeMoney {
+        NonNegativeMoney::new(Money::usd(minor))
+            .unwrap_or_else(|error| panic!("test money: {error}"))
+    }
 
     fn quantity(value: &str) -> Quantity {
         value.parse().unwrap()
@@ -275,23 +353,19 @@ mod tests {
     #[test]
     fn invalid_and_zero_trade_quantities_are_rejected() {
         for invalid in [
-            "",
-            "0",
-            "0.00000000",
-            "-1",
-            "+1",
-            "1e2",
-            " 1",
-            "1 ",
-            ".5",
-            "1.",
-            "1.2.3",
-            "NaN",
+            "", "-1", "+1", "1e2", " 1", "1 ", ".5", "1.", "1.2.3", "NaN",
         ] {
             assert_eq!(
                 invalid.parse::<Quantity>(),
                 Err(InvestmentError::InvalidQuantity),
                 "{invalid}"
+            );
+        }
+        for zero in ["0", "0.00000000"] {
+            assert_eq!(zero.parse::<Quantity>(), Ok(Quantity::ZERO));
+            assert_eq!(
+                zero.parse::<PositiveQuantity>(),
+                Err(InvestmentError::ZeroQuantity)
             );
         }
         assert_eq!(
@@ -338,70 +412,91 @@ mod tests {
     }
 
     #[test]
-    fn market_values_round_half_up_in_minor_units() {
-        assert_eq!(market_value(quantity("1.25"), 1234), Ok(1543));
-        assert_eq!(market_value(quantity("0.49999999"), 1), Ok(0));
-        assert_eq!(market_value(quantity("0.5"), 1), Ok(1));
-        assert_eq!(market_value(quantity("0.50000001"), 1), Ok(1));
-        assert_eq!(market_value(Quantity::ZERO, i64::MAX), Ok(0));
-        assert_eq!(market_value(quantity("1"), 0), Ok(0));
-        assert_eq!(market_value(quantity("1"), i64::MAX), Ok(i64::MAX));
+    fn market_values_round_half_up_and_retain_currency() {
+        assert_eq!(market_value(quantity("1.25"), usd(1234)), Ok(usd(1543)));
+        assert_eq!(market_value(quantity("0.49999999"), usd(1)), Ok(usd(0)));
+        assert_eq!(market_value(quantity("0.5"), usd(1)), Ok(usd(1)));
+        assert_eq!(market_value(quantity("0.50000001"), usd(1)), Ok(usd(1)));
+        assert_eq!(market_value(Quantity::ZERO, usd(i128::MAX)), Ok(usd(0)));
+        assert_eq!(market_value(quantity("1"), usd(0)), Ok(usd(0)));
+        let euro = NonNegativeMoney::new(Money::eur(100))
+            .unwrap_or_else(|error| panic!("test valuation currency: {error}"));
+        assert_eq!(market_value(quantity("1"), euro), Ok(euro));
+        assert!(matches!(
+            euro.checked_add(usd(100)),
+            Err(MoneyError::CurrencyMismatch { .. })
+        ));
     }
 
     #[test]
-    fn negative_values_and_monetary_overflows_are_rejected() {
+    fn only_out_of_range_results_overflow() {
         assert_eq!(
-            market_value(quantity("1"), -1),
-            Err(InvestmentError::NegativeMoney)
+            market_value(quantity("1"), usd(i128::MAX)),
+            Ok(usd(i128::MAX))
         );
         assert_eq!(
-            market_value(quantity("2"), i64::MAX),
+            market_value(quantity("2"), usd(i128::MAX)),
             Err(InvestmentError::Overflow)
         );
-        let maximum = Quantity::from_atoms(i128::MAX).unwrap();
-        assert_eq!(market_value(maximum, 2), Err(InvestmentError::Overflow));
+        let maximum = PositiveQuantity::from_atoms(i128::MAX)
+            .unwrap_or_else(|error| panic!("test maximum quantity: {error}"));
+        let half = PositiveQuantity::from_atoms(i128::MAX / 2)
+            .unwrap_or_else(|error| panic!("test partial quantity: {error}"));
         assert_eq!(
-            allocate_cost(quantity("1"), -1, quantity("1")),
-            Err(InvestmentError::NegativeMoney)
-        );
-        assert_eq!(
-            allocate_cost(maximum, 2, maximum.checked_sub(quantity("1")).unwrap()),
-            Err(InvestmentError::Overflow)
+            allocate_cost(maximum, usd(i128::MAX), half),
+            Ok(usd(i128::MAX / 2))
         );
     }
 
     #[test]
-    fn partial_disposals_conserve_basis_and_close_the_residual() {
-        let one = quantity("1");
+    fn negative_and_zero_money_cannot_enter_positive_calculations() {
+        assert_eq!(
+            NonNegativeMoney::new(Money::usd(-1)),
+            Err(MoneyError::NegativeAmount)
+        );
+        assert_eq!(
+            PositiveMoney::new(Money::usd(0)),
+            Err(MoneyError::ZeroAmount)
+        );
+        assert_eq!(usd(1).checked_sub(usd(2)), Err(MoneyError::NegativeAmount));
+    }
+
+    #[test]
+    fn partial_disposals_conserve_basis_and_close_the_residual()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let one = positive("1");
         let mut shares = quantity("3");
-        let mut basis = 100;
+        let mut basis = usd(100);
         let mut relieved = Vec::new();
         for _ in 0..3 {
-            let cost = allocate_cost(shares, basis, one).unwrap();
-            relieved.push(cost);
-            basis -= cost;
-            shares = shares.checked_sub(one).unwrap();
+            let cost = allocate_cost(shares.try_into()?, basis, one)?;
+            relieved.push(cost.money().amount().minor_units());
+            basis = basis.checked_sub(cost)?;
+            shares = shares.checked_sub(one.into())?;
         }
         assert_eq!(relieved, [33, 34, 33]);
-        assert_eq!(relieved.iter().sum::<i64>(), 100);
-        assert_eq!(basis, 0);
+        assert_eq!(relieved.iter().sum::<i128>(), 100);
+        assert_eq!(basis, usd(0));
         assert_eq!(shares, Quantity::ZERO);
-        assert_eq!(allocate_cost(quantity("0.5"), 1, quantity("0.25")), Ok(1));
-        assert_eq!(allocate_cost(quantity("0.25"), 0, quantity("0.25")), Ok(0));
+        assert_eq!(
+            allocate_cost(positive("0.5"), usd(1), positive("0.25")),
+            Ok(usd(1))
+        );
+        assert_eq!(
+            allocate_cost(positive("0.25"), usd(0), positive("0.25")),
+            Ok(usd(0))
+        );
+        Ok(())
     }
 
     #[test]
     fn invalid_disposals_do_not_allocate_cost() {
         assert_eq!(
-            allocate_cost(Quantity::ZERO, 0, quantity("1")),
-            Err(InvestmentError::EmptyDisposal)
+            PositiveQuantity::try_from(Quantity::ZERO),
+            Err(InvestmentError::ZeroQuantity)
         );
         assert_eq!(
-            allocate_cost(quantity("1"), 100, Quantity::ZERO),
-            Err(InvestmentError::EmptyDisposal)
-        );
-        assert_eq!(
-            allocate_cost(quantity("1"), 100, quantity("2")),
+            allocate_cost(positive("1"), usd(100), positive("2")),
             Err(InvestmentError::InsufficientQuantity)
         );
     }

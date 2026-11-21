@@ -58,8 +58,9 @@ pub mod prelude {
     pub use chrono::NaiveDate;
 
     pub use crate::core::{
-        Frequency, InvestmentError, JournalEntry, Ledger, LotMethod, Quantity, RecurrenceError,
-        Transaction, TransactionError, allocate_cost, market_value, occurrence_date,
+        Frequency, InvestmentError, JournalEntry, Ledger, LotMethod, PositiveQuantity, Quantity,
+        RecurrenceError, Transaction, TransactionError, allocate_cost, market_value,
+        occurrence_date,
     };
     pub use crate::error::BeanError;
     pub use crate::loan::{
@@ -70,6 +71,7 @@ pub mod prelude {
         Account, AccountCode, AccountCodeError, AccountType, AccountTypeError, Amount, AmountError,
         ClearedEntry, Currency, CurrencyError, DebitCreditError, DebitOrCredit, DocumentType,
         DocumentTypeError, Entry, EntryError, IdempotencyKey, IdempotencyKeyError, Money,
-        MoneyError, Sha256Hex, Sha256HexError, SourceDocument, SourceDocumentError,
+        MoneyError, NonNegativeMoney, PositiveMoney, Sha256Hex, Sha256HexError, SourceDocument,
+        SourceDocumentError,
     };
 }
