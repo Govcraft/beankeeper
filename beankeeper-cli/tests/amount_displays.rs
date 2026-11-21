@@ -225,6 +225,58 @@ fn typed_statements_share_money_and_cli_output() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn typed_cash_flow_reuses_currency_scope_and_cli_payload() -> Result<(), Box<dyn Error>> {
+    use beankeeper::types::{AccountCode, AccountType, Currency, Money};
+    use beankeeper_cli::commands::report::DateRange;
+    use beankeeper_cli::commands::report_cash_flow::{Section, compute_cash_flow};
+    use beankeeper_cli::db::Db;
+    use chrono::NaiveDate;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("cash-flow.db");
+    seed(&path, "BHD")?;
+    let db = Db::open_snapshot(&path, None)?;
+    let from = NaiveDate::parse_from_str("2026-03-01", "%Y-%m-%d")?;
+    let to = NaiveDate::parse_from_str("2026-03-31", "%Y-%m-%d")?;
+    let dates = DateRange::new(from, to)?;
+    let currency = Currency::BHD;
+    let report = compute_cash_flow(&db, "co", dates, currency, &[AccountCode::new("1000")?])?;
+    let proceeds = Money::from_minor(1_800_000, currency);
+    assert_eq!(report.dates(), dates);
+    assert_eq!(report.currency(), currency);
+    assert_eq!(report.cash_accounts()[0].code, "1000");
+    assert_eq!(report.net_change(), proceeds);
+    assert_eq!(report.closing_cash(), proceeds);
+    assert!(report.reconciled());
+    let [line] = report.section(Section::Operating).lines() else {
+        return Err("expected one cash-flow counter-account".into());
+    };
+    assert_eq!(line.account_type(), AccountType::Revenue);
+    assert_eq!(line.amount(), proceeds);
+    let typed_data = serde_json::to_value(&report)?;
+    assert_eq!(typed_data["operating"]["total_display"], "1800.000");
+    let cli = run(
+        &path,
+        &[
+            "--company",
+            "co",
+            "report",
+            "cash-flow",
+            "--cash-account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-31",
+            "--currency",
+            "BHD",
+        ],
+    )?;
+    assert_eq!(cli["data"], typed_data);
+    Ok(())
+}
+
 fn seed(db: &Path, currency: &str) -> Result<(), Box<dyn Error>> {
     run(db, &["init"])?;
     run(db, &["company", "create", "co", "Company"])?;

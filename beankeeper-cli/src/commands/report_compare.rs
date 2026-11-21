@@ -943,15 +943,13 @@ fn cash_snapshot(
         currency,
         ..
     } = *context;
-    let cash_accounts =
-        super::report_cash_flow::resolve_cash_accounts(db.conn(), company, &args.cash_account)?;
-    let data = super::report_cash_flow::compute_cash_flow(
-        db.conn(),
+    let dates = super::report_dates::DateRange::new(from, to)?;
+    let data = super::report_cash_flow::compute_scoped(
+        db,
         company,
-        from,
-        to,
+        dates,
         currency,
-        cash_accounts,
+        args.cash_account.iter().map(String::as_str),
     )?;
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
@@ -965,12 +963,12 @@ fn cash_snapshot(
                 LedgerAccountCode::from_cash_line(&row),
                 SnapshotLine {
                     name: row.name,
-                    kind: parse_kind(&row.account_type)?,
-                    amount: ReportMoney::from_minor(row.amount, currency),
+                    kind: row.account_type,
+                    amount: ReportMoney(row.amount),
                 },
             );
         }
-        totals.insert(key, ReportMoney::from_minor(section.total, currency));
+        totals.insert(key, ReportMoney(section.total));
     }
     for (key, amount) in [
         (TotalKey::NetChange, data.net_change),
@@ -978,7 +976,7 @@ fn cash_snapshot(
         (TotalKey::ClosingCash, data.closing_cash),
         (TotalKey::Difference, data.difference),
     ] {
-        totals.insert(key, ReportMoney::from_minor(amount, currency));
+        totals.insert(key, ReportMoney(amount));
     }
     Ok(Snapshot {
         accounts,
