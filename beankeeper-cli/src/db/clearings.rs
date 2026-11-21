@@ -46,8 +46,10 @@
 
 use std::str::FromStr;
 
+use chrono::NaiveDate;
+use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use super::audit::EntryStatus;
 use crate::error::CliError;
@@ -71,6 +73,15 @@ impl ClearingStatus {
             Self::Reconciled => "reconciled",
         }
     }
+
+    /// Status of a new clearing recorded on this day.
+    #[must_use]
+    pub const fn on(self, date: NaiveDate) -> ClearingState {
+        match self {
+            Self::Cleared => ClearingState::Cleared,
+            Self::Reconciled => ClearingState::Reconciled { on: date },
+        }
+    }
 }
 
 impl FromStr for ClearingStatus {
@@ -87,23 +98,96 @@ impl FromStr for ClearingStatus {
     }
 }
 
+/// A clearing's state. Only a reconciled clearing has a reconciliation date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearingState {
+    /// Matched against a statement.
+    Cleared,
+    /// Locked in by a completed reconciliation.
+    Reconciled {
+        /// The date the clearing was locked.
+        on: NaiveDate,
+    },
+}
+
+impl ClearingState {
+    /// The status label, separate from its associated date.
+    #[must_use]
+    pub const fn status(self) -> ClearingStatus {
+        match self {
+            Self::Cleared => ClearingStatus::Cleared,
+            Self::Reconciled { .. } => ClearingStatus::Reconciled,
+        }
+    }
+
+    /// The reconciliation date, when one exists.
+    #[must_use]
+    pub const fn reconciled_on(self) -> Option<NaiveDate> {
+        match self {
+            Self::Cleared => None,
+            Self::Reconciled { on } => Some(on),
+        }
+    }
+}
+
+impl Serialize for ClearingState {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut record = serializer.serialize_struct("ClearingState", 2)?;
+        record.serialize_field("reconciled_date", &self.reconciled_on())?;
+        record.serialize_field("status", &self.status())?;
+        record.end()
+    }
+}
+
 /// One persisted clearing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Clearing {
     pub id: i64,
     pub entry_id: i64,
     pub amount: i64,
-    pub cleared_date: String,
-    /// Day the clearing was reconciled; `Some` exactly when `status` is
-    /// [`ClearingStatus::Reconciled`].
-    pub reconciled_date: Option<String>,
+    cleared_date: NaiveDate,
     pub statement_ref: Option<String>,
-    pub status: ClearingStatus,
+    #[serde(flatten)]
+    state: ClearingState,
 }
 
-/// The `YYYY-MM-DD` day of a stored date (tolerates a trailing time).
-fn day(s: &str) -> &str {
-    s.get(..10).unwrap_or(s)
+impl Clearing {
+    /// The day the amount was cleared.
+    #[must_use]
+    pub const fn cleared_on(&self) -> NaiveDate {
+        self.cleared_date
+    }
+
+    /// The current state and its reconciliation date, if any.
+    #[must_use]
+    pub const fn state(&self) -> ClearingState {
+        self.state
+    }
+
+    /// Project a clearing onto the given day. A later promotion is not yet visible.
+    #[must_use]
+    pub fn as_of(mut self, cutoff: NaiveDate) -> Option<Self> {
+        if self.cleared_date > cutoff {
+            return None;
+        }
+        if matches!(self.state, ClearingState::Reconciled { on } if on > cutoff) {
+            self.state = ClearingState::Cleared;
+        }
+        Some(self)
+    }
+}
+
+fn database_day(raw: &str) -> Result<NaiveDate, chrono::ParseError> {
+    // Older transactions and their migrated clearings can carry a time suffix.
+    raw.split_once([' ', 'T'])
+        .map_or(raw, |(day, _)| day)
+        .parse()
+}
+
+fn read_day(raw: &str, column: usize) -> rusqlite::Result<NaiveDate> {
+    database_day(raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
 }
 
 /// Total cleared amount of a set of clearings.
@@ -119,7 +203,7 @@ pub fn derive_status(entry_amount: i64, clearings: &[Clearing]) -> EntryStatus {
         EntryStatus::Uncleared
     } else if clearings
         .iter()
-        .all(|c| c.status == ClearingStatus::Reconciled)
+        .all(|c| c.state.status() == ClearingStatus::Reconciled)
     {
         EntryStatus::Reconciled
     } else {
@@ -138,9 +222,9 @@ pub struct ClearSpec<'a> {
     /// `YYYY-MM-DD` date of the request: the `cleared_date` of a new clearing
     /// and, with status reconciled, the `reconciled_date` of every clearing it
     /// creates or promotes.
-    pub date: &'a str,
+    pub date: NaiveDate,
     /// Date of the entry's transaction; no clearing may predate it.
-    pub txn_date: &'a str,
+    pub txn_date: NaiveDate,
 }
 
 /// Why a clear request changed nothing.
@@ -219,7 +303,7 @@ pub fn plan_clear(
             "clearing amount must be positive".to_string(),
         ));
     }
-    if day(spec.date) < day(spec.txn_date) {
+    if spec.date < spec.txn_date {
         let what = if spec.status == ClearingStatus::Reconciled {
             "reconciled"
         } else {
@@ -227,8 +311,7 @@ pub fn plan_clear(
         };
         return Err(CliError::Validation(format!(
             "{what} date {} is before the transaction date {}",
-            spec.date,
-            day(spec.txn_date)
+            spec.date, spec.txn_date
         )));
     }
 
@@ -246,7 +329,7 @@ pub fn plan_clear(
                 prior.entry_id, prior.amount
             )));
         }
-        return match (spec.status, prior.status) {
+        return match (spec.status, prior.state.status()) {
             (ClearingStatus::Reconciled, ClearingStatus::Cleared) => {
                 check_promotable(prior, spec.date)?;
                 Ok(ClearPlan::Promote {
@@ -266,7 +349,7 @@ pub fn plan_clear(
         && let Some(first) = existing.first()
         && existing
             .iter()
-            .all(|c| c.status == ClearingStatus::Reconciled)
+            .all(|c| c.state.status() == ClearingStatus::Reconciled)
     {
         return Err(locked_error(first.entry_id, None));
     }
@@ -284,7 +367,7 @@ pub fn plan_clear(
         let mut ids = Vec::new();
         for c in existing
             .iter()
-            .filter(|c| c.status == ClearingStatus::Cleared)
+            .filter(|c| c.state.status() == ClearingStatus::Cleared)
         {
             check_promotable(c, spec.date)?;
             ids.push(c.id);
@@ -304,8 +387,8 @@ pub fn plan_clear(
 }
 
 /// A clearing can only be reconciled on or after its cleared date.
-fn check_promotable(c: &Clearing, reconciled_date: &str) -> Result<(), CliError> {
-    if day(reconciled_date) < day(&c.cleared_date) {
+fn check_promotable(c: &Clearing, reconciled_date: NaiveDate) -> Result<(), CliError> {
+    if reconciled_date < c.cleared_date {
         return Err(CliError::Validation(format!(
             "reconciled date {reconciled_date} is before the cleared date {} of clearing {} \
              (entry {}); reconcile on or after the cleared date",
@@ -353,29 +436,52 @@ pub fn plan_unclear(existing: &[Clearing], statement: Option<&str>) -> Vec<i64> 
 pub fn list_clearings(conn: &Connection, entry_id: i64) -> Result<Vec<Clearing>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT id, entry_id, amount, cleared_date, statement_ref, status, reconciled_date \
-         FROM entry_clearings WHERE entry_id = ?1 ORDER BY cleared_date, id",
+         FROM entry_clearings WHERE entry_id = ?1",
     )?;
-    let rows = stmt.query_map(params![entry_id], |row| {
-        Ok((
-            Clearing {
-                id: row.get(0)?,
-                entry_id: row.get(1)?,
-                amount: row.get(2)?,
-                cleared_date: row.get(3)?,
-                reconciled_date: row.get(6)?,
-                statement_ref: row.get(4)?,
-                status: ClearingStatus::Cleared,
-            },
-            row.get::<_, String>(5)?,
-        ))
-    })?;
+    let rows = stmt.query_map(params![entry_id], clearing_from_row)?;
     let mut out = Vec::new();
     for row in rows {
-        let (mut c, status) = row?;
-        c.status = ClearingStatus::from_str(&status)?;
-        out.push(c);
+        out.push(row?);
     }
+    out.sort_unstable_by_key(|clearing| (clearing.cleared_date, clearing.id));
     Ok(out)
+}
+
+fn clearing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clearing> {
+    let cleared_date = read_day(&row.get::<_, String>(3)?, 3)?;
+    let status = row
+        .get::<_, String>(5)?
+        .parse::<ClearingStatus>()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+        })?;
+    let reconciled = row
+        .get::<_, Option<String>>(6)?
+        .map(|date| read_day(&date, 6))
+        .transpose()?;
+    let state = match (status, reconciled) {
+        (ClearingStatus::Cleared, None) => ClearingState::Cleared,
+        (ClearingStatus::Reconciled, Some(on)) if on >= cleared_date => {
+            ClearingState::Reconciled { on }
+        }
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                6,
+                Type::Text,
+                Box::new(CliError::Database(
+                    "persisted clearing status and dates disagree".into(),
+                )),
+            ));
+        }
+    };
+    Ok(Clearing {
+        id: row.get(0)?,
+        entry_id: row.get(1)?,
+        amount: row.get(2)?,
+        cleared_date,
+        statement_ref: row.get(4)?,
+        state,
+    })
 }
 
 /// An entry resolved for clearing.
@@ -387,7 +493,7 @@ pub struct EntryTarget {
     pub amount: i64,
     pub currency: String,
     pub reference: Option<String>,
-    pub date: String,
+    pub date: NaiveDate,
 }
 
 const TARGET_SELECT: &str = "SELECT t.id, e.id, e.account_code, e.amount, t.currency, \
@@ -402,7 +508,7 @@ fn map_target(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryTarget> {
         amount: row.get(3)?,
         currency: row.get(4)?,
         reference: row.get(5)?,
-        date: row.get(6)?,
+        date: read_day(&row.get::<_, String>(6)?, 6)?,
     })
 }
 
@@ -479,15 +585,18 @@ pub fn find_entry_by_reference(
 mod tests {
     use super::*;
 
+    fn date(value: &str) -> NaiveDate {
+        database_day(value).unwrap_or_else(|error| panic!("test date: {error}"))
+    }
+
     fn c(id: i64, amount: i64, stmt: Option<&str>, status: ClearingStatus) -> Clearing {
         Clearing {
             id,
             entry_id: 1,
             amount,
-            cleared_date: "2026-01-01".into(),
-            reconciled_date: (status == ClearingStatus::Reconciled).then(|| "2026-01-01".into()),
+            cleared_date: date(TXN_DATE),
             statement_ref: stmt.map(str::to_string),
-            status,
+            state: status.on(date(TXN_DATE)),
         }
     }
 
@@ -499,22 +608,78 @@ mod tests {
             amount,
             status: ClearingStatus::Cleared,
             statement,
-            date: DATE,
-            txn_date: TXN_DATE,
+            date: date(DATE),
+            txn_date: date(TXN_DATE),
         }
     }
 
-    fn reconcile<'a>(statement: Option<&'a str>, date: &'a str) -> ClearSpec<'a> {
+    fn reconcile<'a>(statement: Option<&'a str>, on: &str) -> ClearSpec<'a> {
         ClearSpec {
             amount: None,
             status: ClearingStatus::Reconciled,
             statement,
-            date,
-            txn_date: TXN_DATE,
+            date: date(on),
+            txn_date: date(TXN_DATE),
         }
     }
 
     use ClearingStatus::{Cleared, Reconciled};
+
+    #[test]
+    fn stored_clearings_require_matching_state_and_date() -> rusqlite::Result<()> {
+        let conn = Connection::open_in_memory()?;
+        let decode = |cleared, status, reconciled| {
+            conn.query_row(
+                "SELECT 1, 1, 100, ?1, NULL, ?2, ?3",
+                params![cleared, status, reconciled],
+                clearing_from_row,
+            )
+        };
+        for (start, status, end) in [
+            ("invalid", "cleared", None),
+            ("2026-02-01", "cleared", Some("2026-02-02")),
+            ("2026-02-01", "reconciled", None),
+            ("2026-02-01", "reconciled", Some("2026-01-31")),
+        ] {
+            assert!(
+                decode(start, status, end).is_err(),
+                "{status}: {start} {end:?}"
+            );
+        }
+
+        let clearing = decode(
+            "2026-02-01 09:00:00",
+            "reconciled",
+            Some("2026-02-15T17:00:00"),
+        )?;
+        assert_eq!(clearing.cleared_on(), date("2026-02-01"));
+        assert_eq!(
+            clearing.state(),
+            ClearingState::Reconciled {
+                on: date("2026-02-15")
+            }
+        );
+        let earlier = clearing
+            .as_of(date("2026-02-01"))
+            .and_then(|value| serde_json::to_value(value).ok());
+        assert_eq!(
+            earlier,
+            Some(serde_json::json!({
+                "id": 1, "entry_id": 1, "amount": 100,
+                "cleared_date": "2026-02-01", "statement_ref": null,
+                "reconciled_date": null, "status": "cleared"
+            }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn planner_compares_calendar_days_instead_of_text() {
+        let mut later = spec(None, None);
+        later.txn_date = date("9999-12-31");
+        later.date = date("+10000-01-01");
+        assert!(plan_clear(100, &[], &later).is_ok());
+    }
 
     #[test]
     fn derive_status_rules() {
@@ -634,7 +799,7 @@ mod tests {
     #[test]
     fn date_before_transaction_is_rejected() {
         let mut early = spec(None, None);
-        early.date = "2025-12-31";
+        early.date = date("2025-12-31");
         let err = plan_clear(100, &[], &early);
         assert!(
             matches!(&err, Err(CliError::Validation(m)) if m.contains("before the transaction date")),
@@ -642,8 +807,8 @@ mod tests {
         );
         // Same day is fine; a stored date with a time is compared by day.
         let mut same = spec(None, None);
-        same.date = TXN_DATE;
-        same.txn_date = "2026-01-01 09:00:00";
+        same.date = date(TXN_DATE);
+        same.txn_date = date("2026-01-01 09:00:00");
         assert!(plan_clear(100, &[], &same).is_ok());
         // The rule applies to the reconciled date too.
         let err = plan_clear(100, &[], &reconcile(None, "2025-12-31"));
@@ -656,7 +821,7 @@ mod tests {
     #[test]
     fn reconciled_date_must_not_precede_cleared_date() {
         let mut feb = c(7, 100, Some("S1"), Cleared);
-        feb.cleared_date = "2026-02-15".into();
+        feb.cleared_date = date("2026-02-15");
         let existing = [feb];
         // Promote by statement and promote in full both check the date.
         for spec in [

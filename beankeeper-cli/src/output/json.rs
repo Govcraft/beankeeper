@@ -13,13 +13,13 @@
 use std::collections::HashMap;
 
 use beankeeper::types::{Currency, Sha256Hex};
-use chrono::{SecondsFormat, Utc};
+use chrono::{NaiveDate, SecondsFormat, Utc};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use crate::db::clearings::Clearing;
 use crate::db::{
-    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, CompanyRow, EntryRow, PostResult,
-    TransactionRow,
+    AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, ClearingState, CompanyRow,
+    EntryRow, EntryStatus, PostResult, TransactionRow,
 };
 use crate::error::{CliError, ErrorCode};
 
@@ -218,7 +218,7 @@ pub struct EntryJson {
     memo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tax_category: Option<String>,
-    status: String,
+    status: EntryStatus,
     /// Total cleared amount (`txn show` only).
     #[serde(skip_serializing_if = "Option::is_none")]
     cleared_amount: Option<i64>,
@@ -235,11 +235,11 @@ pub struct EntryJson {
 pub struct ClearingJson {
     id: i64,
     amount: i64,
-    cleared_date: String,
-    reconciled_date: Option<String>,
+    cleared_date: NaiveDate,
     #[serde(rename = "statement")]
     statement_ref: Option<String>,
-    status: &'static str,
+    #[serde(flatten)]
+    state: ClearingState,
 }
 
 /// Builds an entry's JSON; `clearings` adds the clearing breakdown.
@@ -252,7 +252,7 @@ fn entry_json(e: &EntryRow, clearings: Option<&[Clearing]>) -> EntryJson {
         amount: e.amount,
         memo: e.memo.clone(),
         tax_category: e.tax_category.clone(),
-        status: e.status.clone(),
+        status: e.status,
         cleared_amount: cleared,
         remaining_amount: cleared.map(|c| e.amount - c),
         clearings: clearings.map(|cs| {
@@ -260,10 +260,9 @@ fn entry_json(e: &EntryRow, clearings: Option<&[Clearing]>) -> EntryJson {
                 .map(|c| ClearingJson {
                     id: c.id,
                     amount: c.amount,
-                    cleared_date: c.cleared_date.clone(),
-                    reconciled_date: c.reconciled_date.clone(),
+                    cleared_date: c.cleared_on(),
                     statement_ref: c.statement_ref.clone(),
-                    status: c.status.as_str(),
+                    state: c.state(),
                 })
                 .collect()
         }),
@@ -1084,7 +1083,7 @@ mod tests {
                     amount: 5000,
                     memo: None,
                     tax_category: None,
-                    status: "uncleared".into(),
+                    status: EntryStatus::Uncleared,
                 },
                 EntryRow {
                     id: 2,
@@ -1095,7 +1094,7 @@ mod tests {
                     amount: 5000,
                     memo: None,
                     tax_category: None,
-                    status: "uncleared".into(),
+                    status: EntryStatus::Uncleared,
                 },
             ],
         );

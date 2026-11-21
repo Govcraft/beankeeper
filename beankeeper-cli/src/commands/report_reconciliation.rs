@@ -100,37 +100,31 @@ pub struct ItemClearing {
     pub id: i64,
     /// Raw (always positive) amount in minor units.
     pub amount: i64,
-    pub cleared_date: String,
-    pub reconciled_date: Option<String>,
+    pub cleared_date: NaiveDate,
     #[serde(rename = "statement")]
     pub statement_ref: Option<String>,
-    pub status: &'static str,
+    #[serde(flatten)]
+    pub state: db::ClearingState,
 }
 
 /// The clearings of an entry as of `to` (`None`: current state).
 fn clearings_as_of(
     conn: &Connection,
     entry_id: i64,
-    to: Option<&str>,
+    to: Option<NaiveDate>,
 ) -> Result<Vec<ItemClearing>, CliError> {
-    let on_or_before = |d: &str| to.is_none_or(|to| d <= to);
     Ok(db::clearings::list_clearings(conn, entry_id)?
         .into_iter()
-        .filter(|c| on_or_before(&c.cleared_date))
-        .map(|c| {
-            let reconciled_date = c.reconciled_date.filter(|d| on_or_before(d));
-            ItemClearing {
-                id: c.id,
-                amount: c.amount,
-                cleared_date: c.cleared_date,
-                status: if reconciled_date.is_some() {
-                    "reconciled"
-                } else {
-                    "cleared"
-                },
-                reconciled_date,
-                statement_ref: c.statement_ref,
-            }
+        .filter_map(|clearing| match to {
+            Some(cutoff) => clearing.as_of(cutoff),
+            None => Some(clearing),
+        })
+        .map(|c| ItemClearing {
+            id: c.id,
+            amount: c.amount,
+            cleared_date: c.cleared_on(),
+            state: c.state(),
+            statement_ref: c.statement_ref,
         })
         .collect())
 }
@@ -153,7 +147,7 @@ pub struct ReconciliationReport {
     pub account_type: String,
     pub normal_balance: &'static str,
     pub currency: Currency,
-    pub as_of: Option<String>,
+    pub as_of: Option<NaiveDate>,
     pub statement: Option<String>,
     pub filters: Vec<MetadataFilter>,
     pub group_by: Option<String>,
@@ -370,11 +364,10 @@ pub fn build_report(
     company: &str,
     args: &ReconciliationArgs<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    if let Some(to) = args.to {
-        NaiveDate::parse_from_str(to, "%Y-%m-%d").map_err(|_| {
-            CliError::Validation(format!("invalid --to date '{to}': expected YYYY-MM-DD"))
-        })?;
-    }
+    let to = args
+        .to
+        .map(|date| super::report_dates::parse_date("--to", date))
+        .transpose()?;
     let filters = metadata_filter::parse_filters(args.filter_metadata)?;
     let statement = args
         .statement
@@ -398,7 +391,7 @@ pub fn build_report(
         &EntryQuery {
             code: &account.code,
             currency,
-            to: args.to,
+            to,
             statement: statement.as_deref(),
             filters: &filters,
         },
@@ -423,7 +416,7 @@ pub fn build_report(
             let group = args
                 .group_by_metadata
                 .and_then(|k| metadata_value(r.metadata.as_deref(), k));
-            let clearings = clearings_as_of(conn, r.entry_id, args.to)?;
+            let clearings = clearings_as_of(conn, r.entry_id, to)?;
             uncleared.push(UnclearedEntry {
                 entry_id: r.entry_id,
                 transaction_id: r.transaction_id,
@@ -461,7 +454,7 @@ pub fn build_report(
         normal_balance: if debit_normal { "debit" } else { "credit" },
         account_type: account.account_type,
         currency,
-        as_of: args.to.map(str::to_string),
+        as_of: to,
         statement,
         filters,
         group_by: args.group_by_metadata.map(str::to_string),
@@ -512,7 +505,7 @@ struct EntryRow {
 struct EntryQuery<'a> {
     code: &'a str,
     currency: Currency,
-    to: Option<&'a str>,
+    to: Option<NaiveDate>,
     statement: Option<&'a str>,
     filters: &'a [MetadataFilter],
 }
@@ -563,7 +556,7 @@ fn load_entries(
         Some(company.to_string()),
         Some(code.to_string()),
         Some(currency.code().to_string()),
-        to.map(str::to_string),
+        to.map(|date| date.to_string()),
         statement.map(str::to_string),
     ];
     values.extend(filter.params.into_iter().map(Some));
@@ -683,7 +676,6 @@ fn header_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
     let bold = anstyle::Style::new().bold();
     let as_of = r
         .as_of
-        .as_deref()
         .map_or_else(|| "all dates".to_string(), |d| format!("through {d}"));
     let mut lines = vec![
         styled(
@@ -886,7 +878,7 @@ struct AccountJson<'a> {
 struct ReportJson<'a> {
     account: AccountJson<'a>,
     currency: &'a str,
-    as_of: Option<&'a str>,
+    as_of: Option<NaiveDate>,
     statement: Option<&'a str>,
     metadata_filters: &'a [MetadataFilter],
     group_by_metadata: Option<&'a str>,
@@ -920,7 +912,7 @@ pub fn render_json(r: &ReconciliationReport, meta: output::json::Meta) -> Result
             normal_balance: r.normal_balance,
         },
         currency: r.currency.code(),
-        as_of: r.as_of.as_deref(),
+        as_of: r.as_of,
         statement: r.statement.as_deref(),
         metadata_filters: &r.filters,
         group_by_metadata: r.group_by.as_deref(),
@@ -1031,7 +1023,7 @@ pub fn render_csv(r: &ReconciliationReport) -> Result<String, CliError> {
         details.write_csv(&mut wtr, r)?;
     }
 
-    let as_of = r.as_of.as_deref().unwrap_or("");
+    let as_of = r.as_of.map(|date| date.to_string()).unwrap_or_default();
     let mut summary = vec![
         ("book_balance", r.book_balance),
         ("cleared_balance", r.cleared_balance),
@@ -1051,7 +1043,7 @@ pub fn render_csv(r: &ReconciliationReport) -> Result<String, CliError> {
             "summary",
             "",
             "",
-            as_of,
+            as_of.as_str(),
             "",
             label,
             &value.to_string(),

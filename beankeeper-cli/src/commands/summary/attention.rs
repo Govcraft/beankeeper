@@ -413,12 +413,12 @@ mod tests {
             transaction_id: id,
             entry_id,
             amount: None,
-            date: "2024-01-15",
+            date: "2024-01-15".parse()?,
             statement: Some("statement"),
             status: db::clearings::ClearingStatus::Cleared,
         };
         db::audit::clear_entry(db.conn(), &Actor::new("test"), &request)?;
-        request.date = "2024-02-02";
+        request.date = "2024-02-02".parse()?;
         request.status = db::clearings::ClearingStatus::Reconciled;
         db::audit::clear_entry(db.conn(), &Actor::new("test"), &request)?;
         let prior = attention(&db, "2024-02-01")?;

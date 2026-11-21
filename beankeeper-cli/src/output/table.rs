@@ -10,7 +10,7 @@ use super::amounts::format_money_grouped;
 use crate::db::clearings::{Clearing, cleared_sum};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceRow,
-    CompanyRow, EntryRow, TransactionRow,
+    CompanyRow, EntryRow, EntryStatus, TransactionRow,
 };
 use crate::error::CliError;
 
@@ -363,10 +363,10 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
             .as_deref()
             .map(|c| format!("  [{c}]"))
             .unwrap_or_default();
-        let status_suffix = match entry.status.as_str() {
-            "cleared" => format!("  {}", styled("*C*", green_style(), use_color)),
-            "reconciled" => format!("  {}", styled("*R*", green_style(), use_color)),
-            _ => String::new(),
+        let status_suffix = match entry.status {
+            EntryStatus::Cleared => format!("  {}", styled("*C*", green_style(), use_color)),
+            EntryStatus::Reconciled => format!("  {}", styled("*R*", green_style(), use_color)),
+            EntryStatus::Uncleared => String::new(),
         };
 
         lines.push(format!(
@@ -420,8 +420,8 @@ fn clearing_lines(
     )];
     for c in clearings {
         let reconciled = c
-            .reconciled_date
-            .as_deref()
+            .state()
+            .reconciled_on()
             .map(|d| format!("  reconciled {d}"))
             .unwrap_or_default();
         let statement = c
@@ -433,8 +433,8 @@ fn clearing_lines(
             "         clearing #{id}  {amount}  {status}  cleared {date}{reconciled}{statement}",
             id = c.id,
             amount = format_amount(c.amount, currency_minor_units),
-            status = c.status.as_str(),
-            date = c.cleared_date,
+            status = c.state().status().as_str(),
+            date = c.cleared_on(),
         ));
     }
     out
@@ -1082,7 +1082,7 @@ mod tests {
                 amount: 5000,
                 memo: None,
                 tax_category: None,
-                status: "uncleared".into(),
+                status: EntryStatus::Uncleared,
             },
             EntryRow {
                 id: 2,
@@ -1093,7 +1093,7 @@ mod tests {
                 amount: 5000,
                 memo: None,
                 tax_category: None,
-                status: "uncleared".into(),
+                status: EntryStatus::Uncleared,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);
@@ -1131,7 +1131,7 @@ mod tests {
                 amount: 5000,
                 memo: None,
                 tax_category: None,
-                status: "uncleared".into(),
+                status: EntryStatus::Uncleared,
             },
             EntryRow {
                 id: 2,
@@ -1142,7 +1142,7 @@ mod tests {
                 amount: 3000,
                 memo: None,
                 tax_category: None,
-                status: "uncleared".into(),
+                status: EntryStatus::Uncleared,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, 2, false);
