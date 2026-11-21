@@ -7,6 +7,7 @@ pub mod budgets;
 pub mod clearings;
 pub mod companies;
 pub mod connection;
+pub mod ids;
 pub mod investments;
 pub mod metadata;
 pub mod metadata_filter;

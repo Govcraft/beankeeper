@@ -17,6 +17,7 @@ use chrono::{NaiveDate, SecondsFormat, Utc};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use crate::db::clearings::Clearing;
+use crate::db::ids::{AttachmentId, TransactionId};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, ClearingState, CompanyRow,
     EntryRow, EntryStatus, PostResult, TransactionRow,
@@ -271,7 +272,7 @@ fn entry_json(e: &EntryRow, clearings: Option<&[Clearing]>) -> EntryJson {
 
 #[derive(Serialize)]
 pub struct AttachmentJson<'a> {
-    id: i64,
+    id: AttachmentId,
     document_type: &'static str,
     uri: &'a str,
     hash: Option<&'a str>,
@@ -726,14 +727,14 @@ pub(crate) fn post_result_data(result: PostResult) -> Result<serde_json::Value, 
 ///
 /// Returns [`CliError`] on serialisation failure.
 pub fn render_attached(
-    attachment_id: i64,
-    transaction_id: i64,
+    attachment_id: AttachmentId,
+    transaction_id: TransactionId,
     meta: Meta,
 ) -> Result<String, CliError> {
     #[derive(Serialize)]
     struct AttachedJson {
-        id: i64,
-        transaction_id: i64,
+        id: AttachmentId,
+        transaction_id: TransactionId,
     }
     envelope_ok(
         meta,

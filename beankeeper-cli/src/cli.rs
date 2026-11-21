@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 use crate::operation::Operation;
 
@@ -1805,7 +1806,7 @@ pub struct TxnImportArgs {
 #[derive(Args, Debug)]
 pub struct TxnAttachArgs {
     /// Transaction ID.
-    pub transaction_id: i64,
+    pub transaction_id: TransactionId,
 
     /// Path to the file to attach.
     pub file_path: String,
@@ -1816,7 +1817,7 @@ pub struct TxnAttachArgs {
 
     /// Optional entry ID for entry-level attachments.
     #[arg(long)]
-    pub entry: Option<i64>,
+    pub entry: Option<EntryId>,
 }
 
 /// Arguments accepted by `bk txn clear`.

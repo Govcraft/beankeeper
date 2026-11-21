@@ -704,7 +704,7 @@ fn posting(db: &Db, input: inputs::TxnPost, actor: &Actor, mode: PostingMode) ->
         credit: lines(input.credits)?,
         metadata: input.metadata,
         annotations: input.meta.into_iter().collect(),
-        correlate: input.correlate.map(|id| id.get()),
+        correlate: input.correlate.map(crate::db::ids::TransactionId::get),
         reference: input.reference.map(Text::into_inner),
         on_conflict: input
             .on_conflict

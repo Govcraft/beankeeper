@@ -998,7 +998,7 @@ fn run_show(
     let (format, use_color) = display;
     let company_scope = Company::resolve(db_handle.conn(), company)?;
     let (txn, entries) = transactions::get_scoped_transaction(&company_scope, id)?;
-    let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
+    let att_rows = attachments::list_attachments(db_handle.conn(), company, id.try_into()?)?;
     let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
     for e in &entries {
         clearings.insert(e.id, db::clearings::list_clearings(&company_scope, e.id)?);
@@ -1066,7 +1066,7 @@ fn run_attach(
         .map_err(|e| CliError::Validation(format!("{e}")))?;
 
     // 2. Validate the transaction exists for this company
-    let _txn = transactions::get_transaction(db_handle.conn(), company, transaction_id)?;
+    let _txn = transactions::get_transaction(db_handle.conn(), company, transaction_id.get())?;
 
     // 3. Validate source file exists
     let source = Path::new(file_path);
