@@ -16,13 +16,14 @@
 //! clearings) live in [`crate::db::clearings`]; every change is audited by
 //! [`crate::db::audit`].
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use beankeeper::types::Currency;
 use chrono::NaiveDate;
 use serde::Serialize;
 
-use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnCommand, resolve_format};
+use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnClearArgs, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db::connection::Db;
 use crate::db::{self, Actor, ClearOutcome, ClearRequest, EntryTarget};
@@ -39,25 +40,20 @@ pub fn run(
     cli: &Cli,
     db_handle: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &TxnClearArgs,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
-    let batch = match sub {
-        TxnCommand::Clear {
-            from_file: Some(input),
-            ..
-        } => Some(parse_batch(&input.read_text()?)?),
-        _ => None,
-    };
+    let target = resolve_request(args, BatchInput::Cli)?;
     let actor = cli.principal();
-    let result = compute(db_handle, company, sub, &actor, batch.as_deref())?;
+    let result = compute(db_handle, company, args, &actor, target)?;
     let ctx = result.context(db_handle, company, actor);
     let format = resolve_format(None, cli);
     let meta = meta.unwrap_or_else(|| cli.meta("txn.clear", Some(company)));
-    if let Some(account) = &result.account {
-        render_batch(cli, &ctx, account, &result.items, format, meta)
-    } else {
-        render_single(cli, &ctx, &result.items[0], format, meta)
+    match &result.items {
+        ClearedItems::Single(item) => render_single(cli, &ctx, item, format, meta),
+        ClearedItems::Batch { account, items } => {
+            render_batch(cli, &ctx, account, items, format, meta)
+        }
     }
 }
 
@@ -73,123 +69,157 @@ pub fn run(
 pub fn execute_json(
     db_handle: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &TxnClearArgs,
     actor: &Actor,
     batch: Option<&[BatchLine]>,
 ) -> Result<serde_json::Value, CliError> {
     db::get_company(db_handle.conn(), company)?;
-    let result = compute(db_handle, company, sub, actor, batch)?;
+    let target = resolve_request(args, BatchInput::Mcp(batch))?;
+    let result = compute(db_handle, company, args, actor, target)?;
     let ctx = result.context(db_handle, company, actor.clone());
-    if let Some(account) = &result.account {
-        batch_data(&ctx, account, &result.items)
-    } else {
-        single_data(&ctx, &result.items[0])
+    match &result.items {
+        ClearedItems::Single(item) => single_data(&ctx, item),
+        ClearedItems::Batch { account, items } => batch_data(&ctx, account, items),
     }
 }
 
-struct Execution {
-    date: String,
-    statement: Option<String>,
-    status: ClearanceArg,
-    account: Option<String>,
-    items: Vec<Item>,
+enum BatchInput<'a> {
+    Cli,
+    Mcp(Option<&'a [BatchLine]>),
 }
 
-impl Execution {
+enum ClearRequestTarget<'a> {
+    Entry {
+        selector: EntrySelector<'a>,
+        amount: Option<&'a str>,
+    },
+    Batch {
+        account: &'a str,
+        lines: Cow<'a, [BatchLine]>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum EntrySelector<'a> {
+    Id {
+        transaction_id: i64,
+        entry_id: i64,
+    },
+    Reference {
+        reference: &'a str,
+        account: &'a str,
+    },
+}
+
+fn resolve_request<'a>(
+    args: &'a TxnClearArgs,
+    input: BatchInput<'a>,
+) -> Result<ClearRequestTarget<'a>, CliError> {
+    let amount = args.amount.as_deref();
+    if args.status == ClearanceArg::Uncleared && amount.is_some() {
+        return Err(CliError::Usage(
+            "--amount cannot be used with --status uncleared".into(),
+        ));
+    }
+    let selection = match (
+        args.transaction_id,
+        args.entry,
+        args.reference.as_deref(),
+        args.account.as_deref(),
+        args.from_file.as_ref(),
+        input,
+    ) {
+        (Some(transaction_id), Some(entry_id), None, None, None, BatchInput::Cli | BatchInput::Mcp(None)) => {
+            ClearRequestTarget::Entry { selector: EntrySelector::Id { transaction_id, entry_id }, amount }
+        }
+        (None, None, Some(reference), Some(account), None, BatchInput::Cli | BatchInput::Mcp(None)) => {
+            ClearRequestTarget::Entry { selector: EntrySelector::Reference { reference, account }, amount }
+        }
+        (None, None, None, Some(account), Some(source), BatchInput::Cli) if amount.is_none() => {
+            ClearRequestTarget::Batch { account, lines: Cow::Owned(parse_batch(&source.read_text()?)?) }
+        }
+        (None, None, None, Some(account), _, BatchInput::Mcp(Some(lines))) if amount.is_none() => {
+            validate_inline_batch(lines)?;
+            ClearRequestTarget::Batch { account, lines: Cow::Borrowed(lines) }
+        }
+        (None, None, None, Some(_), Some(_), BatchInput::Mcp(None)) => {
+            return Err(CliError::Usage("MCP batch input must be supplied directly".into()));
+        }
+        _ => return Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into())),
+    };
+    Ok(selection)
+}
+
+enum ClearedItems<'a> {
+    Single(Item),
+    Batch { account: &'a str, items: Vec<Item> },
+}
+
+struct Execution<'a> {
+    date: String,
+    statement: Option<&'a str>,
+    status: ClearanceArg,
+    items: ClearedItems<'a>,
+}
+
+impl Execution<'_> {
     fn context<'a>(&'a self, db: &'a Db, company: &'a str, actor: Actor) -> Ctx<'a> {
         Ctx {
             conn: db.conn(),
             actor,
             company,
             date: &self.date,
-            statement: self.statement.as_deref(),
+            statement: self.statement,
             status: self.status,
         }
     }
 }
 
-fn compute(
+fn compute<'a>(
     db_handle: &Db,
     company: &str,
-    sub: &TxnCommand,
+    args: &'a TxnClearArgs,
     actor: &Actor,
-    batch: Option<&[BatchLine]>,
-) -> Result<Execution, CliError> {
-    let TxnCommand::Clear {
-        account,
-        from_file,
-        amount,
-        date,
-        statement,
-        status,
-        ..
-    } = sub
-    else {
-        return Err(CliError::General("expected txn clear subcommand".into()));
-    };
-    let cleared_date = resolve_date(date.as_deref())?;
-    let statement = statement
+    selection: ClearRequestTarget<'a>,
+) -> Result<Execution<'a>, CliError> {
+    let date = resolve_date(args.date.as_deref())?;
+    let statement = args
+        .statement
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    if *status == ClearanceArg::Uncleared && amount.is_some() {
-        return Err(CliError::Usage(
-            "--amount cannot be used with --status uncleared".into(),
-        ));
-    }
+    let status = args.status;
     let ctx = Ctx {
         conn: db_handle.conn(),
         actor: actor.clone(),
         company,
-        date: &cleared_date,
+        date: &date,
         statement,
-        status: *status,
+        status,
     };
-    let (batch_account, items) = if let Some(lines) = batch {
-        validate_batch_target(sub, lines)?;
-        let account = account
-            .as_deref()
-            .ok_or_else(|| CliError::Usage("batch clearing requires --account".into()))?;
-        (Some(account.to_string()), run_batch(&ctx, account, lines)?)
-    } else {
-        if from_file.is_some() {
-            return Err(CliError::Usage(
-                "MCP batch input must be supplied directly".into(),
-            ));
+    let items = match selection {
+        ClearRequestTarget::Entry { selector, amount } => {
+            let target = resolve_entry(&ctx, selector)?;
+            let amount = amount
+                .map(|amount| parse_amount(amount, &target))
+                .transpose()?;
+            let outcome = apply(&ctx, &target, amount)?;
+            ClearedItems::Single(Item::new(None, &target, &outcome))
         }
-        let target = resolve_target(&ctx, sub)?;
-        let amount = amount
-            .as_deref()
-            .map(|a| parse_amount(a, &target))
-            .transpose()?;
-        let outcome = apply(&ctx, &target, amount)?;
-        (None, vec![Item::new(None, &target, &outcome)])
+        ClearRequestTarget::Batch { account, lines } => ClearedItems::Batch {
+            account,
+            items: run_batch(&ctx, account, &lines)?,
+        },
     };
     Ok(Execution {
-        date: cleared_date,
-        statement: statement.map(str::to_string),
-        status: *status,
-        account: batch_account,
+        date,
+        statement,
+        status,
         items,
     })
 }
 
-fn validate_batch_target(sub: &TxnCommand, lines: &[BatchLine]) -> Result<(), CliError> {
-    let TxnCommand::Clear {
-        transaction_id,
-        entry,
-        reference,
-        amount,
-        ..
-    } = sub
-    else {
-        return Err(CliError::General("expected txn clear subcommand".into()));
-    };
-    if transaction_id.is_some() || entry.is_some() || reference.is_some() || amount.is_some() {
-        return Err(CliError::Usage(
-            "batch clearing cannot be combined with a single entry or amount".into(),
-        ));
-    }
+fn validate_inline_batch(lines: &[BatchLine]) -> Result<(), CliError> {
     if lines.is_empty() {
         return Err(CliError::Validation("batch input has no lines".into()));
     }
@@ -204,37 +234,15 @@ fn validate_batch_target(sub: &TxnCommand, lines: &[BatchLine]) -> Result<(), Cl
     Ok(())
 }
 
-fn resolve_target(ctx: &Ctx<'_>, sub: &TxnCommand) -> Result<EntryTarget, CliError> {
-    let TxnCommand::Clear {
-        transaction_id,
-        entry,
-        reference,
-        account,
-        ..
-    } = sub
-    else {
-        return Err(CliError::General("expected txn clear subcommand".into()));
-    };
-    if let Some(reference) = reference {
-        if transaction_id.is_some() || entry.is_some() {
-            return Err(CliError::Usage(
-                "--reference cannot be combined with transaction or entry IDs".into(),
-            ));
+fn resolve_entry(ctx: &Ctx<'_>, selector: EntrySelector<'_>) -> Result<EntryTarget, CliError> {
+    match selector {
+        EntrySelector::Id {
+            transaction_id,
+            entry_id,
+        } => db::get_entry_target(ctx.conn, ctx.company, transaction_id, entry_id),
+        EntrySelector::Reference { reference, account } => {
+            db::find_entry_by_reference(ctx.conn, ctx.company, reference, account)
         }
-        let account = account
-            .as_deref()
-            .ok_or_else(|| CliError::Usage("--reference requires --account".into()))?;
-        db::find_entry_by_reference(ctx.conn, ctx.company, reference, account)
-    } else {
-        let (Some(txn_id), Some(entry_id)) = (transaction_id, entry) else {
-            return Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into()));
-        };
-        if account.is_some() {
-            return Err(CliError::Usage(
-                "--account is only used with --reference or batch input".into(),
-            ));
-        }
-        db::get_entry_target(ctx.conn, ctx.company, *txn_id, *entry_id)
     }
 }
 

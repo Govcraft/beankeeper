@@ -166,7 +166,7 @@ fn import_file_formats_keep_global_response_format() -> TestResult {
             let cli = Cli::try_parse_from(args)?;
             assert!(cli.is_json());
             assert!(
-                matches!(cli.command, BkCommand::Txn(args) if matches!(*args.command, TxnCommand::Import { format: Some(ImportFormat::Ofx), .. }))
+                matches!(cli.command, BkCommand::Txn(args) if matches!(*args.command, TxnCommand::Import(beankeeper_cli::cli::TxnImportArgs { format: Some(ImportFormat::Ofx), .. })))
             );
         }
     }
@@ -220,4 +220,72 @@ fn help_only_describes_user_facing_format_options() {
     assert!(!help.contains("does not collide"));
     assert!(!help.contains("not `global`"));
     assert!(help.contains("Output format"));
+}
+
+#[test]
+fn clearing_requires_exactly_one_complete_target() -> TestResult {
+    for args in [
+        &["42", "--entry", "5"][..],
+        &["--reference", "abc", "--account", "1000"][..],
+        &["--from-file", "-", "--account", "1000"][..],
+    ] {
+        Cli::try_parse_from(
+            ["bk", "txn", "clear"]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )?;
+    }
+    for args in [
+        &[][..],
+        &["42"][..],
+        &["42", "--entry", "5", "--account", "1000"][..],
+        &["--reference", "abc"][..],
+        &["--from-file", "-", "--account", "1000", "--amount", "1"][..],
+    ] {
+        assert!(
+            Cli::try_parse_from(
+                ["bk", "txn", "clear"]
+                    .into_iter()
+                    .chain(args.iter().copied())
+            )
+            .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn budget_accepts_only_complete_monthly_or_annual_arguments() -> TestResult {
+    let prefix = ["bk", "budget", "set", "5000", "--year", "2026"];
+    for args in [
+        &["--month", "12", "--amount", "42"][..],
+        &["--annual", "42"][..],
+    ] {
+        Cli::try_parse_from(prefix.into_iter().chain(args.iter().copied()))?;
+    }
+    for args in [
+        &[][..],
+        &["--month", "1"][..],
+        &["--amount", "42"][..],
+        &["--month", "13", "--amount", "42"][..],
+        &["--month", "1", "--amount", "42", "--annual", "42"][..],
+    ] {
+        assert!(Cli::try_parse_from(prefix.into_iter().chain(args.iter().copied())).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn transaction_list_validates_pagination_inputs() -> TestResult {
+    let cli = Cli::try_parse_from(["bk", "txn", "list", "--limit", "-1"])?;
+    assert!(matches!(
+        cli.command,
+        BkCommand::Txn(args) if matches!(*args.command, TxnCommand::List(beankeeper_cli::cli::TxnListArgs {
+            limit: beankeeper_cli::cli::TxnPageLimit::All,
+            ..
+        }))
+    ));
+    assert!(Cli::try_parse_from(["bk", "txn", "list", "--limit=-2"]).is_err());
+    assert!(Cli::try_parse_from(["bk", "txn", "list", "--offset=-1"]).is_err());
+    Ok(())
 }

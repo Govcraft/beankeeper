@@ -396,25 +396,21 @@ fn execute_operation(
         Command::Account(args) => {
             commands::account::execute_json_with_actor(db, company()?, &args.command, actor)
         }
-        Command::Txn(args) if tool == "txn_clear" => commands::txn_clear::execute_json(
-            db,
-            company()?,
-            &args.command,
-            actor,
-            batch.as_deref(),
-        ),
-        Command::Txn(args) if matches!(*args.command, crate::cli::TxnCommand::Reconcile) => {
-            commands::txn::execute_reconcile_json(db)
-        }
-        Command::Txn(args) => {
-            return commands::txn::execute_json_with_pagination(
-                &cli,
-                db,
-                company()?,
-                &args.command,
-                actor,
-            );
-        }
+        Command::Txn(args) => match args.command.as_ref() {
+            crate::cli::TxnCommand::Clear(clear) => {
+                commands::txn_clear::execute_json(db, company()?, clear, actor, batch.as_deref())
+            }
+            crate::cli::TxnCommand::Reconcile => commands::txn::execute_reconcile_json(db),
+            txn => {
+                return commands::txn::execute_json_with_pagination(
+                    &cli,
+                    db,
+                    company()?,
+                    txn,
+                    actor,
+                );
+            }
+        },
         Command::Report(args) => {
             commands::report::execute_json(&cli, db, company()?, &args.command)
         }
