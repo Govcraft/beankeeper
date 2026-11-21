@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use agent_uri::{AgentId, AgentUri, CapabilityPath};
 use agent_uri_attestation::{
-    AttestationClaims, AttestationError, Denylist, Issuer, SigningKey, Verifier, VerifyingKey,
+    AttestationClaims, Denylist, Issuer, SigningKey, Verifier, VerifyingKey,
 };
 use chrono::{DateTime, Utc};
 use mti::prelude::*;
@@ -22,9 +22,10 @@ use crate::operation::{Operation, Permission};
 /// Identity claims accepted by the ledger's verifier.
 #[derive(Debug, Clone)]
 pub struct VerifiedAgent {
-    uri: String,
+    uri: AgentUri,
     jti: MagicTypeId,
-    capabilities: Vec<String>,
+    grants: Vec<Capability>,
+    signed_capabilities: Vec<String>,
     agent_key: String,
     expires_at: DateTime<Utc>,
 }
@@ -33,7 +34,7 @@ impl VerifiedAgent {
     /// Canonical agent URI from the signed token.
     #[must_use]
     pub fn uri(&self) -> &str {
-        &self.uri
+        self.uri.as_str()
     }
 
     /// Unique identifier of the verified token.
@@ -45,7 +46,7 @@ impl VerifiedAgent {
     /// Explicit grants from the signed claims, never the mutable registry JSON.
     #[must_use]
     pub fn capabilities(&self) -> &[String] {
-        &self.capabilities
+        &self.signed_capabilities
     }
 
     /// Whether these signed grants allow a CLI operation or MCP tool.
@@ -73,24 +74,19 @@ impl VerifiedAgent {
     }
 
     pub(crate) fn is_setup_credential(&self) -> bool {
-        self.capabilities == [Capability::Setup.path()]
+        self.signed_capabilities == [Capability::Setup.path()]
     }
 
     pub(crate) fn enforces_permissions(&self, ledger_enforced: bool) -> bool {
         ledger_enforced || self.is_setup_credential()
     }
 
-    /// Whether the signed grants cover this leaf capability.
+    /// Whether the verified identity holds the requested ledger or UI grant.
     ///
     /// # Errors
-    /// Returns a validation error if an internal capability path is invalid.
+    /// This method retains its fallible signature for existing callers.
     pub fn allows(&self, capability: Capability) -> Result<bool, CliError> {
-        let path = CapabilityPath::parse(capability.path())
-            .map_err(|error| CliError::Validation(error.to_string()))?;
-        Ok(agent_uri_attestation::capability_covers(
-            &self.capabilities,
-            &path,
-        ))
+        Ok(self.grants.contains(&capability))
     }
 }
 
@@ -318,9 +314,6 @@ fn verify_required(
     );
     let claims = verifier.verify(token).map_err(|_| unauthorized())?;
     let uri = AgentUri::parse(&claims.agent_uri).map_err(|_| unauthorized())?;
-    let claims = verifier
-        .verify_for_uri(token, &uri)
-        .map_err(|_| unauthorized())?;
     let registered: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM agent_tokens WHERE jti = ?1 AND agent_uri = ?2 AND agent_key = ?3)",
         params![claims.jti, claims.agent_uri, claims.agent_key], |r| r.get(0),
@@ -335,25 +328,28 @@ fn verify_required(
     {
         return Err(unauthorized());
     }
-    if let Some(required) = required {
-        let path = CapabilityPath::parse(required.path())
-            .map_err(|error| CliError::Validation(error.to_string()))?;
-        verifier
-            .verify_for_capability(token, &uri, &path)
-            .map_err(|error| match error {
-                // The token and its claim scope have already verified above.
-                // A requested operation outside that scope is a missing grant.
-                AttestationError::InsufficientCapabilities { .. }
-                | AttestationError::CapabilityOutsideIdentity { .. } => CliError::Forbidden(
-                    format!("operation requires capability {}", required.path()),
-                ),
-                _ => unauthorized(),
-            })?;
+    // The verifier has bound each signed grant to the URI's capability
+    // path or a descendant. Ledger operations require explicit leaf grants,
+    // and namespace-wide grants were rejected above.
+    let grants: Vec<_> = claims
+        .capabilities
+        .iter()
+        .filter_map(|path| Capability::from_path(path))
+        .collect();
+    if let Some(required) = required
+        && !grants.contains(&required)
+    {
+        return Err(CliError::Forbidden(format!(
+            "operation requires capability {}",
+            required.path()
+        )));
     }
+
     Ok(VerifiedAgent {
-        uri: uri.to_string(),
+        uri,
         jti: MagicTypeId::from_str(&claims.jti).map_err(|_| unauthorized())?,
-        capabilities: claims.capabilities,
+        grants,
+        signed_capabilities: claims.capabilities,
         agent_key: claims.agent_key,
         expires_at: claims.exp,
     })
@@ -737,6 +733,38 @@ pub fn parse_ttl(input: &str) -> Result<Duration, CliError> {
 mod capability_witness_tests {
     use super::*;
     use crate::db::Db;
+
+    #[test]
+    fn verification_preserves_multiple_explicit_leaf_grants() -> Result<(), CliError> {
+        let directory = tempfile::tempdir()?;
+        let passphrase: SecretString = "ephemeral test ledger".into();
+        let ledger = Db::open(&directory.path().join("books.db"), Some(&passphrase))?;
+        let owner = Actor::new("owner");
+        init_root(ledger.conn(), &owner)?;
+        let capabilities = [
+            "ledger/read".into(),
+            "ledger/approve".into(),
+            "ledger/post/scheduled".into(),
+        ];
+        let issued = issue_credential(
+            ledger.conn(),
+            &owner,
+            &IssueRequest {
+                name: "reviewer",
+                capabilities: &capabilities,
+                ttl: Duration::from_mins(15),
+                public_key: None,
+                generate_key: true,
+            },
+        )?;
+        let identity = verify(ledger.conn(), issued.token().expose_secret())?;
+        assert_eq!(identity.capabilities(), &capabilities);
+        assert!(identity.allows(Capability::Read)?);
+        assert!(identity.allows(Capability::Approve)?);
+        assert!(!identity.allows(Capability::Post)?);
+        assert!(!identity.allows(Capability::Navigate)?);
+        Ok(())
+    }
 
     #[test]
     fn approval_witness_rechecks_ledger_registration_and_revocation() -> Result<(), CliError> {
