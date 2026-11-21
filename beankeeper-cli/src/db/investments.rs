@@ -7,7 +7,7 @@ use beankeeper::{
         JournalEntry,
         investments::{LotMethod, Quantity, allocate_cost, market_value},
     },
-    types::{Currency, Money},
+    types::{Amount, Currency},
 };
 use chrono::NaiveDate;
 use mti::prelude::{MagicTypeIdExt, V7};
@@ -317,15 +317,15 @@ fn entry(account: &str, direction: &str, amount: i64) -> PostEntryParams {
 fn post(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<i64, CliError> {
     let currency = Currency::from_code(p.currency).map_err(|e| invalid(e.to_string()))?;
     let date = p.date.parse().map_err(|_| invalid("invalid trade date"))?;
-    let mut journal = JournalEntry::new(date, p.description);
+    let mut journal = JournalEntry::new(date, p.description, currency);
     for e in p.entries {
         let row = super::accounts::get_account(conn, p.company_slug, &e.account_code)?;
         let account = super::accounts::row_to_account(&row)?;
-        let money = Money::from_minor(i128::from(e.amount), currency);
+        let amount = Amount::new(i128::from(e.amount));
         journal = if e.direction == "debit" {
-            journal.debit(&account, money)?
+            journal.debit(&account, amount)?
         } else {
-            journal.credit(&account, money)?
+            journal.credit(&account, amount)?
         };
     }
     journal.post()?;

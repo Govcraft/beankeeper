@@ -1706,7 +1706,7 @@ fn reversal_entries(
     use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
     let currency = Currency::from_code(&original.currency)
         .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
-    let mut journal = beankeeper::core::JournalEntry::new(date, "Reversal");
+    let mut journal = beankeeper::core::JournalEntry::new(date, "Reversal", currency);
     let mut reversed = Vec::with_capacity(entries.len());
     for entry in entries {
         let (direction, direction_name) = match entry.direction.as_str() {
@@ -1723,7 +1723,7 @@ fn reversal_entries(
             super::accounts::row_to_account(&row)?,
             Money::from_minor(i128::from(entry.amount), currency),
             direction,
-        )?);
+        )?)?;
         reversed.push(super::transactions::PostEntryParams {
             account_code: entry.account_code.clone(),
             direction: direction_name.into(),

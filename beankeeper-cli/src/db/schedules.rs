@@ -4,7 +4,7 @@ use std::{fmt, str::FromStr};
 
 use beankeeper::{
     core::{Frequency, JournalEntry, RecurrenceError, occurrence_date},
-    types::{Currency, Money},
+    types::{Amount, Currency},
 };
 use chrono::NaiveDate;
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
@@ -245,14 +245,14 @@ fn validate_posting(
     validate_entries(entries)?;
     let currency =
         Currency::from_code(currency).map_err(|e| CliError::Validation(e.to_string()))?;
-    let mut journal = JournalEntry::new(date, description);
+    let mut journal = JournalEntry::new(date, description, currency);
     for entry in entries {
         let account = super::accounts::row_to_account(&super::accounts::get_account(
             conn,
             company,
             &entry.account_code,
         )?)?;
-        let amount = Money::from_minor(i128::from(entry.amount), currency);
+        let amount = Amount::new(i128::from(entry.amount));
         journal = match entry.direction.as_str() {
             "debit" => journal.debit(&account, amount)?,
             "credit" => journal.credit(&account, amount)?,

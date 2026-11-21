@@ -29,7 +29,9 @@ impl fmt::Display for CurrencyError {
 
 impl std::error::Error for CurrencyError {}
 
-/// An ISO 4217 currency code with its associated minor unit precision.
+/// A supported ISO 4217 currency with fixed minor unit precision.
+///
+/// Use the named variants or parse a currency code with [`Currency::from_code`].
 ///
 /// # Examples
 ///
@@ -44,50 +46,39 @@ impl std::error::Error for CurrencyError {}
 /// assert_eq!(jpy.minor_units(), 0);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Currency {
-    code: [u8; 3],
-    minor_units: u8,
+#[non_exhaustive]
+pub enum Currency {
+    /// US Dollar.
+    USD,
+    /// Euro.
+    EUR,
+    /// British Pound Sterling.
+    GBP,
+    /// Japanese Yen.
+    JPY,
+    /// Swiss Franc.
+    CHF,
+    /// Canadian Dollar.
+    CAD,
+    /// Australian Dollar.
+    AUD,
+    /// Bahraini Dinar.
+    BHD,
+    /// Kuwaiti Dinar.
+    KWD,
+    /// Mexican Peso.
+    MXN,
 }
 
 impl Currency {
-    /// US Dollar
-    pub const USD: Self = Self::new(*b"USD", 2);
-    /// Euro
-    pub const EUR: Self = Self::new(*b"EUR", 2);
-    /// British Pound Sterling
-    pub const GBP: Self = Self::new(*b"GBP", 2);
-    /// Japanese Yen
-    pub const JPY: Self = Self::new(*b"JPY", 0);
-    /// Swiss Franc
-    pub const CHF: Self = Self::new(*b"CHF", 2);
-    /// Canadian Dollar
-    pub const CAD: Self = Self::new(*b"CAD", 2);
-    /// Australian Dollar
-    pub const AUD: Self = Self::new(*b"AUD", 2);
-    /// Bahraini Dinar (3 decimal places)
-    pub const BHD: Self = Self::new(*b"BHD", 3);
-    /// Kuwaiti Dinar (3 decimal places)
-    pub const KWD: Self = Self::new(*b"KWD", 3);
-    /// Mexican Peso
-    pub const MXN: Self = Self::new(*b"MXN", 2);
-
-    /// Creates a new `Currency` from a 3-byte ASCII code and minor unit count.
-    ///
-    /// This is a low-level const constructor. For runtime construction with
-    /// validation, use [`from_code`](Self::from_code).
-    #[must_use]
-    pub const fn new(code: [u8; 3], minor_units: u8) -> Self {
-        Self { code, minor_units }
-    }
-
     /// Creates a `Currency` from a string code, validating format.
     ///
     /// The code must be exactly 3 uppercase ASCII letters.
     ///
     /// # Errors
     ///
-    /// Returns [`CurrencyError::InvalidCode`] if the string is not
-    /// 3 uppercase ASCII letters.
+    /// Returns [`CurrencyError::InvalidCode`] for malformed text and
+    /// [`CurrencyError::UnknownCode`] for an unsupported code.
     pub fn from_code(code: &str) -> Result<Self, CurrencyError> {
         let bytes = code.as_bytes();
         if bytes.len() != 3 || !bytes.iter().all(u8::is_ascii_uppercase) {
@@ -96,10 +87,7 @@ impl Currency {
             });
         }
 
-        let code_arr = [bytes[0], bytes[1], bytes[2]];
-
-        // Look up known currencies for minor unit info
-        match &code_arr {
+        match bytes {
             b"USD" => Ok(Self::USD),
             b"EUR" => Ok(Self::EUR),
             b"GBP" => Ok(Self::GBP),
@@ -119,22 +107,25 @@ impl Currency {
     /// Returns the 3-byte currency code.
     #[must_use]
     pub const fn code_bytes(&self) -> [u8; 3] {
-        self.code
+        let bytes = self.code().as_bytes();
+        [bytes[0], bytes[1], bytes[2]]
     }
 
     /// Returns the currency code as a string slice.
-    ///
-    /// # Panics
-    ///
-    /// This method will not panic because `Currency` is always constructed
-    /// from valid ASCII bytes.
     #[must_use]
-    pub fn code(&self) -> &str {
-        // SAFETY: Currency codes are always valid ASCII, which is valid UTF-8.
-        // This is guaranteed by the constructors: `new` takes bytes that are
-        // ASCII uppercase by convention, `from_code` validates, and `FromStr`
-        // validates.
-        std::str::from_utf8(&self.code).unwrap_or("???")
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::USD => "USD",
+            Self::EUR => "EUR",
+            Self::GBP => "GBP",
+            Self::JPY => "JPY",
+            Self::CHF => "CHF",
+            Self::CAD => "CAD",
+            Self::AUD => "AUD",
+            Self::BHD => "BHD",
+            Self::KWD => "KWD",
+            Self::MXN => "MXN",
+        }
     }
 
     /// Returns the number of minor unit decimal places for this currency.
@@ -142,13 +133,17 @@ impl Currency {
     /// For example, USD has 2 (cents), JPY has 0, BHD has 3.
     #[must_use]
     pub const fn minor_units(&self) -> u8 {
-        self.minor_units
+        match self {
+            Self::JPY => 0,
+            Self::BHD | Self::KWD => 3,
+            Self::USD | Self::EUR | Self::GBP | Self::CHF | Self::CAD | Self::AUD | Self::MXN => 2,
+        }
     }
 }
 
 impl fmt::Display for Currency {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.code())
+        f.write_str(self.code())
     }
 }
 
@@ -210,8 +205,7 @@ mod tests {
 
     #[test]
     fn from_str_round_trips() {
-        let usd: Currency = "USD".parse().ok().unwrap_or(Currency::USD);
-        assert_eq!(usd, Currency::USD);
+        assert_eq!("USD".parse(), Ok(Currency::USD));
     }
 
     #[test]

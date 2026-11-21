@@ -2,9 +2,9 @@ use core::fmt;
 
 use chrono::NaiveDate;
 
-use crate::types::{
-    Account, Amount, Currency, DebitOrCredit, Entry, Money, MoneyError, SourceDocument,
-};
+use crate::types::{Account, Amount, Currency, Entry, Money, MoneyError, SourceDocument};
+
+use super::journal_entry::BalancedEntries;
 
 /// Error type for transaction validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,11 +20,6 @@ pub enum TransactionError {
         total_debits: Amount,
         /// Total of all credit entries.
         total_credits: Amount,
-    },
-    /// Entries use more than one currency.
-    CurrencyMismatch {
-        /// The distinct currencies found in the entries.
-        currencies: Vec<Currency>,
     },
     /// An error occurred during monetary arithmetic.
     Money(MoneyError),
@@ -42,16 +37,6 @@ impl fmt::Display for TransactionError {
                 f,
                 "transaction is unbalanced: debits={total_debits}, credits={total_credits}"
             ),
-            Self::CurrencyMismatch { currencies } => {
-                write!(f, "transaction entries use multiple currencies: ")?;
-                for (i, c) in currencies.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{c}")?;
-                }
-                Ok(())
-            }
             Self::Money(e) => write!(f, "monetary arithmetic error: {e}"),
         }
     }
@@ -74,23 +59,37 @@ impl From<MoneyError> for TransactionError {
 
 /// A validated, balanced double-entry transaction.
 ///
-/// A `Transaction` can only be created through [`JournalEntry::post`],
-/// which guarantees that total debits equal total credits.
-///
-/// This type is intentionally **not** constructible outside this crate
-/// to preserve the balance invariant.
+/// [`JournalEntry::post`] produces a transaction only after validating that at
+/// least two entries exist and that total debits equal total credits. The
+/// transaction holds the sealed entries and their shared currency and total.
 ///
 /// [`JournalEntry::post`]: super::JournalEntry::post
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
-    pub(crate) date: NaiveDate,
-    pub(crate) description: String,
-    pub(crate) entries: Vec<Entry>,
-    pub(crate) metadata: Option<String>,
-    pub(crate) attachments: Vec<SourceDocument>,
+    date: NaiveDate,
+    description: String,
+    entries: BalancedEntries,
+    metadata: Option<String>,
+    attachments: Vec<SourceDocument>,
 }
 
 impl Transaction {
+    pub(super) fn from_balanced_entries(
+        date: NaiveDate,
+        description: String,
+        entries: BalancedEntries,
+        metadata: Option<String>,
+        attachments: Vec<SourceDocument>,
+    ) -> Self {
+        Self {
+            date,
+            description,
+            entries,
+            metadata,
+            attachments,
+        }
+    }
+
     /// Returns the transaction date.
     #[must_use]
     pub fn date(&self) -> NaiveDate {
@@ -106,7 +105,7 @@ impl Transaction {
     /// Returns all entries in this transaction.
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
-        &self.entries
+        self.entries.as_slice()
     }
 
     /// Returns optional metadata attached to this transaction.
@@ -123,27 +122,30 @@ impl Transaction {
 
     /// Returns an iterator over debit entries.
     pub fn debit_entries(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| e.is_debit())
+        self.entries().iter().filter(|e| e.is_debit())
     }
 
     /// Returns an iterator over credit entries.
     pub fn credit_entries(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| e.is_credit())
+        self.entries().iter().filter(|e| e.is_credit())
     }
 
-    /// Returns the total amount of the transaction (debits or credits, since they're equal).
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`MoneyError`] if arithmetic overflows.
-    pub fn total(&self) -> Result<Money, MoneyError> {
-        sum_entries_by_direction(&self.entries, DebitOrCredit::Debit)
+    /// Returns the currency shared by every entry.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.total().currency()
+    }
+
+    /// Returns the total of either side of the balanced transaction.
+    #[must_use]
+    pub const fn total(&self) -> Money {
+        self.entries.total()
     }
 
     /// Returns `true` if this transaction involves the given account.
     #[must_use]
     pub fn involves_account(&self, account: &Account) -> bool {
-        self.entries.iter().any(|e| e.account() == account)
+        self.entries().iter().any(|e| e.account() == account)
     }
 
     /// Returns the net money amount for a specific account in this transaction,
@@ -156,65 +158,37 @@ impl Transaction {
     ///
     /// Returns a [`MoneyError`] if arithmetic overflows.
     pub fn amount_for_account(&self, account: &Account) -> Result<Option<Money>, MoneyError> {
-        let relevant: Vec<_> = self
-            .entries
+        let mut total = None;
+        for entry in self
+            .entries()
             .iter()
-            .filter(|e| e.account() == account)
-            .collect();
-
-        if relevant.is_empty() {
-            return Ok(None);
+            .filter(|entry| entry.account() == account)
+        {
+            total = Some(
+                total
+                    .unwrap_or(Amount::ZERO)
+                    .checked_add(entry.signed_amount())
+                    .ok_or(MoneyError::Overflow)?,
+            );
         }
-
-        let currency = relevant[0].amount().currency();
-        let mut total = Amount::ZERO;
-
-        for entry in &relevant {
-            let signed = entry.signed_amount();
-            total = total.checked_add(signed).ok_or(MoneyError::Overflow)?;
-        }
-
-        Ok(Some(Money::new(total, currency)))
+        Ok(total.map(|amount| Money::new(amount, self.currency())))
     }
 }
 
 impl fmt::Display for Transaction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Transaction [{}]: {}", self.date, self.description)?;
-        for entry in &self.entries {
+        for entry in self.entries() {
             writeln!(f, "  {entry}")?;
         }
         Ok(())
     }
 }
 
-/// Sums the amounts of entries matching the given direction.
-///
-/// # Panics
-///
-/// Panics if `entries` is empty. All internal callers guarantee at least
-/// two entries (validated by [`JournalEntry::post`] or guarded before calling).
-pub(crate) fn sum_entries_by_direction(
-    entries: &[Entry],
-    direction: DebitOrCredit,
-) -> Result<Money, MoneyError> {
-    // Safety: all callers guarantee non-empty entries — Transaction always
-    // has ≥2 entries, JournalEntry::total_debits/total_credits guard on
-    // is_empty(), and post() checks len ≥ 2 before calling.
-    let currency = entries[0].amount().currency();
-
-    let mut total = Money::from_minor(0, currency);
-
-    for entry in entries.iter().filter(|e| e.direction() == direction) {
-        total = total.checked_add(entry.amount())?;
-    }
-
-    Ok(total)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::JournalEntry;
     use crate::types::{AccountCode, AccountType};
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
@@ -233,16 +207,14 @@ mod tests {
         let cash = make_account("1000", "Cash", AccountType::Asset);
         let revenue = make_account("4000", "Revenue", AccountType::Revenue);
 
-        Transaction {
-            date: date(2024, 1, 15),
-            description: "Test sale".to_owned(),
-            entries: vec![
-                Entry::debit(cash, Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}")),
-                Entry::credit(revenue, Money::usd(500)).unwrap_or_else(|e| panic!("test: {e}")),
-            ],
-            metadata: Some("ref-001".to_owned()),
-            attachments: Vec::new(),
-        }
+        JournalEntry::new(date(2024, 1, 15), "Test sale", Currency::USD)
+            .with_metadata("ref-001")
+            .debit(&cash, Amount::new(500))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .credit(&revenue, Amount::new(500))
+            .unwrap_or_else(|e| panic!("test: {e}"))
+            .post()
+            .unwrap_or_else(|e| panic!("test: {e}"))
     }
 
     #[test]
@@ -287,7 +259,7 @@ mod tests {
     #[test]
     fn total_returns_debit_sum() {
         let txn = make_balanced_transaction();
-        let total = txn.total().unwrap_or_else(|e| panic!("test: {e}"));
+        let total = txn.total();
         assert_eq!(total, Money::usd(500));
     }
 

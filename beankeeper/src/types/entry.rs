@@ -3,11 +3,12 @@ use core::fmt;
 use super::account::Account;
 use super::amount::Amount;
 use super::clearance::ClearanceStatus;
+use super::currency::Currency;
 use super::debit_credit::DebitOrCredit;
 use super::document::SourceDocument;
 use super::money::Money;
 
-/// Error type for [`Entry`] construction.
+/// Error type for [`Entry`] construction and clearance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EntryError {
@@ -18,6 +19,15 @@ pub enum EntryError {
         /// The invalid amount.
         amount: Amount,
     },
+    /// A prebuilt entry uses a different currency from its journal.
+    CurrencyMismatch {
+        /// Currency selected for the journal.
+        expected: Currency,
+        /// Currency of the entry.
+        actual: Currency,
+    },
+    /// A reconciled entry cannot be cleared again.
+    AlreadyReconciled,
 }
 
 impl fmt::Display for EntryError {
@@ -27,6 +37,13 @@ impl fmt::Display for EntryError {
             Self::NegativeAmount { amount } => {
                 write!(f, "entry amount must be positive, got {amount}")
             }
+            Self::CurrencyMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "entry currency mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::AlreadyReconciled => f.write_str("entry is already reconciled"),
         }
     }
 }
@@ -198,11 +215,17 @@ impl Entry {
         self.status
     }
 
-    /// Sets the clearance status, returning the updated entry.
-    #[must_use]
-    pub fn with_status(mut self, status: ClearanceStatus) -> Self {
-        self.status = status;
-        self
+    /// Clears the entry so it can be reconciled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::AlreadyReconciled`] if the entry is reconciled.
+    pub fn clear(mut self) -> Result<ClearedEntry, EntryError> {
+        if self.status == ClearanceStatus::Reconciled {
+            return Err(EntryError::AlreadyReconciled);
+        }
+        self.status = ClearanceStatus::Cleared;
+        Ok(ClearedEntry(self))
     }
 
     /// Returns the optional tax category for this entry.
@@ -246,6 +269,25 @@ impl Entry {
         } else {
             -self.amount.amount()
         }
+    }
+}
+
+/// An entry cleared through [`Entry::clear`] and ready to be reconciled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearedEntry(Entry);
+
+impl ClearedEntry {
+    /// Marks a cleared entry reconciled.
+    #[must_use]
+    pub fn reconcile(mut self) -> Entry {
+        self.0.status = ClearanceStatus::Reconciled;
+        self.0
+    }
+}
+
+impl From<ClearedEntry> for Entry {
+    fn from(entry: ClearedEntry) -> Self {
+        entry.0
     }
 }
 
@@ -333,6 +375,22 @@ mod tests {
             .unwrap_or_else(|e| panic!("test: {e}"));
         assert!(entry.is_credit());
         assert!(!entry.is_debit());
+    }
+
+    #[test]
+    fn reconciliation_requires_a_cleared_entry() -> Result<(), EntryError> {
+        let entry = Entry::debit(cash_account(), Money::usd(100))?;
+        assert_eq!(entry.status(), ClearanceStatus::Uncleared);
+
+        let cleared = entry.clear()?;
+        assert_eq!(
+            Entry::from(cleared.clone()).status(),
+            ClearanceStatus::Cleared
+        );
+        let reconciled = cleared.reconcile();
+        assert_eq!(reconciled.status(), ClearanceStatus::Reconciled);
+        assert_eq!(reconciled.clear(), Err(EntryError::AlreadyReconciled));
+        Ok(())
     }
 
     #[test]
