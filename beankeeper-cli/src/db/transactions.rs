@@ -166,23 +166,29 @@ fn post_transaction_inner(
     }
 
     let date = chrono::NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
-        .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?
-        .to_string();
-
-    super::periods::check_posting(conn, p.company_slug, &date)?;
+        .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?;
+    let period = super::periods::check_posting(conn, p.company_slug, date)?;
 
     // Build the metadata string, merging --correlate and --metadata if both present.
     let effective_metadata = build_metadata(p.metadata, p.correlate)?;
+    persist_posting(period, p, effective_metadata.as_deref())
+}
 
+fn persist_posting(
+    period: super::periods::OpenPeriod<'_>,
+    p: &PostTransactionParams<'_>,
+    effective_metadata: Option<&str>,
+) -> Result<PostResult, CliError> {
+    let (conn, company, date) = period.into_parts();
     conn.execute(
         "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by, agent_uri, token_jti) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
-            p.company_slug,
+            company,
             p.description,
             effective_metadata,
             p.currency,
-            date,
+            date.to_string(),
             p.reference,
             p.actor.name(),
             p.actor.agent_uri(),
@@ -208,7 +214,7 @@ fn post_transaction_inner(
             params![
                 txn_id,
                 entry.account_code,
-                p.company_slug,
+                company,
                 dir_lower,
                 entry.amount,
                 entry.memo,
@@ -221,10 +227,10 @@ fn post_transaction_inner(
     // partner's metadata is mutated in place, so it goes through the audited
     // mutation path rather than a bare in-place write here.
     if let Some(partner_id) = p.correlate {
-        audit::correlate_partner(conn, p.actor, p.company_slug, txn_id, partner_id)?;
+        audit::correlate_partner(conn, p.actor, company, txn_id, partner_id)?;
     }
 
-    audit::record_creation(conn, p.actor, p.company_slug, txn_id)?;
+    audit::record_creation(conn, p.actor, company, txn_id)?;
 
     Ok(PostResult::Created(txn_id))
 }

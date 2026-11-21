@@ -739,57 +739,33 @@ pub(super) fn require_capability(
 /// Authorization, state change, and audit snapshot share one savepoint.
 ///
 /// # Errors
-/// Rejects insufficient admin grants, invalid dates, non-advancing closes,
-/// reopening an open company, empty reasons, and inconsistent persisted state.
+/// Rejects insufficient admin grants, non-advancing closes, reopening an
+/// open company, and inconsistent persisted state.
 pub fn change_period(
     conn: &Connection,
     actor: &Actor,
     company: &str,
-    through: Option<chrono::NaiveDate>,
-    reason: Option<&str>,
+    change: super::periods::PeriodChange,
 ) -> Result<super::periods::PeriodLock, CliError> {
+    use super::periods::PeriodLock;
+
     in_savepoint(conn, "sp_period_change", || {
         require_capability(conn, actor, crate::capability::Capability::Admin)?;
         super::companies::get_company(conn, company)?;
         let before = super::periods::get(conn, company)?;
-        let previous = before
-            .as_ref()
-            .and_then(|lock| lock.closed_through.as_deref());
-        let through = through
-            .map(|date| super::periods::parse_date(&date.to_string()).map(|date| date.to_string()))
-            .transpose()?;
-        let reason = reason.map(str::trim).filter(|value| !value.is_empty());
-        let action = if let Some(date) = through.as_deref() {
-            if previous.is_some_and(|cutoff| date <= cutoff) {
-                return Err(CliError::Validation(
-                    "close must advance the cutoff; use period reopen to unlock it".into(),
-                ));
-            }
-            AuditAction::PeriodClose
-        } else {
-            if previous.is_none() {
-                return Err(CliError::Validation(
-                    "company has no closed period to reopen".into(),
-                ));
-            }
-            if reason.is_none() {
-                return Err(CliError::Validation(
-                    "period reopen requires a nonempty reason".into(),
-                ));
-            }
-            AuditAction::PeriodReopen
-        };
+        let previous = before.as_ref().and_then(PeriodLock::closed_through);
+        let (state, action) = resolve_period_change(change, previous)?;
         let changed_at =
             conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
                 row.get(0)
             })?;
-        let after = super::periods::PeriodLock {
+        let after = PeriodLock {
             company_slug: company.to_owned(),
-            closed_through: through,
+            state,
             changed_at,
             actor: actor.name().to_owned(),
-            reason: reason.map(str::to_owned),
         };
+        let through = after.closed_through().map(|date| date.to_string());
         record(
             conn,
             actor,
@@ -808,7 +784,7 @@ pub fn change_period(
             conn.execute(
                 "UPDATE period_locks SET closed_through = ?2, changed_at = ?3, actor = ?4, reason = ?5
                  WHERE company_slug = ?1",
-                params![company, after.closed_through, after.changed_at, after.actor, after.reason],
+                params![company, through, after.changed_at, after.actor, after.reason()],
             )?;
         } else {
             conn.execute(
@@ -816,15 +792,47 @@ pub fn change_period(
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     company,
-                    after.closed_through,
+                    through,
                     after.changed_at,
                     after.actor,
-                    after.reason
+                    after.reason()
                 ],
             )?;
         }
         Ok(after)
     })
+}
+
+fn resolve_period_change(
+    change: super::periods::PeriodChange,
+    previous: Option<super::periods::PeriodDate>,
+) -> Result<(super::periods::PeriodState, AuditAction), CliError> {
+    use super::periods::{PeriodChange, PeriodState};
+
+    match change {
+        PeriodChange::Close(cutoff) => {
+            if previous.is_some_and(|old| cutoff <= old) {
+                return Err(CliError::Validation(
+                    "close must advance the cutoff; use period reopen to unlock it".into(),
+                ));
+            }
+            Ok((
+                PeriodState::ClosedThrough {
+                    cutoff,
+                    legacy_reason: None,
+                },
+                AuditAction::PeriodClose,
+            ))
+        }
+        PeriodChange::Reopen(reason) => {
+            if previous.is_none() {
+                return Err(CliError::Validation(
+                    "company has no closed period to reopen".into(),
+                ));
+            }
+            Ok((PeriodState::Open(reason), AuditAction::PeriodReopen))
+        }
+    }
 }
 
 /// Approve exactly once, posting and recording the frozen proposer request atomically.

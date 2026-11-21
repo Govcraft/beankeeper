@@ -91,8 +91,7 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
         db.conn(),
         &beankeeper_cli::db::Actor::new("owner"),
         "acme",
-        Some(beankeeper_cli::db::periods::parse_date("2026-01-31")?),
-        None,
+        beankeeper_cli::db::periods::PeriodChange::Close("2026-01-31".parse()?),
     )?;
     let before: i64 = db
         .conn()

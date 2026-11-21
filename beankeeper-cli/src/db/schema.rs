@@ -1427,10 +1427,11 @@ mod tests {
             &conn,
             &owner,
             "legacy",
-            Some(periods::parse_date("2026-01-31")?),
-            None,
+            periods::PeriodChange::Close("2026-01-31".parse()?),
         )?;
-        assert!(periods::check_posting(&conn, "legacy", "2026-01-31").is_err());
+        assert!(
+            periods::check_posting(&conn, "legacy", periods::parse_date("2026-01-31")?).is_err()
+        );
         audit::verify_hash_chain(&conn)?;
         audit::verify_creations(&conn)?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
