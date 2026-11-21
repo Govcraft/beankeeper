@@ -106,19 +106,26 @@ pub fn post_transaction(
         ));
     }
 
-    post_with_approval(conn, params, None)
+    post(conn, &Posting::Direct(params))
 }
 
-pub(super) fn post_with_approval(
-    conn: &Connection,
-    params: &PostTransactionParams<'_>,
-    approval: Option<&super::proposals::Proposal>,
+pub(super) fn post_approved_transaction(
+    approval: super::proposals::ApprovedPosting<'_>,
 ) -> Result<PostResult, CliError> {
+    post(approval.connection(), &Posting::Approved(approval))
+}
+
+enum Posting<'a> {
+    Direct(&'a PostTransactionParams<'a>),
+    Approved(super::proposals::ApprovedPosting<'a>),
+}
+
+fn post(conn: &Connection, posting: &Posting<'_>) -> Result<PostResult, CliError> {
     // Use a savepoint so we can roll back on error without affecting
     // any outer transaction.
     conn.execute_batch("SAVEPOINT post_txn")?;
 
-    let result = post_transaction_inner(conn, params, approval);
+    let result = post_transaction_inner(conn, posting);
 
     match &result {
         Ok(_) => conn.execute_batch("RELEASE post_txn")?,
@@ -130,9 +137,16 @@ pub(super) fn post_with_approval(
 
 fn post_transaction_inner(
     conn: &Connection,
-    p: &PostTransactionParams<'_>,
-    approval: Option<&super::proposals::Proposal>,
+    posting: &Posting<'_>,
 ) -> Result<PostResult, CliError> {
+    let approved;
+    let p = match posting {
+        Posting::Direct(params) => *params,
+        Posting::Approved(approval) => {
+            approved = approval.params();
+            &approved
+        }
+    };
     // Check for duplicate reference before inserting.
     if let Some(ref_str) = p.reference {
         let existing: Option<i64> = conn
@@ -157,7 +171,7 @@ fn post_transaction_inner(
         }
     }
 
-    if approval.is_none() {
+    if let Posting::Direct(_) = posting {
         super::proposals::reject_reserved_metadata(p.metadata)?;
         if let Some(reference) = p.reference {
             super::proposals::check_reference(conn, p.company_slug, reference)?;
