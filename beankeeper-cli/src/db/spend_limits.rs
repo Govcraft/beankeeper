@@ -2,21 +2,220 @@
 
 use std::collections::BTreeMap;
 
+use agent_uri::AgentUri;
+use beankeeper::types::Currency;
 use chrono::NaiveDate;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
+use super::companies::CompanySlug;
 use super::transactions::{PostEntryParams, PostTransactionParams};
 use crate::error::CliError;
 
-/// One currency's optional per-post and daily caps, in minor units.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One nonnegative spend cap in the associated currency's minor units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cap(i64);
+
+impl Cap {
+    /// Returns the stored minor-unit cap.
+    #[must_use]
+    pub const fn minor_units(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for Cap {
+    type Error = CliError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if value < 0 {
+            return Err(CliError::Validation(
+                "spend limits must be nonnegative".into(),
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
+/// A spend limit always has at least one cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caps {
+    /// Limit each posting.
+    PerPost(Cap),
+    /// Limit all postings dated on the same day.
+    Daily(Cap),
+    /// Apply both limits.
+    Both(Cap, Cap),
+}
+
+impl Caps {
+    /// Validate optional caps from SQLite or a transport boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error when both caps are absent or a cap is negative.
+    pub fn from_minor_units(
+        max_post: Option<i64>,
+        daily_limit: Option<i64>,
+    ) -> Result<Self, CliError> {
+        match (
+            max_post.map(Cap::try_from).transpose()?,
+            daily_limit.map(Cap::try_from).transpose()?,
+        ) {
+            (Some(post), Some(daily)) => Ok(Self::Both(post, daily)),
+            (Some(post), None) => Ok(Self::PerPost(post)),
+            (None, Some(daily)) => Ok(Self::Daily(daily)),
+            (None, None) => Err(CliError::Validation(
+                "provide at least one nonnegative spend limit".into(),
+            )),
+        }
+    }
+
+    /// The cap per posting, if configured.
+    #[must_use]
+    pub const fn max_post(self) -> Option<Cap> {
+        match self {
+            Self::PerPost(post) | Self::Both(post, _) => Some(post),
+            Self::Daily(_) => None,
+        }
+    }
+
+    /// The cap per transaction day, if configured.
+    #[must_use]
+    pub const fn daily_limit(self) -> Option<Cap> {
+        match self {
+            Self::Daily(daily) | Self::Both(_, daily) => Some(daily),
+            Self::PerPost(_) => None,
+        }
+    }
+}
+
+/// A validated agent and company spend limit in a single currency.
+#[derive(Debug, Clone)]
 pub struct SpendLimit {
-    pub agent_uri: String,
-    pub company_slug: String,
-    pub currency: String,
-    pub max_post: Option<i64>,
-    pub daily_limit: Option<i64>,
+    agent: AgentUri,
+    legacy_uri_spelling: Option<Box<str>>,
+    company: CompanySlug,
+    currency: Currency,
+    caps: Caps,
+}
+
+impl SpendLimit {
+    /// Create a limit from a validated ledger scope and cap selection.
+    #[must_use]
+    pub fn new(agent: AgentUri, company: CompanySlug, currency: Currency, caps: Caps) -> Self {
+        Self {
+            agent,
+            legacy_uri_spelling: None,
+            company,
+            currency,
+            caps,
+        }
+    }
+
+    /// Returns the agent URI validated for this spend bucket.
+    #[must_use]
+    pub const fn agent(&self) -> &AgentUri {
+        &self.agent
+    }
+
+    /// Returns the bucket key as spelled in storage.
+    #[must_use]
+    pub fn agent_uri(&self) -> &str {
+        self.legacy_uri_spelling
+            .as_deref()
+            .unwrap_or_else(|| self.agent.as_str())
+    }
+
+    /// Returns the validated company slug.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        &self.company
+    }
+
+    /// Returns the fixed currency of the caps.
+    #[must_use]
+    pub const fn currency(&self) -> Currency {
+        self.currency
+    }
+
+    /// Returns the nonempty set of caps.
+    #[must_use]
+    pub const fn caps(&self) -> Caps {
+        self.caps
+    }
+}
+
+impl PartialEq for SpendLimit {
+    fn eq(&self, other: &Self) -> bool {
+        self.agent_uri() == other.agent_uri()
+            && self.company == other.company
+            && self.currency == other.currency
+            && self.caps == other.caps
+    }
+}
+
+impl Eq for SpendLimit {}
+
+#[derive(Deserialize)]
+struct StoredLimit {
+    agent_uri: String,
+    company_slug: String,
+    currency: String,
+    max_post: Option<i64>,
+    daily_limit: Option<i64>,
+}
+
+impl TryFrom<StoredLimit> for SpendLimit {
+    type Error = CliError;
+
+    fn try_from(stored: StoredLimit) -> Result<Self, Self::Error> {
+        let agent = AgentUri::parse(&stored.agent_uri)
+            .map_err(|error| CliError::Validation(error.to_string()))?;
+        let legacy_uri_spelling =
+            (agent.as_str() != stored.agent_uri).then(|| stored.agent_uri.into_boxed_str());
+        let company = stored.company_slug.parse()?;
+        let currency =
+            stored
+                .currency
+                .parse()
+                .map_err(|error: beankeeper::types::CurrencyError| {
+                    CliError::Validation(error.to_string())
+                })?;
+        let caps = Caps::from_minor_units(stored.max_post, stored.daily_limit)?;
+        Ok(Self {
+            agent,
+            legacy_uri_spelling,
+            company,
+            currency,
+            caps,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SpendLimit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        StoredLimit::deserialize(deserializer)?
+            .try_into()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for SpendLimit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut row = serializer.serialize_struct("SpendLimit", 5)?;
+        row.serialize_field("agent_uri", self.agent_uri())?;
+        row.serialize_field("company_slug", self.company.as_str())?;
+        row.serialize_field("currency", self.currency.code())?;
+        row.serialize_field("max_post", &self.caps.max_post().map(Cap::minor_units))?;
+        row.serialize_field(
+            "daily_limit",
+            &self.caps.daily_limit().map(Cap::minor_units),
+        )?;
+        row.end()
+    }
 }
 
 /// List a verified URI's limits, optionally within one company.
@@ -34,7 +233,7 @@ pub fn list(
     )?;
     let actual = stmt
         .query_map([uri], |row| {
-            Ok(SpendLimit {
+            Ok(StoredLimit {
                 agent_uri: row.get(0)?,
                 company_slug: row.get(1)?,
                 currency: row.get(2)?,
@@ -42,6 +241,7 @@ pub fn list(
                 daily_limit: row.get(4)?,
             })
         })?
+        .map(|row| SpendLimit::try_from(row?).map_err(|_| integrity_error(uri)))
         .collect::<Result<Vec<_>, _>>()?;
     let expected: Vec<_> = audited_limits(conn, uri)?.into_values().collect();
     if actual != expected {
@@ -49,7 +249,7 @@ pub fn list(
     }
     Ok(actual
         .into_iter()
-        .filter(|limit| company.is_none_or(|company| limit.company_slug == company))
+        .filter(|limit| company.is_none_or(|company| limit.company.as_str() == company))
         .collect())
 }
 
@@ -62,7 +262,7 @@ fn integrity_error(uri: &str) -> CliError {
 fn audited_limits(
     conn: &Connection,
     uri: &str,
-) -> Result<BTreeMap<(String, String), SpendLimit>, CliError> {
+) -> Result<BTreeMap<(CompanySlug, &'static str), SpendLimit>, CliError> {
     let mut expected = BTreeMap::new();
     let mut stmt = conn.prepare(
         "SELECT before, after FROM audit_log
@@ -81,8 +281,8 @@ fn audited_limits(
         let before = before.map(parse).transpose()?;
         let after = after.map(parse).transpose()?;
         let key = match after.as_ref().or(before.as_ref()) {
-            Some(limit) if limit.agent_uri == uri => {
-                (limit.company_slug.clone(), limit.currency.clone())
+            Some(limit) if limit.agent_uri() == uri => {
+                (limit.company.clone(), limit.currency.code())
             }
             _ => return Err(integrity_error(uri)),
         };
@@ -151,19 +351,23 @@ pub(crate) fn check(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<
     }
     let limit = limits
         .iter()
-        .find(|limit| limit.currency == p.currency)
+        .find(|limit| limit.currency.code() == p.currency)
         .ok_or_else(|| forbidden("no spend limit is configured for this currency"))?;
     let amount = debit_total(p.entries)?;
-    if limit.max_post.is_some_and(|cap| amount > cap) {
+    if limit
+        .caps
+        .max_post()
+        .is_some_and(|cap| amount > cap.minor_units())
+    {
         return Err(forbidden("posting exceeds the agent's max-post limit"));
     }
-    if let Some(cap) = limit.daily_limit {
+    if let Some(cap) = limit.caps.daily_limit() {
         // An approved posting belongs to the proposer bucket, while its posted
         // identity stays the approver. Metadata edits cannot change this join.
         let date = NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
             .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?;
         let used = daily_used(conn, p.company_slug, p.currency, uri, date)?;
-        if used + i128::from(amount) > i128::from(cap) {
+        if used + i128::from(amount) > i128::from(cap.minor_units()) {
             return Err(forbidden(
                 "posting exceeds the agent's daily-limit for this transaction date",
             ));
@@ -219,13 +423,13 @@ mod tests {
         db::create_company(db.conn(), "acme", "Acme", None)?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;
-        let limit = SpendLimit {
-            agent_uri: format!("agent://test.bk.local/ledger/{id}"),
-            company_slug: "acme".into(),
-            currency: "USD".into(),
-            max_post: Some(1000),
-            daily_limit: Some(2000),
-        };
+        let limit = SpendLimit::new(
+            AgentUri::parse(&format!("agent://test.bk.local/ledger/{id}"))
+                .map_err(|error| CliError::Validation(error.to_string()))?,
+            "acme".parse()?,
+            Currency::USD,
+            Caps::from_minor_units(Some(1000), Some(2000))?,
+        );
         Ok((db, limit))
     }
 
@@ -234,22 +438,75 @@ mod tests {
         let (db, mut limit) = ledger()?;
         let owner = Actor::new("owner");
         audit::set_spend_limit(db.conn(), &owner, &limit)?;
-        limit.max_post = None;
-        limit.daily_limit = Some(3000);
+        limit.caps = Caps::from_minor_units(None, Some(3000))?;
         audit::set_spend_limit(db.conn(), &owner, &limit)?;
         assert_eq!(
-            list(db.conn(), &limit.agent_uri, Some("acme"))?,
+            list(db.conn(), limit.agent_uri(), Some("acme"))?,
             [limit.clone()]
         );
-        limit.currency = "JPY".into();
+        limit.currency = Currency::JPY;
         audit::set_spend_limit(db.conn(), &owner, &limit)?;
-        assert_eq!(list(db.conn(), &limit.agent_uri, None)?.len(), 2);
+        assert_eq!(list(db.conn(), limit.agent_uri(), None)?.len(), 2);
         verify(db.conn())?;
         assert_eq!(
-            audit::clear_spend_limits(db.conn(), &owner, &limit.agent_uri, None)?,
+            audit::clear_spend_limits(db.conn(), &owner, limit.agent_uri(), None)?,
             2
         );
-        assert_eq!(list(db.conn(), &limit.agent_uri, None)?, Vec::new());
+        assert_eq!(list(db.conn(), limit.agent_uri(), None)?, Vec::new());
+        verify(db.conn())?;
+        audit::verify_hash_chain(db.conn())?;
+        Ok(())
+    }
+
+    #[test]
+    fn wire_rejects_limits_that_cannot_be_constructed() -> Result<(), CliError> {
+        let (_, limit) = ledger()?;
+        let valid =
+            serde_json::to_value(limit).map_err(|error| CliError::General(error.to_string()))?;
+        for (key, invalid) in [
+            ("max_post", serde_json::json!(-1)),
+            ("daily_limit", serde_json::json!(-1)),
+            ("currency", serde_json::json!("usd")),
+            ("company_slug", serde_json::json!("")),
+            ("agent_uri", serde_json::json!("invalid")),
+        ] {
+            let mut wire = valid.clone();
+            wire[key] = invalid;
+            assert!(serde_json::from_value::<SpendLimit>(wire).is_err());
+        }
+        let mut no_caps = valid;
+        no_caps["max_post"] = serde_json::Value::Null;
+        no_caps["daily_limit"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<SpendLimit>(no_caps).is_err());
+        assert!(matches!(
+            Caps::from_minor_units(Some(0), None),
+            Ok(Caps::PerPost(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn live_rows_and_audit_keep_legacy_uri_spelling() -> Result<(), CliError> {
+        let (db, limit) = ledger()?;
+        let mut wire =
+            serde_json::to_value(&limit).map_err(|error| CliError::General(error.to_string()))?;
+        let stored = limit.agent_uri().replace("test.bk.local", "TEST.bk.local");
+        wire["agent_uri"] = stored.clone().into();
+        let legacy: SpendLimit = serde_json::from_value(wire.clone())
+            .map_err(|error| CliError::General(error.to_string()))?;
+        assert_eq!(legacy.agent(), limit.agent());
+        assert_eq!(legacy.agent_uri(), stored);
+        let owner = Actor::new("owner");
+        audit::set_spend_limit(db.conn(), &owner, &legacy)?;
+        assert_eq!(
+            serde_json::to_value(list(db.conn(), &stored, Some("acme"))?)
+                .map_err(|error| CliError::General(error.to_string()))?,
+            serde_json::json!([wire])
+        );
+        assert_eq!(
+            audit::clear_spend_limits(db.conn(), &owner, &stored, None)?,
+            1
+        );
         verify(db.conn())?;
         audit::verify_hash_chain(db.conn())?;
         Ok(())
@@ -281,17 +538,17 @@ mod tests {
             db::create_account(db.conn(), "acme", code, code, kind, None)?;
         }
         for date in ["2026-1-1", "2026-01-01", "2026-01-02"] {
-            legacy_post(db.conn(), &limit.agent_uri, date)?;
+            legacy_post(db.conn(), limit.agent_uri(), date)?;
         }
         let date = NaiveDate::from_ymd_opt(2026, 1, 1)
             .ok_or_else(|| CliError::General("invalid test date".into()))?;
         assert_eq!(
-            daily_used(db.conn(), "acme", "USD", &limit.agent_uri, date)?,
+            daily_used(db.conn(), "acme", "USD", limit.agent_uri(), date)?,
             80000
         );
-        legacy_post(db.conn(), &limit.agent_uri, "invalid-date")?;
+        legacy_post(db.conn(), limit.agent_uri(), "invalid-date")?;
         assert!(matches!(
-            daily_used(db.conn(), "acme", "USD", &limit.agent_uri, date),
+            daily_used(db.conn(), "acme", "USD", limit.agent_uri(), date),
             Err(CliError::Database(_))
         ));
         Ok(())

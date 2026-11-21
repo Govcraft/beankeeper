@@ -1,6 +1,9 @@
 //! Spend policy tampering must fail closed even with an intact posted audit chain.
 
+use agent_uri::AgentUri;
+use beankeeper::types::Currency;
 use beankeeper_cli::commands::verify;
+use beankeeper_cli::db::spend_limits::{Caps, SpendLimit};
 use beankeeper_cli::db::{self, Actor, Db, audit, spend_limits};
 use beankeeper_cli::error::CliError;
 
@@ -15,18 +18,18 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
         db::create_company(db.conn(), "acme", "Acme", None)?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;
-        let limit = spend_limits::SpendLimit {
-            agent_uri: format!("agent://test.bk.local/ledger/{id}"),
-            company_slug: "acme".into(),
-            currency: "USD".into(),
-            max_post: Some(1000),
-            daily_limit: Some(2000),
-        };
+        let limit = SpendLimit::new(
+            AgentUri::parse(&format!("agent://test.bk.local/ledger/{id}"))
+                .map_err(|error| CliError::Validation(error.to_string()))?,
+            "acme".parse()?,
+            Currency::USD,
+            Caps::from_minor_units(Some(1000), Some(2000))?,
+        );
         audit::set_spend_limit(db.conn(), &Actor::new("owner"), &limit)?;
         verify::execute_json(&db)?;
         db.conn().execute_batch(tamper)?;
         assert!(matches!(
-            spend_limits::list(db.conn(), &limit.agent_uri, Some("acme")),
+            spend_limits::list(db.conn(), limit.agent_uri(), Some("acme")),
             Err(CliError::Database(_))
         ));
         assert!(matches!(

@@ -80,19 +80,22 @@ fn run_limit(
                 let currency = beankeeper::types::Currency::from_code(currency)
                     .map_err(|error| CliError::Validation(error.to_string()))?;
                 let parse = |value: &String| super::txn::parse_amount_to_minor(value, currency);
-                let limit = spend_limits::SpendLimit {
-                    agent_uri: canonical_uri(agent_uri)?,
-                    company_slug: company.into(),
-                    currency: currency.code().into(),
-                    max_post: max_post.as_ref().map(parse).transpose()?,
-                    daily_limit: daily_limit.as_ref().map(parse).transpose()?,
-                };
+                let caps = spend_limits::Caps::from_minor_units(
+                    max_post.as_ref().map(parse).transpose()?,
+                    daily_limit.as_ref().map(parse).transpose()?,
+                )?;
+                let limit = spend_limits::SpendLimit::new(
+                    parse_agent_uri(agent_uri)?,
+                    company.parse()?,
+                    currency,
+                    caps,
+                );
                 serde_json::to_value(audit::set_spend_limit(db.conn(), actor, &limit)?)
             }
             AgentLimitCommand::Show { agent_uri, company } => {
                 serde_json::to_value(spend_limits::list(
                     db.conn(),
-                    &canonical_uri(agent_uri)?,
+                    parse_agent_uri(agent_uri)?.as_str(),
                     company.as_deref().or(cli.company.as_deref()),
                 )?)
             }
@@ -100,7 +103,7 @@ fn run_limit(
                 let cleared = audit::clear_spend_limits(
                     db.conn(),
                     actor,
-                    &canonical_uri(agent_uri)?,
+                    parse_agent_uri(agent_uri)?.as_str(),
                     company.as_deref().or(cli.company.as_deref()),
                 )?;
                 return Ok(serde_json::json!({"cleared": cleared}));
@@ -112,8 +115,6 @@ fn run_limit(
     })
 }
 
-fn canonical_uri(value: &str) -> Result<String, CliError> {
-    agent_uri::AgentUri::parse(value)
-        .map(|uri| uri.to_string())
-        .map_err(|error| CliError::Validation(error.to_string()))
+fn parse_agent_uri(value: &str) -> Result<agent_uri::AgentUri, CliError> {
+    agent_uri::AgentUri::parse(value).map_err(|error| CliError::Validation(error.to_string()))
 }
