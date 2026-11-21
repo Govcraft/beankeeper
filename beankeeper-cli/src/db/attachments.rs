@@ -9,14 +9,15 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
+use super::ids::{AttachmentId, EntryId, TransactionId};
 use crate::error::CliError;
 
 /// A row from the `attachments` table.
 #[derive(Debug, Clone)]
 pub struct AttachmentRow {
-    pub id: i64,
-    pub transaction_id: i64,
-    pub entry_id: Option<i64>,
+    pub id: AttachmentId,
+    pub transaction_id: TransactionId,
+    pub entry_id: Option<EntryId>,
     pub company_slug: String,
     pub uri: String,
     pub document_type: DocumentType,
@@ -27,8 +28,8 @@ pub struct AttachmentRow {
 
 /// Parameters for inserting a new attachment record.
 pub struct StoreAttachmentParams<'a> {
-    pub transaction_id: i64,
-    pub entry_id: Option<i64>,
+    pub transaction_id: TransactionId,
+    pub entry_id: Option<EntryId>,
     pub company_slug: &'a str,
     pub uri: &'a str,
     pub document_type: DocumentType,
@@ -44,7 +45,7 @@ pub struct StoreAttachmentParams<'a> {
 pub fn store_attachment(
     conn: &Connection,
     params: &StoreAttachmentParams<'_>,
-) -> Result<i64, CliError> {
+) -> Result<AttachmentId, CliError> {
     conn.execute(
         "INSERT INTO attachments (transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -59,7 +60,7 @@ pub fn store_attachment(
         ],
     )?;
 
-    Ok(conn.last_insert_rowid())
+    AttachmentId::try_from(conn.last_insert_rowid())
 }
 
 /// Lists all attachments for a transaction within a company.
@@ -70,7 +71,7 @@ pub fn store_attachment(
 pub fn list_attachments(
     conn: &Connection,
     company_slug: &str,
-    transaction_id: i64,
+    transaction_id: TransactionId,
 ) -> Result<Vec<AttachmentRow>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT id, transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename, attached_at
@@ -97,7 +98,7 @@ pub fn list_attachments(
 pub fn get_attachment(
     conn: &Connection,
     company_slug: &str,
-    attachment_id: i64,
+    attachment_id: AttachmentId,
 ) -> Result<AttachmentRow, CliError> {
     conn.query_row(
         "SELECT id, transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename, attached_at
@@ -207,7 +208,7 @@ mod tests {
         db
     }
 
-    fn post_sample(db: &Db) -> i64 {
+    fn post_sample(db: &Db) -> TransactionId {
         let entries = vec![
             transactions::PostEntryParams {
                 account_code: "1000".to_string(),
@@ -240,7 +241,9 @@ mod tests {
         match transactions::post_transaction(db.conn(), &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"))
         {
-            transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => id,
+            transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => {
+                id.try_into().unwrap_or_else(|e| panic!("post ID: {e}"))
+            }
         }
     }
 
@@ -262,7 +265,7 @@ mod tests {
         };
         let att_id =
             store_attachment(db.conn(), &params).unwrap_or_else(|e| panic!("store failed: {e}"));
-        assert!(att_id > 0);
+        assert!(att_id.get() > 0);
 
         let attachments = list_attachments(db.conn(), "acme", txn_id)
             .unwrap_or_else(|e| panic!("list failed: {e}"));
@@ -301,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn attachment_rows_validate_existing_hash_text() -> rusqlite::Result<()> {
+    fn attachment_rows_validate_existing_hash_text() -> Result<(), CliError> {
         let db = setup();
         let txn_id = post_sample(&db);
         let insert =
@@ -310,7 +313,7 @@ mod tests {
 
         db.conn()
             .execute(insert, params![txn_id, HELLO_WORLD_HASH])?;
-        let row = get_attachment(db.conn(), "acme", db.conn().last_insert_rowid())
+        let row = get_attachment(db.conn(), "acme", db.conn().last_insert_rowid().try_into()?)
             .unwrap_or_else(|e| panic!("read existing attachment: {e}"));
         assert_eq!(
             row.hash.as_ref().map(Sha256Hex::as_str),
@@ -329,10 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn get_attachment_not_found() {
+    fn get_attachment_not_found() -> Result<(), CliError> {
         let db = setup();
-        let result = get_attachment(db.conn(), "acme", 9999);
+        let result = get_attachment(db.conn(), "acme", 9999.try_into()?);
         assert!(matches!(result, Err(CliError::NotFound(_))));
+        Ok(())
     }
 
     #[test]
@@ -374,16 +378,15 @@ mod tests {
     }
 
     #[test]
-    fn store_attachment_with_entry_id() {
+    fn store_attachment_with_entry_id() -> Result<(), CliError> {
         let db = setup();
         let txn_id = post_sample(&db);
 
         // Get an entry ID from the posted transaction
-        let company = super::super::companies::Company::resolve(db.conn(), "acme")
-            .expect("bind transaction company");
-        let entries = transactions::get_entries_for_transaction(&company, txn_id)
+        let company = super::super::companies::Company::resolve(db.conn(), "acme")?;
+        let entries = transactions::get_entries_for_transaction(&company, txn_id.get())
             .unwrap_or_else(|e| panic!("get entries: {e}"));
-        let entry_id = entries[0].id;
+        let entry_id = entries[0].id.try_into()?;
 
         let params = StoreAttachmentParams {
             transaction_id: txn_id,
@@ -400,5 +403,6 @@ mod tests {
         let att =
             get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.entry_id, Some(entry_id));
+        Ok(())
     }
 }

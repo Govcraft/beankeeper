@@ -10,11 +10,15 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 use super::input_values::{
-    CalendarDate, CompanySlug, DecimalAmount, Entry, Month, NonEmpty, PageLimit, PageOffset, RowId,
-    SecuritySymbol, Text, Transaction,
+    CalendarDate, CompanySlug, DecimalAmount, Month, NonEmpty, PageLimit, PageOffset,
+    SecuritySymbol, Text,
 };
 use crate::commands::{reference::TransactionReference, report_periods::CompareArg};
-use crate::db::{investments::LotId, proposals::ProposalId};
+use crate::db::{
+    ids::{EntryId, TransactionId},
+    investments::LotId,
+    proposals::ProposalId,
+};
 
 pub(super) use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as AuditEntityArg};
 
@@ -25,8 +29,6 @@ type Date = Text<CalendarDate>;
 type Amount = Text<DecimalAmount>;
 type Reference = Text<TransactionReference>;
 type Comparison = Text<CompareArg>;
-type TransactionId = RowId<Transaction>;
-type EntryId = RowId<Entry>;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]

@@ -1,6 +1,6 @@
 //! Decode validated values from the standard MCP JSON wire types.
 
-use std::{borrow::Cow, fmt, marker::PhantomData, num::NonZeroI64, str::FromStr};
+use std::{borrow::Cow, fmt, str::FromStr};
 
 use agent_uri::AgentUri;
 use beankeeper::{
@@ -331,61 +331,6 @@ impl TextValue for DecimalAmount {
 
     fn schema() -> Schema {
         json_schema!({"type": "string", "pattern": "^[+-]?[0-9]+(\\.[0-9]*)?$"})
-    }
-}
-
-pub(super) trait RowKind {
-    const NAME: &'static str;
-}
-
-#[derive(Debug)]
-pub(super) enum Transaction {}
-impl RowKind for Transaction {
-    const NAME: &'static str = "transaction ID";
-}
-
-#[derive(Debug)]
-pub(super) enum Entry {}
-impl RowKind for Entry {
-    const NAME: &'static str = "entry ID";
-}
-
-/// Distinct typed IDs for the SQLite rows still exposed as positive integers.
-#[derive(Debug)]
-pub(super) struct RowId<T>(NonZeroI64, PhantomData<T>);
-
-impl<T> RowId<T> {
-    pub(super) fn get(&self) -> i64 {
-        self.0.get()
-    }
-}
-
-impl<'de, T: RowKind> Deserialize<'de> for RowId<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let id = NonZeroI64::deserialize(deserializer)?;
-        if id.get() < 0 {
-            return Err(de::Error::custom(format_args!(
-                "{} must be positive",
-                T::NAME
-            )));
-        }
-        Ok(Self(id, PhantomData))
-    }
-}
-
-impl<T> Serialize for RowId<T> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_i64(self.get())
-    }
-}
-
-impl<T: RowKind> JsonSchema for RowId<T> {
-    fn schema_name() -> Cow<'static, str> {
-        T::NAME.into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type": "integer", "format": "int64", "minimum": 1})
     }
 }
 
