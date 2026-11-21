@@ -153,3 +153,24 @@ fn zero_and_unlimited_pages_follow_sqlite_limit_semantics() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn date_filters_match_the_same_calendar_day_for_list_and_count() -> TestResult {
+    let ledger = Ledger::new()?;
+    let bounds = ["--json", "--from", "2026-1-1", "--to", "2026-1-1"];
+    let rows = ledger.list(&bounds)?;
+    assert_success(&rows);
+    let result: Value = serde_json::from_slice(&rows.stdout)?;
+    assert_eq!(result["meta"]["pagination"]["total"], 51);
+
+    let mut count_flags = bounds.to_vec();
+    count_flags.push("--count");
+    let count = ledger.list(&count_flags)?;
+    assert_success(&count);
+    let result: Value = serde_json::from_slice(&count.stdout)?;
+    assert_eq!(result["data"]["count"], 51);
+
+    let invalid = ledger.list(&["--from", "2026-02-30"])?;
+    assert_eq!(invalid.status.code(), Some(2));
+    Ok(())
+}

@@ -1,6 +1,7 @@
 use std::fmt::Write;
 
 use beankeeper::types::{Currency, Money};
+use chrono::NaiveDate;
 use rusqlite::{Connection, params};
 
 use super::audit::{self, Actor};
@@ -335,9 +336,9 @@ pub struct ListTransactionParams<'a> {
     /// Optional account code filter (matches entries).
     pub account_filter: Option<&'a str>,
     /// Optional start date (inclusive).
-    pub from_date: Option<&'a str>,
+    pub from_date: Option<NaiveDate>,
     /// Optional end date (inclusive).
-    pub to_date: Option<&'a str>,
+    pub to_date: Option<NaiveDate>,
     /// Maximum number of rows to return.
     pub limit: i64,
     /// Number of rows to skip.
@@ -891,8 +892,8 @@ mod tests {
         assert!(post_transaction(db.conn(), &p3).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
-        lp.from_date = Some("2024-02-01");
-        lp.to_date = Some("2024-02-28");
+        lp.from_date = NaiveDate::from_ymd_opt(2024, 2, 1);
+        lp.to_date = NaiveDate::from_ymd_opt(2024, 2, 28);
         lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
@@ -1150,7 +1151,7 @@ mod tests {
         assert_eq!(count, 3);
 
         let mut lp2 = ListTransactionParams::for_company("acme");
-        lp2.from_date = Some("2024-01-02");
+        lp2.from_date = NaiveDate::from_ymd_opt(2024, 1, 2);
         let count2 = count_transactions(db.conn(), &lp2).unwrap_or(0);
         assert_eq!(count2, 2);
     }
@@ -1169,7 +1170,7 @@ mod tests {
         // Combine description + date range
         let mut lp = ListTransactionParams::for_company("acme");
         lp.description_like = Some("AWS");
-        lp.from_date = Some("2024-02-01");
+        lp.from_date = NaiveDate::from_ymd_opt(2024, 2, 1);
         lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);

@@ -354,8 +354,8 @@ fn run_list_or_count(
 
     let mut lp = transactions::ListTransactionParams::for_company(company);
     lp.account_filter = account.as_deref();
-    lp.from_date = from.as_deref();
-    lp.to_date = to.as_deref();
+    lp.from_date = *from;
+    lp.to_date = *to;
     lp.limit = limit.sql_limit();
     lp.offset = i64::from(*offset);
     lp.description_like = description.as_deref();

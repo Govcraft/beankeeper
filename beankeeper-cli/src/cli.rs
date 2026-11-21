@@ -1643,11 +1643,11 @@ pub struct TxnListArgs {
 
     /// Start date (inclusive).
     #[arg(long)]
-    pub from: Option<String>,
+    pub from: Option<chrono::NaiveDate>,
 
     /// End date (inclusive).
     #[arg(long)]
-    pub to: Option<String>,
+    pub to: Option<chrono::NaiveDate>,
 
     /// Maximum number of transactions to return. Use -1 for all matches.
     #[arg(long, default_value = "50", allow_negative_numbers = true)]
