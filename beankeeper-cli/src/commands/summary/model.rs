@@ -107,28 +107,89 @@ fn encode(value: &str) -> String {
         .collect()
 }
 
-pub(super) fn desktop_view(company: &str, currency: Currency, periods: &Periods) -> Value {
+const SUMMARY_VIEW_ID: &str = "financial-summary";
+
+#[derive(Serialize)]
+pub(super) struct SelectedAccounts<'a> {
+    #[serde(rename = "cash_account", skip_serializing_if = "<[_]>::is_empty")]
+    pub cash: &'a [String],
+    #[serde(rename = "receivable_account", skip_serializing_if = "<[_]>::is_empty")]
+    pub receivable: &'a [String],
+    #[serde(rename = "payable_account", skip_serializing_if = "<[_]>::is_empty")]
+    pub payable: &'a [String],
+}
+
+#[derive(Serialize)]
+struct ViewState<'a> {
+    company: &'a str,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    currency: Currency,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+    compare_from: chrono::NaiveDate,
+    compare_to: chrono::NaiveDate,
+    #[serde(flatten)]
+    accounts: &'a SelectedAccounts<'a>,
+}
+
+#[derive(Serialize)]
+struct DesktopLink<'a> {
+    view_id: &'static str,
+    state: ViewState<'a>,
+}
+
+pub(super) fn desktop_view(
+    company: &str,
+    currency: Currency,
+    periods: &Periods,
+    accounts: &SelectedAccounts<'_>,
+) -> Value {
+    let state = ViewState {
+        company,
+        currency,
+        from: periods.current.from,
+        to: periods.current.to,
+        compare_from: periods.prior.from,
+        compare_to: periods.prior.to,
+        accounts,
+    };
+    let uri = legacy_view_uri(&state);
     json!({
-        "view":"financial-summary", "company":company, "currency":currency.code(),
-        "from":periods.current.from, "to":periods.current.to,
-        "compare_from":periods.prior.from, "compare_to":periods.prior.to,
-        "uri":format!("beankeeper://summary?company={}&currency={}&from={}&to={}&compare_from={}&compare_to={}",
-            encode(company),currency.code(),periods.current.from,periods.current.to,periods.prior.from,periods.prior.to),
+        "view": SUMMARY_VIEW_ID,
+        "company": state.company, "currency": state.currency.code(),
+        "from": state.from, "to": state.to,
+        "compare_from": state.compare_from, "compare_to": state.compare_to,
+        "cash_accounts": accounts.cash,
+        "receivable_accounts": accounts.receivable,
+        "payable_accounts": accounts.payable,
+        "uri": uri,
+        "link": DesktopLink { view_id: SUMMARY_VIEW_ID, state },
     })
 }
 
-pub(super) fn select_view_accounts(view: &mut Value, selections: [(&str, &[String]); 3]) {
-    let mut uri = view["uri"].as_str().unwrap_or_default().to_owned();
-    for (kind, codes) in selections {
-        view[format!("{kind}_accounts")] = json!(codes);
+fn legacy_view_uri(state: &ViewState<'_>) -> String {
+    use std::fmt::Write as _;
+
+    let mut uri = format!(
+        "beankeeper://summary?company={}&currency={}&from={}&to={}&compare_from={}&compare_to={}",
+        encode(state.company),
+        state.currency.code(),
+        state.from,
+        state.to,
+        state.compare_from,
+        state.compare_to,
+    );
+    for (name, codes) in [
+        ("cash_account", state.accounts.cash),
+        ("receivable_account", state.accounts.receivable),
+        ("payable_account", state.accounts.payable),
+    ] {
         for code in codes {
-            uri.push('&');
-            uri.push_str(kind);
-            uri.push_str("_account=");
-            uri.push_str(&encode(code));
+            // Writing to a String cannot fail.
+            let _ = write!(uri, "&{name}={}", encode(code));
         }
     }
-    view["uri"] = Value::String(uri);
+    uri
 }
 
 fn money(amount: i64, currency: Currency) -> String {

@@ -342,14 +342,15 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
         receivables: &receivables,
         payables: &payables,
     })?;
-    let mut view = model::desktop_view(company, currency, &periods);
-    model::select_view_accounts(
-        &mut view,
-        [
-            ("cash", &cash),
-            ("receivable", &receivables),
-            ("payable", &payables),
-        ],
+    let view = model::desktop_view(
+        company,
+        currency,
+        &periods,
+        &model::SelectedAccounts {
+            cash: &cash,
+            receivable: &receivables,
+            payable: &payables,
+        },
     );
     let standing = json!({
         "as_of":periods.current.to,

@@ -336,16 +336,55 @@ fn custom_account_selection_is_qualified_and_preserved_in_desktop_links() -> Tes
             .as_str()
             .is_some_and(|text| text.contains("selected accounts"))
     );
-    let explicit = ledger.summary(&["--to", "2024-03-31", "--cash-account", "1300"])?;
+    let expected_state = json!({
+        "company": "co",
+        "currency": "USD",
+        "from": "2024-03-01",
+        "to": "2024-03-31",
+        "compare_from": "2024-02-01",
+        "compare_to": "2024-02-29",
+        "cash_account": ["1000"],
+        "receivable_account": ["1100"],
+        "payable_account": ["2000"],
+    });
+    let inferred_view = &inferred["data"]["desktop_view"];
+    assert_eq!(
+        inferred_view["link"],
+        json!({"view_id": "financial-summary", "state": expected_state}),
+    );
+    assert_eq!(inferred_view["cash_accounts"], json!(["1000"]));
+
+    let explicit = ledger.summary(&[
+        "--to",
+        "2024-03-31",
+        "--cash-account",
+        "1300",
+        "--receivable-account",
+        "1200",
+        "--payable-account",
+        "2100",
+    ])?;
+    let mut expected_state = expected_state;
+    expected_state["cash_account"] = json!(["1300"]);
+    expected_state["receivable_account"] = json!(["1200"]);
+    expected_state["payable_account"] = json!(["2100"]);
     assert_eq!(explicit["data"]["standing"]["cash_on_hand"], 2500);
     let view = &explicit["data"]["desktop_view"];
     assert_eq!(view["cash_accounts"], json!(["1300"]));
+    assert_eq!(view["view"], "financial-summary");
+    assert_eq!(view["compare_to"], "2024-02-29");
+    assert_eq!(view["receivable_accounts"], json!(["1200"]));
+    assert_eq!(view["payable_accounts"], json!(["2100"]));
+    assert_eq!(
+        view["link"],
+        json!({"view_id": "financial-summary", "state": expected_state}),
+    );
     assert!(
         view["uri"]
             .as_str()
             .is_some_and(|uri| uri.contains("&cash_account=1300")
-                && uri.contains("&receivable_account=1100")
-                && uri.contains("&payable_account=2000")
+                && uri.contains("&receivable_account=1200")
+                && uri.contains("&payable_account=2100")
                 && !uri.contains("&cash_account=1000"))
     );
     Ok(())
