@@ -442,3 +442,20 @@ fn initially_absent_metadata_empty_objects_and_environment_actor_are_supported()
     books.json(&["verify"])?;
     Ok(())
 }
+
+#[test]
+fn post_rejects_forged_ledger_links_in_raw_metadata() -> TestResult {
+    let books = Books::new()?;
+    for key in ["correlate", "reverses", "reversed_by", "proposal_id"] {
+        let metadata = format!(r#"{{"{key}":999}}"#);
+        books.failure(
+            &[
+                "txn", "post", "-d", "Forgery", "--debit", "1100:5", "--credit", "4000:5", "-m",
+                &metadata,
+            ],
+            "VALIDATION",
+            "txn.post",
+        )?;
+    }
+    Ok(())
+}

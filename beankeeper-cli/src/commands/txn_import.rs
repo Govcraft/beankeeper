@@ -124,7 +124,7 @@ struct PreparedTransaction {
     #[serde(serialize_with = "crate::output::json::serialize_display")]
     currency: Currency,
     entries: Vec<PreparedEntry>,
-    metadata: Option<String>,
+    metadata: Option<db::metadata::UserAnnotations>,
     #[serde(skip)]
     reference: Option<TransactionReference>,
 }
@@ -170,7 +170,8 @@ fn prepare_json(
         entries,
         metadata: input
             .metadata
-            .map(|value| serde_json::Value::Object(value).to_string()),
+            .map(db::metadata::UserAnnotations::from_fields)
+            .transpose()?,
         reference: input.reference.as_deref().map(str::parse).transpose()?,
     })
 }
@@ -431,7 +432,10 @@ fn post_import(
     let params = transactions::PostTransactionParams {
         company_slug: ctx.company,
         description: &prepared.description,
-        metadata: prepared.metadata.as_deref(),
+        metadata: prepared
+            .metadata
+            .as_ref()
+            .map(db::metadata::UserAnnotations::as_str),
         currency: prepared.currency.code(),
         date: &prepared.date.to_string(),
         entries: &entries,

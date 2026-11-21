@@ -38,6 +38,98 @@ pub const MEMO_KEY: &str = "memo";
 /// Key holding the partner transaction ID of an intercompany link.
 pub const CORRELATE_KEY: &str = "correlate";
 
+/// The approval link is assigned only by proposal resolution.
+pub(crate) const PROPOSAL_KEY: &str = "proposal_id";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkKey {
+    Correlate,
+    Reverses,
+    ReversedBy,
+    Proposal,
+    Settlement,
+}
+
+impl LinkKey {
+    pub(crate) fn classify(key: &str) -> Option<Self> {
+        match key {
+            CORRELATE_KEY => Some(Self::Correlate),
+            "reverses" => Some(Self::Reverses),
+            "reversed_by" => Some(Self::ReversedBy),
+            PROPOSAL_KEY => Some(Self::Proposal),
+            "applies_to" => Some(Self::Settlement),
+            _ => None,
+        }
+    }
+
+    fn validate_post_key(key: &str) -> Result<(), CliError> {
+        match Self::classify(key) {
+            // Settlement intent is collected when a payment is posted. It does
+            // not grant authority over the linked transaction.
+            None | Some(Self::Settlement) => Ok(()),
+            Some(Self::Correlate) => Err(CliError::Validation(format!(
+                "metadata key '{key}' is reserved; use --correlate to link transactions"
+            ))),
+            Some(Self::Proposal) => Err(CliError::Validation(format!(
+                "metadata key '{key}' is reserved for approvals"
+            ))),
+            Some(Self::Reverses | Self::ReversedBy) => Err(reserved_link_error(key)),
+        }
+    }
+}
+
+fn reserved_link_error(key: &str) -> CliError {
+    CliError::Validation(format!(
+        "metadata key '{key}' is reserved for ledger relationships"
+    ))
+}
+
+/// Metadata supplied with a posting, checked before any ledger-owned links are added.
+pub(crate) struct UserAnnotations(NormalizedMetadata);
+
+impl UserAnnotations {
+    pub(crate) fn parse(raw: Option<&str>) -> Result<Option<Self>, CliError> {
+        raw.and_then(normalize)
+            .map(Self::from_normalized)
+            .transpose()
+    }
+
+    fn from_normalized(metadata: NormalizedMetadata) -> Result<Self, CliError> {
+        for key in metadata.fields.keys() {
+            LinkKey::validate_post_key(key)?;
+        }
+        Ok(Self(metadata))
+    }
+
+    pub(crate) fn from_fields(fields: Map<String, Value>) -> Result<Self, CliError> {
+        let text =
+            serde_json::to_string(&fields).map_err(|error| CliError::General(error.to_string()))?;
+        Self::from_normalized(NormalizedMetadata { text, fields })
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0.text
+    }
+
+    pub(super) fn into_normalized(self) -> NormalizedMetadata {
+        self.0
+    }
+
+    pub(crate) fn into_string(self) -> String {
+        self.0.into_string()
+    }
+}
+
+impl serde::Serialize for UserAnnotations {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+pub(super) fn link_fields(raw: &str) -> Option<Map<String, Value>> {
+    parse_object(raw)
+}
+
 /// SQL expression yielding a transaction's correlate value, or `NULL` when the
 /// metadata is NULL, not valid JSON, or has no `correlate` key. The `CASE`
 /// guarantees `json_extract` never sees malformed JSON (`SQLite` does not promise
@@ -215,18 +307,10 @@ pub fn build_post_metadata(
             )));
         }
     }
-    if let Some((key, _)) = meta.iter().find(|(k, _)| k == CORRELATE_KEY) {
-        return Err(CliError::Validation(format!(
-            "--meta key '{key}' is reserved; use --correlate to link transactions"
-        )));
+    for (key, _) in meta {
+        LinkKey::validate_post_key(key)?;
     }
-    super::proposals::reject_reserved_metadata(metadata)?;
-    if meta.iter().any(|(key, _)| key == "proposal_id") {
-        return Err(CliError::Validation(
-            "metadata key 'proposal_id' is reserved for approvals".into(),
-        ));
-    }
-    let base = metadata.and_then(normalize);
+    let base = UserAnnotations::parse(metadata)?.map(|annotations| annotations.0);
     if meta.is_empty() {
         return Ok(base.map(NormalizedMetadata::into_string));
     }
@@ -246,7 +330,13 @@ pub fn build_post_metadata(
 ///
 /// Returns `CliError::Validation` if the metadata is already correlated.
 pub fn with_correlate(metadata: Option<&str>, partner_id: i64) -> Result<String, CliError> {
-    let mut base = metadata.and_then(normalize);
+    with_correlation(metadata.and_then(normalize), partner_id)
+}
+
+pub(super) fn with_correlation(
+    mut base: Option<NormalizedMetadata>,
+    partner_id: i64,
+) -> Result<String, CliError> {
     if let Some(metadata) = base.as_mut()
         && let Some(correlate) = metadata.fields.get_mut(CORRELATE_KEY)
     {
@@ -260,6 +350,10 @@ pub fn with_correlate(metadata: Option<&str>, partner_id: i64) -> Result<String,
     }
     let addition = [(CORRELATE_KEY.to_string(), Value::from(partner_id))];
     insert_keys(base, &addition).map(NormalizedMetadata::into_string)
+}
+
+pub(super) fn reversal_link(original: i64) -> Result<NormalizedMetadata, CliError> {
+    insert_keys(None, &[("reverses".to_owned(), Value::from(original))])
 }
 
 /// A batch of top-level transaction annotation edits. Set values are strings.
@@ -293,18 +387,8 @@ impl MetadataEdit {
                     "metadata keys must be non-empty and must not contain '\"'".into(),
                 ));
             }
-            if [
-                "correlate",
-                "reverses",
-                "reversed_by",
-                "applies_to",
-                "proposal_id",
-            ]
-            .contains(key)
-            {
-                return Err(CliError::Validation(format!(
-                    "metadata key '{key}' is reserved for ledger relationships"
-                )));
+            if LinkKey::classify(key).is_some() {
+                return Err(reserved_link_error(key));
             }
             if keys[..index].contains(key) {
                 return Err(CliError::Validation(format!(

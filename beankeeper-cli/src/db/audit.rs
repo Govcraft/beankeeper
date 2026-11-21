@@ -1583,6 +1583,27 @@ pub struct ReverseTransactionParams<'a> {
     pub actor: &'a Actor,
 }
 
+/// A checked reverse request and its exact original, minted by the audited path.
+pub(super) struct ReversalPosting<'a> {
+    conn: &'a Connection,
+    original_id: i64,
+    params: super::transactions::PostTransactionParams<'a>,
+}
+
+impl<'a> ReversalPosting<'a> {
+    pub(super) const fn connection(&self) -> &'a Connection {
+        self.conn
+    }
+
+    pub(super) const fn params(&self) -> &super::transactions::PostTransactionParams<'a> {
+        &self.params
+    }
+
+    pub(super) const fn original_id(&self) -> i64 {
+        self.original_id
+    }
+}
+
 /// Creates an opposite posting, links both transactions, and records the action.
 ///
 /// Existing entries and clearings stay intact; new entries start uncleared.
@@ -1597,9 +1618,7 @@ pub fn reverse_transaction(
     conn: &Connection,
     p: &ReverseTransactionParams<'_>,
 ) -> Result<super::transactions::PostResult, CliError> {
-    use super::transactions::{
-        PostResult, PostTransactionParams, get_transaction, post_transaction,
-    };
+    use super::transactions::{PostResult, PostTransactionParams, get_transaction};
 
     in_savepoint(conn, "sp_reverse", || {
         let (original, entries) = get_transaction(conn, p.company_slug, p.id)?;
@@ -1620,17 +1639,17 @@ pub fn reverse_transaction(
             || format!("Reversal of #{}: {}", p.id, original.description),
             str::to_string,
         );
-        let entries = reversal_entries(conn, &original, &entries, date)?;
+        let entries = reversal_entries(&entries);
         let reference = p
             .reference
             .map_or_else(|| format!("reversal-of-{}", p.id), str::to_string);
-        let reversal_metadata = serde_json::json!({"reverses": p.id}).to_string();
-        let result = post_transaction(
+        let result = super::transactions::post_reversal(ReversalPosting {
             conn,
-            &PostTransactionParams {
+            original_id: p.id,
+            params: PostTransactionParams {
                 company_slug: p.company_slug,
                 description: &description,
-                metadata: Some(&reversal_metadata),
+                metadata: None,
                 currency: &original.currency,
                 date: &date.to_string(),
                 entries: &entries,
@@ -1639,7 +1658,7 @@ pub fn reverse_transaction(
                 on_conflict: super::transactions::ConflictStrategy::Error,
                 actor: p.actor,
             },
-        )?;
+        })?;
         let PostResult::Created(reversal_id) = result else {
             return Err(CliError::General(
                 "reversal was unexpectedly skipped".into(),
@@ -1738,36 +1757,18 @@ fn validate_reversal(
     Ok(date)
 }
 
-/// Build mirror entries and validate the entire posting with the library.
-fn reversal_entries(
-    conn: &Connection,
-    original: &super::TransactionRow,
-    entries: &[super::EntryRow],
-    date: chrono::NaiveDate,
-) -> Result<Vec<super::transactions::PostEntryParams>, CliError> {
-    use beankeeper::types::{Currency, Entry, Money};
-    let currency = Currency::from_code(&original.currency)
-        .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
-    let mut journal = beankeeper::core::JournalEntry::new(date, "Reversal", currency);
-    let mut reversed = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let direction = entry.direction.opposite();
-        let row = super::accounts::get_account(conn, &original.company_slug, &entry.account_code)?;
-        journal = journal.entry(Entry::new(
-            super::accounts::row_to_account(&row)?,
-            Money::from_minor(i128::from(entry.amount), currency),
-            direction,
-        )?)?;
-        reversed.push(super::transactions::PostEntryParams {
+/// Mirror the original entries. The sealed writer validates the resulting journal.
+fn reversal_entries(entries: &[super::EntryRow]) -> Vec<super::transactions::PostEntryParams> {
+    entries
+        .iter()
+        .map(|entry| super::transactions::PostEntryParams {
             account_code: entry.account_code.clone(),
-            direction: direction.code().into(),
+            direction: entry.direction.opposite().code().into(),
             amount: entry.amount,
             memo: entry.memo.clone(),
             tax_category: entry.tax_category.clone(),
-        });
-    }
-    journal.post()?;
-    Ok(reversed)
+        })
+        .collect()
 }
 
 /// Upserts a single month's budget, recording the prior amount (if any).
