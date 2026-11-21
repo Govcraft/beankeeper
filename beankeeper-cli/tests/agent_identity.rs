@@ -891,3 +891,48 @@ fn metadata_annotations_record_verified_identity_without_changing_the_poster() -
     ledger.run(&["verify"], None)?;
     Ok(())
 }
+
+#[test]
+fn typed_issuance_keeps_bearer_and_private_key_out_of_debug_and_audit() -> TestResult {
+    use secrecy::ExposeSecret as _;
+
+    let ledger = Ledger::new()?;
+    let db = &ledger.db;
+    let actor = Actor::new("owner");
+    identity::init_root(db.conn(), &actor)?;
+    let issued = identity::issue_credential(
+        db.conn(),
+        &actor,
+        &identity::IssueRequest {
+            name: "typed_reader",
+            capabilities: &["ledger/read".into()],
+            ttl: std::time::Duration::from_mins(15),
+            public_key: None,
+            generate_key: true,
+        },
+    )?;
+    let secret = issued.token().expose_secret();
+    let private_key = issued
+        .generated_private_key()
+        .ok_or("missing generated key")?;
+    let preview = format!("{issued:?}");
+    assert!(!preview.contains(secret));
+    assert!(!preview.contains(private_key.expose_secret()));
+
+    let verified = identity::verify(db.conn(), secret)?;
+    assert_eq!(verified.uri(), issued.agent_uri.as_str());
+    assert_eq!(verified.jti(), issued.token_jti.as_str());
+    assert_eq!(verified.capabilities(), issued.capabilities);
+    assert!(issued.expires_at > issued.issued_at);
+
+    let recorded: String = db.conn().query_row(
+        "SELECT after FROM audit_log WHERE action = 'token_issue' AND entity_id = ?1",
+        [issued.token_jti.as_str()],
+        |row| row.get(0),
+    )?;
+    let event: Value = serde_json::from_str(&recorded)?;
+    assert_eq!(event["agent_uri"], issued.agent_uri.as_str());
+    assert!(event.get("token").is_none());
+    assert!(event.get("private_key").is_none());
+    Ok(())
+}
