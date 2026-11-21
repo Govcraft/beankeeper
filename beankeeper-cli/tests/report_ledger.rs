@@ -3,9 +3,12 @@
 //! balance per account.
 
 use std::error::Error;
+use std::path::Path;
 use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
+use beankeeper_cli::commands::report_ledger::{LedgerOptions, build_report};
+use beankeeper_cli::db::connection::Db;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -178,9 +181,9 @@ fn opening_balance_reflects_activity_before_from() -> TestResult {
             "--account",
             "1000",
             "--from",
-            "2025-01-10",
+            "2025-1-10",
             "--to",
-            "2025-01-15",
+            "2025-1-15",
         ],
     )?;
     let cash = account(&env, "1000")?;
@@ -191,6 +194,45 @@ fn opening_balance_reflects_activity_before_from() -> TestResult {
     assert_eq!(cash["closing_balance"], 7_000);
     assert_eq!(env["data"]["from"], "2025-01-10");
     assert_eq!(env["data"]["to"], "2025-01-15");
+    Ok(())
+}
+
+#[test]
+fn embedded_bounds_use_canonical_sql_dates_and_keep_open_ends() -> TestResult {
+    let (_dir, path) = setup()?;
+    let db = Db::open_existing(Path::new(&path), None)?;
+    let opts = LedgerOptions {
+        accounts: &["1000".to_string()],
+        from: Some("2025-1-10"),
+        to: Some("2025-1-10"),
+        currency: None,
+        filter_metadata: &[],
+    };
+
+    let bounded = build_report(db.conn(), CO, &opts)?;
+    let cash = bounded.accounts.first().ok_or("missing cash account")?;
+    assert_eq!(bounded.from.as_deref(), Some("2025-01-10"));
+    assert_eq!(bounded.to.as_deref(), Some("2025-01-10"));
+    assert_eq!(cash.opening_balance, -3_000);
+    assert_eq!(cash.entries.len(), 1);
+    assert_eq!(
+        cash.entries.first().ok_or("missing invoice")?.date,
+        "2025-01-10"
+    );
+    assert_eq!(cash.closing_balance, 7_000);
+
+    let no_start = build_report(db.conn(), CO, &LedgerOptions { from: None, ..opts })?;
+    let cash = no_start.accounts.first().ok_or("missing cash account")?;
+    assert_eq!(no_start.from, None);
+    assert_eq!(cash.opening_balance, 0);
+    assert_eq!(cash.entries.len(), 2);
+    assert_eq!(cash.closing_balance, 7_000);
+
+    let no_end = build_report(db.conn(), CO, &LedgerOptions { to: None, ..opts })?;
+    let cash = no_end.accounts.first().ok_or("missing cash account")?;
+    assert_eq!(no_end.to, None);
+    assert_eq!(cash.entries.len(), 2);
+    assert_eq!(cash.closing_balance, 12_000);
     Ok(())
 }
 
