@@ -1,6 +1,5 @@
 //! Pending obligations, explicit posting, and recurring transaction templates.
 
-use beankeeper::types::Currency;
 use serde_json::Value;
 
 use crate::cli::{Cli, OutputFormat, ScheduleCommand, resolve_format};
@@ -79,13 +78,12 @@ fn create_params(command: &ScheduleCommand) -> Result<schedules::CreateScheduleP
     else {
         return Err(CliError::Usage("expected schedule create".into()));
     };
-    let parsed_currency = Currency::from_code(currency)
-        .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
+    let currency = currency.resolve()?;
     let tax = super::txn::parse_tax_args(tax)?;
     let mut entries = Vec::new();
     for (args, direction) in [(debit, "debit"), (credit, "credit")] {
         for arg in args {
-            let (account_code, amount, memo) = super::txn::parse_entry_arg(arg, parsed_currency)?;
+            let (account_code, amount, memo) = super::txn::parse_entry_arg(arg, currency)?;
             entries.push(PostEntryParams {
                 tax_category: tax.get(&account_code).cloned(),
                 account_code,
@@ -99,7 +97,7 @@ fn create_params(command: &ScheduleCommand) -> Result<schedules::CreateScheduleP
     let metadata = db::metadata::build_post_metadata(metadata.as_deref(), &pairs)?;
     Ok(schedules::CreateScheduleParams {
         description: description.clone(),
-        currency: currency.clone(),
+        currency,
         start_date: *start,
         frequency: *frequency,
         end_date: *end,

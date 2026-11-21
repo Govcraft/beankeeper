@@ -1,6 +1,6 @@
 //! Schedule validation, atomic posting and audit preservation.
 
-use beankeeper::core::Frequency;
+use beankeeper::{core::Frequency, types::Currency};
 use beankeeper_cli::{
     db::{
         Actor, Db, PostEntryParams, accounts, audit, companies,
@@ -30,7 +30,7 @@ fn fixture() -> Result<Db, CliError> {
 fn template() -> Result<CreateScheduleParams, CliError> {
     Ok(CreateScheduleParams {
         description: "Monthly rent".into(),
-        currency: "USD".into(),
+        currency: Currency::USD,
         start_date: date("2026-01-31")?,
         frequency: Frequency::Monthly,
         end_date: Some(date("2026-03-31")?),
@@ -64,9 +64,6 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     cases.push(invalid);
     let mut invalid = template()?;
     invalid.entries[0].account_code = "missing".into();
-    cases.push(invalid);
-    let mut invalid = template()?;
-    invalid.currency = "BAD".into();
     cases.push(invalid);
     let mut invalid = template()?;
     invalid.description = "  ".into();

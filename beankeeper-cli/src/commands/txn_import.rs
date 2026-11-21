@@ -43,7 +43,7 @@ pub struct ImportOptions {
     positive_amount: PositiveAmount,
     /// Default currency for CSV/JSON (JSON objects may override it).
     #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    currency: String,
+    currency: crate::cli::CurrencyArg,
 }
 
 /// The direction of positive bank statement amounts.
@@ -121,7 +121,8 @@ struct PreparedEntry {
 struct PreparedTransaction {
     date: NaiveDate,
     description: String,
-    currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    currency: Currency,
     entries: Vec<PreparedEntry>,
     metadata: Option<String>,
     #[serde(skip)]
@@ -143,9 +144,12 @@ fn parse_date(date: &str, format: &str) -> Result<NaiveDate, CliError> {
 
 fn prepare_json(
     input: InputTransaction,
-    default_currency: &str,
+    default_currency: &crate::cli::CurrencyArg,
 ) -> Result<PreparedTransaction, CliError> {
-    let currency = parse_currency(input.currency.as_deref().unwrap_or(default_currency))?;
+    let currency = input
+        .currency
+        .as_deref()
+        .map_or_else(|| default_currency.resolve(), parse_currency)?;
     let entries = input
         .entries
         .into_iter()
@@ -162,7 +166,7 @@ fn prepare_json(
     Ok(PreparedTransaction {
         date: parse_date(&input.date, "%Y-%m-%d")?,
         description: input.description,
-        currency: currency.code().to_string(),
+        currency,
         entries,
         metadata: input
             .metadata
@@ -211,7 +215,7 @@ fn prepare_csv(
     bank: &str,
     suspense: &str,
 ) -> Result<PreparedTransaction, CliError> {
-    let currency = parse_currency(&options.currency)?;
+    let currency = options.currency.resolve()?;
     let signed = super::txn::parse_amount_to_minor(record[columns.amount].trim(), currency)?;
     let inflow = (signed > 0) == (options.positive_amount == PositiveAmount::Inflow);
     let (debit, credit) = if inflow {
@@ -238,7 +242,7 @@ fn prepare_csv(
     Ok(PreparedTransaction {
         date: parse_date(&record[columns.date], &options.date_format)?,
         description: record[columns.description].to_string(),
-        currency: currency.code().to_string(),
+        currency,
         entries,
         metadata: None,
         // Blank CSV cells mean the source row has no explicit reference.
@@ -306,7 +310,7 @@ fn validate_posting(
     company: &str,
     prepared: &mut PreparedTransaction,
 ) -> Result<Vec<transactions::PostEntryParams>, CliError> {
-    let currency = parse_currency(&prepared.currency)?;
+    let currency = prepared.currency;
     let mut journal = JournalEntry::new(prepared.date, &prepared.description, currency);
     let mut entries = Vec::new();
     for entry in &mut prepared.entries {
@@ -428,7 +432,7 @@ fn post_import(
         company_slug: ctx.company,
         description: &prepared.description,
         metadata: prepared.metadata.as_deref(),
-        currency: &prepared.currency,
+        currency: prepared.currency.code(),
         date: &prepared.date.to_string(),
         entries: &entries,
         correlate: None,

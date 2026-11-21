@@ -65,7 +65,7 @@ fn checked_money(amount: Amount, currency: Currency) -> Result<Money, CliError> 
 }
 
 fn calculate(args: &LoanCalculationArgs) -> Result<(Currency, ScheduleData), CliError> {
-    let currency = Currency::from_code(&args.currency).map_err(validation)?;
+    let currency = args.currency.resolve()?;
     let principal = super::txn::parse_amount_to_minor(&args.principal, currency)?;
     let principal = Amount::new(i128::from(principal));
     let rate: AnnualRate = args.rate.parse().map_err(validation)?;
@@ -179,7 +179,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         credit: vec![format!("{}:{}", args.paying_account, row.payment.decimal())],
         metadata: None,
         meta: Vec::new(),
-        currency: currency.to_string(),
+        currency: currency.into(),
         date: Some(args.date.clone()),
         correlate: None,
         reference: Some(args.reference.clone()),

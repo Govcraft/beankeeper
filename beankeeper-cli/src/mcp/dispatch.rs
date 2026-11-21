@@ -393,7 +393,7 @@ fn call_txn_list(db: &Db, actor: &Actor, input: inputs::TxnList) -> Response {
             amount_gt: optional_text(input.amount_gt),
             amount_lt: optional_text(input.amount_lt),
             amount_eq: optional_text(input.amount_eq),
-            currency: optional_text(input.currency),
+            currency: input.currency.map(|currency| currency.into_inner().into()),
             reference: optional_text(input.reference),
             metadata: input.metadata,
             meta: input.meta,
@@ -437,7 +437,7 @@ fn call_budget_set(db: &Db, actor: &Actor, input: inputs::BudgetSet) -> Response
             month: budget_month(input.month)?,
             amount: optional_text(input.amount),
             annual: optional_text(input.annual),
-            currency: budget_currency(optional_text(input.currency)),
+            currency: budget_currency(input.currency.map(Text::into_inner))?.into(),
             notes: input.notes,
         }),
     )
@@ -452,7 +452,7 @@ fn call_budget_delete(db: &Db, actor: &Actor, input: inputs::BudgetDelete) -> Re
             account: input.account.to_string(),
             year: input.year,
             month: budget_month(input.month)?,
-            currency: budget_currency(optional_text(input.currency)),
+            currency: budget_currency(input.currency.map(Text::into_inner))?.into(),
             force: true,
         },
     )
@@ -736,10 +736,15 @@ fn budget_month(month: Option<Month>) -> Result<Option<cli::BudgetMonth>, CliErr
         .transpose()
 }
 
-fn budget_currency(currency: Option<String>) -> String {
-    currency
-        .or_else(|| std::env::var("BEANKEEPER_CURRENCY").ok())
-        .unwrap_or_else(|| Currency::USD.to_string())
+fn budget_currency(currency: Option<Currency>) -> Result<Currency, CliError> {
+    if let Some(currency) = currency {
+        return Ok(currency);
+    }
+    match std::env::var("BEANKEEPER_CURRENCY") {
+        Ok(default) => cli::parse_currency_arg(&default)
+            .map_err(|error| CliError::Validation(error.to_string())),
+        Err(_) => Ok(Currency::USD),
+    }
 }
 
 pub(super) fn optional_text(value: Option<impl std::fmt::Display>) -> Option<String> {

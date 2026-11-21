@@ -2,8 +2,6 @@
 
 use std::io::IsTerminal;
 
-use beankeeper::types::Currency;
-
 use crate::cli::{BudgetCommand, BudgetMonth, BudgetSetArgs, Cli, OutputFormat, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db;
@@ -116,7 +114,7 @@ fn compute(
             actor,
             company,
             account,
-            currency,
+            currency.resolve()?,
             *year,
             month.map(BudgetMonth::get),
         )
@@ -144,8 +142,7 @@ fn set(
             "account '{account}' not found in company '{company}'"
         )));
     }
-    let parsed_currency = Currency::from_code(currency)
-        .map_err(|_| CliError::Validation(format!("unknown currency: {currency}")))?;
+    let currency = currency.resolve()?;
     let scope = match (month, amount.as_deref(), annual.as_deref()) {
         (Some(month), Some(amount), None) => BudgetScope::Monthly {
             month: *month,
@@ -167,7 +164,7 @@ fn set(
                 account_code: account,
                 currency,
                 year: *year,
-                annual_amount: parse_amount_to_minor(annual, parsed_currency)?,
+                annual_amount: parse_amount_to_minor(annual, currency)?,
                 notes: notes.as_deref(),
             },
         ),
@@ -180,7 +177,7 @@ fn set(
                 currency,
                 year: *year,
                 month: month.get(),
-                amount: parse_amount_to_minor(amount, parsed_currency)?,
+                amount: parse_amount_to_minor(amount, currency)?,
                 notes: notes.as_deref(),
             },
         )
@@ -281,7 +278,7 @@ mod tests {
             month: Some("3".parse().unwrap_or_else(|error| panic!("{error}"))),
             amount: Some(amount.into()),
             annual: None,
-            currency: "USD".into(),
+            currency: beankeeper::types::Currency::USD.into(),
             notes: Some("Office".into()),
         })
     }
@@ -324,7 +321,7 @@ mod tests {
                 account: "5000".into(),
                 year: 2026,
                 month: None,
-                currency: "USD".into(),
+                currency: beankeeper::types::Currency::USD.into(),
                 force: true,
             },
             &actor,

@@ -77,8 +77,7 @@ fn run_limit(
                     .as_deref()
                     .or(cli.company.as_deref())
                     .ok_or_else(|| CliError::Usage("agent limit set requires --company".into()))?;
-                let currency = beankeeper::types::Currency::from_code(currency)
-                    .map_err(|error| CliError::Validation(error.to_string()))?;
+                let currency = currency.resolve()?;
                 let parse = |value: &String| super::txn::parse_amount_to_minor(value, currency);
                 let caps = spend_limits::Caps::from_minor_units(
                     max_post.as_ref().map(parse).transpose()?,

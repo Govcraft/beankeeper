@@ -13,7 +13,7 @@ use crate::error::CliError;
 pub struct SetBudgetParams<'a> {
     pub company_slug: &'a str,
     pub account_code: &'a str,
-    pub currency: &'a str,
+    pub currency: Currency,
     pub year: i32,
     pub month: i32,
     pub amount: i64,
@@ -24,7 +24,7 @@ pub struct SetBudgetParams<'a> {
 pub struct SetAnnualBudgetParams<'a> {
     pub company_slug: &'a str,
     pub account_code: &'a str,
-    pub currency: &'a str,
+    pub currency: Currency,
     pub year: i32,
     pub annual_amount: i64,
     pub notes: Option<&'a str>,
@@ -450,7 +450,7 @@ mod tests {
         conn: &Connection,
         company_slug: &str,
         account_code: &str,
-        currency: &str,
+        currency: Currency,
         year: i32,
         month: Option<i32>,
     ) -> Result<usize, CliError> {
@@ -556,7 +556,7 @@ mod tests {
         SetBudgetParams {
             company_slug: "acme",
             account_code: account,
-            currency: "USD",
+            currency: Currency::USD,
             year,
             month,
             amount,
@@ -573,7 +573,7 @@ mod tests {
         SetAnnualBudgetParams {
             company_slug: "acme",
             account_code: account,
-            currency: "USD",
+            currency: Currency::USD,
             year,
             annual_amount: amount,
             notes,
@@ -713,7 +713,7 @@ mod tests {
     fn delete_budget_single_month() -> Result<(), CliError> {
         let db = setup();
         set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
-        let deleted = delete_budget(db.conn(), "acme", "5000", "USD", 2026, Some(3))?;
+        let deleted = delete_budget(db.conn(), "acme", "5000", Currency::USD, 2026, Some(3))?;
         assert_eq!(deleted, 1);
         let remaining = list_budgets(
             db.conn(),
@@ -732,7 +732,7 @@ mod tests {
     fn delete_budget_all_months() -> Result<(), CliError> {
         let db = setup();
         set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
-        let deleted = delete_budget(db.conn(), "acme", "5000", "USD", 2026, None)?;
+        let deleted = delete_budget(db.conn(), "acme", "5000", Currency::USD, 2026, None)?;
         assert_eq!(deleted, 12);
         let remaining = list_budgets(
             db.conn(),

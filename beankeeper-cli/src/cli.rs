@@ -2,6 +2,7 @@ use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use beankeeper::types::{Currency, CurrencyError};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -334,7 +335,7 @@ pub enum AgentLimitCommand {
         #[arg(long)]
         company: Option<String>,
         #[arg(long)]
-        currency: String,
+        currency: CurrencyArg,
         #[arg(long)]
         max_post: Option<String>,
         #[arg(long)]
@@ -760,7 +761,7 @@ pub enum ScheduleCommand {
         credit: Vec<String>,
         /// Currency code for all entries.
         #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-        currency: String,
+        currency: CurrencyArg,
         /// Metadata copied to each posting.
         #[arg(short = 'm', long)]
         metadata: Option<String>,
@@ -840,7 +841,7 @@ pub struct LoanCalculationArgs {
     pub months: u32,
     /// Currency used to interpret and display amounts.
     #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    pub currency: String,
+    pub currency: CurrencyArg,
 }
 
 /// Stateless monthly loan operations. No persistent loan records are created.
@@ -1149,7 +1150,7 @@ EXAMPLES:\n  \
 
         /// Currency code.
         #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-        currency: String,
+        currency: CurrencyArg,
 
         /// Skip confirmation prompt.
         #[arg(long)]
@@ -1183,7 +1184,7 @@ pub struct BudgetSetArgs {
 
     /// Currency code (default: USD or `BEANKEEPER_CURRENCY`).
     #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    pub currency: String,
+    pub currency: CurrencyArg,
 
     /// Optional note for the budget line.
     #[arg(long)]
@@ -1610,7 +1611,7 @@ pub struct PostingArgs {
 
     /// Currency code.
     #[arg(long, default_value = "USD")]
-    pub currency: String,
+    pub currency: CurrencyArg,
 
     /// Transaction date (YYYY-MM-DD). Defaults to today.
     #[arg(long)]
@@ -1675,7 +1676,7 @@ pub struct TxnListArgs {
 
     /// Filter by currency code. Required for amount filters when the company has multiple currencies.
     #[arg(long)]
-    pub currency: Option<String>,
+    pub currency: Option<CurrencyArg>,
 
     /// Filter by idempotency reference key.
     #[arg(long)]
@@ -2574,6 +2575,48 @@ pub enum OnConflictArg {
     Error,
     /// Skip the transaction silently on duplicate reference.
     Skip,
+}
+
+/// A decoded currency flag with any validation error retained for the command envelope.
+#[derive(Debug, Clone)]
+pub struct CurrencyArg(Result<Currency, CurrencyError>);
+
+impl CurrencyArg {
+    /// Returns the validated currency.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::Validation`] for an unsupported currency code.
+    pub fn resolve(&self) -> Result<Currency, CliError> {
+        self.0
+            .as_ref()
+            .copied()
+            .map_err(|error| CliError::Validation(error.to_string()))
+    }
+}
+
+impl From<Currency> for CurrencyArg {
+    fn from(currency: Currency) -> Self {
+        Self(Ok(currency))
+    }
+}
+
+impl std::str::FromStr for CurrencyArg {
+    type Err = std::convert::Infallible;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Ok(Self(parse_currency_arg(raw)))
+    }
+}
+
+/// Parse a currency flag or its environment default.
+pub(crate) fn parse_currency_arg(raw: &str) -> Result<Currency, CurrencyError> {
+    let raw = raw.trim();
+    if raw.bytes().any(|byte| byte.is_ascii_lowercase()) {
+        raw.to_ascii_uppercase().parse()
+    } else {
+        raw.parse()
+    }
 }
 
 /// Resolve the effective output format.
