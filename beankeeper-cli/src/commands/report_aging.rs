@@ -61,7 +61,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::{NonZeroI64, NonZeroU32};
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, Money};
 use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
@@ -76,6 +76,7 @@ use crate::db::connection::Db;
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
+use crate::output::amounts::MoneyField;
 
 /// Counterparty label used when metadata does not carry the grouping key
 /// (missing key, non-JSON or non-object metadata, or an unsupported value).
@@ -2224,7 +2225,8 @@ fn render_table(r: &MultiAgingReport, ctx: &RenderContext<'_>, use_color: bool) 
 #[derive(Serialize)]
 struct BucketAmountJson<'a> {
     label: &'a str,
-    amount: i64,
+    #[serde(flatten)]
+    amount: MoneyField,
 }
 
 #[derive(Serialize)]
@@ -2236,27 +2238,29 @@ struct OpenItemJson<'a> {
     description: &'a str,
     age_days: i64,
     bucket: &'a str,
-    original_amount: i64,
-    open_amount: i64,
+    #[serde(flatten)]
+    original_amount: MoneyField,
+    #[serde(flatten)]
+    open_amount: MoneyField,
 }
 
 #[derive(Serialize)]
 struct GroupJson<'a> {
     counterparty: Option<&'a str>,
-    buckets: Vec<BucketAmountJson<'a>>,
-    total_open: i64,
-    unapplied_credit: i64,
-    net: i64,
-    net_credit: bool,
+    #[serde(flatten)]
+    totals: TotalsJson<'a>,
     open_items: Vec<OpenItemJson<'a>>,
 }
 
 #[derive(Serialize)]
 struct TotalsJson<'a> {
     buckets: Vec<BucketAmountJson<'a>>,
-    total_open: i64,
-    unapplied_credit: i64,
-    net: i64,
+    #[serde(flatten)]
+    total_open: MoneyField,
+    #[serde(flatten)]
+    unapplied_credit: MoneyField,
+    #[serde(flatten)]
+    net: MoneyField,
     net_credit: bool,
 }
 
@@ -2265,7 +2269,8 @@ struct UnmatchedLinkJson<'a> {
     account: Option<&'a str>,
     settlement_transaction_id: i64,
     settlement_date: String,
-    settlement_amount: i64,
+    #[serde(flatten)]
+    settlement_amount: MoneyField,
     counterparty: Option<&'a str>,
     link: &'a Value,
     reason: UnmatchedReason,
@@ -2279,7 +2284,8 @@ struct AccountAgingJson<'a> {
     r#type: &'a str,
     groups: Vec<GroupJson<'a>>,
     totals: TotalsJson<'a>,
-    account_balance: i64,
+    #[serde(flatten)]
+    account_balance: MoneyField,
     unmatched_links: Vec<UnmatchedLinkJson<'a>>,
 }
 
@@ -2299,21 +2305,35 @@ struct AgingJson<'a> {
     accounts: Vec<AccountAgingJson<'a>>,
     groups: Vec<GroupJson<'a>>,
     totals: TotalsJson<'a>,
-    account_balance: i64,
+    #[serde(flatten)]
+    account_balance: MoneyField,
     unmatched_links: Vec<UnmatchedLinkJson<'a>>,
 }
 
-fn bucket_amounts<'a>(buckets: &'a Buckets, amounts: &BucketTotals) -> Vec<BucketAmountJson<'a>> {
+fn money_field(key: &'static str, amount: i64, currency: Currency) -> MoneyField {
+    MoneyField::new(key, Money::from_minor(i128::from(amount), currency))
+}
+
+fn bucket_amounts<'a>(
+    buckets: &'a Buckets,
+    amounts: &BucketTotals,
+    currency: Currency,
+) -> Vec<BucketAmountJson<'a>> {
     buckets
         .amounts(amounts)
         .map(|(b, amount)| BucketAmountJson {
             label: &b.label,
-            amount,
+            amount: money_field("amount", amount, currency),
         })
         .collect()
 }
 
-fn item_json<'a>(buckets: &'a Buckets, account: &'a str, a: &'a AgedItem) -> OpenItemJson<'a> {
+fn item_json<'a>(
+    buckets: &'a Buckets,
+    account: &'a str,
+    a: &'a AgedItem,
+    currency: Currency,
+) -> OpenItemJson<'a> {
     OpenItemJson {
         account,
         transaction_id: a.item.transaction_id,
@@ -2322,8 +2342,8 @@ fn item_json<'a>(buckets: &'a Buckets, account: &'a str, a: &'a AgedItem) -> Ope
         description: &a.item.description,
         age_days: a.age_days,
         bucket: &buckets.classify(a.age_days).label,
-        original_amount: a.item.original,
-        open_amount: a.item.open,
+        original_amount: money_field("original_amount", a.item.original, currency),
+        open_amount: money_field("open_amount", a.item.open, currency),
     }
 }
 
@@ -2332,25 +2352,26 @@ fn totals_json<'a>(
     bucket_totals: &BucketTotals,
     total_open: i64,
     unapplied_credit: i64,
+    currency: Currency,
 ) -> TotalsJson<'a> {
     let net = total_open - unapplied_credit;
     TotalsJson {
-        buckets: bucket_amounts(buckets, bucket_totals),
-        total_open,
-        unapplied_credit,
-        net,
+        buckets: bucket_amounts(buckets, bucket_totals, currency),
+        total_open: money_field("total_open", total_open, currency),
+        unapplied_credit: money_field("unapplied_credit", unapplied_credit, currency),
+        net: money_field("net", net, currency),
         net_credit: net < 0,
     }
 }
 
-fn unmatched_json(links: &[UnmatchedLink]) -> Vec<UnmatchedLinkJson<'_>> {
+fn unmatched_json(links: &[UnmatchedLink], currency: Currency) -> Vec<UnmatchedLinkJson<'_>> {
     links
         .iter()
         .map(|u| UnmatchedLinkJson {
             account: u.account.as_deref(),
             settlement_transaction_id: u.settlement_transaction_id,
             settlement_date: u.settlement_date.format("%Y-%m-%d").to_string(),
-            settlement_amount: u.settlement_amount,
+            settlement_amount: money_field("settlement_amount", u.settlement_amount, currency),
             counterparty: u.counterparty.as_deref(),
             link: &u.link,
             reason: u.reason,
@@ -2359,7 +2380,11 @@ fn unmatched_json(links: &[UnmatchedLink]) -> Vec<UnmatchedLinkJson<'_>> {
         .collect()
 }
 
-fn account_json<'a>(buckets: &'a Buckets, a: &'a AccountAging) -> AccountAgingJson<'a> {
+fn account_json<'a>(
+    buckets: &'a Buckets,
+    a: &'a AccountAging,
+    currency: Currency,
+) -> AccountAgingJson<'a> {
     let r = &a.report;
     let code = a.account.code.as_str();
     AccountAgingJson {
@@ -2369,26 +2394,31 @@ fn account_json<'a>(buckets: &'a Buckets, a: &'a AccountAging) -> AccountAgingJs
         groups: r
             .groups
             .iter()
-            .map(|g| {
-                let t = totals_json(buckets, &g.bucket_totals, g.total_open, g.unapplied_credit);
-                GroupJson {
-                    counterparty: g.counterparty.as_deref(),
-                    buckets: t.buckets,
-                    total_open: t.total_open,
-                    unapplied_credit: t.unapplied_credit,
-                    net: t.net,
-                    net_credit: t.net_credit,
-                    open_items: g
-                        .items
-                        .iter()
-                        .map(|i| item_json(buckets, code, i))
-                        .collect(),
-                }
+            .map(|g| GroupJson {
+                counterparty: g.counterparty.as_deref(),
+                totals: totals_json(
+                    buckets,
+                    &g.bucket_totals,
+                    g.total_open,
+                    g.unapplied_credit,
+                    currency,
+                ),
+                open_items: g
+                    .items
+                    .iter()
+                    .map(|i| item_json(buckets, code, i, currency))
+                    .collect(),
             })
             .collect(),
-        totals: totals_json(buckets, &r.bucket_totals, r.total_open, r.unapplied_credit),
-        account_balance: r.account_balance,
-        unmatched_links: unmatched_json(&r.unmatched_links),
+        totals: totals_json(
+            buckets,
+            &r.bucket_totals,
+            r.total_open,
+            r.unapplied_credit,
+            currency,
+        ),
+        account_balance: money_field("account_balance", r.account_balance, currency),
+        unmatched_links: unmatched_json(&r.unmatched_links, currency),
     }
 }
 
@@ -2401,24 +2431,24 @@ fn render_json(
     meta: output::json::Meta,
 ) -> Result<String, CliError> {
     let b = &r.buckets;
+    let currency = ctx.currency;
     let groups = r
         .groups
         .iter()
-        .map(|g| {
-            let t = totals_json(b, &g.bucket_totals, g.total_open, g.unapplied_credit);
-            GroupJson {
-                counterparty: g.counterparty.as_deref(),
-                buckets: t.buckets,
-                total_open: t.total_open,
-                unapplied_credit: t.unapplied_credit,
-                net: t.net,
-                net_credit: t.net_credit,
-                open_items: g
-                    .items
-                    .iter()
-                    .map(|(code, i)| item_json(b, code, i))
-                    .collect(),
-            }
+        .map(|g| GroupJson {
+            counterparty: g.counterparty.as_deref(),
+            totals: totals_json(
+                b,
+                &g.bucket_totals,
+                g.total_open,
+                g.unapplied_credit,
+                currency,
+            ),
+            open_items: g
+                .items
+                .iter()
+                .map(|(code, i)| item_json(b, code, i, currency))
+                .collect(),
         })
         .collect();
 
@@ -2434,11 +2464,21 @@ fn render_json(
         link_key: ctx.link_key,
         basis: r.method.basis(),
         buckets: b.iter().collect(),
-        accounts: r.accounts.iter().map(|a| account_json(b, a)).collect(),
+        accounts: r
+            .accounts
+            .iter()
+            .map(|a| account_json(b, a, currency))
+            .collect(),
         groups,
-        totals: totals_json(b, &r.bucket_totals, r.total_open, r.unapplied_credit),
-        account_balance: r.account_balance,
-        unmatched_links: unmatched_json(&r.unmatched_links),
+        totals: totals_json(
+            b,
+            &r.bucket_totals,
+            r.total_open,
+            r.unapplied_credit,
+            currency,
+        ),
+        account_balance: money_field("account_balance", r.account_balance, currency),
+        unmatched_links: unmatched_json(&r.unmatched_links, currency),
     };
 
     let env = output::json::Envelope {
@@ -2613,6 +2653,21 @@ mod tests {
     ) -> AgingReport {
         build_report(grouped, as_of, buckets, method)
             .unwrap_or_else(|error| panic!("test aging report: {error}"))
+    }
+
+    #[test]
+    fn aging_totals_project_money_without_an_envelope() -> Result<(), Box<dyn std::error::Error>> {
+        let buckets = default_buckets();
+        let mut totals = BucketTotals::default();
+        totals.add(buckets.current.range(), 1234)?;
+        let data = serde_json::to_value(totals_json(&buckets, &totals, 1234, 3000, Currency::BHD))?;
+        assert_eq!(data["buckets"][0]["amount"], 1234);
+        assert_eq!(data["buckets"][0]["amount_display"], "1.234");
+        assert_eq!(data["total_open_display"], "1.234");
+        assert_eq!(data["unapplied_credit_display"], "3.000");
+        assert_eq!(data["net_display"], "-1.766");
+        assert_eq!(data["net_credit"], true);
+        Ok(())
     }
 
     #[test]
