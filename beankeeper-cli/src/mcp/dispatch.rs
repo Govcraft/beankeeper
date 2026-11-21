@@ -36,6 +36,7 @@ macro_rules! requests {
 
 requests! {
     Summary(FinancialSummary),
+    LedgerSetupStatus(Empty),
     SecurityCreate(SecurityCreate),
     SecurityList(CompanyScope),
     SecurityPrice(SecurityPrice),
@@ -75,6 +76,12 @@ impl Request {
     pub(super) fn execute(self, db: &Db, actor: &Actor) -> Response {
         match self {
             Self::Summary(input) => summary(db, input, actor),
+            Self::LedgerSetupStatus(_) => {
+                let state = commands::setup::status(db)?;
+                let data = serde_json::to_value(state)
+                    .map_err(|error| CliError::General(error.to_string()))?;
+                Ok((data, None))
+            }
             Self::Report(input) => super::report_input::execute(db, input),
             Self::SecurityCreate(input) => call_security_create(db, actor, input),
             Self::SecurityList(input) => call_security_list(db, actor, input),

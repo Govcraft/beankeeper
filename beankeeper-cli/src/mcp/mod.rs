@@ -295,6 +295,16 @@ impl LedgerServer {
             .await
     }
 
+    #[tool(description = "Read setup counts and owner-key readiness for the selected ledger.")]
+    async fn ledger_setup_status(
+        &self,
+        Parameters(input): Parameters<inputs::Empty>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupStatus(input), context)
+            .await
+    }
+
     #[tool(description = "List companies in the ledger.")]
     async fn company_list(
         &self,

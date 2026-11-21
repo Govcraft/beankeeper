@@ -406,6 +406,7 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "txn_show",
         "report",
         "financial_summary",
+        "ledger_setup_status",
         "budget_list",
         "budget_set",
         "budget_delete",
@@ -891,7 +892,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 16);
+    assert_eq!(names.len(), 17);
+    assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
     assert!(!names.contains("period_close"));
@@ -1906,7 +1908,8 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 16);
+    assert_eq!(names.len(), 17);
+    assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
     assert!(!names.contains("period_close"));
@@ -2052,7 +2055,9 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     assert_eq!(shown[0]["agent_uri"], issued["agent_uri"]);
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
-    assert_eq!(tool_names(&listed)?.len(), 16);
+    let names = tool_names(&listed)?;
+    assert_eq!(names.len(), 17);
+    assert!(names.contains("ledger_setup_status"));
     assert!(!tool_names(&listed)?.contains("txn_post"));
     writer.success("verify", &json!({}))?;
     Ok(())
@@ -2493,5 +2498,35 @@ fn account_list_applies_typed_balance_dates_and_currency() -> TestResult {
     assert_eq!(data[0]["debit_total"], 20_002);
     assert_eq!(data[0]["debit_total_display"], "20.002");
     assert_eq!(data[1]["credit_total"], 20_002);
+    Ok(())
+}
+
+#[test]
+fn setup_status_matches_cli_for_an_empty_encrypted_ledger() -> TestResult {
+    let temp = tempdir()?;
+    let path = temp.path().join("setup.db");
+    let passphrase = temp.path().join("passphrase");
+    std::fs::write(&passphrase, "test-only-setup-passphrase")?;
+    let command = || {
+        let mut command = bk(&path)?;
+        command.arg("--passphrase-file").arg(&passphrase);
+        Ok::<_, Box<dyn Error>>(command)
+    };
+
+    command()?.args(["init", "--encrypt"]).assert().success();
+    let report = command()?.args(["setup", "status", "--json"]).output()?;
+    assert!(report.status.success());
+    let report: Value = serde_json::from_slice(&report.stdout)?;
+    let mut server = command()?;
+    server.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(server)?;
+    client.initialize()?;
+    let tools = client.request("tools/list", &json!({}))?;
+    assert!(tool_names(&tools)?.contains("ledger_setup_status"));
+    let expected = json!({
+        "companies": 0, "accounts": 0, "transactions": 0, "owner_key_initialized": false,
+    });
+    assert_eq!(report["data"], expected);
+    assert_eq!(client.success("ledger_setup_status", &json!({}))?, expected);
     Ok(())
 }

@@ -362,6 +362,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk budget list` | List budget entries |
 | `bk budget delete` | Remove budget entries |
 | `bk summary` | Answer how finances are doing with facts, chartable comparisons and optional Desktop targets |
+| `bk setup status` | Read ledger readiness before configuring a new ledger or continuing onboarding |
 | `bk report trial-balance` | All accounts with debit/credit totals |
 | `bk report balance` | Single account balance |
 | `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |

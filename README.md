@@ -471,6 +471,7 @@ mutation tools are absent and cannot be called.
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
 | `investment_buy`, `investment_sell`, `investment_lots`, `investment_holdings` | Trade, inspect lots and value holdings |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
+| `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `report` | Run CLI reports |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |

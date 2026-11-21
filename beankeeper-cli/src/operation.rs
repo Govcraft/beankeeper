@@ -74,6 +74,7 @@ macro_rules! operations {
                 match name {
                     $($name => Ok(Self::$operation),)+
                     "financial.summary" => Ok(Self::Summary),
+                    "setup.status" => Ok(Self::LedgerSetupStatus),
                     "report.1099-nec" => Ok(Self::ReportVendor1099),
                     _ => Err(CliError::Usage("operation has no capability mapping".into())),
                 }
@@ -84,6 +85,7 @@ macro_rules! operations {
 
 operations! {
     Summary => ("summary", Read),
+    LedgerSetupStatus => ("ledger.setup.status", Read),
     PeriodList => ("period.list", Read),
     CompanyList => ("company.list", Read),
     CompanyShow => ("company.show", Read),
