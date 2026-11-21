@@ -14,6 +14,7 @@ use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceReport,
     CompanyRow, EntryRow, EntryStatus, TransactionRow,
 };
+use crate::error::CliError;
 
 // ---------------------------------------------------------------------------
 // Amount formatting
