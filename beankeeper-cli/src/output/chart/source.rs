@@ -24,6 +24,15 @@ impl Bounds {
     }
 }
 
+impl From<DateRange> for Bounds {
+    fn from(dates: DateRange) -> Self {
+        Self {
+            from: dates.from(),
+            to: dates.to(),
+        }
+    }
+}
+
 impl From<(NaiveDate, NaiveDate)> for Bounds {
     fn from((from, to): (NaiveDate, NaiveDate)) -> Self {
         Self { from, to }
@@ -155,25 +164,16 @@ pub(crate) fn cash_flow(
 
 pub(crate) fn income_statement(
     company: &str,
-    currency: Currency,
-    dates: DateRange,
     income: &IncomeStatement,
     all: bool,
 ) -> Result<Chart, CliError> {
-    let target = Target::IncomeStatement(range(
-        company,
-        currency,
-        Bounds {
-            from: dates.from(),
-            to: dates.to(),
-        },
-        None,
-    ));
+    let currency = income.currency();
+    let target = Target::IncomeStatement(range(company, currency, income.dates().into(), None));
     let rows = income
-        .expenses
-        .accounts
+        .expenses()
+        .accounts()
         .iter()
-        .map(|line| Row::new(&line.name, line.code.as_deref(), [line.amount], currency))
+        .map(|line| Row::from_money(line.name(), line.code(), [line.amount()]))
         .collect();
     Chart::categories("Spending by category", rows, currency, target, all)
 }

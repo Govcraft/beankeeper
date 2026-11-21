@@ -1,7 +1,7 @@
 use std::io::Write;
 
-use beankeeper::types::Currency;
-use chrono::Month;
+use beankeeper::types::{AccountType, Currency};
+use chrono::{Month, NaiveDate};
 use serde::Serialize;
 
 use crate::cli::{AccountTypeArg, Cli, OutputFormat, ReportCommand, resolve_format};
@@ -12,6 +12,8 @@ use crate::error::CliError;
 use crate::output;
 use crate::output::chart::{self, Chart, WithChart};
 use crate::output::json::{Envelope, Meta, serialize_payload};
+
+pub use super::report_dates::DateRange;
 
 /// Run a `bk report` subcommand.
 ///
@@ -452,80 +454,76 @@ fn run_income_statement(
     let StatementOptions {
         from, to, currency, ..
     } = *opts;
-    let dates =
-        super::report_dates::DateRange::resolve(from, to, chrono::Local::now().date_naive())?;
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let stmt = compute_income_statement(db, company, dates, currency)?;
-
-    let minor_units = currency.minor_units();
+    let dates = DateRange::resolve(from, to, chrono::Local::now().date_naive())?;
+    let stmt = db::audit::atomically(db.conn(), || {
+        let currency = resolve_report_currency(db.conn(), company, currency)?;
+        compute_income_statement(db, company, dates, currency)
+    })?;
 
     match output.format {
         OutputFormat::Table => {
             let title = build_period_title(
                 "Income Statement",
-                currency.code(),
-                stmt.from.as_deref(),
-                stmt.to.as_deref(),
+                stmt.currency().code(),
+                Some(&stmt.dates().from().to_string()),
+                Some(&stmt.dates().to().to_string()),
             );
-            let rendered = output::statements::render_income_statement_table(
-                &stmt,
-                &title,
-                minor_units,
-                output.use_color,
-            );
+            let rendered =
+                output::statements::render_income_statement_table(&stmt, &title, output.use_color);
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = cli
                 .meta("report.income-statement", Some(company))
-                .with_currency(currency);
+                .with_currency(stmt.currency());
             let chart = chart::requested(cli, || {
-                chart::income_statement(company, currency, dates, &stmt, cli.output.chart_all)
+                chart::income_statement(company, &stmt, cli.output.chart_all)
             })?;
-            output.write_json(
-                meta,
-                output::statements::income_statement_json(&stmt),
-                chart,
-            )?;
+            output.write_json(meta, &stmt, chart)?;
         }
         OutputFormat::Csv => {
             let rendered = output::statements::render_income_statement_csv(&stmt)?;
             write!(output.writer, "{rendered}")?;
         }
     }
-
     if !cli.verbosity.quiet {
         eprintln!("[ok] income statement generated");
     }
-
     Ok(())
 }
 
-fn compute_income_statement(
+/// Compute an income statement on an already-open ledger using explicit scope.
+///
+/// # Errors
+/// Returns [`CliError`] for an unknown company, database errors or overflow.
+pub fn compute_income_statement(
     db: &Db,
     company: &str,
-    dates: super::report_dates::DateRange,
+    dates: DateRange,
     currency: Currency,
 ) -> Result<output::statements::IncomeStatement, CliError> {
-    use super::report_periods::{MultiReportKind, fetch_window_rows};
-
-    let mut revenue = fetch_window_rows(
-        db.conn(),
-        company,
-        MultiReportKind::IncomeStatement,
-        None,
-        currency.code(),
-        (dates.from(), dates.to()),
-    )?;
-    // The shared query returns revenues followed by expenses.
-    let first_expense = revenue.partition_point(|row| row.account_type == "revenue");
-    let expenses = revenue.split_off(first_expense);
-    Ok(output::statements::build_income_statement(
-        Some(&dates.from().to_string()),
-        Some(&dates.to().to_string()),
-        &revenue,
-        &expenses,
-    ))
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        db::companies::get_company(conn, company)?;
+        let from = dates.from().to_string();
+        let to = dates.to().to_string();
+        let load = |kind: AccountType| {
+            db::compute_trial_balance(
+                conn,
+                company,
+                Some(kind.code()),
+                Some(&from),
+                Some(&to),
+                Some(currency.code()),
+            )
+        };
+        output::statements::build_income_statement(
+            dates,
+            currency,
+            load(AccountType::Revenue)?,
+            load(AccountType::Expense)?,
+        )
+    })
 }
 
 /// Execute the `report balance-sheet` subcommand.
@@ -542,59 +540,78 @@ fn run_balance_sheet(
     currency: Option<&str>,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let code = Some(currency.code());
-    let asset_balances =
-        db::compute_trial_balance(db.conn(), company, Some("asset"), None, to, code)?;
-    let liability_balances =
-        db::compute_trial_balance(db.conn(), company, Some("liability"), None, to, code)?;
-    let equity_balances =
-        db::compute_trial_balance(db.conn(), company, Some("equity"), None, to, code)?;
-    let revenue_balances =
-        db::compute_trial_balance(db.conn(), company, Some("revenue"), None, to, code)?;
-    let expense_balances =
-        db::compute_trial_balance(db.conn(), company, Some("expense"), None, to, code)?;
-
-    let sheet = output::statements::build_balance_sheet(&output::statements::BalanceSheetInputs {
-        as_of: to,
-        assets: &asset_balances,
-        liabilities: &liability_balances,
-        equity: &equity_balances,
-        revenue: &revenue_balances,
-        expenses: &expense_balances,
-    });
-
-    let minor_units = currency.minor_units();
+    let as_of = to
+        .map(|raw| super::report_dates::parse_date("--to", raw))
+        .transpose()?
+        .unwrap_or_else(|| chrono::Local::now().date_naive());
+    let sheet = db::audit::atomically(db.conn(), || {
+        let currency = resolve_report_currency(db.conn(), company, currency)?;
+        compute_balance_sheet(db, company, as_of, currency)
+    })?;
 
     match output.format {
         OutputFormat::Table => {
-            let title = build_period_title("Balance Sheet", currency.code(), None, to);
-            let rendered = output::statements::render_balance_sheet_table(
-                &sheet,
-                &title,
-                minor_units,
-                output.use_color,
+            let title = build_period_title(
+                "Balance Sheet",
+                sheet.currency().code(),
+                None,
+                Some(&sheet.as_of().to_string()),
             );
+            let rendered =
+                output::statements::render_balance_sheet_table(&sheet, &title, output.use_color);
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {
             let meta = cli
                 .meta("report.balance-sheet", Some(company))
-                .with_currency(currency);
-            let rendered = output::statements::render_balance_sheet_json(&sheet, meta)?;
-            writeln!(output.writer, "{rendered}")?;
+                .with_currency(sheet.currency());
+            output.write_json(meta, &sheet, None)?;
         }
         OutputFormat::Csv => {
             let rendered = output::statements::render_balance_sheet_csv(&sheet)?;
             write!(output.writer, "{rendered}")?;
         }
     }
-
     if !cli.verbosity.quiet {
         eprintln!("[ok] balance sheet generated");
     }
-
     Ok(())
+}
+
+/// Compute an as-of balance sheet on an already-open ledger using explicit scope.
+///
+/// # Errors
+/// Returns [`CliError`] for an unknown company, database errors or overflow.
+pub fn compute_balance_sheet(
+    db: &Db,
+    company: &str,
+    as_of: NaiveDate,
+    currency: Currency,
+) -> Result<output::statements::BalanceSheet, CliError> {
+    let conn = db.conn();
+    db::audit::atomically(conn, || {
+        db::companies::get_company(conn, company)?;
+        let to = as_of.to_string();
+        let load = |kind: AccountType| {
+            db::compute_trial_balance(
+                conn,
+                company,
+                Some(kind.code()),
+                None,
+                Some(&to),
+                Some(currency.code()),
+            )
+        };
+        output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
+            as_of,
+            currency,
+            assets: load(AccountType::Asset)?,
+            liabilities: load(AccountType::Liability)?,
+            equity: load(AccountType::Equity)?,
+            revenue: load(AccountType::Revenue)?,
+            expenses: load(AccountType::Expense)?,
+        })
+    })
 }
 
 /// Replace a renderer's plain heading with its effective date window.

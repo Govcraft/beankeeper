@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::cli::{Cli, Command, ReportCommand};
 use crate::error::CliError;
+use crate::output::amounts::format_money;
 
 const DEFAULT_LIMIT: usize = 8;
 
@@ -39,28 +40,30 @@ impl Row {
         values: impl IntoIterator<Item = i64>,
         currency: Currency,
     ) -> Self {
-        Self {
-            name: name.into(),
-            values: values
+        Self::from_money(
+            name,
+            account,
+            values
                 .into_iter()
-                .map(|value| Money::from_minor(i128::from(value), currency))
-                .collect(),
-            account: account.map(str::to_owned),
-        }
+                .map(|value| Money::from_minor(i128::from(value), currency)),
+        )
     }
-    fn comparison(name: &str, account: Option<&str>, values: [Money; 2]) -> Self {
+
+    fn from_money(
+        name: &str,
+        account: Option<&str>,
+        values: impl IntoIterator<Item = Money>,
+    ) -> Self {
         Self {
             name: name.into(),
-            values: values.into(),
+            values: values.into_iter().collect(),
             account: account.map(str::to_owned),
         }
     }
-}
 
-fn format_money(value: Money) -> String {
-    value
-        .amount()
-        .format_decimal(value.currency().minor_units())
+    fn comparison(name: &str, account: Option<&str>, values: [Money; 2]) -> Self {
+        Self::from_money(name, account, values)
+    }
 }
 
 #[derive(Serialize)]

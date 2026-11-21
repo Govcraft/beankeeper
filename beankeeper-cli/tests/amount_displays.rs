@@ -155,6 +155,76 @@ fn typed_budget_variance_retains_currency_and_matches_cli() -> Result<(), Box<dy
     Ok(())
 }
 
+#[test]
+fn typed_statements_share_money_and_cli_output() -> Result<(), Box<dyn Error>> {
+    use beankeeper::types::{AccountType, Currency, Money};
+    use beankeeper_cli::commands::report::{
+        DateRange, compute_balance_sheet, compute_income_statement,
+    };
+    use beankeeper_cli::db::Db;
+    use chrono::NaiveDate;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("statements.db");
+    seed(&path, "BHD")?;
+    let db = Db::open_snapshot(&path, None)?;
+    let start = NaiveDate::parse_from_str("2026-03-01", "%Y-%m-%d")?;
+    let end = NaiveDate::parse_from_str("2026-03-31", "%Y-%m-%d")?;
+    let dates = DateRange::new(start, end)?;
+    let currency = Currency::BHD;
+    let proceeds = Money::from_minor(1_800_000, currency);
+
+    let income = compute_income_statement(&db, "co", dates, currency)?;
+    assert_eq!(income.dates(), dates);
+    assert_eq!(income.currency(), currency);
+    assert_eq!(income.revenue().kind(), AccountType::Revenue);
+    assert_eq!(income.revenue().total(), proceeds);
+    assert_eq!(income.net_income(), proceeds);
+    let income_json = serde_json::to_value(&income)?;
+    assert_eq!(income_json["sections"][0]["normal_balance"], "credit");
+    assert_eq!(income_json["net_income_display"], "1800.000");
+    let cli_income = run(
+        &path,
+        &[
+            "--company",
+            "co",
+            "report",
+            "income-statement",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-31",
+            "--currency",
+            "BHD",
+        ],
+    )?;
+    assert_eq!(income_json, cli_income["data"]);
+
+    let sheet = compute_balance_sheet(&db, "co", end, currency)?;
+    assert!(sheet.balanced());
+    assert_eq!(sheet.as_of(), end);
+    assert_eq!(sheet.assets().total(), proceeds);
+    assert_eq!(sheet.computed_earnings(), proceeds);
+    assert!(sheet.equity().accounts()[0].is_computed());
+    let sheet_json = serde_json::to_value(&sheet)?;
+    assert_eq!(sheet_json["computed_earnings_display"], "1800.000");
+    let cli_sheet = run(
+        &path,
+        &[
+            "--company",
+            "co",
+            "report",
+            "balance-sheet",
+            "--to",
+            "2026-03-31",
+            "--currency",
+            "BHD",
+        ],
+    )?;
+    assert_eq!(sheet_json, cli_sheet["data"]);
+    Ok(())
+}
+
 fn seed(db: &Path, currency: &str) -> Result<(), Box<dyn Error>> {
     run(db, &["init"])?;
     run(db, &["company", "create", "co", "Company"])?;
