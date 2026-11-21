@@ -379,7 +379,9 @@ mod tests {
         let txn_id = post_sample(&db);
 
         // Get an entry ID from the posted transaction
-        let entries = transactions::get_entries_for_transaction(db.conn(), txn_id)
+        let company = super::super::companies::Company::resolve(db.conn(), "acme")
+            .expect("bind transaction company");
+        let entries = transactions::get_entries_for_transaction(&company, txn_id)
             .unwrap_or_else(|e| panic!("get entries: {e}"));
         let entry_id = entries[0].id;
 

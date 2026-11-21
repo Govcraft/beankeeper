@@ -30,11 +30,52 @@ impl std::str::FromStr for CompanySlug {
     }
 }
 
+/// An existing company bound to the database connection that resolved it.
+#[derive(Debug)]
+pub struct Company<'conn> {
+    conn: &'conn Connection,
+    slug: CompanySlug,
+}
+
+impl<'conn> Company<'conn> {
+    /// Resolves a validated slug on this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::NotFound`] if the company does not exist or
+    /// [`CliError::Sqlite`] if the lookup fails.
+    pub fn bind(conn: &'conn Connection, slug: CompanySlug) -> Result<Self, CliError> {
+        if company_exists(conn, slug.as_str())? {
+            Ok(Self { conn, slug })
+        } else {
+            Err(CliError::NotFound(format!("company '{slug}' not found")))
+        }
+    }
+
+    pub(crate) fn resolve(conn: &'conn Connection, slug: &str) -> Result<Self, CliError> {
+        Self::bind(conn, slug.parse()?)
+    }
+
+    /// Returns the validated slug for this company.
+    #[must_use]
+    pub fn slug(&self) -> &CompanySlug {
+        &self.slug
+    }
+
+    pub(super) fn conn(&self) -> &'conn Connection {
+        self.conn
+    }
+}
+
+/// An operation that deliberately scans across company boundaries.
+#[derive(Debug, Clone, Copy)]
+pub struct AllCompanies;
+
 /// Validates a company slug.
 ///
 /// Must be 1-64 characters, lowercase alphanumeric and hyphens only,
 /// and must start with a lowercase letter or digit (matches `^[a-z0-9][a-z0-9-]{0,63}$`).
-pub(crate) fn validate_slug(slug: &str) -> Result<(), CliError> {
+fn validate_slug(slug: &str) -> Result<(), CliError> {
     if slug.is_empty() || slug.len() > 64 {
         return Err(CliError::Validation(
             "company slug must be 1-64 characters".to_string(),

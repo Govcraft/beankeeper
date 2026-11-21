@@ -33,6 +33,7 @@ use crate::cli::{Cli, OutputFormat, ReconciliationMode, ReportCommand};
 mod settlement;
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db;
+use crate::db::companies::Company;
 use crate::db::connection::Db;
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
@@ -109,11 +110,11 @@ pub struct ItemClearing {
 
 /// The clearings of an entry as of `to` (`None`: current state).
 fn clearings_as_of(
-    conn: &Connection,
+    company: &Company<'_>,
     entry_id: i64,
     to: Option<NaiveDate>,
 ) -> Result<Vec<ItemClearing>, CliError> {
-    Ok(db::clearings::list_clearings(conn, entry_id)?
+    Ok(db::clearings::list_clearings(company, entry_id)?
         .into_iter()
         .filter_map(|clearing| match to {
             Some(cutoff) => clearing.as_of(cutoff),
@@ -376,6 +377,7 @@ pub fn build_report(
         .map(str::to_string);
 
     let account = db::get_account(conn, company, args.account)?;
+    let company_scope = Company::resolve(conn, company)?;
     let currency = resolve_currency(conn, company, args.currency)?;
     let statement_balance = args
         .statement_balance
@@ -416,7 +418,7 @@ pub fn build_report(
             let group = args
                 .group_by_metadata
                 .and_then(|k| metadata_value(r.metadata.as_deref(), k));
-            let clearings = clearings_as_of(conn, r.entry_id, to)?;
+            let clearings = clearings_as_of(&company_scope, r.entry_id, to)?;
             uncleared.push(UnclearedEntry {
                 entry_id: r.entry_id,
                 transaction_id: r.transaction_id,

@@ -12,8 +12,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::commands::{reference::TransactionReference, report_periods::CompareArg};
+pub(super) use crate::db::companies::CompanySlug;
 use crate::db::{
-    companies::validate_slug,
     investments::{LotId, valid_symbol},
     proposals::ProposalId,
 };
@@ -283,30 +283,6 @@ impl PageOffset {
 impl Serialize for PageOffset {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_i64(self.get())
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct CompanySlug(Box<str>);
-
-impl CompanySlug {
-    pub(super) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for CompanySlug {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for CompanySlug {
-    type Err = CliError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        validate_slug(input)?;
-        Ok(Self(input.into()))
     }
 }
 

@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use super::{EntryQuery, EntryRow, ReconciliationArgs, ReconciliationReport, UnclearedEntry};
 use crate::commands::report_aging::{self, LinkSpec, Movement, TargetIndex, UnmatchedReason};
+use crate::db::companies::Company;
 use crate::error::CliError;
 
 /// Additional settlement-mode output. Amounts are minor units.
@@ -207,6 +208,7 @@ pub(super) fn build_report(
             "--mode settlement requires an asset (AR) or liability (AP) account".into(),
         ));
     }
+    let company_scope = Company::resolve(conn, company)?;
     let (all, selected) = load_postings(conn, company, &report, link_key)?;
     let index = TargetIndex::new(all.iter().map(|p| &p.movement));
     let mut charges: BTreeMap<i64, Charge> = all
@@ -264,7 +266,7 @@ pub(super) fn build_report(
         if c.remaining > 0 {
             report
                 .uncleared
-                .push(outstanding(conn, posting, &c, report.as_of)?);
+                .push(outstanding(&company_scope, posting, &c, report.as_of)?);
         }
         details.charges.push(c);
     }
@@ -380,7 +382,7 @@ fn apply_settlements(
 }
 
 fn outstanding(
-    conn: &Connection,
+    company: &Company<'_>,
     posting: &Posting,
     c: &Charge,
     to: Option<NaiveDate>,
@@ -402,7 +404,7 @@ fn outstanding(
         remaining_amount: c.remaining,
         signed_remaining: c.remaining,
         partially_cleared: c.applied_total > 0,
-        clearings: super::clearings_as_of(conn, row.entry_id, to)?,
+        clearings: super::clearings_as_of(company, row.entry_id, to)?,
         group: c.group.clone(),
     })
 }

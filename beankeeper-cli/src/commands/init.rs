@@ -751,7 +751,9 @@ mod tests {
         populate_demo_data(&db, &crate::db::Actor::new("demo")).expect("populate demo data");
 
         // No orphaned correlations — every intercompany pair should be fully linked
-        let orphans = crate::db::find_orphaned_correlations(db.conn()).expect("find orphans");
+        let orphans =
+            crate::db::find_orphaned_correlations(db.conn(), crate::db::companies::AllCompanies)
+                .expect("find orphans");
         assert!(
             orphans.is_empty(),
             "expected no orphaned correlations, found {}: {orphans:?}",
