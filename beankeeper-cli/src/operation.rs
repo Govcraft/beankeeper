@@ -8,6 +8,8 @@ pub(crate) enum Permission {
     Capability(Capability),
     ProposalList,
     ProposalReject,
+    SetupStatus,
+    SetupOwner,
     Transport,
 }
 
@@ -15,7 +17,8 @@ impl Permission {
     pub(crate) fn primary(self) -> Result<Capability, CliError> {
         match self {
             Self::Capability(capability) => Ok(capability),
-            Self::ProposalList => Ok(Capability::Read),
+            Self::ProposalList | Self::SetupStatus => Ok(Capability::Read),
+            Self::SetupOwner => Ok(Capability::Admin),
             Self::ProposalReject => Ok(Capability::Propose),
             Self::Transport => Err(CliError::Usage(
                 "operation has no capability mapping".into(),
@@ -30,6 +33,12 @@ macro_rules! permission {
     };
     (ProposalReject) => {
         Permission::ProposalReject
+    };
+    (SetupStatus) => {
+        Permission::SetupStatus
+    };
+    (SetupOwner) => {
+        Permission::SetupOwner
     };
     (Transport) => {
         Permission::Transport
@@ -75,6 +84,9 @@ macro_rules! operations {
                     $($name => Ok(Self::$operation),)+
                     "financial.summary" => Ok(Self::Summary),
                     "setup.status" => Ok(Self::LedgerSetupStatus),
+                    "setup.begin" => Ok(Self::LedgerSetupBegin),
+                    "setup.finish" => Ok(Self::LedgerSetupFinish),
+                    "setup.revoke" => Ok(Self::LedgerSetupRevoke),
                     "report.1099-nec" => Ok(Self::ReportVendor1099),
                     _ => Err(CliError::Usage("operation has no capability mapping".into())),
                 }
@@ -85,7 +97,10 @@ macro_rules! operations {
 
 operations! {
     Summary => ("summary", Read),
-    LedgerSetupStatus => ("ledger.setup.status", Read),
+    LedgerSetupStatus => ("ledger.setup.status", SetupStatus),
+    LedgerSetupBegin => ("ledger.setup.begin", SetupOwner),
+    LedgerSetupFinish => ("ledger.setup.finish", SetupOwner),
+    LedgerSetupRevoke => ("ledger.setup.revoke", SetupOwner),
     PeriodList => ("period.list", Read),
     CompanyList => ("company.list", Read),
     CompanyShow => ("company.show", Read),

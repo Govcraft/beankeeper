@@ -65,8 +65,19 @@ impl VerifiedAgent {
             Permission::ProposalReject => {
                 Ok(self.allows(Capability::Propose)? || self.allows(Capability::Approve)?)
             }
+            Permission::SetupStatus => {
+                Ok(self.allows(Capability::Read)? || self.allows(Capability::Setup)?)
+            }
             permission => self.allows(permission.primary()?),
         }
+    }
+
+    pub(crate) fn is_setup_credential(&self) -> bool {
+        self.capabilities == [Capability::Setup.path()]
+    }
+
+    pub(crate) fn enforces_permissions(&self, ledger_enforced: bool) -> bool {
+        ledger_enforced || self.is_setup_credential()
     }
 
     /// Whether the signed grants cover this leaf capability.
@@ -86,6 +97,7 @@ impl VerifiedAgent {
 mod sealed {
     pub trait GrantKind {
         const REQUIRED: crate::capability::Capability;
+        const EXPLICIT: bool = false;
     }
 }
 
@@ -93,6 +105,13 @@ pub(crate) enum Approve {}
 
 impl sealed::GrantKind for Approve {
     const REQUIRED: Capability = Capability::Approve;
+}
+
+pub(crate) enum SetupOwner {}
+
+impl sealed::GrantKind for SetupOwner {
+    const REQUIRED: Capability = Capability::Admin;
+    const EXPLICIT: bool = true;
 }
 
 /// Authorization for a single capability, bound to this ledger and principal.
@@ -105,10 +124,10 @@ pub(crate) struct Granted<'a, C> {
 impl<'a, C: sealed::GrantKind> Granted<'a, C> {
     // Call inside the same audited savepoint as the operation.
     pub(crate) fn check(conn: &'a Connection, actor: &'a Actor) -> Result<Self, CliError> {
-        let enforce = crate::db::policy::get(conn)?.enforce;
+        let enforce = crate::db::policy::get(conn)?.enforce || C::EXPLICIT;
         if let Some(agent) = actor.identity() {
             agent.check_live(conn)?;
-            if enforce && !agent.allows(C::REQUIRED)? {
+            if agent.enforces_permissions(enforce) && !agent.allows(C::REQUIRED)? {
                 return Err(CliError::Forbidden(format!(
                     "operation requires capability {}",
                     C::REQUIRED.path()
@@ -153,6 +172,27 @@ impl VerifiedAgent {
     }
 }
 
+pub(crate) fn require_live_capability<'a>(
+    conn: &Connection,
+    actor: &'a Actor,
+    required: Capability,
+) -> Result<&'a VerifiedAgent, CliError> {
+    let identity = actor.identity().ok_or_else(|| {
+        CliError::Unauthorized(format!(
+            "operation requires an agent token for {}",
+            required.path()
+        ))
+    })?;
+    identity.check_live(conn)?;
+    if !identity.allows(required)? {
+        return Err(CliError::Forbidden(format!(
+            "operation requires capability {}",
+            required.path()
+        )));
+    }
+    Ok(identity)
+}
+
 fn unauthorized() -> CliError {
     CliError::Unauthorized("invalid, expired, revoked, or untrusted agent token".into())
 }
@@ -166,7 +206,7 @@ pub fn verify(conn: &Connection, token: &str) -> Result<VerifiedAgent, CliError>
 }
 
 /// Verify optional credentials and enforce the current ledger policy.
-/// Navigation always requires a verified `ui/navigate` grant, even with policy off.
+/// Navigation and setup always require a verified grant.
 ///
 /// # Errors
 /// Returns `UNAUTHORIZED` for missing or rejected credentials, `FORBIDDEN` for
@@ -176,9 +216,19 @@ pub fn authorize(
     token: Option<&str>,
     required: Capability,
 ) -> Result<Option<VerifiedAgent>, CliError> {
-    let enforce = crate::db::policy::get(conn)?.enforce || required == Capability::Navigate;
+    let enforce = crate::db::policy::get(conn)?.enforce
+        || matches!(required, Capability::Navigate | Capability::Setup);
     match token {
-        Some(token) => verify_required(conn, token, enforce.then_some(required)).map(Some),
+        Some(token) => {
+            let identity = verify_required(conn, token, enforce.then_some(required))?;
+            if !enforce && identity.is_setup_credential() && !identity.allows(required)? {
+                return Err(CliError::Forbidden(format!(
+                    "operation requires capability {}",
+                    required.path()
+                )));
+            }
+            Ok(Some(identity))
+        }
         None if enforce => Err(CliError::Unauthorized(format!(
             "operation requires an agent token for {}",
             required.path()
@@ -209,6 +259,12 @@ pub(crate) fn authorize_known_operation(
     if let Permission::Capability(_) = permission {
         return authorize(conn, token, required);
     }
+    if permission == Permission::SetupOwner {
+        let token = token.ok_or_else(|| {
+            CliError::Unauthorized("setup lifecycle requires a ledger/admin token".into())
+        })?;
+        return verify_required(conn, token, Some(Capability::Admin)).map(Some);
+    }
     let enforce = crate::db::policy::get(conn)?.enforce;
     let identity = match token {
         Some(token) => Some(verify(conn, token)?),
@@ -219,13 +275,19 @@ pub(crate) fn authorize_known_operation(
         }
         None => None,
     };
-    if enforce
-        && let Some(identity) = &identity
+    if let Some(identity) = &identity
+        && identity.enforces_permissions(enforce)
         && !identity.allows_known_operation(operation)?
     {
+        let alternative = if permission == Permission::SetupStatus {
+            Capability::Setup
+        } else {
+            Capability::Approve
+        };
         return Err(CliError::Forbidden(format!(
-            "operation requires capability {} or ledger/approve",
-            required.path()
+            "operation requires capability {} or {}",
+            required.path(),
+            alternative.path()
         )));
     }
     Ok(identity)
@@ -297,16 +359,19 @@ fn verify_required(
     })
 }
 
+pub(crate) fn ledger_encrypted(conn: &Connection) -> Result<bool, CliError> {
+    Ok(conn
+        .query_row("PRAGMA cipher_salt", [], |r| r.get::<_, String>(0))
+        .optional()?
+        .is_some())
+}
+
 /// Create one trust root, preserving any existing key. Private material stays in `SQLCipher`.
 ///
 /// # Errors
 /// Rejects unencrypted databases and repeated initialization.
 pub fn init_root(conn: &Connection, actor: &Actor) -> Result<Value, CliError> {
-    let encrypted = conn
-        .query_row("PRAGMA cipher_salt", [], |r| r.get::<_, String>(0))
-        .optional()?
-        .is_some();
-    if !encrypted {
+    if !ledger_encrypted(conn)? {
         return Err(CliError::Validation(
             "root keys require an encrypted ledger; initialize with `bk init --encrypt`".into(),
         ));
@@ -427,6 +492,42 @@ pub fn issue(
 /// # Errors
 /// Returns validation errors for invalid keys, capabilities, names or TTLs.
 pub fn issue_credential(
+    conn: &Connection,
+    actor: &Actor,
+    request: &IssueRequest<'_>,
+) -> Result<IssuedCredential, CliError> {
+    if request
+        .capabilities
+        .iter()
+        .any(|grant| grant == Capability::Setup.path())
+    {
+        return Err(CliError::Usage(
+            "issue setup credentials through `bk setup begin`".into(),
+        ));
+    }
+    issue_checked_credential(conn, actor, request)
+}
+
+pub(crate) fn issue_setup_credential(
+    owner: &Granted<'_, SetupOwner>,
+    name: &str,
+    public_key: &str,
+    ttl: Duration,
+) -> Result<IssuedCredential, CliError> {
+    issue_checked_credential(
+        owner.connection(),
+        owner.actor(),
+        &IssueRequest {
+            name,
+            capabilities: &[Capability::Setup.path().to_owned()],
+            ttl,
+            public_key: Some(public_key),
+            generate_key: false,
+        },
+    )
+}
+
+fn issue_checked_credential(
     conn: &Connection,
     actor: &Actor,
     request: &IssueRequest<'_>,

@@ -6,11 +6,10 @@
 //! only callable mutators, but it cannot stop someone from hand-writing a raw
 //! `conn.execute("UPDATE ...")` against the shared `&Connection`. This test
 //! closes that last gap: it asserts that the mutating SQL keywords appear
-//! nowhere in `src/` except the two sanctioned files -- `db/audit.rs` (the
-//! audited mutation API) and `db/schema.rs` (migrations).
+//! nowhere in `src/` except the audited mutation modules and schema migrations.
 //!
-//! If this test fails, you added a mutation outside the audited path. Move it
-//! into `db/audit.rs` so the change is recorded.
+//! If this test fails, move the mutation into the audited path so the change is
+//! recorded.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,7 +19,7 @@ use std::path::{Path, PathBuf};
 const FORBIDDEN: [&str; 3] = ["UPDATE ", "DELETE FROM", "INSERT OR REPLACE"];
 
 /// Files permitted to contain mutating SQL.
-const ALLOWED: [&str; 2] = ["db/audit.rs", "db/schema.rs"];
+const ALLOWED: [&str; 3] = ["db/audit.rs", "db/audit/setup.rs", "db/schema.rs"];
 
 #[test]
 fn mutating_sql_lives_only_in_the_audit_and_schema_modules() {
@@ -49,7 +48,7 @@ fn mutating_sql_lives_only_in_the_audit_and_schema_modules() {
 
     assert!(
         violations.is_empty(),
-        "mutating SQL found outside db/audit.rs and db/schema.rs -- \
+        "mutating SQL found outside the audited mutation and schema modules. \
          move it into the audited mutation path:\n{}",
         violations.join("\n")
     );

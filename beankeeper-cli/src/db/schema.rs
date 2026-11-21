@@ -4,7 +4,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = 20;
+pub(crate) const CURRENT_VERSION: i64 = 21;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -126,6 +126,9 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 
     if version < 20 {
         apply_v20(conn)?;
+    }
+    if version < 21 {
+        apply_v21(conn)?;
     }
 
     debug_assert_eq!(
@@ -1300,6 +1303,24 @@ fn apply_v20(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
+fn apply_v21(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.execute_batch(
+            "CREATE TABLE setup_sessions (
+                generation INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_jti TEXT NOT NULL UNIQUE REFERENCES agent_tokens(jti),
+                state TEXT NOT NULL CHECK (state IN ('active', 'finished', 'revoked')),
+                ended_at TEXT,
+                CHECK ((state = 'active') = (ended_at IS NULL))
+             );
+             CREATE UNIQUE INDEX idx_setup_sessions_active
+                 ON setup_sessions(state) WHERE state = 'active';
+             INSERT INTO schema_version(version) VALUES (21);",
+        )?;
+        Ok(())
+    })
+}
+
 fn extend_period_audit(conn: &Connection) -> Result<(), CliError> {
     conn.execute_batch(
         "CREATE TABLE audit_log_v20 (
@@ -1394,11 +1415,11 @@ mod tests {
         let path = directory.path().join("v19.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
         let migrated = super::super::Db::open_existing(&path, None)?;
-        assert_eq!(get_schema_version(migrated.conn())?, 20);
+        assert_eq!(get_schema_version(migrated.conn())?, CURRENT_VERSION);
         assert_eq!(history(migrated.conn())?, before);
         crate::commands::verify::execute_json(&migrated)?;
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, 20);
+        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(&conn)?.enforce);
         assert_eq!(

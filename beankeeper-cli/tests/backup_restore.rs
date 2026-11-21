@@ -177,7 +177,7 @@ fn round_trip(encrypted: bool) -> TestResult {
     let snapshot = success(&snapshot_output)?;
     assert_eq!(snapshot["meta"]["command"], "backup");
     assert_eq!(snapshot["data"]["encrypted"], encrypted);
-    assert_eq!(snapshot["data"]["schema_version"], 20);
+    assert_eq!(snapshot["data"]["schema_version"], 21);
     assert!(snapshot["data"]["bytes"].as_u64().ok_or("missing bytes")? > 0);
     assert_eq!(
         std::fs::read(&backup)?.starts_with(b"SQLite format 3\0"),
@@ -303,7 +303,7 @@ fn invalid_inputs_never_publish_or_replace_a_destination() -> TestResult {
     let forged = dir.path().join("forged.db");
     let conn = rusqlite::Connection::open(&forged)?;
     conn.execute_batch(
-        "CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (20)",
+        "CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (21)",
     )?;
     drop(conn);
     let mut truncated = std::fs::read(&valid)?;
@@ -554,7 +554,7 @@ fn restore_rejects_unsupported_schema_without_migration_or_modifying_input() -> 
     let dir = tempdir()?;
     let source = dir.path().join("source.db");
     let destination = dir.path().join("destination.db");
-    for version in [19, 21] {
+    for version in [20, 22] {
         let conn = rusqlite::Connection::open(&source)?;
         conn.execute_batch(
             "DROP TABLE IF EXISTS schema_version; CREATE TABLE schema_version (version INTEGER)",

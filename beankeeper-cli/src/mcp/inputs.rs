@@ -251,6 +251,20 @@ pub(super) struct AuditLog {
 #[serde(deny_unknown_fields)]
 pub(super) struct Empty {}
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupBegin {
+    pub name: String,
+    pub public_key: String,
+    pub ttl: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupEnd {
+    pub generation: crate::db::audit::setup::Generation,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Line {

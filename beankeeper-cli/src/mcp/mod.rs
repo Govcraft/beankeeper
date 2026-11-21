@@ -305,6 +305,42 @@ impl LedgerServer {
             .await
     }
 
+    #[tool(
+        description = "Issue a short-lived setup-only credential for the encrypted ledger. Requires a live owner Admin credential."
+    )]
+    async fn ledger_setup_begin(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupBegin>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupBegin(input), context)
+            .await
+    }
+
+    #[tool(
+        description = "Finish a setup generation and revoke its credential. Requires a live owner Admin credential."
+    )]
+    async fn ledger_setup_finish(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupEnd>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupFinish(input), context)
+            .await
+    }
+
+    #[tool(
+        description = "Revoke a setup generation and its credential. Requires a live owner Admin credential."
+    )]
+    async fn ledger_setup_revoke(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupEnd>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupRevoke(input), context)
+            .await
+    }
+
     #[tool(description = "List companies in the ledger.")]
     async fn company_list(
         &self,
@@ -591,7 +627,7 @@ impl ServerHandler for LedgerServer {
                     .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
                 crate::db::audit::atomically(db.conn(), || {
                     let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
-                    if crate::db::policy::get(db.conn())?.enforce {
+                    if identity.enforces_permissions(crate::db::policy::get(db.conn())?.enforce) {
                         let mut allowed = Vec::new();
                         for tool in tools {
                             if identity.allows_known_operation(tool.name.parse()?)? {
@@ -658,7 +694,9 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         read_only.into(),
         Credentials::Stdio(cli.agent_token.clone()),
     );
-    if enforce && let Some(identity) = identity {
+    if let Some(identity) = identity
+        && identity.enforces_permissions(enforce)
+    {
         for tool in server.tool_router.list_all() {
             if !identity.allows_known_operation(tool.name.parse()?)? {
                 server.tool_router.remove_route(&tool.name);

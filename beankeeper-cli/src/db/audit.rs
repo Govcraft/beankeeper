@@ -30,6 +30,7 @@ use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetP
 use crate::error::CliError;
 
 mod savepoint;
+pub mod setup;
 
 // ---------------------------------------------------------------------------
 // Typed clearance status -- illegal states are unrepresentable

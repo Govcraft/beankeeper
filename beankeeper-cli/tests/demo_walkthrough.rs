@@ -148,7 +148,7 @@ fn readme_demo_reports_show_seeded_features() -> TestResult {
     assert_eq!(budget["totals"]["budget"], 750_000);
     assert_eq!(budget["totals"]["actual"], 500_000);
     let verification = results.get("verify").ok_or("ledger verification")?;
-    assert_eq!(verification["schema_version"], 20);
+    assert_eq!(verification["schema_version"], 21);
     assert_eq!(verification["status"], "healthy");
     Ok(())
 }

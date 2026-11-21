@@ -37,6 +37,9 @@ macro_rules! requests {
 requests! {
     Summary(FinancialSummary),
     LedgerSetupStatus(Empty),
+    LedgerSetupBegin(LedgerSetupBegin),
+    LedgerSetupFinish(LedgerSetupEnd),
+    LedgerSetupRevoke(LedgerSetupEnd),
     SecurityCreate(SecurityCreate),
     SecurityList(CompanyScope),
     SecurityPrice(SecurityPrice),
@@ -82,6 +85,25 @@ impl Request {
                     .map_err(|error| CliError::General(error.to_string()))?;
                 Ok((data, None))
             }
+            Self::LedgerSetupBegin(input) => unpaged(commands::setup::begin_json(
+                db,
+                actor,
+                &input.name,
+                &input.public_key,
+                input.ttl.as_deref().unwrap_or(commands::setup::DEFAULT_TTL),
+            )),
+            Self::LedgerSetupFinish(input) => unpaged(commands::setup::end_json(
+                db,
+                actor,
+                input.generation,
+                crate::db::audit::setup::End::Finish,
+            )),
+            Self::LedgerSetupRevoke(input) => unpaged(commands::setup::end_json(
+                db,
+                actor,
+                input.generation,
+                crate::db::audit::setup::End::Revoke,
+            )),
             Self::Report(input) => super::report_input::execute(db, input),
             Self::SecurityCreate(input) => call_security_create(db, actor, input),
             Self::SecurityList(input) => call_security_list(db, actor, input),
