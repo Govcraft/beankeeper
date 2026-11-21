@@ -219,20 +219,13 @@ fn render(
         println!("{}", json(data, cli.meta(command(sub), Some(company)))?);
     } else if let BudgetData::Rows(rows) = data {
         match format {
-            OutputFormat::Table => {
-                let currency = rows
-                    .first()
-                    .and_then(|row| Currency::from_code(&row.currency).ok())
-                    .unwrap_or(Currency::USD);
-                println!(
-                    "{}",
-                    output::table::render_budgets(
-                        rows,
-                        currency.minor_units(),
-                        output::should_use_color(cli.verbosity.no_color)
-                    )
-                );
-            }
+            OutputFormat::Table => println!(
+                "{}",
+                output::table::render_budgets(
+                    rows,
+                    output::should_use_color(cli.verbosity.no_color),
+                )?
+            ),
             OutputFormat::Csv => print!("{}", output::csv::render_budgets(rows)?),
             OutputFormat::Json => {}
         }

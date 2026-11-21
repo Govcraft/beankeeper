@@ -6,11 +6,13 @@ use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 
 use std::collections::HashMap;
 
+use super::amounts::format_money_grouped;
 use crate::db::clearings::{Clearing, cleared_sum};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceRow,
     CompanyRow, EntryRow, TransactionRow,
 };
+use crate::error::CliError;
 
 // ---------------------------------------------------------------------------
 // Amount formatting
@@ -728,10 +730,12 @@ static MONTH_NAMES: [&str; 12] = [
 ];
 
 /// Render budget rows as a table.
-#[must_use]
-pub fn render_budgets(rows: &[BudgetRow], currency_minor_units: u8, use_color: bool) -> String {
+///
+/// # Errors
+/// Returns [`CliError`] if a row contains an invalid stored currency.
+pub fn render_budgets(rows: &[BudgetRow], use_color: bool) -> Result<String, CliError> {
     if rows.is_empty() {
-        return "No budgets found.".to_string();
+        return Ok("No budgets found.".to_string());
     }
 
     let mut lines = Vec::new();
@@ -755,8 +759,7 @@ pub fn render_budgets(rows: &[BudgetRow], currency_minor_units: u8, use_color: b
             Cell::new(styled(&row.account_code, cyan_style(), use_color)),
             Cell::new(row.year.to_string()),
             Cell::new(format!("{} ({})", month_name, row.month)),
-            Cell::new(format_amount(row.amount, currency_minor_units))
-                .set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(row.money()?)).set_alignment(CellAlignment::Right),
             Cell::new(&row.currency),
             Cell::new(row.notes.as_deref().unwrap_or("")),
         ]);
@@ -764,7 +767,7 @@ pub fn render_budgets(rows: &[BudgetRow], currency_minor_units: u8, use_color: b
 
     lines.push(table.to_string());
 
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 /// Render a budget-variance report as a table.
@@ -803,7 +806,7 @@ pub fn render_budget_variance(
         total_actual = total_actual.saturating_add(row.actual_amount);
 
         let pct_str = match row.variance_percent {
-            Some(p) => format!("{p:.1}%"),
+            Some(p) => format!("{}%", p.to_fixed(1)),
             None => "--".to_string(),
         };
 
@@ -859,6 +862,26 @@ mod tests {
     use super::*;
 
     // -- format_amount --
+
+    #[test]
+    fn budgets_use_each_rows_currency() -> Result<(), CliError> {
+        let rows = ["USD", "JPY", "BHD"].map(|currency| BudgetRow {
+            id: 1,
+            company_slug: "acme".into(),
+            account_code: "5000".into(),
+            currency: currency.into(),
+            year: 2026,
+            month: 1,
+            amount: 1234,
+            notes: None,
+            created_at: String::new(),
+        });
+        let table = render_budgets(&rows, false)?;
+        for amount in ["12.34", "1,234", "1.234"] {
+            assert!(table.contains(amount), "{table}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn format_amount_cents() {

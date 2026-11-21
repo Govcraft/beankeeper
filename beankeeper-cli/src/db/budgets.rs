@@ -149,15 +149,17 @@ pub fn compute_budget_variance(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        let budget_amount = row.get(3)?;
+        let variance_amount = row.get(5)?;
         Ok(BudgetVarianceRow {
             code: row.get(0)?,
             name: row.get(1)?,
             account_type: row.get(2)?,
-            budget_amount: row.get(3)?,
+            budget_amount,
             actual_amount: row.get(4)?,
-            variance_amount: row.get(5)?,
-            variance_percent: row.get(6)?,
-            favorable: row.get(7)?,
+            variance_amount,
+            variance_percent: crate::percent::Percent::of(variance_amount, budget_amount),
+            favorable: row.get(6)?,
         })
     })?;
 
@@ -206,11 +208,6 @@ fn build_variance_query_budget_only(account_type: Option<&str>) -> String {
                 THEN COALESCE(b.total, 0) - COALESCE(act.total, 0) \
                 ELSE COALESCE(act.total, 0) - COALESCE(b.total, 0) \
             END AS variance, \
-            CASE WHEN COALESCE(b.total, 0) = 0 THEN NULL \
-                WHEN a.type = 'expense' \
-                    THEN ROUND(CAST(COALESCE(b.total, 0) - COALESCE(act.total, 0) AS REAL) / b.total * 100, 1) \
-                ELSE ROUND(CAST(COALESCE(act.total, 0) - COALESCE(b.total, 0) AS REAL) / b.total * 100, 1) \
-            END AS variance_pct, \
             CASE WHEN a.type = 'expense' \
                 THEN COALESCE(b.total, 0) >= COALESCE(act.total, 0) \
                 ELSE COALESCE(act.total, 0) >= COALESCE(b.total, 0) \
@@ -266,11 +263,6 @@ fn build_variance_query_with_unbudgeted(account_type: Option<&str>) -> String {
                 THEN COALESCE(b.total, 0) - COALESCE(act.total, 0) \
                 ELSE COALESCE(act.total, 0) - COALESCE(b.total, 0) \
             END AS variance, \
-            CASE WHEN COALESCE(b.total, 0) = 0 THEN NULL \
-                WHEN a.type = 'expense' \
-                    THEN ROUND(CAST(COALESCE(b.total, 0) - COALESCE(act.total, 0) AS REAL) / b.total * 100, 1) \
-                ELSE ROUND(CAST(COALESCE(act.total, 0) - COALESCE(b.total, 0) AS REAL) / b.total * 100, 1) \
-            END AS variance_pct, \
             CASE WHEN a.type = 'expense' \
                 THEN COALESCE(b.total, 0) >= COALESCE(act.total, 0) \
                 ELSE COALESCE(act.total, 0) >= COALESCE(b.total, 0) \
@@ -640,6 +632,33 @@ mod tests {
     }
 
     #[test]
+    fn variance_retains_exact_ratio_until_rendering() -> Result<(), CliError> {
+        let db = setup();
+        set_budget(db.conn(), &budget("5000", 2026, 1, 16, None))?;
+        post_expense(&db, "2026-01-15", "5000", 15);
+
+        for include_unbudgeted in [false, true] {
+            let rows = compute_budget_variance(
+                db.conn(),
+                &variance(2026, 1, 1, None, include_unbudgeted),
+            )?;
+            let percent = rows
+                .iter()
+                .find(|row| row.code == "5000")
+                .and_then(|row| row.variance_percent);
+            assert_eq!(
+                percent.map(|value| value.to_fixed(2)).as_deref(),
+                Some("6.25")
+            );
+            assert_eq!(
+                percent.map(|value| value.to_fixed(1)).as_deref(),
+                Some("6.3")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn variance_expense_over_budget() -> Result<(), CliError> {
         let db = setup();
         set_budget(db.conn(), &budget("5000", 2026, 1, 50_000, None))?;
@@ -726,6 +745,7 @@ mod tests {
             .ok_or_else(|| CliError::General("expected matching row".into()))?;
         assert_eq!(supplies.budget_amount, 0);
         assert_eq!(supplies.actual_amount, 30_000);
+        assert_eq!(supplies.variance_percent, None);
         Ok(())
     }
 

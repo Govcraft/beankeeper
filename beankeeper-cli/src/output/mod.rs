@@ -4,7 +4,7 @@
 //! function determines whether ANSI colour codes should be emitted based on
 //! terminal state and user flags.
 
-mod amounts;
+pub(crate) mod amounts;
 pub(crate) mod chart;
 pub mod csv;
 pub mod json;

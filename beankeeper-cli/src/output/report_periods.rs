@@ -19,63 +19,7 @@ use crate::output::json::{Meta, envelope_ok};
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// An exact percentage, `num / den` percent with `den > 0`, kept as a
-/// fraction so that rounding happens once, at formatting time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Percent {
-    num: i128,
-    den: i128,
-}
-
-impl Percent {
-    /// Decimal text rounded half away from zero to `decimals` places, e.g.
-    /// `33.33` or `-87.5`. A value that rounds to zero has no sign.
-    #[must_use]
-    pub fn to_fixed(self, decimals: u8) -> String {
-        let scale = 10i128.pow(u32::from(decimals));
-        let scaled = round_half_away(self.num * scale, self.den);
-        let sign = if scaled < 0 { "-" } else { "" };
-        let abs = scaled.unsigned_abs();
-        let scale = scale.unsigned_abs();
-        if decimals == 0 {
-            format!("{sign}{abs}")
-        } else {
-            format!(
-                "{sign}{}.{:0width$}",
-                abs / scale,
-                abs % scale,
-                width = usize::from(decimals)
-            )
-        }
-    }
-
-    /// The value rounded to two decimals, as the nearest `f64` (for JSON).
-    #[must_use]
-    pub fn to_json_number(self) -> Option<f64> {
-        self.to_fixed(2).parse().ok()
-    }
-}
-
-/// `n / d` rounded half away from zero (`d > 0`).
-fn round_half_away(n: i128, d: i128) -> i128 {
-    let (q, r) = (n / d, n % d);
-    if 2 * r.abs() >= d { q + n.signum() } else { q }
-}
-
-/// Percentage change from `prior` to `current`, or `None` when `prior` is 0.
-///
-/// The base is `|prior|`, so a move from -100 to -50 is +50%. Computed in
-/// exact integer arithmetic.
-#[must_use]
-pub fn change_percent(current: i64, prior: i64) -> Option<Percent> {
-    if prior == 0 {
-        return None;
-    }
-    Some(Percent {
-        num: (i128::from(current) - i128::from(prior)) * 100,
-        den: i128::from(prior.unsigned_abs()),
-    })
-}
+pub use crate::percent::{Percent, change_percent};
 
 /// Sum a row of amounts (the Total column of the periods layout).
 fn row_total(amounts: &[i64]) -> i64 {

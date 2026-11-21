@@ -167,6 +167,72 @@ fn rows<'a>(data: &'a Value, key: &str) -> Result<&'a Vec<Value>, Box<dyn Error>
 }
 
 #[test]
+fn typed_tax_queries_expose_money_and_share_cli_exports() -> TestResult {
+    use beankeeper::types::{Currency, Money};
+    use beankeeper_cli::commands::report_tax::{
+        Period, VendorThreshold, build_schedule_c, build_vendors, render_schedule_c_csv,
+        render_vendors_csv,
+    };
+    use beankeeper_cli::db::Db;
+    use chrono::NaiveDate;
+
+    let books = Books::new()?;
+    for currency in ["USD", "BHD"] {
+        books.post(
+            "2026-02-19",
+            "5000:1.20",
+            "1000:1.20",
+            &["--currency", currency, "--meta", "payee=Ledger Vendor"],
+        )?;
+    }
+    let db = Db::open_snapshot(&books.path, None)?;
+    let from = NaiveDate::parse_from_str("2026-01-01", "%Y-%m-%d")?;
+    let to = NaiveDate::parse_from_str("2026-12-31", "%Y-%m-%d")?;
+    let period = Period::new(from, to)?;
+    assert!(Period::new(to, from).is_err());
+    assert!(VendorThreshold::new(Money::usd(-1)).is_err());
+
+    let currency = Currency::BHD;
+    let paid = Money::from_minor(1200, currency);
+    let schedule = build_schedule_c(&db, "llc", period, currency)?;
+    assert_eq!(schedule.period(), period);
+    assert_eq!(schedule.currency(), currency);
+    assert_eq!(schedule.summary().lines()[0].line(), Some("18"));
+    assert_eq!(schedule.summary().lines()[0].debit_total(), paid);
+    assert_eq!(schedule.summary().lines()[0].net(), paid);
+
+    let vendors = build_vendors(&db, "llc", period, VendorThreshold::new(paid)?)?;
+    assert_eq!(vendors.summary().threshold(), paid);
+    assert_eq!(vendors.summary().vendors()[0].total(), paid);
+    assert_eq!(vendors.summary().vendors()[0].payment_count, 1);
+
+    for (command, data, csv, threshold_args) in [
+        (
+            "schedule-c",
+            serde_json::to_value(&schedule)?,
+            render_schedule_c_csv(&schedule)?,
+            Vec::new(),
+        ),
+        (
+            "1099",
+            serde_json::to_value(&vendors)?,
+            render_vendors_csv(&vendors)?,
+            vec!["--threshold", "1.20"],
+        ),
+    ] {
+        let mut args = vec!["--currency", "BHD"];
+        args.extend_from_slice(YEAR);
+        args.extend(threshold_args);
+        assert_eq!(books.report(command, &args)?["data"], data);
+        let mut csv_args = vec!["--company", "llc", "report", command, "--format", "csv"];
+        csv_args.extend(args);
+        let cli_csv = ok(&books.path, &csv_args)?;
+        assert_eq!(cli_csv.trim_end_matches('\n'), csv.trim_end_matches('\n'));
+    }
+    Ok(())
+}
+
+#[test]
 fn schedule_c_matches_tax_summary_and_preserves_unmatched_activity_in_all_formats() -> TestResult {
     let books = Books::seeded()?;
     let schedule = books.report("schedule-c", YEAR)?;

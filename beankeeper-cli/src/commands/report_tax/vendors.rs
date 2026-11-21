@@ -2,31 +2,108 @@
 
 use std::collections::BTreeMap;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, Money};
 use comfy_table::Table;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{TaxEntry, TaxReport, add, csv_error, decimal, finish_csv};
+use super::{TaxEntry, TaxReport, add, csv_error, finish_csv};
 use crate::error::CliError;
+use crate::output::amounts::MoneyField;
 
+/// Nonnegative minimum paid to a vendor, in one currency.
+#[derive(Debug, Clone, Copy)]
+pub struct VendorThreshold {
+    minor: i64,
+    currency: Currency,
+}
+
+impl VendorThreshold {
+    /// Validate a vendor report threshold.
+    ///
+    /// # Errors
+    /// Returns [`CliError::Validation`] for a negative amount or for an amount
+    /// outside the supported minor-unit range.
+    pub fn new(money: Money) -> Result<Self, CliError> {
+        let minor = i64::try_from(money.amount().minor_units()).map_err(|_| {
+            CliError::Validation("vendor threshold exceeds the minor-unit range".into())
+        })?;
+        if minor < 0 {
+            return Err(CliError::Validation(
+                "--threshold must be nonnegative".into(),
+            ));
+        }
+        Ok(Self {
+            minor,
+            currency: money.currency(),
+        })
+    }
+
+    /// The validated threshold and its currency.
+    #[must_use]
+    pub fn money(self) -> Money {
+        Money::from_minor(i128::from(self.minor), self.currency)
+    }
+}
+
+/// Vendor payments meeting the requested threshold.
 #[derive(Serialize)]
-pub(super) struct VendorSummary {
-    threshold: i64,
+pub struct VendorSummary {
+    #[serde(flatten)]
+    threshold: MoneyField,
     vendors: Vec<VendorRow>,
 }
 
+impl VendorSummary {
+    /// Minimum included total in the report currency.
+    #[must_use]
+    pub const fn threshold(&self) -> Money {
+        self.threshold.money()
+    }
+
+    /// Included vendors, ordered by payee.
+    #[must_use]
+    pub fn vendors(&self) -> &[VendorRow] {
+        &self.vendors
+    }
+}
+
+/// Payments attributed to one recorded payee.
 #[derive(Serialize)]
-struct VendorRow {
+pub struct VendorRow {
+    /// Payee name from recorded transaction metadata.
+    pub payee: String,
+    /// Taxpayer identification number, when recorded.
+    pub tin: Option<String>,
+    /// Mailing address, when recorded.
+    pub payee_address: Option<String>,
+    /// Number of payments counted for the payee.
+    pub payment_count: i64,
+    #[serde(flatten)]
+    total: MoneyField,
+    meets_threshold: bool,
+}
+
+impl VendorRow {
+    /// Total paid in the report currency.
+    #[must_use]
+    pub const fn total(&self) -> Money {
+        self.total.money()
+    }
+}
+
+struct AccumulatedVendor {
     payee: String,
     tin: Option<String>,
     payee_address: Option<String>,
     payment_count: i64,
     total: i64,
-    meets_threshold: bool,
 }
 
-pub(super) fn build(entries: &[TaxEntry], threshold: i64) -> Result<VendorSummary, CliError> {
+pub(super) fn build(
+    entries: &[TaxEntry],
+    threshold: VendorThreshold,
+) -> Result<VendorSummary, CliError> {
     let mut vendors = BTreeMap::new();
     // Input is ordered by transaction ID. Count split debit legs only once.
     let mut previous_payment = None;
@@ -49,13 +126,12 @@ pub(super) fn build(entries: &[TaxEntry], threshold: i64) -> Result<VendorSummar
         let address = optional_detail(&metadata, "payee_address", payee)?;
         let row = vendors
             .entry(payee.to_owned())
-            .or_insert_with(|| VendorRow {
+            .or_insert_with(|| AccumulatedVendor {
                 payee: payee.into(),
                 tin: None,
                 payee_address: None,
                 payment_count: 0,
                 total: 0,
-                meets_threshold: false,
             });
         merge_detail(&mut row.tin, tin, "tin", payee)?;
         merge_detail(&mut row.payee_address, address, "payee_address", payee)?;
@@ -66,12 +142,20 @@ pub(super) fn build(entries: &[TaxEntry], threshold: i64) -> Result<VendorSummar
         previous_payment = Some(entry.transaction_id);
     }
     Ok(VendorSummary {
-        threshold,
+        threshold: MoneyField::new("threshold", threshold.money()),
         vendors: vendors
             .into_values()
-            .filter_map(|mut row| {
-                row.meets_threshold = row.total >= threshold;
-                row.meets_threshold.then_some(row)
+            .filter(|row| row.total >= threshold.minor)
+            .map(|row| VendorRow {
+                payee: row.payee,
+                tin: row.tin,
+                payee_address: row.payee_address,
+                payment_count: row.payment_count,
+                total: MoneyField::new(
+                    "total",
+                    Money::from_minor(i128::from(row.total), threshold.currency),
+                ),
+                meets_threshold: true,
             })
             .collect(),
     })
@@ -111,7 +195,7 @@ fn merge_detail(
     Ok(())
 }
 
-pub(super) fn render_table(report: &TaxReport<VendorSummary>, currency: Currency) -> String {
+pub(super) fn render_table(report: &TaxReport<VendorSummary>) -> String {
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::UTF8_FULL);
     table.set_header([
@@ -128,21 +212,28 @@ pub(super) fn render_table(report: &TaxReport<VendorSummary>, currency: Currency
             row.tin.clone().unwrap_or_default(),
             row.payee_address.clone().unwrap_or_default(),
             row.payment_count.to_string(),
-            decimal(row.total, currency),
+            row.total.decimal(),
             row.meets_threshold.to_string(),
         ]);
     }
     format!(
         "1099 vendor book summary ({} to {}) ({})\nThreshold: {} {}\nNot tax advice; not a filed form.\n\n{table}",
-        report.from,
-        report.to,
-        report.currency,
-        decimal(report.summary.threshold, currency),
-        report.currency
+        report.period().from(),
+        report.period().to(),
+        report.currency(),
+        report.summary.threshold.decimal(),
+        report.currency()
     )
 }
 
-pub(super) fn render_csv(report: &TaxReport<VendorSummary>) -> Result<String, CliError> {
+/// Export a typed vendor book summary using the CLI's CSV columns.
+///
+/// # Errors
+/// Returns [`CliError`] if CSV serialization fails.
+pub fn render_csv(report: &TaxReport<VendorSummary>) -> Result<String, CliError> {
+    let from = report.period().from().to_string();
+    let to = report.period().to().to_string();
+    let currency = report.currency();
     let mut writer = csv::Writer::from_writer(Vec::new());
     writer
         .write_record([
@@ -165,12 +256,12 @@ pub(super) fn render_csv(report: &TaxReport<VendorSummary>) -> Result<String, Cl
                 row.tin.as_deref().unwrap_or(""),
                 row.payee_address.as_deref().unwrap_or(""),
                 &row.payment_count.to_string(),
-                &row.total.to_string(),
+                &row.total.minor_units().to_string(),
                 &row.meets_threshold.to_string(),
-                &report.summary.threshold.to_string(),
-                &report.currency,
-                &report.from,
-                &report.to,
+                &report.summary.threshold.minor_units().to_string(),
+                currency.code(),
+                &from,
+                &to,
             ])
             .map_err(|error| csv_error(&error))?;
     }

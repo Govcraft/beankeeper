@@ -14,3 +14,4 @@ pub mod identity;
 pub mod mcp;
 pub mod output;
 pub mod passphrase;
+pub mod percent;

@@ -373,7 +373,7 @@ pub fn render_budget_variance(rows: &[crate::db::BudgetVarianceRow]) -> Result<S
         let actual = r.actual_amount.to_string();
         let variance = r.variance_amount.to_string();
         let pct = match r.variance_percent {
-            Some(p) => format!("{p:.1}"),
+            Some(p) => p.to_fixed(1),
             None => String::new(),
         };
         let status = if r.variance_amount == 0 {
