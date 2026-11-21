@@ -236,8 +236,9 @@ fn call_account_list(db: &Db, actor: &Actor, input: inputs::AccountList) -> Resp
             account_type: input.account_type.map(Into::into),
             name: input.name,
             with_balances: input.with_balances,
-            from: optional_text(input.from),
-            to: optional_text(input.to),
+            from: input.from.map(|date| date.into_inner().date()),
+            to: input.to.map(|date| date.into_inner().date()),
+            currency: input.currency.map(|value| value.into_inner().into()),
         },
     )
 }

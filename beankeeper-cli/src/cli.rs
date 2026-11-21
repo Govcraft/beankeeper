@@ -1351,13 +1351,17 @@ EXAMPLES:\n  \
         #[arg(long)]
         with_balances: bool,
 
-        /// Start date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
+        /// Inclusive start date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
         #[arg(long)]
-        from: Option<String>,
+        from: Option<chrono::NaiveDate>,
 
-        /// End date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
+        /// Inclusive end date for balance calculation (YYYY-MM-DD). Only used with --with-balances.
         #[arg(long)]
-        to: Option<String>,
+        to: Option<chrono::NaiveDate>,
+
+        /// Currency for balance totals. Required when the company uses multiple currencies.
+        #[arg(long)]
+        currency: Option<CurrencyArg>,
     },
 
     /// Show account details.

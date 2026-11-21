@@ -179,17 +179,26 @@ pub fn render_accounts_with_balances(
     accounts: &[AccountWithBalanceRow],
     use_color: bool,
 ) -> String {
-    if accounts.is_empty() {
+    let Some(first) = accounts.first() else {
         return "No accounts found.".to_string();
-    }
+    };
+    let currency = first.debit_total.currency().code();
 
     let mut table = new_table();
     table.set_header(vec![
         Cell::new(styled("Code", bold_style(), use_color)),
         Cell::new(styled("Name", bold_style(), use_color)),
         Cell::new(styled("Type", bold_style(), use_color)),
-        Cell::new(styled("Debit Total", bold_style(), use_color)),
-        Cell::new(styled("Credit Total", bold_style(), use_color)),
+        Cell::new(styled(
+            &format!("Debit Total ({currency})"),
+            bold_style(),
+            use_color,
+        )),
+        Cell::new(styled(
+            &format!("Credit Total ({currency})"),
+            bold_style(),
+            use_color,
+        )),
     ]);
 
     for a in accounts {
@@ -197,8 +206,8 @@ pub fn render_accounts_with_balances(
             Cell::new(styled(&a.code, cyan_style(), use_color)),
             Cell::new(&a.name),
             Cell::new(capitalize_first(&a.account_type)),
-            Cell::new(a.debit_total).set_alignment(CellAlignment::Right),
-            Cell::new(a.credit_total).set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(a.debit_total)).set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(a.credit_total)).set_alignment(CellAlignment::Right),
         ]);
     }
 

@@ -24,6 +24,8 @@ use crate::db::{
 };
 use crate::error::{CliError, ErrorCode};
 
+use super::amounts::MoneyField;
+
 // ---------------------------------------------------------------------------
 // Envelope types
 // ---------------------------------------------------------------------------
@@ -617,39 +619,51 @@ pub fn render_tax_summary(
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct AccountWithBalanceJson {
-    code: String,
-    name: String,
-    r#type: String,
-    normal_balance: String,
-    default_tax_category: Option<String>,
-    debit_total: i64,
-    credit_total: i64,
+struct AccountWithBalanceJson<'a> {
+    code: &'a str,
+    name: &'a str,
+    r#type: &'a str,
+    normal_balance: &'static str,
+    default_tax_category: Option<&'a str>,
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
+    #[serde(flatten)]
+    debit_total: MoneyField,
+    #[serde(flatten)]
+    credit_total: MoneyField,
+}
+
+fn account_balance_rows(rows: &[AccountWithBalanceRow]) -> Vec<AccountWithBalanceJson<'_>> {
+    rows.iter()
+        .map(|row| AccountWithBalanceJson {
+            code: &row.code,
+            name: &row.name,
+            r#type: &row.account_type,
+            normal_balance: normal_balance_for(&row.account_type),
+            default_tax_category: row.default_tax_category.as_deref(),
+            currency: row.debit_total.currency(),
+            debit_total: MoneyField::new("debit_total", row.debit_total),
+            credit_total: MoneyField::new("credit_total", row.credit_total),
+        })
+        .collect()
 }
 
 /// Render accounts with balance totals as an enveloped JSON response.
 ///
 /// # Errors
-///
-/// Returns [`CliError`] on serialisation failure.
+/// Returns [`CliError`] on serialization failure.
 pub fn render_accounts_with_balances(
     rows: &[AccountWithBalanceRow],
     meta: Meta,
 ) -> Result<String, CliError> {
-    let json_rows: Vec<AccountWithBalanceJson> = rows
-        .iter()
-        .map(|row| AccountWithBalanceJson {
-            code: row.code.clone(),
-            name: row.name.clone(),
-            r#type: row.account_type.clone(),
-            normal_balance: normal_balance_for(&row.account_type).to_string(),
-            default_tax_category: row.default_tax_category.clone(),
-            debit_total: row.debit_total,
-            credit_total: row.credit_total,
-        })
-        .collect();
+    envelope_ok(meta, account_balance_rows(rows))
+}
 
-    envelope_ok(meta, json_rows)
+pub(crate) fn account_balances_payload(
+    rows: &[AccountWithBalanceRow],
+) -> Result<serde_json::Value, CliError> {
+    serde_json::to_value(account_balance_rows(rows))
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
 // ---------------------------------------------------------------------------

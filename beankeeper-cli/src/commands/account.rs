@@ -1,8 +1,8 @@
 use std::io::IsTerminal;
 
-use crate::cli::{AccountCommand, Cli, OutputFormat, resolve_format};
+use crate::cli::{AccountCommand, Cli, CurrencyArg, OutputFormat, resolve_format};
 use crate::db::connection::Db;
-use crate::db::{self, accounts};
+use crate::db::{self, AccountBalanceWindow, accounts};
 use crate::error::CliError;
 use crate::output;
 
@@ -105,26 +105,32 @@ fn compute(
             with_balances,
             from,
             to,
+            currency,
         } => {
             let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
+            let filter = accounts::ListAccountParams {
+                company_slug: company,
+                type_filter: type_filter.as_deref(),
+                name_filter: name.as_deref(),
+            };
+            let conn = db.conn();
             if *with_balances {
-                Ok(AccountData::Balances(db::list_accounts_with_balances(
-                    db.conn(),
-                    company,
-                    type_filter.as_deref(),
-                    name.as_deref(),
-                    from.as_deref(),
-                    to.as_deref(),
-                )?))
+                let window = AccountBalanceWindow::new(*from, *to)?;
+                let currency = currency.as_ref().map(CurrencyArg::resolve).transpose()?;
+                db::audit::atomically(conn, || {
+                    let currency = match currency {
+                        Some(currency) => currency,
+                        None => super::report_currency::infer_company_currency(
+                            conn,
+                            company,
+                            CliError::Validation,
+                        )?,
+                    };
+                    let rows = db::list_accounts_with_balances(conn, &filter, window, currency)?;
+                    Ok(AccountData::Balances(rows))
+                })
             } else {
-                Ok(AccountData::Rows(accounts::list_accounts(
-                    db.conn(),
-                    &accounts::ListAccountParams {
-                        company_slug: company,
-                        type_filter: type_filter.as_deref(),
-                        name_filter: name.as_deref(),
-                    },
-                )?))
+                Ok(AccountData::Rows(accounts::list_accounts(conn, &filter)?))
             }
         }
         AccountCommand::Show { code } => Ok(AccountData::Rows(vec![accounts::get_account(
@@ -164,7 +170,7 @@ pub fn execute_json_with_actor(
     let meta = output::json::meta(operation(sub), Some(company));
     let rendered = match compute(db, company, sub, actor)? {
         AccountData::Rows(rows) => output::json::render_accounts(&rows, meta)?,
-        AccountData::Balances(rows) => output::json::render_accounts_with_balances(&rows, meta)?,
+        AccountData::Balances(rows) => return output::json::account_balances_payload(&rows),
     };
     super::company::json_data(&rendered)
 }

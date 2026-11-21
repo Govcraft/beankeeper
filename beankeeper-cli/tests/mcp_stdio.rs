@@ -2448,3 +2448,50 @@ fn posting_preserves_structured_annotation_keys_and_line_memos() -> TestResult {
     assert_eq!(data[0]["entries"][0]["memo"], "payee: invoice=one");
     Ok(())
 }
+
+#[test]
+fn account_list_applies_typed_balance_dates_and_currency() -> TestResult {
+    let dir = tempdir()?;
+    let db = dir.path().join("books.db");
+    seed(&db)?;
+    for (date, currency, amount) in [
+        ("2026-01-09", "BHD", "10.001"),
+        ("2026-01-10", "BHD", "20.002"),
+        ("2026-01-10", "USD", "100"),
+    ] {
+        bk(&db)?
+            .args([
+                "--company",
+                "acme",
+                "txn",
+                "post",
+                "-d",
+                "Sale",
+                "--date",
+                date,
+                "--currency",
+                currency,
+                "--debit",
+                &format!("1000:{amount}"),
+                "--credit",
+                &format!("4000:{amount}"),
+            ])
+            .assert()
+            .success();
+    }
+    let mut command = bk(&db)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let arguments = json!({
+        "company":"acme", "with_balances":true,
+        "from":"2026-01-10", "to":"2026-01-10", "currency":"BHD"
+    });
+    let data = client.success("account_list", &arguments)?;
+    assert_eq!(data[0]["code"], "1000");
+    assert_eq!(data[0]["currency"], "BHD");
+    assert_eq!(data[0]["debit_total"], 20_002);
+    assert_eq!(data[0]["debit_total_display"], "20.002");
+    assert_eq!(data[1]["credit_total"], 20_002);
+    Ok(())
+}
