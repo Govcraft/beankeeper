@@ -6,7 +6,7 @@ use super::clearance::ClearanceStatus;
 use super::currency::Currency;
 use super::debit_credit::DebitOrCredit;
 use super::document::SourceDocument;
-use super::money::Money;
+use super::money::{Money, PositiveMoney};
 
 /// Error type for [`Entry`] construction and clearance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +72,7 @@ impl std::error::Error for EntryError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     account: Account,
-    amount: Money,
+    amount: PositiveMoney,
     direction: DebitOrCredit,
     status: ClearanceStatus,
     memo: Option<String>,
@@ -92,14 +92,15 @@ impl Entry {
         amount: Money,
         direction: DebitOrCredit,
     ) -> Result<Self, EntryError> {
-        if amount.is_zero() {
-            return Err(EntryError::ZeroAmount);
-        }
-        if amount.is_negative() {
-            return Err(EntryError::NegativeAmount {
-                amount: amount.amount(),
-            });
-        }
+        let amount = PositiveMoney::new(amount).map_err(|_| {
+            if amount.is_zero() {
+                EntryError::ZeroAmount
+            } else {
+                EntryError::NegativeAmount {
+                    amount: amount.amount(),
+                }
+            }
+        })?;
 
         Ok(Self {
             account,
@@ -182,7 +183,7 @@ impl Entry {
     /// Returns the monetary amount of this entry (always positive).
     #[must_use]
     pub fn amount(&self) -> Money {
-        self.amount
+        self.amount.money()
     }
 
     /// Returns the direction of this entry.
@@ -264,10 +265,12 @@ impl Entry {
     /// (decreases the account).
     #[must_use]
     pub fn signed_amount(&self) -> Amount {
+        let amount = self.amount.money().amount();
         if self.direction == self.account.normal_balance() {
-            self.amount.amount()
+            amount
         } else {
-            -self.amount.amount()
+            // Entry amounts are strictly positive, so negation is representable.
+            Amount::new(-amount.minor_units())
         }
     }
 }

@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::types::{Account, Amount};
+use crate::types::{Account, Amount, MoneyError};
 
 /// The computed balance for a single account.
 ///
@@ -45,23 +45,28 @@ impl AccountBalance {
     /// Returns the net balance (debit total minus credit total).
     ///
     /// Positive means net debit, negative means net credit.
-    #[must_use]
-    pub fn net_balance(&self) -> Amount {
-        self.debit_total - self.credit_total
+    /// # Errors
+    /// Returns [`MoneyError::Overflow`] if the difference cannot be represented.
+    pub fn net_balance(&self) -> Result<Amount, MoneyError> {
+        self.debit_total
+            .checked_sub(self.credit_total)
+            .ok_or(MoneyError::Overflow)
     }
 
     /// Returns the balance expressed according to the account's normal side.
     ///
     /// For debit-normal accounts (Asset, Expense), this is `debit - credit`.
     /// For credit-normal accounts (Liability, Equity, Revenue), this is `credit - debit`.
-    ///
     /// A positive result means the account is in its normal state.
-    #[must_use]
-    pub fn normal_balance_amount(&self) -> Amount {
+    /// # Errors
+    /// Returns [`MoneyError::Overflow`] if the difference cannot be represented.
+    pub fn normal_balance_amount(&self) -> Result<Amount, MoneyError> {
         if self.account.account_type().is_debit_normal() {
-            self.debit_total - self.credit_total
+            self.net_balance()
         } else {
-            self.credit_total - self.debit_total
+            self.credit_total
+                .checked_sub(self.debit_total)
+                .ok_or(MoneyError::Overflow)
         }
     }
 
@@ -102,7 +107,7 @@ mod tests {
             Amount::new(500),
             Amount::new(200),
         );
-        assert_eq!(ab.net_balance(), Amount::new(300));
+        assert_eq!(ab.net_balance(), Ok(Amount::new(300)));
     }
 
     #[test]
@@ -112,7 +117,7 @@ mod tests {
             Amount::new(100),
             Amount::new(500),
         );
-        assert_eq!(ab.net_balance(), Amount::new(-400));
+        assert_eq!(ab.net_balance(), Ok(Amount::new(-400)));
     }
 
     #[test]
@@ -123,7 +128,7 @@ mod tests {
             Amount::new(200),
         );
         // Asset is debit-normal: DR - CR = 300
-        assert_eq!(ab.normal_balance_amount(), Amount::new(300));
+        assert_eq!(ab.normal_balance_amount(), Ok(Amount::new(300)));
     }
 
     #[test]
@@ -134,7 +139,7 @@ mod tests {
             Amount::new(500),
         );
         // Revenue is credit-normal: CR - DR = 400
-        assert_eq!(ab.normal_balance_amount(), Amount::new(400));
+        assert_eq!(ab.normal_balance_amount(), Ok(Amount::new(400)));
     }
 
     #[test]

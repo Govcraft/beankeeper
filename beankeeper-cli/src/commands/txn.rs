@@ -582,8 +582,8 @@ fn validate_journal(journal: JournalEntry, currency: Currency) -> Result<(), Cli
         }) => {
             let difference = Money::new(total_debits, currency)
                 .checked_sub(Money::new(total_credits, currency))
+                .and_then(Money::checked_abs)
                 .map_err(|error| CliError::Validation(error.to_string()))?
-                .abs()
                 .amount()
                 .format_decimal(currency.minor_units());
             let debits = total_debits.format_decimal(currency.minor_units());
