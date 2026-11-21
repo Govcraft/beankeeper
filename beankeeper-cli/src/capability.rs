@@ -39,67 +39,10 @@ impl Capability {
     /// # Errors
     /// Returns a usage error for an operation without an explicit mapping.
     pub fn for_operation(operation: &str) -> Result<Self, CliError> {
-        let operation = operation.replace('_', ".");
-        match operation.as_str() {
-            "summary"
-            | "financial.summary"
-            | "period.list"
-            | "company.list"
-            | "company.show"
-            | "account.list"
-            | "account.show"
-            | "txn.list"
-            | "txn.show"
-            | "security.list"
-            | "investment.lots"
-            | "investment.holdings"
-            | "schedule.list"
-            | "rule.list"
-            | "budget.list"
-            | "loan.schedule"
-            | "export"
-            | "verify"
-            | "audit.log"
-            | "txn.proposals"
-            | "agent.limit.show"
-            | "agent.list"
-            | "policy.show"
-            | "report"
-            | "report.aging"
-            | "report.balance"
-            | "report.balance-sheet"
-            | "report.budget-variance"
-            | "report.cash-flow"
-            | "report.income-statement"
-            | "report.income-statement.compare"
-            | "report.income-statement.periods"
-            | "report.ledger"
-            | "report.reconciliation"
-            | "report.schedule-c"
-            | "report.1099"
-            | "report.1099-nec"
-            | "report.tax-summary"
-            | "report.trend"
-            | "report.trial-balance"
-            | "report.trial-balance.compare"
-            | "report.trial-balance.periods" => Ok(Self::Read),
-            "txn.post" | "txn.import" | "txn.attach" | "txn.meta.set" | "txn.meta.unset"
-            | "investment.buy" | "investment.sell" | "security.create" | "security.price"
-            | "loan.pay" | "schedule.create" | "schedule.cancel" | "schedule.run"
-            | "rule.create" | "rule.delete" => Ok(Self::Post),
-            "txn.propose" | "txn.reject" => Ok(Self::Propose),
-            "txn.approve" => Ok(Self::Approve),
-            "txn.reverse" => Ok(Self::Reverse),
-            "txn.clear" | "txn.reconcile" => Ok(Self::Reconcile),
-            "budget.set" | "budget.delete" => Ok(Self::Budget),
-            "period.close" | "period.reopen" | "company.create" | "company.delete"
-            | "account.create" | "account.delete" | "key.init" | "agent.issue" | "agent.revoke"
-            | "policy.set" | "init" | "backup" | "restore" | "agent.limit.set"
-            | "agent.limit.clear" => Ok(Self::Admin),
-            _ => Err(CliError::Usage(
-                "operation has no capability mapping".into(),
-            )),
-        }
+        operation
+            .parse::<crate::operation::Operation>()?
+            .permission()
+            .primary()
     }
 }
 

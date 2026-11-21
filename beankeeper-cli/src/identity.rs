@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::capability::Capability;
 use crate::db::Actor;
 use crate::error::CliError;
+use crate::operation::{Operation, Permission};
 
 /// Identity claims accepted by the ledger's verifier.
 #[derive(Debug, Clone)]
@@ -48,15 +49,19 @@ impl VerifiedAgent {
     /// # Errors
     /// Returns an error for an unknown operation or invalid capability.
     pub fn allows_operation(&self, operation: &str) -> Result<bool, CliError> {
-        match operation.replace('_', ".").as_str() {
-            "txn.proposals" => Ok(self.allows(Capability::Read)?
+        self.allows_known_operation(operation.parse()?)
+    }
+
+    pub(crate) fn allows_known_operation(&self, operation: Operation) -> Result<bool, CliError> {
+        match operation.permission() {
+            Permission::ProposalList => Ok(self.allows(Capability::Read)?
                 || self.allows(Capability::Propose)?
                 || self.allows(Capability::Approve)?
                 || self.allows(Capability::Admin)?),
-            "txn.reject" => {
+            Permission::ProposalReject => {
                 Ok(self.allows(Capability::Propose)? || self.allows(Capability::Approve)?)
             }
-            _ => self.allows(Capability::for_operation(operation)?),
+            permission => self.allows(permission.primary()?),
         }
     }
 
@@ -117,12 +122,17 @@ pub fn authorize_operation(
     token: Option<&str>,
     operation: &str,
 ) -> Result<Option<VerifiedAgent>, CliError> {
-    let required = Capability::for_operation(operation)?;
-    let special = matches!(
-        operation.replace('_', ".").as_str(),
-        "txn.proposals" | "txn.reject"
-    );
-    if !special {
+    authorize_known_operation(conn, token, operation.parse()?)
+}
+
+pub(crate) fn authorize_known_operation(
+    conn: &Connection,
+    token: Option<&str>,
+    operation: Operation,
+) -> Result<Option<VerifiedAgent>, CliError> {
+    let permission = operation.permission();
+    let required = permission.primary()?;
+    if let Permission::Capability(_) = permission {
         return authorize(conn, token, required);
     }
     let enforce = crate::db::policy::get(conn)?.enforce;
@@ -137,7 +147,7 @@ pub fn authorize_operation(
     };
     if enforce
         && let Some(identity) = &identity
-        && !identity.allows_operation(operation)?
+        && !identity.allows_known_operation(operation)?
     {
         return Err(CliError::Forbidden(format!(
             "operation requires capability {} or ledger/approve",

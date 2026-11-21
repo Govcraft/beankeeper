@@ -29,6 +29,7 @@ use crate::cli::{Cli, Command};
 use crate::commands;
 use crate::db::{Actor, connection::Db};
 use crate::error::CliError;
+use crate::operation::Operation;
 
 /// A ledger tool router, independent of the transport used to serve it.
 #[derive(Clone)]
@@ -117,10 +118,10 @@ impl LedgerServer {
             // One snapshot covers authorization and execution, including policy
             // changes made by another process while this session is running.
             crate::db::audit::atomically(db.conn(), || {
-                let identity = crate::identity::authorize_operation(
+                let identity = crate::identity::authorize_known_operation(
                     db.conn(),
                     token.as_ref().map(ExposeSecret::expose_secret),
-                    tool,
+                    tool.parse::<Operation>()?,
                 )?;
                 let actor = match identity {
                     Some(identity) => actor.with_identity(identity),
@@ -827,7 +828,7 @@ impl ServerHandler for LedgerServer {
                     if crate::db::policy::get(db.conn())?.enforce {
                         let mut allowed = Vec::new();
                         for tool in tools {
-                            if identity.allows_operation(&tool.name)? {
+                            if identity.allows_known_operation(tool.name.parse()?)? {
                                 allowed.push(tool);
                             }
                         }
@@ -893,7 +894,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
     );
     if enforce && let Some(identity) = identity {
         for tool in server.tool_router.list_all() {
-            if !identity.allows_operation(&tool.name)? {
+            if !identity.allows_known_operation(tool.name.parse()?)? {
                 server.tool_router.remove_route(&tool.name);
             }
         }
