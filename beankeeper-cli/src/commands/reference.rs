@@ -6,20 +6,26 @@ use crate::error::CliError;
 
 /// The original nonempty reference, trimmed once for storage and lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct TransactionReference(Box<str>);
+pub(crate) struct TransactionReference(Box<str>);
 
 impl TransactionReference {
-    pub(super) fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub(super) fn into_string(self) -> String {
+    pub(crate) fn into_string(self) -> String {
         self.0.into_string()
     }
 }
 
+impl fmt::Display for TransactionReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct EmptyReference;
+pub(crate) struct EmptyReference;
 
 impl fmt::Display for EmptyReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

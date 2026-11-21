@@ -175,14 +175,7 @@ pub fn create_security(
     company: &str,
     p: &SecurityParams,
 ) -> Result<Security, CliError> {
-    if p.symbol.is_empty()
-        || p.symbol.len() > 32
-        || !p
-            .symbol
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-_:".contains(&b))
-        || p.name.trim().is_empty()
-    {
+    if !valid_symbol(&p.symbol) || p.name.trim().is_empty() {
         return Err(invalid(
             "symbol must be 1-32 ASCII letters, digits, '.', '-', '_' or ':'; name must not be empty",
         ));
@@ -205,6 +198,14 @@ pub fn create_security(
         )?;
         Ok(security)
     })
+}
+
+pub(crate) fn valid_symbol(symbol: &str) -> bool {
+    !symbol.is_empty()
+        && symbol.len() <= 32
+        && symbol
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b".-_:".contains(&byte))
 }
 
 /// List securities, sorted by symbol.

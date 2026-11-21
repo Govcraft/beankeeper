@@ -7,7 +7,7 @@ use crate::error::CliError;
 ///
 /// Must be 1-64 characters, lowercase alphanumeric and hyphens only,
 /// and must start with a lowercase letter or digit (matches `^[a-z0-9][a-z0-9-]{0,63}$`).
-fn validate_slug(slug: &str) -> Result<(), CliError> {
+pub(crate) fn validate_slug(slug: &str) -> Result<(), CliError> {
     if slug.is_empty() || slug.len() > 64 {
         return Err(CliError::Validation(
             "company slug must be 1-64 characters".to_string(),

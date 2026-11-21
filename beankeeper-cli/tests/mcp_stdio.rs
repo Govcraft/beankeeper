@@ -1310,6 +1310,39 @@ fn metadata_tools_share_cli_rules_and_audit_the_mcp_actor() -> TestResult {
 }
 
 #[test]
+fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let mut empty_debits = posting("empty-debits");
+    empty_debits["debits"] = json!([]);
+    let mut bad_currency = posting("bad-currency");
+    bad_currency["currency"] = json!("XXX");
+    for input in [empty_debits, bad_currency] {
+        let response = client.call("txn_post", &input)?;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+    }
+
+    let response = client.call(
+        "txn_clear",
+        &json!({"company":"acme","target":"entry","transaction_id":1,"reference":"other"}),
+    )?;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+
+    let db = beankeeper_cli::db::Db::open_existing(&path, None)?;
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
 fn historical_trends_over_stdio_match_cli_payloads() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -1918,12 +1951,12 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
         ),
         (
             "txn_approve",
-            json!({"company":"acme", "id":"proposal_absent"}),
+            json!({"company":"acme", "id":"proposal_00000000000000000000000000"}),
             "ledger/approve",
         ),
         (
             "txn_reject",
-            json!({"company":"acme", "id":"proposal_absent"}),
+            json!({"company":"acme", "id":"proposal_00000000000000000000000000"}),
             "ledger/propose",
         ),
         ("txn_reconcile", json!({}), "ledger/reconcile"),

@@ -5,6 +5,7 @@
 
 mod host;
 mod http;
+mod input_values;
 mod inputs;
 
 pub use host::{HostTool, HostToolEffect, HostToolHandler};
@@ -286,25 +287,21 @@ fn append_flag(args: &mut Vec<String>, name: &str, value: &Value) -> Result<(), 
 
 fn prepare_post(input: &mut Map<String, Value>) -> Result<(), CliError> {
     for (source, target) in [("debits", "debit"), ("credits", "credit")] {
-        let lines: Vec<inputs::Line> =
+        let lines: input_values::NonEmpty<inputs::Line> =
             serde_json::from_value(input.remove(source).unwrap_or(Value::Null))
                 .map_err(|error| CliError::Usage(error.to_string()))?;
         let values = lines
+            .into_vec()
             .into_iter()
             .map(|line| {
-                if line.account.contains(':') || line.amount.contains(':') {
-                    return Err(CliError::Validation(
-                        "entry account and amount cannot contain ':'".into(),
-                    ));
-                }
-                Ok(Value::String(format!(
+                Value::String(format!(
                     "{}:{}:{}",
-                    line.account,
-                    line.amount,
+                    line.account.into_inner(),
+                    line.amount.into_inner(),
                     line.memo.unwrap_or_default()
-                )))
+                ))
             })
-            .collect::<Result<Vec<_>, CliError>>()?;
+            .collect::<Vec<_>>();
         input.insert(target.into(), Value::Array(values));
     }
     if let Some(Value::Object(meta)) = input.remove("meta") {
@@ -329,16 +326,17 @@ fn parse_batch_lines(
         .remove("batch")
         .filter(|value| !value.is_null())
         .map(|value| {
-            let lines: Vec<inputs::BatchLine> = serde_json::from_value(value)
+            let lines: input_values::NonEmpty<inputs::BatchLine> = serde_json::from_value(value)
                 .map_err(|error| CliError::Usage(error.to_string()))?;
             Ok::<_, CliError>(
                 lines
+                    .into_vec()
                     .into_iter()
                     .enumerate()
                     .map(|(index, line)| commands::txn_clear::BatchLine {
                         line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                        reference: line.reference,
-                        amount: line.amount,
+                        reference: line.reference.into_inner().into_string(),
+                        amount: line.amount.map(|amount| amount.to_string()),
                     })
                     .collect::<Vec<_>>(),
             )
@@ -358,14 +356,8 @@ fn execute_operation(
     if matches!(tool, "txn_post" | "txn_propose") {
         prepare_post(&mut input)?;
     }
-    if tool.starts_with("txn_meta_") {
-        let has_id = input.get("id").is_some_and(|value| !value.is_null());
-        let has_reference = input.get("reference").is_some_and(|value| !value.is_null());
-        if has_id == has_reference {
-            return Err(CliError::Usage(
-                "provide exactly one transaction ID or reference".into(),
-            ));
-        }
+    if tool == "txn_clear" {
+        input.remove("target");
     }
     let batch = parse_batch_lines(&mut input)?;
     if batch.is_some() {
@@ -450,7 +442,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::FinancialSummary>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let company = input.company.clone();
+        let company = input.company.to_string();
         let result = self.execute("financial_summary", input, context).await;
         if result.is_error == Some(true) {
             CallToolResult::structured_error(json!({
@@ -730,7 +722,7 @@ impl LedgerServer {
     )]
     async fn txn_clear(
         &self,
-        Parameters(input): Parameters<inputs::TxnClear>,
+        Parameters(input): Parameters<inputs::ClearInput>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         self.execute("txn_clear", input, context).await
