@@ -6,7 +6,10 @@ use serde_json::Value;
 use crate::cli::{Cli, Command, InvestmentCommand, OutputFormat, SecurityCommand, resolve_format};
 use crate::db::{Actor, Db, investments};
 use crate::error::CliError;
-use crate::output::json::{self, with_amount_displays};
+use crate::output::json;
+
+mod wire;
+use wire::Wire;
 
 /// Run one company-scoped security or investment command.
 ///
@@ -69,7 +72,7 @@ pub fn execute_security(
         } => {
             let price = NonNegativeMoney::new(amount(db, company, symbol, price)?)
                 .map_err(|_| CliError::Validation("price must not be negative".into()))?;
-            serde_json::to_value(investments::record_price(
+            serde_json::to_value(Wire(investments::record_price(
                 db.conn(),
                 actor,
                 company,
@@ -78,11 +81,10 @@ pub fn execute_security(
                     date: *date,
                     price,
                 },
-            )?)
+            )?))
         }
     };
-    data.map(|data| with_amount_displays(data, None))
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+    data.map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
 /// Execute an investment trade or report using the same behavior for CLI and MCP.
@@ -102,7 +104,7 @@ pub fn execute_investment(
                 PositiveMoney::new(amount(db, company, &trade.symbol, cost)?).map_err(|_| {
                     CliError::Validation("buy quantity and cost must be positive".into())
                 })?;
-            serde_json::to_value(investments::buy(
+            serde_json::to_value(Wire(investments::buy(
                 db.conn(),
                 actor,
                 company,
@@ -115,7 +117,7 @@ pub fn execute_investment(
                     cash: trade.cash.clone(),
                     reference: normalized_reference(trade.reference.as_deref())?,
                 },
-            )?)
+            )?))
         }
         InvestmentCommand::Sell {
             trade,
@@ -126,7 +128,7 @@ pub fn execute_investment(
         } => {
             let proceeds = NonNegativeMoney::new(amount(db, company, &trade.symbol, proceeds)?)
                 .map_err(|_| CliError::Validation("sell proceeds must be nonnegative".into()))?;
-            serde_json::to_value(investments::sell(
+            serde_json::to_value(Wire(investments::sell(
                 db.conn(),
                 actor,
                 company,
@@ -141,19 +143,22 @@ pub fn execute_investment(
                     selection: investments::LotSelection::from_flags(*method, lot.clone())?,
                     reference: normalized_reference(trade.reference.as_deref())?,
                 },
-            )?)
+            )?))
         }
         InvestmentCommand::Lots { symbol } => {
-            serde_json::to_value(investments::list_lots(db.conn(), company, symbol)?)
+            let rows = investments::list_lots(db.conn(), company, symbol)?;
+            serde_json::to_value(rows.into_iter().map(Wire).collect::<Vec<_>>())
         }
-        InvestmentCommand::Holdings { as_of } => serde_json::to_value(investments::holdings(
-            db.conn(),
-            company,
-            as_of.unwrap_or_else(|| chrono::Local::now().date_naive()),
-        )?),
+        InvestmentCommand::Holdings { as_of } => {
+            let rows = investments::holdings(
+                db.conn(),
+                company,
+                as_of.unwrap_or_else(|| chrono::Local::now().date_naive()),
+            )?;
+            serde_json::to_value(rows.into_iter().map(Wire).collect::<Vec<_>>())
+        }
     };
-    data.map(|data| with_amount_displays(data, None))
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+    data.map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
 fn normalized_reference(value: Option<&str>) -> Result<Option<String>, CliError> {
