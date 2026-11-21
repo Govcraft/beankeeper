@@ -51,6 +51,12 @@ pub struct TrendArgs {
     /// Transaction currency. Required for companies with multiple currencies.
     #[arg(long)]
     pub currency: Option<String>,
+    /// Compare the full range with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
+    #[arg(long)]
+    pub compare: Option<super::report_periods::CompareArg>,
+    /// Explain the change for one account code.
+    #[arg(long, requires = "compare")]
+    pub explain_change: Option<String>,
 }
 
 #[derive(Serialize)]

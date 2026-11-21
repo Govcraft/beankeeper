@@ -55,13 +55,15 @@ impl PeriodArg {
 }
 
 /// Earlier range used by `--compare`.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareArg {
     /// The range of equal length immediately before `--from`. Ranges made of
     /// whole calendar months shift back by that many months (Q2 -> Q1).
     PriorPeriod,
     /// The same range one year earlier.
     PriorYear,
+    /// An explicit inclusive comparison window.
+    Custom(NaiveDate, NaiveDate),
 }
 
 impl CompareArg {
@@ -71,6 +73,35 @@ impl CompareArg {
         match self {
             Self::PriorPeriod => "prior-period",
             Self::PriorYear => "prior-year",
+            Self::Custom(..) => "custom",
+        }
+    }
+}
+
+impl std::str::FromStr for CompareArg {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "previous" | "prior-period" => Ok(Self::PriorPeriod),
+            "year-ago" | "prior-year" => Ok(Self::PriorYear),
+            _ => {
+                let (from, to) = value.split_once("..").ok_or_else(|| {
+                    CliError::Usage(
+                        "--compare expects previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD".into(),
+                    )
+                })?;
+                let window = super::report_dates::DateWindow::resolve(
+                    Some(from),
+                    Some(to),
+                    true,
+                    NaiveDate::default(),
+                )?;
+                let from = window
+                    .from
+                    .ok_or_else(|| CliError::Validation("missing comparison start".into()))?;
+                Ok(Self::Custom(from, window.to))
+            }
         }
     }
 }
@@ -477,6 +508,7 @@ pub fn prior_range(
     compare: CompareArg,
 ) -> Result<(NaiveDate, NaiveDate), CliError> {
     match compare {
+        CompareArg::Custom(from, to) => Ok((from, to)),
         CompareArg::PriorYear => {
             let year = Months::new(12);
             Ok((
@@ -591,12 +623,24 @@ fn build_lines(
         let rows = fetch_column_rows(conn, company, kind, type_filter, currency, col)?;
 
         for row in &rows {
-            let net = normal_side_net(row);
-            debits[i] = debits[i].saturating_add(row.debit_total);
-            credits[i] = credits[i].saturating_add(row.credit_total);
+            let overflow = || {
+                CliError::Validation("report amount exceeds the supported minor-unit range".into())
+            };
+            let (positive, negative) = if matches!(row.account_type.as_str(), "asset" | "expense") {
+                (row.debit_total, row.credit_total)
+            } else {
+                (row.credit_total, row.debit_total)
+            };
+            let net = positive.checked_sub(negative).ok_or_else(overflow)?;
+            debits[i] = debits[i]
+                .checked_add(row.debit_total)
+                .ok_or_else(overflow)?;
+            credits[i] = credits[i]
+                .checked_add(row.credit_total)
+                .ok_or_else(overflow)?;
             match row.account_type.as_str() {
-                "revenue" => revenue[i] = revenue[i].saturating_add(net),
-                "expense" => expenses[i] = expenses[i].saturating_add(net),
+                "revenue" => revenue[i] = revenue[i].checked_add(net).ok_or_else(overflow)?,
+                "expense" => expenses[i] = expenses[i].checked_add(net).ok_or_else(overflow)?,
                 _ => {}
             }
             let pos = *index.entry(row.code.clone()).or_insert_with(|| {
@@ -629,8 +673,14 @@ fn build_lines(
             let net_income = revenue
                 .iter()
                 .zip(&expenses)
-                .map(|(r, e)| r.saturating_sub(*e))
-                .collect();
+                .map(|(r, e)| {
+                    r.checked_sub(*e).ok_or_else(|| {
+                        CliError::Validation(
+                            "report amount exceeds the supported minor-unit range".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             vec![
                 SummaryLine {
                     key: "total_revenue",

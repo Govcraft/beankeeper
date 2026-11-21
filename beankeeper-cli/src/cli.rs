@@ -1902,9 +1902,13 @@ EXAMPLES:\n  \
         #[arg(long, value_enum, conflicts_with = "compare")]
         period: Option<crate::commands::report_periods::PeriodArg>,
 
-        /// Add a column for an earlier range, with change and percent. Defaults to year-to-date.
-        #[arg(long, value_enum)]
+        /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD. Defaults to year-to-date.
+        #[arg(long)]
         compare: Option<crate::commands::report_periods::CompareArg>,
+
+        /// Explain the change for one account code, including transactions and payees.
+        #[arg(long, requires = "compare")]
+        explain_change: Option<String>,
     },
 
     /// Show balance for a single account.
@@ -1937,6 +1941,12 @@ EXAMPLES:\n  \
         /// than one currency; otherwise inferred.
         #[arg(long)]
         currency: Option<String>,
+        /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
+        #[arg(long)]
+        compare: Option<crate::commands::report_periods::CompareArg>,
+        /// Explain the change for one account code.
+        #[arg(long, requires = "compare")]
+        explain_change: Option<String>,
     },
 
     /// Generate an income statement.
@@ -1966,9 +1976,13 @@ EXAMPLES:\n  \
         #[arg(long, value_enum, conflicts_with = "compare")]
         period: Option<crate::commands::report_periods::PeriodArg>,
 
-        /// Add a column for an earlier range, with change and percent. Defaults to year-to-date.
-        #[arg(long, value_enum)]
+        /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD. Defaults to year-to-date.
+        #[arg(long)]
         compare: Option<crate::commands::report_periods::CompareArg>,
+
+        /// Explain the change for one account code, including transactions and payees.
+        #[arg(long, requires = "compare")]
+        explain_change: Option<String>,
     },
 
     /// Generate a balance sheet.
@@ -1990,6 +2004,12 @@ EXAMPLES:\n  \
         /// than one currency; otherwise inferred.
         #[arg(long)]
         currency: Option<String>,
+        /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
+        #[arg(long)]
+        compare: Option<crate::commands::report_periods::CompareArg>,
+        /// Explain the change for one account code.
+        #[arg(long, requires = "compare")]
+        explain_change: Option<String>,
     },
 
     /// Summarise entries grouped by tax category.

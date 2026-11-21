@@ -93,13 +93,6 @@ pub(super) enum PeriodArg {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub(super) enum CompareArg {
-    PriorPeriod,
-    PriorYear,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CompanyShow {
     pub slug: String,
@@ -334,6 +327,8 @@ pub(super) enum ReportOptions {
         to: Option<String>,
         period: Option<PeriodArg>,
         currency: Option<String>,
+        compare: Option<String>,
+        explain_change: Option<String>,
     },
     TrialBalance {
         from: Option<String>,
@@ -341,24 +336,30 @@ pub(super) enum ReportOptions {
         account_type: Option<AccountTypeArg>,
         currency: Option<String>,
         period: Option<PeriodArg>,
-        compare: Option<CompareArg>,
+        compare: Option<String>,
+        explain_change: Option<String>,
     },
     Balance {
         account: String,
         from: Option<String>,
         to: Option<String>,
         currency: Option<String>,
+        compare: Option<String>,
+        explain_change: Option<String>,
     },
     IncomeStatement {
         from: Option<String>,
         to: Option<String>,
         currency: Option<String>,
         period: Option<PeriodArg>,
-        compare: Option<CompareArg>,
+        compare: Option<String>,
+        explain_change: Option<String>,
     },
     BalanceSheet {
         to: Option<String>,
         currency: Option<String>,
+        compare: Option<String>,
+        explain_change: Option<String>,
     },
     ScheduleC {
         from: Option<String>,
@@ -435,6 +436,8 @@ pub(super) enum ReportOptions {
         #[serde(default)]
         cash_account: Vec<String>,
         currency: Option<String>,
+        compare: Option<String>,
+        explain_change: Option<String>,
     },
 }
 
