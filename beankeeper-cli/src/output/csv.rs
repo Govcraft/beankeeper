@@ -67,8 +67,8 @@ pub fn render_accounts(accounts: &[AccountRow]) -> Result<String, CliError> {
         wtr.write_record([
             &a.code,
             &a.name,
-            &a.account_type,
-            normal_balance_for(&a.account_type),
+            a.account_type.code(),
+            a.account_type.normal_balance().code(),
         ])
         .map_err(|e| csv_err(&e))?;
     }
@@ -454,7 +454,7 @@ mod tests {
             company_slug: "acme".into(),
             code: "1000".into(),
             name: "Cash".into(),
-            account_type: "asset".into(),
+            account_type: beankeeper::types::AccountType::Asset,
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];
@@ -469,7 +469,7 @@ mod tests {
             company_slug: "acme".into(),
             code: "4000".into(),
             name: "Revenue".into(),
-            account_type: "revenue".into(),
+            account_type: beankeeper::types::AccountType::Revenue,
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];

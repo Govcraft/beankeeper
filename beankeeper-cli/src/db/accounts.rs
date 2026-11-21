@@ -1,7 +1,7 @@
 use std::fmt::Write;
-use std::str::FromStr;
 
-use beankeeper::types::{AccountCode, AccountType};
+use beankeeper::types::{Account, AccountCode, AccountType};
+use rusqlite::types::Type;
 use rusqlite::{Connection, params};
 
 use super::AccountRow;
@@ -10,25 +10,14 @@ use crate::error::CliError;
 
 /// Converts an [`AccountRow`] to the library's [`Account`](beankeeper::types::Account) type.
 ///
-/// Parses the account code and type from their string representations.
+/// Parses the account code and reuses the already-decoded account type.
 ///
 /// # Errors
-///
-/// Returns [`CliError::Validation`] if the code or type is invalid.
-pub fn row_to_account(row: &AccountRow) -> Result<beankeeper::types::Account, CliError> {
-    let code = beankeeper::types::AccountCode::new(&row.code)
+/// Returns [`CliError::Validation`] if the code is invalid.
+pub fn row_to_account(row: &AccountRow) -> Result<Account, CliError> {
+    let code = AccountCode::new(&row.code)
         .map_err(|e| CliError::Validation(format!("invalid account code '{}': {e}", row.code)))?;
-
-    let account_type =
-        beankeeper::types::AccountType::from_str(&row.account_type).map_err(|e| {
-            CliError::Validation(format!("invalid account type '{}': {e}", row.account_type))
-        })?;
-
-    Ok(beankeeper::types::Account::new(
-        code,
-        &row.name,
-        account_type,
-    ))
+    Ok(Account::new(code, &row.name, row.account_type))
 }
 
 /// Fields used to create an account.
@@ -110,7 +99,7 @@ pub fn create_account(
             &serde_json::json!({
                 "code": row.code,
                 "name": row.name,
-                "type": row.account_type,
+                "type": row.account_type.code(),
                 "company_slug": row.company_slug,
                 "default_tax_category": row.default_tax_category,
                 "created_at": row.created_at,
@@ -124,8 +113,8 @@ pub fn create_account(
 pub struct ListAccountParams<'a> {
     /// Company slug to scope the query.
     pub company_slug: &'a str,
-    /// Optional account type filter (lowercase).
-    pub type_filter: Option<&'a str>,
+    /// Optional exact account type filter.
+    pub type_filter: Option<AccountType>,
     /// Optional account name substring filter (case-insensitive).
     pub name_filter: Option<&'a str>,
 }
@@ -151,7 +140,7 @@ pub fn list_accounts(
 
     if let Some(filter) = params.type_filter {
         let _ = write!(sql, " AND type = ?{param_idx}");
-        param_values.push(Box::new(filter.to_lowercase()));
+        param_values.push(Box::new(filter.code()));
         param_idx += 1;
     }
 
@@ -167,16 +156,7 @@ pub fn list_accounts(
         param_values.iter().map(AsRef::as_ref).collect();
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_refs.as_slice(), |row| {
-        Ok(AccountRow {
-            company_slug: row.get(0)?,
-            code: row.get(1)?,
-            name: row.get(2)?,
-            account_type: row.get(3)?,
-            created_at: row.get(4)?,
-            default_tax_category: row.get(5)?,
-        })
-    })?;
+    let rows = stmt.query_map(params_refs.as_slice(), decode_account)?;
 
     let mut accounts = Vec::new();
     for row in rows {
@@ -201,16 +181,7 @@ pub fn get_account(
          WHERE company_slug = ?1 AND code = ?2",
     )?;
 
-    let mut rows = stmt.query_map(params![company_slug, code], |row| {
-        Ok(AccountRow {
-            company_slug: row.get(0)?,
-            code: row.get(1)?,
-            name: row.get(2)?,
-            account_type: row.get(3)?,
-            created_at: row.get(4)?,
-            default_tax_category: row.get(5)?,
-        })
-    })?;
+    let mut rows = stmt.query_map(params![company_slug, code], decode_account)?;
 
     match rows.next() {
         Some(row) => Ok(row?),
@@ -218,6 +189,20 @@ pub fn get_account(
             "account '{code}' not found in company '{company_slug}'"
         ))),
     }
+}
+
+fn decode_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
+    let account_type = row.get_ref(3)?.as_str()?.parse().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(error))
+    })?;
+    Ok(AccountRow {
+        company_slug: row.get(0)?,
+        code: row.get(1)?,
+        name: row.get(2)?,
+        account_type,
+        created_at: row.get(4)?,
+        default_tax_category: row.get(5)?,
+    })
 }
 
 /// Returns `true` if an account with the given code exists for the company.
@@ -288,7 +273,7 @@ mod tests {
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.code, "1000");
-        assert_eq!(row.account_type, "asset");
+        assert_eq!(row.account_type, AccountType::Asset);
 
         let fetched = get_account(db.conn(), "acme", "1000");
         assert!(fetched.is_ok());
@@ -310,7 +295,7 @@ mod tests {
         );
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
-        assert_eq!(row.account_type, "asset");
+        assert_eq!(row.account_type, AccountType::Asset);
     }
 
     #[test]
@@ -451,7 +436,7 @@ mod tests {
         );
         let params = ListAccountParams {
             company_slug: "acme",
-            type_filter: Some("asset"),
+            type_filter: Some(AccountType::Asset),
             name_filter: None,
         };
         let list = list_accounts(db.conn(), &params).unwrap_or_default();
@@ -552,7 +537,7 @@ mod tests {
             company_slug: "acme".to_string(),
             code: "1000".to_string(),
             name: "Cash".to_string(),
-            account_type: "asset".to_string(),
+            account_type: AccountType::Asset,
             created_at: "2024-01-01 00:00:00".to_string(),
             default_tax_category: None,
         };
@@ -623,7 +608,7 @@ mod tests {
 
         let params2 = ListAccountParams {
             company_slug: "acme",
-            type_filter: Some("asset"),
+            type_filter: Some(AccountType::Asset),
             name_filter: Some("Petty"),
         };
         let list2 = list_accounts(db.conn(), &params2).unwrap_or_default();

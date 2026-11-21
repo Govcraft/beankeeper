@@ -97,7 +97,7 @@ fn export_json(db: &Db) -> Result<String, CliError> {
                 serde_json::json!({
                     "code": a.code,
                     "name": a.name,
-                    "type": a.account_type,
+                    "type": a.account_type.code(),
                 })
             })
             .collect();
@@ -157,7 +157,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
     for a in &all_accounts {
         acct_wtr
-            .write_record([&a.company_slug, &a.code, &a.name, &a.account_type])
+            .write_record([&a.company_slug, &a.code, &a.name, a.account_type.code()])
             .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
     }
     let acct_bytes = acct_wtr

@@ -2093,7 +2093,7 @@ pub fn delete_account(
                     Some(&snapshot(&serde_json::json!({
                         "code": row.code,
                         "name": row.name,
-                        "type": row.account_type,
+                        "type": row.account_type.code(),
                         "created_at": row.created_at,
                         "default_tax_category": row.default_tax_category,
                     }))),

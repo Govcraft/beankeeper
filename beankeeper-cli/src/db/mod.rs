@@ -78,7 +78,7 @@ pub struct AccountRow {
     pub company_slug: String,
     pub code: String,
     pub name: String,
-    pub account_type: String,
+    pub account_type: beankeeper::types::AccountType,
     pub created_at: String,
     pub default_tax_category: Option<String>,
 }
@@ -246,7 +246,7 @@ pub fn list_accounts_with_balances(
             currency.code(),
             window.from.map(|date| date.to_string()),
             window.to.map(|date| date.to_string()),
-            filter.type_filter,
+            filter.type_filter.map(beankeeper::types::AccountType::code),
             filter.name_filter,
         ],
         |row| {

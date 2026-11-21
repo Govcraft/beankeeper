@@ -133,10 +133,10 @@ pub enum AgingKind {
 impl AgingKind {
     /// Map a lowercase account type to an aging kind.
     #[must_use]
-    pub fn from_account_type(account_type: &str) -> Option<Self> {
+    pub fn from_account_type(account_type: beankeeper::types::AccountType) -> Option<Self> {
         match account_type {
-            "asset" => Some(Self::Receivable),
-            "liability" => Some(Self::Payable),
+            beankeeper::types::AccountType::Asset => Some(Self::Receivable),
+            beankeeper::types::AccountType::Liability => Some(Self::Payable),
             _ => None,
         }
     }
@@ -1108,11 +1108,12 @@ pub fn select_accounts(
 pub fn common_kind(accounts: &[db::AccountRow]) -> Result<AgingKind, CliError> {
     let mut kinds: Vec<(AgingKind, &str)> = Vec::with_capacity(accounts.len());
     for a in accounts {
-        let kind = AgingKind::from_account_type(&a.account_type).ok_or_else(|| {
+        let kind = AgingKind::from_account_type(a.account_type).ok_or_else(|| {
             CliError::Validation(format!(
                 "account {} is a {} account; aging supports only asset (receivable) \
                  and liability (payable) accounts",
-                a.code, a.account_type
+                a.code,
+                a.account_type.code()
             ))
         })?;
         kinds.push((kind, &a.code));
@@ -2390,7 +2391,7 @@ fn account_json<'a>(
     AccountAgingJson {
         code,
         name: &a.account.name,
-        r#type: &a.account.account_type,
+        r#type: a.account.account_type.code(),
         groups: r
             .groups
             .iter()
@@ -3251,7 +3252,10 @@ mod tests {
     fn charge_amount_by_kind() {
         assert_eq!(AgingKind::Receivable.charge_amount(500, 200), 300);
         assert_eq!(AgingKind::Payable.charge_amount(500, 200), -300);
-        assert_eq!(AgingKind::from_account_type("revenue"), None);
+        assert_eq!(
+            AgingKind::from_account_type(beankeeper::types::AccountType::Revenue),
+            None
+        );
     }
 
     #[test]
@@ -3302,7 +3306,7 @@ mod tests {
             company_slug: "c".to_string(),
             code: code.to_string(),
             name: format!("Account {code}"),
-            account_type: ty.to_string(),
+            account_type: ty.parse().unwrap_or_else(|error| panic!("{error}")),
             created_at: String::new(),
             default_tax_category: None,
         }
