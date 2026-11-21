@@ -8,6 +8,7 @@ use super::audit::{self, Actor};
 use super::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
 use crate::capability::Capability;
 use crate::error::CliError;
+use crate::identity::{Approve, Granted};
 
 /// A typed, time-sortable identifier for a pending posting request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,8 +296,8 @@ impl<'a> PendingProposal<'a> {
         Ok(Self { conn, before })
     }
 
-    fn approve(self, grant: &ApprovalGrant<'_>) -> Result<(Proposal, Proposal), CliError> {
-        let actor = grant.actor;
+    fn approve(self, grant: &Granted<'_, Approve>) -> Result<(Proposal, Proposal), CliError> {
+        let actor = grant.actor();
         let mut payload = self.before.payload.clone();
         validate_posting(self.conn, &payload.params(&self.before.company_slug, actor))?;
         let (existing, proposal_id) = (payload.metadata.as_deref(), self.before.id.as_str());
@@ -357,18 +358,6 @@ impl<'a> PendingProposal<'a> {
     }
 }
 
-/// Authorization checked before any proposal details are loaded.
-struct ApprovalGrant<'a> {
-    actor: &'a Actor,
-}
-
-impl<'a> ApprovalGrant<'a> {
-    fn authorize(conn: &Connection, actor: &'a Actor) -> Result<Self, CliError> {
-        audit::require_capability(conn, actor, Capability::Approve)?;
-        Ok(Self { actor })
-    }
-}
-
 pub(super) fn approve(
     conn: &Connection,
     actor: &Actor,
@@ -376,8 +365,9 @@ pub(super) fn approve(
     id: &str,
 ) -> Result<Proposal, CliError> {
     audit::atomically(conn, || {
-        let grant = ApprovalGrant::authorize(conn, actor)?;
-        let (before, after) = PendingProposal::load(conn, company, id)?.approve(&grant)?;
+        let grant = Granted::<Approve>::check(conn, actor)?;
+        let (before, after) =
+            PendingProposal::load(grant.connection(), company, id)?.approve(&grant)?;
         audit::record_proposal_resolution(ProposalTransition {
             conn,
             actor,
