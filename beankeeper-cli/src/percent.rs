@@ -26,16 +26,26 @@ impl Percent {
     /// Decimal text rounded half away from zero, without a negative zero.
     #[must_use]
     pub fn to_fixed(self, decimals: u8) -> String {
+        self.format(decimals, false)
+    }
+
+    /// Decimal text rounded to nearest, with exact ties going to the even digit.
+    #[must_use]
+    pub fn to_fixed_half_even(self, decimals: u8) -> String {
+        self.format(decimals, true)
+    }
+
+    fn format(self, decimals: u8, ties_even: bool) -> String {
         if let Some(scale) = 10i128.checked_pow(u32::from(decimals))
             && let Some(scaled) = self.numerator.checked_mul(scale)
         {
             return format_scaled(
-                round_half_away(scaled, i128::from(self.denominator.get())),
+                round_scaled(scaled, self.denominator, ties_even),
                 scale,
                 decimals,
             );
         }
-        self.to_fixed_wide(decimals)
+        self.to_fixed_wide(decimals, ties_even)
     }
 
     /// Round to two decimals and convert to the nearest JSON number.
@@ -53,7 +63,7 @@ impl Percent {
 
     // Long division preserves high requested precision without a large scale
     // multiplication. The carry operates on decimal digits only.
-    fn to_fixed_wide(self, decimals: u8) -> String {
+    fn to_fixed_wide(self, decimals: u8, ties_even: bool) -> String {
         use std::fmt::Write;
         let denominator = u128::from(self.denominator.get());
         let numerator = self.numerator.unsigned_abs();
@@ -65,7 +75,8 @@ impl Percent {
             digits.push(remainder / denominator);
             remainder %= denominator;
         }
-        if remainder * 2 >= denominator {
+        let last = digits.last().copied().unwrap_or(whole);
+        if round_up(remainder, denominator, !ties_even || last % 2 != 0) {
             let mut carry = 1;
             for digit in digits.iter_mut().rev() {
                 let next = *digit + carry;
@@ -108,10 +119,20 @@ pub fn change_percent(current: i64, prior: i64) -> Option<Percent> {
     Percent::from_ratio(i128::from(current) - i128::from(prior), prior)
 }
 
-/// `n / d` rounded half away from zero (`d > 0`).
-fn round_half_away(n: i128, d: i128) -> i128 {
+fn round_scaled(n: i128, denominator: NonZeroU64, ties_even: bool) -> i128 {
+    let d = i128::from(denominator.get());
     let (q, r) = (n / d, n % d);
-    if 2 * r.abs() >= d { q + n.signum() } else { q }
+    let up_on_tie = !ties_even || q % 2 != 0;
+    if round_up(r.unsigned_abs(), u128::from(denominator.get()), up_on_tie) {
+        q + n.signum()
+    } else {
+        q
+    }
+}
+
+fn round_up(remainder: u128, denominator: u128, up_on_tie: bool) -> bool {
+    let twice = remainder * 2;
+    twice > denominator || (twice == denominator && up_on_tie)
 }
 
 #[cfg(test)]

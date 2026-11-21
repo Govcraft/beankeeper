@@ -5,7 +5,7 @@ mod model;
 
 use std::io::Write;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, Money};
 use chrono::{Datelike, Days, NaiveDate};
 use clap::Args;
 use serde::Serialize;
@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use crate::cli::{Cli, OutputFormat, resolve_format};
 use crate::db::{self, BalanceRow, connection::Db};
 use crate::error::CliError;
+use crate::output::amounts::MoneyField;
 use crate::output::chart::{self, WithChart};
 use crate::output::json::Envelope;
 
@@ -123,6 +124,10 @@ impl SummaryArgs {
     }
 }
 
+fn money(minor_units: i64, currency: Currency) -> Money {
+    Money::from_minor(i128::from(minor_units), currency)
+}
+
 fn date_error() -> CliError {
     CliError::Validation("summary dates are outside the supported range".into())
 }
@@ -199,43 +204,79 @@ pub fn execute_json(
     company: &str,
     args: &SummaryArgs,
 ) -> Result<Value, CliError> {
+    let report = read_summary(cli, db, company, args)?;
+    envelope(cli, company, &report)
+}
+
+fn read_summary(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    args: &SummaryArgs,
+) -> Result<SummaryReport, CliError> {
     chart::validate_request(cli)?;
-    db::audit::atomically(db.conn(), || {
-        let report = compute(db, company, args)?;
-        let meta = cli
-            .meta("summary", Some(company))
-            .with_currency(report.currency);
-        let chart = chart::requested(cli, || {
-            chart::summary(
-                company,
-                report.currency,
-                &report.periods,
-                &report.comparison,
-                cli.output.chart_all,
-            )
-        })?;
-        serde_json::to_value(Envelope {
-            ok: true,
-            meta,
-            data: Some(WithChart {
-                report: report.json(),
-                chart,
-            }),
-            error: None,
-        })
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+    db::audit::atomically(db.conn(), || compute(db, company, args))
+}
+
+fn envelope(cli: &Cli, company: &str, report: &SummaryReport) -> Result<Value, CliError> {
+    let meta = cli
+        .meta("summary", Some(company))
+        .with_currency(report.currency);
+    let chart = chart::requested(cli, || {
+        chart::summary(
+            company,
+            report.currency,
+            &report.periods,
+            &report.comparison,
+            cli.output.chart_all,
+        )
+    })?;
+    serde_json::to_value(Envelope {
+        ok: true,
+        meta,
+        data: Some(WithChart {
+            report: report.json(),
+            chart,
+        }),
+        error: None,
     })
+    .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
 struct SummaryReport {
     currency: Currency,
     periods: Periods,
-    standing: Value,
+    standing: Standing,
     comparison: Vec<Comparison>,
     movers: Vec<Comparison>,
-    attention: Value,
+    attention: attention::Attention,
     highlights: Vec<String>,
     view: Value,
+}
+
+#[derive(Serialize)]
+struct Standing {
+    as_of: NaiveDate,
+    #[serde(flatten)]
+    cash_on_hand: MoneyField,
+    #[serde(flatten)]
+    owed_to_you: MoneyField,
+    #[serde(flatten)]
+    you_owe: MoneyField,
+    #[serde(flatten)]
+    net_worth: MoneyField,
+    cash_accounts: Vec<String>,
+    receivable_accounts: Vec<String>,
+    payable_accounts: Vec<String>,
+    cash_accounts_identified: bool,
+    receivable_accounts_identified: bool,
+}
+
+#[derive(Serialize)]
+struct StandingSection<'a> {
+    #[serde(flatten)]
+    standing: &'a Standing,
+    desktop_view: &'a Value,
 }
 
 #[derive(Serialize)]
@@ -246,7 +287,7 @@ struct SeriesSection<'a> {
 
 #[derive(Serialize)]
 struct AttentionSection<'a> {
-    items: &'a Value,
+    items: &'a attention::Attention,
     desktop_view: &'a Value,
 }
 
@@ -255,7 +296,7 @@ struct SummaryJson<'a> {
     currency: &'a str,
     minor_units: u8,
     periods: &'a Periods,
-    standing: &'a Value,
+    standing: StandingSection<'a>,
     comparison: SeriesSection<'a>,
     biggest_movers: SeriesSection<'a>,
     needs_attention: AttentionSection<'a>,
@@ -270,7 +311,10 @@ impl SummaryReport {
             currency: self.currency.code(),
             minor_units: self.currency.minor_units(),
             periods: &self.periods,
-            standing: &self.standing,
+            standing: StandingSection {
+                standing: &self.standing,
+                desktop_view: &self.view,
+            },
             comparison: SeriesSection {
                 series: &self.comparison,
                 desktop_view: &self.view,
@@ -331,12 +375,12 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
     };
     let current = activity(periods.current)?;
     let prior = activity(periods.prior)?;
-    let comparison = model::comparison(&current, &prior)?;
-    let movers = model::movers(&current, &prior)?;
+    let comparison = model::comparison(&current, &prior, currency)?;
+    let movers = model::movers(&current, &prior, currency)?;
     let attention = attention::compute(&attention::AttentionContext {
         conn: db.conn(),
         company,
-        currency: currency.code(),
+        currency,
         as_of: periods.current.to,
         cash: &cash,
         receivables: &receivables,
@@ -352,17 +396,24 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
             payable: &payables,
         },
     );
-    let standing = json!({
-        "as_of":periods.current.to,
-        "cash_on_hand":sum(rows.iter().filter(|row| cash.contains(&row.code)))?,
-        "owed_to_you":sum(rows.iter().filter(|row| receivables.contains(&row.code)))?,
-        "you_owe":sum(rows.iter().filter(|row| row.account_type == "liability"))?,
-        "net_worth":sub(sum(rows.iter().filter(|row| row.account_type == "asset"))?, sum(rows.iter().filter(|row| row.account_type == "liability"))?)?,
-        "cash_accounts":cash, "receivable_accounts":receivables, "payable_accounts":payables,
-        "cash_accounts_identified":!cash.is_empty(), "receivable_accounts_identified":!receivables.is_empty(),
-        "desktop_view":view,
-    });
-    let highlights = model::highlights(&standing, &comparison, &movers, currency);
+    let cash_on_hand = sum(rows.iter().filter(|row| cash.contains(&row.code)))?;
+    let owed_to_you = sum(rows.iter().filter(|row| receivables.contains(&row.code)))?;
+    let you_owe = sum(rows.iter().filter(|row| row.account_type == "liability"))?;
+    let assets = sum(rows.iter().filter(|row| row.account_type == "asset"))?;
+    let field = |name, value| MoneyField::new(name, money(value, currency));
+    let standing = Standing {
+        as_of: periods.current.to,
+        cash_on_hand: field("cash_on_hand", cash_on_hand),
+        owed_to_you: field("owed_to_you", owed_to_you),
+        you_owe: field("you_owe", you_owe),
+        net_worth: field("net_worth", sub(assets, you_owe)?),
+        cash_accounts_identified: !cash.is_empty(),
+        receivable_accounts_identified: !receivables.is_empty(),
+        cash_accounts: cash,
+        receivable_accounts: receivables,
+        payable_accounts: payables,
+    };
+    let highlights = model::highlights(&standing, &comparison, &movers);
     Ok(SummaryReport {
         currency,
         periods,
@@ -381,12 +432,12 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
 /// Returns summary validation, database, serialization or output errors.
 pub fn run(cli: &Cli, company: &str, args: &SummaryArgs) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    let envelope = execute_json(cli, &db, company, args)?;
+    let report = read_summary(cli, &db, company, args)?;
     let rendered = match resolve_format(None, cli) {
-        OutputFormat::Json => serde_json::to_string_pretty(&envelope)
+        OutputFormat::Json => serde_json::to_string_pretty(&envelope(cli, company, &report)?)
             .map_err(|error| CliError::General(error.to_string()))?,
-        OutputFormat::Table => model::plain(&envelope["data"]),
-        OutputFormat::Csv => model::csv(&envelope["data"])?,
+        OutputFormat::Table => model::plain(&report),
+        OutputFormat::Csv => model::csv(&report)?,
     };
     writeln!(std::io::stdout().lock(), "{rendered}")?;
     Ok(())
@@ -418,6 +469,35 @@ mod tests {
         .periods(today)?;
         assert_eq!(p.prior.from.to_string(), "2024-12-01");
         assert_eq!(p.prior.to.to_string(), "2024-12-31");
+        Ok(())
+    }
+
+    #[test]
+    fn summary_projects_known_and_unknown_money_without_the_envelope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let db = Db::open_in_memory()?;
+        db::create_company(db.conn(), "co", "Company", None)?;
+        let args = SummaryArgs {
+            to: Some("2024-03-15".into()),
+            currency: Some("BHD".into()),
+            ..SummaryArgs::default()
+        };
+        let report = compute(&db, "co", &args)?;
+        let json = serde_json::to_value(report.json())?;
+        assert_eq!(json["standing"]["cash_on_hand"], 0);
+        assert_eq!(json["standing"]["cash_on_hand_display"], "0.000");
+        let attention = &json["needs_attention"]["items"];
+        assert_eq!(attention["recurring_due"]["total_display"], "0.000");
+        assert_eq!(attention["recurring_due"]["from"], "2024-03-16");
+        assert_eq!(
+            attention["overdue_payables"].get("total"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            attention["overdue_payables"].get("total_display"),
+            Some(&Value::Null)
+        );
+        assert!(attention["overdue_payables"].get("id").is_none());
         Ok(())
     }
 
