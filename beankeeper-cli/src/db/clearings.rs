@@ -52,6 +52,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use super::audit::EntryStatus;
+use super::companies::Company;
 use crate::error::CliError;
 
 /// Status of a single clearing row.
@@ -428,17 +429,24 @@ pub fn plan_unclear(existing: &[Clearing], statement: Option<&str>) -> Vec<i64> 
 // Read-only queries
 // ---------------------------------------------------------------------------
 
-/// Lists an entry's clearings, oldest first.
+/// Lists an entry's clearings within this company, oldest first.
 ///
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn list_clearings(conn: &Connection, entry_id: i64) -> Result<Vec<Clearing>, CliError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, entry_id, amount, cleared_date, statement_ref, status, reconciled_date \
-         FROM entry_clearings WHERE entry_id = ?1",
+pub fn list_clearings(company: &Company<'_>, entry_id: i64) -> Result<Vec<Clearing>, CliError> {
+    let mut stmt = company.conn().prepare_cached(
+        "SELECT c.id, c.entry_id, c.amount, c.cleared_date, c.statement_ref, c.status, \
+         c.reconciled_date \
+         FROM entries e \
+         JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+         JOIN entry_clearings c ON c.entry_id = e.id \
+         WHERE e.id = ?1 AND e.company_slug = ?2",
     )?;
-    let rows = stmt.query_map(params![entry_id], clearing_from_row)?;
+    let rows = stmt.query_map(
+        params![entry_id, company.slug().as_str()],
+        clearing_from_row,
+    )?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row?);
@@ -498,7 +506,7 @@ pub struct EntryTarget {
 
 const TARGET_SELECT: &str = "SELECT t.id, e.id, e.account_code, e.amount, t.currency, \
      t.reference, t.date \
-     FROM entries e JOIN transactions t ON t.id = e.transaction_id";
+     FROM entries e JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug";
 
 fn map_target(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryTarget> {
     Ok(EntryTarget {

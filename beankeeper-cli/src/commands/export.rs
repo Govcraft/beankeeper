@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::cli::{Cli, ExportFormat};
 use crate::db;
+use crate::db::companies::Company;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output;
@@ -60,13 +61,14 @@ fn export_json(db: &Db) -> Result<String, CliError> {
                 name_filter: None,
             },
         )?;
-        let mut txn_params = db::ListTransactionParams::for_company(&company.slug);
+        let scope = Company::resolve(db.conn(), &company.slug)?;
+        let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
         txn_params.limit = i64::MAX;
         let transactions = db::list_transactions(db.conn(), &txn_params)?;
 
         let mut txn_exports = Vec::new();
         for txn in &transactions {
-            let entries = db::get_entries_for_transaction(db.conn(), txn.id)?;
+            let entries = db::get_entries_for_transaction(&scope, txn.id)?;
             let entry_jsons: Vec<serde_json::Value> = entries
                 .iter()
                 .map(|e| {
@@ -182,11 +184,12 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
 
     for company in &companies {
-        let mut txn_params = db::ListTransactionParams::for_company(&company.slug);
+        let scope = Company::resolve(db.conn(), &company.slug)?;
+        let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
         txn_params.limit = i64::MAX;
         let transactions = db::list_transactions(db.conn(), &txn_params)?;
         for txn in &transactions {
-            let entries = db::get_entries_for_transaction(db.conn(), txn.id)?;
+            let entries = db::get_entries_for_transaction(&scope, txn.id)?;
             for entry in &entries {
                 let txn_id_str = txn.id.to_string();
                 let meta = txn.metadata.as_deref().unwrap_or("");

@@ -403,7 +403,8 @@ mod tests {
     fn unreconciled_includes_cleared_items_until_reconciliation_date() -> TestResult {
         let db = setup()?;
         let id = post(&db, "2024-01-01", ("1000", "4000"), 10000, None, None)?;
-        let entry_id = db::get_entries_for_transaction(db.conn(), id)?
+        let company = db::companies::Company::resolve(db.conn(), "co")?;
+        let entry_id = db::get_entries_for_transaction(&company, id)?
             .into_iter()
             .find(|entry| entry.account_code == "1000")
             .ok_or("missing cash entry")?

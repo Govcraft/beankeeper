@@ -1130,13 +1130,16 @@ fn explain(
         },
     )?;
     let cash_codes = report.cash_accounts.as_deref().unwrap_or_default();
+    let cash_scope = (!cash_codes.is_empty())
+        .then(|| db::companies::Company::resolve(db.conn(), company))
+        .transpose()?;
     let zero = ReportMoney::from_minor(0, currency);
     let mut transactions = Vec::new();
     for row in rows {
         let row = row?;
         let mut amount = ReportMoney::from_minor(row.amount, currency);
-        if !cash_codes.is_empty() {
-            let entries = db::transactions::get_entries_for_transaction(db.conn(), row.id)?;
+        if let Some(scope) = &cash_scope {
+            let entries = db::transactions::get_entries_for_transaction(scope, row.id)?;
             let mut cash = zero;
             for entry in entries
                 .iter()

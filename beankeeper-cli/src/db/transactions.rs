@@ -4,6 +4,7 @@ use beankeeper::types::{Currency, Money};
 use rusqlite::{Connection, params};
 
 use super::audit::{self, Actor};
+use super::companies::{AllCompanies, Company};
 use super::metadata;
 use super::metadata_filter;
 use super::{EntryRow, TransactionRow};
@@ -540,19 +541,25 @@ pub fn count_transactions(
     Ok(count)
 }
 
-/// Fetches a single transaction and all its entries.
-///
-/// Returns `CliError::NotFound` if the transaction does not exist.
+/// Fetches a transaction and its entries in the given company.
 ///
 /// # Errors
-///
-/// Returns `CliError::NotFound` if the transaction does not exist.
+/// Returns `CliError::NotFound` if the company or transaction does not exist.
 pub fn get_transaction(
     conn: &Connection,
     company_slug: &str,
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
-    let mut stmt = conn.prepare(
+    let company = Company::resolve(conn, company_slug)?;
+    get_scoped_transaction(&company, id)
+}
+
+pub(crate) fn get_scoped_transaction(
+    company: &Company<'_>,
+    id: i64,
+) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
+    let company_slug = company.slug().as_str();
+    let mut stmt = company.conn().prepare(
         "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti \
          FROM transactions \
          WHERE company_slug = ?1 AND id = ?2",
@@ -583,29 +590,30 @@ pub fn get_transaction(
         }
     };
 
-    let entries = get_entries_for_transaction(conn, id)?;
+    let entries = get_entries_for_transaction(company, id)?;
 
     Ok((txn, entries))
 }
 
-/// Fetches all entries for a given transaction ID.
+/// Fetches the entries for a transaction in this company.
 ///
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn get_entries_for_transaction(
-    conn: &Connection,
+    company: &Company<'_>,
     txn_id: i64,
 ) -> Result<Vec<EntryRow>, CliError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, transaction_id, account_code, company_slug, direction, amount, memo, \
-         tax_category, status \
-         FROM entries \
-         WHERE transaction_id = ?1 \
-         ORDER BY id",
+    let mut stmt = company.conn().prepare_cached(
+        "SELECT e.id, e.transaction_id, e.account_code, e.company_slug, e.direction, \
+         e.amount, e.memo, e.tax_category, e.status \
+         FROM transactions t \
+         JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug \
+         WHERE t.id = ?1 AND t.company_slug = ?2 \
+         ORDER BY e.id",
     )?;
 
-    let rows = stmt.query_map(params![txn_id], |row| {
+    let rows = stmt.query_map(params![txn_id, company.slug().as_str()], |row| {
         Ok(EntryRow {
             id: row.get(0)?,
             transaction_id: row.get(1)?,
@@ -634,7 +642,10 @@ pub fn get_entries_for_transaction(
 /// # Errors
 ///
 /// Returns [`CliError`] on database query failure.
-pub fn find_orphaned_correlations(conn: &Connection) -> Result<Vec<OrphanedCorrelation>, CliError> {
+pub fn find_orphaned_correlations(
+    conn: &Connection,
+    _scope: AllCompanies,
+) -> Result<Vec<OrphanedCorrelation>, CliError> {
     // NULL or non-JSON metadata means "no correlate" (issue #17); the guarded
     // expression is shared with the Rust-side rule in `metadata::has_correlate`.
     let own = metadata::sql_correlate("t.metadata");
@@ -869,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn get_entries_for_transaction_returns_entries() {
+    fn get_entries_for_transaction_respects_company_scope() {
         let db = setup();
         let entries = sample_entries();
         let p = make_params(&entries, "Test", None, "2024-01-15");
@@ -878,10 +889,29 @@ mod tests {
             panic!("expected Created");
         };
 
-        let entry_rows = get_entries_for_transaction(db.conn(), id).unwrap_or_default();
+        create_company(db.conn(), "other", "Other", None).expect("create company");
+        create_account(db.conn(), "other", "1000", "Other cash", "asset", None)
+            .expect("create account");
+        db.conn()
+            .execute(
+                "INSERT INTO entries (transaction_id, account_code, company_slug, direction, amount)
+                 VALUES (?1, '1000', 'other', 'debit', 100)",
+                params![id],
+            )
+            .expect("seed a mismatched transaction and entry company");
+
+        let company = Company::resolve(db.conn(), "acme").expect("bind transaction company");
+        let entry_rows = get_entries_for_transaction(&company, id).expect("read entries");
         assert_eq!(entry_rows.len(), 2);
         assert_eq!(entry_rows[0].direction, "debit");
         assert_eq!(entry_rows[1].direction, "credit");
+
+        let other = Company::resolve(db.conn(), "other").expect("bind other company");
+        assert!(
+            get_entries_for_transaction(&other, id)
+                .expect("read entries for other company")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1188,8 +1218,8 @@ mod tests {
                 )
                 .unwrap_or_else(|e| panic!("insert failed: {e}"));
         }
-        let orphans =
-            find_orphaned_correlations(db.conn()).unwrap_or_else(|e| panic!("reconcile: {e}"));
+        let orphans = find_orphaned_correlations(db.conn(), AllCompanies)
+            .unwrap_or_else(|e| panic!("reconcile: {e}"));
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].partner_id, 42);
     }

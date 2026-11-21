@@ -9,6 +9,7 @@ use crate::cli::{
     Cli, OutputFormat, PostingArgs, TxnAttachArgs, TxnCommand, TxnImportArgs, TxnListArgs,
     TxnProposalCommand, TxnReverseArgs, resolve_format,
 };
+use crate::db::companies::{AllCompanies, Company};
 use crate::db::connection::Db;
 use crate::db::transactions::TransactionValueFilter;
 use crate::db::{self, accounts, attachments, transactions};
@@ -85,8 +86,9 @@ pub fn run(
         TxnCommand::Clear(args) => super::txn_clear::run(cli, &db_handle, company, args, meta),
         TxnCommand::Import(args) => run_import(cli, &db_handle, company, args),
         TxnCommand::Attach(args) => run_attach(cli, &db_handle, company, args),
-        TxnCommand::Reconcile => run_reconcile(
+        TxnCommand::Reconcile => render_reconcile(
             &db_handle,
+            AllCompanies,
             format,
             use_color,
             &mut std::io::stdout(),
@@ -257,7 +259,7 @@ pub fn execute_json_with_pagination(
 }
 
 pub(crate) fn execute_reconcile_json(db_handle: &Db) -> Result<serde_json::Value, CliError> {
-    let orphans = transactions::find_orphaned_correlations(db_handle.conn())?;
+    let orphans = transactions::find_orphaned_correlations(db_handle.conn(), AllCompanies)?;
     if orphans.is_empty() {
         Ok(serde_json::Value::Array(Vec::new()))
     } else {
@@ -912,9 +914,10 @@ fn run_list(
         }
         OutputFormat::Json => {
             // For JSON, include entries for each transaction
+            let company = Company::resolve(db_handle.conn(), params.company_slug)?;
             let mut entries_map: HashMap<i64, Vec<db::EntryRow>> = HashMap::new();
             for txn in &rows {
-                let entries = transactions::get_entries_for_transaction(db_handle.conn(), txn.id)?;
+                let entries = transactions::get_entries_for_transaction(&company, txn.id)?;
                 entries_map.insert(txn.id, entries);
             }
             let meta = cli
@@ -993,11 +996,12 @@ fn run_show(
     meta: output::json::Meta,
 ) -> Result<(), CliError> {
     let (format, use_color) = display;
-    let (txn, entries) = transactions::get_transaction(db_handle.conn(), company, id)?;
+    let company_scope = Company::resolve(db_handle.conn(), company)?;
+    let (txn, entries) = transactions::get_scoped_transaction(&company_scope, id)?;
     let att_rows = attachments::list_attachments(db_handle.conn(), company, id)?;
     let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
     for e in &entries {
-        clearings.insert(e.id, db::clearings::list_clearings(db_handle.conn(), e.id)?);
+        clearings.insert(e.id, db::clearings::list_clearings(&company_scope, e.id)?);
     }
 
     // Determine currency minor units for formatting
@@ -1120,14 +1124,27 @@ fn run_attach(
 
     Ok(())
 }
-fn run_reconcile(
+pub(super) fn run_reconcile_all(cli: &Cli, scope: AllCompanies) -> Result<(), CliError> {
+    let db_handle = cli.open_db()?;
+    render_reconcile(
+        &db_handle,
+        scope,
+        resolve_format(None, cli),
+        output::should_use_color(cli.verbosity.no_color),
+        &mut std::io::stdout(),
+        cli.meta("txn.reconcile", None),
+    )
+}
+
+fn render_reconcile(
     db_handle: &Db,
+    scope: AllCompanies,
     format: OutputFormat,
     use_color: bool,
     out: &mut dyn Write,
     meta: output::json::Meta,
 ) -> Result<(), CliError> {
-    let orphans = transactions::find_orphaned_correlations(db_handle.conn())?;
+    let orphans = transactions::find_orphaned_correlations(db_handle.conn(), scope)?;
 
     if orphans.is_empty() {
         match format {
