@@ -749,6 +749,37 @@ for another metadata key. Filters and grouping select original charge metadata.
 The account-wide explanations include all statements through `--to`; the
 comparison uses only this statement's charge clearings. Bank mode is the default.
 
+### Draw a chart in the conversation
+
+Request `--json --chart` on a supported summary/report, or pass `chart: true` to
+MCP `financial_summary` / `report`. Use `data.chart` from CLI and summary MCP
+responses, or `chart` from MCP report results. Answer in plain words first;
+draw the chart from the returned decimal strings when useful. Offer Desktop
+as an optional detail view using `chart.desktop_view` with `ui_get_link`.
+
+Supported outputs: summary comparisons, spending trends and categories
+(`report income-statement`), net-worth history (`report trend --metric net-worth`),
+cash flow, and period/comparison income statements and trial balances.
+`--chart-all` / `chart_all: true` requires a chart request and returns all
+categories/series; the default is eight plus a signed Other aggregate.
+
+Version 1 contains `schema_version: 1`, `kind` (`line` or `bar`), `title`, ordered
+`x` labels, `x_accounts`, and named `series` with `values`, `unit: "major"`,
+`currency`, and optional `account`. Every values array aligns with x. Values
+are exact signed decimal strings at the currency's scale, including zeros and
+refunds. Preserve account codes when display labels repeat. `truncated` and
+`omitted_count` describe Other; the full source report remains available.
+
+Worked example: request
+`{"company":"acme","kind":"trend","metric":"spending","from":"2026-01-01","to":"2026-02-28","chart":true}`.
+For a chart with `x: ["2026-01","2026-02"]` and
+`series: [{"name":"Dining","account":"5000","values":["120.50","-15.00"],"unit":"major","currency":"USD"}]`,
+draw a line labeled Dining with those two USD values. Explain that February's
+refunds exceeded expenses by USD 15.00. Do not sum Total Spending together with
+its categories or sum net-worth snapshots across dates. Do not replace an
+account code with its label or put that label in Desktop's tax-tag `category`.
+See the [full schema and link example](../chart-data.md).
+
 ### Historical trends
 
 ```bash

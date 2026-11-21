@@ -31,11 +31,13 @@ use beankeeper::types::Currency;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+use super::report_dates::DateRange;
 use crate::cli::{Cli, OutputFormat};
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
-use crate::output;
+use crate::output::chart;
+use chrono::NaiveDate;
 
 /// Substrings (lowercase) that mark an asset account as cash by default.
 pub const DEFAULT_CASH_NAME_KEYWORDS: &[&str] = &["cash", "bank", "checking", "savings"];
@@ -152,11 +154,12 @@ pub struct CashFlowSection {
 #[derive(Debug, Clone, Serialize)]
 pub struct CashFlowStatement {
     /// Start date (inclusive).
-    pub from: String,
+    pub from: NaiveDate,
     /// End date (inclusive).
-    pub to: String,
+    pub to: NaiveDate,
     /// Report currency code.
-    pub currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    pub currency: Currency,
     /// Cash accounts used.
     pub cash_accounts: Vec<CashAccount>,
     /// Operating activities.
@@ -203,11 +206,7 @@ pub fn run(
     use_color: bool,
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput {
-        format,
-        use_color,
-        writer: &mut stdout,
-    };
+    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
     run_to(cli, db, company, args, &mut output)
 }
 
@@ -218,33 +217,8 @@ pub(crate) fn run_to(
     args: &CashFlowArgs,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let conn = db.conn();
-    if !db::company_exists(conn, company)? {
-        return Err(CliError::NotFound(format!("company '{company}' not found")));
-    }
-
-    let window = super::report_dates::DateWindow::resolve(
-        args.from.as_deref(),
-        args.to.as_deref(),
-        true,
-        chrono::Local::now().date_naive(),
-    )?;
-    let from = window
-        .from
-        .ok_or_else(|| CliError::General("missing report start date".to_string()))?;
-    let to = window.to;
-
-    let currency = resolve_currency(conn, company, args.currency.as_deref())?;
-    let cash_accounts = resolve_cash_accounts(conn, company, &args.cash_account)?;
-    let statement = compute_cash_flow(
-        conn,
-        company,
-        &from.to_string(),
-        &to.to_string(),
-        currency,
-        cash_accounts,
-    )?;
-    let minor_units = currency.minor_units();
+    let statement = compute(db, company, args)?;
+    let minor_units = statement.currency.minor_units();
 
     match output.format {
         OutputFormat::Table => writeln!(
@@ -254,15 +228,10 @@ pub(crate) fn run_to(
         )?,
         OutputFormat::Json => {
             let meta = cli.meta("report.cash-flow", Some(company));
-            let env = output::json::Envelope {
-                ok: true,
-                meta,
-                data: Some(&statement),
-                error: None,
-            };
-            let rendered = serde_json::to_string_pretty(&env)
-                .map_err(|e| CliError::General(format!("JSON serialisation failed: {e}")))?;
-            writeln!(output.writer, "{rendered}")?;
+            let chart = chart::requested(cli, || {
+                chart::cash_flow(company, &statement, cli.output.chart_all)
+            })?;
+            output.write_json(meta, &statement, chart)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(&statement)?)?,
     }
@@ -281,17 +250,30 @@ pub(crate) fn run_to(
     Ok(())
 }
 
-/// Resolve the report currency via the shared report resolver
-/// ([`super::report_currency::resolve_report_currency`]).
-fn resolve_currency(
-    conn: &Connection,
-    company: &str,
-    explicit: Option<&str>,
-) -> Result<Currency, CliError> {
-    super::report_currency::resolve_report_currency(conn, company, explicit)
+fn compute(db: &Db, company: &str, args: &CashFlowArgs) -> Result<CashFlowStatement, CliError> {
+    let conn = db.conn();
+    if !db::company_exists(conn, company)? {
+        return Err(CliError::NotFound(format!("company '{company}' not found")));
+    }
+
+    let dates = DateRange::resolve(
+        args.from.as_deref(),
+        args.to.as_deref(),
+        chrono::Local::now().date_naive(),
+    )?;
+    let currency =
+        super::report_currency::resolve_report_currency(conn, company, args.currency.as_deref())?;
+    let cash_accounts = resolve_cash_accounts(conn, company, &args.cash_account)?;
+    compute_cash_flow(
+        conn,
+        company,
+        dates.from(),
+        dates.to(),
+        currency,
+        cash_accounts,
+    )
 }
 
-/// Whether an account name matches the default cash-account rule.
 fn is_default_cash_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     DEFAULT_CASH_NAME_KEYWORDS
@@ -368,11 +350,13 @@ struct EntryFact {
 pub(super) fn compute_cash_flow(
     conn: &Connection,
     company: &str,
-    from: &str,
-    to: &str,
+    from: NaiveDate,
+    to: NaiveDate,
     currency: Currency,
     cash_accounts: Vec<CashAccount>,
 ) -> Result<CashFlowStatement, CliError> {
+    let from_sql = from.to_string();
+    let to_sql = to.to_string();
     let cash_codes: BTreeSet<&str> = cash_accounts.iter().map(|a| a.code.as_str()).collect();
 
     let mut stmt = conn.prepare(
@@ -385,7 +369,7 @@ pub(super) fn compute_cash_flow(
          ORDER BY t.id, e.id",
     )?;
     let facts = stmt
-        .query_map(params![company, currency.code(), from, to], |row| {
+        .query_map(params![company, currency.code(), from_sql, to_sql], |row| {
             Ok(EntryFact {
                 txn_id: row.get(0)?,
                 code: row.get(1)?,
@@ -434,8 +418,8 @@ pub(super) fn compute_cash_flow(
         .checked_add(investing.total)
         .and_then(|amount| amount.checked_add(financing.total))
         .ok_or_else(amount_overflow)?;
-    let opening_cash = cash_balance(conn, company, currency, &cash_codes, false, from)?;
-    let closing_cash = cash_balance(conn, company, currency, &cash_codes, true, to)?;
+    let opening_cash = cash_balance(conn, company, currency, &cash_codes, false, &from_sql)?;
+    let closing_cash = cash_balance(conn, company, currency, &cash_codes, true, &to_sql)?;
     let expected = opening_cash
         .checked_add(net_change)
         .ok_or_else(amount_overflow)?;
@@ -444,9 +428,9 @@ pub(super) fn compute_cash_flow(
         .ok_or_else(amount_overflow)?;
 
     Ok(CashFlowStatement {
-        from: from.to_string(),
-        to: to.to_string(),
-        currency: currency.code().to_string(),
+        from,
+        to,
+        currency,
         cash_accounts,
         operating,
         investing,
@@ -607,7 +591,9 @@ fn render_table(s: &CashFlowStatement, minor_units: u8, use_color: bool) -> Stri
     out.push(styled(
         &format!(
             "Cash Flow Statement ({} to {}) ({})",
-            s.from, s.to, s.currency
+            s.from,
+            s.to,
+            s.currency.code()
         ),
         bold,
         use_color,

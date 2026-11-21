@@ -318,6 +318,12 @@ pub(super) struct BatchLine {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(super) struct Report {
     pub company: String,
+    /// Request versioned chart data with exact major-unit decimal strings.
+    #[serde(default)]
+    pub chart: bool,
+    /// Return every chart category/series; requires chart.
+    #[serde(default)]
+    pub chart_all: bool,
     #[serde(flatten)]
     pub options: ReportOptions,
 }
@@ -552,6 +558,12 @@ pub(super) struct PeriodReopen {
 #[serde(deny_unknown_fields)]
 pub(super) struct FinancialSummary {
     pub company: String,
+    /// Request versioned chart data with exact major-unit decimal strings.
+    #[serde(default)]
+    pub chart: bool,
+    /// Return every chart category/series; requires chart.
+    #[serde(default)]
+    pub chart_all: bool,
     #[serde(flatten)]
     pub options: crate::commands::summary::SummaryArgs,
 }

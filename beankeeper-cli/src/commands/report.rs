@@ -1,11 +1,16 @@
 use std::io::Write;
 
+use beankeeper::types::Currency;
+use serde::Serialize;
+
 use crate::cli::{AccountTypeArg, Cli, OutputFormat, ReportCommand, resolve_format};
 use crate::commands::report_currency::resolve_report_currency;
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output;
+use crate::output::chart::{self, Chart, WithChart};
+use crate::output::json::{Envelope, Meta, serialize_payload};
 
 /// Run a `bk report` subcommand.
 ///
@@ -15,18 +20,19 @@ use crate::output;
 pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
     let mut stdout = std::io::stdout().lock();
-    let mut output = ReportOutput {
-        format: resolve_format(
-            match sub {
-                ReportCommand::ScheduleC(args) => args.output_format,
-                ReportCommand::Vendor1099(args) => args.period.output_format,
-                _ => None,
-            },
-            cli,
-        ),
-        use_color: output::should_use_color(cli.verbosity.no_color),
-        writer: &mut stdout,
-    };
+    let format = resolve_format(
+        match sub {
+            ReportCommand::ScheduleC(args) => args.output_format,
+            ReportCommand::Vendor1099(args) => args.period.output_format,
+            _ => None,
+        },
+        cli,
+    );
+    let mut output = ReportOutput::new(
+        format,
+        output::should_use_color(cli.verbosity.no_color),
+        &mut stdout,
+    );
     run_to(cli, &db, company, sub, &mut output)
 }
 
@@ -35,6 +41,45 @@ pub(crate) struct ReportOutput<'a> {
     pub format: OutputFormat,
     pub use_color: bool,
     pub writer: &'a mut dyn Write,
+    json_payload: Option<&'a mut Option<serde_json::Value>>,
+}
+
+impl<'a> ReportOutput<'a> {
+    pub(crate) fn new(format: OutputFormat, use_color: bool, writer: &'a mut dyn Write) -> Self {
+        Self {
+            format,
+            use_color,
+            writer,
+            json_payload: None,
+        }
+    }
+
+    pub(crate) fn write_json(
+        &mut self,
+        meta: Meta,
+        report: impl Serialize,
+        chart: Option<Chart>,
+    ) -> Result<(), CliError> {
+        let data = WithChart { report, chart };
+        if let Some(payload) = self.json_payload.as_deref_mut() {
+            *payload = Some(serialize_payload(&data, &meta).map_err(|error| json_error(&error))?);
+        } else {
+            let envelope = Envelope {
+                ok: true,
+                meta,
+                data: Some(data),
+                error: None,
+            };
+            serde_json::to_writer_pretty(&mut *self.writer, &envelope)
+                .map_err(|error| json_error(&error))?;
+            writeln!(self.writer)?;
+        }
+        Ok(())
+    }
+}
+
+fn json_error(error: &serde_json::Error) -> CliError {
+    CliError::General(format!("JSON serialization failed: {error}"))
 }
 
 /// Compute a report using the CLI's JSON contract, without writing to stdout.
@@ -52,12 +97,17 @@ pub fn execute_json(
     sub: &ReportCommand,
 ) -> Result<serde_json::Value, CliError> {
     let mut bytes = Vec::new();
+    let mut payload = None;
     let mut output = ReportOutput {
-        format: OutputFormat::Json,
-        use_color: false,
-        writer: &mut bytes,
+        json_payload: Some(&mut payload),
+        ..ReportOutput::new(OutputFormat::Json, false, &mut bytes)
     };
     run_to(cli, db, company, sub, &mut output)?;
+    if let Some(payload) = payload {
+        return Ok(payload);
+    }
+
+    // Reports without a typed JSON output path still use their existing renderer.
     let mut envelope: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| CliError::General(format!("invalid report JSON: {error}")))?;
     envelope
@@ -73,19 +123,33 @@ fn run_to(
     sub: &ReportCommand,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    crate::db::companies::get_company(db.conn(), company)?;
-    let resolved = super::report_dates::resolve(sub, chrono::Local::now().date_naive())?;
-    let sub = &resolved;
+    chart::validate_request(cli)?;
+    if cli.output.chart {
+        // Currency, effective dates, and source rows share the same read snapshot.
+        return db::audit::atomically(db.conn(), || run_resolved_to(cli, db, company, sub, output));
+    }
+    run_resolved_to(cli, db, company, sub, output)
+}
 
+fn run_resolved_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    output: &mut ReportOutput<'_>,
+) -> Result<(), CliError> {
+    crate::db::companies::get_company(db.conn(), company)?;
     if let Some(result) = super::report_compare::try_run_to(cli, db, company, sub, output) {
         return result;
     }
 
-    // `--period` / `--compare` multi-column modes (issue #22).
-    let multi = super::report_periods::try_run_to(cli, db, company, sub, output);
-    if let Some(result) = multi {
+    if let Some(result) = super::report_periods::try_run_to(cli, db, company, sub, output) {
         return result;
     }
+
+    let today = chrono::Local::now().date_naive();
+    let resolved = super::report_dates::resolve(sub, today)?;
+    let sub = &resolved;
 
     match sub {
         ReportCommand::ScheduleC(_) | ReportCommand::Vendor1099(_) => {
@@ -387,18 +451,21 @@ fn run_income_statement(
     let StatementOptions {
         from, to, currency, ..
     } = *opts;
+    let dates =
+        super::report_dates::DateRange::resolve(from, to, chrono::Local::now().date_naive())?;
     let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let code = Some(currency.code());
-    let revenue_balances = compute_period_balances(db, company, "revenue", from, to, code)?;
-    let expense_balances = compute_period_balances(db, company, "expense", from, to, code)?;
-    let stmt =
-        output::statements::build_income_statement(from, to, &revenue_balances, &expense_balances);
+    let stmt = compute_income_statement(db, company, dates, currency)?;
 
     let minor_units = currency.minor_units();
 
     match output.format {
         OutputFormat::Table => {
-            let title = build_period_title("Income Statement", currency.code(), from, to);
+            let title = build_period_title(
+                "Income Statement",
+                currency.code(),
+                stmt.from.as_deref(),
+                stmt.to.as_deref(),
+            );
             let rendered = output::statements::render_income_statement_table(
                 &stmt,
                 &title,
@@ -411,8 +478,14 @@ fn run_income_statement(
             let meta = cli
                 .meta("report.income-statement", Some(company))
                 .with_currency(currency);
-            let rendered = output::statements::render_income_statement_json(&stmt, meta)?;
-            writeln!(output.writer, "{rendered}")?;
+            let chart = chart::requested(cli, || {
+                chart::income_statement(company, currency, dates, &stmt, cli.output.chart_all)
+            })?;
+            output.write_json(
+                meta,
+                output::statements::income_statement_json(&stmt),
+                chart,
+            )?;
         }
         OutputFormat::Csv => {
             let rendered = output::statements::render_income_statement_csv(&stmt)?;
@@ -425,6 +498,33 @@ fn run_income_statement(
     }
 
     Ok(())
+}
+
+fn compute_income_statement(
+    db: &Db,
+    company: &str,
+    dates: super::report_dates::DateRange,
+    currency: Currency,
+) -> Result<output::statements::IncomeStatement, CliError> {
+    use super::report_periods::{MultiReportKind, fetch_window_rows};
+
+    let mut revenue = fetch_window_rows(
+        db.conn(),
+        company,
+        MultiReportKind::IncomeStatement,
+        None,
+        currency.code(),
+        (dates.from(), dates.to()),
+    )?;
+    // The shared query returns revenues followed by expenses.
+    let first_expense = revenue.partition_point(|row| row.account_type == "revenue");
+    let expenses = revenue.split_off(first_expense);
+    Ok(output::statements::build_income_statement(
+        Some(&dates.from().to_string()),
+        Some(&dates.to().to_string()),
+        &revenue,
+        &expenses,
+    ))
 }
 
 /// Execute the `report balance-sheet` subcommand.
@@ -494,23 +594,6 @@ fn run_balance_sheet(
     }
 
     Ok(())
-}
-
-/// Compute period-based balances for a specific account type.
-///
-/// When a `from` date is provided, we compute the difference between
-/// the as-of-`to` balances and the as-of-`from-1-day` balances to get
-/// the period activity. When no `from` is given, we just use `to` as
-/// the as-of date.
-fn compute_period_balances(
-    db: &Db,
-    company: &str,
-    type_filter: &str,
-    from: Option<&str>,
-    to: Option<&str>,
-    currency: Option<&str>,
-) -> Result<Vec<db::BalanceRow>, CliError> {
-    db::compute_trial_balance(db.conn(), company, Some(type_filter), from, to, currency)
 }
 
 /// Replace a renderer's plain heading with its effective date window.

@@ -411,17 +411,18 @@ pub fn render_income_statement_json(
     stmt: &IncomeStatement,
     meta: Meta,
 ) -> Result<String, CliError> {
-    envelope_ok(
-        meta,
-        IncomeStatementJson {
-            from: stmt.from.as_deref(),
-            to: stmt.to.as_deref(),
-            sections: [&stmt.revenue, &stmt.expenses],
-            total_revenue: stmt.revenue.total,
-            total_expenses: stmt.expenses.total,
-            net_income: stmt.net_income,
-        },
-    )
+    envelope_ok(meta, income_statement_json(stmt))
+}
+
+pub(crate) fn income_statement_json(stmt: &IncomeStatement) -> impl Serialize + '_ {
+    IncomeStatementJson {
+        from: stmt.from.as_deref(),
+        to: stmt.to.as_deref(),
+        sections: [&stmt.revenue, &stmt.expenses],
+        total_revenue: stmt.revenue.total,
+        total_expenses: stmt.expenses.total,
+        net_income: stmt.net_income,
+    }
 }
 
 /// Render a balance sheet as an enveloped JSON response.

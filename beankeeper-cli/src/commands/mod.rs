@@ -15,9 +15,9 @@ mod reference;
 pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;
-mod report_compare;
+pub(crate) mod report_compare;
 pub mod report_currency;
-mod report_dates;
+pub(crate) mod report_dates;
 pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;
@@ -140,6 +140,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
 ///
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+    crate::output::chart::validate_request(cli)?;
     if !matches!(
         cli.command,
         Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. }

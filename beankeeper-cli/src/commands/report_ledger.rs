@@ -113,11 +113,7 @@ pub fn run_command(
     use_color: bool,
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput {
-        format,
-        use_color,
-        writer: &mut stdout,
-    };
+    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
     run_command_to(cli, db, company, sub, &mut output)
 }
 
@@ -166,11 +162,7 @@ pub fn run(
     use_color: bool,
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput {
-        format,
-        use_color,
-        writer: &mut stdout,
-    };
+    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
     run_to(cli, db, company, opts, &mut output)
 }
 

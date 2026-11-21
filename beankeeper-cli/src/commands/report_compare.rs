@@ -13,10 +13,12 @@ use serde::{Serialize, Serializer};
 
 use super::report::ReportOutput;
 use super::report_dates::DateWindow;
-use super::report_periods::{Column, CompareArg, MultiReportKind, prior_range, range_label};
+use super::report_periods::{CompareArg, MultiReportKind, prior_range, range_label};
 use crate::cli::{Cli, OutputFormat, ReportCommand};
 use crate::db::{self, connection::Db};
 use crate::error::CliError;
+use crate::output::chart::{self, ComparisonView};
+use crate::output::json::serialize_display;
 
 struct Context<'a> {
     cli: &'a Cli,
@@ -80,10 +82,6 @@ impl Serialize for ReportMoney {
     }
 }
 
-fn display<S: Serializer, T: std::fmt::Display>(value: &T, s: S) -> Result<S::Ok, S::Error> {
-    s.collect_str(value)
-}
-
 fn account_type<S: Serializer, T: std::fmt::Display>(value: &T, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&value.to_string().to_lowercase())
 }
@@ -138,7 +136,7 @@ impl ComparisonValues {
 
 #[derive(Debug, Clone, Serialize)]
 struct ComparisonLine {
-    #[serde(serialize_with = "display")]
+    #[serde(serialize_with = "serialize_display")]
     code: LedgerAccountCode,
     name: String,
     #[serde(rename = "type", serialize_with = "account_type")]
@@ -257,7 +255,7 @@ struct PayeeContribution {
 
 #[derive(Debug, Serialize)]
 struct Explanation {
-    #[serde(serialize_with = "display")]
+    #[serde(serialize_with = "serialize_display")]
     account: LedgerAccountCode,
     change: ReportMoney,
     transactions: Vec<TransactionContribution>,
@@ -283,13 +281,13 @@ struct DesktopView {
 }
 
 #[derive(Serialize)]
-struct ComparisonReport {
+pub(crate) struct ComparisonReport {
     report: &'static str,
     mode: &'static str,
     compare: &'static str,
     from: NaiveDate,
     to: NaiveDate,
-    #[serde(serialize_with = "display")]
+    #[serde(serialize_with = "serialize_display")]
     currency: Currency,
     current: Period,
     prior: Period,
@@ -306,6 +304,51 @@ struct ComparisonReport {
     desktop_view: DesktopView,
     #[serde(skip_serializing_if = "Option::is_none")]
     explanation: Option<Explanation>,
+}
+
+impl ComparisonReport {
+    pub(crate) fn currency(&self) -> Currency {
+        self.currency
+    }
+
+    pub(crate) fn windows(&self) -> [(NaiveDate, NaiveDate); 2] {
+        [
+            (self.current.from, self.current.to),
+            (self.prior.from, self.prior.to),
+        ]
+    }
+
+    pub(crate) fn account_amounts(&self) -> impl Iterator<Item = (&str, &str, [Money; 2])> {
+        self.accounts.iter().map(|line| {
+            (
+                line.name.as_str(),
+                line.code.as_str(),
+                [line.values.current.0, line.values.prior.0],
+            )
+        })
+    }
+
+    pub(crate) fn net_worth_amounts(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, [Money; 2])> + '_ {
+        [
+            (TotalKey::TotalAssets, "Total Assets"),
+            (TotalKey::TotalLiabilities, "Total Liabilities"),
+            (TotalKey::NetWorth, "Net Worth"),
+        ]
+        .into_iter()
+        .map(|(key, label)| {
+            // An empty asset or liability category has a zero balance.
+            let amounts = self
+                .totals
+                .0
+                .get(&key)
+                .map_or([Money::from_minor(0, self.currency); 2], |values| {
+                    [values.current.0, values.prior.0]
+                });
+            (label, amounts)
+        })
+    }
 }
 
 struct ComparisonPair {
@@ -509,12 +552,16 @@ impl Windows {
         })
     }
 
-    fn bounds(&self, prior: bool) -> (Option<String>, String) {
-        let (from, to) = if prior {
+    fn dates(&self, prior: bool) -> (NaiveDate, NaiveDate) {
+        if prior {
             (self.prior_from, self.prior_to)
         } else {
             (self.from, self.to)
-        };
+        }
+    }
+
+    fn bounds(&self, prior: bool) -> (Option<String>, String) {
+        let (from, to) = self.dates(prior);
         ((!self.cumulative).then(|| from.to_string()), to.to_string())
     }
 
@@ -574,7 +621,7 @@ fn run(
                 })?;
             data.explanation = Some(explain(&context, account, &data, &windows)?);
         }
-        render(&context, req, &data, output)
+        render(&context, sub, req, &data, output)
     })
 }
 
@@ -697,9 +744,8 @@ fn snapshot(
         currency,
         ..
     } = *context;
-    let (from, to) = windows.bounds(prior);
     if let ReportCommand::CashFlow(args) = sub {
-        return cash_snapshot(context, args, from, &to);
+        return cash_snapshot(context, args, windows.dates(prior));
     }
     if let Some(kind) = match sub {
         ReportCommand::IncomeStatement { .. } => Some(MultiReportKind::IncomeStatement),
@@ -708,6 +754,7 @@ fn snapshot(
     } {
         return period_snapshot(context, sub, kind, windows, prior);
     }
+    let (from, to) = windows.bounds(prior);
     let rows = db::compute_trial_balance(
         db.conn(),
         company,
@@ -825,24 +872,14 @@ fn period_snapshot(
     } else {
         None
     };
-    let (from, to) = if prior {
-        (windows.prior_from, windows.prior_to)
-    } else {
-        (windows.from, windows.to)
-    };
-    // Both period layouts share this typed ledger computation. Deltas are
-    // constructed once after pairing snapshots and reused by every renderer.
-    let rows = super::report_periods::fetch_column_rows(
+    // Both period layouts share this ledger query and its window selection.
+    let rows = super::report_periods::fetch_window_rows(
         context.db.conn(),
         context.company,
         kind,
         type_filter.as_deref(),
         context.currency.code(),
-        &Column {
-            label: range_label(from, to),
-            from,
-            to,
-        },
+        windows.dates(prior),
     )?;
     let zero = ReportMoney::from_minor(0, context.currency);
     let mut revenue = zero;
@@ -898,8 +935,7 @@ fn period_snapshot(
 fn cash_snapshot(
     context: &Context<'_>,
     args: &super::report_cash_flow::CashFlowArgs,
-    from: Option<String>,
-    to: &str,
+    (from, to): (NaiveDate, NaiveDate),
 ) -> Result<Snapshot, CliError> {
     let Context {
         db,
@@ -907,13 +943,12 @@ fn cash_snapshot(
         currency,
         ..
     } = *context;
-    let from = from.ok_or_else(|| CliError::Validation("missing cash-flow start date".into()))?;
     let cash_accounts =
         super::report_cash_flow::resolve_cash_accounts(db.conn(), company, &args.cash_account)?;
     let data = super::report_cash_flow::compute_cash_flow(
         db.conn(),
         company,
-        &from,
+        from,
         to,
         currency,
         cash_accounts,
@@ -1206,6 +1241,7 @@ fn finish_explanation(
 
 fn render(
     context: &Context<'_>,
+    sub: &ReportCommand,
     req: &Request<'_>,
     data: &ComparisonReport,
     output: &mut ReportOutput<'_>,
@@ -1226,17 +1262,30 @@ fn render(
                 "cash-flow" => "report.cash-flow",
                 _ => "report.trend",
             };
-            let envelope = crate::output::json::Envelope {
-                ok: true,
-                meta: cli.meta(id, Some(company)).with_currency(currency),
-                data: Some(data),
-                error: None,
-            };
-            writeln!(
-                output.writer,
-                "{}",
-                serde_json::to_string_pretty(&envelope)
-                    .map_err(|e| CliError::General(e.to_string()))?
+            let chart = chart::requested(cli, || {
+                let view = match sub {
+                    ReportCommand::IncomeStatement { .. } => ComparisonView::IncomeStatement,
+                    ReportCommand::TrialBalance { .. } => ComparisonView::TrialBalance,
+                    ReportCommand::Trend(args) => ComparisonView::Trend(args.period, args.metric),
+                    ReportCommand::CashFlow(_) => ComparisonView::CashFlow(
+                        data.cash_accounts.as_deref().ok_or_else(|| {
+                            CliError::General(
+                                "cash-flow comparison is missing its cash accounts".into(),
+                            )
+                        })?,
+                    ),
+                    _ => {
+                        return Err(CliError::Usage(
+                            "--chart is unavailable for this comparison".into(),
+                        ));
+                    }
+                };
+                chart::comparison(company, data, view, cli.output.chart_all)
+            })?;
+            output.write_json(
+                cli.meta(id, Some(company)).with_currency(currency),
+                data,
+                chart,
             )?;
         }
         OutputFormat::Table => {

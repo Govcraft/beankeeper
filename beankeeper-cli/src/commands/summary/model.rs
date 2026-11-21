@@ -10,7 +10,7 @@ use crate::db::BalanceRow;
 use crate::error::CliError;
 
 #[derive(Serialize)]
-pub(super) struct Comparison {
+pub(crate) struct Comparison {
     id: String,
     label: String,
     current: i64,
@@ -37,6 +37,10 @@ impl Comparison {
             change,
             change_percent,
         })
+    }
+
+    pub(crate) fn chart_series(&self) -> (&str, [i64; 2]) {
+        (&self.label, [self.prior, self.current])
     }
 }
 

@@ -2242,3 +2242,136 @@ fn comparisons_and_explanations_match_cli_on_read_only_stdio() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn requested_charts_over_read_only_stdio_match_cli_and_are_discoverable() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("chart.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    for name in ["report", "financial_summary"] {
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .ok_or("tools")?
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .ok_or("tool")?;
+        let schema = tool["inputSchema"].to_string();
+        assert!(schema.contains("chart_all"), "{schema}");
+        assert!(schema.contains("\"chart\""), "{schema}");
+    }
+    for (input, flags) in [
+        (
+            json!({"kind":"trend", "metric":"spending"}),
+            vec!["trend", "--metric", "spending"],
+        ),
+        (
+            json!({"kind":"trend", "metric":"net-worth"}),
+            vec!["trend", "--metric", "net-worth"],
+        ),
+        (
+            json!({"kind":"trend", "metric":"net-worth", "compare":"previous"}),
+            vec!["trend", "--metric", "net-worth", "--compare", "previous"],
+        ),
+        (
+            json!({"kind":"cash-flow", "compare":"previous"}),
+            vec!["cash-flow", "--compare", "previous"],
+        ),
+        (json!({"kind":"cash-flow"}), vec!["cash-flow"]),
+        (json!({"kind":"income-statement"}), vec!["income-statement"]),
+        (
+            json!({"kind":"income-statement", "compare":"prior-year"}),
+            vec!["income-statement", "--compare", "prior-year"],
+        ),
+        (
+            json!({"kind":"trial-balance", "compare":"2023-04-01..2023-06-30"}),
+            vec!["trial-balance", "--compare", "2023-04-01..2023-06-30"],
+        ),
+        (
+            json!({"kind":"trial-balance", "period":"quarter"}),
+            vec!["trial-balance", "--period", "quarter"],
+        ),
+    ] {
+        for all in [false, true] {
+            let mut input = input.clone();
+            input["company"] = json!("acme");
+            input["chart"] = json!(true);
+            input["chart_all"] = json!(all);
+            input["from"] = json!("2024-01-01");
+            input["to"] = json!("2024-03-31");
+            let actual = client.success("report", &input)?;
+            let mut args = vec!["--company", "acme", "--json", "--chart"];
+            if all {
+                args.push("--chart-all");
+            }
+            args.push("report");
+            args.extend(&flags);
+            args.extend(["--from", "2024-01-01", "--to", "2024-03-31"]);
+            let output = bk(&path)?.args(args).output()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let expected: Value = serde_json::from_slice(&output.stdout)?;
+            assert_eq!(actual, expected["data"]);
+            assert_eq!(actual["chart"]["schema_version"], 1);
+        }
+    }
+    let actual = client.success(
+        "financial_summary",
+        &json!({"company":"acme", "chart":true, "chart_all":true, "to":"2024-03-31"}),
+    )?;
+    let output = bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "--json",
+            "--chart",
+            "--chart-all",
+            "summary",
+            "--to",
+            "2024-03-31",
+        ])
+        .output()?;
+    assert!(output.status.success());
+    let expected: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(actual["data"], expected["data"]);
+    Ok(())
+}
+
+#[test]
+fn invalid_chart_requests_keep_each_mcp_tools_error_contract() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("chart.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    for (tool, input) in [
+        (
+            "report",
+            json!({"company":"acme", "kind":"balance-sheet", "chart":true}),
+        ),
+        (
+            "financial_summary",
+            json!({"company":"acme", "chart_all":true}),
+        ),
+    ] {
+        let result = client.request("tools/call", &json!({"name":tool,"arguments":input}))?;
+        assert_eq!(result["result"]["isError"], true, "{result}");
+        let error = payload(&result)?;
+        let code = if tool == "financial_summary" {
+            &error["error"]["code"]
+        } else {
+            &error["code"]
+        };
+        assert_eq!(code, "USAGE", "{result}");
+    }
+    Ok(())
+}

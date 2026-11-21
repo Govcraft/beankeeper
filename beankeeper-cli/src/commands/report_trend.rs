@@ -1,18 +1,18 @@
 //! Historical spending activity and period-end net worth.
 
-use beankeeper::types::Amount;
+use beankeeper::types::{Amount, Currency};
 use chrono::NaiveDate;
 use clap::{Args, ValueEnum};
 use comfy_table::{Cell, CellAlignment, Table};
 use serde::Serialize;
 
 use super::report::ReportOutput;
-use super::report_dates::DateWindow;
+use super::report_dates::DateRange;
 use super::report_periods::{Column, PeriodArg, period_columns};
 use crate::cli::{Cli, OutputFormat};
 use crate::db::{self, BalanceRow, connection::Db};
 use crate::error::CliError;
-use crate::output::json::{Envelope, EnvelopeError};
+use crate::output::chart;
 
 /// Financial quantity tracked over calendar periods.
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
@@ -74,14 +74,47 @@ struct Series {
 }
 
 #[derive(Serialize)]
-struct TrendReport {
+pub(crate) struct TrendReport {
     metric: TrendMetric,
-    period: &'static str,
+    period: PeriodArg,
     from: NaiveDate,
     to: NaiveDate,
-    currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    currency: Currency,
     columns: Vec<TrendColumn>,
     series: Vec<Series>,
+}
+
+impl TrendReport {
+    pub(crate) fn metric(&self) -> TrendMetric {
+        self.metric
+    }
+
+    pub(crate) fn period(&self) -> PeriodArg {
+        self.period
+    }
+
+    pub(crate) fn currency(&self) -> Currency {
+        self.currency
+    }
+
+    pub(crate) fn bounds(&self) -> (NaiveDate, NaiveDate) {
+        (self.from, self.to)
+    }
+
+    pub(crate) fn labels(&self) -> impl Iterator<Item = &str> {
+        self.columns.iter().map(|column| column.label.as_str())
+    }
+
+    pub(crate) fn amounts(&self) -> impl Iterator<Item = (&str, Option<&str>, &[i64])> {
+        self.series.iter().map(|row| {
+            (
+                row.name.as_str(),
+                row.code.as_deref(),
+                row.amounts.as_slice(),
+            )
+        })
+    }
 }
 
 pub(crate) fn run_to(
@@ -91,16 +124,40 @@ pub(crate) fn run_to(
     args: &TrendArgs,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let window = DateWindow::resolve(
+    let report = compute(db, company, args)?;
+    match output.format {
+        OutputFormat::Json => {
+            let meta = cli
+                .meta("report.trend", Some(company))
+                .with_currency(report.currency);
+            let chart =
+                chart::requested(cli, || chart::trend(company, &report, cli.output.chart_all))?;
+            output.write_json(meta, &report, chart)?;
+        }
+        OutputFormat::Table => writeln!(
+            output.writer,
+            "{}",
+            render_table(&report, report.currency.minor_units())
+        )?,
+        OutputFormat::Csv => writeln!(output.writer, "{}", render_csv(&report)?)?,
+    }
+    if !cli.verbosity.quiet {
+        eprintln!(
+            "[ok] {} generated ({} columns)",
+            args.metric.title().to_lowercase(),
+            report.columns.len()
+        );
+    }
+    Ok(())
+}
+
+fn compute(db: &Db, company: &str, args: &TrendArgs) -> Result<TrendReport, CliError> {
+    let dates = DateRange::resolve(
         args.from.as_deref(),
         args.to.as_deref(),
-        true,
         chrono::Local::now().date_naive(),
     )?;
-    let from = window
-        .from
-        .ok_or_else(|| CliError::Validation("trend reports require a start date".to_string()))?;
-    let columns = period_columns(from, window.to, args.period)?;
+    let columns = period_columns(dates.from(), dates.to(), args.period)?;
     let currency = super::report_currency::resolve_report_currency(
         db.conn(),
         company,
@@ -111,12 +168,12 @@ pub(crate) fn run_to(
         let rows = column_rows(db, company, args.metric, currency.code(), column)?;
         append_column(&mut series, args.metric, &rows, index)?;
     }
-    let report = TrendReport {
+    Ok(TrendReport {
         metric: args.metric,
-        period: args.period.as_str(),
-        from,
-        to: window.to,
-        currency: currency.code().to_string(),
+        period: args.period,
+        from: dates.from(),
+        to: dates.to(),
+        currency,
         columns: columns
             .into_iter()
             .map(|column| TrendColumn {
@@ -126,29 +183,7 @@ pub(crate) fn run_to(
             })
             .collect(),
         series,
-    };
-    let rendered = match output.format {
-        OutputFormat::Json => serde_json::to_string_pretty(&Envelope {
-            ok: true,
-            meta: cli
-                .meta("report.trend", Some(company))
-                .with_currency(currency),
-            data: Some(&report),
-            error: None::<EnvelopeError>,
-        })
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))?,
-        OutputFormat::Table => render_table(&report, currency.minor_units()),
-        OutputFormat::Csv => render_csv(&report)?,
-    };
-    writeln!(output.writer, "{rendered}")?;
-    if !cli.verbosity.quiet {
-        eprintln!(
-            "[ok] {} generated ({} columns)",
-            args.metric.title().to_lowercase(),
-            report.columns.len()
-        );
-    }
-    Ok(())
+    })
 }
 
 fn column_rows(
@@ -258,7 +293,7 @@ fn render_table(report: &TrendReport, minor_units: u8) -> String {
     format!(
         "{} by {} ({} to {}) ({})\n\n{table}",
         report.metric.title(),
-        report.period,
+        report.period.as_str(),
         report.from,
         report.to,
         report.currency
@@ -321,5 +356,28 @@ mod tests {
         assert_eq!(series[1].amounts, [-20]);
         assert_eq!(series[2].amounts, [10]);
         Ok(())
+    }
+
+    #[test]
+    fn chart_rejects_a_trend_series_that_does_not_fill_its_axis() {
+        let date = NaiveDate::default();
+        let report = TrendReport {
+            metric: TrendMetric::NetWorth,
+            period: PeriodArg::Month,
+            from: date,
+            to: date,
+            currency: Currency::KWD,
+            columns: vec![TrendColumn {
+                label: "2024-01".into(),
+                from: date,
+                to: date,
+            }],
+            series: vec![Series {
+                code: None,
+                name: "Net worth".into(),
+                amounts: vec![],
+            }],
+        };
+        assert!(chart::trend("co", &report, false).is_err());
     }
 }

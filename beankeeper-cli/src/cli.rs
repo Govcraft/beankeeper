@@ -111,6 +111,14 @@ pub struct FormatOptions {
     #[arg(long, global = true, value_enum)]
     pub format: Option<OutputFormat>,
 
+    /// Include versioned chart data in supported JSON summaries and reports.
+    #[arg(long, global = true)]
+    pub chart: bool,
+
+    /// Include all chart categories/series instead of the top eight plus Other.
+    #[arg(long, global = true, requires = "chart")]
+    pub chart_all: bool,
+
     /// Shorthand for --format json.
     #[arg(long, global = true)]
     pub json: bool,
