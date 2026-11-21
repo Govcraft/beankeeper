@@ -642,7 +642,10 @@ mod tests {
                 db.conn(),
                 &variance(2026, 1, 1, None, include_unbudgeted),
             )?;
-            let percent = rows[0].variance_percent;
+            let percent = rows
+                .iter()
+                .find(|row| row.code == "5000")
+                .and_then(|row| row.variance_percent);
             assert_eq!(
                 percent.map(|value| value.to_fixed(2)).as_deref(),
                 Some("6.25")
