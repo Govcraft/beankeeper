@@ -1,7 +1,7 @@
 //! Typed MCP inputs. Amount strings use major units, as in CLI flags.
 use agent_uri::AgentUri;
 use beankeeper::{
-    core::Quantity,
+    core::investments::PositiveQuantity,
     types::{AccountCode, Currency},
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -10,11 +10,11 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 use super::input_values::{
-    CalendarDate, CompanySlug, DecimalAmount, Entry, LotId, Month, NonEmpty, PageLimit, PageOffset,
-    RowId, SecuritySymbol, Text, Transaction,
+    CalendarDate, CompanySlug, DecimalAmount, Entry, Month, NonEmpty, PageLimit, PageOffset, RowId,
+    SecuritySymbol, Text, Transaction,
 };
 use crate::commands::{reference::TransactionReference, report_periods::CompareArg};
-use crate::db::proposals::ProposalId;
+use crate::db::{investments::LotId, proposals::ProposalId};
 
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
@@ -635,7 +635,7 @@ pub(super) struct SecurityPrice {
 pub(super) struct InvestmentBuy {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
-    pub quantity: Text<Quantity>,
+    pub quantity: Text<PositiveQuantity>,
     pub cost: Amount,
     pub date: Date,
     pub asset: Account,
@@ -656,7 +656,7 @@ pub(super) enum LotMethodArg {
 pub(super) struct InvestmentSell {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
-    pub quantity: Text<Quantity>,
+    pub quantity: Text<PositiveQuantity>,
     pub proceeds: Amount,
     pub date: Date,
     pub asset: Account,

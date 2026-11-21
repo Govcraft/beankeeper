@@ -186,6 +186,13 @@ pub fn build_post_metadata(
     metadata: Option<&str>,
     meta: &[(String, String)],
 ) -> Result<Option<String>, CliError> {
+    for (key, _) in meta {
+        if key.is_empty() || key.contains('"') {
+            return Err(CliError::Usage(format!(
+                "invalid metadata key {key:?}: expected nonempty text without double quotes"
+            )));
+        }
+    }
     if let Some((key, _)) = meta.iter().find(|(k, _)| k == CORRELATE_KEY) {
         return Err(CliError::Validation(format!(
             "--meta key '{key}' is reserved; use --correlate to link transactions"

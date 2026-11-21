@@ -162,6 +162,34 @@ impl Cli {
         }
     }
 
+    pub(crate) fn for_mcp(command: Command, chart: bool, chart_all: bool) -> Self {
+        Self {
+            db: PathBuf::new(),
+            db_source: DbSource::Implicit,
+            company: None,
+            actor: None,
+            agent_token: None,
+            resolved_passphrase: OnceCell::new(),
+            verified_agent: OnceCell::new(),
+            output: FormatOptions {
+                format: None,
+                json: true,
+                chart,
+                chart_all,
+            },
+            verbosity: VerbosityOptions {
+                verbose: false,
+                quiet: true,
+                no_color: true,
+            },
+            passphrase: PassphraseOptions {
+                passphrase_fd: None,
+                passphrase_file: None,
+            },
+            command,
+        }
+    }
+
     /// Opens an existing ledger, verifying any supplied token before use.
     /// Passphrases (including one-shot file descriptors) are resolved only once.
     ///

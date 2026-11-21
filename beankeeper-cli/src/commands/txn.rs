@@ -444,10 +444,7 @@ pub(crate) fn parse_tax_args(args: &[String]) -> Result<HashMap<String, String>,
 /// Decimal amounts are also major units (e.g. `50.00` = 50 dollars).
 /// The amount is converted to minor units based on the currency's decimal places.
 /// An optional third segment after a second colon is treated as a memo.
-pub(crate) fn parse_entry_arg(
-    s: &str,
-    currency: Currency,
-) -> Result<(String, i64, Option<String>), CliError> {
+pub(crate) fn parse_entry_arg(s: &str, currency: Currency) -> Result<PostingLine, CliError> {
     let parts: Vec<&str> = s.splitn(3, ':').collect();
 
     if parts.len() < 2 {
@@ -465,7 +462,18 @@ pub(crate) fn parse_entry_arg(
         )));
     }
 
-    let minor = parse_amount_to_minor(amount_str.trim(), currency)?;
+    let minor = parse_posting_amount(amount_str, currency)?;
+    let memo = if parts.len() == 3 && !parts[2].is_empty() {
+        Some(parts[2].to_string())
+    } else {
+        None
+    };
+
+    Ok((code.to_string(), minor, memo))
+}
+
+fn parse_posting_amount(input: &str, currency: Currency) -> Result<i64, CliError> {
+    let minor = parse_amount_to_minor(input.trim(), currency)?;
     if minor <= 0 {
         let amount = Money::from_minor(i128::from(minor), currency)
             .amount()
@@ -475,13 +483,22 @@ pub(crate) fn parse_entry_arg(
         )));
     }
 
-    let memo = if parts.len() == 3 && !parts[2].is_empty() {
-        Some(parts[2].to_string())
-    } else {
-        None
-    };
+    Ok(minor)
+}
 
-    Ok((code.to_string(), minor, memo))
+pub(crate) type PostingLine = (String, i64, Option<String>);
+
+pub(crate) fn structured_posting_line(
+    account: String,
+    amount: &str,
+    memo: Option<String>,
+    currency: Currency,
+) -> Result<PostingLine, CliError> {
+    if account.is_empty() {
+        return Err(CliError::Usage("entry account code is empty".into()));
+    }
+    let minor = parse_posting_amount(amount, currency)?;
+    Ok((account, minor, memo.filter(|memo| !memo.is_empty())))
 }
 
 /// Parse an amount string to minor currency units.
@@ -588,9 +605,13 @@ fn execute_proposal(
 ) -> Result<serde_json::Value, CliError> {
     let value = match args {
         TxnProposalCommand::Propose(args) => {
-            return with_post_params(db, company, args, actor, |params| {
-                db::proposals::create(db.conn(), params)
-            });
+            return with_post_params(
+                db,
+                company,
+                &PostingRequest::try_from(args)?,
+                actor,
+                |params| db::proposals::create(db.conn(), params),
+            );
         }
         TxnProposalCommand::Proposals { include_rejected } => serde_json::to_value(
             db::proposals::list(db.conn(), company, actor, *include_rejected)?,
@@ -612,61 +633,116 @@ fn execute_post(
     args: &PostingArgs,
     actor: &db::Actor,
 ) -> Result<transactions::PostResult, CliError> {
-    with_post_params(db, company, args, actor, |params| {
-        transactions::post_transaction(db.conn(), params)
+    with_post_params(
+        db,
+        company,
+        &PostingRequest::try_from(args)?,
+        actor,
+        |params| transactions::post_transaction(db.conn(), params),
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PostingMode {
+    Post,
+    Propose,
+}
+
+/// Shared request after each transport has decoded its posting inputs.
+pub(crate) struct PostingRequest {
+    pub description: String,
+    pub currency: Currency,
+    pub date: chrono::NaiveDate,
+    pub debit: Vec<PostingLine>,
+    pub credit: Vec<PostingLine>,
+    pub metadata: Option<String>,
+    pub annotations: Vec<(String, String)>,
+    pub correlate: Option<i64>,
+    pub reference: Option<super::reference::TransactionReference>,
+    pub on_conflict: crate::cli::OnConflictArg,
+    pub tax: HashMap<String, String>,
+}
+
+impl TryFrom<&PostingArgs> for PostingRequest {
+    type Error = CliError;
+
+    fn try_from(args: &PostingArgs) -> Result<Self, Self::Error> {
+        let currency = Currency::from_code(&args.currency)
+            .map_err(|error| CliError::Validation(format!("invalid currency: {error}")))?;
+        Ok(Self {
+            description: args.description.clone(),
+            currency,
+            date: posting_date(args.date.as_deref())?,
+            debit: parse_entries(&args.debit, currency)?,
+            credit: parse_entries(&args.credit, currency)?,
+            metadata: args.metadata.clone(),
+            annotations: db::metadata::parse_meta_args(&args.meta)?,
+            correlate: args.correlate,
+            reference: args
+                .reference
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(|error| CliError::Validation(format!("invalid reference: {error}")))?,
+            on_conflict: args.on_conflict,
+            tax: parse_tax_args(&args.tax)?,
+        })
+    }
+}
+
+pub(crate) fn posting_date(input: Option<&str>) -> Result<chrono::NaiveDate, CliError> {
+    input.map_or_else(
+        || Ok(chrono::Local::now().date_naive()),
+        |date| {
+            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .map_err(|error| CliError::Validation(format!("invalid date '{date}': {error}")))
+        },
+    )
+}
+
+pub(crate) fn execute_posting_json(
+    db: &Db,
+    company: &str,
+    request: &PostingRequest,
+    actor: &db::Actor,
+    mode: PostingMode,
+) -> Result<serde_json::Value, CliError> {
+    db::get_company(db.conn(), company)?;
+    with_post_params(db, company, request, actor, |params| match mode {
+        PostingMode::Post => transactions::post_transaction(db.conn(), params)
+            .and_then(output::json::post_result_data),
+        PostingMode::Propose => db::proposals::create(db.conn(), params)
+            .map(|data| output::json::with_amount_displays(data, None)),
     })
 }
 
-/// Execute the `txn post` subcommand.
 fn with_post_params<T>(
     db_handle: &Db,
     company: &str,
-    args: &PostingArgs,
+    request: &PostingRequest,
     actor: &db::Actor,
     action: impl FnOnce(&transactions::PostTransactionParams<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    let PostingArgs {
+    let PostingRequest {
         description,
-        debit: debit_args,
-        credit: credit_args,
-        metadata,
-        meta: meta_args,
-        currency: currency_code,
+        currency,
         date,
+        debit: parsed_debits,
+        credit: parsed_credits,
+        metadata,
+        annotations,
         correlate,
         reference,
         on_conflict,
-        tax: tax_args,
-    } = args;
-    let date = date.as_deref();
+        tax: tax_map,
+    } = request;
+    let currency = *currency;
+    let metadata = db::metadata::build_post_metadata(metadata.as_deref(), annotations)?;
     let metadata = metadata.as_deref();
-    let reference = reference.as_deref();
-    // 1. Parse currency
-    let currency = Currency::from_code(currency_code)
-        .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
-
-    // 2. Parse debit/credit args into (code, minor_units, memo) tuples
-    let parsed_debits = parse_entries(debit_args, currency)?;
-    let parsed_credits = parse_entries(credit_args, currency)?;
-
-    // 2b. Parse --tax flags into account_code -> category map
-    let tax_map = parse_tax_args(tax_args)?;
-
-    // 3. Determine the transaction date
-    let effective_date = match date {
-        Some(d) => d.to_string(),
-        None => chrono::Local::now().format("%Y-%m-%d").to_string(),
-    };
-    let txn_date = chrono::NaiveDate::parse_from_str(&effective_date, "%Y-%m-%d")
-        .map_err(|e| CliError::Validation(format!("invalid date '{effective_date}': {e}")))?;
-
-    // 3b. Normalize -m and merge --meta pairs into a JSON object (issue #17).
-    let meta_pairs = db::metadata::parse_meta_args(meta_args)?;
-    let metadata = db::metadata::build_post_metadata(metadata, &meta_pairs)?;
-    let metadata = metadata.as_deref();
+    let effective_date = date.format("%Y-%m-%d").to_string();
 
     // 4. Look up accounts, resolve tax categories, and build library Entry objects
-    let mut journal = JournalEntry::new(txn_date, description, currency);
+    let mut journal = JournalEntry::new(*date, description, currency);
     if let Some(meta) = metadata {
         journal = journal.with_metadata(meta);
     }
@@ -679,7 +755,7 @@ fn with_post_params<T>(
             .or_else(|| account_row.default_tax_category.clone())
     };
 
-    for (args, debit) in [(&parsed_debits, true), (&parsed_credits, false)] {
+    for (args, debit) in [(parsed_debits, true), (parsed_credits, false)] {
         for arg in args {
             let entry = library_entry(db_handle, company, arg, currency, debit, &resolve_tax)?;
             journal = journal.entry(entry)?;
@@ -693,8 +769,8 @@ fn with_post_params<T>(
     let db_entries = build_db_entries(
         db_handle,
         company,
-        &parsed_debits,
-        &parsed_credits,
+        parsed_debits,
+        parsed_credits,
         &resolve_tax,
     )?;
 
@@ -702,16 +778,11 @@ fn with_post_params<T>(
     // through `txn list --reference <KEY>`. The reference column is itself the
     // idempotency/dedup key, so the raw value is also what conflict checks
     // compare against.
-    let reference = reference
-        .map(str::parse::<super::reference::TransactionReference>)
-        .transpose()
-        .map_err(|e| CliError::Validation(format!("invalid reference: {e}")))?;
-
     let params = transactions::PostTransactionParams {
         company_slug: company,
         description,
         metadata,
-        currency: currency_code,
+        currency: currency.code(),
         date: &effective_date,
         entries: &db_entries,
         correlate: *correlate,
@@ -724,10 +795,7 @@ fn with_post_params<T>(
 
     action(&params)
 }
-fn parse_entries(
-    args: &[String],
-    currency: Currency,
-) -> Result<Vec<(String, i64, Option<String>)>, CliError> {
+fn parse_entries(args: &[String], currency: Currency) -> Result<Vec<PostingLine>, CliError> {
     args.iter()
         .map(|arg| parse_entry_arg(arg, currency))
         .collect()

@@ -3,10 +3,12 @@
 //! Tool bodies use the same in-process database operations and JSON renderers
 //! as the CLI. Only the transport writes to stdout.
 
+mod dispatch;
 mod host;
 mod http;
 mod input_values;
 mod inputs;
+mod report_input;
 
 pub use host::{HostTool, HostToolEffect, HostToolHandler};
 pub use http::{http_router, http_router_with_host_tools, http_router_with_passphrase, serve_http};
@@ -15,21 +17,18 @@ pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 
 use std::sync::{Arc, Mutex};
 
-use clap::Parser;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use secrecy::{ExposeSecret, SecretString};
-use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::json;
 
 use crate::capability::Capability;
-use crate::cli::{Cli, Command};
-use crate::commands;
+use crate::cli::Cli;
 use crate::db::{Actor, connection::Db};
 use crate::error::CliError;
-use crate::operation::Operation;
+use dispatch::Request;
 
 /// A ledger tool router, independent of the transport used to serve it.
 #[derive(Clone)]
@@ -89,12 +88,12 @@ impl LedgerServer {
         }
     }
 
-    async fn execute<T: Serialize>(
+    async fn execute(
         &self,
-        tool: &'static str,
-        input: T,
+        request: Request,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
+        let operation = request.operation();
         let actor = client_actor(
             context
                 .peer
@@ -102,10 +101,6 @@ impl LedgerServer {
                 .map(|info| info.client_info.name.clone())
                 .as_deref(),
         );
-        let input = match serde_json::to_value(input) {
-            Ok(input) => input,
-            Err(error) => return tool_error(&CliError::General(error.to_string())),
-        };
         let db = self.db.clone();
         let token = match self.request_token(&context) {
             Ok(token) => token,
@@ -121,13 +116,13 @@ impl LedgerServer {
                 let identity = crate::identity::authorize_known_operation(
                     db.conn(),
                     token.as_ref().map(ExposeSecret::expose_secret),
-                    tool.parse::<Operation>()?,
+                    operation,
                 )?;
                 let actor = match identity {
                     Some(identity) => actor.with_identity(identity),
                     None => actor,
                 };
-                execute_operation(&db, tool, input, &actor)
+                request.execute(&db, &actor)
             })
         })
         .await;
@@ -173,7 +168,7 @@ fn tool_error(error: &CliError) -> CallToolResult {
     CallToolResult::structured_error(json!({"code":error.code(), "message":error.to_string()}))
 }
 
-fn summary_error(company: Option<&str>, error: Option<&Value>) -> CallToolResult {
+fn summary_error(company: Option<&str>, error: Option<&serde_json::Value>) -> CallToolResult {
     CallToolResult::structured_error(json!({
         "ok": false,
         "meta": crate::output::json::meta("summary", company),
@@ -201,246 +196,6 @@ fn client_actor(name: Option<&str>) -> Actor {
     ))
 }
 
-// Parse flags in memory to reuse CLI defaults, enums and argument constraints.
-// There is no subprocess or output-producing CLI dispatch on this path.
-fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliError> {
-    let mut args = vec!["bk".to_string(), "--json".into(), "--quiet".into()];
-    if tool != "audit_log"
-        && let Some(Value::String(company)) = input.remove("company")
-    {
-        args.push(format!("--company={company}"));
-    }
-    let positional: &[&str] = match tool {
-        "security_create" | "security_price" | "investment_buy" | "investment_sell"
-        | "investment_lots" => &["symbol"],
-        "company_show" => &["slug"],
-        "account_show" => &["code"],
-        "account_create" => &["code", "name"],
-        "txn_show" | "txn_reverse" | "txn_approve" | "txn_reject" => &["id"],
-        "txn_meta_set" => &["id", "values"],
-        "txn_meta_unset" => &["id", "keys"],
-        "txn_clear" => &["transaction_id"],
-        "budget_set" | "budget_delete" => &["account"],
-        _ => &[],
-    };
-    if tool == "financial_summary" {
-        args.push("summary".into());
-    } else if tool == "report" {
-        args.push("report".into());
-        let kind = input
-            .remove("kind")
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .ok_or_else(|| CliError::Usage("report kind is required".into()))?;
-        args.push(kind);
-    } else if let Some(action) = tool.strip_prefix("txn_meta_") {
-        args.extend(["txn".into(), "meta".into(), action.into()]);
-    } else if let Some((group, action)) = tool.split_once('_') {
-        args.extend([group.into(), action.into()]);
-    } else {
-        args.push(tool.into());
-    }
-    if tool == "budget_delete" {
-        args.push("--force".into());
-    }
-    for (key, value) in input
-        .iter()
-        .filter(|(key, _)| !positional.contains(&key.as_str()))
-    {
-        let flag = if key == "account_type" {
-            "type".into()
-        } else {
-            key.replace('_', "-")
-        };
-        append_flag(&mut args, &flag, value)?;
-    }
-    let positions: Vec<String> = positional
-        .iter()
-        .filter_map(|key| input.remove(*key))
-        .filter(|v| !v.is_null())
-        .flat_map(|value| match value {
-            Value::Array(values) => values,
-            value => vec![value],
-        })
-        .map(|value| scalar(&value))
-        .collect::<Result<_, _>>()?;
-    if !positions.is_empty() {
-        args.push("--".into());
-        args.extend(positions);
-    }
-    Cli::try_parse_from(args).map_err(|error| CliError::Usage(error.to_string()))
-}
-
-fn scalar(value: &Value) -> Result<String, CliError> {
-    match value {
-        Value::String(value) => Ok(value.clone()),
-        Value::Number(value) => Ok(value.to_string()),
-        _ => Err(CliError::Usage(
-            "expected a string or numeric argument".into(),
-        )),
-    }
-}
-
-fn append_flag(args: &mut Vec<String>, name: &str, value: &Value) -> Result<(), CliError> {
-    match value {
-        Value::Null | Value::Bool(false) => (),
-        Value::Bool(true) => args.push(format!("--{name}")),
-        Value::Array(values) => {
-            for value in values {
-                append_flag(args, name, value)?;
-            }
-        }
-        _ => args.push(format!("--{name}={}", scalar(value)?)),
-    }
-    Ok(())
-}
-
-fn prepare_post(input: &mut Map<String, Value>) -> Result<(), CliError> {
-    for (source, target) in [("debits", "debit"), ("credits", "credit")] {
-        let lines: input_values::NonEmpty<inputs::Line> =
-            serde_json::from_value(input.remove(source).unwrap_or(Value::Null))
-                .map_err(|error| CliError::Usage(error.to_string()))?;
-        let values = lines
-            .into_vec()
-            .into_iter()
-            .map(|line| {
-                Value::String(format!(
-                    "{}:{}:{}",
-                    line.account.into_inner(),
-                    line.amount.into_inner(),
-                    line.memo.unwrap_or_default()
-                ))
-            })
-            .collect::<Vec<_>>();
-        input.insert(target.into(), Value::Array(values));
-    }
-    if let Some(Value::Object(meta)) = input.remove("meta") {
-        input.insert(
-            "meta".into(),
-            Value::Array(
-                meta.into_iter()
-                    .map(|(key, value)| {
-                        scalar(&value).map(|value| Value::String(format!("{key}={value}")))
-                    })
-                    .collect::<Result<_, _>>()?,
-            ),
-        );
-    }
-    Ok(())
-}
-
-fn parse_batch_lines(
-    input: &mut Map<String, Value>,
-) -> Result<Option<Vec<commands::txn_clear::BatchLine>>, CliError> {
-    input
-        .remove("batch")
-        .filter(|value| !value.is_null())
-        .map(|value| {
-            let lines: input_values::NonEmpty<inputs::BatchLine> = serde_json::from_value(value)
-                .map_err(|error| CliError::Usage(error.to_string()))?;
-            Ok::<_, CliError>(
-                lines
-                    .into_vec()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, line)| commands::txn_clear::BatchLine {
-                        line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                        reference: line.reference.into_inner().into_string(),
-                        amount: line.amount.map(|amount| amount.to_string()),
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .transpose()
-}
-
-fn execute_operation(
-    db: &Db,
-    tool: &str,
-    input: Value,
-    actor: &Actor,
-) -> Result<(Value, Option<Value>), CliError> {
-    let Value::Object(mut input) = input else {
-        return Err(CliError::Usage("tool arguments must be an object".into()));
-    };
-    if matches!(tool, "txn_post" | "txn_propose") {
-        prepare_post(&mut input)?;
-    }
-    if tool == "txn_clear" {
-        input.remove("target");
-    }
-    let batch = parse_batch_lines(&mut input)?;
-    if batch.is_some() {
-        input.insert("from_file".into(), Value::String("-".into()));
-    }
-    let cli = operation_cli(tool, &mut input)?;
-    let company = || {
-        cli.company
-            .as_deref()
-            .ok_or_else(|| CliError::Usage("company is required for this tool".into()))
-    };
-    match &cli.command {
-        Command::Summary(args) => {
-            commands::summary::execute_json(&cli, db, company()?, args).map(|mut envelope| {
-                if let Some(agent) = actor.agent_uri() {
-                    envelope["meta"]["agent"] = Value::String(agent.to_owned());
-                }
-                envelope
-            })
-        }
-        Command::Security(args) => {
-            commands::investment::execute_security(db, company()?, &args.command, actor)
-        }
-        Command::Investment(args) => {
-            commands::investment::execute_investment(db, company()?, &args.command, actor)
-        }
-        Command::Company(sub) => commands::company::execute_json(db, sub),
-        Command::Account(args) => {
-            commands::account::execute_json_with_actor(db, company()?, &args.command, actor)
-        }
-        Command::Txn(args) => match args.command.as_ref() {
-            crate::cli::TxnCommand::Clear(clear) => {
-                commands::txn_clear::execute_json(db, company()?, clear, actor, batch.as_deref())
-            }
-            crate::cli::TxnCommand::Reconcile => commands::txn::execute_reconcile_json(db),
-            txn => {
-                return commands::txn::execute_json_with_pagination(
-                    &cli,
-                    db,
-                    company()?,
-                    txn,
-                    actor,
-                );
-            }
-        },
-        Command::Report(args) => {
-            commands::report::execute_json(&cli, db, company()?, &args.command)
-        }
-        Command::Budget(args) => {
-            commands::budget::execute_json(db, company()?, &args.command, actor)
-        }
-        Command::Audit(args) => {
-            let data = commands::audit::execute_json(db, &args.command)?;
-            let pagination = commands::audit::pagination(
-                db,
-                &args.command,
-                data.as_array().map_or(0, Vec::len),
-            )?;
-            let pagination = serde_json::to_value(pagination)
-                .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
-            return Ok((data, Some(pagination)));
-        }
-        Command::Period(command) => {
-            serde_json::to_value(commands::period::execute(db, company()?, command, actor)?)
-                .map_err(|error| CliError::General(error.to_string()))
-        }
-        Command::Verify => commands::verify::execute_json(db),
-        _ => Err(CliError::Usage(
-            "operation is not available over MCP".into(),
-        )),
-    }
-    .map(|data| (data, None))
-}
-
 #[tool_router]
 impl LedgerServer {
     #[tool(
@@ -462,7 +217,7 @@ impl LedgerServer {
             }
         };
         let company = input.company.to_string();
-        let result = self.execute("financial_summary", input, context).await;
+        let result = self.execute(Request::Summary(input), context).await;
         if result.is_error == Some(true) {
             summary_error(Some(&company), result.structured_content.as_ref())
         } else {
@@ -476,7 +231,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::SecurityCreate>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("security_create", input, context).await
+        self.execute(Request::SecurityCreate(input), context).await
     }
 
     #[tool(description = "List company securities.")]
@@ -485,7 +240,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::CompanyScope>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("security_list", input, context).await
+        self.execute(Request::SecurityList(input), context).await
     }
 
     #[tool(description = "Record a dated price per whole share in major currency units.")]
@@ -494,7 +249,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::SecurityPrice>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("security_price", input, context).await
+        self.execute(Request::SecurityPrice(input), context).await
     }
 
     #[tool(
@@ -505,7 +260,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::InvestmentBuy>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("investment_buy", input, context).await
+        self.execute(Request::InvestmentBuy(input), context).await
     }
 
     #[tool(
@@ -516,7 +271,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::InvestmentSell>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("investment_sell", input, context).await
+        self.execute(Request::InvestmentSell(input), context).await
     }
 
     #[tool(description = "List acquisition lots with remaining share quantities and cost basis.")]
@@ -525,7 +280,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::InvestmentLots>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("investment_lots", input, context).await
+        self.execute(Request::InvestmentLots(input), context).await
     }
 
     #[tool(
@@ -536,7 +291,8 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::InvestmentHoldings>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("investment_holdings", input, context).await
+        self.execute(Request::InvestmentHoldings(input), context)
+            .await
     }
 
     #[tool(description = "List companies in the ledger.")]
@@ -545,7 +301,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::Empty>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("company_list", input, context).await
+        self.execute(Request::CompanyList(input), context).await
     }
 
     #[tool(description = "Show one company by slug.")]
@@ -554,7 +310,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::CompanyShow>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("company_show", input, context).await
+        self.execute(Request::CompanyShow(input), context).await
     }
 
     #[tool(
@@ -565,7 +321,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::AccountList>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("account_list", input, context).await
+        self.execute(Request::AccountList(input), context).await
     }
 
     #[tool(description = "Show one account in a company.")]
@@ -574,7 +330,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::AccountShow>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("account_show", input, context).await
+        self.execute(Request::AccountShow(input), context).await
     }
 
     #[tool(description = "Create an account in a company.")]
@@ -583,7 +339,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::AccountCreate>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("account_create", input, context).await
+        self.execute(Request::AccountCreate(input), context).await
     }
 
     #[tool(
@@ -594,7 +350,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnPost>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_post", input, context).await
+        self.execute(Request::TxnPost(input), context).await
     }
 
     #[tool(
@@ -605,7 +361,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnPost>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_propose", input, context).await
+        self.execute(Request::TxnPropose(input), context).await
     }
 
     #[tool(
@@ -616,7 +372,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnProposals>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_proposals", input, context).await
+        self.execute(Request::TxnProposals(input), context).await
     }
 
     #[tool(
@@ -627,7 +383,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnApprove>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_approve", input, context).await
+        self.execute(Request::TxnApprove(input), context).await
     }
 
     #[tool(
@@ -638,7 +394,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnReject>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_reject", input, context).await
+        self.execute(Request::TxnReject(input), context).await
     }
 
     #[tool(
@@ -649,7 +405,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnReverse>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_reverse", input, context).await
+        self.execute(Request::TxnReverse(input), context).await
     }
 
     #[tool(
@@ -660,7 +416,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnMetaSet>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_meta_set", input, context).await
+        self.execute(Request::TxnMetaSet(input), context).await
     }
 
     #[tool(
@@ -671,7 +427,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnMetaUnset>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_meta_unset", input, context).await
+        self.execute(Request::TxnMetaUnset(input), context).await
     }
 
     #[tool(description = "List or count transactions using the CLI filters and pagination.")]
@@ -680,7 +436,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnList>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_list", input, context).await
+        self.execute(Request::TxnList(input), context).await
     }
 
     #[tool(description = "Show transaction entries, attachments, and clearing details.")]
@@ -689,7 +445,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::TxnShow>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_show", input, context).await
+        self.execute(Request::TxnShow(input), context).await
     }
 
     #[tool(
@@ -700,7 +456,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::Report>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("report", input, context).await
+        self.execute(Request::Report(input), context).await
     }
 
     #[tool(description = "List budget entries for a company and year.")]
@@ -709,7 +465,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::BudgetList>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("budget_list", input, context).await
+        self.execute(Request::BudgetList(input), context).await
     }
 
     #[tool(
@@ -720,7 +476,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::BudgetSet>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("budget_set", input, context).await
+        self.execute(Request::BudgetSet(input), context).await
     }
 
     #[tool(description = "Delete a monthly or annual budget; this call confirms deletion.")]
@@ -729,7 +485,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::BudgetDelete>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("budget_delete", input, context).await
+        self.execute(Request::BudgetDelete(input), context).await
     }
 
     #[tool(
@@ -740,7 +496,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::ClearInput>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_clear", input, context).await
+        self.execute(Request::TxnClear(input), context).await
     }
 
     #[tool(
@@ -751,7 +507,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::Empty>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("txn_reconcile", input, context).await
+        self.execute(Request::TxnReconcile(input), context).await
     }
 
     #[tool(
@@ -762,7 +518,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::PeriodClose>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("period_close", input, context).await
+        self.execute(Request::PeriodClose(input), context).await
     }
 
     #[tool(
@@ -773,7 +529,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::PeriodReopen>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("period_reopen", input, context).await
+        self.execute(Request::PeriodReopen(input), context).await
     }
 
     #[tool(
@@ -784,7 +540,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::CompanyScope>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("period_list", input, context).await
+        self.execute(Request::PeriodList(input), context).await
     }
 
     #[tool(description = "Verify ledger integrity.")]
@@ -793,7 +549,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::Empty>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("verify", input, context).await
+        self.execute(Request::Verify(input), context).await
     }
 
     #[tool(description = "List audit changes, optionally filtered by company, entity, or action.")]
@@ -802,7 +558,7 @@ impl LedgerServer {
         Parameters(input): Parameters<inputs::AuditLog>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        self.execute("audit_log", input, context).await
+        self.execute(Request::AuditLog(input), context).await
     }
 }
 
@@ -919,6 +675,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn every_mcp_tool_has_an_explicit_requirement() -> Result<(), CliError> {
@@ -965,6 +722,10 @@ mod tests {
         Ok(())
     }
 
+    fn decode<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, CliError> {
+        serde_json::from_value(input).map_err(|error| CliError::Usage(error.to_string()))
+    }
+
     #[test]
     fn investment_tools_share_trade_valuation_and_actor_behavior() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
@@ -975,7 +736,17 @@ mod tests {
         let actor = client_actor(Some("Investment Client"));
         let call = |tool, mut input: Value| {
             input["company"] = json!("acme");
-            execute_operation(&db, tool, input, &actor).map(|(data, _)| data)
+            let request = match tool {
+                "security_create" => Request::SecurityCreate(decode(input)?),
+                "security_list" => Request::SecurityList(decode(input)?),
+                "investment_buy" => Request::InvestmentBuy(decode(input)?),
+                "security_price" => Request::SecurityPrice(decode(input)?),
+                "investment_sell" => Request::InvestmentSell(decode(input)?),
+                "investment_holdings" => Request::InvestmentHoldings(decode(input)?),
+                "investment_lots" => Request::InvestmentLots(decode(input)?),
+                _ => return Err(CliError::General(format!("unexpected test tool: {tool}"))),
+            };
+            request.execute(&db, &actor).map(|(data, _)| data)
         };
         call(
             "security_create",
@@ -1059,9 +830,7 @@ mod tests {
             input["company"] = json!("acme");
             let input: inputs::Report = serde_json::from_value(input)
                 .map_err(|error| CliError::General(error.to_string()))?;
-            let input = serde_json::to_value(input)
-                .map_err(|error| CliError::General(error.to_string()))?;
-            execute_operation(&db, "report", input, &client_actor(None))?;
+            Request::Report(input).execute(&db, &client_actor(None))?;
         }
         Ok(())
     }

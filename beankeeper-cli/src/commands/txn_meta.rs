@@ -59,6 +59,18 @@ pub fn execute_json(
         .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
+pub(crate) fn execute_structured(
+    db: &Db,
+    company: &str,
+    actor: &Actor,
+    target: audit::MetadataTarget<'_>,
+    edit: &metadata::MetadataEdit,
+) -> Result<serde_json::Value, CliError> {
+    crate::db::get_company(db.conn(), company)?;
+    let result = audit::edit_metadata(db.conn(), actor, company, target, edit)?;
+    serde_json::to_value(result).map_err(|error| CliError::General(error.to_string()))
+}
+
 /// Render an annotation edit in JSON or as a terminal confirmation.
 ///
 /// # Errors
