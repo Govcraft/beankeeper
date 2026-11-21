@@ -27,6 +27,13 @@ use crate::error::{CliError, ErrorCode};
 // Envelope types
 // ---------------------------------------------------------------------------
 
+pub(crate) fn serialize_display<S: Serializer>(
+    value: &impl std::fmt::Display,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+
 /// Response metadata included in every JSON envelope.
 #[derive(Serialize, Clone)]
 pub struct Meta {
@@ -98,19 +105,26 @@ impl<T: Serialize> Serialize for Envelope<T> {
         envelope.serialize_field("ok", &self.ok)?;
         envelope.serialize_field("meta", &self.meta)?;
         if let Some(data) = &self.data {
-            let value = serde_json::to_value(data).map_err(serde::ser::Error::custom)?;
-            let currency = self
-                .meta
-                .currency
-                .as_deref()
-                .and_then(|c| Currency::from_code(c).ok());
-            envelope.serialize_field("data", &with_amount_displays(value, currency))?;
+            let payload = serialize_payload(data, &self.meta).map_err(serde::ser::Error::custom)?;
+            envelope.serialize_field("data", &payload)?;
         }
         if let Some(error) = &self.error {
             envelope.serialize_field("error", error)?;
         }
         envelope.end()
     }
+}
+
+pub(crate) fn serialize_payload(
+    data: &impl Serialize,
+    meta: &Meta,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let value = serde_json::to_value(data)?;
+    let currency = meta
+        .currency
+        .as_deref()
+        .and_then(|code| Currency::from_code(code).ok());
+    Ok(with_amount_displays(value, currency))
 }
 
 pub use super::amounts::with_amount_displays;

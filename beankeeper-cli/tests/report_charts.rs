@@ -337,6 +337,12 @@ fn category_axes_and_comparison_targets_keep_resolved_identifiers() -> TestResul
         true,
         true,
     )?;
+    assert_eq!(
+        report["data"]["chart"]["x"],
+        json!(["2024-03-01..2024-03-31", "2024-02-01..2024-02-29"])
+    );
+    assert_eq!(report["data"]["mode"], "compare");
+    assert!(report["data"]["summary"].as_str().is_some());
     let state = &report["data"]["chart"]["desktop_view"]["state"];
     assert_eq!(state["compare_from"], "2024-02-01");
     assert_eq!(state["compare_to"], "2024-02-29");

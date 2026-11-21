@@ -256,11 +256,7 @@ pub fn run(
     use_color: bool,
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput {
-        format,
-        use_color,
-        writer: &mut stdout,
-    };
+    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
     run_to(cli, db, company, args, &mut output)
 }
 

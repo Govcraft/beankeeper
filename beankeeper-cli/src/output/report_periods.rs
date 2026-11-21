@@ -10,14 +10,16 @@
 //! Amounts are net amounts on each account's normal side. JSON and CSV carry
 //! integer minor units, like the single-column reports.
 
+use std::collections::BTreeMap;
+
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use serde::Serialize;
 
-use crate::commands::report_periods::{Column, Layout, MultiColumnReport};
+use crate::commands::report_periods::{Column, Layout, MultiColumnReport, ReportColumns};
 use crate::error::CliError;
-use crate::output::json::{Envelope, EnvelopeError, Meta};
+use crate::output::json::{Meta, envelope_ok};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -155,9 +157,9 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
 
 /// The amount cells that follow the fixed columns for one row.
 fn value_cells(report: &MultiColumnReport, amounts: &[i64]) -> Vec<String> {
-    let mu = report.minor_units;
+    let mu = report.currency.minor_units();
     let mut cells: Vec<String> = amounts.iter().map(|a| format_amount(*a, mu)).collect();
-    match report.layout {
+    match report.layout() {
         Layout::Periods(_) => cells.push(format_amount(row_total(amounts), mu)),
         Layout::Compare(_) => {
             let (cur, prior) = current_prior(amounts);
@@ -170,8 +172,8 @@ fn value_cells(report: &MultiColumnReport, amounts: &[i64]) -> Vec<String> {
 
 /// Header labels for the amount columns.
 fn value_headers(report: &MultiColumnReport) -> Vec<String> {
-    let mut headers: Vec<String> = report.columns.iter().map(|c| c.label.clone()).collect();
-    match report.layout {
+    let mut headers: Vec<String> = report.columns().iter().map(|c| c.label.clone()).collect();
+    match report.layout() {
         Layout::Periods(_) => headers.push("Total".to_string()),
         Layout::Compare(_) => {
             headers.push("Change".to_string());
@@ -189,26 +191,18 @@ fn value_headers(report: &MultiColumnReport) -> Vec<String> {
 #[must_use]
 pub fn title(report: &MultiColumnReport) -> String {
     let base = report.kind.title();
-    let currency = &report.currency_code;
-    match report.layout {
-        Layout::Periods(p) => format!(
+    let currency = report.currency.code();
+    match report.report_columns() {
+        ReportColumns::Periods(p, _) => format!(
             "{base} by {} ({} to {}) ({currency})",
             capitalize_first(p.as_str()),
             report.from,
             report.to
         ),
-        Layout::Compare(_) => {
-            let prior = report
-                .columns
-                .get(1)
-                .map_or_else(String::new, |c: &Column| {
-                    format!(" vs. {} to {}", c.from, c.to)
-                });
-            format!(
-                "{base} ({} to {}{prior}) ({currency})",
-                report.from, report.to
-            )
-        }
+        ReportColumns::Compare(_, [_, prior]) => format!(
+            "{base} ({} to {} vs. {} to {}) ({currency})",
+            report.from, report.to, prior.from, prior.to,
+        ),
     }
 }
 
@@ -337,7 +331,7 @@ struct ReportJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     prior: Option<ColumnJson>,
     accounts: Vec<AccountJson>,
-    totals: serde_json::Map<String, serde_json::Value>,
+    totals: BTreeMap<&'static str, ValuesJson>,
 }
 
 fn values_json(layout: Layout, amounts: &[i64]) -> ValuesJson {
@@ -358,16 +352,14 @@ fn values_json(layout: Layout, amounts: &[i64]) -> ValuesJson {
     }
 }
 
-fn json_err(e: &serde_json::Error) -> CliError {
-    CliError::General(format!("JSON serialization failed: {e}"))
-}
-
 /// Render a multi-column report inside the standard JSON envelope.
-///
 /// # Errors
-///
 /// Returns `CliError::General` if serialisation fails.
 pub fn render_json(report: &MultiColumnReport, meta: Meta) -> Result<String, CliError> {
+    envelope_ok(meta, report_json(report))
+}
+
+pub(crate) fn report_json(report: &MultiColumnReport) -> impl Serialize {
     let accounts = report
         .accounts
         .iter()
@@ -376,58 +368,49 @@ pub fn render_json(report: &MultiColumnReport, meta: Meta) -> Result<String, Cli
             name: a.name.clone(),
             r#type: a.account_type.clone(),
             normal_balance: normal_balance_for(&a.account_type),
-            values: values_json(report.layout, &a.amounts),
+            values: values_json(report.layout(), &a.amounts),
         })
         .collect();
 
-    let mut totals = serde_json::Map::new();
-    for line in &report.summary {
-        let value = serde_json::to_value(values_json(report.layout, &line.amounts))
-            .map_err(|e| json_err(&e))?;
-        totals.insert(line.key.to_string(), value);
-    }
+    let totals = report
+        .summary
+        .iter()
+        .map(|line| (line.key, values_json(report.layout(), &line.amounts)))
+        .collect();
 
-    let (mode, period, compare, columns, current, prior) = match report.layout {
-        Layout::Periods(p) => (
+    let (mode, period, compare, columns, current, prior) = match report.report_columns() {
+        ReportColumns::Periods(p, columns) => (
             "periods",
             Some(p.as_str()),
             None,
-            Some(report.columns.iter().map(ColumnJson::from).collect()),
+            Some(columns.iter().map(ColumnJson::from).collect()),
             None,
             None,
         ),
-        Layout::Compare(c) => (
+        ReportColumns::Compare(c, [current, prior]) => (
             "compare",
             None,
             Some(c.as_str()),
             None,
-            report.columns.first().map(ColumnJson::from),
-            report.columns.get(1).map(ColumnJson::from),
+            Some(ColumnJson::from(current)),
+            Some(ColumnJson::from(prior)),
         ),
     };
 
-    let data = ReportJson {
+    ReportJson {
         report: report.kind.as_str(),
         mode,
         period,
         compare,
         from: report.from.to_string(),
         to: report.to.to_string(),
-        currency: report.currency_code.clone(),
+        currency: report.currency.code().into(),
         columns,
         current,
         prior,
         accounts,
         totals,
-    };
-
-    let env = Envelope {
-        ok: true,
-        meta,
-        data: Some(data),
-        error: None::<EnvelopeError>,
-    };
-    serde_json::to_string_pretty(&env).map_err(|e| json_err(&e))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -469,9 +452,9 @@ pub fn render_csv(report: &MultiColumnReport) -> Result<String, CliError> {
     let mut wtr = csv::Writer::from_writer(Vec::new());
 
     let mut header: Vec<String> = vec!["code".into(), "name".into(), "type".into()];
-    match report.layout {
+    match report.layout() {
         Layout::Periods(_) => {
-            header.extend(report.columns.iter().map(|c| c.label.clone()));
+            header.extend(report.columns().iter().map(|c| c.label.clone()));
             header.push("total".into());
         }
         Layout::Compare(_) => {
@@ -486,12 +469,12 @@ pub fn render_csv(report: &MultiColumnReport) -> Result<String, CliError> {
             line.name.clone(),
             line.account_type.clone(),
         ];
-        record.extend(csv_values(report.layout, &line.amounts));
+        record.extend(csv_values(report.layout(), &line.amounts));
         wtr.write_record(&record).map_err(|e| csv_err(&e))?;
     }
     for line in &report.summary {
         let mut record = vec![String::new(), line.key.to_string(), "total".to_string()];
-        record.extend(csv_values(report.layout, &line.amounts));
+        record.extend(csv_values(report.layout(), &line.amounts));
         wtr.write_record(&record).map_err(|e| csv_err(&e))?;
     }
 

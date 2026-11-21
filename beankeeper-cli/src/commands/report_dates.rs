@@ -42,7 +42,42 @@ impl DateWindow {
     }
 }
 
-fn parse_date(flag: &str, value: &str) -> Result<NaiveDate, CliError> {
+/// A report window with both validated, ordered endpoints.
+#[derive(Clone, Copy)]
+pub(crate) struct DateRange {
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+impl DateRange {
+    pub(super) fn resolve(
+        from: Option<&str>,
+        to: Option<&str>,
+        today: NaiveDate,
+    ) -> Result<Self, CliError> {
+        let window = DateWindow::resolve(from, to, false, today)?;
+        let from = match window.from {
+            Some(from) => from,
+            None => window.to.with_ordinal(1).ok_or_else(|| {
+                CliError::Validation("date is out of the supported range".to_string())
+            })?,
+        };
+        Ok(Self {
+            from,
+            to: window.to,
+        })
+    }
+
+    pub(crate) fn from(self) -> NaiveDate {
+        self.from
+    }
+
+    pub(crate) fn to(self) -> NaiveDate {
+        self.to
+    }
+}
+
+pub(super) fn parse_date(flag: &str, value: &str) -> Result<NaiveDate, CliError> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
         CliError::Validation(format!(
             "invalid {flag} date {value:?}: expected YYYY-MM-DD"
@@ -69,17 +104,15 @@ pub(super) fn resolve(sub: &ReportCommand, today: NaiveDate) -> Result<ReportCom
         ReportCommand::TrialBalance {
             from,
             to,
-            period,
-            compare,
+            period: None,
+            compare: None,
             ..
-        } => {
-            resolve_bounds(from, to, period.is_some() || compare.is_some(), today)?;
         }
-        ReportCommand::Balance { from, to, .. } | ReportCommand::Ledger { from, to, .. } => {
+        | ReportCommand::Balance { from, to, .. }
+        | ReportCommand::Ledger { from, to, .. } => {
             resolve_bounds(from, to, false, today)?;
         }
-        ReportCommand::IncomeStatement { from, to, .. }
-        | ReportCommand::TaxSummary { from, to, .. } => {
+        ReportCommand::TaxSummary { from, to, .. } => {
             resolve_bounds(from, to, true, today)?;
         }
         ReportCommand::BalanceSheet { to, .. } | ReportCommand::Reconciliation { to, .. } => {
@@ -98,14 +131,13 @@ pub(super) fn resolve(sub: &ReportCommand, today: NaiveDate) -> Result<ReportCom
         ReportCommand::Vendor1099(args) => {
             resolve_bounds(&mut args.period.from, &mut args.period.to, true, today)?;
         }
-        ReportCommand::Trend(args) => {
-            resolve_bounds(&mut args.from, &mut args.to, true, today)?;
-        }
-        ReportCommand::CashFlow(args) => {
-            resolve_bounds(&mut args.from, &mut args.to, true, today)?;
-        }
+        // These reports resolve and retain typed date ranges in their computations.
+        ReportCommand::IncomeStatement { .. }
+        | ReportCommand::TrialBalance { .. }
+        | ReportCommand::Trend(_)
+        | ReportCommand::CashFlow(_)
         // Budget variance uses an explicit year and month numbers, not dates.
-        ReportCommand::BudgetVariance { .. } => {}
+        | ReportCommand::BudgetVariance { .. } => {}
     }
     Ok(sub)
 }

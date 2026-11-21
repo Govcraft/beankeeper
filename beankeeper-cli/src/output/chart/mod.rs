@@ -1,14 +1,17 @@
 //! Version 1, exact-money chart projections. This module cannot mutate a ledger.
 //!
-//! Wire adapters consume already computed reports, never issue fresh queries.
+//! Chart projections consume typed report results and issue no ledger queries.
 //! Only the validating constructor can create a chart; output types deliberately
 //! have no Deserialize implementation or publicly mutable fields.
 
 mod source;
 
-use beankeeper::types::{Amount, Currency};
+pub(crate) use source::{
+    ComparisonView, cash_flow, comparison, income_statement, periods, summary, trend,
+};
+
+use beankeeper::types::{Amount, Currency, Money, MoneyError};
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::cli::{Cli, Command, ReportCommand};
 use crate::error::CliError;
@@ -25,8 +28,39 @@ enum Kind {
 /// Intermediate numeric row. Amounts stay exact until the final projection.
 struct Row {
     name: String,
-    values: Vec<i128>,
+    values: Vec<Money>,
     account: Option<String>,
+}
+
+impl Row {
+    fn new(
+        name: &str,
+        account: Option<&str>,
+        values: impl IntoIterator<Item = i64>,
+        currency: Currency,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            values: values
+                .into_iter()
+                .map(|value| Money::from_minor(i128::from(value), currency))
+                .collect(),
+            account: account.map(str::to_owned),
+        }
+    }
+    fn comparison(name: &str, account: Option<&str>, values: [Money; 2]) -> Self {
+        Self {
+            name: name.into(),
+            values: values.into(),
+            account: account.map(str::to_owned),
+        }
+    }
+}
+
+fn format_money(value: Money) -> String {
+    value
+        .amount()
+        .format_decimal(value.currency().minor_units())
 }
 
 #[derive(Serialize)]
@@ -34,7 +68,8 @@ struct Series {
     name: String,
     values: Vec<String>,
     unit: &'static str,
-    currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    currency: Currency,
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<String>,
 }
@@ -46,7 +81,7 @@ struct Context {
 }
 
 #[derive(Serialize)]
-struct Chart {
+pub(crate) struct Chart {
     schema_version: u8,
     kind: Kind,
     title: &'static str,
@@ -75,18 +110,14 @@ impl Chart {
         if rows.iter().any(|row| row.values.len() != x.len()) {
             return Err(invalid_source("chart series must align with x labels"));
         }
-        let (rows, omitted_count) = compact(rows, all)?;
+        let (rows, omitted_count) = compact(rows, currency, all)?;
         let series = rows
             .into_iter()
             .map(|row| Series {
                 name: row.name,
-                values: row
-                    .values
-                    .into_iter()
-                    .map(|value| Amount::new(value).format_decimal(currency.minor_units()))
-                    .collect(),
+                values: row.values.into_iter().map(format_money).collect(),
                 unit: "major",
-                currency: currency.code().into(),
+                currency,
                 account: row.account,
             })
             .collect();
@@ -134,7 +165,7 @@ impl Chart {
             name: title.into(),
             values,
             unit: "major",
-            currency: currency.code().into(),
+            currency,
             account: None,
         }];
         Ok(chart)
@@ -147,13 +178,20 @@ fn invalid_source(message: &str) -> CliError {
 
 /// Rank by sum of absolute values, breaking ties by account then label.
 /// Checked arithmetic prevents a partial or silently clipped Other bucket.
-fn compact(mut rows: Vec<Row>, all: bool) -> Result<(Vec<Row>, usize), CliError> {
+fn compact(
+    mut rows: Vec<Row>,
+    currency: Currency,
+    all: bool,
+) -> Result<(Vec<Row>, usize), CliError> {
     if all || rows.len() <= DEFAULT_LIMIT {
         return Ok((rows, 0));
     }
     let score = |row: &Row| -> u128 {
         // Source values are i64 and reports are bounded to 120 periods.
-        row.values.iter().map(|value| value.unsigned_abs()).sum()
+        row.values
+            .iter()
+            .map(|value| value.amount().minor_units().unsigned_abs())
+            .sum()
     };
     rows.sort_by(|left, right| {
         score(right)
@@ -165,14 +203,15 @@ fn compact(mut rows: Vec<Row>, all: bool) -> Result<(Vec<Row>, usize), CliError>
     let count = rest.len();
     let mut other = Row {
         name: "Other".into(),
-        values: vec![0; rest.first().map_or(0, |row| row.values.len())],
+        values: vec![Money::new(Amount::ZERO, currency); rest[0].values.len()],
         account: None,
     };
     for row in rest {
         for (total, value) in other.values.iter_mut().zip(row.values) {
-            *total = total
-                .checked_add(value)
-                .ok_or_else(|| invalid_source("Other exceeds the supported amount range"))?;
+            *total = total.checked_add(value).map_err(|error| match error {
+                MoneyError::Overflow => invalid_source("Other exceeds the supported amount range"),
+                _ => invalid_source(&error.to_string()),
+            })?;
         }
     }
     rows.push(other);
@@ -202,84 +241,43 @@ pub(crate) fn validate_request(cli: &Cli) -> Result<(), CliError> {
     }
 }
 
-pub(crate) fn attach(cli: &Cli, company: &str, envelope: &mut Value) -> Result<(), CliError> {
-    let chart = source::project(cli, company, envelope)?;
-    envelope["data"]["chart"] =
-        serde_json::to_value(chart).map_err(|error| invalid_source(&error.to_string()))?;
-    Ok(())
+pub(crate) fn requested(
+    cli: &Cli,
+    project: impl FnOnce() -> Result<Chart, CliError>,
+) -> Result<Option<Chart>, CliError> {
+    cli.output.chart.then(project).transpose()
+}
+
+/// Attach an already computed chart to the existing report data at serialization.
+#[derive(Serialize)]
+pub(crate) struct WithChart<T> {
+    #[serde(flatten)]
+    pub(crate) report: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) chart: Option<Chart>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
-    use serde_json::json;
-
-    fn cli() -> Result<Cli, CliError> {
-        Cli::try_parse_from([
-            "bk",
-            "--json",
-            "--chart",
-            "report",
-            "trend",
-            "--metric",
-            "net-worth",
-        ])
-        .map_err(|error| CliError::Usage(error.to_string()))
-    }
-
-    #[test]
-    fn chart_boundary_rejects_misalignment_missing_values_and_unknown_units() -> Result<(), CliError>
-    {
-        let valid = json!({"data": {
-            "currency":"USD", "from":"2024-01-01", "to":"2024-01-31",
-            "metric":"net-worth", "period":"month", "columns":[{"label":"2024-01"}],
-            "series":[{"code":null, "name":"Net worth", "amounts":[1]}]
-        }});
-        for invalid in [
-            json!({"series":[{"name":"Net worth", "amounts":[]}]}),
-            json!({"series":[{"name":"Net worth", "amounts":["1.00"]}]}),
-            json!({"currency":"BOGUS"}),
-            json!({"metric":"invented"}),
-            json!({"period":"day"}),
-            json!({"from":"2024-02-30"}),
-        ] {
-            let mut envelope = valid.clone();
-            for (key, value) in invalid
-                .as_object()
-                .ok_or_else(|| invalid_source("fixture"))?
-            {
-                envelope["data"][key] = value.clone();
-            }
-            assert!(attach(&cli()?, "co", &mut envelope).is_err());
-            assert!(envelope["data"].get("chart").is_none());
-        }
-        Ok(())
-    }
-
     #[test]
     fn minimum_integer_and_other_use_exact_wide_arithmetic() -> Result<(), CliError> {
         let rows = (0..10)
-            .map(|index| Row {
-                name: "Same".into(),
-                account: Some(format!("50{index:02}")),
-                values: vec![i128::from(i64::MIN)],
+            .map(|index| {
+                Row::new(
+                    "Same",
+                    Some(&format!("50{index:02}")),
+                    [i64::MIN],
+                    Currency::USD,
+                )
             })
             .collect();
-        let (rows, omitted) = compact(rows, false)?;
+        let (rows, omitted) = compact(rows, Currency::USD, false)?;
         assert_eq!(omitted, 2);
         assert_eq!(rows[0].account.as_deref(), Some("5000"));
-        assert_eq!(rows[8].values, [i128::from(i64::MIN) * 2]);
-        let mut envelope = json!({"data": {
-            "currency":"KWD", "from":"2024-01-01", "to":"2024-01-31",
-            "metric":"net-worth", "period":"month", "columns":[{"label":"2024-01"}],
-            "series":[{"name":"Net worth", "amounts":[i64::MIN]}]
-        }});
-        attach(&cli()?, "co", &mut envelope)?;
-        assert_eq!(
-            envelope["data"]["chart"]["series"][0]["values"],
-            json!(["-9223372036854775.808"])
-        );
+        assert_eq!(rows[8].values, [Money::usd(i128::from(i64::MIN) * 2)]);
+        let minimum = Money::from_minor(i128::from(i64::MIN), Currency::KWD);
+        assert_eq!(format_money(minimum), "-9223372036854775.808");
         Ok(())
     }
 }

@@ -2273,11 +2273,23 @@ fn requested_charts_over_read_only_stdio_match_cli_and_are_discoverable() -> Tes
             json!({"kind":"trend", "metric":"net-worth"}),
             vec!["trend", "--metric", "net-worth"],
         ),
+        (
+            json!({"kind":"trend", "metric":"net-worth", "compare":"previous"}),
+            vec!["trend", "--metric", "net-worth", "--compare", "previous"],
+        ),
+        (
+            json!({"kind":"cash-flow", "compare":"previous"}),
+            vec!["cash-flow", "--compare", "previous"],
+        ),
         (json!({"kind":"cash-flow"}), vec!["cash-flow"]),
         (json!({"kind":"income-statement"}), vec!["income-statement"]),
         (
             json!({"kind":"income-statement", "compare":"prior-year"}),
             vec!["income-statement", "--compare", "prior-year"],
+        ),
+        (
+            json!({"kind":"trial-balance", "compare":"2023-04-01..2023-06-30"}),
+            vec!["trial-balance", "--compare", "2023-04-01..2023-06-30"],
         ),
         (
             json!({"kind":"trial-balance", "period":"quarter"}),

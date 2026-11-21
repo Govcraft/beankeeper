@@ -5,6 +5,7 @@ mod model;
 
 use std::io::Write;
 
+use beankeeper::types::Currency;
 use chrono::{Datelike, Days, NaiveDate};
 use clap::Args;
 use serde::Serialize;
@@ -13,7 +14,8 @@ use serde_json::{Value, json};
 use crate::cli::{Cli, OutputFormat, resolve_format};
 use crate::db::{self, BalanceRow, connection::Db};
 use crate::error::CliError;
-use crate::output::json::{Envelope, EnvelopeError};
+use crate::output::chart::{self, WithChart};
+use crate::output::json::Envelope;
 
 /// Options for `bk summary` and the `financial_summary` MCP tool.
 #[derive(Debug, Clone, Default, Args, serde::Deserialize, Serialize, schemars::JsonSchema)]
@@ -55,10 +57,21 @@ struct Period {
 }
 
 #[derive(Serialize)]
-struct Periods {
+pub(crate) struct Periods {
     current: Period,
     prior: Period,
 }
+
+impl Periods {
+    pub(crate) fn windows(&self) -> [(NaiveDate, NaiveDate); 2] {
+        [
+            (self.current.from, self.current.to),
+            (self.prior.from, self.prior.to),
+        ]
+    }
+}
+
+pub(crate) use model::Comparison;
 
 impl SummaryArgs {
     fn periods(&self, today: NaiveDate) -> Result<Periods, CliError> {
@@ -186,100 +199,178 @@ pub fn execute_json(
     company: &str,
     args: &SummaryArgs,
 ) -> Result<Value, CliError> {
-    crate::output::chart::validate_request(cli)?;
+    chart::validate_request(cli)?;
     db::audit::atomically(db.conn(), || {
-        db::companies::get_company(db.conn(), company)?;
-        let periods = args.periods(chrono::Local::now().date_naive())?;
-        let currency = super::report_currency::resolve_report_currency(
-            db.conn(),
-            company,
-            args.currency.as_deref(),
-        )?;
-        let rows = db::compute_trial_balance(
-            db.conn(),
-            company,
-            None,
-            None,
-            Some(&periods.current.to.to_string()),
-            Some(currency.code()),
-        )?;
-        let cash = select_accounts(
-            &rows,
-            &args.cash_account,
-            "asset",
-            super::report_cash_flow::DEFAULT_CASH_NAME_KEYWORDS,
-        )?;
-        let receivables =
-            select_accounts(&rows, &args.receivable_account, "asset", &["receivable"])?;
-        let payables = select_accounts(&rows, &args.payable_account, "liability", &["payable"])?;
-        let activity = |period: Period| {
-            db::compute_trial_balance(
-                db.conn(),
+        let report = compute(db, company, args)?;
+        let meta = cli
+            .meta("summary", Some(company))
+            .with_currency(report.currency);
+        let chart = chart::requested(cli, || {
+            chart::summary(
                 company,
-                None,
-                Some(&period.from.to_string()),
-                Some(&period.to.to_string()),
-                Some(currency.code()),
+                report.currency,
+                &report.periods,
+                &report.comparison,
+                cli.output.chart_all,
             )
-        };
-        let current = activity(periods.current)?;
-        let prior = activity(periods.prior)?;
-        let comparison = model::comparison(&current, &prior)?;
-        let movers = model::movers(&current, &prior)?;
-        let attention = attention::compute(&attention::AttentionContext {
-            conn: db.conn(),
-            company,
-            currency: currency.code(),
-            as_of: periods.current.to,
-            cash: &cash,
-            receivables: &receivables,
-            payables: &payables,
         })?;
-        let mut view = model::desktop_view(company, currency, &periods);
-        model::select_view_accounts(
-            &mut view,
-            [
-                ("cash", &cash),
-                ("receivable", &receivables),
-                ("payable", &payables),
-            ],
-        );
-        let standing = json!({
-            "as_of":periods.current.to,
-            "cash_on_hand":sum(rows.iter().filter(|row| cash.contains(&row.code)))?,
-            "owed_to_you":sum(rows.iter().filter(|row| receivables.contains(&row.code)))?,
-            "you_owe":sum(rows.iter().filter(|row| row.account_type == "liability"))?,
-            "net_worth":sub(sum(rows.iter().filter(|row| row.account_type == "asset"))?, sum(rows.iter().filter(|row| row.account_type == "liability"))?)?,
-            "cash_accounts":cash, "receivable_accounts":receivables, "payable_accounts":payables,
-            "cash_accounts_identified":!cash.is_empty(), "receivable_accounts_identified":!receivables.is_empty(),
-            "desktop_view":view,
-        });
-        let data = json!({
-            "currency":currency.code(), "minor_units":currency.minor_units(),
-            "periods":periods, "standing":standing,
-            "comparison":{"series":comparison, "desktop_view":view},
-            "biggest_movers":{"series":movers, "desktop_view":view},
-            "needs_attention":{"items":attention, "desktop_view":view},
-            "highlights":model::highlights(&standing, &comparison, &movers, currency),
-            "desktop_view":view,
-            "basis":{
+        serde_json::to_value(Envelope {
+            ok: true,
+            meta,
+            data: Some(WithChart {
+                report: report.json(),
+                chart,
+            }),
+            error: None,
+        })
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+    })
+}
+
+struct SummaryReport {
+    currency: Currency,
+    periods: Periods,
+    standing: Value,
+    comparison: Vec<Comparison>,
+    movers: Vec<Comparison>,
+    attention: Value,
+    highlights: Vec<String>,
+    view: Value,
+}
+
+#[derive(Serialize)]
+struct SeriesSection<'a> {
+    series: &'a [Comparison],
+    desktop_view: &'a Value,
+}
+
+#[derive(Serialize)]
+struct AttentionSection<'a> {
+    items: &'a Value,
+    desktop_view: &'a Value,
+}
+
+#[derive(Serialize)]
+struct SummaryJson<'a> {
+    currency: &'a str,
+    minor_units: u8,
+    periods: &'a Periods,
+    standing: &'a Value,
+    comparison: SeriesSection<'a>,
+    biggest_movers: SeriesSection<'a>,
+    needs_attention: AttentionSection<'a>,
+    highlights: &'a [String],
+    desktop_view: &'a Value,
+    basis: Value,
+}
+
+impl SummaryReport {
+    fn json(&self) -> impl Serialize + '_ {
+        SummaryJson {
+            currency: self.currency.code(),
+            minor_units: self.currency.minor_units(),
+            periods: &self.periods,
+            standing: &self.standing,
+            comparison: SeriesSection {
+                series: &self.comparison,
+                desktop_view: &self.view,
+            },
+            biggest_movers: SeriesSection {
+                series: &self.movers,
+                desktop_view: &self.view,
+            },
+            needs_attention: AttentionSection {
+                items: &self.attention,
+                desktop_view: &self.view,
+            },
+            highlights: &self.highlights,
+            desktop_view: &self.view,
+            basis: json!({
                 "activity":"Posted revenue and net expenses, including refunds; leftover is income minus spending, not cash flow.",
                 "valuation":"Net worth uses ledger book values, not investment market prices.",
                 "accounts":"Cash: asset names containing cash/bank/checking/savings; receivables: asset names containing receivable; payables: liability names containing payable. Explicit selectors replace inferred lists; an empty selection totals zero. You owe includes every liability.",
                 "comparison":"Without --from: month to date versus the full prior calendar month. With --from: the immediately preceding equal-length interval. Explicit comparison dates override either default."
-            }
-        });
-        let mut envelope = serde_json::to_value(Envelope {
-            ok: true,
-            meta: cli.meta("summary", Some(company)).with_currency(currency),
-            data: Some(data),
-            error: None::<EnvelopeError>,
-        })
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))?;
-        if cli.output.chart {
-            crate::output::chart::attach(cli, company, &mut envelope)?;
+            }),
         }
-        Ok(envelope)
+    }
+}
+
+fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, CliError> {
+    db::companies::get_company(db.conn(), company)?;
+    let periods = args.periods(chrono::Local::now().date_naive())?;
+    let currency = super::report_currency::resolve_report_currency(
+        db.conn(),
+        company,
+        args.currency.as_deref(),
+    )?;
+    let rows = db::compute_trial_balance(
+        db.conn(),
+        company,
+        None,
+        None,
+        Some(&periods.current.to.to_string()),
+        Some(currency.code()),
+    )?;
+    let cash = select_accounts(
+        &rows,
+        &args.cash_account,
+        "asset",
+        super::report_cash_flow::DEFAULT_CASH_NAME_KEYWORDS,
+    )?;
+    let receivables = select_accounts(&rows, &args.receivable_account, "asset", &["receivable"])?;
+    let payables = select_accounts(&rows, &args.payable_account, "liability", &["payable"])?;
+    let activity = |period: Period| {
+        db::compute_trial_balance(
+            db.conn(),
+            company,
+            None,
+            Some(&period.from.to_string()),
+            Some(&period.to.to_string()),
+            Some(currency.code()),
+        )
+    };
+    let current = activity(periods.current)?;
+    let prior = activity(periods.prior)?;
+    let comparison = model::comparison(&current, &prior)?;
+    let movers = model::movers(&current, &prior)?;
+    let attention = attention::compute(&attention::AttentionContext {
+        conn: db.conn(),
+        company,
+        currency: currency.code(),
+        as_of: periods.current.to,
+        cash: &cash,
+        receivables: &receivables,
+        payables: &payables,
+    })?;
+    let mut view = model::desktop_view(company, currency, &periods);
+    model::select_view_accounts(
+        &mut view,
+        [
+            ("cash", &cash),
+            ("receivable", &receivables),
+            ("payable", &payables),
+        ],
+    );
+    let standing = json!({
+        "as_of":periods.current.to,
+        "cash_on_hand":sum(rows.iter().filter(|row| cash.contains(&row.code)))?,
+        "owed_to_you":sum(rows.iter().filter(|row| receivables.contains(&row.code)))?,
+        "you_owe":sum(rows.iter().filter(|row| row.account_type == "liability"))?,
+        "net_worth":sub(sum(rows.iter().filter(|row| row.account_type == "asset"))?, sum(rows.iter().filter(|row| row.account_type == "liability"))?)?,
+        "cash_accounts":cash, "receivable_accounts":receivables, "payable_accounts":payables,
+        "cash_accounts_identified":!cash.is_empty(), "receivable_accounts_identified":!receivables.is_empty(),
+        "desktop_view":view,
+    });
+    let highlights = model::highlights(&standing, &comparison, &movers, currency);
+    Ok(SummaryReport {
+        currency,
+        periods,
+        standing,
+        comparison,
+        movers,
+        attention,
+        highlights,
+        view,
     })
 }
 

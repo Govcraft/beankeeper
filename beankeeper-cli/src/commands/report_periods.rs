@@ -19,20 +19,25 @@
 
 use std::collections::HashMap;
 
+use beankeeper::types::Currency;
 use chrono::{Datelike, Months, NaiveDate};
 use clap::ValueEnum;
+use serde::Serialize;
+
+use super::report_dates::{DateRange, parse_date};
 
 use crate::cli::{AccountTypeArg, Cli, Command, OutputFormat, ReportCommand};
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, chart};
 
 /// Maximum number of period columns a single `--period` report may produce.
 pub const MAX_PERIODS: usize = 120;
 
 /// Calendar granularity for `--period`.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PeriodArg {
     /// One column per calendar month (labelled `2026-01`).
     Month,
@@ -199,18 +204,57 @@ pub struct SummaryLine {
     pub amounts: Vec<i64>,
 }
 
+/// The columns for a computed report. A comparison always has both endpoints.
+#[derive(Debug, Clone)]
+pub(crate) enum ReportColumns {
+    Periods(PeriodArg, Vec<Column>),
+    Compare(CompareArg, [Column; 2]),
+}
+
+impl ReportColumns {
+    fn as_slice(&self) -> &[Column] {
+        match self {
+            Self::Periods(_, columns) => columns,
+            Self::Compare(_, columns) => columns,
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        match self {
+            Self::Periods(period, _) => Layout::Periods(*period),
+            Self::Compare(compare, _) => Layout::Compare(*compare),
+        }
+    }
+}
+
 /// A fully computed multi-column report, ready for rendering.
 #[derive(Debug, Clone)]
 pub struct MultiColumnReport {
     pub kind: MultiReportKind,
-    pub layout: Layout,
-    pub currency_code: String,
-    pub minor_units: u8,
+    pub currency: Currency,
     pub from: NaiveDate,
     pub to: NaiveDate,
-    pub columns: Vec<Column>,
     pub accounts: Vec<AccountLine>,
     pub summary: Vec<SummaryLine>,
+    columns: ReportColumns,
+}
+
+impl MultiColumnReport {
+    /// Column layout used for rendering values.
+    #[must_use]
+    pub fn layout(&self) -> Layout {
+        self.columns.layout()
+    }
+
+    /// Columns in display order.
+    #[must_use]
+    pub fn columns(&self) -> &[Column] {
+        self.columns.as_slice()
+    }
+
+    pub(crate) fn report_columns(&self) -> &ReportColumns {
+        &self.columns
+    }
 }
 
 /// Command id for the multi-column modes, or `None` for any other command.
@@ -266,11 +310,7 @@ pub fn try_run(
     use_color: bool,
 ) -> Option<Result<(), CliError>> {
     let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput {
-        format,
-        use_color,
-        writer: &mut stdout,
-    };
+    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
     try_run_to(cli, db, company, sub, &mut output)
 }
 
@@ -328,54 +368,7 @@ fn run(
     req: &Request<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let option = match req.layout {
-        Layout::Periods(_) => "--period",
-        Layout::Compare(_) => "--compare",
-    };
-    let (from, to) = parse_range(option, req.from, req.to)?;
-
-    let columns = match req.layout {
-        Layout::Periods(p) => period_columns(from, to, p)?,
-        Layout::Compare(c) => {
-            let (prior_from, prior_to) = prior_range(from, to, c)?;
-            vec![
-                Column {
-                    label: range_label(from, to),
-                    from,
-                    to,
-                },
-                Column {
-                    label: range_label(prior_from, prior_to),
-                    from: prior_from,
-                    to: prior_to,
-                },
-            ]
-        }
-    };
-
-    let currency =
-        super::report_currency::resolve_report_currency(db.conn(), company, req.currency)?;
-    let type_filter = req.account_type.map(|t| format!("{t:?}").to_lowercase());
-    let (accounts, summary) = build_lines(
-        db.conn(),
-        company,
-        req.kind,
-        type_filter.as_deref(),
-        currency.code(),
-        &columns,
-    )?;
-
-    let report = MultiColumnReport {
-        kind: req.kind,
-        layout: req.layout,
-        currency_code: currency.code().to_string(),
-        minor_units: currency.minor_units(),
-        from,
-        to,
-        columns,
-        accounts,
-        summary,
-    };
+    let report = compute(db, company, req)?;
 
     match output.format {
         OutputFormat::Table => {
@@ -388,11 +381,10 @@ fn run(
         OutputFormat::Json => {
             let id = mode_command_id(req.kind, req.layout);
             let meta = cli.meta(id, Some(company));
-            writeln!(
-                output.writer,
-                "{}",
-                output::report_periods::render_json(&report, meta)?
-            )?;
+            let chart = chart::requested(cli, || {
+                chart::periods(company, &report, cli.output.chart_all)
+            })?;
+            output.write_json(meta, output::report_periods::report_json(&report), chart)?;
         }
         OutputFormat::Csv => {
             write!(
@@ -407,38 +399,59 @@ fn run(
         eprintln!(
             "[ok] {} generated ({} columns)",
             req.kind.title().to_lowercase(),
-            report.columns.len()
+            report.columns().len()
         );
     }
     Ok(())
 }
 
-/// Parse and validate `--from`/`--to`, both of which are required here.
-fn parse_range(
-    option: &str,
-    from: Option<&str>,
-    to: Option<&str>,
-) -> Result<(NaiveDate, NaiveDate), CliError> {
-    let (Some(from), Some(to)) = (from, to) else {
-        return Err(CliError::Validation(format!(
-            "{option} requires both --from and --to (YYYY-MM-DD)"
-        )));
+fn compute(db: &Db, company: &str, req: &Request<'_>) -> Result<MultiColumnReport, CliError> {
+    let dates = DateRange::resolve(req.from, req.to, chrono::Local::now().date_naive())?;
+    let from = dates.from();
+    let to = dates.to();
+    let columns = match req.layout {
+        Layout::Periods(period) => {
+            ReportColumns::Periods(period, period_columns(from, to, period)?)
+        }
+        Layout::Compare(compare) => {
+            let (prior_from, prior_to) = prior_range(from, to, compare)?;
+            ReportColumns::Compare(
+                compare,
+                [
+                    Column {
+                        label: range_label(from, to),
+                        from,
+                        to,
+                    },
+                    Column {
+                        label: range_label(prior_from, prior_to),
+                        from: prior_from,
+                        to: prior_to,
+                    },
+                ],
+            )
+        }
     };
-    let from = parse_date("--from", from)?;
-    let to = parse_date("--to", to)?;
-    if from > to {
-        return Err(CliError::Validation(format!(
-            "--from ({from}) must be on or before --to ({to})"
-        )));
-    }
-    Ok((from, to))
-}
 
-fn parse_date(option: &str, value: &str) -> Result<NaiveDate, CliError> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
-        CliError::Validation(format!(
-            "invalid {option} date {value:?}: expected YYYY-MM-DD"
-        ))
+    let currency =
+        super::report_currency::resolve_report_currency(db.conn(), company, req.currency)?;
+    let type_filter = req.account_type.map(|t| format!("{t:?}").to_lowercase());
+    let (accounts, summary) = build_lines(
+        db.conn(),
+        company,
+        req.kind,
+        type_filter.as_deref(),
+        currency.code(),
+        columns.as_slice(),
+    )?;
+    Ok(MultiColumnReport {
+        kind: req.kind,
+        currency,
+        from,
+        to,
+        columns,
+        accounts,
+        summary,
     })
 }
 
@@ -586,16 +599,16 @@ pub fn normal_side_net(row: &db::BalanceRow) -> i64 {
 }
 
 /// Fetch the balance rows for one column window.
-pub(super) fn fetch_column_rows(
+pub(super) fn fetch_window_rows(
     conn: &rusqlite::Connection,
     company: &str,
     kind: MultiReportKind,
     type_filter: Option<&str>,
     currency: &str,
-    col: &Column,
+    (from, to): (NaiveDate, NaiveDate),
 ) -> Result<Vec<db::BalanceRow>, CliError> {
-    let from = col.from.format("%Y-%m-%d").to_string();
-    let to = col.to.format("%Y-%m-%d").to_string();
+    let from = from.format("%Y-%m-%d").to_string();
+    let to = to.format("%Y-%m-%d").to_string();
     let (from, to) = (from.as_str(), to.as_str());
     let rows = match kind {
         MultiReportKind::IncomeStatement => {
@@ -629,6 +642,10 @@ pub(super) fn fetch_column_rows(
     Ok(rows)
 }
 
+fn amount_overflow() -> CliError {
+    CliError::Validation("report amount exceeds the supported minor-unit range".into())
+}
+
 /// Fetch balances for every column window and pivot them into account lines
 /// plus the report's summary lines.
 fn build_lines(
@@ -648,27 +665,35 @@ fn build_lines(
     let mut expenses = vec![0i64; n];
 
     for (i, col) in columns.iter().enumerate() {
-        let rows = fetch_column_rows(conn, company, kind, type_filter, currency, col)?;
+        let rows = fetch_window_rows(
+            conn,
+            company,
+            kind,
+            type_filter,
+            currency,
+            (col.from, col.to),
+        )?;
 
         for row in &rows {
-            let overflow = || {
-                CliError::Validation("report amount exceeds the supported minor-unit range".into())
-            };
             let (positive, negative) = if matches!(row.account_type.as_str(), "asset" | "expense") {
                 (row.debit_total, row.credit_total)
             } else {
                 (row.credit_total, row.debit_total)
             };
-            let net = positive.checked_sub(negative).ok_or_else(overflow)?;
+            let net = positive.checked_sub(negative).ok_or_else(amount_overflow)?;
             debits[i] = debits[i]
                 .checked_add(row.debit_total)
-                .ok_or_else(overflow)?;
+                .ok_or_else(amount_overflow)?;
             credits[i] = credits[i]
                 .checked_add(row.credit_total)
-                .ok_or_else(overflow)?;
+                .ok_or_else(amount_overflow)?;
             match row.account_type.as_str() {
-                "revenue" => revenue[i] = revenue[i].checked_add(net).ok_or_else(overflow)?,
-                "expense" => expenses[i] = expenses[i].checked_add(net).ok_or_else(overflow)?,
+                "revenue" => {
+                    revenue[i] = revenue[i].checked_add(net).ok_or_else(amount_overflow)?;
+                }
+                "expense" => {
+                    expenses[i] = expenses[i].checked_add(net).ok_or_else(amount_overflow)?;
+                }
                 _ => {}
             }
             let pos = *index.entry(row.code.clone()).or_insert_with(|| {
@@ -701,13 +726,7 @@ fn build_lines(
             let net_income = revenue
                 .iter()
                 .zip(&expenses)
-                .map(|(r, e)| {
-                    r.checked_sub(*e).ok_or_else(|| {
-                        CliError::Validation(
-                            "report amount exceeds the supported minor-unit range".into(),
-                        )
-                    })
-                })
+                .map(|(r, e)| r.checked_sub(*e).ok_or_else(amount_overflow))
                 .collect::<Result<Vec<_>, _>>()?;
             vec![
                 SummaryLine {
