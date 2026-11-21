@@ -15,6 +15,7 @@ use crate::output::chart::{self, Chart, WithChart};
 use crate::output::json::{Envelope, Meta, serialize_payload};
 
 pub use super::report_dates::DateRange;
+use super::report_dates::DateWindow;
 
 /// Run a `bk report` subcommand.
 ///
@@ -153,7 +154,7 @@ fn run_resolved_to(
 
     let today = chrono::Local::now().date_naive();
     let resolved = super::report_dates::resolve(sub, today)?;
-    dispatch_report(cli, db, company, &resolved, output)
+    dispatch_report(cli, db, company, &resolved, today, output)
 }
 
 fn dispatch_report(
@@ -161,6 +162,7 @@ fn dispatch_report(
     db: &Db,
     company: &str,
     sub: &ReportCommand,
+    today: NaiveDate,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     match sub {
@@ -242,14 +244,15 @@ fn dispatch_report(
             currency,
             filter_metadata,
         } => {
-            let opts = super::report_ledger::LedgerOptions {
+            let dates = DateWindow::resolve(from.as_deref(), to.as_deref(), false, today)?;
+            let request = super::report_ledger::LedgerRequest {
                 accounts: account,
-                from: from.as_deref(),
-                to: to.as_deref(),
+                from: dates.from,
+                to: Some(dates.to),
                 currency: currency.as_deref(),
                 filter_metadata,
             };
-            super::report_ledger::run_to(cli, db, company, &opts, output)
+            super::report_ledger::run_to(cli, db, company, &request, output)
         }
         ReportCommand::Aging(args) => {
             super::report_aging::run_to(cli, db, company, &args.into(), output)

@@ -126,8 +126,7 @@ pub(super) fn resolve(sub: &ReportCommand, today: NaiveDate) -> Result<ReportCom
             compare: None,
             ..
         }
-        | ReportCommand::Balance { from, to, .. }
-        | ReportCommand::Ledger { from, to, .. } => {
+        | ReportCommand::Balance { from, to, .. } => {
             resolve_bounds(from, to, false, today)?;
         }
         ReportCommand::TaxSummary { from, to, .. } => {
@@ -153,6 +152,7 @@ pub(super) fn resolve(sub: &ReportCommand, today: NaiveDate) -> Result<ReportCom
         | ReportCommand::IncomeStatement { .. }
         | ReportCommand::TrialBalance { .. }
         | ReportCommand::Trend(_)
+        | ReportCommand::Ledger { .. }
         | ReportCommand::CashFlow(_)
         // Budget variance uses an explicit year and month numbers, not dates.
         | ReportCommand::BudgetVariance { .. } => {}
