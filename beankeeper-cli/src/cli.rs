@@ -929,7 +929,7 @@ pub enum AuditCommand {
         #[arg(long)]
         agent: Option<String>,
 
-        /// Restrict to one entity kind (entry, transaction, budget, account, company).
+        /// Restrict to one entity kind.
         #[arg(long, value_enum)]
         entity: Option<AuditEntityArg>,
 
@@ -947,114 +947,8 @@ pub enum AuditCommand {
     },
 }
 
-/// Entity-kind filter for `audit log`.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuditEntityArg {
-    Period,
-    Proposal,
-    #[value(name = "spend_limit", alias = "spend-limit")]
-    SpendLimit,
-    Policy,
-    Schedule,
-    Rule,
-    Entry,
-    Transaction,
-    Budget,
-    Account,
-    Company,
-    Key,
-    Agent,
-}
-
-impl AuditEntityArg {
-    /// Returns the database string representation.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Period => "period",
-            Self::Proposal => "proposal",
-            Self::SpendLimit => "spend_limit",
-            Self::Policy => "policy",
-            Self::Schedule => "schedule",
-            Self::Rule => "rule",
-            Self::Entry => "entry",
-            Self::Transaction => "transaction",
-            Self::Budget => "budget",
-            Self::Account => "account",
-            Self::Company => "company",
-            Self::Key => "key",
-            Self::Agent => "agent",
-        }
-    }
-}
-
-/// Action-kind filter for `audit log`.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuditActionArg {
-    #[value(name = "period_close", alias = "period-close")]
-    PeriodClose,
-    #[value(name = "period_reopen", alias = "period-reopen")]
-    PeriodReopen,
-    #[value(name = "proposal_approve", alias = "proposal-approve")]
-    ProposalApprove,
-    #[value(name = "proposal_reject", alias = "proposal-reject")]
-    ProposalReject,
-    #[value(name = "limit_set", alias = "limit-set")]
-    LimitSet,
-    #[value(name = "policy_change", alias = "policy-change")]
-    PolicyChange,
-    ScheduleCancel,
-    ScheduleRun,
-    #[value(name = "metadata_set", alias = "metadata-set")]
-    MetadataSet,
-    #[value(name = "metadata_unset", alias = "metadata-unset")]
-    MetadataUnset,
-    RuleDelete,
-    Create,
-    StatusChange,
-    Correlate,
-    Reverse,
-    BudgetSet,
-    BudgetDelete,
-    AccountDelete,
-    CompanyDelete,
-    KeyInit,
-    TokenIssue,
-    TokenRevoke,
-    Attach,
-}
-
-impl AuditActionArg {
-    /// Returns the database string representation.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::PeriodClose => "period_close",
-            Self::PeriodReopen => "period_reopen",
-            Self::ProposalApprove => "proposal_approve",
-            Self::ProposalReject => "proposal_reject",
-            Self::LimitSet => "limit_set",
-            Self::PolicyChange => "policy_change",
-            Self::MetadataSet => "metadata_set",
-            Self::MetadataUnset => "metadata_unset",
-            Self::ScheduleCancel => "schedule_cancel",
-            Self::ScheduleRun => "schedule_run",
-            Self::RuleDelete => "rule_delete",
-            Self::Create => "create",
-            Self::StatusChange => "status_change",
-            Self::Correlate => "correlate",
-            Self::Reverse => "reverse",
-            Self::BudgetSet => "budget_set",
-            Self::BudgetDelete => "budget_delete",
-            Self::AccountDelete => "account_delete",
-            Self::CompanyDelete => "company_delete",
-            Self::KeyInit => "key_init",
-            Self::TokenIssue => "token_issue",
-            Self::TokenRevoke => "token_revoke",
-            Self::Attach => "attach",
-        }
-    }
-}
+/// Shared typed classifications for audit-log filters.
+pub use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as AuditEntityArg};
 
 /// Arguments for account commands.
 #[derive(Args, Debug)]

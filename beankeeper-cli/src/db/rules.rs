@@ -179,7 +179,7 @@ pub fn create_rule(
             conn,
             actor,
             company,
-            "rule",
+            super::audit::Creation::Rule,
             &rule.id.to_string(),
             &serde_json::json!(&rule),
         )?;

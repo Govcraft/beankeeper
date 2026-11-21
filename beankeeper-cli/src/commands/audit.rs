@@ -4,6 +4,7 @@ use beankeeper::types::Currency;
 use rusqlite::OptionalExtension as _;
 
 use crate::cli::{AuditCommand, Cli, OutputFormat, resolve_format};
+use crate::db::audit::AuditEntity;
 use crate::db::{Db, ListAuditParams, count_audit, list_audit};
 use crate::error::CliError;
 use crate::output;
@@ -32,8 +33,8 @@ fn list_params(sub: &AuditCommand) -> ListAuditParams<'_> {
     ListAuditParams {
         agent_uri: agent.as_deref(),
         company_slug: company.as_deref(),
-        entity: entity.map(crate::cli::AuditEntityArg::as_str),
-        action: action.map(crate::cli::AuditActionArg::as_str),
+        entity: *entity,
+        action: *action,
         limit: (*limit).max(0),
         offset: (*offset).max(0),
     }
@@ -73,9 +74,9 @@ fn run_log(
                     csv_field(&r.changed_at),
                     csv_field(&r.actor),
                     csv_field(r.company_slug.as_deref().unwrap_or("")),
-                    csv_field(&r.entity),
+                    csv_field(r.entity.as_str()),
                     csv_field(&r.entity_id),
-                    csv_field(&r.action),
+                    csv_field(r.action.as_str()),
                     csv_field(r.agent_uri.as_deref().unwrap_or("")),
                     csv_field(r.token_jti.as_deref().unwrap_or("")),
                 );
@@ -227,11 +228,13 @@ fn snapshot_currency(db: &Db, row: &crate::db::AuditLogRow) -> Result<Option<Cur
     // Entry and transaction financial fields are immutable, so a lookup is
     // safe for snapshots recorded before currency was included. Mutable or
     // deleted budget rows cannot safely identify a historical currency.
-    let sql = match row.entity.as_str() {
-        "entry" => {
+    let sql = match row.entity {
+        AuditEntity::Entry => {
             "SELECT t.currency FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE e.id = ?1 AND e.company_slug = ?2"
         }
-        "transaction" => "SELECT currency FROM transactions WHERE id = ?1 AND company_slug = ?2",
+        AuditEntity::Transaction => {
+            "SELECT currency FROM transactions WHERE id = ?1 AND company_slug = ?2"
+        }
         _ => return Ok(None),
     };
     let code: Option<String> = db

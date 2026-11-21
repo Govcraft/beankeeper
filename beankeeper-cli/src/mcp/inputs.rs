@@ -16,6 +16,8 @@ use super::input_values::{
 use crate::commands::{reference::TransactionReference, report_periods::CompareArg};
 use crate::db::proposals::ProposalId;
 
+pub(super) use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as AuditEntityArg};
+
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
 type CurrencyCode = Text<Currency>;
@@ -70,41 +72,6 @@ pub(super) enum AgingMethodArg {
 pub(super) enum ReconciliationModeArg {
     Bank,
     Settlement,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub(super) enum AuditEntityArg {
-    Period,
-    Policy,
-    Entry,
-    Transaction,
-    Budget,
-    Account,
-    Company,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub(super) enum AuditActionArg {
-    #[serde(rename = "period_close")]
-    PeriodClose,
-    #[serde(rename = "period_reopen")]
-    PeriodReopen,
-    #[serde(rename = "policy_change")]
-    PolicyChange,
-    #[serde(rename = "metadata_set")]
-    MetadataSet,
-    #[serde(rename = "metadata_unset")]
-    MetadataUnset,
-    Create,
-    StatusChange,
-    Reverse,
-    Correlate,
-    BudgetSet,
-    BudgetDelete,
-    AccountDelete,
-    CompanyDelete,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
