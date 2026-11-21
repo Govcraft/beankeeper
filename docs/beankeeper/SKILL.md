@@ -15,6 +15,21 @@ description: >
 
 Beankeeper is a double-entry accounting system operated through the `bk` CLI or its MCP server. It stores data in a local SQLite database (optionally encrypted via SQLCipher). All output supports three formats: human-readable tables, machine-readable JSON, and CSV.
 
+## Install and set up Beankeeper on this machine
+
+- **Desktop-managed books.** Follow the Desktop skill for this operating system to
+  install the verified release, check the local service, and register the agent.
+  Have the owner handle the recovery kit directly.
+  [Beankeeper Desktop skill](https://raw.githubusercontent.com/Govcraft/beankeeper-desktop/main/SKILL.md)
+- **Standalone local books.** Install `bk` and confirm it with `bk --version`.
+  For an existing ledger, use its configured path. For new books, choose a local
+  database path and have the owner initialize it with `bk --db PATH init --encrypt`,
+  entering the passphrase directly. Use `bk --db PATH --json verify` to check the
+  ledger. To connect an MCP client, configure `bk --db PATH mcp serve` with the
+  documented noninteractive passphrase source.
+  [CLI installation and release verification](../../README.md#install) ·
+  [MCP setup](../../README.md#connect-an-ai-assistant-through-mcp)
+
 For binary installation, `install.sh` verifies the archive and checksum file's
 Sigstore bundles when `cosign` is on `PATH`, before extraction or installation.
 Missing bundles (HTTP 404) warn that the release predates signing and fall back
