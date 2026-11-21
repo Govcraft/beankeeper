@@ -1,5 +1,6 @@
 //! Human-readable table output using `comfy-table` and `anstyle` colours.
 
+use beankeeper::types::DebitOrCredit;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
@@ -346,12 +347,15 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
     for entry in entries {
         let amount_str = format_amount(entry.amount, currency_minor_units);
 
-        let (prefix, direction_style) = if entry.direction == "debit" {
-            total_debits = total_debits.saturating_add(entry.amount);
-            ("DR", cyan_style())
-        } else {
-            total_credits = total_credits.saturating_add(entry.amount);
-            ("CR", dim_style())
+        let (prefix, direction_style) = match entry.direction {
+            DebitOrCredit::Debit => {
+                total_debits = total_debits.saturating_add(entry.amount);
+                ("DR", cyan_style())
+            }
+            DebitOrCredit::Credit => {
+                total_credits = total_credits.saturating_add(entry.amount);
+                ("CR", dim_style())
+            }
         };
 
         let memo_suffix = entry
@@ -1067,7 +1071,7 @@ mod tests {
                 transaction_id: 42,
                 account_code: "1000".into(),
                 company_slug: "acme".into(),
-                direction: "debit".into(),
+                direction: DebitOrCredit::Debit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
@@ -1078,7 +1082,7 @@ mod tests {
                 transaction_id: 42,
                 account_code: "4000".into(),
                 company_slug: "acme".into(),
-                direction: "credit".into(),
+                direction: DebitOrCredit::Credit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
@@ -1116,7 +1120,7 @@ mod tests {
                 transaction_id: 1,
                 account_code: "1000".into(),
                 company_slug: "acme".into(),
-                direction: "debit".into(),
+                direction: DebitOrCredit::Debit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
@@ -1127,7 +1131,7 @@ mod tests {
                 transaction_id: 1,
                 account_code: "4000".into(),
                 company_slug: "acme".into(),
-                direction: "credit".into(),
+                direction: DebitOrCredit::Credit,
                 amount: 3000,
                 memo: None,
                 tax_category: None,

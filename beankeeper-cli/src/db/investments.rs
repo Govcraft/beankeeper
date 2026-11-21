@@ -566,20 +566,13 @@ fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
     for entry in p.entries {
         let money = entry.amount.money();
         require_currency(money, p.currency)?;
-        let direction = match entry.direction {
-            DebitOrCredit::Debit => {
-                journal = journal.debit(entry.account, money.amount())?;
-                "debit"
-            }
-            DebitOrCredit::Credit => {
-                journal = journal.credit(entry.account, money.amount())?;
-                "credit"
-            }
-            _ => return Err(invalid("unsupported investment entry direction")),
-        };
+        journal = match entry.direction {
+            DebitOrCredit::Debit => journal.debit(entry.account, money.amount()),
+            DebitOrCredit::Credit => journal.credit(entry.account, money.amount()),
+        }?;
         entries.push(PostEntryParams {
             account_code: entry.account.code().as_str().into(),
-            direction: direction.into(),
+            direction: entry.direction.code().into(),
             amount: minor(money)?,
             memo: None,
             tax_category: None,

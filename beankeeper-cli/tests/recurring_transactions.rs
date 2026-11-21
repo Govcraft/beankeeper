@@ -189,7 +189,7 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
             && entry.status == beankeeper_cli::db::EntryStatus::Uncleared));
         let debit = entries
             .iter()
-            .find(|entry| entry.direction == "debit")
+            .find(|entry| entry.direction.is_debit())
             .ok_or("missing debit")?;
         assert_eq!(debit.memo.as_deref(), Some("Office rent"));
         assert_eq!(debit.tax_category.as_deref(), Some("rent"));

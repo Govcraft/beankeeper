@@ -214,7 +214,7 @@ pub struct EntryJson {
     /// Entry id (the `--entry` of `txn clear`).
     id: i64,
     account_code: String,
-    direction: String,
+    direction: &'static str,
     amount: i64,
     memo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -249,7 +249,7 @@ fn entry_json(e: &EntryRow, clearings: Option<&[Clearing]>) -> EntryJson {
     EntryJson {
         id: e.id,
         account_code: e.account_code.clone(),
-        direction: e.direction.clone(),
+        direction: e.direction.code(),
         amount: e.amount,
         memo: e.memo.clone(),
         tax_category: e.tax_category.clone(),
@@ -1075,7 +1075,7 @@ mod tests {
                     transaction_id: 1,
                     account_code: "1000".into(),
                     company_slug: "acme".into(),
-                    direction: "debit".into(),
+                    direction: beankeeper::types::DebitOrCredit::Debit,
                     amount: 5000,
                     memo: None,
                     tax_category: None,
@@ -1086,7 +1086,7 @@ mod tests {
                     transaction_id: 1,
                     account_code: "4000".into(),
                     company_slug: "acme".into(),
-                    direction: "credit".into(),
+                    direction: beankeeper::types::DebitOrCredit::Credit,
                     amount: 5000,
                     memo: None,
                     tax_category: None,

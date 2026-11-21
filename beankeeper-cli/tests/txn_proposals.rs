@@ -196,7 +196,7 @@ fn assert_approved_details(
     assert!(entries.iter().all(|entry| entry.amount == 50001));
     let debit = entries
         .iter()
-        .find(|entry| entry.direction == "debit")
+        .find(|entry| entry.direction.is_debit())
         .ok_or("missing debit")?;
     assert_eq!(debit.memo.as_deref(), Some("Receipt"));
     assert_eq!(debit.tax_category.as_deref(), Some("office"));

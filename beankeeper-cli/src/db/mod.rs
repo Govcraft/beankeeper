@@ -7,6 +7,7 @@ pub mod budgets;
 pub mod clearings;
 pub mod companies;
 pub mod connection;
+pub(crate) mod direction;
 pub mod ids;
 pub mod investments;
 pub mod metadata;
@@ -104,7 +105,7 @@ pub struct EntryRow {
     pub transaction_id: i64,
     pub account_code: String,
     pub company_slug: String,
-    pub direction: String,
+    pub direction: beankeeper::types::DebitOrCredit,
     pub amount: i64,
     pub memo: Option<String>,
     pub tax_category: Option<String>,

@@ -107,7 +107,7 @@ pub(super) fn build(
     let mut vendors = BTreeMap::new();
     // Input is ordered by transaction ID. Count split debit legs only once.
     let mut previous_payment = None;
-    for entry in entries.iter().filter(|entry| entry.direction == "debit") {
+    for entry in entries.iter().filter(|entry| entry.direction.is_debit()) {
         let Some(metadata) = entry
             .metadata
             .as_deref()
