@@ -572,35 +572,33 @@ pub fn set_spend_limit(
 ) -> Result<super::spend_limits::SpendLimit, CliError> {
     atomically(conn, || {
         require_capability(conn, actor, crate::capability::Capability::Admin)?;
-        agent_uri::AgentUri::parse(&limit.agent_uri)
-            .map_err(|error| CliError::Validation(error.to_string()))?;
-        beankeeper::types::Currency::from_code(&limit.currency)
-            .map_err(|error| CliError::Validation(error.to_string()))?;
-        if limit.max_post.is_none() && limit.daily_limit.is_none()
-            || limit.max_post.is_some_and(|amount| amount < 0)
-            || limit.daily_limit.is_some_and(|amount| amount < 0)
-        {
-            return Err(CliError::Validation(
-                "provide at least one nonnegative spend limit".into(),
-            ));
-        }
-        super::companies::get_company(conn, &limit.company_slug)?;
-        let before = super::spend_limits::list(conn, &limit.agent_uri, Some(&limit.company_slug))?
+        let uri = limit.agent_uri();
+        let company = limit.company().as_str();
+        let currency = limit.currency();
+        let caps = limit.caps();
+        super::companies::get_company(conn, company)?;
+        let before = super::spend_limits::list(conn, uri, Some(company))?
             .into_iter()
-            .find(|row| row.currency == limit.currency);
+            .find(|row| row.currency() == currency);
         conn.execute(
             "INSERT INTO agent_spend_limits(agent_uri, company_slug, currency, max_post, daily_limit)
              VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(agent_uri, company_slug, currency)
              DO UPDATE SET max_post = excluded.max_post, daily_limit = excluded.daily_limit",
-            params![limit.agent_uri, limit.company_slug, limit.currency, limit.max_post, limit.daily_limit],
+            params![
+                uri,
+                company,
+                currency.code(),
+                caps.max_post().map(super::spend_limits::Cap::minor_units),
+                caps.daily_limit().map(super::spend_limits::Cap::minor_units),
+            ],
         )?;
         record(
             conn,
             actor,
             AuditChange {
-                company_slug: Some(&limit.company_slug),
+                company_slug: Some(limit.company().as_str()),
                 entity: AuditEntity::SpendLimit,
-                entity_id: &limit.agent_uri,
+                entity_id: uri,
                 action: AuditAction::LimitSet,
                 snapshots: (
                     before.as_ref().map(snapshot).as_deref(),
@@ -627,12 +625,12 @@ pub fn clear_spend_limits(
         let before = super::spend_limits::list(conn, uri, company)?;
         for limit in &before {
             conn.execute("DELETE FROM agent_spend_limits WHERE agent_uri = ?1 AND company_slug = ?2 AND currency = ?3",
-                params![uri, limit.company_slug, limit.currency])?;
+                params![uri, limit.company().as_str(), limit.currency().code()])?;
             record(
                 conn,
                 actor,
                 AuditChange {
-                    company_slug: Some(&limit.company_slug),
+                    company_slug: Some(limit.company().as_str()),
                     entity: AuditEntity::SpendLimit,
                     entity_id: uri,
                     action: AuditAction::LimitSet,

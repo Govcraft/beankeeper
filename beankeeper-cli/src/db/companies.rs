@@ -3,6 +3,33 @@ use rusqlite::{Connection, params};
 use super::CompanyRow;
 use crate::error::CliError;
 
+/// A company slug validated before use in a company-scoped operation.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CompanySlug(Box<str>);
+
+impl CompanySlug {
+    /// Returns the persisted slug text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CompanySlug {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for CompanySlug {
+    type Err = CliError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        validate_slug(raw)?;
+        Ok(Self(raw.into()))
+    }
+}
+
 /// Validates a company slug.
 ///
 /// Must be 1-64 characters, lowercase alphanumeric and hyphens only,
