@@ -5,6 +5,9 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::CliError;
 
+mod read;
+pub use read::{ReadConn, ReadStatement};
+
 /// Database connection wrapper with `SQLCipher` support.
 pub struct Db {
     conn: Connection,
@@ -117,6 +120,12 @@ impl Db {
     /// Returns a reference to the underlying `rusqlite` connection.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Borrows this ledger for query-only access without exposing its SQLite connection.
+    #[must_use]
+    pub fn read(&self) -> ReadConn<'_> {
+        ReadConn::new(&self.conn)
     }
 }
 

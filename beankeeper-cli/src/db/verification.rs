@@ -1,8 +1,9 @@
 //! Verification of persisted accounting invariants, independent of CLI input.
 
 use beankeeper::types::Currency;
-use rusqlite::{Connection, params};
+use rusqlite::params;
 
+use super::connection::ReadConn;
 use crate::error::CliError;
 
 /// Checks every transaction using integer totals wide enough for SQLite amounts.
@@ -10,7 +11,7 @@ use crate::error::CliError;
 ///
 /// # Errors
 /// Returns a database error identifying the first invalid transaction.
-pub fn verify_accounting(conn: &Connection) -> Result<(), CliError> {
+pub fn verify_accounting(conn: ReadConn<'_>) -> Result<(), CliError> {
     let mut txns =
         conn.prepare("SELECT id, company_slug, currency FROM transactions ORDER BY id")?;
     let mut entries = conn.prepare(

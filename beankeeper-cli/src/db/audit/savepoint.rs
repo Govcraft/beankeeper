@@ -1,0 +1,99 @@
+//! Savepoint lifetime for an audited mutation or a nested audited batch.
+
+use rusqlite::Connection;
+
+use crate::error::CliError;
+
+pub(super) struct AuditedTx<'a> {
+    connection: &'a Connection,
+    name: &'static str,
+    active: bool,
+}
+
+impl<'a> AuditedTx<'a> {
+    fn begin(connection: &'a Connection, name: &'static str) -> Result<Self, CliError> {
+        connection.execute_batch(&format!("SAVEPOINT {name}"))?;
+        Ok(Self {
+            connection,
+            name,
+            active: true,
+        })
+    }
+
+    fn commit(mut self) -> Result<(), CliError> {
+        self.connection
+            .execute_batch(&format!("RELEASE {}", self.name))?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for AuditedTx<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let name = self.name;
+            // Keep the originating error (including an unwind) authoritative.
+            let _ = self
+                .connection
+                .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+        }
+    }
+}
+
+pub(super) fn with_audited_tx<T>(
+    connection: &Connection,
+    name: &'static str,
+    run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    let transaction = AuditedTx::begin(connection, name)?;
+    let value = run(&transaction)?;
+    transaction.commit()?;
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_rolls_back_the_audited_savepoint() -> Result<(), CliError> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch("CREATE TABLE sample(value INTEGER)")?;
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = with_audited_tx(&connection, "sp_example", |_| -> Result<(), CliError> {
+                connection.execute("INSERT INTO sample VALUES (1)", [])?;
+                panic!("simulate an unwind during an audited mutation");
+            });
+        }));
+
+        assert!(result.is_err());
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM sample", [], |row| row.get(0))?;
+        assert_eq!(count, 0);
+        assert!(connection.is_autocommit());
+        Ok(())
+    }
+
+    #[test]
+    fn commit_error_rolls_back_the_audited_savepoint() -> Result<(), CliError> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE parent(id INTEGER PRIMARY KEY);
+             CREATE TABLE child(id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);",
+        )?;
+
+        let result = with_audited_tx(&connection, "sp_example", |_| {
+            connection.execute("INSERT INTO child VALUES (1)", [])?;
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM child", [], |row| row.get(0))?;
+        assert_eq!(count, 0);
+        assert!(connection.is_autocommit());
+        Ok(())
+    }
+}
