@@ -393,6 +393,7 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "txn_list",
         "txn_show",
         "report",
+        "financial_summary",
         "budget_list",
         "budget_set",
         "budget_delete",
@@ -778,7 +779,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 15);
+    assert_eq!(names.len(), 16);
+    assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
     assert!(!names.contains("period_close"));
     assert!(!names.contains("period_reopen"));
@@ -1756,7 +1758,8 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 15);
+    assert_eq!(names.len(), 16);
+    assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
     assert!(!names.contains("period_close"));
     assert!(!names.contains("period_reopen"));
@@ -1901,7 +1904,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     assert_eq!(shown[0]["agent_uri"], issued["agent_uri"]);
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
-    assert_eq!(tool_names(&listed)?.len(), 15);
+    assert_eq!(tool_names(&listed)?.len(), 16);
     assert!(!tool_names(&listed)?.contains("txn_post"));
     writer.success("verify", &json!({}))?;
     Ok(())
@@ -1959,5 +1962,83 @@ fn period_close_and_reopen_apply_to_mcp_postings_and_live_cli_changes() -> TestR
         "2026-03-31"
     );
     client.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
+fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("summary.db");
+    seed(&path)?;
+    bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "txn",
+            "post",
+            "-d",
+            "Sale",
+            "--date",
+            "2024-03-01",
+            "--debit",
+            "1000:12.34",
+            "--credit",
+            "4000:12.34",
+        ])
+        .assert()
+        .success();
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    assert!(tool_names(&listed)?.contains("financial_summary"));
+    let mut actual = client.success(
+        "financial_summary",
+        &json!({"company":"acme", "to":"2024-03-31"}),
+    )?;
+    let output = bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "summary",
+            "--json",
+            "--to",
+            "2024-03-31",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut expected: Value = serde_json::from_slice(&output.stdout)?;
+    actual["meta"]
+        .as_object_mut()
+        .ok_or("meta")?
+        .remove("timestamp");
+    expected["meta"]
+        .as_object_mut()
+        .ok_or("meta")?
+        .remove("timestamp");
+    assert_eq!(actual, expected);
+    assert_eq!(actual["data"]["comparison"]["series"][0]["current"], 1234);
+    for (company, to, code) in [
+        ("acme", "bad", "VALIDATION"),
+        ("missing", "2024-03-31", "NOT_FOUND"),
+    ] {
+        let response = client.call("financial_summary", &json!({"company":company,"to":to}))?;
+        assert_eq!(response["result"]["isError"], true);
+        let actual = payload(&response)?;
+        assert_eq!(actual["ok"], false);
+        assert_eq!(actual["meta"]["command"], "summary");
+        assert_eq!(actual["error"]["code"], code);
+        assert!(actual.get("data").is_none());
+    }
+    let unknown = client.call(
+        "financial_summary",
+        &json!({"company":"acme", "db":"other.db"}),
+    )?;
+    assert!(unknown.get("error").is_some() || unknown["result"]["isError"] == true);
     Ok(())
 }

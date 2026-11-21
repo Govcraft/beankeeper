@@ -41,7 +41,9 @@ impl Capability {
     pub fn for_operation(operation: &str) -> Result<Self, CliError> {
         let operation = operation.replace('_', ".");
         match operation.as_str() {
-            "period.list"
+            "summary"
+            | "financial.summary"
+            | "period.list"
             | "company.list"
             | "company.show"
             | "account.list"

@@ -175,6 +175,17 @@ referenced by retained templates cannot be deleted. Schedule creation,
 cancellation, and progress are audited under entity `schedule`, with actions
 `create`, `schedule_cancel`, and `schedule_run`.
 
+## Financial summary
+
+`bk --company SLUG summary [--from DATE] [--to DATE] [--compare-from DATE
+--compare-to DATE] [--currency CODE] [--cash-account CODE ...]
+[--receivable-account CODE ...] [--payable-account CODE ...] [--json]`
+
+Provides advisor-ready facts and chartable data without changing ledger records.
+The matching `financial_summary` MCP tool accepts `company` plus snake_case CLI
+options and returns the full CLI JSON envelope. See the [data contract, comparison
+rules and attention limits](../../financial-summary.md).
+
 ## MCP
 
 ### `bk mcp serve [--read-only] [--http [--bind ADDRESS] [--allow-remote]]`
@@ -234,6 +245,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: ["key=value", ...]`, unset takes `keys: ["key", ...]`; values are strings; reserved relationship keys are rejected |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
+| `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
