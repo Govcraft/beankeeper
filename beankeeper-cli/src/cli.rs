@@ -2245,61 +2245,7 @@ EXAMPLES:\n  \
     Custom buckets, grouped by the `customer` metadata key:\n    \
     $ bk --company acme report aging --account 1100 --buckets 15,45 --group-by-metadata customer\
 ")]
-    Aging {
-        /// Asset (receivable) or liability (payable) account code
-        /// (repeatable).
-        #[arg(long, required = true, num_args = 1)]
-        account: Vec<String>,
-
-        /// Also age every child of each --account: accounts whose code
-        /// starts with the account's code minus trailing zeros.
-        #[arg(long)]
-        include_children: bool,
-
-        /// As-of date (YYYY-MM-DD, inclusive). Defaults to today. Charges and
-        /// settlements dated after it are ignored.
-        #[arg(long)]
-        as_of: Option<String>,
-
-        /// Ascending, comma-separated bucket upper bounds in days.
-        #[arg(long, default_value = "30,60,90")]
-        buckets: String,
-
-        /// Group by this key of the (JSON) transaction metadata. Missing keys
-        /// and non-JSON or non-object metadata go to `(unassigned)`.
-        #[arg(long, visible_alias = "group-by", value_name = "KEY")]
-        group_by_metadata: Option<String>,
-
-        /// Currency code. Defaults to the company's single transaction currency.
-        #[arg(long)]
-        currency: Option<String>,
-
-        /// How settlements are matched to charges.
-        #[arg(long, value_enum, default_value_t = AgingMethodArg::Fifo)]
-        method: AgingMethodArg,
-
-        /// Metadata key holding a settlement's link to a charge (reference or
-        /// transaction id); default `applies_to`. Only used with `--method specific`.
-        #[arg(long, value_name = "KEY")]
-        link_key: Option<String>,
-
-        /// List the individual open charges under each counterparty (table
-        /// and CSV; JSON always includes them).
-        #[arg(long)]
-        detail: bool,
-
-        /// With several accounts and --group-by, combine each counterparty's
-        /// rows across accounts in table and CSV output (JSON always has both
-        /// views). Matching still runs per account.
-        #[arg(long, requires = "group_by_metadata")]
-        group_across_accounts: bool,
-
-        /// Only show open charges whose transaction metadata has KEY equal to
-        /// VALUE (repeatable; AND-ed). Settlements are applied before
-        /// filtering.
-        #[arg(long = "filter-metadata", value_name = "KEY=VALUE", num_args = 1)]
-        filter_metadata: Vec<String>,
-    },
+    Aging(AgingCommandArgs),
 
     /// Reconcile bank balances or AR/AP statement settlements.
     #[command(after_help = "\
@@ -2317,50 +2263,7 @@ EXAMPLES:\n  \
     Settlement mode requires --statement and an asset or liability account.\n  \
     Link credits with transaction metadata applies_to (or --link-key KEY).\
 ")]
-    Reconciliation {
-        /// Bank balances (default) or statement-scoped AR/AP settlements.
-        #[arg(long, value_enum, default_value_t = ReconciliationMode::Bank)]
-        mode: ReconciliationMode,
-
-        /// Settlement link metadata key (settlement mode only; default `applies_to`).
-        #[arg(long, value_name = "KEY")]
-        link_key: Option<String>,
-
-        /// Account code to reconcile.
-        #[arg(long)]
-        account: String,
-
-        /// As-of date (inclusive, YYYY-MM-DD). Defaults to today. Counts
-        /// clearings cleared on or before it, and as reconciled only those
-        /// reconciled on or before it.
-        #[arg(long)]
-        to: Option<String>,
-
-        /// Statement amount in major units (e.g. 1234.56): bank ending balance
-        /// or, in settlement mode, net payments against expected charges.
-        #[arg(long, allow_hyphen_values = true)]
-        statement_balance: Option<String>,
-
-        /// Only count clearings made for this statement id in the cleared and
-        /// reconciled balances (outstanding items still reflect all clearings).
-        #[arg(long)]
-        statement: Option<String>,
-
-        /// Only include entries whose transaction metadata has KEY equal to
-        /// VALUE (same rule as `txn list`). Repeatable; AND-ed.
-        #[arg(long = "filter-metadata", value_name = "KEY=VALUE", num_args = 1)]
-        filter_metadata: Vec<String>,
-
-        /// Group outstanding items by this top-level metadata key, with
-        /// subtotals and an `(unassigned)` group for items without it.
-        #[arg(long, visible_alias = "group-by", value_name = "KEY")]
-        group_by_metadata: Option<String>,
-
-        /// Currency code. Defaults to the company's single transaction
-        /// currency (USD when there are no transactions).
-        #[arg(long)]
-        currency: Option<String>,
-    },
+    Reconciliation(ReconciliationCommandArgs),
 
     /// Generate a cash flow statement (direct method).
     #[command(after_help = "\
@@ -2380,6 +2283,111 @@ EXAMPLES:\n  \
     $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-12-31 --currency EUR\
 ")]
     CashFlow(crate::commands::report_cash_flow::CashFlowArgs),
+}
+
+/// CLI arguments for the aging report.
+#[derive(Args, Debug, Clone)]
+pub struct AgingCommandArgs {
+    /// Asset (receivable) or liability (payable) account code
+    /// (repeatable).
+    #[arg(long, required = true, num_args = 1)]
+    pub account: Vec<String>,
+
+    /// Also age every child of each --account: accounts whose code
+    /// starts with the account's code minus trailing zeros.
+    #[arg(long)]
+    pub include_children: bool,
+
+    /// As-of date (YYYY-MM-DD, inclusive). Defaults to today. Charges and
+    /// settlements dated after it are ignored.
+    #[arg(long)]
+    pub as_of: Option<String>,
+
+    /// Ascending, comma-separated bucket upper bounds in days.
+    #[arg(long, default_value = "30,60,90")]
+    pub buckets: String,
+
+    /// Group by this key of the (JSON) transaction metadata. Missing keys
+    /// and non-JSON or non-object metadata go to `(unassigned)`.
+    #[arg(long, visible_alias = "group-by", value_name = "KEY")]
+    pub group_by_metadata: Option<String>,
+
+    /// Currency code. Defaults to the company's single transaction currency.
+    #[arg(long)]
+    pub currency: Option<String>,
+
+    /// How settlements are matched to charges.
+    #[arg(long, value_enum, default_value_t = AgingMethodArg::Fifo)]
+    pub method: AgingMethodArg,
+
+    /// Metadata key holding a settlement's link to a charge (reference or
+    /// transaction id); default `applies_to`. Only used with `--method specific`.
+    #[arg(long, value_name = "KEY")]
+    pub link_key: Option<String>,
+
+    /// List the individual open charges under each counterparty (table
+    /// and CSV; JSON always includes them).
+    #[arg(long)]
+    pub detail: bool,
+
+    /// With several accounts and --group-by, combine each counterparty's
+    /// rows across accounts in table and CSV output (JSON always has both
+    /// views). Matching still runs per account.
+    #[arg(long, requires = "group_by_metadata")]
+    pub group_across_accounts: bool,
+
+    /// Only show open charges whose transaction metadata has KEY equal to
+    /// VALUE (repeatable; AND-ed). Settlements are applied before
+    /// filtering.
+    #[arg(long = "filter-metadata", value_name = "KEY=VALUE", num_args = 1)]
+    pub filter_metadata: Vec<String>,
+}
+
+/// CLI arguments for the reconciliation report.
+#[derive(Args, Debug, Clone)]
+pub struct ReconciliationCommandArgs {
+    /// Bank balances (default) or statement-scoped AR/AP settlements.
+    #[arg(long, value_enum, default_value_t = ReconciliationMode::Bank)]
+    pub mode: ReconciliationMode,
+
+    /// Settlement link metadata key (settlement mode only; default `applies_to`).
+    #[arg(long, value_name = "KEY")]
+    pub link_key: Option<String>,
+
+    /// Account code to reconcile.
+    #[arg(long)]
+    pub account: String,
+
+    /// As-of date (inclusive, YYYY-MM-DD). Defaults to today. Counts
+    /// clearings cleared on or before it, and as reconciled only those
+    /// reconciled on or before it.
+    #[arg(long)]
+    pub to: Option<String>,
+
+    /// Statement amount in major units (e.g. 1234.56): bank ending balance
+    /// or, in settlement mode, net payments against expected charges.
+    #[arg(long, allow_hyphen_values = true)]
+    pub statement_balance: Option<String>,
+
+    /// Only count clearings made for this statement id in the cleared and
+    /// reconciled balances (outstanding items still reflect all clearings).
+    #[arg(long)]
+    pub statement: Option<String>,
+
+    /// Only include entries whose transaction metadata has KEY equal to
+    /// VALUE (same rule as `txn list`). Repeatable; AND-ed.
+    #[arg(long = "filter-metadata", value_name = "KEY=VALUE", num_args = 1)]
+    pub filter_metadata: Vec<String>,
+
+    /// Group outstanding items by this top-level metadata key, with
+    /// subtotals and an `(unassigned)` group for items without it.
+    #[arg(long, visible_alias = "group-by", value_name = "KEY")]
+    pub group_by_metadata: Option<String>,
+
+    /// Currency code. Defaults to the company's single transaction
+    /// currency (USD when there are no transactions).
+    #[arg(long)]
+    pub currency: Option<String>,
 }
 
 /// Output format for general commands.

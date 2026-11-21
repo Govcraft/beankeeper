@@ -9,7 +9,7 @@ use rusqlite::params;
 use serde::Serialize;
 
 use super::report::ReportOutput;
-use crate::cli::{Cli, OutputFormat, ReportCommand};
+use crate::cli::{Cli, OutputFormat};
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output::json::serialize_display;
@@ -135,30 +135,60 @@ pub fn build_vendors(
     })
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum TaxInvocation<'a> {
+    ScheduleC(&'a TaxArgs),
+    Vendor1099(&'a VendorArgs),
+}
+
+enum ResolvedTaxReport {
+    ScheduleC {
+        period: Period,
+        currency: Currency,
+    },
+    Vendor1099 {
+        period: Period,
+        threshold: VendorThreshold,
+    },
+}
+
+impl TaxInvocation<'_> {
+    fn resolve(self, db: &Db, company: &str) -> Result<ResolvedTaxReport, CliError> {
+        let args = match self {
+            Self::ScheduleC(args) => args,
+            Self::Vendor1099(args) => &args.period,
+        };
+        let currency = super::report_currency::resolve_report_currency(
+            db.conn(),
+            company,
+            args.currency.as_deref(),
+        )?;
+        let period = Period::resolve(
+            args.from.as_deref(),
+            args.to.as_deref(),
+            chrono::Local::now().date_naive(),
+        )?;
+        match self {
+            Self::ScheduleC(_) => Ok(ResolvedTaxReport::ScheduleC { period, currency }),
+            Self::Vendor1099(args) => {
+                let minor = super::txn::parse_amount_to_minor(&args.threshold, currency)?;
+                let threshold =
+                    VendorThreshold::new(Money::from_minor(i128::from(minor), currency))?;
+                Ok(ResolvedTaxReport::Vendor1099 { period, threshold })
+            }
+        }
+    }
+}
+
 pub(crate) fn run_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    sub: &ReportCommand,
+    invocation: TaxInvocation<'_>,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let args = match sub {
-        ReportCommand::ScheduleC(args) => args,
-        ReportCommand::Vendor1099(args) => &args.period,
-        _ => return Err(CliError::General("internal error: not a tax report".into())),
-    };
-    let currency = super::report_currency::resolve_report_currency(
-        db.conn(),
-        company,
-        args.currency.as_deref(),
-    )?;
-    let period = Period::resolve(
-        args.from.as_deref(),
-        args.to.as_deref(),
-        chrono::Local::now().date_naive(),
-    )?;
-    match sub {
-        ReportCommand::ScheduleC(_) => {
+    match invocation.resolve(db, company)? {
+        ResolvedTaxReport::ScheduleC { period, currency } => {
             let report = build_schedule_c(db, company, period, currency)?;
             match output.format {
                 OutputFormat::Json => {
@@ -173,10 +203,8 @@ pub(crate) fn run_to(
                 }
             }
         }
-        ReportCommand::Vendor1099(args) => {
-            let threshold = super::txn::parse_amount_to_minor(&args.threshold, currency)?;
-            let threshold =
-                VendorThreshold::new(Money::from_minor(i128::from(threshold), currency))?;
+        ResolvedTaxReport::Vendor1099 { period, threshold } => {
+            let currency = threshold.money().currency();
             let report = build_vendors(db, company, period, threshold)?;
             match output.format {
                 OutputFormat::Json => {
@@ -191,7 +219,6 @@ pub(crate) fn run_to(
                 }
             }
         }
-        _ => return Err(CliError::General("internal error: not a tax report".into())),
     }
     if !cli.verbosity.quiet {
         eprintln!("[ok] tax book summary generated");

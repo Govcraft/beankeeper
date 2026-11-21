@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::cli::{AccountTypeArg, Cli, OutputFormat, ReportCommand, resolve_format};
 use crate::commands::report_currency::resolve_report_currency;
+use crate::commands::report_tax::{self, TaxInvocation};
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
@@ -152,36 +153,10 @@ fn run_resolved_to(
 
     let today = chrono::Local::now().date_naive();
     let resolved = super::report_dates::resolve(sub, today)?;
-    let sub = &resolved;
-
-    match sub {
-        ReportCommand::ScheduleC(_) | ReportCommand::Vendor1099(_) => {
-            super::report_tax::run_to(cli, db, company, sub, output)
-        }
-        ReportCommand::Trend(args) => super::report_trend::run_to(cli, db, company, args, output),
-        ReportCommand::TrialBalance { .. }
-        | ReportCommand::Balance { .. }
-        | ReportCommand::IncomeStatement { .. }
-        | ReportCommand::BalanceSheet { .. }
-        | ReportCommand::TaxSummary { .. } => run_statement_command(cli, db, company, sub, output),
-        ReportCommand::BudgetVariance { .. } | ReportCommand::Reconciliation { .. } => {
-            run_entry_command(cli, db, company, sub, output)
-        }
-        ReportCommand::Ledger { .. } => {
-            super::report_ledger::run_command_to(cli, db, company, sub, output)
-        }
-        ReportCommand::Aging { .. } => {
-            super::report_aging::run_command_to(cli, db, company, sub, output)
-        }
-        ReportCommand::CashFlow(args) => {
-            super::report_cash_flow::run_to(cli, db, company, args, output)
-        }
-    }
+    dispatch_report(cli, db, company, &resolved, output)
 }
 
-/// Dispatch the account-balance statements: trial balance, balance, income
-/// statement, balance sheet and tax summary.
-fn run_statement_command(
+fn dispatch_report(
     cli: &Cli,
     db: &Db,
     company: &str,
@@ -189,87 +164,51 @@ fn run_statement_command(
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     match sub {
+        ReportCommand::ScheduleC(args) => {
+            report_tax::run_to(cli, db, company, TaxInvocation::ScheduleC(args), output)
+        }
+        ReportCommand::Vendor1099(args) => {
+            report_tax::run_to(cli, db, company, TaxInvocation::Vendor1099(args), output)
+        }
+        ReportCommand::Trend(args) => super::report_trend::run_to(cli, db, company, args, output),
         ReportCommand::TrialBalance {
             from,
             to,
             account_type,
             currency,
             ..
-        } => run_trial_balance(
-            cli,
-            db,
-            company,
-            &StatementOptions {
-                from: from.as_deref(),
-                to: to.as_deref(),
-                currency: currency.as_deref(),
-                account_type: account_type.as_ref(),
-            },
-            output,
-        ),
+        } => {
+            let mut opts =
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+            opts.account_type = account_type.as_ref();
+            run_trial_balance(cli, db, company, &opts, output)
+        }
         ReportCommand::Balance {
             account,
             from,
             to,
             currency,
             ..
-        } => run_balance(
-            cli,
-            db,
-            company,
-            account,
-            &StatementOptions {
-                from: from.as_deref(),
-                to: to.as_deref(),
-                currency: currency.as_deref(),
-                account_type: None,
-            },
-            output,
-        ),
+        } => {
+            let opts =
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+            run_balance(cli, db, company, account, &opts, output)
+        }
         ReportCommand::IncomeStatement {
             from, to, currency, ..
-        } => run_income_statement(
-            cli,
-            db,
-            company,
-            &StatementOptions {
-                from: from.as_deref(),
-                to: to.as_deref(),
-                currency: currency.as_deref(),
-                account_type: None,
-            },
-            output,
-        ),
+        } => {
+            let opts =
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+            run_income_statement(cli, db, company, &opts, output)
+        }
         ReportCommand::BalanceSheet { to, currency, .. } => {
             run_balance_sheet(cli, db, company, to.as_deref(), currency.as_deref(), output)
         }
-        ReportCommand::TaxSummary { from, to, currency } => run_tax_summary(
-            cli,
-            db,
-            company,
-            &StatementOptions {
-                from: from.as_deref(),
-                to: to.as_deref(),
-                currency: currency.as_deref(),
-                account_type: None,
-            },
-            output,
-        ),
-        _ => Err(CliError::General(
-            "internal error: not a statement report".to_string(),
-        )),
-    }
-}
-
-/// Dispatch budget variance and reconciliation.
-fn run_entry_command(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    sub: &ReportCommand,
-    output: &mut ReportOutput<'_>,
-) -> Result<(), CliError> {
-    match sub {
+        ReportCommand::TaxSummary { from, to, currency } => {
+            let opts =
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+            run_tax_summary(cli, db, company, &opts, output)
+        }
         ReportCommand::BudgetVariance {
             year,
             month,
@@ -293,12 +232,31 @@ fn run_entry_command(
             },
             output,
         ),
-        ReportCommand::Reconciliation { .. } => {
-            super::report_reconciliation::run_command_to(cli, db, company, sub, output)
+        ReportCommand::Reconciliation(args) => {
+            super::report_reconciliation::run_command_to(cli, db, company, args, output)
         }
-        _ => Err(CliError::General(
-            "internal error: not a budget or reconciliation report".to_string(),
-        )),
+        ReportCommand::Ledger {
+            account,
+            from,
+            to,
+            currency,
+            filter_metadata,
+        } => {
+            let opts = super::report_ledger::LedgerOptions {
+                accounts: account,
+                from: from.as_deref(),
+                to: to.as_deref(),
+                currency: currency.as_deref(),
+                filter_metadata,
+            };
+            super::report_ledger::run_to(cli, db, company, &opts, output)
+        }
+        ReportCommand::Aging(args) => {
+            super::report_aging::run_to(cli, db, company, &args.into(), output)
+        }
+        ReportCommand::CashFlow(args) => {
+            super::report_cash_flow::run_to(cli, db, company, args, output)
+        }
     }
 }
 
@@ -307,6 +265,17 @@ struct StatementOptions<'a> {
     to: Option<&'a str>,
     currency: Option<&'a str>,
     account_type: Option<&'a AccountTypeArg>,
+}
+
+impl<'a> StatementOptions<'a> {
+    fn from_cli(from: Option<&'a str>, to: Option<&'a str>, currency: Option<&'a str>) -> Self {
+        Self {
+            from,
+            to,
+            currency,
+            account_type: None,
+        }
+    }
 }
 
 /// Execute the `report trial-balance` subcommand.

@@ -151,8 +151,8 @@ fn report_operation(command: &ReportCommand) -> Operation {
         ReportCommand::Vendor1099(_) => Operation::ReportVendor1099,
         ReportCommand::BudgetVariance { .. } => Operation::ReportBudgetVariance,
         ReportCommand::Ledger { .. } => Operation::ReportLedger,
-        ReportCommand::Aging { .. } => Operation::ReportAging,
-        ReportCommand::Reconciliation { .. } => Operation::ReportReconciliation,
+        ReportCommand::Aging(_) => Operation::ReportAging,
+        ReportCommand::Reconciliation(_) => Operation::ReportReconciliation,
         ReportCommand::CashFlow(_) => Operation::ReportCashFlow,
         ReportCommand::Trend(_) => Operation::ReportTrend,
     }
