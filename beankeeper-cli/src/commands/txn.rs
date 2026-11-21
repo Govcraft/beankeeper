@@ -997,7 +997,10 @@ fn run_show(
     let att_rows = attachments::list_attachments(db_handle.conn(), company, id.try_into()?)?;
     let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
     for e in &entries {
-        clearings.insert(e.id, db::clearings::list_clearings(&company_scope, e.id)?);
+        clearings.insert(
+            e.id,
+            db::clearings::list_clearings(&company_scope, e.id.try_into()?)?,
+        );
     }
 
     // Determine currency minor units for formatting

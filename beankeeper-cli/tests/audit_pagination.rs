@@ -240,8 +240,8 @@ fn clearing_audit_resolves_immutable_entry_currency() -> TestResult {
             &Actor::new("test"),
             &db::ClearRequest {
                 company_slug: "acme",
-                transaction_id,
-                entry_id,
+                transaction_id: transaction_id.try_into()?,
+                entry_id: entry_id.try_into()?,
                 amount: Some(100),
                 date: "2026-01-31".parse()?,
                 statement: Some("S1"),

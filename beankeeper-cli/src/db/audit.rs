@@ -27,6 +27,7 @@ use super::clearings::{
 use super::companies::Company;
 use super::metadata;
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
+use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 
 mod savepoint;
@@ -1103,8 +1104,8 @@ pub fn set_entry_status(
     conn: &Connection,
     actor: &Actor,
     company_slug: &str,
-    transaction_id: i64,
-    entry_id: i64,
+    transaction_id: TransactionId,
+    entry_id: EntryId,
     to: EntryStatus,
 ) -> Result<EntryStatus, CliError> {
     let status = match to {
@@ -1136,8 +1137,8 @@ pub fn set_entry_status(
 #[derive(Debug, Clone, Copy)]
 pub struct ClearRequest<'a> {
     pub company_slug: &'a str,
-    pub transaction_id: i64,
-    pub entry_id: i64,
+    pub transaction_id: TransactionId,
+    pub entry_id: EntryId,
     /// Minor units; `None` clears the full remaining amount.
     pub amount: Option<i64>,
     /// `YYYY-MM-DD`: the cleared date of a new clearing and, with status
@@ -1179,8 +1180,8 @@ impl ClearAction {
 /// The result of [`clear_entry`] / [`unclear_entry`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClearOutcome {
-    pub transaction_id: i64,
-    pub entry_id: i64,
+    pub transaction_id: TransactionId,
+    pub entry_id: EntryId,
     pub action: ClearAction,
     /// Id of the clearing inserted by this call, if any.
     pub clearing_id: Option<i64>,
@@ -1213,7 +1214,7 @@ pub fn atomically<T>(
 /// Re-derives and stores `entries.status`, returning `(cleared, status)`.
 fn sync_entry_status(
     company: &Company<'_>,
-    entry_id: i64,
+    entry_id: EntryId,
     entry_amount: i64,
 ) -> Result<(Vec<Clearing>, EntryStatus), CliError> {
     let after = list_clearings(company, entry_id)?;
@@ -1246,7 +1247,7 @@ enum ClearingChangeKind {
 
 struct ClearingChange<'a> {
     company_slug: &'a str,
-    entry_id: i64,
+    entry_id: EntryId,
     operation: ClearingChangeKind,
     before: (EntryStatus, i64),
     after: (EntryStatus, i64),
@@ -1328,8 +1329,8 @@ pub fn clear_entry(
     req: &ClearRequest<'_>,
 ) -> Result<ClearOutcome, CliError> {
     in_savepoint(conn, "sp_entry_clear", || {
-        let target = get_entry_target(conn, req.company_slug, req.transaction_id, req.entry_id)?;
         let company = Company::resolve(conn, req.company_slug)?;
+        let target = get_entry_target(&company, req.transaction_id, req.entry_id)?;
         let existing = list_clearings(&company, req.entry_id)?;
         let before_sum = cleared_sum(&existing);
         let before_status = derive_status(target.amount, &existing);
@@ -1433,13 +1434,13 @@ pub fn unclear_entry(
     conn: &Connection,
     actor: &Actor,
     company_slug: &str,
-    transaction_id: i64,
-    entry_id: i64,
+    transaction_id: TransactionId,
+    entry_id: EntryId,
     statement: Option<&str>,
 ) -> Result<ClearOutcome, CliError> {
     in_savepoint(conn, "sp_entry_unclear", || {
-        let target = get_entry_target(conn, company_slug, transaction_id, entry_id)?;
         let company = Company::resolve(conn, company_slug)?;
+        let target = get_entry_target(&company, transaction_id, entry_id)?;
         let existing = list_clearings(&company, entry_id)?;
         let before_sum = cleared_sum(&existing);
         let before_status = derive_status(target.amount, &existing);
@@ -2606,8 +2607,15 @@ mod tests {
     fn set_entry_status_records_transition() {
         let db = seed();
         let actor = Actor::new("tester");
-        let prev = set_entry_status(db.conn(), &actor, "acme", 1, 1, EntryStatus::Cleared)
-            .expect("clear entry");
+        let prev = set_entry_status(
+            db.conn(),
+            &actor,
+            "acme",
+            fixture_txn(1),
+            fixture_entry(1),
+            EntryStatus::Cleared,
+        )
+        .expect("clear entry");
         assert_eq!(prev, EntryStatus::Uncleared);
 
         let status: String = db
@@ -2635,7 +2643,14 @@ mod tests {
     fn set_entry_status_unknown_entry_errors_and_records_nothing() {
         let db = seed();
         let actor = Actor::new("tester");
-        let result = set_entry_status(db.conn(), &actor, "acme", 1, 999, EntryStatus::Cleared);
+        let result = set_entry_status(
+            db.conn(),
+            &actor,
+            "acme",
+            fixture_txn(1),
+            fixture_entry(999),
+            EntryStatus::Cleared,
+        );
         assert!(result.is_err());
 
         let count: i64 = db
@@ -2666,11 +2681,19 @@ mod tests {
         assert!(before.unwrap_or_default().contains("Cash"));
     }
 
+    fn fixture_txn(id: i64) -> TransactionId {
+        id.try_into().expect("positive fixture transaction ID")
+    }
+
+    fn fixture_entry(id: i64) -> EntryId {
+        id.try_into().expect("positive fixture entry ID")
+    }
+
     fn req<'a>(amount: Option<i64>, date: &str, stmt: Option<&'a str>) -> ClearRequest<'a> {
         ClearRequest {
             company_slug: "acme",
-            transaction_id: 1,
-            entry_id: 1,
+            transaction_id: fixture_txn(1),
+            entry_id: fixture_entry(1),
             amount,
             date: date.parse().expect("test clearing date"),
             statement: stmt,
@@ -2742,7 +2765,15 @@ mod tests {
         assert_eq!(entry_status(&db), "reconciled");
 
         // Unclear one statement drops back to uncleared.
-        let o = unclear_entry(db.conn(), &actor, "acme", 1, 1, Some("S2")).expect("unclear");
+        let o = unclear_entry(
+            db.conn(),
+            &actor,
+            "acme",
+            fixture_txn(1),
+            fixture_entry(1),
+            Some("S2"),
+        )
+        .expect("unclear");
         assert_eq!((o.amount, o.cleared_amount), (70, 30));
         assert_eq!(entry_status(&db), "uncleared");
     }
@@ -2786,7 +2817,7 @@ mod tests {
         let o = clear_entry(db.conn(), &actor, &r).expect("promote S1");
         assert_eq!(o.action, ClearAction::Reconciled);
         let company = Company::resolve(db.conn(), "acme").expect("bind clearing company");
-        let rows = list_clearings(&company, 1).expect("list");
+        let rows = list_clearings(&company, fixture_entry(1)).expect("list");
         assert_eq!(rows[0].cleared_on().to_string(), "2026-01-31");
         assert_eq!(
             rows[0]
@@ -2813,7 +2844,7 @@ mod tests {
         let mut r = req(Some(60), "2026-03-01", Some("S2"));
         r.status = ClearingStatus::Reconciled;
         clear_entry(db.conn(), &actor, &r).expect("reconcile S2");
-        let rows = list_clearings(&company, 1).expect("list");
+        let rows = list_clearings(&company, fixture_entry(1)).expect("list");
         assert_eq!(rows[1].cleared_on().to_string(), "2026-03-01");
         assert_eq!(
             rows[1]
@@ -2841,7 +2872,7 @@ mod tests {
 
         let company = Company::resolve(db.conn(), "acme").expect("bind clearing company");
         assert_eq!(
-            list_clearings(&company, 1)
+            list_clearings(&company, fixture_entry(1))
                 .expect("list own clearings")
                 .len(),
             1
@@ -2849,7 +2880,7 @@ mod tests {
 
         let other = Company::resolve(db.conn(), "other").expect("bind other company");
         assert_eq!(
-            list_clearings(&other, 1).expect("list foreign clearings"),
+            list_clearings(&other, fixture_entry(1)).expect("list foreign clearings"),
             []
         );
     }

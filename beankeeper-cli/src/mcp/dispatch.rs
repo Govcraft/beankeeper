@@ -629,8 +629,8 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
         } => (
             company,
             cli::TxnClearArgs {
-                transaction_id: Some(transaction_id.get()),
-                entry: Some(entry.get()),
+                transaction_id: Some(transaction_id),
+                entry: Some(entry),
                 reference: None,
                 account: None,
                 from_file: None,

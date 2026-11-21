@@ -226,20 +226,22 @@ fn clearings_as_of(
     to: Option<NaiveDate>,
     currency: Currency,
 ) -> Result<Vec<ItemClearing>, CliError> {
-    Ok(db::clearings::list_clearings(company, entry_id)?
-        .into_iter()
-        .filter_map(|clearing| match to {
-            Some(cutoff) => clearing.as_of(cutoff),
-            None => Some(clearing),
-        })
-        .map(|c| ItemClearing {
-            id: c.id,
-            amount: money(c.amount, currency),
-            cleared_date: c.cleared_on(),
-            state: c.state(),
-            statement_ref: c.statement_ref,
-        })
-        .collect())
+    Ok(
+        db::clearings::list_clearings(company, entry_id.try_into()?)?
+            .into_iter()
+            .filter_map(|clearing| match to {
+                Some(cutoff) => clearing.as_of(cutoff),
+                None => Some(clearing),
+            })
+            .map(|c| ItemClearing {
+                id: c.id,
+                amount: money(c.amount, currency),
+                cleared_date: c.cleared_on(),
+                state: c.state(),
+                statement_ref: c.statement_ref,
+            })
+            .collect(),
+    )
 }
 
 /// Subtotal for one `--group-by-metadata` value.

@@ -340,8 +340,8 @@ fn allowed_clearing_and_metadata_mutations_keep_verification_healthy() -> TestRe
         ledger.db.conn(),
         &Actor::new("clearer"),
         "acme",
-        1,
-        1,
+        1.try_into()?,
+        1.try_into()?,
         db::EntryStatus::Cleared,
     )?;
     ledger.db.conn().execute(

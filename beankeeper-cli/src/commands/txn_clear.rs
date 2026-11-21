@@ -26,7 +26,9 @@ use serde::Serialize;
 use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnClearArgs, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db::clearings::SkipReason;
+use crate::db::companies::Company;
 use crate::db::connection::Db;
+use crate::db::ids::{EntryId, TransactionId};
 use crate::db::{self, Actor, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
 use crate::error::CliError;
 use crate::output;
@@ -103,8 +105,8 @@ enum ClearRequestTarget<'a> {
 #[derive(Clone, Copy)]
 enum EntrySelector<'a> {
     Id {
-        transaction_id: i64,
-        entry_id: i64,
+        transaction_id: TransactionId,
+        entry_id: EntryId,
     },
     Reference {
         reference: &'a str,
@@ -236,13 +238,14 @@ fn validate_inline_batch(lines: &[BatchLine]) -> Result<(), CliError> {
 }
 
 fn resolve_entry(ctx: &Ctx<'_>, selector: EntrySelector<'_>) -> Result<EntryTarget, CliError> {
+    let company = Company::resolve(ctx.conn, ctx.company)?;
     match selector {
         EntrySelector::Id {
             transaction_id,
             entry_id,
-        } => db::get_entry_target(ctx.conn, ctx.company, transaction_id, entry_id),
+        } => db::get_entry_target(&company, transaction_id, entry_id),
         EntrySelector::Reference { reference, account } => {
-            db::find_entry_by_reference(ctx.conn, ctx.company, reference, account)
+            db::find_entry_by_reference(&company, reference, account)
         }
     }
 }
@@ -426,11 +429,11 @@ fn run_batch(ctx: &Ctx<'_>, account: &str, lines: &[BatchLine]) -> Result<Vec<It
     }
 
     // Resolve and validate everything first, then apply atomically.
+    let company = Company::resolve(ctx.conn, ctx.company)?;
     let mut resolved = Vec::with_capacity(lines.len());
     for l in lines {
         let wrap = |e| at_line(l.line, &l.reference, e);
-        let target = db::find_entry_by_reference(ctx.conn, ctx.company, &l.reference, account)
-            .map_err(wrap)?;
+        let target = db::find_entry_by_reference(&company, &l.reference, account).map_err(wrap)?;
         let amount = l
             .amount
             .as_deref()
@@ -462,8 +465,8 @@ struct Item {
     #[serde(skip_serializing_if = "Option::is_none")]
     line: Option<u64>,
     reference: Option<String>,
-    transaction_id: i64,
-    entry_id: i64,
+    transaction_id: TransactionId,
+    entry_id: EntryId,
     action: ClearAction,
     clearing_id: Option<i64>,
     currency: String,
