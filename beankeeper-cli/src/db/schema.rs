@@ -416,7 +416,10 @@ fn apply_v9(conn: &Connection) -> Result<(), CliError> {
         for (id, raw) in rows {
             conn.execute(
                 "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
-                params![metadata::normalize(&raw), id],
+                params![
+                    metadata::normalize(&raw).map(metadata::NormalizedMetadata::into_string),
+                    id
+                ],
             )?;
         }
 

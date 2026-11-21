@@ -1606,8 +1606,10 @@ pub fn reverse_transaction(
             .metadata
             .as_deref()
             .and_then(metadata::normalize)
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
+            .map_or_else(
+                || serde_json::json!({}),
+                metadata::NormalizedMetadata::into_value,
+            );
         if let Some(result) = existing_reversal(conn, p, &original_metadata)? {
             return Ok(result);
         }
@@ -2424,7 +2426,7 @@ fn edited_metadata(
 ) -> Result<(String, bool), CliError> {
     let mut after = before
         .and_then(metadata::normalize)
-        .unwrap_or_else(|| "{}".into());
+        .map_or_else(|| "{}".into(), metadata::NormalizedMetadata::into_string);
     let mut changed = false;
     let pairs: Vec<(&str, Option<&str>)> = match edit {
         metadata::MetadataEdit::Set(pairs) => pairs

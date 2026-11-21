@@ -59,23 +59,57 @@ fn parse_object(raw: &str) -> Option<Map<String, Value>> {
     }
 }
 
-/// Normalizes arbitrary metadata input into the stored form: `None` or the
-/// text of a JSON object. See the module docs for the full table.
+/// A JSON metadata object whose original text is retained for storage.
+#[derive(Debug, Clone)]
+pub struct NormalizedMetadata {
+    text: String,
+    fields: Map<String, Value>,
+}
+
+impl NormalizedMetadata {
+    /// Returns the JSON object text for storage or transport.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.text
+    }
+
+    /// Returns the parsed object without reading the JSON text again.
+    #[must_use]
+    pub(crate) fn into_value(self) -> Value {
+        Value::Object(self.fields)
+    }
+}
+
+/// Normalizes arbitrary metadata input into the stored form. Whitespace-only
+/// input returns `None`. See the module docs for the full table.
 #[must_use]
-pub fn normalize(raw: &str) -> Option<String> {
+pub fn normalize(raw: &str) -> Option<NormalizedMetadata> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
     let memo = match serde_json::from_str::<Value>(trimmed) {
-        Ok(Value::Object(_)) => return Some(raw.to_string()),
+        Ok(Value::Object(fields)) => {
+            // JSON permits only these four whitespace characters around an object.
+            let json_trimmed = raw.trim_matches([' ', '\t', '\n', '\r']);
+            let text = if json_trimmed == trimmed {
+                raw
+            } else {
+                trimmed
+            };
+            return Some(NormalizedMetadata {
+                text: text.into(),
+                fields,
+            });
+        }
         Ok(v @ (Value::String(_) | Value::Array(_))) => v,
         // Numbers, booleans, null, and free text: keep the text verbatim.
         Ok(_) | Err(_) => Value::String(raw.to_string()),
     };
-    let mut map = Map::new();
-    map.insert(MEMO_KEY.to_string(), memo);
-    Some(Value::Object(map).to_string())
+    Some(NormalizedMetadata {
+        text: format!(r#"{{"{MEMO_KEY}":{memo}}}"#),
+        fields: Map::from_iter([(MEMO_KEY.to_string(), memo)]),
+    })
 }
 
 /// Returns `true` if the metadata carries a non-null `correlate` key.
@@ -84,61 +118,49 @@ pub fn normalize(raw: &str) -> Option<String> {
 /// that merely mentions the word "correlate" is not a correlation.
 #[must_use]
 pub fn has_correlate(metadata: Option<&str>) -> bool {
-    metadata
-        .and_then(parse_object)
-        .and_then(|m| m.get(CORRELATE_KEY).cloned())
-        .is_some_and(|v| !v.is_null())
+    metadata.and_then(parse_object).is_some_and(|fields| {
+        fields
+            .get(CORRELATE_KEY)
+            .is_some_and(|value| !value.is_null())
+    })
 }
 
-/// Returns the top-level keys of a normalized
-/// metadata object, or an empty list if `metadata` is `None`/not an object.
-fn object_keys(metadata: Option<&str>) -> Vec<String> {
-    metadata
-        .and_then(parse_object)
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default()
-}
-
-/// Adds `additions` to normalized metadata, returning the new object text.
-///
-/// `base` must be `None` or JSON-object text (i.e. output of [`normalize`]).
-/// The base text is kept verbatim and the new keys are appended before the
-/// closing brace, so user-supplied formatting and number precision survive.
-///
-/// # Errors
-///
-/// Returns `CliError::Validation` if a key in `additions` already exists in
-/// `base` (or is repeated within `additions`).
-pub fn insert_keys(base: Option<&str>, additions: &[(String, Value)]) -> Result<String, CliError> {
-    let existing = object_keys(base);
-    let mut seen: Vec<&str> = Vec::with_capacity(additions.len());
-    for (key, _) in additions {
-        if existing.iter().any(|k| k == key) || seen.contains(&key.as_str()) {
+/// Adds keys to a validated JSON object. Preserves its original formatting
+/// and number precision by appending the new fields before the closing brace.
+fn insert_keys(
+    base: Option<NormalizedMetadata>,
+    additions: &[(String, Value)],
+) -> Result<NormalizedMetadata, CliError> {
+    let mut base = base.unwrap_or_else(|| NormalizedMetadata {
+        text: "{}".into(),
+        fields: Map::new(),
+    });
+    if additions.is_empty() {
+        return Ok(base);
+    }
+    let was_empty = base.fields.is_empty();
+    for (key, value) in additions {
+        if base.fields.insert(key.clone(), value.clone()).is_some() {
             return Err(CliError::Validation(format!(
                 "duplicate metadata key '{key}'"
             )));
         }
-        seen.push(key);
     }
-
     let spliced = additions
         .iter()
-        .map(|(k, v)| format!("{}:{v}", Value::String(k.clone())))
+        .map(|(key, value)| format!("{}:{value}", Value::String(key.clone())))
         .collect::<Vec<_>>()
         .join(",");
 
-    let Some(base) = base else {
-        return Ok(format!("{{{spliced}}}"));
+    base.text = if was_empty {
+        format!("{{{spliced}}}")
+    } else {
+        let text = base.text.trim_end();
+        // Normalization establishes the closing brace as the last JSON token.
+        let body = text[..text.len() - 1].trim_end();
+        format!("{body},{spliced}}}")
     };
-    if additions.is_empty() {
-        return Ok(base.to_string());
-    }
-    if existing.is_empty() {
-        return Ok(format!("{{{spliced}}}"));
-    }
-    let trimmed = base.trim_end();
-    let body = trimmed.strip_suffix('}').unwrap_or(trimmed).trim_end();
-    Ok(format!("{body},{spliced}}}"))
+    Ok(base)
 }
 
 /// Parses repeatable `key=value` arguments (from `--meta`).
@@ -206,13 +228,13 @@ pub fn build_post_metadata(
     }
     let base = metadata.and_then(normalize);
     if meta.is_empty() {
-        return Ok(base);
+        return Ok(base.map(NormalizedMetadata::into_string));
     }
     let additions: Vec<(String, Value)> = meta
         .iter()
         .map(|(k, v)| (k.clone(), Value::String(v.clone())))
         .collect();
-    insert_keys(base.as_deref(), &additions).map(Some)
+    insert_keys(base, &additions).map(|metadata| Some(metadata.into_string()))
 }
 
 /// Adds `"correlate": partner_id` to (normalized) metadata.
@@ -224,21 +246,20 @@ pub fn build_post_metadata(
 ///
 /// Returns `CliError::Validation` if the metadata is already correlated.
 pub fn with_correlate(metadata: Option<&str>, partner_id: i64) -> Result<String, CliError> {
-    let base = metadata.and_then(normalize);
-    if has_correlate(base.as_deref()) {
-        return Err(CliError::Validation(
-            "metadata already contains a 'correlate' key".to_string(),
-        ));
+    let mut base = metadata.and_then(normalize);
+    if let Some(metadata) = base.as_mut()
+        && let Some(correlate) = metadata.fields.get_mut(CORRELATE_KEY)
+    {
+        if !correlate.is_null() {
+            return Err(CliError::Validation(
+                "metadata already contains a 'correlate' key".to_string(),
+            ));
+        }
+        *correlate = Value::from(partner_id);
+        return Ok(Value::Object(std::mem::take(&mut metadata.fields)).to_string());
     }
     let addition = [(CORRELATE_KEY.to_string(), Value::from(partner_id))];
-    match base.as_deref().and_then(parse_object) {
-        // `"correlate": null` present: rebuild the object without it.
-        Some(mut map) if map.contains_key(CORRELATE_KEY) => {
-            map.insert(CORRELATE_KEY.to_string(), Value::from(partner_id));
-            Ok(Value::Object(map).to_string())
-        }
-        _ => insert_keys(base.as_deref(), &addition),
-    }
+    insert_keys(base, &addition).map(NormalizedMetadata::into_string)
 }
 
 /// A batch of top-level transaction annotation edits. Set values are strings.
@@ -300,7 +321,7 @@ mod tests {
     use super::*;
 
     fn norm(s: &str) -> Option<String> {
-        normalize(s)
+        normalize(s).map(NormalizedMetadata::into_string)
     }
 
     #[test]
@@ -319,6 +340,14 @@ mod tests {
     fn object_passes_through_verbatim() {
         let raw = r#"{ "ref": "INV-001", "n": 12345678901234567890 }"#;
         assert_eq!(norm(raw).as_deref(), Some(raw));
+    }
+
+    #[test]
+    fn unicode_padding_does_not_leak_into_json_storage() {
+        assert_eq!(
+            norm(" \u{2002}{\"ref\":1} \n").as_deref(),
+            Some(r#"{"ref":1}"#)
+        );
     }
 
     #[test]
@@ -341,7 +370,7 @@ mod tests {
     fn normalize_is_idempotent() {
         for raw in ["text", "[1]", r#"{"a":1}"#, "42"] {
             let once = norm(raw);
-            assert_eq!(once.as_deref().and_then(normalize), once);
+            assert_eq!(once.as_deref().and_then(norm), once);
         }
     }
 
@@ -403,6 +432,20 @@ mod tests {
                 .as_deref(),
             Some(r#"{"a":1,"vendor":"AWS"}"#)
         );
+    }
+
+    #[test]
+    fn adding_annotation_preserves_large_number_text() -> Result<(), CliError> {
+        let additions = [("vendor".to_string(), "AWS".to_string())];
+        let metadata = build_post_metadata(
+            Some(r#"{ "large": 123456789012345678901234567890, "other": {} }  "#),
+            &additions,
+        )?;
+        assert_eq!(
+            metadata.as_deref(),
+            Some(r#"{ "large": 123456789012345678901234567890, "other": {},"vendor":"AWS"}"#)
+        );
+        Ok(())
     }
 
     #[test]

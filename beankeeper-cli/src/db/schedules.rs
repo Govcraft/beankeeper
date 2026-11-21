@@ -207,7 +207,8 @@ pub fn create_schedule(
             metadata: params
                 .metadata
                 .as_deref()
-                .and_then(super::metadata::normalize),
+                .and_then(super::metadata::normalize)
+                .map(super::metadata::NormalizedMetadata::into_string),
             occurrence_index: 0,
         };
         conn.execute(
