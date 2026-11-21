@@ -9,7 +9,7 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
-use super::audit::{self, Actor, Creation};
+use super::audit::{self, Actor};
 use super::ids::{AttachmentId, EntryId, TransactionId};
 use crate::error::CliError;
 
@@ -48,38 +48,7 @@ pub fn store_attachment(
     actor: &Actor,
     params: &StoreAttachmentParams<'_>,
 ) -> Result<AttachmentId, CliError> {
-    audit::atomically(conn, || {
-        conn.execute(
-            "INSERT INTO attachments (transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                params.transaction_id,
-                params.entry_id,
-                params.company_slug,
-                params.uri,
-                params.document_type.as_str(),
-                params.hash.map(Sha256Hex::as_str),
-                params.original_filename,
-            ],
-        )?;
-
-        let id = AttachmentId::try_from(conn.last_insert_rowid())?;
-        audit::record_insert(
-            conn,
-            actor,
-            params.company_slug,
-            Creation::Attachment,
-            &params.transaction_id.to_string(),
-            &serde_json::json!({
-                "attachment_id": id,
-                "entry_id": params.entry_id,
-                "uri": params.uri,
-                "hash": params.hash.map(Sha256Hex::as_str),
-                "document_type": params.document_type.as_str(),
-            }),
-        )?;
-        Ok(id)
-    })
+    audit::store_attachment(conn, actor, params)
 }
 
 /// Lists all attachments for a transaction within a company.
@@ -295,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn store_and_list_attachments() {
+    fn store_and_list_attachments() -> Result<(), CliError> {
         let db = setup();
         let txn_id = post_sample(&db);
         let hash = Sha256Hex::from_digest([0xab; 32]);
@@ -310,12 +279,10 @@ mod tests {
             hash: Some(&hash),
             original_filename: Some("receipt.pdf"),
         };
-        let att_id = store_attachment(db.conn(), &Actor::new("fixture"), &params)
-            .unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id = store_attachment(db.conn(), &Actor::new("fixture"), &params)?;
         assert!(att_id.get() > 0);
 
-        let attachments = list_attachments(db.conn(), "acme", txn_id)
-            .unwrap_or_else(|e| panic!("list failed: {e}"));
+        let attachments = list_attachments(db.conn(), "acme", txn_id)?;
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].uri, uri);
         assert_eq!(attachments[0].document_type, DocumentType::Receipt);
@@ -324,6 +291,30 @@ mod tests {
             attachments[0].original_filename.as_deref(),
             Some("receipt.pdf")
         );
+        let event: (String, String, Option<String>, String) = db.conn().query_row(
+            "SELECT actor, entity_id, before, after FROM audit_log
+             WHERE company_slug = 'acme' AND entity = 'transaction' AND action = 'attach'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let snapshot = serde_json::json!({
+            "attachment_id": att_id.get(),
+            "entry_id": null,
+            "uri": uri,
+            "hash": hash.as_str(),
+            "document_type": "receipt",
+        });
+        assert_eq!(
+            event,
+            (
+                "fixture".into(),
+                txn_id.to_string(),
+                None,
+                snapshot.to_string()
+            )
+        );
+        audit::verify_hash_chain(db.conn())?;
+        Ok(())
     }
 
     #[test]
