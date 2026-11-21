@@ -299,3 +299,115 @@ fn posting_validation_formats_amounts_in_the_input_currency() {
         serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("JSON list: {e}"));
     assert!(list["data"].as_array().is_some_and(Vec::is_empty), "{list}");
 }
+
+fn post_balance_activity(db: &str, date: &str, currency: &str, amount: &str) {
+    success(&run(
+        db,
+        &[
+            "--company",
+            "acme",
+            "txn",
+            "post",
+            "-d",
+            "Activity",
+            "--date",
+            date,
+            "--currency",
+            currency,
+            "--debit",
+            &format!("1000:{amount}"),
+            "--credit",
+            &format!("5000:{amount}"),
+        ],
+    ));
+}
+
+#[test]
+fn account_balance_windows_include_endpoints_and_keep_accounts_without_activity()
+-> Result<(), serde_json::Error> {
+    let (_dir, db) = setup();
+    post_balance_activity(&db, "2026-01-10", "USD", "100");
+    post_balance_activity(&db, "2026-03-10", "USD", "250");
+    let prefix = [
+        "--json",
+        "--company",
+        "acme",
+        "account",
+        "list",
+        "--with-balances",
+    ];
+    for (bounds, expected_minor, display) in [
+        (&[][..], 35_000, "350.00"),
+        (
+            &["--from", "2026-02-01", "--to", "2026-02-28"][..],
+            0,
+            "0.00",
+        ),
+        (
+            &["--from", "2026-01-10", "--to", "2026-01-10"][..],
+            10_000,
+            "100.00",
+        ),
+        (&["--from", "2026-03-10"][..], 25_000, "250.00"),
+        (&["--to", "2026-01-10"][..], 10_000, "100.00"),
+    ] {
+        let out = run(&db, &[prefix.as_slice(), bounds].concat());
+        success(&out);
+        let payload: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+        assert_eq!(payload["data"].as_array().map(Vec::len), Some(2));
+        let cash = &payload["data"][0];
+        assert_eq!(cash["code"], "1000");
+        assert_eq!(cash["debit_total"], expected_minor);
+        assert_eq!(cash["debit_total_display"], display);
+        assert_eq!(payload["data"][1]["credit_total"], expected_minor);
+    }
+    let reversed = run(
+        &db,
+        &[
+            prefix.as_slice(),
+            &["--from", "2026-03-11", "--to", "2026-03-10"],
+        ]
+        .concat(),
+    );
+    assert_eq!(reversed.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&reversed.stderr).contains("must be on or before --to"));
+    assert!(
+        !run(&db, &[prefix.as_slice(), &["--to", "2026-02-30"]].concat())
+            .status
+            .success()
+    );
+    Ok(())
+}
+
+#[test]
+fn account_balances_use_one_currency_and_human_readable_table_totals()
+-> Result<(), serde_json::Error> {
+    let (_dir, db) = setup();
+    post_balance_activity(&db, "2026-01-10", "USD", "100");
+    post_balance_activity(&db, "2026-01-10", "BHD", "1.125");
+    let prefix = ["--company", "acme", "account", "list", "--with-balances"];
+    let ambiguous = run(&db, &prefix);
+    assert_eq!(ambiguous.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("pass --currency"));
+    let args = [prefix.as_slice(), &["--currency", "bhd", "--name", "cash"]].concat();
+    let table = run(&db, &args);
+    success(&table);
+    let text = String::from_utf8_lossy(&table.stdout);
+    assert!(text.contains("1.125"), "{text}");
+    assert!(text.contains("BHD"), "{text}");
+
+    let json = run(&db, &[&["--json"][..], &args].concat());
+    success(&json);
+    let payload: serde_json::Value = serde_json::from_slice(&json.stdout)?;
+    assert_eq!(payload["data"].as_array().map(Vec::len), Some(1));
+    assert_eq!(payload["data"][0]["currency"], "BHD");
+    assert_eq!(payload["data"][0]["debit_total"], 1_125);
+    assert_eq!(payload["data"][0]["debit_total_display"], "1.125");
+    assert_eq!(payload["data"][0]["credit_total_display"], "0.000");
+
+    let csv = run(&db, &[&["--format", "csv"][..], &args].concat());
+    success(&csv);
+    let text = String::from_utf8_lossy(&csv.stdout);
+    assert!(text.contains("1000,Cash,asset,debit,1125,0"), "{text}");
+    Ok(())
+}

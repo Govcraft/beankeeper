@@ -108,6 +108,8 @@ pub(super) struct AccountList {
     pub with_balances: bool,
     pub from: Option<Date>,
     pub to: Option<Date>,
+    /// Currency of balance totals. Required when the company uses multiple currencies.
+    pub currency: Option<CurrencyCode>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

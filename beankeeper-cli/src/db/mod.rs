@@ -51,6 +51,8 @@ pub use transactions::{
 
 use std::fmt::Write;
 
+use beankeeper::types::{Currency, Money};
+use chrono::NaiveDate;
 use rusqlite::{Connection, params};
 
 use crate::error::CliError;
@@ -170,91 +172,94 @@ pub struct BalanceRow {
     pub credit_total: i64,
 }
 
-/// Account with aggregated debit/credit balance totals.
+/// Account with aggregated debit and credit totals in one currency.
 #[derive(Debug, Clone)]
 pub struct AccountWithBalanceRow {
     pub code: String,
     pub name: String,
     pub account_type: String,
     pub default_tax_category: Option<String>,
-    pub debit_total: i64,
-    pub credit_total: i64,
+    pub debit_total: Money,
+    pub credit_total: Money,
 }
 
-/// Lists accounts with their debit/credit balance totals in a single query.
-///
-/// Optionally filters by account type, name substring, and date range.
+/// Inclusive date bounds for account activity. Absent bounds are open-ended.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AccountBalanceWindow {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+}
+
+impl AccountBalanceWindow {
+    /// Construct a window with optional endpoints.
+    ///
+    /// # Errors
+    /// Returns [`CliError::Validation`] if the start follows the end.
+    pub fn new(from: Option<NaiveDate>, to: Option<NaiveDate>) -> Result<Self, CliError> {
+        if let (Some(from), Some(to)) = (from, to)
+            && from > to
+        {
+            return Err(CliError::Validation(format!(
+                "--from ({from}) must be on or before --to ({to})"
+            )));
+        }
+        Ok(Self { from, to })
+    }
+}
+
+/// List accounts with totals for the selected currency and date window.
+/// Accounts with no activity in scope are returned with zero totals.
 ///
 /// # Errors
-///
-/// Returns `CliError::Sqlite` on any database error.
+/// Returns [`CliError::Sqlite`] on database errors, including an overflowing sum.
 pub fn list_accounts_with_balances(
     conn: &Connection,
-    company_slug: &str,
-    type_filter: Option<&str>,
-    name_filter: Option<&str>,
-    from_date: Option<&str>,
-    to_date: Option<&str>,
+    filter: &ListAccountParams<'_>,
+    window: AccountBalanceWindow,
+    currency: Currency,
 ) -> Result<Vec<AccountWithBalanceRow>, CliError> {
-    let has_date_filter = from_date.is_some() || to_date.is_some();
-    let base = if has_date_filter {
-        "SELECT a.code, a.name, a.type, a.default_tax_category, \
-         COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
-         COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
-         FROM accounts a \
-         LEFT JOIN (entries e JOIN transactions t ON t.id = e.transaction_id) \
-           ON e.company_slug = a.company_slug AND e.account_code = a.code"
-    } else {
-        "SELECT a.code, a.name, a.type, a.default_tax_category, \
-         COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
-         COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
-         FROM accounts a \
-         LEFT JOIN entries e ON e.company_slug = a.company_slug AND e.account_code = a.code"
-    };
-
-    let mut sql = String::from(base);
-    sql.push_str(" WHERE a.company_slug = ?1");
-
-    let mut param_idx = 2u32;
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new(company_slug.to_string()));
-
-    if let Some(filter) = type_filter {
-        let _ = write!(sql, " AND a.type = ?{param_idx}");
-        param_values.push(Box::new(filter.to_lowercase()));
-        param_idx += 1;
-    }
-
-    if let Some(name) = name_filter {
-        let _ = write!(sql, " AND a.name LIKE '%' || ?{param_idx} || '%'");
-        param_values.push(Box::new(name.to_string()));
-        param_idx += 1;
-    }
-
-    let _ = param_idx;
-
-    sql.push_str(" GROUP BY a.code, a.name, a.type, a.default_tax_category ORDER BY a.code");
-
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(AsRef::as_ref).collect();
-
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_refs.as_slice(), |row| {
-        Ok(AccountWithBalanceRow {
-            code: row.get(0)?,
-            name: row.get(1)?,
-            account_type: row.get(2)?,
-            default_tax_category: row.get(3)?,
-            debit_total: row.get(4)?,
-            credit_total: row.get(5)?,
-        })
-    })?;
-
-    let mut results = Vec::new();
-    for row in rows {
-        results.push(row?);
-    }
-    Ok(results)
+    let mut stmt = conn.prepare(
+        "SELECT a.code, a.name, a.type, a.default_tax_category,
+                COALESCE(activity.debit_total, 0), COALESCE(activity.credit_total, 0)
+         FROM accounts a
+         LEFT JOIN (
+             SELECT e.account_code,
+                    SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END) AS debit_total,
+                    SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END) AS credit_total
+             FROM transactions t
+             JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
+             WHERE t.company_slug = ?1 AND t.currency = ?2
+               AND (?3 IS NULL OR substr(t.date, 1, 10) >= ?3)
+               AND (?4 IS NULL OR substr(t.date, 1, 10) <= ?4)
+             GROUP BY e.account_code
+         ) activity ON activity.account_code = a.code
+         WHERE a.company_slug = ?1
+           AND (?5 IS NULL OR a.type = ?5 COLLATE NOCASE)
+           AND (?6 IS NULL OR a.name LIKE '%' || ?6 || '%')
+         ORDER BY a.code",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            filter.company_slug,
+            currency.code(),
+            window.from.map(|date| date.to_string()),
+            window.to.map(|date| date.to_string()),
+            filter.type_filter,
+            filter.name_filter,
+        ],
+        |row| {
+            Ok(AccountWithBalanceRow {
+                code: row.get(0)?,
+                name: row.get(1)?,
+                account_type: row.get(2)?,
+                default_tax_category: row.get(3)?,
+                debit_total: Money::from_minor(i128::from(row.get::<_, i64>(4)?), currency),
+                credit_total: Money::from_minor(i128::from(row.get::<_, i64>(5)?), currency),
+            })
+        },
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(CliError::from)
 }
 
 /// Computes a trial balance for a company.

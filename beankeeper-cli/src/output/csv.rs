@@ -107,8 +107,8 @@ pub fn render_accounts_with_balances(
             &a.name,
             &a.account_type,
             normal_balance_for(&a.account_type),
-            &a.debit_total.to_string(),
-            &a.credit_total.to_string(),
+            &a.debit_total.amount().minor_units().to_string(),
+            &a.credit_total.amount().minor_units().to_string(),
         ])
         .map_err(|e| csv_err(&e))?;
     }
