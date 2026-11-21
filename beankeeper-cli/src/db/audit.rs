@@ -846,52 +846,7 @@ pub fn approve_proposal(
     company: &str,
     id: &str,
 ) -> Result<super::proposals::Proposal, CliError> {
-    atomically(conn, || {
-        require_capability(conn, actor, crate::capability::Capability::Approve)?;
-        let before = pending_proposal(conn, company, id)?;
-        let mut payload = before.payload.clone();
-        super::proposals::validate_posting(conn, &payload.params(company, actor))?;
-        let mut metadata: serde_json::Value = payload
-            .metadata
-            .as_deref()
-            .and_then(metadata::normalize)
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        metadata["proposal_id"] = serde_json::json!(id);
-        payload.metadata = Some(metadata.to_string());
-        let result = super::transactions::post_with_approval(
-            conn,
-            &payload.params(company, actor),
-            Some(&before),
-        )?;
-        let transaction_id = match result {
-            super::transactions::PostResult::Created(id) => id,
-            super::transactions::PostResult::Skipped(_) => {
-                return Err(CliError::Validation(
-                    "proposal reference was already posted; withdraw this proposal".into(),
-                ));
-            }
-        };
-        let mut after = resolved_proposal(conn, actor, &before, "approved")?;
-        after.transaction_id = Some(transaction_id);
-        record(
-            conn,
-            actor,
-            AuditChange {
-                company_slug: Some(company),
-                entity: AuditEntity::Proposal,
-                entity_id: id,
-                action: AuditAction::ProposalApprove,
-                snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
-            },
-        )?;
-        conn.execute(
-            "UPDATE txn_proposals SET status = 'approved', resolved_at = ?1,
-                resolved_by_uri = ?2, resolved_by_jti = ?3, transaction_id = ?4 WHERE id = ?5 AND status = 'pending'",
-            params![after.resolved_at, actor.agent_uri(), actor.token_jti(), transaction_id, id],
-        )?;
-        Ok(after)
-    })
+    super::proposals::approve(conn, actor, company, id)
 }
 
 /// Withdraw an owned pending request, or reject another request with an approval grant.
@@ -905,75 +860,65 @@ pub fn reject_proposal(
     id: &str,
     reason: Option<&str>,
 ) -> Result<super::proposals::Proposal, CliError> {
-    atomically(conn, || {
-        let before = pending_proposal(conn, company, id)?;
-        let own = actor.agent_uri() == Some(before.proposer_uri.as_str());
-        let can_approve = actor
-            .identity()
-            .map(|identity| identity.allows(crate::capability::Capability::Approve))
-            .transpose()?
-            .unwrap_or(false);
-        let required = if own && !can_approve {
-            crate::capability::Capability::Propose
-        } else {
-            crate::capability::Capability::Approve
-        };
-        require_capability(conn, actor, required)?;
-        let status = if own { "withdrawn" } else { "rejected" };
-        let mut after = resolved_proposal(conn, actor, &before, status)?;
-        after.reason = reason.map(str::to_owned);
-        record(
-            conn,
-            actor,
-            AuditChange {
-                company_slug: Some(company),
-                entity: AuditEntity::Proposal,
-                entity_id: id,
-                action: AuditAction::ProposalReject,
-                snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
-            },
-        )?;
-        conn.execute(
-            "UPDATE txn_proposals SET status = ?1, resolved_at = ?2,
-                resolved_by_uri = ?3, resolved_by_jti = ?4, reason = ?5 WHERE id = ?6 AND status = 'pending'",
-            params![status, after.resolved_at, actor.agent_uri(), actor.token_jti(), reason, id],
-        )?;
-        Ok(after)
-    })
+    super::proposals::reject(conn, actor, company, id, reason)
 }
 
-fn resolved_proposal(
-    conn: &Connection,
-    actor: &Actor,
-    before: &super::proposals::Proposal,
-    status: &str,
+pub(super) fn record_proposal_resolution(
+    transition: super::proposals::ProposalTransition<'_>,
 ) -> Result<super::proposals::Proposal, CliError> {
-    let mut after = before.clone();
-    after.status = status.into();
-    after.resolved_at = Some(conn.query_row(
-        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-        [],
-        |row| row.get(0),
-    )?);
-    after.resolved_by_uri = actor.agent_uri().map(str::to_owned);
-    after.resolved_by_jti = actor.token_jti().map(str::to_owned);
-    Ok(after)
-}
+    use super::proposals::ProposalState;
 
-fn pending_proposal(
-    conn: &Connection,
-    company: &str,
-    id: &str,
-) -> Result<super::proposals::Proposal, CliError> {
-    super::proposals::verify_resolutions(conn)?;
-    let proposal = super::proposals::get(conn, company, id)?;
-    if proposal.status != "pending" {
-        return Err(CliError::Validation(format!(
-            "proposal '{id}' is already {}",
-            proposal.status
-        )));
+    let (conn, actor, before, after) = transition.into_parts();
+    let (action, resolution, transaction_id) = match &after.state {
+        ProposalState::Approved {
+            resolution,
+            transaction_id,
+        } => (
+            AuditAction::ProposalApprove,
+            resolution,
+            Some(*transaction_id),
+        ),
+        ProposalState::Rejected { resolution, .. }
+        | ProposalState::Withdrawn { resolution, .. } => {
+            (AuditAction::ProposalReject, resolution, None)
+        }
+        ProposalState::Pending => {
+            return Err(CliError::Database("proposal resolution is pending".into()));
+        }
+    };
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: Some(&after.company_slug),
+            entity: AuditEntity::Proposal,
+            entity_id: after.id.as_str(),
+            action,
+            snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
+        },
+    )?;
+    let (uri, jti) = resolution.by.columns();
+    let updated = conn.execute(
+        "UPDATE txn_proposals SET status = ?1, resolved_at = ?2, resolved_by_uri = ?3,
+          resolved_by_jti = ?4, transaction_id = ?5, reason = ?6
+         WHERE company_slug = ?7 AND id = ?8 AND status = 'pending'",
+        params![
+            after.state.code(),
+            resolution.at,
+            uri,
+            jti,
+            transaction_id,
+            after.state.reason(),
+            after.company_slug,
+            after.id.as_str()
+        ],
+    )?;
+    if updated != 1 {
+        return Err(CliError::Database(
+            "proposal changed during resolution".into(),
+        ));
     }
-    Ok(proposal)
+    Ok(after)
 }
 
 /// Record a key or token management event without persisting secrets.

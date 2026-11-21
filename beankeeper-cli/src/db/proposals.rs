@@ -87,12 +87,156 @@ impl PostingPayload {
     }
 }
 
+/// Who resolved a proposal, preserving local resolutions made without a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedBy {
+    /// Local operator.
+    Local,
+    /// An operator with a verified agent token.
+    Agent {
+        /// Agent URI on record.
+        uri: String,
+        /// ID of the token used for this resolution.
+        jti: String,
+    },
+}
+
+impl ResolvedBy {
+    fn from_columns(uri: Option<String>, jti: Option<String>) -> Option<Self> {
+        match (uri, jti) {
+            (None, None) => Some(Self::Local),
+            (Some(uri), Some(jti)) => Some(Self::Agent { uri, jti }),
+            _ => None,
+        }
+    }
+
+    pub(super) fn columns(&self) -> (Option<&str>, Option<&str>) {
+        match self {
+            Self::Local => (None, None),
+            Self::Agent { uri, jti } => (Some(uri), Some(jti)),
+        }
+    }
+}
+
+/// Resolution attribution shared by each terminal state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolution {
+    /// Stored UTC resolution timestamp.
+    pub at: String,
+    /// Operator who resolved the proposal.
+    pub by: ResolvedBy,
+}
+
+impl Resolution {
+    fn new(conn: &Connection, actor: &Actor) -> Result<Self, CliError> {
+        let at = conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
+        let by = actor
+            .identity()
+            .map_or(ResolvedBy::Local, |identity| ResolvedBy::Agent {
+                uri: identity.uri().to_string(),
+                jti: identity.jti().to_string(),
+            });
+        Ok(Self { at, by })
+    }
+}
+
+/// Review lifecycle. Approved proposals always identify their transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposalState {
+    /// Awaiting a resolution.
+    Pending,
+    /// Approved and posted.
+    Approved {
+        /// When and by whom the proposal was approved.
+        resolution: Resolution,
+        /// Transaction created for this proposal.
+        transaction_id: i64,
+    },
+    /// Declined by a reviewer.
+    Rejected {
+        /// When and by whom the proposal was rejected.
+        resolution: Resolution,
+        /// Optional reviewer explanation.
+        reason: Option<String>,
+    },
+    /// Withdrawn by the proposer.
+    Withdrawn {
+        /// When and by whom the proposal was withdrawn.
+        resolution: Resolution,
+        /// Optional explanation from the proposer.
+        reason: Option<String>,
+    },
+}
+
+impl ProposalState {
+    /// Status label in existing clients and SQLite.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved { .. } => "approved",
+            Self::Rejected { .. } => "rejected",
+            Self::Withdrawn { .. } => "withdrawn",
+        }
+    }
+
+    /// Optional rejection or withdrawal reason.
+    #[must_use]
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Rejected { reason, .. } | Self::Withdrawn { reason, .. } => reason.as_deref(),
+            Self::Pending | Self::Approved { .. } => None,
+        }
+    }
+
+    fn resolution(&self) -> Option<&Resolution> {
+        match self {
+            Self::Pending => None,
+            Self::Approved { resolution, .. }
+            | Self::Rejected { resolution, .. }
+            | Self::Withdrawn { resolution, .. } => Some(resolution),
+        }
+    }
+
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let status = row.get_ref(2)?.as_str()?;
+        let at: Option<String> = row.get(10)?;
+        let by = ResolvedBy::from_columns(row.get(11)?, row.get(12)?);
+        let transaction_id: Option<i64> = row.get(13)?;
+        let reason: Option<String> = row.get(14)?;
+        match (status, at, by, transaction_id, reason) {
+            ("pending", None, Some(ResolvedBy::Local), None, None) => Ok(Self::Pending),
+            ("approved", Some(at), Some(by), Some(transaction_id), None) => Ok(Self::Approved {
+                resolution: Resolution { at, by },
+                transaction_id,
+            }),
+            ("rejected", Some(at), Some(by), None, reason) => Ok(Self::Rejected {
+                resolution: Resolution { at, by },
+                reason,
+            }),
+            ("withdrawn", Some(at), Some(by), None, reason) => Ok(Self::Withdrawn {
+                resolution: Resolution { at, by },
+                reason,
+            }),
+            _ => Err(rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(CliError::Database(format!(
+                    "invalid stored proposal resolution for status '{status}'"
+                ))),
+            )),
+        }
+    }
+}
+
 /// Reviewable proposal and its immutable proposer attribution and resolution.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct Proposal {
     pub id: ProposalId,
     pub company_slug: String,
-    pub status: String,
+    pub state: ProposalState,
     pub payload: PostingPayload,
     pub reference: Option<String>,
     pub debit_total: i64,
@@ -100,11 +244,198 @@ pub struct Proposal {
     pub proposer_uri: String,
     pub proposer_jti: String,
     pub created_at: String,
-    pub resolved_at: Option<String>,
-    pub resolved_by_uri: Option<String>,
-    pub resolved_by_jti: Option<String>,
-    pub transaction_id: Option<i64>,
-    pub reason: Option<String>,
+}
+
+impl Serialize for Proposal {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let resolution = self.state.resolution();
+        let transaction_id = match &self.state {
+            ProposalState::Approved { transaction_id, .. } => Some(*transaction_id),
+            _ => None,
+        };
+        let (uri, jti) = resolution.map_or((None, None), |value| value.by.columns());
+        let mut wire = serializer.serialize_struct("Proposal", 15)?;
+        wire.serialize_field("id", &self.id)?;
+        wire.serialize_field("company_slug", &self.company_slug)?;
+        wire.serialize_field("status", self.state.code())?;
+        wire.serialize_field("payload", &self.payload)?;
+        wire.serialize_field("reference", &self.reference)?;
+        wire.serialize_field("debit_total", &self.debit_total)?;
+        wire.serialize_field("currency", &self.currency)?;
+        wire.serialize_field("proposer_uri", &self.proposer_uri)?;
+        wire.serialize_field("proposer_jti", &self.proposer_jti)?;
+        wire.serialize_field("created_at", &self.created_at)?;
+        wire.serialize_field("resolved_at", &resolution.map(|value| value.at.as_str()))?;
+        wire.serialize_field("resolved_by_uri", &uri)?;
+        wire.serialize_field("resolved_by_jti", &jti)?;
+        wire.serialize_field("transaction_id", &transaction_id)?;
+        wire.serialize_field("reason", &self.state.reason())?;
+        wire.end()
+    }
+}
+
+/// A pending proposal loaded from the same book that will resolve it.
+struct PendingProposal<'a> {
+    conn: &'a Connection,
+    before: Proposal,
+}
+
+impl<'a> PendingProposal<'a> {
+    fn load(conn: &'a Connection, company: &str, id: &str) -> Result<Self, CliError> {
+        verify_resolutions(conn)?;
+        let before = get(conn, company, id)?;
+        if before.state != ProposalState::Pending {
+            return Err(CliError::Validation(format!(
+                "proposal '{id}' is already {}",
+                before.state.code(),
+            )));
+        }
+        Ok(Self { conn, before })
+    }
+
+    fn approve(self, grant: &ApprovalGrant<'_>) -> Result<(Proposal, Proposal), CliError> {
+        let actor = grant.actor;
+        let mut payload = self.before.payload.clone();
+        validate_posting(self.conn, &payload.params(&self.before.company_slug, actor))?;
+        let (existing, proposal_id) = (payload.metadata.as_deref(), self.before.id.as_str());
+        let mut metadata: serde_json::Value = existing
+            .and_then(super::metadata::normalize)
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        metadata["proposal_id"] = serde_json::json!(proposal_id);
+        payload.metadata = Some(metadata.to_string());
+        let posting = ApprovedPosting {
+            conn: self.conn,
+            company: &self.before.company_slug,
+            actor,
+            payload,
+        };
+        let transaction_id = match super::transactions::post_approved_transaction(posting)? {
+            super::transactions::PostResult::Created(id) => id,
+            super::transactions::PostResult::Skipped(_) => {
+                return Err(CliError::Validation(
+                    "proposal reference was already posted; withdraw this proposal".into(),
+                ));
+            }
+        };
+        let state = ProposalState::Approved {
+            resolution: Resolution::new(self.conn, actor)?,
+            transaction_id,
+        };
+        Ok(self.transition(state))
+    }
+
+    fn reject(self, actor: &Actor, reason: Option<&str>) -> Result<(Proposal, Proposal), CliError> {
+        let own = actor.agent_uri() == Some(self.before.proposer_uri.as_str());
+        let can_approve = actor
+            .identity()
+            .map(|identity| identity.allows(Capability::Approve))
+            .transpose()?
+            .unwrap_or(false);
+        let required = if own && !can_approve {
+            Capability::Propose
+        } else {
+            Capability::Approve
+        };
+        audit::require_capability(self.conn, actor, required)?;
+        let resolution = Resolution::new(self.conn, actor)?;
+        let reason = reason.map(str::to_owned);
+        let state = if own {
+            ProposalState::Withdrawn { resolution, reason }
+        } else {
+            ProposalState::Rejected { resolution, reason }
+        };
+        Ok(self.transition(state))
+    }
+
+    fn transition(self, state: ProposalState) -> (Proposal, Proposal) {
+        let mut after = self.before.clone();
+        after.state = state;
+        (self.before, after)
+    }
+}
+
+/// Authorization checked before any proposal details are loaded.
+struct ApprovalGrant<'a> {
+    actor: &'a Actor,
+}
+
+impl<'a> ApprovalGrant<'a> {
+    fn authorize(conn: &Connection, actor: &'a Actor) -> Result<Self, CliError> {
+        audit::require_capability(conn, actor, Capability::Approve)?;
+        Ok(Self { actor })
+    }
+}
+
+pub(super) fn approve(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    id: &str,
+) -> Result<Proposal, CliError> {
+    audit::atomically(conn, || {
+        let grant = ApprovalGrant::authorize(conn, actor)?;
+        let (before, after) = PendingProposal::load(conn, company, id)?.approve(&grant)?;
+        audit::record_proposal_resolution(ProposalTransition {
+            conn,
+            actor,
+            before,
+            after,
+        })
+    })
+}
+
+pub(super) fn reject(
+    conn: &Connection,
+    actor: &Actor,
+    company: &str,
+    id: &str,
+    reason: Option<&str>,
+) -> Result<Proposal, CliError> {
+    audit::atomically(conn, || {
+        let (before, after) = PendingProposal::load(conn, company, id)?.reject(actor, reason)?;
+        audit::record_proposal_resolution(ProposalTransition {
+            conn,
+            actor,
+            before,
+            after,
+        })
+    })
+}
+
+/// A consumed pending proposal and its authorized resolution.
+pub(super) struct ProposalTransition<'a> {
+    conn: &'a Connection,
+    actor: &'a Actor,
+    before: Proposal,
+    after: Proposal,
+}
+
+impl<'a> ProposalTransition<'a> {
+    pub(super) fn into_parts(self) -> (&'a Connection, &'a Actor, Proposal, Proposal) {
+        (self.conn, self.actor, self.before, self.after)
+    }
+}
+
+/// The exact frozen posting being approved. Its only constructor is approval
+/// of a pending proposal, and it is consumed on the originating connection.
+pub(super) struct ApprovedPosting<'a> {
+    conn: &'a Connection,
+    company: &'a str,
+    actor: &'a Actor,
+    payload: PostingPayload,
+}
+
+impl<'a> ApprovedPosting<'a> {
+    pub(super) fn connection(&self) -> &'a Connection {
+        self.conn
+    }
+
+    pub(super) fn params(&self) -> PostTransactionParams<'_> {
+        self.payload.params(self.company, self.actor)
+    }
 }
 
 const COLUMNS: &str = "id, company_slug, status, payload, reference, debit_total, currency, proposer_uri,
@@ -127,7 +458,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
                 )
             })?,
         company_slug: row.get(1)?,
-        status: row.get(2)?,
+        state: ProposalState::from_row(row)?,
         payload,
         reference: row.get(4)?,
         debit_total: row.get(5)?,
@@ -135,11 +466,6 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
         proposer_uri: row.get(7)?,
         proposer_jti: row.get(8)?,
         created_at: row.get(9)?,
-        resolved_at: row.get(10)?,
-        resolved_by_uri: row.get(11)?,
-        resolved_by_jti: row.get(12)?,
-        transaction_id: row.get(13)?,
-        reason: row.get(14)?,
     })
 }
 
@@ -335,10 +661,10 @@ pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
         };
         let proposal = get(conn, &company, &id).map_err(|_| invalid())?;
         let expected = serde_json::to_value(&proposal).map_err(|_| invalid())?;
-        let action = if proposal.status == "approved" {
-            "proposal_approve"
-        } else {
-            "proposal_reject"
+        let action = match proposal.state {
+            ProposalState::Pending => return Err(invalid()),
+            ProposalState::Approved { .. } => "proposal_approve",
+            ProposalState::Rejected { .. } | ProposalState::Withdrawn { .. } => "proposal_reject",
         };
         let mut audits = conn.prepare("SELECT action, after FROM audit_log WHERE entity = 'proposal' AND company_slug = ?1 AND entity_id = ?2")?;
         let mut audits = audits.query(params![company, id])?;
@@ -346,16 +672,19 @@ pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
             let stored_action: String = row.get(0)?;
             let after: String = row.get(1)?;
             stored_action == action
-                && proposal.status != "pending"
                 && serde_json::from_str::<serde_json::Value>(&after).ok() == Some(expected)
                 && audits.next()?.is_none()
         } else {
             false
         };
-        if proposal.status == "approved" {
-            let transaction_id = proposal.transaction_id.ok_or_else(invalid)?;
+        if let ProposalState::Approved {
+            resolution,
+            transaction_id,
+        } = &proposal.state
+        {
+            let (uri, jti) = resolution.by.columns();
             let (transaction, _) =
-                super::transactions::get_transaction(conn, &company, transaction_id)
+                super::transactions::get_transaction(conn, &company, *transaction_id)
                     .map_err(|_| invalid())?;
             let link = transaction
                 .metadata
@@ -366,8 +695,8 @@ pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
                 .and_then(|value| value.get("proposal_id"))
                 .and_then(serde_json::Value::as_str)
                 != Some(id.as_str())
-                || transaction.agent_uri != proposal.resolved_by_uri
-                || transaction.token_jti != proposal.resolved_by_jti
+                || transaction.agent_uri.as_deref() != uri
+                || transaction.token_jti.as_deref() != jti
             {
                 return Err(invalid());
             }

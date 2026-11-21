@@ -47,7 +47,7 @@ fn proposals_require_immutable_payloads_and_audited_terminal_transitions() -> Te
     verify::execute_json(&db)?;
     let outcome =
         audit::reject_proposal(db.conn(), &Actor::new("reviewer"), "acme", &id, Some("No"))?;
-    assert_eq!(outcome.status, "rejected");
+    assert_eq!(outcome.state.code(), "rejected");
     verify::execute_json(&db)?;
     assert!(
         db.conn()

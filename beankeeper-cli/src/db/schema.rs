@@ -1399,7 +1399,7 @@ mod tests {
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(&conn)?.enforce);
         assert_eq!(
-            proposals::get(&conn, "legacy", &id)?.reason.as_deref(),
+            proposals::get(&conn, "legacy", &id)?.state.reason(),
             Some("v19 review")
         );
         proposals::verify_resolutions(&conn)?;

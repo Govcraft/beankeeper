@@ -742,7 +742,7 @@ fn period_lock_blocks_approval_atomically_and_reopen_requires_admin() -> TestRes
     assert_eq!(ledger.count("entries")?, 0);
     assert_eq!(ledger.count("audit_log")?, history);
     let pending = beankeeper_cli::db::proposals::get(ledger.db.conn(), "acme", id)?;
-    assert_eq!(pending.status, "pending");
+    assert_eq!(pending.state.code(), "pending");
     error_code(
         &ledger.call("acme", &reopen, Some(&approver.token))?,
         "FORBIDDEN",
