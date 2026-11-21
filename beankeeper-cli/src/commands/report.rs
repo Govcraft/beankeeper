@@ -342,7 +342,7 @@ fn run_trial_balance(
                 minor_units,
                 output.use_color,
                 Some(&title),
-            );
+            )?;
             writeln!(output.writer, "{rendered}")?;
         }
         OutputFormat::Json => {

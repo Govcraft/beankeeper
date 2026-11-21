@@ -7,6 +7,7 @@ use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use std::collections::HashMap;
 
 use super::amounts::format_money_grouped;
+use super::{TrialBalanceTotals, trial_balance_overflow};
 use crate::db::clearings::{Clearing, cleared_sum};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceRow,
@@ -441,14 +442,16 @@ fn clearing_lines(
 }
 
 /// Render a trial balance report as a table with totals and balance status.
-#[must_use]
+/// # Errors
+/// Returns a validation error when a total cannot be represented.
 pub fn render_trial_balance(
     balances: &[BalanceRow],
     currency_code: &str,
     currency_minor_units: u8,
     use_color: bool,
     title_override: Option<&str>,
-) -> String {
+) -> Result<String, CliError> {
+    let TrialBalanceTotals { debits, credits } = TrialBalanceTotals::from_rows(balances)?;
     let mut lines = Vec::new();
     let default_title = format!("Trial Balance ({currency_code})");
     let title = title_override.unwrap_or(&default_title);
@@ -463,13 +466,7 @@ pub fn render_trial_balance(
         Cell::new(styled("Credit", bold_style(), use_color)),
     ]);
 
-    let mut grand_debits: i64 = 0;
-    let mut grand_credits: i64 = 0;
-
     for row in balances {
-        grand_debits = grand_debits.saturating_add(row.debit_total);
-        grand_credits = grand_credits.saturating_add(row.credit_total);
-
         table.add_row(vec![
             Cell::new(styled(&row.code, cyan_style(), use_color)),
             Cell::new(&row.name),
@@ -485,13 +482,13 @@ pub fn render_trial_balance(
         Cell::new(""),
         Cell::new(styled("Totals", bold_style(), use_color)),
         Cell::new(styled(
-            &format_amount(grand_debits, currency_minor_units),
+            &format_amount(debits, currency_minor_units),
             bold_style(),
             use_color,
         ))
         .set_alignment(CellAlignment::Right),
         Cell::new(styled(
-            &format_amount(grand_credits, currency_minor_units),
+            &format_amount(credits, currency_minor_units),
             bold_style(),
             use_color,
         ))
@@ -501,10 +498,10 @@ pub fn render_trial_balance(
     lines.push(table.to_string());
     lines.push(String::new());
 
-    if grand_debits == grand_credits {
+    if debits == credits {
         lines.push(styled("[ok] BALANCED", green_style(), use_color));
     } else {
-        let diff = grand_debits.saturating_sub(grand_credits).abs();
+        let diff = i64::try_from(debits.abs_diff(credits)).map_err(|_| trial_balance_overflow())?;
         let diff_str = format_amount(diff, currency_minor_units);
         lines.push(styled(
             &format!("[!!] UNBALANCED (difference: {diff_str})"),
@@ -513,7 +510,7 @@ pub fn render_trial_balance(
         ));
     }
 
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 /// Parameters for rendering an account balance.
@@ -1169,7 +1166,8 @@ mod tests {
                 credit_total: 10000,
             },
         ];
-        let out = render_trial_balance(&rows, "USD", 2, false, None);
+        let out = render_trial_balance(&rows, "USD", 2, false, None)
+            .expect("test totals are representable");
         assert!(out.contains("Trial Balance (USD)"));
         assert!(out.contains("1000"));
         assert!(out.contains("Cash"));
@@ -1186,7 +1184,8 @@ mod tests {
             debit_total: 10000,
             credit_total: 5000,
         }];
-        let out = render_trial_balance(&rows, "USD", 2, false, None);
+        let out = render_trial_balance(&rows, "USD", 2, false, None)
+            .expect("test totals are representable");
         assert!(out.contains("[!!] UNBALANCED"));
     }
 
@@ -1199,7 +1198,8 @@ mod tests {
             debit_total: 5000,
             credit_total: 5000,
         }];
-        let out = render_trial_balance(&rows, "JPY", 0, false, None);
+        let out = render_trial_balance(&rows, "JPY", 0, false, None)
+            .expect("test totals are representable");
         assert!(out.contains("Trial Balance (JPY)"));
         assert!(out.contains("5,000"));
         assert!(out.contains("[ok] BALANCED"));
