@@ -55,9 +55,7 @@ pub fn run(
     let meta = meta.unwrap_or_else(|| cli.meta(Operation::TxnClear, Some(company)));
     match &result.items {
         ClearedItems::Single(item) => render_single(cli, &ctx, item, format, meta),
-        ClearedItems::Batch { account, items } => {
-            render_batch(cli, &ctx, account, items, format, meta)
-        }
+        ClearedItems::Batch(batch) => render_batch(cli, &ctx, batch, format, meta),
     }
 }
 
@@ -83,7 +81,7 @@ pub fn execute_json(
     let ctx = result.context(db_handle, company, actor.clone());
     match &result.items {
         ClearedItems::Single(item) => single_data(&ctx, item),
-        ClearedItems::Batch { account, items } => batch_data(&ctx, account, items),
+        ClearedItems::Batch(batch) => batch_data(&ctx, batch),
     }
 }
 
@@ -156,7 +154,43 @@ fn resolve_request<'a>(
 
 enum ClearedItems<'a> {
     Single(Item),
-    Batch { account: &'a str, items: Vec<Item> },
+    Batch(ClearedBatch<'a>),
+}
+
+struct ClearedBatch<'a> {
+    account: &'a str,
+    items: Vec<Item>,
+    total: Option<BatchTotal>,
+}
+
+#[derive(Clone, Copy)]
+struct BatchTotal {
+    currency: Currency,
+    amount: i64,
+}
+
+impl BatchTotal {
+    fn from_items(items: &[Item]) -> Result<Option<Self>, CliError> {
+        let Some(currency) = items
+            .first()
+            .map(|item| item.currency)
+            .filter(|currency| items.iter().all(|item| item.currency == *currency))
+        else {
+            return Ok(None);
+        };
+        let amount =
+            items
+                .iter()
+                .filter(|item| !item.skipped())
+                .try_fold(0i64, |total, item| {
+                    total.checked_add(item.amount).ok_or_else(|| {
+                        CliError::Validation(
+                            "cleared total exceeds the supported minor-unit range".into(),
+                        )
+                    })
+                })?;
+        Ok(Some(Self { currency, amount }))
+    }
 }
 
 struct Execution<'a> {
@@ -210,10 +244,9 @@ fn compute<'a>(
             let outcome = apply(&ctx, &target, amount)?;
             ClearedItems::Single(Item::new(None, &target, &outcome))
         }
-        ClearRequestTarget::Batch { account, lines } => ClearedItems::Batch {
-            account,
-            items: run_batch(&ctx, account, &lines)?,
-        },
+        ClearRequestTarget::Batch { account, lines } => {
+            ClearedItems::Batch(run_batch(&ctx, account, &lines)?)
+        }
     };
     Ok(Execution {
         date,
@@ -419,7 +452,11 @@ fn at_line(line: u64, reference: &str, e: CliError) -> CliError {
     }
 }
 
-fn run_batch(ctx: &Ctx<'_>, account: &str, lines: &[BatchLine]) -> Result<Vec<Item>, CliError> {
+fn run_batch<'a>(
+    ctx: &Ctx<'_>,
+    account: &'a str,
+    lines: &[BatchLine],
+) -> Result<ClearedBatch<'a>, CliError> {
     db::get_account(ctx.conn, ctx.company, account)?;
     if ctx.status == ClearanceArg::Uncleared && lines.iter().any(|l| l.amount.is_some()) {
         return Err(CliError::Usage(
@@ -443,14 +480,20 @@ fn run_batch(ctx: &Ctx<'_>, account: &str, lines: &[BatchLine]) -> Result<Vec<It
     }
 
     db::atomically(ctx.conn, || {
-        resolved
+        let items = resolved
             .iter()
             .map(|(l, target, amount)| {
                 apply(ctx, target, *amount)
                     .map(|o| Item::new(Some(l.line), target, &o))
                     .map_err(|e| at_line(l.line, &l.reference, e))
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        let total = BatchTotal::from_items(&items)?;
+        Ok(ClearedBatch {
+            account,
+            items,
+            total,
+        })
     })
 }
 
@@ -630,7 +673,7 @@ fn render_single(
     Ok(())
 }
 
-fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json::Value, CliError> {
+fn batch_data(ctx: &Ctx<'_>, batch: &ClearedBatch<'_>) -> Result<serde_json::Value, CliError> {
     #[derive(Serialize)]
     struct Batch<'a> {
         account: &'a str,
@@ -642,32 +685,27 @@ fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json
         count: usize,
         cleared_count: usize,
         skipped_count: usize,
-        /// Sum of `amount` over the `cleared` items, minor units.
-        cleared_total: i64,
+        /// Sum of cleared minor units when the batch has one currency.
+        cleared_total: Option<i64>,
         /// Currency of the total, absent for a batch spanning currencies.
         currency: Option<&'a str>,
         cleared: Vec<&'a Item>,
         skipped: Vec<&'a Item>,
     }
 
-    let (skipped, cleared): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.skipped());
-    let cleared_total = cleared.iter().map(|i| i.amount).sum();
-    let currency = items
-        .first()
-        .map(|item| item.currency)
-        .filter(|currency| items.iter().all(|item| item.currency == *currency))
-        .map(|currency| currency.code());
+    let (skipped, cleared): (Vec<&Item>, Vec<&Item>) =
+        batch.items.iter().partition(|i| i.skipped());
     let data = Batch {
-        account,
+        account: batch.account,
         status: ctx.status.as_str(),
         cleared_date: ctx.date,
         reconciled_date: ctx.reconciled_date(),
         statement: ctx.statement,
-        count: items.len(),
+        count: batch.items.len(),
         cleared_count: cleared.len(),
         skipped_count: skipped.len(),
-        cleared_total,
-        currency,
+        cleared_total: batch.total.map(|total| total.amount),
+        currency: batch.total.map(|total| total.currency.code()),
         cleared,
         skipped,
     };
@@ -679,14 +717,14 @@ fn batch_data(ctx: &Ctx<'_>, account: &str, items: &[Item]) -> Result<serde_json
 fn render_batch(
     cli: &Cli,
     ctx: &Ctx<'_>,
-    account: &str,
-    items: &[Item],
+    batch: &ClearedBatch<'_>,
     format: OutputFormat,
     meta: output::json::Meta,
 ) -> Result<(), CliError> {
+    let items = &batch.items;
     match format {
         OutputFormat::Json => {
-            let data = batch_data(ctx, account, items)?;
+            let data = batch_data(ctx, batch)?;
             println!("{}", to_json(data, meta)?);
             finish(cli, items);
             return Ok(());
