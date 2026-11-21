@@ -1,13 +1,8 @@
 //! Multi-column reports (issue #22).
 //!
-//! `report income-statement` and `report trial-balance` accept two optional
-//! modes that turn the single-column report into a multi-column one:
-//!
-//! - `--period month|quarter|year` splits `--from`..`--to` into one column per
-//!   calendar period (the first and last periods are clipped to the range) and
-//!   adds a Total column.
-//! - `--compare prior-period|prior-year` adds a column for the equivalent
-//!   earlier range plus the change in amount and percent.
+//! `--period month|quarter|year` splits `--from`..`--to` into columns for
+//! calendar periods and adds a Total column. Comparison requests use the
+//! shared typed comparison implementation.
 //!
 //! Each account shows its net amount on its normal side (debit-normal for
 //! assets and expenses, credit-normal for liabilities, equity and revenue).
@@ -17,7 +12,7 @@
 //! When neither option is given, [`try_run`] returns `None` and the regular
 //! single-column report runs unchanged.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use beankeeper::types::Currency;
 use chrono::{Datelike, Months, NaiveDate};
@@ -204,57 +199,17 @@ pub struct SummaryLine {
     pub amounts: Vec<i64>,
 }
 
-/// The columns for a computed report. A comparison always has both endpoints.
-#[derive(Debug, Clone)]
-pub(crate) enum ReportColumns {
-    Periods(PeriodArg, Vec<Column>),
-    Compare(CompareArg, [Column; 2]),
-}
-
-impl ReportColumns {
-    fn as_slice(&self) -> &[Column] {
-        match self {
-            Self::Periods(_, columns) => columns,
-            Self::Compare(_, columns) => columns,
-        }
-    }
-
-    fn layout(&self) -> Layout {
-        match self {
-            Self::Periods(period, _) => Layout::Periods(*period),
-            Self::Compare(compare, _) => Layout::Compare(*compare),
-        }
-    }
-}
-
 /// A fully computed multi-column report, ready for rendering.
 #[derive(Debug, Clone)]
 pub struct MultiColumnReport {
     pub kind: MultiReportKind,
+    pub period: PeriodArg,
     pub currency: Currency,
     pub from: NaiveDate,
     pub to: NaiveDate,
+    pub columns: Vec<Column>,
     pub accounts: Vec<AccountLine>,
     pub summary: Vec<SummaryLine>,
-    columns: ReportColumns,
-}
-
-impl MultiColumnReport {
-    /// Column layout used for rendering values.
-    #[must_use]
-    pub fn layout(&self) -> Layout {
-        self.columns.layout()
-    }
-
-    /// Columns in display order.
-    #[must_use]
-    pub fn columns(&self) -> &[Column] {
-        self.columns.as_slice()
-    }
-
-    pub(crate) fn report_columns(&self) -> &ReportColumns {
-        &self.columns
-    }
 }
 
 /// Command id for the multi-column modes, or `None` for any other command.
@@ -322,6 +277,9 @@ pub(crate) fn try_run_to(
     output: &mut super::report::ReportOutput<'_>,
 ) -> Option<Result<(), CliError>> {
     let (kind, layout) = requested_layout(sub)?;
+    let Layout::Periods(period) = layout else {
+        return super::report_compare::try_run_to(cli, db, company, sub, output);
+    };
     let (from, to, account_type, currency) = match sub {
         ReportCommand::IncomeStatement {
             from, to, currency, ..
@@ -341,7 +299,7 @@ pub(crate) fn try_run_to(
         company,
         &Request {
             kind,
-            layout,
+            period,
             from: from.as_deref(),
             to: to.as_deref(),
             account_type,
@@ -354,7 +312,7 @@ pub(crate) fn try_run_to(
 /// Parsed inputs for a multi-column report.
 struct Request<'a> {
     kind: MultiReportKind,
-    layout: Layout,
+    period: PeriodArg,
     from: Option<&'a str>,
     to: Option<&'a str>,
     account_type: Option<&'a AccountTypeArg>,
@@ -368,7 +326,32 @@ fn run(
     req: &Request<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let report = compute(db, company, req)?;
+    let dates = DateRange::resolve(req.from, req.to, chrono::Local::now().date_naive())?;
+    let (from, to) = (dates.from(), dates.to());
+    let columns = period_columns(from, to, req.period)?;
+
+    let currency =
+        super::report_currency::resolve_report_currency(db.conn(), company, req.currency)?;
+    let type_filter = req.account_type.map(|t| format!("{t:?}").to_lowercase());
+    let (accounts, summary) = build_lines(
+        db.conn(),
+        company,
+        req.kind,
+        type_filter.as_deref(),
+        currency.code(),
+        &columns,
+    )?;
+
+    let report = MultiColumnReport {
+        kind: req.kind,
+        period: req.period,
+        currency,
+        from,
+        to,
+        columns,
+        accounts,
+        summary,
+    };
 
     match output.format {
         OutputFormat::Table => {
@@ -379,7 +362,7 @@ fn run(
             )?;
         }
         OutputFormat::Json => {
-            let id = mode_command_id(req.kind, req.layout);
+            let id = mode_command_id(req.kind, Layout::Periods(req.period));
             let meta = cli.meta(id, Some(company));
             let chart = chart::requested(cli, || {
                 chart::periods(company, &report, cli.output.chart_all)
@@ -399,60 +382,10 @@ fn run(
         eprintln!(
             "[ok] {} generated ({} columns)",
             req.kind.title().to_lowercase(),
-            report.columns().len()
+            report.columns.len()
         );
     }
     Ok(())
-}
-
-fn compute(db: &Db, company: &str, req: &Request<'_>) -> Result<MultiColumnReport, CliError> {
-    let dates = DateRange::resolve(req.from, req.to, chrono::Local::now().date_naive())?;
-    let from = dates.from();
-    let to = dates.to();
-    let columns = match req.layout {
-        Layout::Periods(period) => {
-            ReportColumns::Periods(period, period_columns(from, to, period)?)
-        }
-        Layout::Compare(compare) => {
-            let (prior_from, prior_to) = prior_range(from, to, compare)?;
-            ReportColumns::Compare(
-                compare,
-                [
-                    Column {
-                        label: range_label(from, to),
-                        from,
-                        to,
-                    },
-                    Column {
-                        label: range_label(prior_from, prior_to),
-                        from: prior_from,
-                        to: prior_to,
-                    },
-                ],
-            )
-        }
-    };
-
-    let currency =
-        super::report_currency::resolve_report_currency(db.conn(), company, req.currency)?;
-    let type_filter = req.account_type.map(|t| format!("{t:?}").to_lowercase());
-    let (accounts, summary) = build_lines(
-        db.conn(),
-        company,
-        req.kind,
-        type_filter.as_deref(),
-        currency.code(),
-        columns.as_slice(),
-    )?;
-    Ok(MultiColumnReport {
-        kind: req.kind,
-        currency,
-        from,
-        to,
-        columns,
-        accounts,
-        summary,
-    })
 }
 
 fn date_overflow() -> CliError {
@@ -642,102 +575,70 @@ pub(super) fn fetch_window_rows(
     Ok(rows)
 }
 
-fn amount_overflow() -> CliError {
+fn report_overflow() -> CliError {
     CliError::Validation("report amount exceeds the supported minor-unit range".into())
 }
 
-/// Fetch balances for every column window and pivot them into account lines
-/// plus the report's summary lines.
-fn build_lines(
-    conn: &rusqlite::Connection,
-    company: &str,
-    kind: MultiReportKind,
-    type_filter: Option<&str>,
-    currency: &str,
-    columns: &[Column],
-) -> Result<(Vec<AccountLine>, Vec<SummaryLine>), CliError> {
-    let n = columns.len();
-    let mut accounts: Vec<AccountLine> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
-    let mut debits = vec![0i64; n];
-    let mut credits = vec![0i64; n];
-    let mut revenue = vec![0i64; n];
-    let mut expenses = vec![0i64; n];
+#[derive(Default)]
+struct ColumnTotals {
+    debit: i64,
+    credit: i64,
+    revenue: i64,
+    expense: i64,
+}
 
-    for (i, col) in columns.iter().enumerate() {
-        let rows = fetch_window_rows(
-            conn,
-            company,
-            kind,
-            type_filter,
-            currency,
-            (col.from, col.to),
-        )?;
-
-        for row in &rows {
-            let (positive, negative) = if matches!(row.account_type.as_str(), "asset" | "expense") {
-                (row.debit_total, row.credit_total)
-            } else {
-                (row.credit_total, row.debit_total)
-            };
-            let net = positive.checked_sub(negative).ok_or_else(amount_overflow)?;
-            debits[i] = debits[i]
-                .checked_add(row.debit_total)
-                .ok_or_else(amount_overflow)?;
-            credits[i] = credits[i]
-                .checked_add(row.credit_total)
-                .ok_or_else(amount_overflow)?;
-            match row.account_type.as_str() {
-                "revenue" => {
-                    revenue[i] = revenue[i].checked_add(net).ok_or_else(amount_overflow)?;
-                }
-                "expense" => {
-                    expenses[i] = expenses[i].checked_add(net).ok_or_else(amount_overflow)?;
-                }
-                _ => {}
+impl ColumnTotals {
+    fn add(&mut self, row: &db::BalanceRow, net: i64) -> Result<(), CliError> {
+        self.debit = self
+            .debit
+            .checked_add(row.debit_total)
+            .ok_or_else(report_overflow)?;
+        self.credit = self
+            .credit
+            .checked_add(row.credit_total)
+            .ok_or_else(report_overflow)?;
+        match row.account_type.as_str() {
+            "revenue" => {
+                self.revenue = self.revenue.checked_add(net).ok_or_else(report_overflow)?;
             }
-            let pos = *index.entry(row.code.clone()).or_insert_with(|| {
-                accounts.push(AccountLine {
-                    code: row.code.clone(),
-                    name: row.name.clone(),
-                    account_type: row.account_type.clone(),
-                    amounts: vec![0; n],
-                });
-                accounts.len() - 1
-            });
-            if let Some(line) = accounts.get_mut(pos) {
-                line.amounts[i] = net;
+            "expense" => {
+                self.expense = self.expense.checked_add(net).ok_or_else(report_overflow)?;
             }
+            _ => {}
         }
+        Ok(())
     }
+}
 
-    // An account can be missing from some windows (no activity there), so
-    // insertion order is not stable: sort like the single-column reports
-    // (revenue before expenses on the income statement, then by code).
-    accounts.sort_by(|a, b| {
-        let rank = |l: &AccountLine| {
-            u8::from(kind == MultiReportKind::IncomeStatement && l.account_type != "revenue")
-        };
-        rank(a).cmp(&rank(b)).then_with(|| a.code.cmp(&b.code))
-    });
+fn net_amount(row: &db::BalanceRow) -> Result<i64, CliError> {
+    let (positive, negative) = if matches!(row.account_type.as_str(), "asset" | "expense") {
+        (row.debit_total, row.credit_total)
+    } else {
+        (row.credit_total, row.debit_total)
+    };
+    positive.checked_sub(negative).ok_or_else(report_overflow)
+}
 
-    let summary = match kind {
+fn summary_lines(
+    kind: MultiReportKind,
+    columns: &[ColumnTotals],
+) -> Result<Vec<SummaryLine>, CliError> {
+    let lines = match kind {
         MultiReportKind::IncomeStatement => {
-            let net_income = revenue
+            let net_income = columns
                 .iter()
-                .zip(&expenses)
-                .map(|(r, e)| r.checked_sub(*e).ok_or_else(amount_overflow))
-                .collect::<Result<Vec<_>, _>>()?;
+                .map(|c| c.revenue.checked_sub(c.expense).ok_or_else(report_overflow))
+                .collect::<Result<_, _>>()?;
             vec![
                 SummaryLine {
                     key: "total_revenue",
                     label: "Total Revenue",
-                    amounts: revenue,
+                    amounts: columns.iter().map(|c| c.revenue).collect(),
                 },
                 SummaryLine {
                     key: "total_expenses",
                     label: "Total Expenses",
-                    amounts: expenses,
+                    amounts: columns.iter().map(|c| c.expense).collect(),
                 },
                 SummaryLine {
                     key: "net_income",
@@ -750,17 +651,75 @@ fn build_lines(
             SummaryLine {
                 key: "total_debits",
                 label: "Total Debits",
-                amounts: debits,
+                amounts: columns.iter().map(|c| c.debit).collect(),
             },
             SummaryLine {
                 key: "total_credits",
                 label: "Total Credits",
-                amounts: credits,
+                amounts: columns.iter().map(|c| c.credit).collect(),
             },
         ],
     };
+    Ok(lines)
+}
 
-    Ok((accounts, summary))
+/// Fetch balances for every window and pivot them by account identity.
+fn build_lines(
+    conn: &rusqlite::Connection,
+    company: &str,
+    kind: MultiReportKind,
+    type_filter: Option<&str>,
+    currency: &str,
+    columns: &[Column],
+) -> Result<(Vec<AccountLine>, Vec<SummaryLine>), CliError> {
+    let mut accounts = BTreeMap::<String, AccountLine>::new();
+    let mut totals = Vec::with_capacity(columns.len());
+    for col in columns {
+        let rows = fetch_window_rows(
+            conn,
+            company,
+            kind,
+            type_filter,
+            currency,
+            (col.from, col.to),
+        )?;
+        let mut subtotals = ColumnTotals::default();
+        for row in rows {
+            let net = net_amount(&row)?;
+            subtotals.add(&row, net)?;
+            let line = accounts
+                .entry(row.code.clone())
+                .or_insert_with(|| AccountLine {
+                    code: row.code,
+                    name: row.name,
+                    account_type: row.account_type,
+                    amounts: Vec::with_capacity(columns.len()),
+                });
+            let completed = totals.len();
+            if line.amounts.len() > completed {
+                return Err(CliError::Database(format!(
+                    "duplicate account in report period: {}",
+                    line.code
+                )));
+            }
+            line.amounts.resize(completed, 0);
+            line.amounts.push(net);
+        }
+        totals.push(subtotals);
+    }
+
+    let mut accounts: Vec<AccountLine> = accounts
+        .into_values()
+        .map(|mut row| {
+            row.amounts.resize(columns.len(), 0);
+            row
+        })
+        .collect();
+    if kind == MultiReportKind::IncomeStatement {
+        // Codes are already ordered; keep revenues before expenses.
+        accounts.sort_by_key(|line| line.account_type != "revenue");
+    }
+    Ok((accounts, summary_lines(kind, &totals)?))
 }
 
 #[cfg(test)]

@@ -209,17 +209,6 @@ fn aged(
     let mut total = 0;
     for account in accounts {
         let movements = load_movements(context, account, payable)?;
-        // The existing matcher adds amounts in i64. Bound each side before
-        // entering it so an oversized book returns a named validation error.
-        let mut charges = 0;
-        let mut settlements = 0;
-        for movement in &movements {
-            if movement.amount >= 0 {
-                charges = add(charges, movement.amount)?;
-            } else {
-                settlements = add(settlements, absolute(movement.amount)?)?;
-            }
-        }
         let matched = report_aging::apply_specific(&movements);
         for item in matched.open_items {
             if (context.as_of - item.date).num_days() > 30 {
@@ -274,21 +263,18 @@ fn load_movements(
         let date = date.parse::<NaiveDate>().map_err(|error| {
             CliError::Database(format!("invalid stored transaction date: {error}"))
         })?;
-        Ok(Movement {
+        Movement::new(
             transaction_id,
             date,
             description,
             reference,
-            amount: if payable {
+            if payable {
                 sub(credit, debit)?
             } else {
                 sub(debit, credit)?
             },
-            links: report_aging::parse_link_spec(
-                metadata.as_deref(),
-                report_aging::DEFAULT_LINK_KEY,
-            ),
-        })
+            report_aging::parse_link_spec(metadata.as_deref(), report_aging::DEFAULT_LINK_KEY),
+        )
     })
     .collect()
 }

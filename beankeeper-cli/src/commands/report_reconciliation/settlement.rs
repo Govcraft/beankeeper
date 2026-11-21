@@ -124,21 +124,21 @@ fn postings(rows: Vec<EntryRow>, normal: &str, link_key: &str) -> Result<Vec<Pos
         row.cleared_stmt = cleared_stmt;
         row.reconciled_all = reconciled_all;
         row.reconciled_stmt = reconciled_stmt;
-        let movement = Movement {
-            transaction_id: row.transaction_id,
-            date: NaiveDate::parse_from_str(&row.date, "%Y-%m-%d")
+        let movement = Movement::new(
+            row.transaction_id,
+            NaiveDate::parse_from_str(&row.date, "%Y-%m-%d")
                 .map_err(|e| CliError::Validation(format!("invalid transaction date: {e}")))?,
-            description: row.description.clone(),
-            reference: row.reference.clone(),
-            amount: row.amount,
-            links: report_aging::parse_link_spec(row.metadata.as_deref(), link_key),
-        };
+            row.description.clone(),
+            row.reference.clone(),
+            row.amount,
+            report_aging::parse_link_spec(row.metadata.as_deref(), link_key),
+        )?;
         result.push(Posting { row, movement });
     }
     result.sort_by_key(|p| {
         (
             p.movement.date,
-            p.movement.amount <= 0,
+            !p.movement.is_charge(),
             p.row.transaction_id,
         )
     });
@@ -212,8 +212,7 @@ pub(super) fn build_report(
         ));
     }
     let (all, selected) = load_postings(conn, company, args, &report, link_key)?;
-    let movements: Vec<&Movement> = all.iter().map(|p| &p.movement).collect();
-    let index = TargetIndex::new(movements.iter().copied());
+    let index = TargetIndex::new(all.iter().map(|p| &p.movement));
     let mut charges: BTreeMap<i64, Charge> = all
         .iter()
         .filter(|p| p.row.amount > 0)
@@ -231,7 +230,6 @@ pub(super) fn build_report(
         conn,
         company,
         all: &all,
-        movements: &movements,
         index: &index,
         account: &report.code,
         currency: report.currency,
@@ -328,8 +326,7 @@ struct MatchContext<'a> {
     conn: &'a Connection,
     company: &'a str,
     all: &'a [Posting],
-    movements: &'a [&'a Movement],
-    index: &'a TargetIndex,
+    index: &'a TargetIndex<'a>,
     account: &'a str,
     currency: Currency,
 }
@@ -359,12 +356,17 @@ fn apply_settlements(
             reversals.insert(posting.row.transaction_id);
         }
     }
-    for posting in ctx
+    for (posting, amount, link_spec) in ctx
         .all
         .iter()
-        .filter(|p| p.row.amount < 0 && !reversals.contains(&p.row.transaction_id))
+        .filter(|p| !reversals.contains(&p.row.transaction_id))
+        .filter_map(|p| {
+            p.movement
+                .settlement()
+                .map(|(amount, links)| (p, amount, links))
+        })
     {
-        let settlement = match_settlement(ctx, posting, &mut linked, charges)?;
+        let settlement = match_settlement(ctx, posting, amount, link_spec, &mut linked, charges)?;
         // Linked settlements follow charge selection even if their own metadata
         // lacks the filter key. Unmatched credits use their own metadata.
         if settlement
@@ -413,20 +415,20 @@ fn outstanding(
 fn match_settlement(
     ctx: &MatchContext<'_>,
     posting: &Posting,
+    amount: i64,
+    link_spec: &LinkSpec,
     linked: &mut BTreeMap<i64, i64>,
     charges: &BTreeMap<i64, Charge>,
 ) -> Result<Settlement, CliError> {
     let MatchContext {
         conn,
         company,
-        all,
-        movements,
         index,
         account,
         currency,
+        ..
     } = *ctx;
     let row = &posting.row;
-    let amount = row.amount.checked_neg().ok_or_else(super::overflow)?;
     let mut result = Settlement {
         entry_id: row.entry_id,
         transaction_id: row.transaction_id,
@@ -439,7 +441,7 @@ fn match_settlement(
         excess: amount,
         reasons: Vec::new(),
     };
-    let targets = match &posting.movement.links {
+    let targets = match link_spec {
         LinkSpec::None => {
             result.reasons.push(SettlementReason::MissingLink);
             return Ok(result);
@@ -454,10 +456,10 @@ fn match_settlement(
     };
     let mut found = Vec::new();
     for target in targets {
-        match index.resolve(target, &posting.movement, movements) {
-            Ok(i) => {
-                if !found.contains(&i) {
-                    found.push(i);
+        match index.resolve(target, &posting.movement) {
+            Ok(charge) => {
+                if !found.contains(&charge) {
+                    found.push(charge);
                 }
             }
             Err(mut reason) => {
@@ -479,12 +481,11 @@ fn match_settlement(
             }
         }
     }
-    for (pos, &i) in found.iter().enumerate() {
-        let charge = &all[i].row;
+    for (pos, &charge) in found.iter().enumerate() {
         let already = linked.get(&charge.transaction_id).copied().unwrap_or(0);
         let expected = charges
             .get(&charge.transaction_id)
-            .map_or(charge.amount, |c| c.expected);
+            .map_or_else(|| charge.amount(), |c| c.expected);
         let room = expected.saturating_sub(already).max(0);
         let take = if pos + 1 == found.len() {
             result.excess

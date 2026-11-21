@@ -6,9 +6,7 @@ use super::{Chart, Context, Kind, Row};
 use crate::commands::report_cash_flow::CashFlowStatement;
 use crate::commands::report_compare::ComparisonReport;
 use crate::commands::report_dates::DateRange;
-use crate::commands::report_periods::{
-    MultiColumnReport, MultiReportKind, PeriodArg, ReportColumns,
-};
+use crate::commands::report_periods::{MultiColumnReport, MultiReportKind, PeriodArg};
 use crate::commands::report_trend::{TrendMetric, TrendReport};
 use crate::commands::summary::{Comparison, Periods};
 use crate::error::CliError;
@@ -217,24 +215,11 @@ pub(crate) fn periods(
     all: bool,
 ) -> Result<Chart, CliError> {
     let currency = report.currency;
-    let (kind, x, prior) = match report.report_columns() {
-        ReportColumns::Periods(_, columns) => (
-            Kind::Line,
-            columns.iter().map(|column| column.label.clone()).collect(),
-            None,
-        ),
-        ReportColumns::Compare(_, [current, prior]) => {
-            let current = Bounds {
-                from: current.from,
-                to: current.to,
-            };
-            let prior = Bounds {
-                from: prior.from,
-                to: prior.to,
-            };
-            (Kind::Bar, vec![current.label(), prior.label()], Some(prior))
-        }
-    };
+    let x = report
+        .columns
+        .iter()
+        .map(|column| column.label.clone())
+        .collect();
     let state = range(
         company,
         currency,
@@ -242,7 +227,7 @@ pub(crate) fn periods(
             from: report.from,
             to: report.to,
         },
-        prior,
+        None,
     );
     let target = match report.kind {
         MultiReportKind::IncomeStatement => Target::IncomeStatement(state),
@@ -261,7 +246,7 @@ pub(crate) fn periods(
         })
         .collect();
     Chart::new(
-        kind,
+        Kind::Line,
         "Account activity on its normal side",
         x,
         rows,
