@@ -5,6 +5,7 @@
 //! terminal state and user flags.
 
 mod amounts;
+pub(crate) mod chart;
 pub mod csv;
 pub mod json;
 pub mod report_periods;

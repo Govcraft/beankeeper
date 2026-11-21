@@ -186,6 +186,7 @@ pub fn execute_json(
     company: &str,
     args: &SummaryArgs,
 ) -> Result<Value, CliError> {
+    crate::output::chart::validate_request(cli)?;
     db::audit::atomically(db.conn(), || {
         db::companies::get_company(db.conn(), company)?;
         let periods = args.periods(chrono::Local::now().date_naive())?;
@@ -268,13 +269,17 @@ pub fn execute_json(
                 "comparison":"Without --from: month to date versus the full prior calendar month. With --from: the immediately preceding equal-length interval. Explicit comparison dates override either default."
             }
         });
-        serde_json::to_value(Envelope {
+        let mut envelope = serde_json::to_value(Envelope {
             ok: true,
             meta: cli.meta("summary", Some(company)).with_currency(currency),
             data: Some(data),
             error: None::<EnvelopeError>,
         })
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))?;
+        if cli.output.chart {
+            crate::output::chart::attach(cli, company, &mut envelope)?;
+        }
+        Ok(envelope)
     })
 }
 

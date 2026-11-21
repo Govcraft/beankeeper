@@ -73,6 +73,37 @@ fn run_to(
     sub: &ReportCommand,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
+    crate::output::chart::validate_request(cli)?;
+    if cli.output.chart {
+        // All report reads, including their resolved bounds, share one snapshot.
+        return db::audit::atomically(db.conn(), || {
+            let mut bytes = Vec::new();
+            let mut buffered = ReportOutput {
+                format: OutputFormat::Json,
+                use_color: false,
+                writer: &mut bytes,
+            };
+            run_resolved_to(cli, db, company, sub, &mut buffered)?;
+            let mut envelope: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| CliError::General(format!("invalid report JSON: {error}")))?;
+            crate::output::chart::attach(cli, company, &mut envelope)?;
+            serde_json::to_writer_pretty(&mut *output.writer, &envelope).map_err(|error| {
+                CliError::General(format!("JSON serialization failed: {error}"))
+            })?;
+            writeln!(output.writer)?;
+            Ok(())
+        });
+    }
+    run_resolved_to(cli, db, company, sub, output)
+}
+
+fn run_resolved_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    sub: &ReportCommand,
+    output: &mut ReportOutput<'_>,
+) -> Result<(), CliError> {
     crate::db::companies::get_company(db.conn(), company)?;
     let resolved = super::report_dates::resolve(sub, chrono::Local::now().date_naive())?;
     let sub = &resolved;

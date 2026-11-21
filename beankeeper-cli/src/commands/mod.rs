@@ -140,6 +140,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
 ///
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+    crate::output::chart::validate_request(cli)?;
     if !matches!(
         cli.command,
         Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. }

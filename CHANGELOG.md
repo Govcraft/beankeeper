@@ -33,6 +33,14 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   ranks signed transaction and recorded-payee contributions. Existing
   `prior-period` and `prior-year` names remain accepted. (#117)
 
+- Optional version 1 `data.chart` projections via `--json --chart` and MCP
+  `chart: true` for financial summaries, spending trends/categories, net-worth
+  history, cash flow and period/comparison reports. Exact decimal strings,
+  currency units and Desktop detail targets let agents draw their own charts.
+  Charts default to eight categories/series plus Other; `--chart-all` / `chart_all`
+  returns all categories without changing source report fields.
+  ([#118](https://github.com/Govcraft/beankeeper/issues/118))
+
 ### Changed
 
 - Comparison CSV uses a `row_type` column for accounts, totals, movers and
