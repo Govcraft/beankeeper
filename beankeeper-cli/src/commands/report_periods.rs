@@ -134,6 +134,15 @@ impl std::str::FromStr for CompareArg {
     }
 }
 
+impl std::fmt::Display for CompareArg {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PriorPeriod | Self::PriorYear => formatter.write_str(self.as_str()),
+            Self::Custom(bounds) => write!(formatter, "{}..{}", bounds.from, bounds.to),
+        }
+    }
+}
+
 /// Which report is being rendered in multi-column form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MultiReportKind {

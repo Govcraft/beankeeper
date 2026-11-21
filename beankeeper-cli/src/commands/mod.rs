@@ -11,7 +11,7 @@ pub mod investment;
 pub mod loan;
 pub mod period;
 pub mod policy;
-mod reference;
+pub(crate) mod reference;
 pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;

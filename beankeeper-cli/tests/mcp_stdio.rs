@@ -166,6 +166,18 @@ fn payload(response: &Value) -> Result<Value, Box<dyn Error>> {
     )?)
 }
 
+fn assert_parameter_rejection(response: &Value, detail: &str) {
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.contains("failed to deserialize parameters:"),
+        "{response}"
+    );
+    assert!(text.contains(detail), "{response}");
+}
+
 fn posting(reference: &str) -> Value {
     json!({"company":"acme", "description":"MCP sale", "date":"2026-03-01",
         "currency":"USD", "reference":reference, "on_conflict":"skip",
@@ -1310,6 +1322,42 @@ fn metadata_tools_share_cli_rules_and_audit_the_mcp_actor() -> TestResult {
 }
 
 #[test]
+fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let mut empty_debits = posting("empty-debits");
+    empty_debits["debits"] = json!([]);
+    let mut bad_currency = posting("bad-currency");
+    bad_currency["currency"] = json!("XXX");
+    for (input, detail) in [
+        (empty_debits, "non-empty array"),
+        (bad_currency, "invalid currency"),
+    ] {
+        let response = client.call("txn_post", &input)?;
+        assert_parameter_rejection(&response, detail);
+    }
+
+    let response = client.call(
+        "txn_clear",
+        &json!({"company":"acme","target":"entry","transaction_id":1,"reference":"other"}),
+    )?;
+    assert_parameter_rejection(&response, "reference");
+
+    let db = beankeeper_cli::db::Db::open_existing(&path, None)?;
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
 fn historical_trends_over_stdio_match_cli_payloads() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -1918,12 +1966,12 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
         ),
         (
             "txn_approve",
-            json!({"company":"acme", "id":"proposal_absent"}),
+            json!({"company":"acme", "id":"proposal_00000000000000000000000000"}),
             "ledger/approve",
         ),
         (
             "txn_reject",
-            json!({"company":"acme", "id":"proposal_absent"}),
+            json!({"company":"acme", "id":"proposal_00000000000000000000000000"}),
             "ledger/propose",
         ),
         ("txn_reconcile", json!({}), "ledger/reconcile"),
@@ -2132,6 +2180,7 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
         let actual = payload(&response)?;
         assert_eq!(actual["ok"], false);
         assert_eq!(actual["meta"]["command"], "summary");
+        assert_eq!(actual["meta"]["company"], company);
         assert_eq!(actual["error"]["code"], code);
         assert!(actual.get("data").is_none());
     }
