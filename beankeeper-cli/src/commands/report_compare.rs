@@ -439,7 +439,7 @@ struct Request<'a> {
     kind: &'static str,
     from: Option<&'a str>,
     to: Option<&'a str>,
-    currency: Option<&'a str>,
+    currency: Option<&'a crate::cli::CurrencyArg>,
     compare: CompareArg,
     explain: Option<&'a str>,
     account: Option<&'a str>,
@@ -540,7 +540,7 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
         kind,
         from,
         to: to.as_deref(),
-        currency: currency.as_deref(),
+        currency: currency.as_ref(),
         compare: (*compare)?,
         explain: explain.as_deref(),
         account,
@@ -625,8 +625,11 @@ fn run(
 ) -> Result<(), CliError> {
     db::audit::atomically(db.conn(), || {
         let windows = Windows::resolve(req)?;
-        let currency =
-            super::report_currency::resolve_report_currency(db.conn(), company, req.currency)?;
+        let currency = super::report_currency::resolve_report_currency(
+            db.conn(),
+            company,
+            crate::cli::CurrencyArg::resolve_optional(req.currency)?,
+        )?;
         if let Some(account) = req.account {
             db::accounts::get_account(db.conn(), company, account)?;
         }
@@ -796,7 +799,7 @@ fn snapshot(
         None,
         from.as_deref(),
         Some(&to),
-        Some(currency.code()),
+        currency,
     )?;
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
@@ -913,7 +916,7 @@ fn period_snapshot(
         context.company,
         kind,
         type_filter.as_deref(),
-        context.currency.code(),
+        context.currency,
         windows.dates(prior),
     )?;
     let zero = ReportMoney::from_minor(0, context.currency);

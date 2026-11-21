@@ -62,7 +62,7 @@ pub struct CashFlowArgs {
     /// Currency code. Defaults to the company's only transaction currency
     /// (USD when there are no transactions).
     #[arg(long)]
-    pub currency: Option<String>,
+    pub currency: Option<crate::cli::CurrencyArg>,
     /// Compare the full range with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
     #[arg(long)]
     pub compare: Option<super::report_periods::CompareArg>,
@@ -405,7 +405,7 @@ fn compute(db: &Db, company: &str, args: &CashFlowArgs) -> Result<CashFlowStatem
         let currency = super::report_currency::resolve_report_currency(
             conn,
             company,
-            args.currency.as_deref(),
+            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
         )?;
         compute_scoped(
             db,

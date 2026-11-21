@@ -9,7 +9,7 @@ use super::inputs::{
     IncomeStatementInput, LedgerInput, ReconciliationInput, Report, ReportOptions, TaxPeriodInput,
     TrendInput, TrialBalanceInput, Vendor1099Input,
 };
-use crate::cli::{Cli, Command, ReportArgs, ReportCommand};
+use crate::cli::{Cli, Command, CurrencyArg, ReportArgs, ReportCommand};
 use crate::commands::{
     report,
     report_cash_flow::CashFlowArgs,
@@ -68,7 +68,7 @@ impl TryFrom<ReportOptions> for ReportCommand {
             ReportOptions::TaxSummary(input) => Ok(Self::TaxSummary {
                 from: optional_text(input.from),
                 to: optional_text(input.to),
-                currency: optional_text(input.currency),
+                currency: input.currency.map(|currency| currency.into_inner().into()),
             }),
             ReportOptions::Ledger(input) => Ok(ledger(input)),
             ReportOptions::BudgetVariance(input) => budget_variance(input),
@@ -85,7 +85,7 @@ fn trend(input: TrendInput) -> Result<ReportCommand, CliError> {
         from: optional_text(input.from),
         to: optional_text(input.to),
         period: input.period.map_or(PeriodArg::Month, Into::into),
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
     }))
@@ -101,7 +101,7 @@ fn trial_balance(input: TrialBalanceInput) -> Result<ReportCommand, CliError> {
         from: optional_text(input.from),
         to: optional_text(input.to),
         account_type: input.account_type.map(Into::into),
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         period: input.period.map(Into::into),
         compare,
         explain_change: optional_text(input.explain_change),
@@ -113,7 +113,7 @@ fn balance(input: BalanceInput) -> Result<ReportCommand, CliError> {
         account: input.account.to_string(),
         from: optional_text(input.from),
         to: optional_text(input.to),
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
     })
@@ -128,7 +128,7 @@ fn income_statement(input: IncomeStatementInput) -> Result<ReportCommand, CliErr
     Ok(ReportCommand::IncomeStatement {
         from: optional_text(input.from),
         to: optional_text(input.to),
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         period: input.period.map(Into::into),
         compare,
         explain_change: optional_text(input.explain_change),
@@ -138,7 +138,7 @@ fn income_statement(input: IncomeStatementInput) -> Result<ReportCommand, CliErr
 fn balance_sheet(input: BalanceSheetInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::BalanceSheet {
         to: optional_text(input.to),
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
     })
@@ -149,7 +149,7 @@ impl From<TaxPeriodInput> for TaxArgs {
         Self {
             from: optional_text(input.from),
             to: optional_text(input.to),
-            currency: optional_text(input.currency),
+            currency: input.currency.map(|currency| currency.into_inner().into()),
             output_format: None,
         }
     }
@@ -161,7 +161,7 @@ impl From<Vendor1099Input> for VendorArgs {
             period: TaxArgs {
                 from: optional_text(input.from),
                 to: optional_text(input.to),
-                currency: optional_text(input.currency),
+                currency: input.currency.map(|currency| currency.into_inner().into()),
                 output_format: None,
             },
             threshold: optional_text(input.threshold).unwrap_or_else(|| "600".into()),
@@ -174,7 +174,7 @@ fn ledger(input: LedgerInput) -> ReportCommand {
         account: text_list(input.account),
         from: optional_text(input.from),
         to: optional_text(input.to),
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         filter_metadata: input.filter_metadata,
     }
 }
@@ -196,8 +196,14 @@ fn budget_variance(input: BudgetVarianceInput) -> Result<ReportCommand, CliError
         from: report_month(input.from.as_ref())?,
         to: report_month(input.to.as_ref())?,
         account_type: input.account_type.map(Into::into),
-        currency: optional_text(input.currency)
-            .or_else(|| std::env::var("BEANKEEPER_CURRENCY").ok()),
+        currency: input
+            .currency
+            .map(|currency| currency.into_inner().into())
+            .or_else(|| {
+                std::env::var("BEANKEEPER_CURRENCY")
+                    .ok()
+                    .map(|code| CurrencyArg::decode(&code))
+            }),
         include_unbudgeted: input.include_unbudgeted,
     })
 }
@@ -214,7 +220,7 @@ fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
         as_of: optional_text(input.as_of),
         buckets: input.buckets.unwrap_or_else(|| "30,60,90".into()),
         group_by_metadata: input.group_by_metadata,
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         method: input.method.map(Into::into).unwrap_or_default(),
         link_key: input.link_key,
         detail: input.detail,
@@ -233,7 +239,7 @@ fn reconciliation(input: ReconciliationInput) -> ReportCommand {
         statement: input.statement,
         filter_metadata: input.filter_metadata,
         group_by_metadata: input.group_by_metadata,
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
     })
 }
 
@@ -242,7 +248,7 @@ fn cash_flow(input: CashFlowInput) -> Result<ReportCommand, CliError> {
         from: optional_text(input.from),
         to: optional_text(input.to),
         cash_account: text_list(input.cash_account),
-        currency: optional_text(input.currency),
+        currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
     }))

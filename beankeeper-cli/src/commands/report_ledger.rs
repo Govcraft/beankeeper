@@ -50,7 +50,7 @@ pub struct LedgerOptions<'a> {
     /// End date (inclusive), `YYYY-MM-DD`.
     pub to: Option<&'a str>,
     /// Currency to report in; resolved from the company's data when `None`.
-    pub currency: Option<&'a str>,
+    pub currency: Option<Currency>,
     /// `KEY=VALUE` metadata filters (AND-ed); see [`metadata_filter`].
     pub filter_metadata: &'a [String],
 }
@@ -91,7 +91,8 @@ pub struct LedgerAccount {
 /// The complete ledger report.
 #[derive(Debug, Clone, Serialize)]
 pub struct LedgerReport {
-    pub currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    pub currency: Currency,
     pub from: Option<String>,
     pub to: Option<String>,
     /// Active metadata filters; when non-empty, opening and running balances
@@ -128,7 +129,7 @@ pub(crate) fn run_to(
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let report = build_report(db.conn(), company, opts)?;
-    let minor_units = Currency::from_code(&report.currency).map_or(2, |c| c.minor_units());
+    let minor_units = report.currency.minor_units();
 
     match output.format {
         OutputFormat::Table => writeln!(
@@ -204,7 +205,7 @@ pub fn build_report(
     let mut out = Vec::new();
     for acct in accounts {
         let scope = StatementScope {
-            currency: &currency,
+            currency,
             from: opts.from,
             to: opts.to,
             filters: &filters,
@@ -240,10 +241,9 @@ fn validate_date(flag: &str, value: &str) -> Result<NaiveDate, CliError> {
 fn resolve_ledger_currency(
     conn: &Connection,
     company: &str,
-    explicit: Option<&str>,
-) -> Result<String, CliError> {
+    explicit: Option<Currency>,
+) -> Result<Currency, CliError> {
     super::report_currency::resolve_report_currency(conn, company, explicit)
-        .map(|c| c.code().to_string())
 }
 
 /// Signed effect of a debit/credit pair on an account's normal-side balance.
@@ -266,7 +266,7 @@ fn with_filter_params(
 
 /// What a statement covers: currency, period and metadata filters.
 struct StatementScope<'a> {
-    currency: &'a str,
+    currency: Currency,
     from: Option<&'a str>,
     to: Option<&'a str>,
     filters: &'a [MetadataFilter],
@@ -290,7 +290,7 @@ fn account_statement(
         vec![
             Some(company.to_string()),
             Some(acct.code.clone()),
-            Some(currency.to_string()),
+            Some(currency.code().to_string()),
             date.map(str::to_string),
         ]
     };
@@ -446,7 +446,7 @@ pub fn render_csv(report: &LedgerReport) -> Result<String, CliError> {
             a.code.as_str(),
             a.name.as_str(),
             a.account_type.as_str(),
-            report.currency.as_str(),
+            report.currency.code(),
         ];
         let opening = a.opening_balance.to_string();
         wtr.write_record(prefix.iter().copied().chain([

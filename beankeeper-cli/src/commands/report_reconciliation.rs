@@ -61,7 +61,7 @@ pub struct ReconciliationArgs<'a> {
     /// Group outstanding items by this metadata key.
     pub group_by_metadata: Option<&'a str>,
     /// Currency filter; `None` resolves from the company's transactions.
-    pub currency: Option<&'a str>,
+    pub currency: Option<Currency>,
 }
 
 /// Resolved bank reconciliation options for an already-open ledger.
@@ -350,7 +350,7 @@ pub(crate) fn run_command_to(
         statement: statement.as_deref(),
         filter_metadata,
         group_by_metadata: group_by_metadata.as_deref(),
-        currency: currency.as_deref(),
+        currency: crate::cli::CurrencyArg::resolve_optional(currency.as_ref())?,
     };
     if *mode == ReconciliationMode::Bank {
         if link_key.is_some() {
@@ -829,7 +829,7 @@ fn load_entries(
 fn resolve_currency(
     conn: &Connection,
     company: &str,
-    explicit: Option<&str>,
+    explicit: Option<Currency>,
 ) -> Result<Currency, CliError> {
     super::report_currency::resolve_report_currency(conn, company, explicit)
 }

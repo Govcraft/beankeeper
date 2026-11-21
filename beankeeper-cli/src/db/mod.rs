@@ -55,7 +55,7 @@ use std::fmt::Write;
 
 use beankeeper::types::{Currency, Money};
 use chrono::NaiveDate;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, params_from_iter};
 
 use crate::error::CliError;
 
@@ -264,93 +264,44 @@ pub fn list_accounts_with_balances(
         .map_err(CliError::from)
 }
 
-/// Computes a trial balance for a company.
+/// Computes debit and credit totals for every account in one currency.
 ///
-/// Returns one [`BalanceRow`] per account (including those with zero totals).
-/// Optionally filters by account type, transaction currency and/or a date
-/// range (inclusive).
-///
-/// When `currency` is given, only entries of transactions in that currency
-/// are summed. The filter is applied inside the joined entries/transactions
-/// group, so accounts with no matching entries are still listed with zero
-/// totals.
+/// Date filters are inclusive. Accounts with no matching entries have zero totals.
 ///
 /// # Errors
 ///
-/// Returns `CliError::Sqlite` on any database error.
+/// Returns [`CliError::Sqlite`] on database errors.
 pub fn compute_trial_balance(
     conn: &Connection,
     company_slug: &str,
     type_filter: Option<&str>,
     from_date: Option<&str>,
     to_date: Option<&str>,
-    currency: Option<&str>,
+    currency: Currency,
 ) -> Result<Vec<BalanceRow>, CliError> {
-    // Build the query dynamically based on whether we need date or currency
-    // filtering. Either requires joining through transactions. We use a
-    // parenthesised join so the LEFT JOIN still includes accounts with no
-    // matching entries (zero balances); the currency filter lives in the
-    // inner join's ON clause (not the WHERE clause) for the same reason.
-    let has_date_filter = from_date.is_some() || to_date.is_some();
-    let joins_transactions = has_date_filter || currency.is_some();
-    let base = if joins_transactions {
+    let mut sql = String::from(
         "SELECT a.code, a.name, a.type, \
          COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
          FROM accounts a \
-         LEFT JOIN (entries e JOIN transactions t ON t.id = e.transaction_id"
-    } else {
-        "SELECT a.code, a.name, a.type, \
-         COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
-         COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
-         FROM accounts a \
-         LEFT JOIN entries e ON e.company_slug = a.company_slug AND e.account_code = a.code"
-    };
-
-    let mut sql = String::from(base);
-
-    let mut param_idx = 2u32;
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new(company_slug.to_string()));
-
-    if joins_transactions {
-        // Date and currency filters live inside the joined group so accounts
-        // whose entries all fall outside the window still appear with zero.
-        if let Some(cur) = currency {
-            let _ = write!(sql, " AND t.currency = ?{param_idx}");
-            param_values.push(Box::new(cur.to_string()));
-            param_idx += 1;
-        }
-        if let Some(from) = from_date {
-            let _ = write!(sql, " AND t.date >= ?{param_idx}");
-            param_values.push(Box::new(from.to_string()));
-            param_idx += 1;
-        }
-        if let Some(to) = to_date {
-            let _ = write!(sql, " AND t.date <= ?{param_idx}");
-            param_values.push(Box::new(to.to_string()));
-            param_idx += 1;
-        }
-        sql.push_str(") ON e.company_slug = a.company_slug AND e.account_code = a.code");
+         LEFT JOIN (entries e JOIN transactions t ON t.id = e.transaction_id \
+           AND t.company_slug = e.company_slug AND t.currency = ?2",
+    );
+    let filter = type_filter.map(str::to_lowercase);
+    let mut bindings = vec![company_slug, currency.code()];
+    push_transaction_dates(&mut sql, &mut bindings, from_date, to_date);
+    sql.push_str(
+        ") ON e.company_slug = a.company_slug AND e.account_code = a.code \
+         WHERE a.company_slug = ?1",
+    );
+    if let Some(filter) = filter.as_deref() {
+        bindings.push(filter);
+        let _ = write!(sql, " AND a.type = ?{}", bindings.len());
     }
-
-    sql.push_str(" WHERE a.company_slug = ?1");
-
-    if let Some(filter) = type_filter {
-        let _ = write!(sql, " AND a.type = ?{param_idx}");
-        param_values.push(Box::new(filter.to_lowercase()));
-        param_idx += 1;
-    }
-
-    let _ = param_idx;
-
     sql.push_str(" GROUP BY a.code, a.name, a.type ORDER BY a.code");
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(AsRef::as_ref).collect();
-
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+    let rows = stmt.query_map(params_from_iter(bindings), |row| {
         Ok(BalanceRow {
             code: row.get(0)?,
             name: row.get(1)?,
@@ -367,134 +318,65 @@ pub fn compute_trial_balance(
     Ok(balances)
 }
 
-/// Computes the debit and credit totals for a single account.
+/// Computes a single account's debit and credit totals in one currency.
 ///
-/// Returns `(debit_total, credit_total)` in minor units. If a date range
-/// is provided, only entries from transactions within that range (inclusive)
-/// are included. If `currency` is provided, only entries from transactions
-/// in that currency are included.
+/// Date filters are inclusive. Totals are returned in minor units.
 ///
 /// # Errors
 ///
-/// Returns `CliError::Sqlite` on any database error.
+/// Returns [`CliError::Sqlite`] on database errors.
 pub fn compute_account_balance(
     conn: &Connection,
     company_slug: &str,
     code: &str,
     from_date: Option<&str>,
     to_date: Option<&str>,
-    currency: Option<&str>,
+    currency: Currency,
 ) -> Result<(i64, i64), CliError> {
-    let has_date_filter = from_date.is_some() || to_date.is_some();
+    let mut sql = String::from(
+        "SELECT \
+         COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
+         FROM entries e \
+         JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+         WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3",
+    );
+    let mut bindings = vec![company_slug, code, currency.code()];
+    push_transaction_dates(&mut sql, &mut bindings, from_date, to_date);
 
-    if has_date_filter || currency.is_some() {
-        let mut sql = String::from(
-            "SELECT \
-                COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
-                COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
-             FROM entries e \
-             JOIN transactions t ON t.id = e.transaction_id \
-             WHERE e.company_slug = ?1 AND e.account_code = ?2",
-        );
-
-        let mut param_idx = 3u32;
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        param_values.push(Box::new(company_slug.to_string()));
-        param_values.push(Box::new(code.to_string()));
-
-        if let Some(cur) = currency {
-            let _ = write!(sql, " AND t.currency = ?{param_idx}");
-            param_values.push(Box::new(cur.to_string()));
-            param_idx += 1;
-        }
-
-        if let Some(from) = from_date {
-            let _ = write!(sql, " AND t.date >= ?{param_idx}");
-            param_values.push(Box::new(from.to_string()));
-            param_idx += 1;
-        }
-
-        if let Some(to) = to_date {
-            let _ = write!(sql, " AND t.date <= ?{param_idx}");
-            param_values.push(Box::new(to.to_string()));
-            let _ = param_idx;
-        }
-
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(AsRef::as_ref).collect();
-
-        let row = conn.query_row(&sql, params_refs.as_slice(), |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-        Ok(row)
-    } else {
-        let row = conn.query_row(
-            "SELECT \
-                COALESCE(SUM(CASE WHEN direction = 'debit' THEN amount ELSE 0 END), 0), \
-                COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount ELSE 0 END), 0) \
-             FROM entries \
-             WHERE company_slug = ?1 AND account_code = ?2",
-            params![company_slug, code],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        Ok(row)
-    }
+    Ok(conn.query_row(&sql, params_from_iter(bindings), |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?)
 }
 
-/// Computes a tax summary for a company, grouping entries by `tax_category`.
+/// Computes a tax summary in one currency, grouped by tax category.
 ///
-/// Returns one [`TaxSummaryRow`] per distinct tax category (excluding entries
-/// with no tax category). Optionally filters by date range and by
-/// transaction currency.
+/// Entries without a tax category are excluded. Date filters are inclusive.
 ///
 /// # Errors
 ///
-/// Returns `CliError::Sqlite` on any database error.
+/// Returns [`CliError::Sqlite`] on database errors.
 pub fn compute_tax_summary(
     conn: &Connection,
     company_slug: &str,
     from_date: Option<&str>,
     to_date: Option<&str>,
-    currency: Option<&str>,
+    currency: Currency,
 ) -> Result<Vec<TaxSummaryRow>, CliError> {
     let mut sql = String::from(
         "SELECT e.tax_category, \
          SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), \
          SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END) \
          FROM entries e \
-         JOIN transactions t ON t.id = e.transaction_id \
-         WHERE e.company_slug = ?1 AND e.tax_category IS NOT NULL",
+         JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+         WHERE e.company_slug = ?1 AND e.tax_category IS NOT NULL AND t.currency = ?2",
     );
-
-    let mut param_idx = 2u32;
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new(company_slug.to_string()));
-
-    if let Some(cur) = currency {
-        let _ = write!(sql, " AND t.currency = ?{param_idx}");
-        param_values.push(Box::new(cur.to_string()));
-        param_idx += 1;
-    }
-
-    if let Some(from) = from_date {
-        let _ = write!(sql, " AND t.date >= ?{param_idx}");
-        param_values.push(Box::new(from.to_string()));
-        param_idx += 1;
-    }
-
-    if let Some(to) = to_date {
-        let _ = write!(sql, " AND t.date <= ?{param_idx}");
-        param_values.push(Box::new(to.to_string()));
-        let _ = param_idx;
-    }
-
+    let mut bindings = vec![company_slug, currency.code()];
+    push_transaction_dates(&mut sql, &mut bindings, from_date, to_date);
     sql.push_str(" GROUP BY e.tax_category ORDER BY e.tax_category");
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(AsRef::as_ref).collect();
-
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+    let rows = stmt.query_map(params_from_iter(bindings), |row| {
         Ok(TaxSummaryRow {
             tax_category: row.get(0)?,
             debit_total: row.get(1)?,
@@ -507,6 +389,22 @@ pub fn compute_tax_summary(
         results.push(row?);
     }
     Ok(results)
+}
+
+fn push_transaction_dates<'a>(
+    sql: &mut String,
+    bindings: &mut Vec<&'a str>,
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+) {
+    if let Some(from) = from {
+        bindings.push(from);
+        let _ = write!(sql, " AND t.date >= ?{}", bindings.len());
+    }
+    if let Some(to) = to {
+        bindings.push(to);
+        let _ = write!(sql, " AND t.date <= ?{}", bindings.len());
+    }
 }
 
 #[cfg(test)]
@@ -604,8 +502,8 @@ mod tests {
     #[test]
     fn trial_balance_empty() {
         let db = setup();
-        let balances =
-            compute_trial_balance(db.conn(), "acme", None, None, None, None).unwrap_or_default();
+        let balances = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::USD)
+            .unwrap_or_default();
         // All 3 accounts with zero balances
         assert_eq!(balances.len(), 3);
         for b in &balances {
@@ -619,8 +517,8 @@ mod tests {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
 
-        let balances =
-            compute_trial_balance(db.conn(), "acme", None, None, None, None).unwrap_or_default();
+        let balances = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::USD)
+            .unwrap_or_default();
         assert_eq!(balances.len(), 3);
 
         let cash = balances.iter().find(|b| b.code == "1000");
@@ -641,8 +539,9 @@ mod tests {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
 
-        let balances = compute_trial_balance(db.conn(), "acme", Some("asset"), None, None, None)
-            .unwrap_or_default();
+        let balances =
+            compute_trial_balance(db.conn(), "acme", Some("asset"), None, None, Currency::USD)
+                .unwrap_or_default();
         assert_eq!(balances.len(), 1);
         assert_eq!(balances[0].code, "1000");
     }
@@ -653,9 +552,15 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let balances =
-            compute_trial_balance(db.conn(), "acme", None, None, Some("2024-01-31"), None)
-                .unwrap_or_default();
+        let balances = compute_trial_balance(
+            db.conn(),
+            "acme",
+            None,
+            None,
+            Some("2024-01-31"),
+            Currency::USD,
+        )
+        .unwrap_or_default();
 
         let cash = balances.iter().find(|b| b.code == "1000");
         assert!(cash.is_some());
@@ -667,7 +572,8 @@ mod tests {
     fn account_balance_empty() {
         let db = setup();
         let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None, None, None).unwrap_or((0, 0));
+            compute_account_balance(db.conn(), "acme", "1000", None, None, Currency::USD)
+                .unwrap_or((0, 0));
         assert_eq!(dr, 0);
         assert_eq!(cr, 0);
     }
@@ -679,7 +585,8 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
 
         let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None, None, None).unwrap_or((0, 0));
+            compute_account_balance(db.conn(), "acme", "1000", None, None, Currency::USD)
+                .unwrap_or((0, 0));
         assert_eq!(dr, 8000);
         assert_eq!(cr, 0);
     }
@@ -690,9 +597,15 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None, Some("2024-01-31"), None)
-                .unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(
+            db.conn(),
+            "acme",
+            "1000",
+            None,
+            Some("2024-01-31"),
+            Currency::USD,
+        )
+        .unwrap_or((0, 0));
         assert_eq!(dr, 5000);
         assert_eq!(cr, 0);
     }
@@ -710,7 +623,7 @@ mod tests {
             "1000",
             Some("2024-02-01"),
             Some("2024-02-29"),
-            None,
+            Currency::USD,
         )
         .unwrap_or((0, 0));
         assert_eq!(dr, 3000);
@@ -730,7 +643,7 @@ mod tests {
             None,
             Some("2024-02-01"),
             Some("2024-02-29"),
-            None,
+            Currency::USD,
         )
         .unwrap_or_default();
         let cash = balances
@@ -747,7 +660,7 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample_in(&db, "2024-02-15", 700, "MXN");
 
-        let usd = compute_trial_balance(db.conn(), "acme", None, None, None, Some("USD"))?;
+        let usd = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::USD)?;
         // Zero-balance accounts are still listed.
         assert_eq!(usd.len(), 3);
         let cash = usd
@@ -762,7 +675,7 @@ mod tests {
             None,
             None,
             Some("2024-12-31"),
-            Some("MXN"),
+            Currency::MXN,
         )?;
         assert_eq!(mxn.len(), 3);
         let cash = mxn
@@ -771,14 +684,15 @@ mod tests {
             .ok_or("missing cash")?;
         assert_eq!(cash.debit_total, 700);
 
-        let eur = compute_trial_balance(db.conn(), "acme", None, None, None, Some("EUR"))?;
+        let eur = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::EUR)?;
         assert_eq!(eur.len(), 3);
         assert!(
             eur.iter()
                 .all(|b| b.debit_total == 0 && b.credit_total == 0)
         );
 
-        let (dr, cr) = compute_account_balance(db.conn(), "acme", "1000", None, None, Some("MXN"))?;
+        let (dr, cr) =
+            compute_account_balance(db.conn(), "acme", "1000", None, None, Currency::MXN)?;
         assert_eq!((dr, cr), (700, 0));
         Ok(())
     }
@@ -796,7 +710,7 @@ mod tests {
             None,
             Some("2024-06-01"),
             Some("2024-06-30"),
-            None,
+            Currency::USD,
         )?;
         assert_eq!(rows.len(), 3);
         assert!(
@@ -805,7 +719,14 @@ mod tests {
         );
 
         // Same for an `--to` cutoff before any activity.
-        let rows = compute_trial_balance(db.conn(), "acme", None, None, Some("2023-12-31"), None)?;
+        let rows = compute_trial_balance(
+            db.conn(),
+            "acme",
+            None,
+            None,
+            Some("2023-12-31"),
+            Currency::USD,
+        )?;
         assert_eq!(rows.len(), 3);
         Ok(())
     }

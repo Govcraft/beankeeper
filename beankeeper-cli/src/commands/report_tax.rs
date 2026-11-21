@@ -30,7 +30,7 @@ pub struct TaxArgs {
     pub to: Option<String>,
     /// Currency; required for companies with transactions in multiple currencies.
     #[arg(long)]
-    pub currency: Option<String>,
+    pub currency: Option<crate::cli::CurrencyArg>,
     /// Report format (also accepts the global --format or --json options).
     #[arg(long, value_enum)]
     pub output_format: Option<OutputFormat>,
@@ -162,7 +162,7 @@ impl TaxInvocation<'_> {
         let currency = super::report_currency::resolve_report_currency(
             db.conn(),
             company,
-            args.currency.as_deref(),
+            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
         )?;
         let period = Period::resolve(
             args.from.as_deref(),

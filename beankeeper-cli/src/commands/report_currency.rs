@@ -16,26 +16,24 @@ const FALLBACK_CURRENCY: Currency = Currency::USD;
 
 /// Resolve the currency a report should be computed and displayed in.
 ///
-/// - If `requested` is `Some`, it is validated and used as-is.
+/// - If `requested` is `Some`, it is used as-is.
 /// - Otherwise the distinct currencies of the company's transactions are
 ///   inspected: exactly one is used; none falls back to USD; several is an
 ///   error asking the user to pass `--currency`.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Validation`] if `requested` is not a known currency
-/// code, or if the company has transactions in more than one currency and no
-/// currency was requested. Returns [`CliError::Sqlite`] on database errors.
+/// Returns [`CliError::Validation`] when the company has multiple currencies
+/// and none was requested. Returns [`CliError::Sqlite`] on database errors.
 pub fn resolve_report_currency(
     conn: &Connection,
     company: &str,
-    requested: Option<&str>,
+    requested: Option<Currency>,
 ) -> Result<Currency, CliError> {
-    if let Some(code) = requested {
-        return parse_currency(&code.trim().to_ascii_uppercase());
-    }
-
-    infer_company_currency(conn, company, CliError::Validation)
+    requested.map_or_else(
+        || infer_company_currency(conn, company, CliError::Validation),
+        Ok,
+    )
 }
 
 /// Infer the currency from all transactions in the company.
@@ -50,7 +48,11 @@ pub(super) fn infer_company_currency(
     let currencies = company_currencies(conn, company)?;
     match currencies.as_slice() {
         [] => Ok(FALLBACK_CURRENCY),
-        [only] => parse_currency(only),
+        [only] => only.parse().map_err(|error| {
+            CliError::Database(format!(
+                "invalid persisted transaction currency '{only}': {error}"
+            ))
+        }),
         many => Err(ambiguous(format!(
             "company '{company}' has transactions in multiple currencies ({}); \
              pass --currency <CODE> to choose one",
@@ -70,12 +72,6 @@ fn company_currencies(conn: &Connection, company: &str) -> Result<Vec<String>, C
         codes.push(row?);
     }
     Ok(codes)
-}
-
-/// Parse a currency code into a [`Currency`], mapping failures to a validation error.
-fn parse_currency(code: &str) -> Result<Currency, CliError> {
-    Currency::from_code(code)
-        .map_err(|e| CliError::Validation(format!("invalid currency '{code}': {e}")))
 }
 
 #[cfg(test)]
@@ -137,30 +133,16 @@ mod tests {
         assert!(msg.contains("MXN, USD"), "message lists currencies: {msg}");
         assert!(msg.contains("--currency"), "message mentions flag: {msg}");
 
-        let c = resolve_report_currency(db.conn(), "acme", Some("MXN"))
+        let c = resolve_report_currency(db.conn(), "acme", Some(Currency::MXN))
             .unwrap_or_else(|e| panic!("resolve failed: {e}"));
         assert_eq!(c.code(), "MXN");
     }
 
     #[test]
-    fn invalid_requested_currency_is_rejected() {
+    fn unsupported_stored_currency_is_a_database_error() {
         let db = setup();
-        for bad in ["US", "U1D", "dollars"] {
-            assert!(
-                matches!(
-                    resolve_report_currency(db.conn(), "acme", Some(bad)),
-                    Err(CliError::Validation(_))
-                ),
-                "{bad} must be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn requested_currency_is_case_insensitive() {
-        let db = setup();
-        let c = resolve_report_currency(db.conn(), "acme", Some(" usd "))
-            .unwrap_or_else(|e| panic!("resolve failed: {e}"));
-        assert_eq!(c.code(), "USD");
+        insert_txn(&db, "BAD");
+        let result = resolve_report_currency(db.conn(), "acme", None);
+        assert!(matches!(result, Err(CliError::Database(_))));
     }
 }

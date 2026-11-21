@@ -103,7 +103,7 @@ pub struct AgingOptions<'a> {
     /// Optional metadata key to group by.
     pub group_by_metadata: Option<&'a str>,
     /// Optional currency filter.
-    pub currency: Option<&'a str>,
+    pub currency: Option<Currency>,
     /// Settlement matching method.
     pub method: MatchMethod,
     /// Metadata key holding settlement links (specific method only).
@@ -1460,7 +1460,7 @@ fn resolve_accounts(
 fn resolve_currency(
     conn: &Connection,
     company: &str,
-    explicit: Option<&str>,
+    explicit: Option<Currency>,
 ) -> Result<Currency, CliError> {
     super::report_currency::resolve_report_currency(conn, company, explicit)
 }
@@ -1495,11 +1495,19 @@ pub fn run_command(
     };
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    run_to(cli, db, company, &args.into(), &mut output)
+    run_to(
+        cli,
+        db,
+        company,
+        &AgingOptions::try_from(args)?,
+        &mut output,
+    )
 }
 
-impl<'a> From<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
-    fn from(args: &'a crate::cli::AgingCommandArgs) -> Self {
+impl<'a> TryFrom<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
+    type Error = CliError;
+
+    fn try_from(args: &'a crate::cli::AgingCommandArgs) -> Result<Self, Self::Error> {
         let crate::cli::AgingCommandArgs {
             account,
             include_children,
@@ -1513,19 +1521,19 @@ impl<'a> From<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
             group_across_accounts,
             filter_metadata,
         } = args;
-        Self {
+        Ok(Self {
             accounts: account,
             include_children: *include_children,
             as_of: as_of.as_deref(),
             buckets,
             group_by_metadata: group_by_metadata.as_deref(),
-            currency: currency.as_deref(),
+            currency: crate::cli::CurrencyArg::resolve_optional(currency.as_ref())?,
             method: (*method).into(),
             link_key: link_key.as_deref(),
             detail: *detail,
             group_across_accounts: *group_across_accounts,
             filter_metadata,
-        }
+        })
     }
 }
 
@@ -3293,12 +3301,9 @@ mod tests {
             resolve_currency(conn, "c", None),
             Err(CliError::Validation(_))
         ));
-        let gbp = resolve_currency(conn, "c", Some("gbp")).unwrap_or_else(|e| panic!("{e}"));
+        let gbp =
+            resolve_currency(conn, "c", Some(Currency::GBP)).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(gbp.code(), "GBP");
-        assert!(matches!(
-            resolve_currency(conn, "c", Some("ZZZ")),
-            Err(CliError::Validation(_))
-        ));
     }
 
     fn account(code: &str, ty: &str) -> db::AccountRow {

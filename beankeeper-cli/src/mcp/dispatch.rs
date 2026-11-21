@@ -638,7 +638,10 @@ fn summary(db: &Db, input: inputs::FinancialSummary, actor: &Actor) -> Response 
         to: optional_text(input.options.to),
         compare_from: optional_text(input.options.compare_from),
         compare_to: optional_text(input.options.compare_to),
-        currency: optional_text(input.options.currency),
+        currency: input
+            .options
+            .currency
+            .map(|currency| currency.into_inner().into()),
         cash_account: text_list(input.options.cash_account),
         receivable_account: text_list(input.options.receivable_account),
         payable_account: text_list(input.options.payable_account),

@@ -180,7 +180,7 @@ fn dispatch_report(
             ..
         } => {
             let mut opts =
-                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_ref());
             opts.account_type = account_type.as_ref();
             run_trial_balance(cli, db, company, &opts, output)
         }
@@ -192,22 +192,22 @@ fn dispatch_report(
             ..
         } => {
             let opts =
-                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_ref());
             run_balance(cli, db, company, account, &opts, output)
         }
         ReportCommand::IncomeStatement {
             from, to, currency, ..
         } => {
             let opts =
-                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_ref());
             run_income_statement(cli, db, company, &opts, output)
         }
         ReportCommand::BalanceSheet { to, currency, .. } => {
-            run_balance_sheet(cli, db, company, to.as_deref(), currency.as_deref(), output)
+            run_balance_sheet(cli, db, company, to.as_deref(), currency.as_ref(), output)
         }
         ReportCommand::TaxSummary { from, to, currency } => {
             let opts =
-                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_deref());
+                StatementOptions::from_cli(from.as_deref(), to.as_deref(), currency.as_ref());
             run_tax_summary(cli, db, company, &opts, output)
         }
         ReportCommand::BudgetVariance {
@@ -228,7 +228,7 @@ fn dispatch_report(
                 from: *from,
                 to: *to,
                 account_type: account_type.as_ref(),
-                currency: currency.as_deref(),
+                currency: currency.as_ref(),
                 include_unbudgeted: *include_unbudgeted,
             },
             output,
@@ -247,14 +247,18 @@ fn dispatch_report(
                 accounts: account,
                 from: from.as_deref(),
                 to: to.as_deref(),
-                currency: currency.as_deref(),
+                currency: crate::cli::CurrencyArg::resolve_optional(currency.as_ref())?,
                 filter_metadata,
             };
             super::report_ledger::run_to(cli, db, company, &opts, output)
         }
-        ReportCommand::Aging(args) => {
-            super::report_aging::run_to(cli, db, company, &args.into(), output)
-        }
+        ReportCommand::Aging(args) => super::report_aging::run_to(
+            cli,
+            db,
+            company,
+            &super::report_aging::AgingOptions::try_from(args)?,
+            output,
+        ),
         ReportCommand::CashFlow(args) => {
             super::report_cash_flow::run_to(cli, db, company, args, output)
         }
@@ -264,12 +268,16 @@ fn dispatch_report(
 struct StatementOptions<'a> {
     from: Option<&'a str>,
     to: Option<&'a str>,
-    currency: Option<&'a str>,
+    currency: Option<&'a crate::cli::CurrencyArg>,
     account_type: Option<&'a AccountTypeArg>,
 }
 
 impl<'a> StatementOptions<'a> {
-    fn from_cli(from: Option<&'a str>, to: Option<&'a str>, currency: Option<&'a str>) -> Self {
+    fn from_cli(
+        from: Option<&'a str>,
+        to: Option<&'a str>,
+        currency: Option<&'a crate::cli::CurrencyArg>,
+    ) -> Self {
         Self {
             from,
             to,
@@ -293,7 +301,11 @@ fn run_trial_balance(
         currency,
         account_type,
     } = *opts;
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
+    let currency = resolve_report_currency(
+        db.conn(),
+        company,
+        crate::cli::CurrencyArg::resolve_optional(currency)?,
+    )?;
     let type_filter = account_type.map(|t| t.to_library_type().code());
     let balances = db::compute_trial_balance(
         db.conn(),
@@ -301,7 +313,7 @@ fn run_trial_balance(
         type_filter,
         from,
         to,
-        Some(currency.code()),
+        currency,
     )?;
 
     let minor_units = currency.minor_units();
@@ -352,15 +364,13 @@ fn run_balance(
     } = *opts;
     // Look up the account to get name and type
     let account_row = db::get_account(db.conn(), company, account_code)?;
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let (debit_total, credit_total) = db::compute_account_balance(
+    let currency = resolve_report_currency(
         db.conn(),
         company,
-        account_code,
-        from,
-        to,
-        Some(currency.code()),
+        crate::cli::CurrencyArg::resolve_optional(currency)?,
     )?;
+    let (debit_total, credit_total) =
+        db::compute_account_balance(db.conn(), company, account_code, from, to, currency)?;
 
     let balance_row = db::BalanceRow {
         code: account_row.code.clone(),
@@ -426,7 +436,11 @@ fn run_income_statement(
     } = *opts;
     let dates = DateRange::resolve(from, to, chrono::Local::now().date_naive())?;
     let stmt = db::audit::atomically(db.conn(), || {
-        let currency = resolve_report_currency(db.conn(), company, currency)?;
+        let currency = resolve_report_currency(
+            db.conn(),
+            company,
+            crate::cli::CurrencyArg::resolve_optional(currency)?,
+        )?;
         compute_income_statement(db, company, dates, currency)
     })?;
 
@@ -484,7 +498,7 @@ pub fn compute_income_statement(
                 Some(kind.code()),
                 Some(&from),
                 Some(&to),
-                Some(currency.code()),
+                currency,
             )
         };
         output::statements::build_income_statement(
@@ -507,7 +521,7 @@ fn run_balance_sheet(
     db: &Db,
     company: &str,
     to: Option<&str>,
-    currency: Option<&str>,
+    currency: Option<&crate::cli::CurrencyArg>,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let as_of = to
@@ -515,7 +529,11 @@ fn run_balance_sheet(
         .transpose()?
         .unwrap_or_else(|| chrono::Local::now().date_naive());
     let sheet = db::audit::atomically(db.conn(), || {
-        let currency = resolve_report_currency(db.conn(), company, currency)?;
+        let currency = resolve_report_currency(
+            db.conn(),
+            company,
+            crate::cli::CurrencyArg::resolve_optional(currency)?,
+        )?;
         compute_balance_sheet(db, company, as_of, currency)
     })?;
 
@@ -563,14 +581,7 @@ pub fn compute_balance_sheet(
         db::companies::get_company(conn, company)?;
         let to = as_of.to_string();
         let load = |kind: AccountType| {
-            db::compute_trial_balance(
-                conn,
-                company,
-                Some(kind.code()),
-                None,
-                Some(&to),
-                Some(currency.code()),
-            )
+            db::compute_trial_balance(conn, company, Some(kind.code()), None, Some(&to), currency)
         };
         output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
             as_of,
@@ -617,8 +628,12 @@ fn run_tax_summary(
     let StatementOptions {
         from, to, currency, ..
     } = *opts;
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let rows = db::compute_tax_summary(db.conn(), company, from, to, Some(currency.code()))?;
+    let currency = resolve_report_currency(
+        db.conn(),
+        company,
+        crate::cli::CurrencyArg::resolve_optional(currency)?,
+    )?;
+    let rows = db::compute_tax_summary(db.conn(), company, from, to, currency)?;
     let minor_units = currency.minor_units();
 
     match output.format {
@@ -658,7 +673,7 @@ struct BudgetVarianceOptions<'a> {
     from: Option<i32>,
     to: Option<i32>,
     account_type: Option<&'a AccountTypeArg>,
-    currency: Option<&'a str>,
+    currency: Option<&'a crate::cli::CurrencyArg>,
     include_unbudgeted: bool,
 }
 
@@ -681,7 +696,11 @@ fn run_budget_variance(
     } = *opts;
     let months = budget_months(year, month, from, to)?;
     let account_type = account_type.copied().map(AccountTypeArg::to_library_type);
-    let currency = resolve_report_currency(db.conn(), company, currency)?;
+    let currency = resolve_report_currency(
+        db.conn(),
+        company,
+        crate::cli::CurrencyArg::resolve_optional(currency)?,
+    )?;
     let coverage = if include_unbudgeted {
         db::BudgetCoverage::IncludeUnbudgeted
     } else {

@@ -321,7 +321,7 @@ pub(crate) fn try_run_to(
             from: from.as_deref(),
             to: to.as_deref(),
             account_type,
-            currency: currency.as_deref(),
+            currency: currency.as_ref(),
         },
         output,
     ))
@@ -334,7 +334,7 @@ struct Request<'a> {
     from: Option<&'a str>,
     to: Option<&'a str>,
     account_type: Option<&'a AccountTypeArg>,
-    currency: Option<&'a str>,
+    currency: Option<&'a crate::cli::CurrencyArg>,
 }
 
 fn run(
@@ -348,15 +348,18 @@ fn run(
     let (from, to) = (dates.from(), dates.to());
     let columns = period_columns(from, to, req.period)?;
 
-    let currency =
-        super::report_currency::resolve_report_currency(db.conn(), company, req.currency)?;
+    let currency = super::report_currency::resolve_report_currency(
+        db.conn(),
+        company,
+        crate::cli::CurrencyArg::resolve_optional(req.currency)?,
+    )?;
     let type_filter = req.account_type.map(|t| format!("{t:?}").to_lowercase());
     let (accounts, summary) = build_lines(
         db.conn(),
         company,
         req.kind,
         type_filter.as_deref(),
-        currency.code(),
+        currency,
         &columns,
     )?;
 
@@ -555,7 +558,7 @@ pub(super) fn fetch_window_rows(
     company: &str,
     kind: MultiReportKind,
     type_filter: Option<&str>,
-    currency: &str,
+    currency: Currency,
     (from, to): (NaiveDate, NaiveDate),
 ) -> Result<Vec<db::BalanceRow>, CliError> {
     let from = from.format("%Y-%m-%d").to_string();
@@ -569,7 +572,7 @@ pub(super) fn fetch_window_rows(
                 Some("revenue"),
                 Some(from),
                 Some(to),
-                Some(currency),
+                currency,
             )?;
             rows.extend(db::compute_trial_balance(
                 conn,
@@ -577,18 +580,13 @@ pub(super) fn fetch_window_rows(
                 Some("expense"),
                 Some(from),
                 Some(to),
-                Some(currency),
+                currency,
             )?);
             rows
         }
-        MultiReportKind::TrialBalance => db::compute_trial_balance(
-            conn,
-            company,
-            type_filter,
-            Some(from),
-            Some(to),
-            Some(currency),
-        )?,
+        MultiReportKind::TrialBalance => {
+            db::compute_trial_balance(conn, company, type_filter, Some(from), Some(to), currency)?
+        }
     };
     Ok(rows)
 }
@@ -687,7 +685,7 @@ fn build_lines(
     company: &str,
     kind: MultiReportKind,
     type_filter: Option<&str>,
-    currency: &str,
+    currency: Currency,
     columns: &[Column],
 ) -> Result<(Vec<AccountLine>, Vec<SummaryLine>), CliError> {
     let mut accounts = BTreeMap::<String, AccountLine>::new();
