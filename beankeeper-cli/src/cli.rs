@@ -1,7 +1,8 @@
 use std::cell::OnceCell;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::CliError;
@@ -21,6 +22,10 @@ use crate::error::CliError;
         NO_COLOR                 Disable colored output"
 )]
 pub struct Cli {
+    // Capture provenance before Clap removes the database path from its matches.
+    #[command(flatten)]
+    db_source: DbSource,
+
     /// Database file path.
     #[arg(
         long,
@@ -67,6 +72,38 @@ pub struct Cli {
     pub command: Command,
 }
 
+#[derive(Debug)]
+enum DbSource {
+    Explicit,
+    Implicit,
+}
+
+impl FromArgMatches for DbSource {
+    fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
+        Ok(match matches.value_source("db") {
+            Some(ValueSource::CommandLine) => Self::Explicit,
+            _ => Self::Implicit,
+        })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), clap::Error> {
+        if matches.contains_id("db") {
+            *self = Self::from_arg_matches(matches)?;
+        }
+        Ok(())
+    }
+}
+
+impl Args for DbSource {
+    fn augment_args(command: clap::Command) -> clap::Command {
+        command
+    }
+
+    fn augment_args_for_update(command: clap::Command) -> clap::Command {
+        command
+    }
+}
+
 /// Output format options.
 #[derive(Args, Debug)]
 pub struct FormatOptions {
@@ -108,6 +145,14 @@ pub struct PassphraseOptions {
 }
 
 impl Cli {
+    /// Database destination supplied by an explicit `--db` argument.
+    pub(crate) fn explicit_db(&self) -> Option<&Path> {
+        match self.db_source {
+            DbSource::Explicit => Some(&self.db),
+            DbSource::Implicit => None,
+        }
+    }
+
     /// Opens an existing ledger, verifying any supplied token before use.
     /// Passphrases (including one-shot file descriptors) are resolved only once.
     ///
@@ -1690,8 +1735,8 @@ EXAMPLES:\n  \
 ")]
     Import {
         /// Input file path. Use `-` for stdin.
-        #[arg(long)]
-        file: Option<String>,
+        #[arg(long, default_value = "-")]
+        file: InputSource,
 
         /// Input format. Auto-detected from file extension when omitted.
         #[arg(
@@ -1828,7 +1873,7 @@ EXAMPLES:\n  \
 
         /// Batch file of `reference[,amount]` lines; `-` reads stdin.
         #[arg(long, requires = "account", conflicts_with = "amount")]
-        from_file: Option<String>,
+        from_file: Option<InputSource>,
 
         /// Amount to clear in major units (default: the full remaining amount).
         #[arg(long)]
@@ -2366,6 +2411,34 @@ pub enum ImportFormat {
     Json,
     /// OFX / QFX bank statement.
     Ofx,
+}
+
+/// A command input read from standard input or a filesystem path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputSource {
+    /// Read from standard input.
+    Stdin,
+    /// Read from the supplied file.
+    Path(PathBuf),
+}
+
+impl From<OsString> for InputSource {
+    fn from(value: OsString) -> Self {
+        if value == "-" {
+            Self::Stdin
+        } else {
+            Self::Path(value.into())
+        }
+    }
+}
+
+impl InputSource {
+    pub(crate) fn read_text(&self) -> Result<String, CliError> {
+        match self {
+            Self::Stdin => Ok(std::io::read_to_string(std::io::stdin().lock())?),
+            Self::Path(path) => Ok(std::fs::read_to_string(path)?),
+        }
+    }
 }
 
 /// Entry direction argument for CLI.

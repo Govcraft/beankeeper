@@ -1,4 +1,5 @@
 //! Audited annotations on existing transactions, shared by CLI and MCP.
+use super::reference::TransactionReference;
 use crate::cli::{Cli, OutputFormat, TxnMetaCommand, resolve_format};
 use crate::db::{Actor, audit, connection::Db, metadata};
 use crate::error::CliError;
@@ -17,11 +18,13 @@ fn execute(
     };
     let reference = selector
         .as_deref()
-        .map(super::txn::normalize_reference)
-        .transpose()
-        .map_err(|error| CliError::Validation(error.to_string()))?;
-    let (target, arguments) = if let Some(reference) = reference.as_deref() {
-        (audit::MetadataTarget::Reference(reference), arguments)
+        .map(str::parse::<TransactionReference>)
+        .transpose()?;
+    let (target, arguments) = if let Some(reference) = &reference {
+        (
+            audit::MetadataTarget::Reference(reference.as_str()),
+            arguments,
+        )
     } else {
         let (id, rest) = arguments
             .split_first()

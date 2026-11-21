@@ -153,10 +153,10 @@ pub fn execute_investment(
 }
 
 fn normalized_reference(value: Option<&str>) -> Result<Option<String>, CliError> {
-    value
-        .map(super::txn::normalize_reference)
-        .transpose()
-        .map_err(|message| CliError::Validation(message.into()))
+    Ok(value
+        .map(str::parse::<super::reference::TransactionReference>)
+        .transpose()?
+        .map(super::reference::TransactionReference::into_string))
 }
 
 fn amount(db: &Db, company: &str, symbol: &str, value: &str) -> Result<i64, CliError> {
@@ -208,16 +208,9 @@ fn render(cli: &Cli, company: &str, name: &str, data: &Value) -> Result<(), CliE
     if cli.verbosity.quiet && format != OutputFormat::Json {
         return Ok(());
     }
-    if format == OutputFormat::Json {
-        println!(
-            "{}",
-            json::envelope_ok(cli.meta(name, Some(company)), data)?
-        );
-        return Ok(());
-    }
     let rows = match data {
-        Value::Array(rows) => rows.iter().collect::<Vec<_>>(),
-        row => vec![row],
+        Value::Array(rows) => rows.as_slice(),
+        row => std::slice::from_ref(row),
     };
     let headers = headers(name);
     match format {
@@ -241,7 +234,12 @@ fn render(cli: &Cli, company: &str, name: &str, data: &Value) -> Result<(), CliE
             }
             println!("{table}");
         }
-        OutputFormat::Json => unreachable!("JSON handled above"),
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                json::envelope_ok(cli.meta(name, Some(company)), data)?
+            );
+        }
     }
     Ok(())
 }

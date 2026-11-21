@@ -1,13 +1,12 @@
 use std::process::ExitCode;
 
-use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
+use clap::Parser;
 
 use beankeeper_cli::cli::Cli;
 use beankeeper_cli::commands;
 
 fn main() -> ExitCode {
-    let matches = Cli::command().get_matches();
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let cli = Cli::parse();
     let json_mode = cli.is_json();
 
     let meta = if json_mode {
@@ -18,16 +17,7 @@ fn main() -> ExitCode {
         None
     };
 
-    let result = if matches!(cli.command, beankeeper_cli::cli::Command::Restore { .. })
-        && matches.value_source("db") != Some(ValueSource::CommandLine)
-    {
-        Err(beankeeper_cli::error::CliError::Usage(
-            "restore requires an explicit --db destination".into(),
-        ))
-    } else {
-        commands::dispatch(&cli, meta.clone())
-    };
-    match result {
+    match commands::dispatch(&cli, meta.clone()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));

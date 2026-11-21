@@ -4,13 +4,13 @@
 //! journal entry against a user-specified bank account and suspense account.
 
 use std::fmt;
-use std::io::Read;
+use std::path::Path;
 
 use beankeeper::types::Currency;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
-use crate::cli::{Cli, ImportFormat};
+use crate::cli::{Cli, ImportFormat, InputSource};
 use crate::db::connection::Db;
 use crate::db::{accounts, transactions};
 use crate::error::CliError;
@@ -203,8 +203,9 @@ fn build_ofx_reference(currency: &str, account_id: &str, fit_id: &str) -> String
 /// # Errors
 ///
 /// Returns [`OfxImportError::CannotDetectFormat`] if the extension is not recognized.
-pub fn detect_format(path: &str) -> Result<ImportFormat, OfxImportError> {
-    let ext = std::path::Path::new(path)
+pub fn detect_format(path: impl AsRef<Path>) -> Result<ImportFormat, OfxImportError> {
+    let path = path.as_ref();
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_lowercase);
@@ -214,7 +215,7 @@ pub fn detect_format(path: &str) -> Result<ImportFormat, OfxImportError> {
         Some("csv") => Ok(ImportFormat::Csv),
         Some("json") => Ok(ImportFormat::Json),
         _ => Err(OfxImportError::CannotDetectFormat {
-            path: path.to_string(),
+            path: path.display().to_string(),
         }),
     }
 }
@@ -527,20 +528,6 @@ fn validate_currency(code: &str) -> Result<(String, u8), OfxImportError> {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-/// Read input from file or stdin.
-fn read_input(file: Option<&str>) -> Result<String, CliError> {
-    match file {
-        Some("-") | None => {
-            let mut buf = String::new();
-            std::io::stdin()
-                .read_to_string(&mut buf)
-                .map_err(CliError::Io)?;
-            Ok(buf)
-        }
-        Some(path) => std::fs::read_to_string(path).map_err(CliError::Io),
-    }
-}
-
 /// Execute an OFX file import.
 ///
 /// # Errors
@@ -551,7 +538,7 @@ pub fn run_import_ofx(
     cli: &Cli,
     db_handle: &Db,
     company: &str,
-    file: Option<&str>,
+    file: &InputSource,
     account_code: &str,
     suspense_code: &str,
     dry_run: bool,
@@ -571,7 +558,7 @@ pub fn run_import_ofx(
     validate_accounts(conn, company, account_code, suspense_code)?;
 
     // Read and parse OFX.
-    let content = read_input(file)?;
+    let content = file.read_text()?;
     let doc = ofx_rs::parse(&content).map_err(|e| OfxImportError::ParseFailed {
         message: e.to_string(),
     })?;

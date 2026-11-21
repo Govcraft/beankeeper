@@ -28,35 +28,92 @@ pub enum CliError {
     Io(io::Error),
 }
 
+/// Stable machine-readable error codes shared by CLI and MCP.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ErrorCode {
+    /// Invalid arguments or CLI usage.
+    Usage,
+    /// Invalid, expired, revoked, or missing agent token.
+    Unauthorized,
+    /// An authenticated token is missing a required capability.
+    Forbidden,
+    /// Inputs violate a domain rule.
+    Validation,
+    /// The ledger could not be read or written.
+    Database,
+    /// A requested record does not exist.
+    NotFound,
+    /// The requested capability is still unimplemented.
+    Unimplemented,
+    /// An I/O operation failed.
+    Io,
+    /// A failure outside the preceding categories.
+    General,
+}
+
+impl ErrorCode {
+    /// The stable spelling in JSON responses and MCP protocol errors.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Usage => "USAGE",
+            Self::Unauthorized => "UNAUTHORIZED",
+            Self::Forbidden => "FORBIDDEN",
+            Self::Validation => "VALIDATION",
+            Self::Database => "DATABASE",
+            Self::NotFound => "NOT_FOUND",
+            Self::Unimplemented => "UNIMPLEMENTED",
+            Self::Io => "IO",
+            Self::General => "GENERAL",
+        }
+    }
+
+    const fn exit_code(self) -> u8 {
+        match self {
+            Self::Usage | Self::Unimplemented => 2,
+            Self::Validation => 3,
+            Self::Database => 4,
+            Self::NotFound => 5,
+            Self::Unauthorized => 6,
+            Self::Forbidden => 7,
+            Self::General | Self::Io => 1,
+        }
+    }
+}
+
+impl serde::Serialize for ErrorCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 impl CliError {
     /// Returns the process exit code for this error.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
+        self.code().exit_code()
+    }
+
+    /// Returns the error's machine-readable category.
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Usage(_) | Self::Unimplemented(_) => 2,
-            Self::Validation(_) | Self::Bean(_) => 3,
-            Self::Database(_) | Self::Sqlite(_) => 4,
-            Self::NotFound(_) => 5,
-            Self::Unauthorized(_) => 6,
-            Self::Forbidden(_) => 7,
-            Self::General(_) | Self::Io(_) => 1,
+            Self::Usage(_) => ErrorCode::Usage,
+            Self::Unimplemented(_) => ErrorCode::Unimplemented,
+            Self::Validation(_) | Self::Bean(_) => ErrorCode::Validation,
+            Self::Database(_) | Self::Sqlite(_) => ErrorCode::Database,
+            Self::NotFound(_) => ErrorCode::NotFound,
+            Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::Forbidden(_) => ErrorCode::Forbidden,
+            Self::Io(_) => ErrorCode::Io,
+            Self::General(_) => ErrorCode::General,
         }
     }
 
     /// Returns a machine-readable error code string for the envelope.
     #[must_use]
     pub fn error_code(&self) -> &'static str {
-        match self {
-            Self::Usage(_) => "USAGE",
-            Self::Unimplemented(_) => "UNIMPLEMENTED",
-            Self::Validation(_) | Self::Bean(_) => "VALIDATION",
-            Self::Database(_) | Self::Sqlite(_) => "DATABASE",
-            Self::NotFound(_) => "NOT_FOUND",
-            Self::Unauthorized(_) => "UNAUTHORIZED",
-            Self::Forbidden(_) => "FORBIDDEN",
-            Self::Io(_) => "IO",
-            Self::General(_) => "GENERAL",
-        }
+        self.code().as_str()
     }
 
     /// Report the error to stderr.
@@ -67,7 +124,7 @@ impl CliError {
     pub fn report(&self, json_mode: bool, meta: Option<crate::output::json::Meta>) {
         if json_mode {
             let message = self.to_string();
-            let code = self.error_code();
+            let code = self.code();
 
             if let Some(m) = meta {
                 let env = crate::output::json::Envelope {
@@ -75,7 +132,7 @@ impl CliError {
                     meta: m,
                     data: None::<()>,
                     error: Some(crate::output::json::EnvelopeError {
-                        code: code.to_string(),
+                        code,
                         message: message.clone(),
                     }),
                 };

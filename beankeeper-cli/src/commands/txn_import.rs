@@ -5,7 +5,6 @@
 //! Dry runs exercise that same path inside a transaction that is rolled back.
 
 use std::collections::HashMap;
-use std::io::Read;
 
 use beankeeper::core::JournalEntry;
 use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
@@ -14,6 +13,7 @@ use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::reference::TransactionReference;
 use crate::cli::{Cli, ImportFormat, OnConflictArg, OutputFormat, TxnCommand};
 use crate::db::connection::Db;
 use crate::db::{self, accounts, transactions};
@@ -125,7 +125,7 @@ struct PreparedTransaction {
     entries: Vec<PreparedEntry>,
     metadata: Option<String>,
     #[serde(skip)]
-    reference: Option<String>,
+    reference: Option<TransactionReference>,
 }
 
 fn invalid(message: impl Into<String>) -> CliError {
@@ -139,19 +139,6 @@ fn parse_currency(code: &str) -> Result<Currency, CliError> {
 fn parse_date(date: &str, format: &str) -> Result<NaiveDate, CliError> {
     NaiveDate::parse_from_str(date.trim(), format)
         .map_err(|error| invalid(format!("invalid date '{date}': {error}")))
-}
-
-fn normalize_reference(reference: Option<String>) -> Result<Option<String>, CliError> {
-    reference
-        .map(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                Err(invalid("reference must not be empty"))
-            } else {
-                Ok(trimmed.to_string())
-            }
-        })
-        .transpose()
 }
 
 fn prepare_json(
@@ -180,7 +167,7 @@ fn prepare_json(
         metadata: input
             .metadata
             .map(|value| serde_json::Value::Object(value).to_string()),
-        reference: normalize_reference(input.reference)?,
+        reference: input.reference.as_deref().map(str::parse).transpose()?,
     })
 }
 
@@ -254,11 +241,10 @@ fn prepare_csv(
         currency: currency.code().to_string(),
         entries,
         metadata: None,
+        // Blank CSV cells mean the source row has no explicit reference.
         reference: columns
             .reference
-            .map(|index| record[index].trim())
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
+            .and_then(|index| record[index].parse().ok()),
     })
 }
 
@@ -353,12 +339,12 @@ fn validate_posting(
 }
 
 fn row_reference(
-    prepared: &PreparedTransaction,
+    prepared: &mut PreparedTransaction,
     format: ImportFormat,
     occurrences: &mut HashMap<String, usize>,
 ) -> Result<String, CliError> {
-    if let Some(reference) = &prepared.reference {
-        return Ok(reference.clone());
+    if let Some(reference) = prepared.reference.take() {
+        return Ok(reference.into_string());
     }
     let bytes = serde_json::to_vec(prepared).map_err(|error| invalid(error.to_string()))?;
     let prefix = if format == ImportFormat::Csv {
@@ -390,7 +376,14 @@ struct ImportOutcome {
     date: String,
     description: String,
     reference: String,
-    status: &'static str,
+    status: ImportStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ImportStatus {
+    Imported,
+    Skipped,
 }
 
 struct ImportContext<'a> {
@@ -410,7 +403,7 @@ fn post_import(
     mut prepared: PreparedTransaction,
     occurrences: &mut HashMap<String, usize>,
 ) -> Result<ImportOutcome, CliError> {
-    let reference = row_reference(&prepared, ctx.format, occurrences)?;
+    let reference = row_reference(&mut prepared, ctx.format, occurrences)?;
     // Skip source duplicates before consulting rules that may have changed.
     if ctx.format == ImportFormat::Csv
         && ctx.strategy == transactions::ConflictStrategy::Skip
@@ -423,7 +416,7 @@ fn post_import(
             date: prepared.date.to_string(),
             description: prepared.description,
             reference,
-            status: "skipped",
+            status: ImportStatus::Skipped,
         });
     }
     // Source identity must not depend on mutable categorization rules.
@@ -444,8 +437,10 @@ fn post_import(
         actor: ctx.actor,
     };
     let (id, status) = match transactions::post_transaction(ctx.db.conn(), &params)? {
-        transactions::PostResult::Created(id) => ((!ctx.dry_run).then_some(id), "imported"),
-        transactions::PostResult::Skipped(_) => (None, "skipped"),
+        transactions::PostResult::Created(id) => {
+            ((!ctx.dry_run).then_some(id), ImportStatus::Imported)
+        }
+        transactions::PostResult::Skipped(_) => (None, ImportStatus::Skipped),
     };
     Ok(ImportOutcome {
         id,
@@ -518,14 +513,7 @@ pub fn run(
         OnConflictArg::Error => transactions::ConflictStrategy::Error,
         OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
     };
-    let content = match file.as_deref() {
-        None | Some("-") => {
-            let mut content = String::new();
-            std::io::stdin().read_to_string(&mut content)?;
-            content
-        }
-        Some(path) => std::fs::read_to_string(path)?,
-    };
+    let content = file.read_text()?;
     let prepared = read_transactions(
         &content,
         format,
@@ -566,10 +554,9 @@ pub fn run(
                 }
                 other => invalid(format!("import transaction {}: {other}", index + 1)),
             })?;
-        if outcome.status == "imported" {
-            result.imported += 1;
-        } else {
-            result.skipped += 1;
+        match outcome.status {
+            ImportStatus::Imported => result.imported += 1,
+            ImportStatus::Skipped => result.skipped += 1,
         }
         result.transactions.push(outcome);
     }

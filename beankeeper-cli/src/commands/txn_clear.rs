@@ -17,7 +17,6 @@
 //! [`crate::db::audit`].
 
 use std::collections::HashSet;
-use std::io::Read as _;
 
 use beankeeper::types::Currency;
 use chrono::NaiveDate;
@@ -45,9 +44,9 @@ pub fn run(
 ) -> Result<(), CliError> {
     let batch = match sub {
         TxnCommand::Clear {
-            from_file: Some(path),
+            from_file: Some(input),
             ..
-        } => Some(parse_batch(&read_input(path)?)?),
+        } => Some(parse_batch(&input.read_text()?)?),
         _ => None,
     };
     let actor = cli.principal();
@@ -324,18 +323,6 @@ pub struct BatchLine {
     /// Amount in major units as written; `None` clears the full remaining
     /// amount.
     pub amount: Option<String>,
-}
-
-fn read_input(path: &str) -> Result<String, CliError> {
-    if path == "-" {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .map_err(CliError::Io)?;
-        Ok(buf)
-    } else {
-        std::fs::read_to_string(path).map_err(CliError::Io)
-    }
 }
 
 /// Parse `reference[,amount]` CSV lines. Blank lines and `#` comments are

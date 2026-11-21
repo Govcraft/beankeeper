@@ -19,7 +19,7 @@ use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -34,8 +34,32 @@ use crate::error::CliError;
 pub struct LedgerServer {
     db: Arc<Mutex<Db>>,
     tool_router: ToolRouter<Self>,
-    agent_token: Option<secrecy::SecretString>,
-    require_request_token: bool,
+    credentials: Credentials,
+}
+
+/// Access ceiling for the tools registered on a ledger server.
+#[derive(Clone, Copy)]
+pub enum LedgerAccess {
+    /// Register read tools only.
+    ReadOnly,
+    /// Register both read and mutation tools.
+    ReadWrite,
+}
+
+impl From<bool> for LedgerAccess {
+    fn from(read_only: bool) -> Self {
+        if read_only {
+            Self::ReadOnly
+        } else {
+            Self::ReadWrite
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Credentials {
+    Stdio(Option<SecretString>),
+    Http,
 }
 
 impl LedgerServer {
@@ -43,9 +67,13 @@ impl LedgerServer {
     ///
     /// Read-only routers do not register mutation tools at all.
     #[must_use]
-    pub fn new(db: Db, read_only: bool) -> Self {
+    pub fn new(db: Db, access: impl Into<LedgerAccess>) -> Self {
+        Self::with_credentials(db, access.into(), Credentials::Stdio(None))
+    }
+
+    fn with_credentials(db: Db, access: LedgerAccess, credentials: Credentials) -> Self {
         let mut tool_router = Self::tool_router();
-        if read_only {
+        if matches!(access, LedgerAccess::ReadOnly) {
             for tool in tool_router.list_all() {
                 if Capability::for_operation(&tool.name).ok() != Some(Capability::Read) {
                     tool_router.remove_route(&tool.name);
@@ -55,8 +83,7 @@ impl LedgerServer {
         Self {
             db: Arc::new(Mutex::new(db)),
             tool_router,
-            agent_token: None,
-            require_request_token: false,
+            credentials,
         }
     }
 
@@ -123,23 +150,25 @@ impl LedgerServer {
     fn request_token(
         &self,
         context: &RequestContext<RoleServer>,
-    ) -> Result<Option<secrecy::SecretString>, CliError> {
-        if !self.require_request_token {
-            return Ok(self.agent_token.clone());
+    ) -> Result<Option<SecretString>, CliError> {
+        match &self.credentials {
+            Credentials::Stdio(token) => Ok(token.clone()),
+            Credentials::Http => Ok(Some(http_token(context)?.clone())),
         }
-        context
-            .extensions
-            .get::<axum::http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<http::RequestToken>())
-            .map(|token| Some(token.0.clone()))
-            .ok_or_else(|| CliError::Unauthorized("HTTP requires an agent token".into()))
     }
 }
 
+fn http_token(context: &RequestContext<RoleServer>) -> Result<&SecretString, CliError> {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<http::RequestToken>())
+        .map(|token| &token.0)
+        .ok_or_else(|| CliError::Unauthorized("HTTP requires an agent token".into()))
+}
+
 fn tool_error(error: &CliError) -> CallToolResult {
-    CallToolResult::structured_error(
-        json!({"code":error.error_code(), "message":error.to_string()}),
-    )
+    CallToolResult::structured_error(json!({"code":error.code(), "message":error.to_string()}))
 }
 
 fn client_actor(name: Option<&str>) -> Actor {
@@ -293,6 +322,30 @@ fn prepare_post(input: &mut Map<String, Value>) -> Result<(), CliError> {
     Ok(())
 }
 
+fn parse_batch_lines(
+    input: &mut Map<String, Value>,
+) -> Result<Option<Vec<commands::txn_clear::BatchLine>>, CliError> {
+    input
+        .remove("batch")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            let lines: Vec<inputs::BatchLine> = serde_json::from_value(value)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            Ok::<_, CliError>(
+                lines
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, line)| commands::txn_clear::BatchLine {
+                        line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                        reference: line.reference,
+                        amount: line.amount,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .transpose()
+}
+
 fn execute_operation(
     db: &Db,
     tool: &str,
@@ -314,33 +367,19 @@ fn execute_operation(
             ));
         }
     }
-    let batch = input
-        .remove("batch")
-        .filter(|value| !value.is_null())
-        .map(|value| {
-            let lines: Vec<inputs::BatchLine> = serde_json::from_value(value)
-                .map_err(|error| CliError::Usage(error.to_string()))?;
-            Ok::<_, CliError>(
-                lines
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, line)| commands::txn_clear::BatchLine {
-                        line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                        reference: line.reference,
-                        amount: line.amount,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .transpose()?;
+    let batch = parse_batch_lines(&mut input)?;
     if batch.is_some() {
         input.insert("from_file".into(), Value::String("-".into()));
     }
     let cli = operation_cli(tool, &mut input)?;
-    let company = cli.company.as_deref().unwrap_or_default();
+    let company = || {
+        cli.company
+            .as_deref()
+            .ok_or_else(|| CliError::Usage("company is required for this tool".into()))
+    };
     match &cli.command {
         Command::Summary(args) => {
-            commands::summary::execute_json(&cli, db, company, args).map(|mut envelope| {
+            commands::summary::execute_json(&cli, db, company()?, args).map(|mut envelope| {
                 if let Some(agent) = actor.agent_uri() {
                     envelope["meta"]["agent"] = Value::String(agent.to_owned());
                 }
@@ -348,29 +387,40 @@ fn execute_operation(
             })
         }
         Command::Security(args) => {
-            commands::investment::execute_security(db, company, &args.command, actor)
+            commands::investment::execute_security(db, company()?, &args.command, actor)
         }
         Command::Investment(args) => {
-            commands::investment::execute_investment(db, company, &args.command, actor)
+            commands::investment::execute_investment(db, company()?, &args.command, actor)
         }
         Command::Company(sub) => commands::company::execute_json(db, sub),
         Command::Account(args) => {
-            commands::account::execute_json_with_actor(db, company, &args.command, actor)
+            commands::account::execute_json_with_actor(db, company()?, &args.command, actor)
         }
-        Command::Txn(args) if tool == "txn_clear" => {
-            commands::txn_clear::execute_json(db, company, &args.command, actor, batch.as_deref())
+        Command::Txn(args) if tool == "txn_clear" => commands::txn_clear::execute_json(
+            db,
+            company()?,
+            &args.command,
+            actor,
+            batch.as_deref(),
+        ),
+        Command::Txn(args) if matches!(*args.command, crate::cli::TxnCommand::Reconcile) => {
+            commands::txn::execute_reconcile_json(db)
         }
         Command::Txn(args) => {
             return commands::txn::execute_json_with_pagination(
                 &cli,
                 db,
-                company,
+                company()?,
                 &args.command,
                 actor,
             );
         }
-        Command::Report(args) => commands::report::execute_json(&cli, db, company, &args.command),
-        Command::Budget(args) => commands::budget::execute_json(db, company, &args.command, actor),
+        Command::Report(args) => {
+            commands::report::execute_json(&cli, db, company()?, &args.command)
+        }
+        Command::Budget(args) => {
+            commands::budget::execute_json(db, company()?, &args.command, actor)
+        }
         Command::Audit(args) => {
             let data = commands::audit::execute_json(db, &args.command)?;
             let pagination = commands::audit::pagination(
@@ -383,7 +433,7 @@ fn execute_operation(
             return Ok((data, Some(pagination)));
         }
         Command::Period(command) => {
-            serde_json::to_value(commands::period::execute(db, company, command, actor)?)
+            serde_json::to_value(commands::period::execute(db, company()?, command, actor)?)
                 .map_err(|error| CliError::General(error.to_string()))
         }
         Command::Verify => commands::verify::execute_json(db),
@@ -761,19 +811,16 @@ impl ServerHandler for LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
         let mut tools = self.tool_router.list_all();
-        if self.require_request_token {
-            let token = self
-                .request_token(&context)
-                .map_err(|error| http::protocol_error(&error))?;
+        if matches!(self.credentials, Credentials::Http) {
+            let token = http_token(&context)
+                .map_err(|error| http::protocol_error(&error))?
+                .clone();
             let db = self.db.clone();
             tools = tokio::task::spawn_blocking(move || {
                 let db = db
                     .lock()
                     .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
                 crate::db::audit::atomically(db.conn(), || {
-                    let token = token.as_ref().ok_or_else(|| {
-                        CliError::Unauthorized("HTTP requires an agent token".into())
-                    })?;
                     let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
                     if crate::db::policy::get(db.conn())?.enforce {
                         let mut allowed = Vec::new();
@@ -837,7 +884,11 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
             "ledger enforcement requires an agent token".into(),
         ));
     }
-    let mut server = LedgerServer::new(db, read_only);
+    let mut server = LedgerServer::with_credentials(
+        db,
+        read_only.into(),
+        Credentials::Stdio(cli.agent_token.clone()),
+    );
     if enforce && let Some(identity) = identity {
         for tool in server.tool_router.list_all() {
             if !identity.allows_operation(&tool.name)? {
@@ -845,7 +896,6 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
             }
         }
     }
-    server.agent_token.clone_from(&cli.agent_token);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -869,7 +919,7 @@ mod tests {
 
     #[test]
     fn every_mcp_tool_has_an_explicit_requirement() -> Result<(), CliError> {
-        let server = LedgerServer::new(Db::open_in_memory()?, false);
+        let server = LedgerServer::new(Db::open_in_memory()?, LedgerAccess::ReadWrite);
         for tool in server.tool_router.list_all() {
             Capability::for_operation(&tool.name)?;
         }
@@ -878,7 +928,7 @@ mod tests {
 
     #[test]
     fn proposal_tools_respect_read_only_router_and_input_boundaries() -> Result<(), CliError> {
-        let server = LedgerServer::new(Db::open_in_memory()?, true);
+        let server = LedgerServer::new(Db::open_in_memory()?, LedgerAccess::ReadOnly);
         let tools = server.tool_router.list_all();
         assert!(tools.iter().any(|tool| tool.name == "txn_proposals"));
         for name in ["txn_propose", "txn_approve", "txn_reject"] {
@@ -896,7 +946,7 @@ mod tests {
 
     #[test]
     fn investment_read_only_router_omits_mutations() -> Result<(), CliError> {
-        let server = LedgerServer::new(Db::open_in_memory()?, true);
+        let server = LedgerServer::new(Db::open_in_memory()?, LedgerAccess::ReadOnly);
         let tools = server.tool_router.list_all();
         for name in [
             "security_create",
