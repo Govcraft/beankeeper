@@ -712,7 +712,7 @@ pub fn get_entries_for_transaction(
             transaction_id: row.get(1)?,
             account_code: row.get(2)?,
             company_slug: row.get(3)?,
-            direction: row.get(4)?,
+            direction: super::direction::read(row, 4)?,
             amount: row.get(5)?,
             memo: row.get(6)?,
             tax_category: row.get(7)?,
@@ -1030,8 +1030,14 @@ mod tests {
         let company = Company::resolve(db.conn(), "acme").expect("bind transaction company");
         let entry_rows = get_entries_for_transaction(&company, id).expect("read entries");
         assert_eq!(entry_rows.len(), 2);
-        assert_eq!(entry_rows[0].direction, "debit");
-        assert_eq!(entry_rows[1].direction, "credit");
+        assert_eq!(
+            entry_rows[0].direction,
+            beankeeper::types::DebitOrCredit::Debit
+        );
+        assert_eq!(
+            entry_rows[1].direction,
+            beankeeper::types::DebitOrCredit::Credit
+        );
 
         let other = Company::resolve(db.conn(), "other").expect("bind other company");
         assert!(

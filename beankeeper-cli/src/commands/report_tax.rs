@@ -3,7 +3,7 @@
 mod schedule;
 mod vendors;
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{Currency, DebitOrCredit, Money};
 use clap::Args;
 use rusqlite::params;
 use serde::Serialize;
@@ -52,7 +52,7 @@ struct TaxEntry {
     account_name: String,
     account_type: String,
     tax_category: Option<String>,
-    direction: String,
+    direction: DebitOrCredit,
     amount: i64,
 }
 
@@ -227,7 +227,7 @@ fn load_entries(
                 account_name: row.get(3)?,
                 account_type: row.get(4)?,
                 tax_category: row.get(5)?,
-                direction: row.get(6)?,
+                direction: crate::db::direction::read(row, 6)?,
                 amount: row.get(7)?,
             })
         },

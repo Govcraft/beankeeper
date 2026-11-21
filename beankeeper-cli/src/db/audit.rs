@@ -990,7 +990,7 @@ fn posting_snapshot(
     let (txn, entries) = super::transactions::get_transaction(conn, company, id)?;
     let entries: Vec<_> = entries.iter().map(|entry| serde_json::json!({
         "id": entry.id, "account_code": entry.account_code, "company_slug": entry.company_slug,
-        "direction": entry.direction, "amount": entry.amount,
+        "direction": entry.direction.code(), "amount": entry.amount,
         "memo": entry.memo, "tax_category": entry.tax_category,
     })).collect();
     let mut result = serde_json::json!({
@@ -1744,21 +1744,13 @@ fn reversal_entries(
     entries: &[super::EntryRow],
     date: chrono::NaiveDate,
 ) -> Result<Vec<super::transactions::PostEntryParams>, CliError> {
-    use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
+    use beankeeper::types::{Currency, Entry, Money};
     let currency = Currency::from_code(&original.currency)
         .map_err(|e| CliError::Validation(format!("invalid currency: {e}")))?;
     let mut journal = beankeeper::core::JournalEntry::new(date, "Reversal", currency);
     let mut reversed = Vec::with_capacity(entries.len());
     for entry in entries {
-        let (direction, direction_name) = match entry.direction.as_str() {
-            "debit" => (DebitOrCredit::Credit, "credit"),
-            "credit" => (DebitOrCredit::Debit, "debit"),
-            other => {
-                return Err(CliError::Validation(format!(
-                    "invalid entry direction '{other}'"
-                )));
-            }
-        };
+        let direction = entry.direction.opposite();
         let row = super::accounts::get_account(conn, &original.company_slug, &entry.account_code)?;
         journal = journal.entry(Entry::new(
             super::accounts::row_to_account(&row)?,
@@ -1767,7 +1759,7 @@ fn reversal_entries(
         )?)?;
         reversed.push(super::transactions::PostEntryParams {
             account_code: entry.account_code.clone(),
-            direction: direction_name.into(),
+            direction: direction.code().into(),
             amount: entry.amount,
             memo: entry.memo.clone(),
             tax_category: entry.tax_category.clone(),

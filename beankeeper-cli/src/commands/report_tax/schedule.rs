@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{Currency, DebitOrCredit, Money};
 use comfy_table::Table;
 use serde::Serialize;
 
@@ -197,14 +197,9 @@ impl AccumulatedRow {
     }
 
     fn add(&mut self, entry: &TaxEntry, sign: BalanceSign) -> Result<(), CliError> {
-        match entry.direction.as_str() {
-            "debit" => add(&mut self.debit_total, entry.amount)?,
-            "credit" => add(&mut self.credit_total, entry.amount)?,
-            _ => {
-                return Err(CliError::Validation(
-                    "invalid entry direction in tax report".into(),
-                ));
-            }
+        match entry.direction {
+            DebitOrCredit::Debit => add(&mut self.debit_total, entry.amount)?,
+            DebitOrCredit::Credit => add(&mut self.credit_total, entry.amount)?,
         }
         self.net = match sign {
             CreditPositive => self.credit_total.checked_sub(self.debit_total),

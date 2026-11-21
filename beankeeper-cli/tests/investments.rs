@@ -149,9 +149,9 @@ fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
         assert_eq!(
             gain.direction,
             if method == LotSelection::Fifo {
-                "credit"
+                beankeeper::types::DebitOrCredit::Credit
             } else {
-                "debit"
+                beankeeper::types::DebitOrCredit::Debit
             }
         );
         verify(&db)?;

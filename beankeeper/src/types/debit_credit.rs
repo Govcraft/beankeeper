@@ -2,6 +2,9 @@ use core::fmt;
 use core::ops::Not;
 use core::str::FromStr;
 
+const DEBIT_CODE: &str = "debit";
+const CREDIT_CODE: &str = "credit";
+
 /// Error type for parsing [`DebitOrCredit`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -30,7 +33,6 @@ impl std::error::Error for DebitCreditError {}
 /// In double-entry bookkeeping, every transaction records equal
 /// amounts of debits and credits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum DebitOrCredit {
     /// A debit entry.
     Debit,
@@ -43,8 +45,19 @@ impl DebitOrCredit {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::Debit => "debit",
-            Self::Credit => "credit",
+            Self::Debit => DEBIT_CODE,
+            Self::Credit => CREDIT_CODE,
+        }
+    }
+
+    /// Parses a canonical lowercase storage code.
+    /// # Errors
+    /// Returns [`DebitCreditError::InvalidValue`] for any other code.
+    pub fn from_code(code: &str) -> Result<Self, DebitCreditError> {
+        match code {
+            DEBIT_CODE => Ok(Self::Debit),
+            CREDIT_CODE => Ok(Self::Credit),
+            _ => Err(DebitCreditError::InvalidValue { value: code.into() }),
         }
     }
 
@@ -95,8 +108,8 @@ impl FromStr for DebitOrCredit {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Debit" | "debit" | "DR" | "Dr" => Ok(Self::Debit),
-            "Credit" | "credit" | "CR" | "Cr" => Ok(Self::Credit),
+            "Debit" | DEBIT_CODE | "DR" | "Dr" => Ok(Self::Debit),
+            "Credit" | CREDIT_CODE | "CR" | "Cr" => Ok(Self::Credit),
             _ => Err(DebitCreditError::InvalidValue {
                 value: s.to_owned(),
             }),

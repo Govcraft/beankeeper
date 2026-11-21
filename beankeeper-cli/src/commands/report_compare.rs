@@ -1176,15 +1176,9 @@ fn explain(
                 .filter(|e| cash_codes.contains(&e.account_code))
             {
                 let value = ReportMoney::from_minor(entry.amount, currency);
-                cash = if entry
-                    .direction
-                    .parse::<beankeeper::types::DebitOrCredit>()
-                    .map_err(|e| CliError::Validation(e.to_string()))?
-                    .is_debit()
-                {
-                    cash.add(value)?
-                } else {
-                    cash.subtract(value)?
+                cash = match entry.direction {
+                    beankeeper::types::DebitOrCredit::Debit => cash.add(value)?,
+                    beankeeper::types::DebitOrCredit::Credit => cash.subtract(value)?,
                 };
             }
             if cash.minor() == 0 {

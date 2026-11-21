@@ -74,7 +74,7 @@ fn export_json(db: &Db) -> Result<String, CliError> {
                 .map(|e| {
                     serde_json::json!({
                         "account_code": e.account_code,
-                        "direction": e.direction,
+                        "direction": e.direction.code(),
                         "amount": e.amount,
                     })
                 })
@@ -203,7 +203,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
                         meta,
                         txn.currency.as_str(),
                         entry.account_code.as_str(),
-                        entry.direction.as_str(),
+                        entry.direction.code(),
                         amount_str.as_str(),
                     ])
                     .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;

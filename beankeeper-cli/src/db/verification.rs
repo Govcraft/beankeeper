@@ -1,6 +1,6 @@
 //! Verification of persisted accounting invariants, independent of CLI input.
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, DebitOrCredit};
 use rusqlite::params;
 
 use super::connection::ReadConn;
@@ -41,11 +41,9 @@ pub fn verify_accounting(conn: ReadConn<'_>) -> Result<(), CliError> {
             if amount <= 0 {
                 return Err(invalid("entry amount must be positive"));
             }
-            balance += match direction.as_str() {
-                "debit" => i128::from(amount),
-                "credit" => -i128::from(amount),
-                _ => return Err(invalid("invalid entry direction")),
-            };
+            let direction = DebitOrCredit::from_code(&direction)
+                .map_err(|_| invalid("invalid entry direction"))?;
+            balance += i128::from(direction.sign()) * i128::from(amount);
             count += 1;
         }
         if count < 2 {
