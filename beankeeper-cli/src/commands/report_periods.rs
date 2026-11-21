@@ -54,6 +54,40 @@ impl PeriodArg {
     }
 }
 
+/// An inclusive comparison range whose start cannot follow its end.
+///
+/// Private fields prevent callers from bypassing [`Self::new`].
+///
+/// ```compile_fail
+/// use beankeeper_cli::commands::report_periods::ComparisonRange;
+/// use chrono::NaiveDate;
+///
+/// let range = ComparisonRange {
+///     from: NaiveDate::default(),
+///     to: NaiveDate::default(),
+/// };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComparisonRange {
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+impl ComparisonRange {
+    /// Construct an inclusive range, rejecting reversed boundaries.
+    ///
+    /// # Errors
+    /// Returns a validation error when `from` is after `to`.
+    pub fn new(from: NaiveDate, to: NaiveDate) -> Result<Self, CliError> {
+        if from > to {
+            return Err(CliError::Validation(format!(
+                "comparison start ({from}) must be on or before its end ({to})"
+            )));
+        }
+        Ok(Self { from, to })
+    }
+}
+
 /// Earlier range used by `--compare`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareArg {
@@ -63,7 +97,7 @@ pub enum CompareArg {
     /// The same range one year earlier.
     PriorYear,
     /// An explicit inclusive comparison window.
-    Custom(NaiveDate, NaiveDate),
+    Custom(ComparisonRange),
 }
 
 impl CompareArg {
@@ -91,16 +125,10 @@ impl std::str::FromStr for CompareArg {
                         "--compare expects previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD".into(),
                     )
                 })?;
-                let window = super::report_dates::DateWindow::resolve(
-                    Some(from),
-                    Some(to),
-                    true,
-                    NaiveDate::default(),
-                )?;
-                let from = window
-                    .from
-                    .ok_or_else(|| CliError::Validation("missing comparison start".into()))?;
-                Ok(Self::Custom(from, window.to))
+                Ok(Self::Custom(ComparisonRange::new(
+                    parse_date("--compare start", from)?,
+                    parse_date("--compare end", to)?,
+                )?))
             }
         }
     }
@@ -508,7 +536,7 @@ pub fn prior_range(
     compare: CompareArg,
 ) -> Result<(NaiveDate, NaiveDate), CliError> {
     match compare {
-        CompareArg::Custom(from, to) => Ok((from, to)),
+        CompareArg::Custom(range) => Ok((range.from, range.to)),
         CompareArg::PriorYear => {
             let year = Months::new(12);
             Ok((
@@ -778,6 +806,27 @@ mod tests {
             prior_range(d("2024-02-01"), d("2024-02-29"), CompareArg::PriorYear)?,
             (d("2023-02-01"), d("2023-02-28"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn custom_ranges_validate_order_and_preserve_inclusive_boundaries() -> Result<(), CliError> {
+        let start = d("2024-02-01");
+        let end = d("2024-02-29");
+        assert!(ComparisonRange::new(end, start).is_err());
+        assert!("2024-02-29..2024-02-01".parse::<CompareArg>().is_err());
+        assert!("2024-02-30..2024-03-01".parse::<CompareArg>().is_err());
+        for (input, from, to) in [
+            ("2024-02-01..2024-02-29", start, end),
+            ("2024-02-29..2024-02-29", end, end),
+        ] {
+            let comparison = input.parse::<CompareArg>()?;
+            assert_eq!(
+                comparison,
+                CompareArg::Custom(ComparisonRange::new(from, to)?)
+            );
+            assert_eq!(prior_range(start, end, comparison)?, (from, to));
+        }
         Ok(())
     }
 
