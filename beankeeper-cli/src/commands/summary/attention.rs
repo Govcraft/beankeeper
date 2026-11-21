@@ -406,8 +406,8 @@ mod tests {
             .id;
         let mut request = db::audit::ClearRequest {
             company_slug: "co",
-            transaction_id: id,
-            entry_id,
+            transaction_id: id.try_into()?,
+            entry_id: entry_id.try_into()?,
             amount: None,
             date: "2024-01-15".parse()?,
             statement: Some("statement"),

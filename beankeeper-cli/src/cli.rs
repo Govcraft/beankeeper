@@ -1827,11 +1827,11 @@ pub struct TxnAttachArgs {
 pub struct TxnClearArgs {
     /// Transaction ID (with --entry).
     #[arg(requires = "entry", conflicts_with = "account")]
-    pub transaction_id: Option<i64>,
+    pub transaction_id: Option<TransactionId>,
 
     /// Entry ID to clear (with a transaction ID).
     #[arg(long, requires = "transaction_id")]
-    pub entry: Option<i64>,
+    pub entry: Option<EntryId>,
 
     /// Transaction reference; the entry is picked by --account.
     #[arg(long, requires = "account")]

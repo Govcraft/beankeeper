@@ -48,11 +48,12 @@ use std::str::FromStr;
 
 use chrono::NaiveDate;
 use rusqlite::types::Type;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use super::audit::EntryStatus;
 use super::companies::Company;
+use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 
 /// Status of a single clearing row.
@@ -434,7 +435,7 @@ pub fn plan_unclear(existing: &[Clearing], statement: Option<&str>) -> Vec<i64> 
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn list_clearings(company: &Company<'_>, entry_id: i64) -> Result<Vec<Clearing>, CliError> {
+pub fn list_clearings(company: &Company<'_>, entry_id: EntryId) -> Result<Vec<Clearing>, CliError> {
     let mut stmt = company.conn().prepare_cached(
         "SELECT c.id, c.entry_id, c.amount, c.cleared_date, c.statement_ref, c.status, \
          c.reconciled_date \
@@ -495,8 +496,8 @@ fn clearing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clearing> {
 /// An entry resolved for clearing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryTarget {
-    pub transaction_id: i64,
-    pub entry_id: i64,
+    pub transaction_id: TransactionId,
+    pub entry_id: EntryId,
     pub account_code: String,
     pub amount: i64,
     pub currency: String,
@@ -527,22 +528,24 @@ fn map_target(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryTarget> {
 /// Returns `CliError::NotFound` when the entry does not belong to the
 /// transaction in this company.
 pub fn get_entry_target(
-    conn: &Connection,
-    company: &str,
-    transaction_id: i64,
-    entry_id: i64,
+    company: &Company<'_>,
+    transaction_id: TransactionId,
+    entry_id: EntryId,
 ) -> Result<EntryTarget, CliError> {
-    conn.query_row(
-        &format!("{TARGET_SELECT} WHERE t.company_slug = ?1 AND t.id = ?2 AND e.id = ?3"),
-        params![company, transaction_id, entry_id],
-        map_target,
-    )
-    .optional()?
-    .ok_or_else(|| {
-        CliError::NotFound(format!(
-            "entry {entry_id} not found in transaction {transaction_id} for company '{company}'"
-        ))
-    })
+    let slug = company.slug().as_str();
+    company
+        .conn()
+        .query_row(
+            &format!("{TARGET_SELECT} WHERE t.company_slug = ?1 AND t.id = ?2 AND e.id = ?3"),
+            params![slug, transaction_id, entry_id],
+            map_target,
+        )
+        .optional()?
+        .ok_or_else(|| {
+            CliError::NotFound(format!(
+                "entry {entry_id} not found in transaction {transaction_id} for company '{slug}'"
+            ))
+        })
 }
 
 /// Resolves an entry by transaction reference and account code.
@@ -553,29 +556,30 @@ pub fn get_entry_target(
 /// has no entry on the account, and `CliError::Validation` when it has more
 /// than one entry on the account.
 pub fn find_entry_by_reference(
-    conn: &Connection,
-    company: &str,
+    company: &Company<'_>,
     reference: &str,
     account: &str,
 ) -> Result<EntryTarget, CliError> {
-    let txn_id: Option<i64> = conn
+    let slug = company.slug().as_str();
+    let conn = company.conn();
+    let txn_id: Option<TransactionId> = conn
         .query_row(
             "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
-            params![company, reference],
+            params![slug, reference],
             |row| row.get(0),
         )
         .optional()?;
     let Some(txn_id) = txn_id else {
         return Err(CliError::NotFound(format!(
-            "no transaction with reference '{reference}' in company '{company}'"
+            "no transaction with reference '{reference}' in company '{slug}'"
         )));
     };
 
     let mut stmt = conn.prepare(&format!(
-        "{TARGET_SELECT} WHERE t.id = ?1 AND e.account_code = ?2 ORDER BY e.id"
+        "{TARGET_SELECT} WHERE t.id = ?1 AND e.account_code = ?2 AND t.company_slug = ?3 ORDER BY e.id"
     ))?;
     let mut found = stmt
-        .query_map(params![txn_id, account], map_target)?
+        .query_map(params![txn_id, account, slug], map_target)?
         .collect::<Result<Vec<_>, _>>()?;
     match found.len() {
         0 => Err(CliError::NotFound(format!(
@@ -635,7 +639,7 @@ mod tests {
 
     #[test]
     fn stored_clearings_require_matching_state_and_date() -> rusqlite::Result<()> {
-        let conn = Connection::open_in_memory()?;
+        let conn = rusqlite::Connection::open_in_memory()?;
         let decode = |cleared, status, reconciled| {
             conn.query_row(
                 "SELECT 1, 1, 100, ?1, NULL, ?2, ?3",
