@@ -166,6 +166,18 @@ fn payload(response: &Value) -> Result<Value, Box<dyn Error>> {
     )?)
 }
 
+fn assert_parameter_rejection(response: &Value, detail: &str) {
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.contains("failed to deserialize parameters:"),
+        "{response}"
+    );
+    assert!(text.contains(detail), "{response}");
+}
+
 fn posting(reference: &str) -> Value {
     json!({"company":"acme", "description":"MCP sale", "date":"2026-03-01",
         "currency":"USD", "reference":reference, "on_conflict":"skip",
@@ -1323,16 +1335,19 @@ fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
     empty_debits["debits"] = json!([]);
     let mut bad_currency = posting("bad-currency");
     bad_currency["currency"] = json!("XXX");
-    for input in [empty_debits, bad_currency] {
+    for (input, detail) in [
+        (empty_debits, "non-empty array"),
+        (bad_currency, "invalid currency"),
+    ] {
         let response = client.call("txn_post", &input)?;
-        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert_parameter_rejection(&response, detail);
     }
 
     let response = client.call(
         "txn_clear",
         &json!({"company":"acme","target":"entry","transaction_id":1,"reference":"other"}),
     )?;
-    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert_parameter_rejection(&response, "reference");
 
     let db = beankeeper_cli::db::Db::open_existing(&path, None)?;
     let count: i64 = db
@@ -2156,18 +2171,18 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
         .remove("timestamp");
     assert_eq!(actual, expected);
     assert_eq!(actual["data"]["comparison"]["series"][0]["current"], 1234);
-    for (company, to, code) in [
-        ("acme", "bad", "VALIDATION"),
-        ("missing", "2024-03-31", "NOT_FOUND"),
-    ] {
-        let response = client.call("financial_summary", &json!({"company":company,"to":to}))?;
-        assert_eq!(response["result"]["isError"], true);
-        let actual = payload(&response)?;
-        assert_eq!(actual["ok"], false);
-        assert_eq!(actual["meta"]["command"], "summary");
-        assert_eq!(actual["error"]["code"], code);
-        assert!(actual.get("data").is_none());
-    }
+    let malformed = client.call("financial_summary", &json!({"company":"acme","to":"bad"}))?;
+    assert_parameter_rejection(&malformed, "calendar date");
+    let missing = client.call(
+        "financial_summary",
+        &json!({"company":"missing","to":"2024-03-31"}),
+    )?;
+    assert_eq!(missing["result"]["isError"], true);
+    let actual = payload(&missing)?;
+    assert_eq!(actual["ok"], false);
+    assert_eq!(actual["meta"]["command"], "summary");
+    assert_eq!(actual["error"]["code"], "NOT_FOUND");
+    assert!(actual.get("data").is_none());
     let unknown = client.call(
         "financial_summary",
         &json!({"company":"acme", "db":"other.db"}),
