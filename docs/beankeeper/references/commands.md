@@ -235,7 +235,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | Tool | Arguments / behavior |
 |------|----------------------|
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
-| `ledger_setup_book_create`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Apply book, profile, chart, and account setup requests using a live generation and request reference |
+| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Apply book, profile, chart, and account setup requests using a live generation and request reference |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
@@ -249,6 +249,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
+| `ledger_setup_book_show` | `company`; returns the current profile and chart of accounts |
 | `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
@@ -306,6 +307,13 @@ Its credential is revoked when the terminal state commits.
 
 ### Books, profiles, and charts
 
+Use `bk --json setup book-show COMPANY` or `ledger_setup_book_show` with
+`company` to read the book name, saved profile, and current accounts. The
+profile includes the current revision, preceding revision, purpose, base
+currency, and fiscal-year start. Existing books without a saved profile
+return `profile: null`. Both a read credential and an active setup credential
+can call the tool.
+
 A personal book and a business book use separate company slugs. Supply
 `target` with `company`, `generation`, and a stable `reference` of up to 128
 bytes on each MCP request. Reuse the same reference with the same inputs to
@@ -315,6 +323,7 @@ returns `VALIDATION`.
 | Tool | Additional inputs |
 |------|-------------------|
 | `ledger_setup_book_create` | `name` and `settings` containing `purpose` (`personal` or `business`), `base_currency` and `fiscal_year_start` (`MM-DD`) |
+| `ledger_setup_book_initialize` | `settings` for an existing company without a profile |
 | `ledger_setup_book_update` | `supersedes` with the current profile revision and the new `settings` |
 | `ledger_setup_chart_apply` | `template`, either `personal-v1` or `business-v1`, matching the book's purpose |
 | `ledger_setup_account_add` | `code`, `name`, and `account_type` |
@@ -329,6 +338,10 @@ bk --json setup chart-apply home personal-v1 --generation 1 --reference home-cha
 bk --json setup account-add home 1010 "Chase Checking" --type asset \
   --generation 1 --reference home-checking
 ```
+
+Use `bk setup book-initialize COMPANY` with the same setting flags and
+a stable reference when the company already exists. It adds the first profile
+while preserving the company name, its accounts, and its journal.
 
 Use `bk setup book-update COMPANY --supersedes REVISION` with the new
 profile flags, active generation and a fresh reference to record a correction.
@@ -350,7 +363,7 @@ Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
-`ledger_setup_book_create`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
+`ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
 and `ledger_setup_account_add` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.

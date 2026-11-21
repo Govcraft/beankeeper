@@ -333,7 +333,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk mcp serve` | Serve MCP stdio, or authenticated HTTP with `--http`; `--read-only` omits writes |
 | `bk init` | Create a new database (`--demo` for sample data, `--encrypt` for passphrase) |
 | `bk setup begin/finish/revoke` | Manage an encrypted ledger's setup session with an owner `ledger/admin` credential |
-| `bk setup book-create/book-update/chart-apply/account-add` | Configure books and accounts within an active setup generation |
+| `bk setup book-create/book-initialize/book-update/chart-apply/account-add` | Configure books and accounts within an active setup generation |
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/delete` | Manage chart of accounts |
@@ -365,6 +365,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk budget delete` | Remove budget entries |
 | `bk summary` | Answer how finances are doing with facts, chartable comparisons and optional Desktop targets |
 | `bk setup status` | Read ledger readiness before configuring a new ledger or continuing onboarding |
+| `bk setup book-show` | Read a book's saved profile, currency, fiscal year, and accounts |
 | `bk report trial-balance` | All accounts with debit/credit totals |
 | `bk report balance` | Single account balance |
 | `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |

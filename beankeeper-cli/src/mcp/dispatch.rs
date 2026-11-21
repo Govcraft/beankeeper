@@ -38,10 +38,12 @@ macro_rules! requests {
 requests! {
     Summary(FinancialSummary),
     LedgerSetupStatus(Empty),
+    LedgerSetupBookShow(CompanyScope),
     LedgerSetupBegin(LedgerSetupBegin),
     LedgerSetupFinish(LedgerSetupEnd),
     LedgerSetupRevoke(LedgerSetupEnd),
     LedgerSetupBookCreate(LedgerSetupBookCreate),
+    LedgerSetupBookInitialize(LedgerSetupBookInitialize),
     LedgerSetupBookUpdate(LedgerSetupBookUpdate),
     LedgerSetupChartApply(LedgerSetupChartApply),
     LedgerSetupAccountAdd(LedgerSetupAccountAdd),
@@ -84,12 +86,8 @@ impl Request {
     pub(super) fn execute(self, db: &Db, actor: &Actor) -> Response {
         match self {
             Self::Summary(input) => summary(db, input, actor),
-            Self::LedgerSetupStatus(_) => {
-                let state = commands::setup::status(db)?;
-                let data = serde_json::to_value(state)
-                    .map_err(|error| CliError::General(error.to_string()))?;
-                Ok((data, None))
-            }
+            Self::LedgerSetupStatus(_) => setup_status(db),
+            Self::LedgerSetupBookShow(input) => setup_book_show(db, input),
             Self::LedgerSetupBegin(input) => unpaged(commands::setup::begin_json(
                 db,
                 actor,
@@ -117,6 +115,12 @@ impl Request {
                     name: &input.name,
                     settings: input.settings.into(),
                 },
+            ),
+            Self::LedgerSetupBookInitialize(input) => setup_book_change(
+                db,
+                actor,
+                input.target,
+                BookChange::Initialize(input.settings.into()),
             ),
             Self::LedgerSetupBookUpdate(input) => setup_book_change(
                 db,
@@ -178,6 +182,17 @@ impl Request {
             Self::AuditLog(input) => audit_log(db, input),
         }
     }
+}
+
+fn setup_status(db: &Db) -> Response {
+    let state = commands::setup::status(db)?;
+    unpaged(serde_json::to_value(state).map_err(|error| CliError::General(error.to_string())))
+}
+
+fn setup_book_show(db: &Db, input: inputs::CompanyScope) -> Response {
+    let company = input.company.into_inner();
+    let facts = commands::setup::book_facts(db, &company)?;
+    unpaged(serde_json::to_value(facts).map_err(|error| CliError::General(error.to_string())))
 }
 
 fn setup_book_change(

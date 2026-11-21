@@ -310,6 +310,13 @@ pub(super) struct LedgerSetupBookCreate {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupBookInitialize {
+    pub target: SetupTarget,
+    pub settings: SetupSettings,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(super) struct LedgerSetupBookUpdate {
     pub target: SetupTarget,
     /// Current profile revision being superseded.

@@ -19,6 +19,14 @@ impl Db {
     /// # Errors
     /// Returns a database error for an invalid, unsupported, or unreadable snapshot.
     pub fn open_snapshot(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
+        Self::open_compatible_snapshot(path, passphrase, super::schema::CURRENT_VERSION)
+    }
+
+    pub(crate) fn open_compatible_snapshot(
+        path: &Path,
+        passphrase: Option<&SecretString>,
+        minimum: i64,
+    ) -> Result<Self, CliError> {
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -27,10 +35,15 @@ impl Db {
             conn.pragma_update(None, "key", pp.expose_secret())?;
         }
         let version = super::schema::get_schema_version(&conn)?;
-        if version != super::schema::CURRENT_VERSION {
+        let current = super::schema::CURRENT_VERSION;
+        if !(minimum..=current).contains(&version) {
+            let expected = if minimum == current {
+                current.to_string()
+            } else {
+                format!("{minimum} through {current}")
+            };
             return Err(CliError::Database(format!(
-                "not a supported beankeeper snapshot: schema version {version}; expected {}",
-                super::schema::CURRENT_VERSION
+                "not a supported beankeeper snapshot: schema version {version}; expected {expected}"
             )));
         }
         Ok(Self { conn })
