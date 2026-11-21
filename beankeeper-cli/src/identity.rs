@@ -7,9 +7,10 @@ use agent_uri::{AgentId, AgentUri, CapabilityPath};
 use agent_uri_attestation::{
     AttestationClaims, AttestationError, Denylist, Issuer, SigningKey, Verifier, VerifyingKey,
 };
+use chrono::{DateTime, Utc};
 use mti::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
-use secrecy::{ExposeSecret, SecretBox};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde_json::{Value, json};
 
 use crate::capability::Capability;
@@ -279,15 +280,82 @@ pub struct IssueRequest<'a> {
     pub generate_key: bool,
 }
 
-/// Issue a token for a supplied public key or explicitly generate a local keypair.
+/// A newly issued credential and its public claims.
+#[derive(Debug)]
+pub struct IssuedCredential {
+    /// Canonical URI of the agent.
+    pub agent_uri: AgentUri,
+    /// Unique identity of this token in the ledger registry.
+    pub token_jti: MagicTypeId,
+    /// Base64 representation of the agent's public Ed25519 key.
+    pub agent_key: String,
+    /// Explicit grants attached to the credential.
+    pub capabilities: Vec<String>,
+    /// UTC issuance time.
+    pub issued_at: DateTime<Utc>,
+    /// UTC expiration time.
+    pub expires_at: DateTime<Utc>,
+    token: SecretString,
+    private_key: Option<SecretString>,
+}
+
+impl IssuedCredential {
+    /// Bearer token. Use `ExposeSecret` to transfer it into secure storage.
+    #[must_use]
+    pub fn token(&self) -> &SecretString {
+        &self.token
+    }
+
+    /// Hex-encoded private key when issuance generated the keypair.
+    #[must_use]
+    pub fn generated_private_key(&self) -> Option<&SecretString> {
+        self.private_key.as_ref()
+    }
+
+    fn public_data(&self) -> Value {
+        json!({
+            "agent_uri": self.agent_uri.as_str(),
+            "token_jti": self.token_jti.as_str(),
+            "agent_key": self.agent_key,
+            "capabilities": self.capabilities,
+            "issued_at": self.issued_at,
+            "expires_at": self.expires_at,
+        })
+    }
+
+    pub(crate) fn response_json(&self) -> Value {
+        let mut data = self.public_data();
+        data["token"] = json!(self.token.expose_secret());
+        if let Some(private_key) = self.generated_private_key() {
+            data["private_key"] = json!(private_key.expose_secret());
+        }
+        data
+    }
+}
+
+/// Issue a credential and return the existing JSON representation.
+///
+/// Rust callers can use [`issue_credential`] to keep secrets in redacted types.
 ///
 /// # Errors
-/// Returns validation errors for invalid keys, capabilities, names or TTLs.
+/// Returns the same issuance errors as [`issue_credential`].
 pub fn issue(
     conn: &Connection,
     actor: &Actor,
     request: &IssueRequest<'_>,
 ) -> Result<Value, CliError> {
+    Ok(issue_credential(conn, actor, request)?.response_json())
+}
+
+/// Issue a token for a supplied public key or explicitly generate a local keypair.
+///
+/// # Errors
+/// Returns validation errors for invalid keys, capabilities, names or TTLs.
+pub fn issue_credential(
+    conn: &Connection,
+    actor: &Actor,
+    request: &IssueRequest<'_>,
+) -> Result<IssuedCredential, CliError> {
     let scope = issuance_scope(request.capabilities)?;
     if request.public_key.is_some() == request.generate_key {
         return Err(CliError::Usage(
@@ -321,8 +389,9 @@ pub fn issue(
         SigningKey::from_bytes(seed).map_err(|_| CliError::Database("invalid root key".into()))?;
     let uri = AgentUri::parse(&format!("agent://{root}/{scope}/{agent_id}"))
         .map_err(|e| CliError::Validation(e.to_string()))?;
+    let token_jti = "token".create_type_id::<V7>();
     let claims = AttestationClaims::builder()
-        .jti("token".create_type_id::<V7>().to_string())
+        .jti(token_jti.to_string())
         .agent_uri(uri.to_string())
         .agent_key(&agent_key)
         .capabilities(request.capabilities.to_vec())
@@ -333,32 +402,51 @@ pub fn issue(
     let token = Issuer::new(root, key, request.ttl)
         .issue_claims(&claims)
         .map_err(|e| CliError::Validation(e.to_string()))?;
-    let public_data = json!({"agent_uri": claims.agent_uri, "token_jti": claims.jti,
-        "agent_key": claims.agent_key, "capabilities": claims.capabilities,
-        "issued_at": claims.iat, "expires_at": claims.exp});
+    let credential = IssuedCredential {
+        agent_uri: uri,
+        token_jti,
+        agent_key: claims.agent_key,
+        capabilities: claims.capabilities,
+        issued_at: claims.iat,
+        expires_at: claims.exp,
+        token: token.into(),
+        private_key: generated.as_ref().map(generated_key_hex),
+    };
     crate::db::audit::atomically(conn, || {
-        conn.execute("INSERT INTO agent_tokens (jti, agent_uri, agent_key, capabilities, issued_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![claims.jti, claims.agent_uri, claims.agent_key, serde_json::to_string(&claims.capabilities).map_err(|e| CliError::General(e.to_string()))?, claims.iat.to_rfc3339(), claims.exp.to_rfc3339()])?;
+        let capabilities = serde_json::to_string(&credential.capabilities)
+            .map_err(|error| CliError::General(error.to_string()))?;
+        conn.execute(
+            "INSERT INTO agent_tokens (jti, agent_uri, agent_key, capabilities, issued_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                credential.token_jti.as_str(),
+                credential.agent_uri.as_str(),
+                credential.agent_key,
+                capabilities,
+                credential.issued_at.to_rfc3339(),
+                credential.expires_at.to_rfc3339(),
+            ],
+        )?;
         crate::db::audit::record_identity(
             conn,
             actor,
             crate::db::audit::IdentityEvent::TokenIssued,
-            &claims.jti,
-            &public_data,
+            credential.token_jti.as_str(),
+            &credential.public_data(),
         )
     })?;
-    let mut result = public_data;
-    result["token"] = json!(token);
-    if let Some(key) = generated {
-        use std::fmt::Write;
-        let seed = SecretBox::new(Box::new(key.to_bytes()));
-        let mut hex = String::with_capacity(64);
-        for byte in seed.expose_secret() {
-            let _ = write!(hex, "{byte:02x}");
-        }
-        result["private_key"] = json!(hex);
+    Ok(credential)
+}
+
+fn generated_key_hex(key: &SigningKey) -> SecretString {
+    use std::fmt::Write as _;
+
+    let seed = SecretBox::new(Box::new(key.to_bytes()));
+    let mut hex = String::with_capacity(64);
+    for byte in seed.expose_secret() {
+        let _ = write!(hex, "{byte:02x}");
     }
-    Ok(result)
+    hex.into()
 }
 
 // The attestation builder and issuer both enforce subject scope. Keep grants

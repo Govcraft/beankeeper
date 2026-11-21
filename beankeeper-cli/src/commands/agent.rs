@@ -19,7 +19,7 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
             ttl,
             public_key,
             generate_key,
-        }) => identity::issue(
+        }) => identity::issue_credential(
             db.conn(),
             &actor,
             &IssueRequest {
@@ -29,7 +29,8 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
                 public_key: public_key.as_deref(),
                 generate_key: *generate_key,
             },
-        )?,
+        )?
+        .response_json(),
         Command::Agent(AgentCommand::Limit(sub)) => run_limit(cli, &db, &actor, sub)?,
         Command::Agent(AgentCommand::List) => identity::list(db.conn())?,
         Command::Agent(AgentCommand::Revoke { target }) => {
