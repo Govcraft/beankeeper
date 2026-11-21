@@ -2498,6 +2498,8 @@ fn reject_investment_reversal(conn: &Connection, id: i64) -> Result<(), CliError
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
     use crate::db::Db;
 
@@ -2585,6 +2587,62 @@ mod tests {
     }
 
     #[test]
+    fn creation_rolls_back_when_attribution_cannot_be_recorded() -> Result<(), CliError> {
+        let db = seed();
+        let connection = db.conn();
+        connection.execute_batch(
+            "CREATE TRIGGER reject_creation_audit BEFORE INSERT ON audit_log
+             BEGIN SELECT RAISE(ABORT, 'audit append rejected by fixture'); END;",
+        )?;
+        let actor = Actor::new("test");
+        let rejected = |error: CliError| {
+            assert!(matches!(error, CliError::Sqlite(_)));
+            assert!(
+                error
+                    .to_string()
+                    .contains("audit append rejected by fixture")
+            );
+        };
+        rejected(
+            crate::db::create_company(connection, &actor, "new", "New", None)
+                .expect_err("company creation must fail on audit error"),
+        );
+        rejected(
+            crate::db::create_account(
+                connection,
+                &actor,
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1100",
+                    name: "New",
+                    account_type: "asset",
+                    default_tax_category: None,
+                },
+            )
+            .expect_err("account creation must fail on audit error"),
+        );
+        let transaction_id = crate::db::ids::TransactionId::try_from(1)?;
+        let attachment = crate::db::StoreAttachmentParams {
+            transaction_id,
+            entry_id: Some(crate::db::ids::EntryId::try_from(1)?),
+            company_slug: "acme",
+            uri: "attachments/test",
+            document_type: beankeeper::types::DocumentType::Receipt,
+            hash: None,
+            original_filename: None,
+        };
+        rejected(
+            crate::db::store_attachment(connection, &actor, &attachment)
+                .expect_err("attachment creation must fail on audit error"),
+        );
+        assert!(!crate::db::company_exists(connection, "new")?);
+        assert!(!crate::db::account_exists(connection, "acme", "1100")?);
+        assert!(crate::db::list_attachments(connection, "acme", transaction_id)?.is_empty());
+        assert!(connection.is_autocommit());
+        Ok(())
+    }
+
+    #[test]
     fn entry_status_parses_round_trip() {
         for s in [
             EntryStatus::Uncleared,
@@ -2658,14 +2716,24 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
         // Delete an unused account without touching posted entries.
-        super::super::create_account(db.conn(), "acme", "1100", "Unused Cash", "asset", None)
-            .expect("create unused account");
+        super::super::create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1100",
+                name: "Unused Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )
+        .expect("create unused account");
         delete_account(db.conn(), &actor, "acme", "1100").expect("delete account");
 
         let (action, before): (String, Option<String>) = db
             .conn()
             .query_row(
-                "SELECT action, before FROM audit_log WHERE entity = 'account'",
+                "SELECT action, before FROM audit_log WHERE entity = 'account' ORDER BY id DESC LIMIT 1",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -2845,7 +2913,8 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
         clear_entry(db.conn(), &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
-        crate::db::create_company(db.conn(), "other", "Other", None).expect("create company");
+        crate::db::create_company(db.conn(), &actor, "other", "Other", None)
+            .expect("create company");
 
         let company = Company::resolve(db.conn(), "acme").expect("bind clearing company");
         assert_eq!(

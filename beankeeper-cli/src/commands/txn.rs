@@ -1091,18 +1091,7 @@ fn run_attach(
         hash: Some(&hash),
         original_filename: original_filename.as_deref(),
     };
-    let att_id = db::audit::atomically(db_handle.conn(), || {
-        let id = attachments::store_attachment(db_handle.conn(), &params)?;
-        db::audit::record_insert(
-            db_handle.conn(),
-            &cli.principal(),
-            company,
-            db::audit::Creation::Attachment,
-            &transaction_id.to_string(),
-            &serde_json::json!({"attachment_id": id, "entry_id": entry_id, "uri": uri, "hash": hash.as_str(), "document_type": doc_type.as_str()}),
-        )?;
-        Ok(id)
-    })?;
+    let att_id = attachments::store_attachment(db_handle.conn(), &cli.principal(), &params)?;
 
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {
@@ -1182,19 +1171,40 @@ fn orphaned_correlations(count: usize) -> CliError {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
 
     fn fixture() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        db::create_company(db.conn(), "acme", "Acme", None)?;
-        db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
+        db::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme",
+            None,
+        )?;
         db::create_account(
             db.conn(),
-            "acme",
-            "4000",
-            "Revenue",
-            "revenue",
-            Some("income"),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )?;
+        db::create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "4000",
+                name: "Revenue",
+                account_type: "revenue",
+                default_tax_category: Some("income"),
+            },
         )?;
         Ok(db)
     }

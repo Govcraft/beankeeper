@@ -331,17 +331,35 @@ fn balance_sheet_earnings_and_all_output_formats_preserve_comparison_data() -> T
 }
 
 #[test]
+fn account_create_rejects_an_unpostable_code_without_an_audit_entry() -> TestResult {
+    let ledger = Ledger::new()?;
+    let output = ledger.run(&["account", "create", "12A", "Bad code", "--type", "asset"])?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("invalid account code '12A'"));
+    let connection = rusqlite::Connection::open(ledger.dir.path().join("books.db"))?;
+    let (accounts, records): (i64, i64) = connection.query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM accounts WHERE company_slug = 'co' AND code = '12A'),
+            (SELECT COUNT(*) FROM audit_log
+             WHERE company_slug = 'co' AND entity = 'account' AND entity_id = '12A')",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!((accounts, records), (0, 0));
+    Ok(())
+}
+
+#[test]
 fn comparison_preserves_existing_alphanumeric_account_codes_and_missing_account_errors()
 -> TestResult {
     let ledger = Ledger::new()?;
-    ledger.ok(&[
-        "account",
-        "create",
-        "rent-office",
-        "Office rent",
-        "--type",
-        "expense",
-    ])?;
+    let connection = rusqlite::Connection::open(ledger.dir.path().join("books.db"))?;
+    connection.execute(
+        "INSERT INTO accounts (company_slug, code, name, type)
+         VALUES ('co', 'rent-office', 'Office rent', 'expense')",
+        [],
+    )?;
+    drop(connection);
     for command in [
         &["income-statement"][..],
         &["trial-balance"][..],

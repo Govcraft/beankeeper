@@ -1,5 +1,6 @@
 //! Agent-facing audit pagination and currency companions.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -23,9 +24,29 @@ impl Ledger {
         let path = dir.path().join("audit.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            db::create_company(db.conn(), company, company, None)?;
-            db::create_account(db.conn(), company, "1000", "Cash", "asset", None)?;
-            db::create_account(db.conn(), company, "4000", "Revenue", "revenue", None)?;
+            db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
+            db::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: company,
+                    code: "1000",
+                    name: "Cash",
+                    account_type: "asset",
+                    default_tax_category: None,
+                },
+            )?;
+            db::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: company,
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: "revenue",
+                    default_tax_category: None,
+                },
+            )?;
         }
         let ledger = Self {
             _dir: dir,

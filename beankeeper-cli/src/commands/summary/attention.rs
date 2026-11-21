@@ -364,6 +364,8 @@ fn load_movements(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
     use crate::db::{Actor, PostEntryParams, PostTransactionParams, connection::Db};
     use beankeeper::core::Frequency;
@@ -373,7 +375,13 @@ mod tests {
 
     fn setup() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        db::companies::create_company(db.conn(), "co", "Company", None)?;
+        db::companies::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "co",
+            "Company",
+            None,
+        )?;
         for (code, name, kind) in [
             ("1000", "Cash", "asset"),
             ("1100", "Receivable", "asset"),
@@ -382,7 +390,17 @@ mod tests {
             ("4000", "Sales", "revenue"),
             ("5000", "Rent", "expense"),
         ] {
-            db::accounts::create_account(db.conn(), "co", code, name, kind, None)?;
+            db::accounts::create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "co",
+                    code,
+                    name,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )?;
         }
         Ok(db)
     }

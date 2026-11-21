@@ -1,3 +1,4 @@
+use crate::db::CreateAccountParams;
 use std::io::IsTerminal;
 
 use crate::cli::{AccountCommand, Cli, CurrencyArg, OutputFormat, resolve_format};
@@ -78,25 +79,17 @@ fn compute(
             default_tax_category,
         } => {
             let account_type = format!("{account_type:?}").to_lowercase();
-            let row = db::audit::atomically(db.conn(), || {
-                let row = accounts::create_account(
-                    db.conn(),
-                    company,
+            let row = accounts::create_account(
+                db.conn(),
+                actor,
+                &CreateAccountParams {
+                    company_slug: company,
                     code,
                     name,
-                    &account_type,
-                    default_tax_category.as_deref(),
-                )?;
-                db::audit::record_insert(
-                    db.conn(),
-                    actor,
-                    company,
-                    db::audit::Creation::Account,
-                    code,
-                    &serde_json::json!({"code": row.code, "name": row.name, "type": row.account_type, "company_slug": row.company_slug, "default_tax_category": row.default_tax_category, "created_at": row.created_at}),
-                )?;
-                Ok(row)
-            })?;
+                    account_type: &account_type,
+                    default_tax_category: default_tax_category.as_deref(),
+                },
+            )?;
             Ok(AccountData::Rows(vec![row]))
         }
         AccountCommand::List {

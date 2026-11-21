@@ -9,6 +9,7 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
+use super::audit::{self, Actor, Creation};
 use super::ids::{AttachmentId, EntryId, TransactionId};
 use crate::error::CliError;
 
@@ -37,30 +38,48 @@ pub struct StoreAttachmentParams<'a> {
     pub original_filename: Option<&'a str>,
 }
 
-/// Inserts an attachment record and returns the new row ID.
+/// Stores an attachment and records its attribution in the same savepoint.
 ///
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn store_attachment(
     conn: &Connection,
+    actor: &Actor,
     params: &StoreAttachmentParams<'_>,
 ) -> Result<AttachmentId, CliError> {
-    conn.execute(
-        "INSERT INTO attachments (transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![
-            params.transaction_id,
-            params.entry_id,
-            params.company_slug,
-            params.uri,
-            params.document_type.as_str(),
-            params.hash.map(Sha256Hex::as_str),
-            params.original_filename,
-        ],
-    )?;
+    audit::atomically(conn, || {
+        conn.execute(
+            "INSERT INTO attachments (transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                params.transaction_id,
+                params.entry_id,
+                params.company_slug,
+                params.uri,
+                params.document_type.as_str(),
+                params.hash.map(Sha256Hex::as_str),
+                params.original_filename,
+            ],
+        )?;
 
-    AttachmentId::try_from(conn.last_insert_rowid())
+        let id = AttachmentId::try_from(conn.last_insert_rowid())?;
+        audit::record_insert(
+            conn,
+            actor,
+            params.company_slug,
+            Creation::Attachment,
+            &params.transaction_id.to_string(),
+            &serde_json::json!({
+                "attachment_id": id,
+                "entry_id": params.entry_id,
+                "uri": params.uri,
+                "hash": params.hash.map(Sha256Hex::as_str),
+                "document_type": params.document_type.as_str(),
+            }),
+        )?;
+        Ok(id)
+    })
 }
 
 /// Lists all attachments for a transaction within a company.
@@ -191,6 +210,8 @@ fn attachment_store_dir(db_path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
     use crate::db::{Db, companies, transactions};
 
@@ -199,12 +220,38 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        companies::create_company(db.conn(), "acme", "Acme Corp", None)
-            .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        crate::db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        crate::db::create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        companies::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme Corp",
+            None,
+        )
+        .unwrap_or_else(|e| panic!("company setup failed: {e}"));
+        crate::db::create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        crate::db::create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "4000",
+                name: "Revenue",
+                account_type: "revenue",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
 
@@ -263,8 +310,8 @@ mod tests {
             hash: Some(&hash),
             original_filename: Some("receipt.pdf"),
         };
-        let att_id =
-            store_attachment(db.conn(), &params).unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id = store_attachment(db.conn(), &Actor::new("fixture"), &params)
+            .unwrap_or_else(|e| panic!("store failed: {e}"));
         assert!(att_id.get() > 0);
 
         let attachments = list_attachments(db.conn(), "acme", txn_id)
@@ -293,8 +340,8 @@ mod tests {
             hash: None,
             original_filename: None,
         };
-        let att_id =
-            store_attachment(db.conn(), &params).unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id = store_attachment(db.conn(), &crate::db::Actor::new("fixture"), &params)
+            .unwrap_or_else(|e| panic!("store failed: {e}"));
 
         let att =
             get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
@@ -397,8 +444,8 @@ mod tests {
             hash: None,
             original_filename: Some("statement.pdf"),
         };
-        let att_id =
-            store_attachment(db.conn(), &params).unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id = store_attachment(db.conn(), &crate::db::Actor::new("fixture"), &params)
+            .unwrap_or_else(|e| panic!("store failed: {e}"));
 
         let att =
             get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));

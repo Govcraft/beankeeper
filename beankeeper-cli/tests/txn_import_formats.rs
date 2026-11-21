@@ -1,11 +1,12 @@
 //! End-to-end CSV and JSON import guarantees (issue #38).
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use assert_cmd::prelude::*;
-use beankeeper_cli::db::{accounts, companies, connection::Db};
+use beankeeper_cli::db::{Actor, accounts, companies, connection::Db};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -22,17 +23,40 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(db.conn(), company, company, None)?;
-            accounts::create_account(db.conn(), company, "1000", "Bank", "asset", None)?;
+            companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
             accounts::create_account(
                 db.conn(),
-                company,
-                "9000",
-                "Suspense",
-                "expense",
-                Some("default-tax"),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: company,
+                    code: "1000",
+                    name: "Bank",
+                    account_type: "asset",
+                    default_tax_category: None,
+                },
             )?;
-            accounts::create_account(db.conn(), company, "4000", "Revenue", "revenue", None)?;
+            accounts::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: company,
+                    code: "9000",
+                    name: "Suspense",
+                    account_type: "expense",
+                    default_tax_category: Some("default-tax"),
+                },
+            )?;
+            accounts::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: company,
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: "revenue",
+                    default_tax_category: None,
+                },
+            )?;
         }
         Ok(Self { dir, path })
     }
@@ -363,6 +387,7 @@ fn dry_runs_validate_batch_duplicates_without_persisting_any_rows() -> TestResul
         ),
     ] {
         let ledger = Ledger::new()?;
+        let creations = ledger.count("audit_log")?;
         flags.push("--dry-run");
         let result = success(&ledger.import(name, &input, &flags)?)?;
         assert_eq!(result["dry_run"], true);
@@ -371,7 +396,7 @@ fn dry_runs_validate_batch_duplicates_without_persisting_any_rows() -> TestResul
         assert!(result["transactions"][0].get("id").is_none());
         assert_eq!(ledger.count("transactions")?, 0);
         assert_eq!(ledger.count("entries")?, 0);
-        assert_eq!(ledger.count("audit_log")?, 0);
+        assert_eq!(ledger.count("audit_log")?, creations);
         flags.extend(["--on-conflict", "error"]);
         validation_error(&ledger.import(name, &input, &flags)?, "already exists")?;
         assert_eq!(ledger.count("transactions")?, 0);

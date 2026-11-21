@@ -2,6 +2,7 @@
 
 use beankeeper::core::{LotMethod, PositiveQuantity, Quantity};
 use beankeeper::types::{Currency, Money, NonNegativeMoney, PositiveMoney};
+use beankeeper_cli::db::CreateAccountParams;
 use beankeeper_cli::{
     db::{
         Actor, Db, accounts, audit, companies,
@@ -40,7 +41,7 @@ fn minor(value: impl Into<Money>) -> i128 {
 fn fixture() -> Result<Db, CliError> {
     let db = Db::open_in_memory()?;
     for company in ["acme", "other"] {
-        companies::create_company(db.conn(), company, company, None)?;
+        companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
         for (code, kind) in [
             ("1000", "asset"),
             ("1200", "asset"),
@@ -48,7 +49,17 @@ fn fixture() -> Result<Db, CliError> {
             ("4000", "revenue"),
             ("5000", "expense"),
         ] {
-            accounts::create_account(db.conn(), company, code, code, kind, None)?;
+            accounts::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: company,
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )?;
         }
         for symbol in ["ABC", "XYZ"] {
             investments::create_security(

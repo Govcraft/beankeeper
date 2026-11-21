@@ -1,5 +1,6 @@
 //! Stateless loan schedules and payments through the existing audited ledger.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::{
     error::Error,
     path::PathBuf,
@@ -7,7 +8,7 @@ use std::{
 };
 
 use assert_cmd::cargo::CommandCargoExt;
-use beankeeper_cli::db::{Db, accounts, companies};
+use beankeeper_cli::db::{Actor, Db, accounts, companies};
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 
@@ -46,14 +47,24 @@ impl Ledger {
         let dir = tempdir()?;
         let path = dir.path().join("loan.db");
         let db = Db::open(&path, None)?;
-        companies::create_company(db.conn(), "acme", "Acme", None)?;
-        companies::create_company(db.conn(), "other", "Other", None)?;
+        companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
         for (code, kind, tax) in [
             ("1000", "asset", None),
             ("2000", "liability", None),
             ("5000", "expense", Some("interest")),
         ] {
-            accounts::create_account(db.conn(), "acme", code, code, kind, tax)?;
+            accounts::create_account(
+                db.conn(),
+                &Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: tax,
+                },
+            )?;
         }
         Ok(Self { _dir: dir, path })
     }

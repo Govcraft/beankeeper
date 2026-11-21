@@ -1,5 +1,6 @@
 //! Exercise the real Streamable HTTP endpoint and request-scoped credentials.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -37,9 +38,29 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let secret = dir.path().join("passphrase");
         let db = Db::open(&path, Some(&PASSPHRASE.into()))?;
-        db::create_company(db.conn(), "acme", "Acme", None)?;
-        db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
-        db::create_account(db.conn(), "acme", "4000", "Sales", "revenue", None)?;
+        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )?;
+        db::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "4000",
+                name: "Sales",
+                account_type: "revenue",
+                default_tax_category: None,
+            },
+        )?;
         identity::init_root(db.conn(), &Actor::new("owner"))?;
         let issue = |name: &str, capabilities: &[String]| {
             identity::issue(
@@ -957,7 +978,7 @@ fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    db::create_company(db.conn(), "acme", "Acme", None)?;
+    db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
     let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
     cli.db = path;
     cli.passphrase.passphrase_fd = Some(-1);

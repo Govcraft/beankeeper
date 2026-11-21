@@ -1,13 +1,12 @@
 use std::fmt::Write;
 use std::str::FromStr;
 
+use beankeeper::types::{AccountCode, AccountType};
 use rusqlite::{Connection, params};
 
 use super::AccountRow;
+use super::audit::{self, Actor, Creation};
 use crate::error::CliError;
-
-/// Valid account types for the CHECK constraint.
-const VALID_TYPES: &[&str] = &["asset", "liability", "equity", "revenue", "expense"];
 
 /// Converts an [`AccountRow`] to the library's [`Account`](beankeeper::types::Account) type.
 ///
@@ -32,58 +31,93 @@ pub fn row_to_account(row: &AccountRow) -> Result<beankeeper::types::Account, Cl
     ))
 }
 
-/// Creates a new account and returns the inserted row.
+/// Fields used to create an account.
+pub struct CreateAccountParams<'a> {
+    /// Company that owns the account.
+    pub company_slug: &'a str,
+    /// Account identifier within its company.
+    pub code: &'a str,
+    /// Account name.
+    pub name: &'a str,
+    /// Account type as entered by the caller.
+    pub account_type: &'a str,
+    /// Optional default tax category for entries.
+    pub default_tax_category: Option<&'a str>,
+}
+
+/// Creates an account and records its attribution in the same savepoint.
 ///
 /// Validates that the account type is one of the five valid types and that
 /// the company exists.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Validation`] if the type is invalid or the account
+/// Returns [`CliError::Validation`] for an invalid code or type, or if the account
 /// already exists. Returns [`CliError::NotFound`] if the company does not exist.
 pub fn create_account(
     conn: &Connection,
-    company_slug: &str,
-    code: &str,
-    name: &str,
-    account_type: &str,
-    default_tax_category: Option<&str>,
+    actor: &Actor,
+    params: &CreateAccountParams<'_>,
 ) -> Result<AccountRow, CliError> {
-    let account_type_lower = account_type.to_lowercase();
+    let CreateAccountParams {
+        company_slug,
+        code,
+        name,
+        account_type,
+        default_tax_category,
+    } = *params;
+    let code = AccountCode::new(code)
+        .map_err(|error| CliError::Validation(format!("invalid account code '{code}': {error}")))?;
+    let account_type = account_type
+        .to_ascii_lowercase()
+        .parse::<AccountType>()
+        .map_err(|error| CliError::Validation(error.to_string()))?;
 
-    if !VALID_TYPES.contains(&account_type_lower.as_str()) {
-        return Err(CliError::Validation(format!(
-            "invalid account type '{account_type}'; expected one of: {}",
-            VALID_TYPES.join(", "),
-        )));
-    }
+    audit::atomically(conn, || {
+        let code = code.as_str();
+        // Verify the company exists
+        if !super::companies::company_exists(conn, company_slug)? {
+            return Err(CliError::NotFound(format!(
+                "company '{company_slug}' not found"
+            )));
+        }
 
-    // Verify the company exists
-    if !super::companies::company_exists(conn, company_slug)? {
-        return Err(CliError::NotFound(format!(
-            "company '{company_slug}' not found"
-        )));
-    }
+        if account_exists(conn, company_slug, code)? {
+            return Err(CliError::Validation(format!(
+                "account '{code}' already exists in company '{company_slug}'"
+            )));
+        }
 
-    if account_exists(conn, company_slug, code)? {
-        return Err(CliError::Validation(format!(
-            "account '{code}' already exists in company '{company_slug}'"
-        )));
-    }
+        conn.execute(
+            "INSERT INTO accounts (company_slug, code, name, type, default_tax_category) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                company_slug,
+                code,
+                name,
+                account_type.code(),
+                default_tax_category
+            ],
+        )?;
 
-    conn.execute(
-        "INSERT INTO accounts (company_slug, code, name, type, default_tax_category) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
+        let row = get_account(conn, company_slug, code)?;
+        audit::record_insert(
+            conn,
+            actor,
             company_slug,
+            Creation::Account,
             code,
-            name,
-            account_type_lower,
-            default_tax_category
-        ],
-    )?;
-
-    get_account(conn, company_slug, code)
+            &serde_json::json!({
+                "code": row.code,
+                "name": row.name,
+                "type": row.account_type,
+                "company_slug": row.company_slug,
+                "default_tax_category": row.default_tax_category,
+                "created_at": row.created_at,
+            }),
+        )?;
+        Ok(row)
+    })
 }
 
 /// Parameters for listing accounts.
@@ -226,15 +260,31 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(db.conn(), "acme", "Acme Corp", None)
-            .unwrap_or_else(|e| panic!("company setup failed: {e}"));
+        create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme Corp",
+            None,
+        )
+        .unwrap_or_else(|e| panic!("company setup failed: {e}"));
         db
     }
 
     #[test]
     fn create_and_get_account() {
         let db = setup();
-        let row = create_account(db.conn(), "acme", "1000", "Cash", "asset", None);
+        let row = create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        );
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.code, "1000");
@@ -247,7 +297,17 @@ mod tests {
     #[test]
     fn create_account_normalises_type_case() {
         let db = setup();
-        let row = create_account(db.conn(), "acme", "1000", "Cash", "Asset", None);
+        let row = create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "Asset",
+                default_tax_category: None,
+            },
+        );
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.account_type, "asset");
@@ -256,30 +316,99 @@ mod tests {
     #[test]
     fn create_account_rejects_invalid_type() {
         let db = setup();
-        let result = create_account(db.conn(), "acme", "1000", "Cash", "bank", None);
+        let result = create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "bank",
+                default_tax_category: None,
+            },
+        );
         assert!(matches!(result, Err(CliError::Validation(_))));
     }
 
     #[test]
     fn create_account_rejects_missing_company() {
         let db = setup();
-        let result = create_account(db.conn(), "nope", "1000", "Cash", "asset", None);
+        let result = create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "nope",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        );
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
     #[test]
     fn duplicate_account_is_validation_error() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
-        let result = create_account(db.conn(), "acme", "1000", "Cash 2", "asset", None);
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1000",
+                    name: "Cash",
+                    account_type: "asset",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
+        let result = create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash 2",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        );
         assert!(matches!(result, Err(CliError::Validation(_))));
     }
 
     #[test]
     fn list_accounts_returns_all() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
-        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1000",
+                    name: "Cash",
+                    account_type: "asset",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "2000",
+                    name: "Payables",
+                    account_type: "liability",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
         let params = ListAccountParams {
             company_slug: "acme",
             type_filter: None,
@@ -292,8 +421,34 @@ mod tests {
     #[test]
     fn list_accounts_with_type_filter() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
-        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1000",
+                    name: "Cash",
+                    account_type: "asset",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "2000",
+                    name: "Payables",
+                    account_type: "liability",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
         let params = ListAccountParams {
             company_slug: "acme",
             type_filter: Some("asset"),
@@ -315,7 +470,20 @@ mod tests {
     fn delete_account_removes_row() {
         let db = setup();
         let actor = crate::db::Actor::new("test");
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1000",
+                    name: "Cash",
+                    account_type: "asset",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
         assert!(crate::db::delete_account(db.conn(), &actor, "acme", "1000").is_ok());
         assert!(!account_exists(db.conn(), "acme", "1000").unwrap_or(true));
     }
@@ -331,8 +499,34 @@ mod tests {
     #[test]
     fn list_account_codes_returns_codes() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash", "asset", None).is_ok());
-        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1000",
+                    name: "Cash",
+                    account_type: "asset",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "2000",
+                    name: "Payables",
+                    account_type: "liability",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
         let codes = list_account_codes(db.conn(), "acme").unwrap_or_default();
         assert_eq!(codes, vec!["1000", "2000"]);
     }
@@ -361,9 +555,48 @@ mod tests {
     #[test]
     fn list_accounts_with_name_filter() {
         let db = setup();
-        assert!(create_account(db.conn(), "acme", "1000", "Cash on Hand", "asset", None).is_ok());
-        assert!(create_account(db.conn(), "acme", "1100", "Petty Cash", "asset", None).is_ok());
-        assert!(create_account(db.conn(), "acme", "2000", "Payables", "liability", None).is_ok());
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1000",
+                    name: "Cash on Hand",
+                    account_type: "asset",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "1100",
+                    name: "Petty Cash",
+                    account_type: "asset",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code: "2000",
+                    name: "Payables",
+                    account_type: "liability",
+                    default_tax_category: None
+                }
+            )
+            .is_ok()
+        );
 
         let params = ListAccountParams {
             company_slug: "acme",

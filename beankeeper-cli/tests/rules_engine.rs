@@ -1,5 +1,6 @@
 //! Persisted categorization, import integration, and audit guarantees (issue #6).
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -22,14 +23,24 @@ impl Ledger {
         let path = dir.path().join("rules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(db.conn(), company, company, None)?;
+            companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
             for (code, kind, tax) in [
                 ("1000", "asset", None),
                 ("4000", "revenue", Some("sales")),
                 ("5000", "expense", Some("dining")),
                 ("9000", "expense", Some("fallback")),
             ] {
-                accounts::create_account(db.conn(), company, code, code, kind, tax)?;
+                accounts::create_account(
+                    db.conn(),
+                    &Actor::new("fixture"),
+                    &CreateAccountParams {
+                        company_slug: company,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: tax,
+                    },
+                )?;
             }
         }
         Ok(Self { dir, path })
@@ -445,8 +456,18 @@ fn ofx_dry_run_and_posting_both_reject_self_posting_rules() -> TestResult {
 #[test]
 fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     let db = Db::open_in_memory()?;
-    companies::create_company(db.conn(), "acme", "Acme", None)?;
-    accounts::create_account(db.conn(), "acme", "5000", "Dining", "expense", None)?;
+    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    accounts::create_account(
+        db.conn(),
+        &Actor::new("fixture"),
+        &CreateAccountParams {
+            company_slug: "acme",
+            code: "5000",
+            name: "Dining",
+            account_type: "expense",
+            default_tax_category: None,
+        },
+    )?;
     let actor = Actor::new("rules-test");
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     assert!(rules::create_rule(db.conn(), &actor, "acme", "coffee".parse()?, "5000", 0).is_err());

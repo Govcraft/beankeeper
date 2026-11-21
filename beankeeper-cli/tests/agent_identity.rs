@@ -1,5 +1,6 @@
 //! Phase 1 identity lifecycle and attribution through the real CLI.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -31,9 +32,29 @@ impl Ledger {
         std::fs::write(&passphrase_file, "test-only-passphrase")?;
         let passphrase: SecretString = "test-only-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        db::create_company(db.conn(), "acme", "Acme", None)?;
-        db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
-        db::create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)?;
+        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )?;
+        db::create_account(
+            db.conn(),
+            &Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "4000",
+                name: "Revenue",
+                account_type: "revenue",
+                default_tax_category: None,
+            },
+        )?;
         Ok(Self {
             dir,
             path,
@@ -246,14 +267,27 @@ fn unauthorized(output: &Output) -> TestResult {
 #[test]
 fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() -> TestResult {
     let ledger = Ledger::new()?;
-    db::create_account(ledger.db.conn(), "acme", "2000", "Loan", "liability", None)?;
     db::create_account(
         ledger.db.conn(),
-        "acme",
-        "5000",
-        "Interest",
-        "expense",
-        None,
+        &Actor::new("fixture"),
+        &CreateAccountParams {
+            company_slug: "acme",
+            code: "2000",
+            name: "Loan",
+            account_type: "liability",
+            default_tax_category: None,
+        },
+    )?;
+    db::create_account(
+        ledger.db.conn(),
+        &Actor::new("fixture"),
+        &CreateAccountParams {
+            company_slug: "acme",
+            code: "5000",
+            name: "Interest",
+            account_type: "expense",
+            default_tax_category: None,
+        },
     )?;
     let issued = ledger.issue()?;
     let token = text(&issued, "token")?;
@@ -307,6 +341,7 @@ fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() ->
 #[test]
 fn key_and_token_lifecycle_binds_supplied_key_and_never_lists_secrets() -> TestResult {
     let ledger = Ledger::new()?;
+    let creations = ledger.count("audit_log")?;
     let root = ledger.run(&["key", "init"], None)?["data"].clone();
     assert!(text(&root, "trust_root")?.ends_with(".bk.local"));
     let key = SigningKey::generate();
@@ -344,7 +379,7 @@ fn key_and_token_lifecycle_binds_supplied_key_and_never_lists_secrets() -> TestR
     let repeated = ledger.command()?.args(["key", "init"]).output()?;
     assert_eq!(repeated.status.code(), Some(3));
     assert_eq!(ledger.count("identity_root")?, 1);
-    assert_eq!(ledger.count("audit_log")?, 2);
+    assert_eq!(ledger.count("audit_log")?, creations + 2);
     ledger.run(&["verify"], None)?;
     Ok(())
 }
@@ -724,6 +759,7 @@ fn identity_is_immutable_and_hash_chain_detects_changes_after_trigger_bypass() -
 #[test]
 fn invalid_issuance_and_audit_failure_leave_no_partial_registry_records() -> TestResult {
     let ledger = Ledger::new()?;
+    let creations = ledger.count("audit_log")?;
     ledger.run(&["key", "init"], None)?;
     for args in [
         vec!["agent", "issue", "--name", "Bad Prefix!", "--generate-key"],
@@ -770,7 +806,7 @@ fn invalid_issuance_and_audit_failure_leave_no_partial_registry_records() -> Tes
         Some(4)
     );
     assert_eq!(ledger.count("agent_tokens")?, 0);
-    assert_eq!(ledger.count("audit_log")?, 1);
+    assert_eq!(ledger.count("audit_log")?, creations + 1);
     ledger.run(&["verify"], None)?;
     Ok(())
 }
@@ -864,6 +900,33 @@ fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestR
         |r| r.get(0),
     )?;
     assert_eq!(wrong, 0);
+    let (companies, accounts): (i64, i64) = db.conn().query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM companies c WHERE (
+                SELECT COUNT(*) FROM audit_log a WHERE a.company_slug = c.slug
+                AND a.entity = 'company' AND a.entity_id = c.slug
+                AND a.action = 'create' AND a.actor = 'demo-host'
+            ) = 1),
+            (SELECT COUNT(*) FROM accounts acc WHERE (
+                SELECT COUNT(*) FROM audit_log a WHERE a.company_slug = acc.company_slug
+                AND a.entity = 'account' AND a.entity_id = acc.code
+                AND a.action = 'create' AND a.actor = 'demo-host'
+            ) = 1)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(companies, 3);
+    let account_count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
+    assert!(account_count > 0);
+    assert_eq!(accounts, account_count);
+    let creations: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE entity IN ('company', 'account') AND action = 'create'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(creations, companies + accounts);
     Ok(())
 }
 

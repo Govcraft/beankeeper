@@ -1,3 +1,4 @@
+use crate::db::CreateAccountParams;
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -210,8 +211,8 @@ fn dr_memo(code: &str, amount: i64, memo: &str) -> PostEntryParams {
 fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     let conn = db.conn();
 
-    seed_companies(conn)?;
-    seed_accounts(conn)?;
+    seed_companies(conn, actor)?;
+    seed_accounts(conn, actor)?;
     seed_consulting_transactions(conn, actor)?;
     seed_products_transactions(conn, actor)?;
     seed_personal_transactions(conn, actor)?;
@@ -222,23 +223,26 @@ fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError>
 }
 
 /// Create the three demo companies.
-fn seed_companies(conn: &rusqlite::Connection) -> Result<(), CliError> {
+fn seed_companies(conn: &rusqlite::Connection, actor: &crate::db::Actor) -> Result<(), CliError> {
     use crate::db::create_company;
 
     create_company(
         conn,
+        actor,
         "acme-consulting",
         "Acme Consulting LLC",
         Some("Demo consulting firm"),
     )?;
     create_company(
         conn,
+        actor,
         "acme-products",
         "Acme Products Inc",
         Some("Demo product company"),
     )?;
     create_company(
         conn,
+        actor,
         "personal",
         "Personal",
         Some("Owner personal finances"),
@@ -248,29 +252,43 @@ fn seed_companies(conn: &rusqlite::Connection) -> Result<(), CliError> {
 }
 
 /// Create the chart of accounts for all three demo companies.
-fn seed_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
-    seed_consulting_accounts(conn)?;
-    seed_products_accounts(conn)?;
-    seed_personal_accounts(conn)?;
+fn seed_accounts(conn: &rusqlite::Connection, actor: &crate::db::Actor) -> Result<(), CliError> {
+    seed_consulting_accounts(conn, actor)?;
+    seed_products_accounts(conn, actor)?;
+    seed_personal_accounts(conn, actor)?;
     Ok(())
 }
 
 /// Create a company's chart of accounts from `(code, name, type, tax)` rows.
 fn seed_company_accounts(
     conn: &rusqlite::Connection,
+    actor: &crate::db::Actor,
     company: &str,
     accounts: &[(&str, &str, &str, Option<&str>)],
 ) -> Result<(), CliError> {
     use crate::db::create_account;
 
     for &(code, name, account_type, tax) in accounts {
-        create_account(conn, company, code, name, account_type, tax)?;
+        create_account(
+            conn,
+            actor,
+            &CreateAccountParams {
+                company_slug: company,
+                code,
+                name,
+                account_type,
+                default_tax_category: tax,
+            },
+        )?;
     }
     Ok(())
 }
 
 /// Create the acme-consulting chart of accounts.
-fn seed_consulting_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
+fn seed_consulting_accounts(
+    conn: &rusqlite::Connection,
+    actor: &crate::db::Actor,
+) -> Result<(), CliError> {
     // Chart of Accounts – acme-consulting. `(code, name, type, tax_category)`.
     let accounts: &[(&str, &str, &str, Option<&str>)] = &[
         ("1000", "Operating Cash", "asset", None),
@@ -298,13 +316,16 @@ fn seed_consulting_accounts(conn: &rusqlite::Connection) -> Result<(), CliError>
         ),
         ("2800", "FICA Payable", "liability", Some("payroll-tax")),
     ];
-    seed_company_accounts(conn, "acme-consulting", accounts)?;
+    seed_company_accounts(conn, actor, "acme-consulting", accounts)?;
 
     Ok(())
 }
 
 /// Create the acme-products chart of accounts.
-fn seed_products_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
+fn seed_products_accounts(
+    conn: &rusqlite::Connection,
+    actor: &crate::db::Actor,
+) -> Result<(), CliError> {
     // Chart of Accounts – acme-products. `(code, name, type, tax_category)`.
     let accounts: &[(&str, &str, &str, Option<&str>)] = &[
         ("1000", "Operating Cash", "asset", None),
@@ -318,13 +339,16 @@ fn seed_products_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
         ("5000", "Cost of Goods Sold", "expense", Some("cogs")),
         ("5100", "Shipping Expense", "expense", Some("shipping")),
     ];
-    seed_company_accounts(conn, "acme-products", accounts)?;
+    seed_company_accounts(conn, actor, "acme-products", accounts)?;
 
     Ok(())
 }
 
 /// Create the personal-books chart of accounts.
-fn seed_personal_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
+fn seed_personal_accounts(
+    conn: &rusqlite::Connection,
+    actor: &crate::db::Actor,
+) -> Result<(), CliError> {
     // Chart of Accounts – personal. `(code, name, type, tax_category)`.
     let accounts: &[(&str, &str, &str, Option<&str>)] = &[
         ("1000", "Checking Account", "asset", None),
@@ -341,7 +365,7 @@ fn seed_personal_accounts(conn: &rusqlite::Connection) -> Result<(), CliError> {
         ("5400", "State Tax Withheld", "expense", Some("state-tax")),
         ("5500", "FICA Withheld", "expense", Some("fica")),
     ];
-    seed_company_accounts(conn, "personal", accounts)?;
+    seed_company_accounts(conn, actor, "personal", accounts)?;
 
     Ok(())
 }

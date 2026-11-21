@@ -1,5 +1,6 @@
 //! Exercise the real MCP server over its newline-delimited stdio transport.
 
+use beankeeper_cli::db::CreateAccountParams;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
@@ -1191,9 +1192,29 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
     std::fs::write(passphrase_file, "mcp-test-passphrase")?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open(path, Some(&passphrase))?;
-    db::create_company(db.conn(), "acme", "Acme", None)?;
-    db::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
-    db::create_account(db.conn(), "acme", "4000", "Sales", "revenue", None)?;
+    db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    db::create_account(
+        db.conn(),
+        &Actor::new("fixture"),
+        &CreateAccountParams {
+            company_slug: "acme",
+            code: "1000",
+            name: "Cash",
+            account_type: "asset",
+            default_tax_category: None,
+        },
+    )?;
+    db::create_account(
+        db.conn(),
+        &Actor::new("fixture"),
+        &CreateAccountParams {
+            company_slug: "acme",
+            code: "4000",
+            name: "Sales",
+            account_type: "revenue",
+            default_tax_category: None,
+        },
+    )?;
     identity::init_root(db.conn(), &Actor::new("owner"))?;
     Ok(identity::issue(
         db.conn(),

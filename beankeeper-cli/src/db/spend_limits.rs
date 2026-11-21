@@ -415,12 +415,20 @@ fn forbidden(message: &str) -> CliError {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
     use crate::db::{self, Actor, Db, audit};
 
     fn ledger() -> Result<(Db, SpendLimit), CliError> {
         let db = Db::open_in_memory()?;
-        db::create_company(db.conn(), "acme", "Acme", None)?;
+        db::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme",
+            None,
+        )?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;
         let limit = SpendLimit::new(
@@ -535,7 +543,17 @@ mod tests {
     {
         let (db, limit) = ledger()?;
         for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
-            db::create_account(db.conn(), "acme", code, code, kind, None)?;
+            db::create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )?;
         }
         for date in ["2026-1-1", "2026-01-01", "2026-01-02"] {
             legacy_post(db.conn(), limit.agent_uri(), date)?;

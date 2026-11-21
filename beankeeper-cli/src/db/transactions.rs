@@ -776,6 +776,8 @@ pub fn find_orphaned_correlations(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
     use crate::db::accounts::create_account;
     use crate::db::companies::create_company;
@@ -783,12 +785,38 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(db.conn(), "acme", "Acme Corp", None)
-            .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        create_account(db.conn(), "acme", "1000", "Cash", "asset", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(db.conn(), "acme", "4000", "Revenue", "revenue", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme Corp",
+            None,
+        )
+        .unwrap_or_else(|e| panic!("company setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "4000",
+                name: "Revenue",
+                account_type: "revenue",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
 
@@ -952,8 +980,18 @@ mod tests {
     #[test]
     fn list_transactions_with_account_filter() {
         let db = setup();
-        create_account(db.conn(), "acme", "5000", "Expenses", "expense", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "5000",
+                name: "Expenses",
+                account_type: "expense",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
 
         let entries1 = sample_entries();
         let p1 = make_params(&entries1, "Sale", None, "2024-01-01");
@@ -1016,9 +1054,20 @@ mod tests {
             panic!("expected Created");
         };
 
-        create_company(db.conn(), "other", "Other", None).expect("create company");
-        create_account(db.conn(), "other", "1000", "Other cash", "asset", None)
-            .expect("create account");
+        let actor = crate::db::Actor::new("fixture");
+        create_company(db.conn(), &actor, "other", "Other", None).expect("create company");
+        create_account(
+            db.conn(),
+            &actor,
+            &CreateAccountParams {
+                company_slug: "other",
+                code: "1000",
+                name: "Other cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )
+        .expect("create account");
         db.conn()
             .execute(
                 "INSERT INTO entries (transaction_id, account_code, company_slug, direction, amount)
@@ -1217,8 +1266,18 @@ mod tests {
     #[test]
     fn list_transactions_with_direction_filter() {
         let db = setup();
-        create_account(db.conn(), "acme", "5000", "Expenses", "expense", None)
-            .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "5000",
+                name: "Expenses",
+                account_type: "expense",
+                default_tax_category: None,
+            },
+        )
+        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
 
         let entries = sample_entries();
         let p1 = make_params(&entries, "Sale", None, "2024-01-01");

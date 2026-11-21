@@ -722,6 +722,8 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::CreateAccountParams;
+
     use super::*;
     use serde_json::Value;
 
@@ -777,9 +779,25 @@ mod tests {
     #[test]
     fn investment_tools_share_trade_valuation_and_actor_behavior() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        crate::db::companies::create_company(db.conn(), "acme", "Acme", None)?;
+        crate::db::companies::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme",
+            None,
+        )?;
         for (code, kind) in [("1000", "asset"), ("1200", "asset"), ("4000", "revenue")] {
-            crate::db::accounts::create_account(db.conn(), "acme", code, code, kind, None)?;
+            crate::db::accounts::create_account(
+                db.conn(),
+                &crate::db::Actor::new("fixture"),
+                &CreateAccountParams {
+                    company_slug: "acme",
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )?;
         }
         let actor = client_actor(Some("Investment Client"));
         let call = |tool, mut input: Value| {
@@ -855,8 +873,24 @@ mod tests {
     #[test]
     fn report_inputs_cover_all_kinds_and_keep_cli_defaults() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        crate::db::companies::create_company(db.conn(), "acme", "Acme", None)?;
-        crate::db::accounts::create_account(db.conn(), "acme", "1000", "Cash", "asset", None)?;
+        crate::db::companies::create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme",
+            None,
+        )?;
+        crate::db::accounts::create_account(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            &CreateAccountParams {
+                company_slug: "acme",
+                code: "1000",
+                name: "Cash",
+                account_type: "asset",
+                default_tax_category: None,
+            },
+        )?;
         for input in [
             json!({"kind":"trial-balance", "account_type":"asset"}),
             json!({"kind":"balance", "account":"1000"}),
