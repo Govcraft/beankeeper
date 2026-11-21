@@ -2171,18 +2171,19 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
         .remove("timestamp");
     assert_eq!(actual, expected);
     assert_eq!(actual["data"]["comparison"]["series"][0]["current"], 1234);
-    let malformed = client.call("financial_summary", &json!({"company":"acme","to":"bad"}))?;
-    assert_parameter_rejection(&malformed, "calendar date");
-    let missing = client.call(
-        "financial_summary",
-        &json!({"company":"missing","to":"2024-03-31"}),
-    )?;
-    assert_eq!(missing["result"]["isError"], true);
-    let actual = payload(&missing)?;
-    assert_eq!(actual["ok"], false);
-    assert_eq!(actual["meta"]["command"], "summary");
-    assert_eq!(actual["error"]["code"], "NOT_FOUND");
-    assert!(actual.get("data").is_none());
+    for (company, to, code) in [
+        ("acme", "bad", "VALIDATION"),
+        ("missing", "2024-03-31", "NOT_FOUND"),
+    ] {
+        let response = client.call("financial_summary", &json!({"company":company,"to":to}))?;
+        assert_eq!(response["result"]["isError"], true);
+        let actual = payload(&response)?;
+        assert_eq!(actual["ok"], false);
+        assert_eq!(actual["meta"]["command"], "summary");
+        assert_eq!(actual["meta"]["company"], company);
+        assert_eq!(actual["error"]["code"], code);
+        assert!(actual.get("data").is_none());
+    }
     let unknown = client.call(
         "financial_summary",
         &json!({"company":"acme", "db":"other.db"}),

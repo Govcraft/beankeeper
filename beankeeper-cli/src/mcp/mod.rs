@@ -172,6 +172,14 @@ fn tool_error(error: &CliError) -> CallToolResult {
     CallToolResult::structured_error(json!({"code":error.code(), "message":error.to_string()}))
 }
 
+fn summary_error(company: Option<&str>, error: Option<&Value>) -> CallToolResult {
+    CallToolResult::structured_error(json!({
+        "ok": false,
+        "meta": crate::output::json::meta("summary", company),
+        "error": error,
+    }))
+}
+
 fn client_actor(name: Option<&str>) -> Actor {
     let name: String = name
         .unwrap_or_default()
@@ -439,17 +447,23 @@ impl LedgerServer {
     )]
     async fn financial_summary(
         &self,
-        Parameters(input): Parameters<inputs::FinancialSummary>,
+        Parameters(input): Parameters<inputs::FinancialSummaryInput>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
+        let input = match input.0 {
+            Ok(input) => input,
+            Err(error) => {
+                let validation = CliError::Validation(error.cause.to_string());
+                return summary_error(
+                    error.company.as_deref(),
+                    tool_error(&validation).structured_content.as_ref(),
+                );
+            }
+        };
         let company = input.company.to_string();
         let result = self.execute("financial_summary", input, context).await;
         if result.is_error == Some(true) {
-            CallToolResult::structured_error(json!({
-                "ok":false,
-                "meta":crate::output::json::meta("summary", Some(&company)),
-                "error":result.structured_content,
-            }))
+            summary_error(Some(&company), result.structured_content.as_ref())
         } else {
             result
         }
