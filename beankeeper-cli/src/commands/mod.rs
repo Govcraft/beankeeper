@@ -23,6 +23,7 @@ pub mod report_tax;
 pub mod report_trend;
 pub mod rule;
 pub mod schedule;
+pub mod summary;
 pub mod txn;
 pub mod txn_clear;
 pub mod txn_import;
@@ -43,6 +44,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
         return id;
     }
     match cmd {
+        Command::Summary(_) => "summary",
         Command::Security(args) => args.command.command_name(),
         Command::Investment(args) => args.command.command_name(),
         Command::Schedule(args) => args.command.command_name(),
@@ -152,6 +154,10 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
     match &cli.command {
+        Command::Summary(args) => {
+            let company = require_company(cli)?;
+            summary::run(cli, &company, args)
+        }
         Command::Period(command) => {
             let company = require_company(cli)?;
             period::run(cli, &company, command)

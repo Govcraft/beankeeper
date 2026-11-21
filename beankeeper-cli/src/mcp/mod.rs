@@ -184,7 +184,9 @@ fn operation_cli(tool: &str, input: &mut Map<String, Value>) -> Result<Cli, CliE
         "budget_set" | "budget_delete" => &["account"],
         _ => &[],
     };
-    if tool == "report" {
+    if tool == "financial_summary" {
+        args.push("summary".into());
+    } else if tool == "report" {
         args.push("report".into());
         let kind = input
             .remove("kind")
@@ -337,6 +339,14 @@ fn execute_operation(
     let cli = operation_cli(tool, &mut input)?;
     let company = cli.company.as_deref().unwrap_or_default();
     match &cli.command {
+        Command::Summary(args) => {
+            commands::summary::execute_json(&cli, db, company, args).map(|mut envelope| {
+                if let Some(agent) = actor.agent_uri() {
+                    envelope["meta"]["agent"] = Value::String(agent.to_owned());
+                }
+                envelope
+            })
+        }
         Command::Security(args) => {
             commands::investment::execute_security(db, company, &args.command, actor)
         }
@@ -386,6 +396,27 @@ fn execute_operation(
 
 #[tool_router]
 impl LedgerServer {
+    #[tool(
+        description = "Answer how the owner is doing: read-only financial summary, period comparisons, spending movers, attention counts and totals, brief highlights and optional Desktop targets. Returns the same full JSON envelope as bk summary; all amounts are in one currency."
+    )]
+    async fn financial_summary(
+        &self,
+        Parameters(input): Parameters<inputs::FinancialSummary>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let company = input.company.clone();
+        let result = self.execute("financial_summary", input, context).await;
+        if result.is_error == Some(true) {
+            CallToolResult::structured_error(json!({
+                "ok":false,
+                "meta":crate::output::json::meta("summary", Some(&company)),
+                "error":result.structured_content,
+            }))
+        } else {
+            result
+        }
+    }
+
     #[tool(description = "Create a company-scoped security with a fixed quotation currency.")]
     async fn security_create(
         &self,

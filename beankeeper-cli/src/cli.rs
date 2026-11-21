@@ -321,6 +321,9 @@ pub enum PeriodCommand {
 /// Top-level commands.
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Answer how your finances are doing, with facts, comparisons and optional Desktop links.
+    Summary(crate::commands::summary::SummaryArgs),
+
     /// Close, reopen, or inspect a company posting cutoff.
     #[command(subcommand)]
     Period(PeriodCommand),

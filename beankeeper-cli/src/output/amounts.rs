@@ -56,7 +56,11 @@ fn display(value: &Value, currency: Option<Currency>) -> Value {
 fn monetary_field(key: &str) -> bool {
     matches!(
         key,
-        "max_post"
+        "cash_on_hand"
+            | "owed_to_you"
+            | "you_owe"
+            | "net_worth"
+            | "max_post"
             | "daily_limit"
             | "amount"
             | "principal"

@@ -539,3 +539,12 @@ pub(super) struct PeriodReopen {
     /// Nonempty explanation recorded in the audit trail.
     pub reason: String,
 }
+
+/// Advisor-ready summary with the same options and envelope as `bk summary`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FinancialSummary {
+    pub company: String,
+    #[serde(flatten)]
+    pub options: crate::commands::summary::SummaryArgs,
+}
