@@ -535,7 +535,7 @@ bk --company acme txn list --count   # Count only, no rows
 - `--from DATE`, `--to DATE`: Date range (inclusive)
 - `-d, --description TEXT`: Substring search (case-insensitive)
 - `--amount-gt`, `--amount-lt`, `--amount-eq`: Amount filters (major units)
-- `--currency CODE`: Filter by currency
+- `--currency CODE`: Filter by currency. Required with amount filters if the company uses multiple transaction currencies. Otherwise the sole transaction currency is inferred, with USD used for an empty company. MCP `txn_list` applies the same rule to `currency`.
 - `--reference KEY`: Filter by idempotency key
 - `--metadata TEXT`: Substring search over the raw metadata JSON text
 - `--filter-metadata KEY=VALUE` (alias `--meta`; repeatable, AND-ed): Exact match on a top-level metadata key. JSON strings match exactly (case-sensitive; `KEY=` matches an empty string); numbers and booleans match by their JSON text as stored (`qty=3` matches `{"qty":3}` but not `{"qty":3.0}`; `paid=true` matches `{"paid":true}`); `null`, arrays, objects, missing keys and non-JSON metadata never match. Free text from `-m` is matched with `--filter-metadata memo=TEXT`. This is the same rule as on `report ledger`, `report reconciliation` and `report aging`.

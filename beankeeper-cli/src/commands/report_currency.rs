@@ -35,11 +35,23 @@ pub fn resolve_report_currency(
         return parse_currency(&code.trim().to_ascii_uppercase());
     }
 
+    infer_company_currency(conn, company, CliError::Validation)
+}
+
+/// Infer the currency from all transactions in the company.
+///
+/// Use USD for an empty company. The caller supplies its error variant for
+/// ambiguous currencies, since reports and filters have different contracts.
+pub(super) fn infer_company_currency(
+    conn: &Connection,
+    company: &str,
+    ambiguous: fn(String) -> CliError,
+) -> Result<Currency, CliError> {
     let currencies = company_currencies(conn, company)?;
     match currencies.as_slice() {
         [] => Ok(FALLBACK_CURRENCY),
         [only] => parse_currency(only),
-        many => Err(CliError::Validation(format!(
+        many => Err(ambiguous(format!(
             "company '{company}' has transactions in multiple currencies ({}); \
              pass --currency <CODE> to choose one",
             many.join(", ")

@@ -14,6 +14,13 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   targets. Missing invoice due dates are explicit; age-based open items are
   reported separately. ([#116](https://github.com/Govcraft/beankeeper/issues/116))
 
+### Fixed
+
+- Transaction list and count interpret amount filters in one currency. They
+  infer a sole transaction currency and require an explicit choice when the
+  company uses several. Applies to both CLI and MCP.
+  ([#155](https://github.com/Govcraft/beankeeper/issues/155))
+
 ## [0.28.0] - Unreleased
 
 ### Added
