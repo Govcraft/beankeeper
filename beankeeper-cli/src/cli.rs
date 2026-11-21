@@ -243,7 +243,7 @@ impl Cli {
 
     /// JSON metadata with the verified URI, if a token was supplied.
     #[must_use]
-    pub fn meta(&self, command: &str, company: Option<&str>) -> crate::output::json::Meta {
+    pub fn meta(&self, command: Operation, company: Option<&str>) -> crate::output::json::Meta {
         let mut meta = crate::output::json::meta(command, company);
         meta.agent = self
             .verified_agent

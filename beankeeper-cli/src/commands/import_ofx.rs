@@ -3,6 +3,7 @@
 //! Parses OFX/QFX files and posts each transaction as a balanced double-entry
 //! journal entry against a user-specified bank account and suspense account.
 
+use crate::operation::Operation;
 use std::fmt;
 use std::path::Path;
 
@@ -674,7 +675,7 @@ fn render_result(
     let error_count = result.errors.len();
 
     if format == crate::cli::OutputFormat::Json {
-        let meta = cli.meta("txn.import", Some(company));
+        let meta = cli.meta(Operation::TxnImport, Some(company));
         let json_str = json::render_import_result(result, dry_run, meta)?;
         println!("{json_str}");
     } else {

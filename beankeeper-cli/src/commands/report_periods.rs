@@ -25,6 +25,7 @@ use crate::cli::{AccountTypeArg, Cli, Command, OutputFormat, ReportCommand};
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output::{self, chart};
 
 /// Maximum number of period columns a single `--period` report may produce.
@@ -234,11 +235,19 @@ pub fn command_id(cmd: &Command) -> Option<&'static str> {
 /// Command id for a report kind rendered with a multi-column layout.
 #[must_use]
 pub fn mode_command_id(kind: MultiReportKind, layout: Layout) -> &'static str {
+    mode_operation(kind, layout).name()
+}
+
+fn mode_operation(kind: MultiReportKind, layout: Layout) -> Operation {
     match (kind, layout) {
-        (MultiReportKind::IncomeStatement, Layout::Periods(_)) => "report.income-statement.periods",
-        (MultiReportKind::IncomeStatement, Layout::Compare(_)) => "report.income-statement.compare",
-        (MultiReportKind::TrialBalance, Layout::Periods(_)) => "report.trial-balance.periods",
-        (MultiReportKind::TrialBalance, Layout::Compare(_)) => "report.trial-balance.compare",
+        (MultiReportKind::IncomeStatement, Layout::Periods(_)) => {
+            Operation::ReportIncomeStatementPeriods
+        }
+        (MultiReportKind::IncomeStatement, Layout::Compare(_)) => {
+            Operation::ReportIncomeStatementCompare
+        }
+        (MultiReportKind::TrialBalance, Layout::Periods(_)) => Operation::ReportTrialBalancePeriods,
+        (MultiReportKind::TrialBalance, Layout::Compare(_)) => Operation::ReportTrialBalanceCompare,
     }
 }
 
@@ -371,7 +380,7 @@ fn run(
             )?;
         }
         OutputFormat::Json => {
-            let id = mode_command_id(req.kind, Layout::Periods(req.period));
+            let id = mode_operation(req.kind, Layout::Periods(req.period));
             let meta = cli.meta(id, Some(company));
             let chart = chart::requested(cli, || {
                 chart::periods(company, &report, cli.output.chart_all)

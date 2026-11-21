@@ -1,3 +1,4 @@
+use crate::operation::Operation;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -49,7 +50,7 @@ pub fn run(
             if format == OutputFormat::Json {
                 println!(
                     "{}",
-                    serde_json::json!({"ok":true, "meta":cli.meta(super::command_name(&cli.command), Some(company)), "data":data})
+                    serde_json::json!({"ok":true, "meta":cli.meta(super::operation(&cli.command), Some(company)), "data":data})
                 );
             } else {
                 println!(
@@ -80,7 +81,7 @@ pub fn run(
             *id,
             (format, use_color),
             &mut std::io::stdout(),
-            cli.meta("txn.show", Some(company)),
+            cli.meta(Operation::TxnShow, Some(company)),
         ),
         TxnCommand::Reverse(args) => run_reverse(cli, &db_handle, company, args),
         TxnCommand::Clear(args) => super::txn_clear::run(cli, &db_handle, company, args, meta),
@@ -92,7 +93,7 @@ pub fn run(
             format,
             use_color,
             &mut std::io::stdout(),
-            cli.meta("txn.reconcile", None),
+            cli.meta(Operation::TxnReconcile, None),
         ),
     }
 }
@@ -111,7 +112,10 @@ fn run_reverse(
     if format == OutputFormat::Json {
         println!(
             "{}",
-            output::json::render_post_result(result, cli.meta("txn.reverse", Some(company)))?
+            output::json::render_post_result(
+                result,
+                cli.meta(Operation::TxnReverse, Some(company))
+            )?
         );
     }
     if !cli.verbosity.quiet {
@@ -211,7 +215,7 @@ pub fn execute_json_with_pagination(
         }
         TxnCommand::Post(args) => {
             let result = execute_post(db_handle, company, args, actor)?;
-            let meta = cli.meta("txn.post", Some(company));
+            let meta = cli.meta(Operation::TxnPost, Some(company));
             out = output::json::render_post_result(result, meta)?.into_bytes();
         }
         TxnCommand::List(args) => run_list_or_count(
@@ -229,7 +233,7 @@ pub fn execute_json_with_pagination(
                 *id,
                 (OutputFormat::Json, false),
                 &mut out,
-                cli.meta("txn.show", Some(company)),
+                cli.meta(Operation::TxnShow, Some(company)),
             )?;
         }
         TxnCommand::Reconcile => {
@@ -241,7 +245,7 @@ pub fn execute_json_with_pagination(
         }
         TxnCommand::Reverse(args) => {
             let result = execute_reverse(db_handle, company, args, actor)?;
-            let meta = cli.meta("txn.reverse", Some(company));
+            let meta = cli.meta(Operation::TxnReverse, Some(company));
             out = output::json::render_post_result(result, meta)?.into_bytes();
         }
         TxnCommand::Import(_) | TxnCommand::Attach(_) => {
@@ -841,7 +845,7 @@ fn print_post_result(
 ) -> Result<(), CliError> {
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {
-        let meta = cli.meta("txn.post", Some(company));
+        let meta = cli.meta(Operation::TxnPost, Some(company));
         let rendered = crate::output::json::render_post_result(post_result, meta)?;
         println!("{rendered}");
     }
@@ -917,7 +921,7 @@ fn run_list(
                 entries_map.insert(txn.id, entries);
             }
             let meta = cli
-                .meta("txn.list", Some(params.company_slug))
+                .meta(Operation::TxnList, Some(params.company_slug))
                 .with_pagination(pagination.clone());
             let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
             writeln!(out, "{rendered}")?;
@@ -959,7 +963,7 @@ fn run_count(
 
     match format {
         OutputFormat::Json => {
-            let meta = cli.meta("txn.list", Some(params.company_slug));
+            let meta = cli.meta(Operation::TxnList, Some(params.company_slug));
             let rendered = output::json::render_count(count, meta)?;
             writeln!(out, "{rendered}")?;
         }
@@ -1098,7 +1102,7 @@ fn run_attach(
 
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {
-        let meta = cli.meta("txn.attach", Some(company));
+        let meta = cli.meta(Operation::TxnAttach, Some(company));
         let rendered = crate::output::json::render_attached(att_id, transaction_id, meta)?;
         println!("{rendered}");
     }
@@ -1120,7 +1124,7 @@ pub(super) fn run_reconcile_all(cli: &Cli, scope: AllCompanies) -> Result<(), Cl
         resolve_format(None, cli),
         output::should_use_color(cli.verbosity.no_color),
         &mut std::io::stdout(),
-        cli.meta("txn.reconcile", None),
+        cli.meta(Operation::TxnReconcile, None),
     )
 }
 

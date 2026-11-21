@@ -21,6 +21,7 @@
 //! the uncleared total is the sum of the listed items' `signed_remaining`.
 //! Without `--statement`, `cleared_balance == total_cleared_balance`.
 
+use crate::operation::Operation;
 use std::collections::BTreeMap;
 
 use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit, Money};
@@ -410,7 +411,7 @@ fn render(
             writeln!(output.writer, "{}", render_table(report, output.use_color))?;
         }
         OutputFormat::Json => {
-            let meta = cli.meta("report.reconciliation", Some(company));
+            let meta = cli.meta(Operation::ReportReconciliation, Some(company));
             output.write_json(meta, report, None)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,

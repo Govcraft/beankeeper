@@ -10,12 +10,12 @@ fn main() -> ExitCode {
     let json_mode = cli.is_json();
 
     let meta = if json_mode {
-        let cmd_name = commands::command_name(&cli.command);
+        let operation = commands::operation(&cli.command);
         let company = cli
             .company
             .as_ref()
             .map(beankeeper_cli::db::companies::CompanySlug::as_str);
-        Some(beankeeper_cli::output::json::meta(cmd_name, company))
+        Some(beankeeper_cli::output::json::meta(operation, company))
     } else {
         None
     };
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     match commands::dispatch(&cli, meta.clone()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
+            let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
             e.report(json_mode, meta);
             ExitCode::from(e.exit_code())
         }

@@ -25,6 +25,7 @@
 //!    through `--to`. The report flags any difference between
 //!    `opening + net change` and `closing`.
 
+use crate::operation::Operation;
 use std::collections::{BTreeMap, BTreeSet};
 
 use beankeeper::types::{AccountCode, AccountType, Currency, Money};
@@ -370,7 +371,7 @@ pub(crate) fn run_to(
             render_table(&statement, output.use_color)
         )?,
         OutputFormat::Json => {
-            let meta = cli.meta("report.cash-flow", Some(company));
+            let meta = cli.meta(Operation::ReportCashFlow, Some(company));
             let chart = chart::requested(cli, || {
                 chart::cash_flow(company, &statement, cli.output.chart_all)
             })?;

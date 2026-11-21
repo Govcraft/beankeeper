@@ -3,6 +3,7 @@
 mod attention;
 mod model;
 
+use crate::operation::Operation;
 use std::io::Write;
 
 use beankeeper::types::{Currency, Money};
@@ -220,7 +221,7 @@ fn read_summary(
 
 fn envelope(cli: &Cli, company: &str, report: &SummaryReport) -> Result<Value, CliError> {
     let meta = cli
-        .meta("summary", Some(company))
+        .meta(Operation::Summary, Some(company))
         .with_currency(report.currency);
     let chart = chart::requested(cli, || {
         chart::summary(

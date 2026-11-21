@@ -16,6 +16,7 @@
 //! clearings) live in [`crate::db::clearings`]; every change is audited by
 //! [`crate::db::audit`].
 
+use crate::operation::Operation;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -51,7 +52,7 @@ pub fn run(
     let result = compute(db_handle, company, args, &actor, target)?;
     let ctx = result.context(db_handle, company, actor);
     let format = resolve_format(None, cli);
-    let meta = meta.unwrap_or_else(|| cli.meta("txn.clear", Some(company)));
+    let meta = meta.unwrap_or_else(|| cli.meta(Operation::TxnClear, Some(company)));
     match &result.items {
         ClearedItems::Single(item) => render_single(cli, &ctx, item, format, meta),
         ClearedItems::Batch { account, items } => {

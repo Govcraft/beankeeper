@@ -15,6 +15,7 @@ pub use http::{http_router, http_router_with_host_tools, http_router_with_passph
 /// Transport options for the HTTP router factories, including host rules and cancellation.
 pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 
+use crate::operation::Operation;
 use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
@@ -171,7 +172,7 @@ fn tool_error(error: &CliError) -> CallToolResult {
 fn summary_error(company: Option<&str>, error: Option<&serde_json::Value>) -> CallToolResult {
     CallToolResult::structured_error(json!({
         "ok": false,
-        "meta": crate::output::json::meta("summary", company),
+        "meta": crate::output::json::meta(Operation::Summary, company),
         "error": error,
     }))
 }

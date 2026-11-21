@@ -1,5 +1,6 @@
 //! Full database snapshots, staged and verified before publication.
 
+use crate::operation::Operation;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
@@ -39,7 +40,7 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
     let encrypted = is_encrypted(&snapshot);
     drop(snapshot);
     publish(staged, &cli.db, output, force)?;
-    report(cli, "backup", output, version, encrypted)
+    report(cli, Operation::Backup, output, version, encrypted)
 }
 
 /// Restore a full snapshot with its original passphrase and verify it in-process.
@@ -83,7 +84,7 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
         }
     }
     publish(staged, input, destination, force)?;
-    report(cli, "restore", destination, version, encrypted)
+    report(cli, Operation::Restore, destination, version, encrypted)
 }
 
 fn is_encrypted(db: &Db) -> bool {
@@ -207,7 +208,7 @@ fn publish(
 
 fn report(
     cli: &Cli,
-    command: &str,
+    command: Operation,
     path: &Path,
     version: i64,
     encrypted: bool,
@@ -225,7 +226,7 @@ fn report(
         );
     }
     if !cli.verbosity.quiet {
-        eprintln!("[ok] Verified {command}: {}", path.display());
+        eprintln!("[ok] Verified {}: {}", command.name(), path.display());
     }
     Ok(())
 }

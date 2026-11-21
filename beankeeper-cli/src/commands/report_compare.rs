@@ -16,6 +16,7 @@ use super::report_periods::{CompareArg, MultiReportKind, prior_range, range_labe
 use crate::cli::{Cli, OutputFormat, ReportCommand};
 use crate::db::{self, connection::Db};
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output::amounts::{MoneyField, format_money};
 use crate::output::chart::{self, ComparisonView};
 use crate::output::json::serialize_display;
@@ -1282,12 +1283,12 @@ fn render(
     match output.format {
         OutputFormat::Json => {
             let id = match req.kind {
-                "income-statement" => "report.income-statement.compare",
-                "trial-balance" => "report.trial-balance.compare",
-                "balance" => "report.balance",
-                "balance-sheet" => "report.balance-sheet",
-                "cash-flow" => "report.cash-flow",
-                _ => "report.trend",
+                "income-statement" => Operation::ReportIncomeStatementCompare,
+                "trial-balance" => Operation::ReportTrialBalanceCompare,
+                "balance" => Operation::ReportBalance,
+                "balance-sheet" => Operation::ReportBalanceSheet,
+                "cash-flow" => Operation::ReportCashFlow,
+                _ => Operation::ReportTrend,
             };
             let chart = chart::requested(cli, || {
                 let view = match sub {

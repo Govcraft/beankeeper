@@ -1,5 +1,6 @@
 //! Security master, exact investment trades, and holdings reports.
 
+use crate::operation::Operation;
 use beankeeper::types::{Money, NonNegativeMoney, PositiveMoney};
 use serde_json::Value;
 
@@ -20,11 +21,11 @@ pub fn run(cli: &Cli, company: &str) -> Result<(), CliError> {
     let actor = cli.principal();
     let (name, data) = match &cli.command {
         Command::Security(args) => (
-            args.command.command_name(),
+            args.command.operation(),
             execute_security(&db, company, &args.command, &actor)?,
         ),
         Command::Investment(args) => (
-            args.command.command_name(),
+            args.command.operation(),
             execute_investment(&db, company, &args.command, &actor)?,
         ),
         _ => {
@@ -174,11 +175,11 @@ fn amount(db: &Db, company: &str, symbol: &str, value: &str) -> Result<Money, Cl
     Ok(Money::from_minor(i128::from(minor), currency))
 }
 
-fn headers(name: &str) -> &'static [&'static str] {
+fn headers(name: Operation) -> &'static [&'static str] {
     match name {
-        "security.create" | "security.list" => &["symbol", "name", "currency"],
-        "security.price" => &["symbol", "currency", "date", "price"],
-        "investment.lots" => &[
+        Operation::SecurityCreate | Operation::SecurityList => &["symbol", "name", "currency"],
+        Operation::SecurityPrice => &["symbol", "currency", "date", "price"],
+        Operation::InvestmentLots => &[
             "id",
             "symbol",
             "asset",
@@ -188,7 +189,7 @@ fn headers(name: &str) -> &'static [&'static str] {
             "remaining_quantity",
             "remaining_cost_basis",
         ],
-        "investment.holdings" => &[
+        Operation::InvestmentHoldings => &[
             "symbol",
             "asset",
             "currency",
@@ -211,7 +212,7 @@ fn headers(name: &str) -> &'static [&'static str] {
     }
 }
 
-fn render(cli: &Cli, company: &str, name: &str, data: &Value) -> Result<(), CliError> {
+fn render(cli: &Cli, company: &str, name: Operation, data: &Value) -> Result<(), CliError> {
     let format = resolve_format(None, cli);
     if cli.verbosity.quiet && format != OutputFormat::Json {
         return Ok(());

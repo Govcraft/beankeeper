@@ -4,6 +4,7 @@
 //! validated by `JournalEntry::post` and persisted through `post_transaction`.
 //! Dry runs exercise that same path inside a transaction that is rolled back.
 
+use crate::operation::Operation;
 use std::collections::HashMap;
 
 use beankeeper::core::JournalEntry;
@@ -582,7 +583,7 @@ fn render_result(
     if crate::cli::resolve_format(None, cli) == OutputFormat::Json {
         let envelope = json::Envelope {
             ok: true,
-            meta: cli.meta("txn.import", Some(company)),
+            meta: cli.meta(Operation::TxnImport, Some(company)),
             data: Some(result),
             error: None,
         };

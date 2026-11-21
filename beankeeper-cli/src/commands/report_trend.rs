@@ -1,5 +1,6 @@
 //! Historical spending activity and period-end net worth.
 
+use crate::operation::Operation;
 use std::collections::BTreeMap;
 
 use beankeeper::types::{AccountType, Currency, Money};
@@ -224,7 +225,7 @@ pub(crate) fn run_to(
     match output.format {
         OutputFormat::Json => {
             let meta = cli
-                .meta("report.trend", Some(company))
+                .meta(Operation::ReportTrend, Some(company))
                 .with_currency(report.currency());
             let chart =
                 chart::requested(cli, || chart::trend(company, &report, cli.output.chart_all))?;

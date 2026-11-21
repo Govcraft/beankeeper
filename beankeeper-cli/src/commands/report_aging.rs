@@ -58,6 +58,7 @@
 //! age and shows what is still open after every settlement applied to it.
 //! Unapplied credit cannot be attributed to a charge and is not shown.
 
+use crate::operation::Operation;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::{NonZeroI64, NonZeroU32};
 
@@ -1678,7 +1679,11 @@ pub(crate) fn run_to(
         OutputFormat::Json => writeln!(
             output.writer,
             "{}",
-            render_json(&report, &ctx, cli.meta("report.aging", Some(company)))?
+            render_json(
+                &report,
+                &ctx,
+                cli.meta(Operation::ReportAging, Some(company))
+            )?
         )?,
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report, &ctx)?)?,
     }

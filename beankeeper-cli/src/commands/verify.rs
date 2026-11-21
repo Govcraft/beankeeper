@@ -2,6 +2,7 @@ use crate::cli::Cli;
 use crate::db::connection::Db;
 use crate::db::schema;
 use crate::error::CliError;
+use crate::operation::Operation;
 
 /// Run the `bk verify` command.
 ///
@@ -19,7 +20,7 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
     }
 
     if cli.is_json() {
-        let meta = cli.meta("verify", None);
+        let meta = cli.meta(Operation::Verify, None);
         let rendered = crate::output::json::render_verify(version, meta)?;
         println!("{rendered}");
     }
@@ -96,6 +97,6 @@ pub fn execute_json(db: &Db) -> Result<serde_json::Value, CliError> {
     let version = verify(db)?;
     super::company::json_data(&crate::output::json::render_verify(
         version,
-        crate::output::json::meta("verify", None),
+        crate::output::json::meta(Operation::Verify, None),
     )?)
 }

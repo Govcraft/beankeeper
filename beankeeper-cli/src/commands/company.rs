@@ -3,6 +3,7 @@ use crate::confirmation::confirm_deletion;
 use crate::db::companies;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output;
 
 /// Run a `bk company` subcommand.
@@ -31,11 +32,11 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
             }
-            render_companies(&[row], "company.create", format, use_color, cli)?;
+            render_companies(&[row], Operation::CompanyCreate, format, use_color, cli)?;
         }
         CompanyCommand::List => {
             let rows = read_companies(&db, sub)?;
-            render_companies(&rows, "company.list", format, use_color, cli)?;
+            render_companies(&rows, Operation::CompanyList, format, use_color, cli)?;
             if !cli.verbosity.quiet {
                 let count = rows.len();
                 eprintln!(
@@ -46,7 +47,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
         }
         CompanyCommand::Show { .. } => {
             let rows = read_companies(&db, sub)?;
-            render_companies(&rows, "company.show", format, use_color, cli)?;
+            render_companies(&rows, Operation::CompanyShow, format, use_color, cli)?;
         }
         CompanyCommand::Delete { slug, force } => {
             let Some(confirmed) = confirm_deletion(*force, &format!("company '{slug}'"))? else {
@@ -56,7 +57,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             let actor = cli.principal();
             crate::db::delete_company(db.conn(), &actor, slug, confirmed)?;
             if format == OutputFormat::Json {
-                let meta = cli.meta("company.delete", None);
+                let meta = cli.meta(Operation::CompanyDelete, None);
                 let rendered = output::json::render_deleted(slug, meta)?;
                 println!("{rendered}");
             }
@@ -72,7 +73,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
 /// Render company rows in the requested format.
 fn render_companies(
     rows: &[crate::db::CompanyRow],
-    command: &str,
+    command: Operation,
     format: OutputFormat,
     use_color: bool,
     cli: &Cli,
@@ -103,8 +104,8 @@ fn render_companies(
 pub fn execute_json(db: &Db, sub: &CompanyCommand) -> Result<serde_json::Value, CliError> {
     let rows = read_companies(db, sub)?;
     let command = match sub {
-        CompanyCommand::List => "company.list",
-        CompanyCommand::Show { .. } => "company.show",
+        CompanyCommand::List => Operation::CompanyList,
+        CompanyCommand::Show { .. } => Operation::CompanyShow,
         _ => return Err(CliError::Usage("unsupported MCP company operation".into())),
     };
     json_data(&output::json::render_companies(
