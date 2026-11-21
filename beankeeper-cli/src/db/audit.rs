@@ -1790,7 +1790,13 @@ pub fn set_budget(
                 "SELECT amount FROM budgets \
                  WHERE company_slug = ?1 AND account_code = ?2 AND currency = ?3 \
                  AND year = ?4 AND month = ?5",
-                params![p.company_slug, p.account_code, p.currency, p.year, p.month],
+                params![
+                    p.company_slug,
+                    p.account_code,
+                    p.currency.code(),
+                    p.year,
+                    p.month
+                ],
                 |row| row.get(0),
             )
             .ok();
@@ -1802,7 +1808,7 @@ pub fn set_budget(
             params![
                 p.company_slug,
                 p.account_code,
-                p.currency,
+                p.currency.code(),
                 p.year,
                 p.month,
                 p.amount,
@@ -1818,7 +1824,7 @@ pub fn set_budget(
         )?;
 
         let before = prior_amount.map(|amount| {
-            snapshot(&serde_json::json!({ "amount": amount, "currency": p.currency }))
+            snapshot(&serde_json::json!({ "amount": amount, "currency": p.currency.code() }))
         });
         record(
             conn,
@@ -1832,7 +1838,7 @@ pub fn set_budget(
                     before.as_deref(),
                     Some(&snapshot(&serde_json::json!({
                         "amount": p.amount,
-                        "currency": p.currency,
+                        "currency": p.currency.code(),
                         "notes": p.notes,
                         "year": p.year,
                         "month": p.month,
@@ -1910,10 +1916,11 @@ pub fn delete_budget(
     actor: &Actor,
     company_slug: &str,
     account_code: &str,
-    currency: &str,
+    currency: beankeeper::types::Currency,
     year: i32,
     month: Option<i32>,
 ) -> Result<usize, CliError> {
+    let currency = currency.code();
     in_savepoint(conn, "sp_budget_delete", || {
         // Snapshot the rows about to be removed.
         let victims =

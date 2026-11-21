@@ -47,7 +47,7 @@ fn seed_automation(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         &db::SetAnnualBudgetParams {
             company_slug: "acme-consulting",
             account_code: "5000",
-            currency: "USD",
+            currency: Currency::USD,
             year: 2025,
             annual_amount: 3_000_000,
             notes: Some("Office rent: $2,500 per month"),
@@ -68,7 +68,7 @@ fn seed_automation(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         "acme-consulting",
         &schedules::CreateScheduleParams {
             description: "Monthly office rent".into(),
-            currency: "USD".into(),
+            currency: Currency::USD,
             start_date: date("2025-03-05")?,
             frequency: Frequency::Monthly,
             end_date: Some(date("2025-12-05")?),

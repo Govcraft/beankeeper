@@ -301,7 +301,7 @@ fn new_budget_audit_snapshots_keep_currency_after_deletion() -> TestResult {
         "--month",
         "1",
         "--currency",
-        "BHD",
+        "bhd",
         "--force",
     ])?;
     let output = ledger.run(&[

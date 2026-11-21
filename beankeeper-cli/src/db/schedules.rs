@@ -121,7 +121,8 @@ pub struct Schedule {
     pub id: ScheduleId,
     pub company_slug: String,
     pub description: String,
-    pub currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    pub currency: Currency,
     pub start_date: NaiveDate,
     #[serde(serialize_with = "crate::output::json::serialize_display")]
     pub frequency: Frequency,
@@ -136,7 +137,7 @@ pub struct Schedule {
 /// Inputs for a future obligation, with entry amounts expressed in minor units.
 pub struct CreateScheduleParams {
     pub description: String,
-    pub currency: String,
+    pub currency: Currency,
     pub start_date: NaiveDate,
     pub frequency: Frequency,
     pub end_date: Option<NaiveDate>,
@@ -182,7 +183,7 @@ pub fn create_schedule(
             company,
             params.start_date,
             &params.description,
-            &params.currency,
+            params.currency,
             &params.entries,
         )?;
         let mut entries = params.entries.clone();
@@ -196,7 +197,7 @@ pub fn create_schedule(
             id: ScheduleId::generate(),
             company_slug: company.into(),
             description: params.description.clone(),
-            currency: params.currency.clone(),
+            currency: params.currency,
             start_date: params.start_date,
             frequency: params.frequency,
             end_date: params.end_date,
@@ -217,7 +218,7 @@ pub fn create_schedule(
                 schedule.id.to_string(),
                 company,
                 schedule.description,
-                schedule.currency,
+                schedule.currency.code(),
                 schedule.start_date.to_string(),
                 schedule.frequency.to_string(),
                 schedule.end_date.map(|d| d.to_string()),
@@ -262,7 +263,6 @@ fn validate_template(params: &CreateScheduleParams) -> Result<(), CliError> {
             "schedule description must not be empty".into(),
         ));
     }
-    Currency::from_code(&params.currency).map_err(|e| CliError::Validation(e.to_string()))?;
     if params.end_date.is_some_and(|end| end < params.start_date) {
         return Err(CliError::Validation(
             "schedule end date must not precede start date".into(),
@@ -306,12 +306,10 @@ fn validate_posting(
     company: &str,
     date: NaiveDate,
     description: &str,
-    currency: &str,
+    currency: Currency,
     entries: &[PostEntryParams],
 ) -> Result<(), CliError> {
     validate_entries(entries)?;
-    let currency =
-        Currency::from_code(currency).map_err(|e| CliError::Validation(e.to_string()))?;
     let mut journal = JournalEntry::new(date, description, currency);
     for entry in entries {
         let account = super::accounts::row_to_account(&super::accounts::get_account(
@@ -406,7 +404,9 @@ pub(crate) fn get_schedule(
         id: id.clone(),
         company_slug: company.into(),
         description: row.0,
-        currency: row.1,
+        currency: row.1.parse().map_err(|error| {
+            CliError::Database(format!("invalid stored schedule currency: {error}"))
+        })?,
         start_date: parse_stored_date(&row.2)?,
         frequency: row.3,
         end_date: row.4.as_deref().map(parse_stored_date).transpose()?,
@@ -569,7 +569,7 @@ fn execute_schedule(
         &before.company_slug,
         before.start_date,
         &before.description,
-        &before.currency,
+        before.currency,
         &before.entries,
     )?;
     let mut after = before.clone();
@@ -586,7 +586,7 @@ fn execute_schedule(
                     company_slug: &after.company_slug,
                     description: &after.description,
                     metadata: after.metadata.as_deref(),
-                    currency: &after.currency,
+                    currency: after.currency.code(),
                     date: &date_text,
                     entries: &after.entries,
                     correlate: None,

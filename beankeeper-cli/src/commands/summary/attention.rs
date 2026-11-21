@@ -132,7 +132,7 @@ fn recurring(context: &AttentionContext<'_>) -> Result<Value, CliError> {
     let mut total = 0;
     for schedule in schedules
         .iter()
-        .filter(|s| s.state.next_due().is_some() && s.currency == context.currency)
+        .filter(|s| s.state.next_due().is_some() && s.currency.code() == context.currency)
     {
         let mut index = first_future_index(schedule, context.as_of)?;
         let amount = schedule
@@ -431,7 +431,7 @@ mod tests {
         let db = setup()?;
         let params = db::schedules::CreateScheduleParams {
             description: "Daily rent".into(),
-            currency: "USD".into(),
+            currency: beankeeper::types::Currency::USD,
             start_date: "2020-01-01".parse()?,
             frequency: Frequency::Daily,
             end_date: None,
@@ -458,7 +458,7 @@ mod tests {
         let actor = Actor::new("test");
         let mut params = db::schedules::CreateScheduleParams {
             description: "One time".into(),
-            currency: "USD".into(),
+            currency: beankeeper::types::Currency::USD,
             start_date: "2024-02-03".parse()?,
             frequency: Frequency::Once,
             end_date: None,
@@ -487,7 +487,7 @@ mod tests {
         let db = setup()?;
         let params = db::schedules::CreateScheduleParams {
             description: "Month end".into(),
-            currency: "USD".into(),
+            currency: beankeeper::types::Currency::USD,
             start_date: "2024-01-31".parse()?,
             frequency: Frequency::Monthly,
             end_date: Some("2024-03-15".parse()?),

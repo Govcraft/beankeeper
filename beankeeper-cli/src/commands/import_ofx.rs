@@ -239,15 +239,14 @@ struct PreparedTransaction {
     is_inflow: bool,
     reference: String,
     metadata: String,
-    currency: String,
+    currency: Currency,
 }
 
 /// Prepare a single OFX transaction for posting.
 fn prepare_transaction(
     txn: &ofx_rs::aggregates::StatementTransaction,
     account_id: &str,
-    currency_code: &str,
-    minor_units: u8,
+    currency: Currency,
 ) -> Result<Option<PreparedTransaction>, OfxImportError> {
     let fit_id = txn.fit_id().as_str();
     let amount = txn.amount().as_decimal();
@@ -257,11 +256,11 @@ fn prepare_transaction(
         return Ok(None);
     }
 
-    let amount_minor = ofx_amount_to_minor(amount, minor_units, fit_id)?;
+    let amount_minor = ofx_amount_to_minor(amount, currency.minor_units(), fit_id)?;
     let is_inflow = !amount.is_sign_negative();
     let date = format_ofx_date(txn.date_posted());
     let description = build_description(txn.name(), txn.memo(), fit_id);
-    let reference = build_ofx_reference(currency_code, account_id, fit_id);
+    let reference = build_ofx_reference(currency.code(), account_id, fit_id);
     let metadata = build_metadata_json(&txn.transaction_type().to_string());
 
     Ok(Some(PreparedTransaction {
@@ -271,7 +270,7 @@ fn prepare_transaction(
         is_inflow,
         reference,
         metadata,
-        currency: currency_code.to_string(),
+        currency,
     }))
 }
 
@@ -289,7 +288,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
                 date: prepared.date.clone(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
-                currency: prepared.currency.clone(),
+                currency: prepared.currency.code().into(),
                 error: error.to_string(),
             });
         }
@@ -301,7 +300,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
             date: prepared.date.clone(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
-            currency: prepared.currency.clone(),
+            currency: prepared.currency.code().into(),
             is_inflow: prepared.is_inflow,
         });
     }
@@ -327,7 +326,7 @@ fn check_conflict(
                     date: prepared.date.clone(),
                     description: prepared.description.clone(),
                     amount_minor: prepared.amount_minor,
-                    currency: prepared.currency.clone(),
+                    currency: prepared.currency.code().into(),
                     error: format!("duplicate reference: {}", prepared.reference),
                 })
             }
@@ -336,7 +335,7 @@ fn check_conflict(
                     date: prepared.date.clone(),
                     description: prepared.description.clone(),
                     amount_minor: prepared.amount_minor,
-                    currency: prepared.currency.clone(),
+                    currency: prepared.currency.code().into(),
                     reference: prepared.reference.clone(),
                 })
             }
@@ -346,7 +345,7 @@ fn check_conflict(
             date: prepared.date.clone(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
-            currency: prepared.currency.clone(),
+            currency: prepared.currency.code().into(),
             error: e.to_string(),
         })),
     }
@@ -400,7 +399,7 @@ fn insert_transaction(
         company_slug: ctx.company,
         description: &prepared.description,
         metadata: Some(&prepared.metadata),
-        currency: &prepared.currency,
+        currency: prepared.currency.code(),
         date: &prepared.date,
         entries,
         correlate: None,
@@ -416,7 +415,7 @@ fn insert_transaction(
                 date: prepared.date.clone(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
-                currency: prepared.currency.clone(),
+                currency: prepared.currency.code().into(),
                 is_inflow: prepared.is_inflow,
             })
         }
@@ -426,7 +425,7 @@ fn insert_transaction(
                 date: prepared.date.clone(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
-                currency: prepared.currency.clone(),
+                currency: prepared.currency.code().into(),
                 reference: prepared.reference.clone(),
             })
         }
@@ -437,7 +436,7 @@ fn insert_transaction(
             date: prepared.date.clone(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
-            currency: prepared.currency.clone(),
+            currency: prepared.currency.code().into(),
             error: e.to_string(),
         }),
     }
@@ -463,8 +462,7 @@ struct StatementContext<'a> {
     account_code: &'a str,
     suspense_code: &'a str,
     ofx_account_id: &'a str,
-    currency_code: &'a str,
-    minor_units: u8,
+    currency: Currency,
     dry_run: bool,
     conflict_strategy: transactions::ConflictStrategy,
     verbose: bool,
@@ -477,12 +475,7 @@ fn process_transactions(
     result: &mut ImportResult,
 ) -> Result<(), CliError> {
     for txn in txn_list.transactions() {
-        let prepared = match prepare_transaction(
-            txn,
-            ctx.ofx_account_id,
-            ctx.currency_code,
-            ctx.minor_units,
-        ) {
+        let prepared = match prepare_transaction(txn, ctx.ofx_account_id, ctx.currency) {
             Ok(Some(p)) => p,
             Ok(None) => {
                 if ctx.verbose {
@@ -499,7 +492,7 @@ fn process_transactions(
                     date: format_ofx_date(txn.date_posted()),
                     description: build_description(txn.name(), txn.memo(), txn.fit_id().as_str()),
                     amount_minor: 0,
-                    currency: ctx.currency_code.to_string(),
+                    currency: ctx.currency.code().into(),
                     error: e.to_string(),
                 });
                 continue;
@@ -517,11 +510,10 @@ fn process_transactions(
 }
 
 /// Validate a currency code from OFX against beankeeper's currency table.
-fn validate_currency(code: &str) -> Result<(String, u8), OfxImportError> {
-    let currency = Currency::from_code(code).map_err(|_| OfxImportError::UnsupportedCurrency {
+fn validate_currency(code: &str) -> Result<Currency, OfxImportError> {
+    Currency::from_code(code).map_err(|_| OfxImportError::UnsupportedCurrency {
         code: code.to_string(),
-    })?;
-    Ok((currency.code().to_string(), currency.minor_units()))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -573,8 +565,7 @@ pub fn run_import_ofx(
     if let Some(banking) = doc.banking() {
         for wrapper in banking.statement_responses() {
             if let Some(stmt) = wrapper.response() {
-                let (currency_code, minor_units) =
-                    validate_currency(stmt.currency_default().as_str())?;
+                let currency = validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
                     rules: &rules,
                     actor: &actor,
@@ -583,8 +574,7 @@ pub fn run_import_ofx(
                     account_code,
                     suspense_code,
                     ofx_account_id: stmt.bank_account().account_id().as_str(),
-                    currency_code: &currency_code,
-                    minor_units,
+                    currency,
                     dry_run,
                     conflict_strategy,
                     verbose,
@@ -600,8 +590,7 @@ pub fn run_import_ofx(
     if let Some(cc) = doc.credit_card() {
         for wrapper in cc.statement_responses() {
             if let Some(stmt) = wrapper.response() {
-                let (currency_code, minor_units) =
-                    validate_currency(stmt.currency_default().as_str())?;
+                let currency = validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
                     rules: &rules,
                     actor: &actor,
@@ -610,8 +599,7 @@ pub fn run_import_ofx(
                     account_code,
                     suspense_code,
                     ofx_account_id: stmt.credit_card_account().account_id().as_str(),
-                    currency_code: &currency_code,
-                    minor_units,
+                    currency,
                     dry_run,
                     conflict_strategy,
                     verbose,
@@ -627,8 +615,7 @@ pub fn run_import_ofx(
     if let Some(inv) = doc.investment() {
         for wrapper in inv.statement_responses() {
             if let Some(stmt) = wrapper.response() {
-                let (currency_code, minor_units) =
-                    validate_currency(stmt.currency_default().as_str())?;
+                let currency = validate_currency(stmt.currency_default().as_str())?;
                 let ctx = StatementContext {
                     rules: &rules,
                     actor: &actor,
@@ -637,8 +624,7 @@ pub fn run_import_ofx(
                     account_code,
                     suspense_code,
                     ofx_account_id: stmt.investment_account().account_id().as_str(),
-                    currency_code: &currency_code,
-                    minor_units,
+                    currency,
                     dry_run,
                     conflict_strategy,
                     verbose,

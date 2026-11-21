@@ -370,7 +370,10 @@ fn run_list_or_count(
         lp.value_filter = list_value_filter(
             db_handle.conn(),
             company,
-            currency.as_deref(),
+            currency
+                .as_ref()
+                .map(crate::cli::CurrencyArg::resolve)
+                .transpose()?,
             [
                 amount_gt.as_deref(),
                 amount_lt.as_deref(),
@@ -389,15 +392,9 @@ fn run_list_or_count(
 fn list_value_filter(
     conn: &rusqlite::Connection,
     company: &str,
-    currency: Option<&str>,
+    currency: Option<Currency>,
     [gt, lt, eq]: [Option<&str>; 3],
 ) -> Result<Option<TransactionValueFilter>, CliError> {
-    let currency = currency
-        .map(Currency::from_code)
-        .transpose()
-        .map_err(|error| {
-            CliError::Validation(format!("invalid currency for transaction filter: {error}"))
-        })?;
     if gt.is_none() && lt.is_none() && eq.is_none() {
         return Ok(currency.map(TransactionValueFilter::by_currency));
     }
@@ -669,8 +666,7 @@ impl TryFrom<&PostingArgs> for PostingRequest {
     type Error = CliError;
 
     fn try_from(args: &PostingArgs) -> Result<Self, Self::Error> {
-        let currency = Currency::from_code(&args.currency)
-            .map_err(|error| CliError::Validation(format!("invalid currency: {error}")))?;
+        let currency = args.currency.resolve()?;
         Ok(Self {
             description: args.description.clone(),
             currency,
