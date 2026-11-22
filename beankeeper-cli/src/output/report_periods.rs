@@ -6,13 +6,15 @@
 
 use std::collections::BTreeMap;
 
+use beankeeper::types::{Currency, Money};
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::commands::report_periods::{Column, MultiColumnReport};
 use crate::error::CliError;
+use crate::output::amounts::{MoneyField, MoneySequence};
 use crate::output::json::{Meta, envelope_ok};
 
 // ---------------------------------------------------------------------------
@@ -189,24 +191,43 @@ impl From<&Column> for ColumnJson {
     }
 }
 
-#[derive(Serialize)]
-struct PeriodValuesJson {
-    amounts: Vec<i64>,
-    total: i64,
+struct PeriodValuesJson<'a> {
+    amounts: &'a [i64],
+    currency: Currency,
+}
+
+impl Serialize for PeriodValuesJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Fields<'a> {
+            #[serde(flatten)]
+            amounts: MoneySequence<'a>,
+            #[serde(flatten)]
+            total: MoneyField,
+        }
+
+        let money = |units| Money::from_minor(i128::from(units), self.currency);
+        let amounts: Vec<_> = self.amounts.iter().copied().map(money).collect();
+        Fields {
+            amounts: MoneySequence::new("amounts", &amounts),
+            total: MoneyField::new("total", money(row_total(self.amounts))),
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Serialize)]
-struct AccountJson {
+struct AccountJson<'a> {
     code: String,
     name: String,
     r#type: String,
     normal_balance: &'static str,
     #[serde(flatten)]
-    values: PeriodValuesJson,
+    values: PeriodValuesJson<'a>,
 }
 
 #[derive(Serialize)]
-struct ReportJson {
+struct ReportJson<'a> {
     report: &'static str,
     mode: &'static str,
     period: &'static str,
@@ -214,15 +235,12 @@ struct ReportJson {
     to: String,
     currency: String,
     columns: Vec<ColumnJson>,
-    accounts: Vec<AccountJson>,
-    totals: BTreeMap<&'static str, PeriodValuesJson>,
+    accounts: Vec<AccountJson<'a>>,
+    totals: BTreeMap<&'static str, PeriodValuesJson<'a>>,
 }
 
-fn values_json(amounts: &[i64]) -> PeriodValuesJson {
-    PeriodValuesJson {
-        amounts: amounts.to_vec(),
-        total: row_total(amounts),
-    }
+fn values_json(amounts: &[i64], currency: Currency) -> PeriodValuesJson<'_> {
+    PeriodValuesJson { amounts, currency }
 }
 
 /// Render a period report inside the standard JSON envelope.
@@ -234,7 +252,7 @@ pub fn render_json(report: &MultiColumnReport, meta: Meta) -> Result<String, Cli
     envelope_ok(meta, report_json(report))
 }
 
-pub(crate) fn report_json(report: &MultiColumnReport) -> impl Serialize {
+pub(crate) fn report_json(report: &MultiColumnReport) -> impl Serialize + '_ {
     let accounts = report
         .accounts
         .iter()
@@ -243,14 +261,14 @@ pub(crate) fn report_json(report: &MultiColumnReport) -> impl Serialize {
             name: a.name.clone(),
             r#type: a.account_type.clone(),
             normal_balance: normal_balance_for(&a.account_type),
-            values: values_json(&a.amounts),
+            values: values_json(&a.amounts, report.currency),
         })
         .collect();
 
     let totals = report
         .summary
         .iter()
-        .map(|line| (line.key, values_json(&line.amounts)))
+        .map(|line| (line.key, values_json(&line.amounts, report.currency)))
         .collect();
 
     ReportJson {
@@ -358,6 +376,21 @@ mod tests {
             Some(i64::MAX.to_string().len() + 2)
         );
         assert_eq!(fixed(i64::MIN, i64::MAX, 2).as_deref(), Some("-200.00"));
+    }
+
+    #[test]
+    fn period_values_project_signed_money_without_an_envelope() -> serde_json::Result<()> {
+        let values = values_json(&[1234, 0, -25], Currency::BHD);
+        assert_eq!(
+            serde_json::to_value(values)?,
+            serde_json::json!({
+                "amounts": [1234, 0, -25],
+                "amounts_display": ["1.234", "0.000", "-0.025"],
+                "total": 1209,
+                "total_display": "1.209",
+            }),
+        );
+        Ok(())
     }
 
     #[test]
