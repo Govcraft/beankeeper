@@ -263,8 +263,8 @@ stays in the encrypted DB and full backups. Root recovery/rotation and signed
 writes remain outside this feature. `init` rejects supplied tokens; an admin
 must disable policy before `init --force` can replace an enforced ledger. An
 existing encrypted ledger must be readable with its current passphrase.
-`init --demo` honors the named actor. Back up before upgrading to schema v18:
-old audit hashes are preserved, but only new binaries can append v3 audit rows.
+Back up before upgrading to schema v18. The upgrade preserves old audit hashes,
+and appending v3 audit rows requires a newer binary.
 
 For stdio MCP, supply the process token in the server's environment or startup
 arguments. It is reverified on every tool call, so expiry/revocation takes effect
@@ -352,6 +352,12 @@ deletion. See the [client configuration examples](../../README.md#connect-an-ai-
 
 For a CLI walkthrough, use `bk init --demo --path demo.db` at a fresh path and
 target that file with `--db demo.db`. Add `--encrypt` to set a passphrase.
+Generated postings and audit activity are credited to `demo`. Company creation
+and a single `demo_seed` event retain the initializer's actor. Generated
+postings carry the reserved `beankeeper_source` metadata key with value `demo`.
+Use `bk audit log --action demo_seed` or MCP `audit_log` with action `demo_seed`
+to see who initialized the sample books. [Demo report and audit notes](../reports.md)
+
 Desktop hosts can provision a separate demo ledger with
 `beankeeper_cli::commands::init::create_demo_ledger`, then configure its
 access and policy before serving it.

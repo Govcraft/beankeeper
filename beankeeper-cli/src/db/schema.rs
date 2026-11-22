@@ -5,7 +5,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = STATEMENT_BATCH_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = 24;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 
@@ -138,6 +138,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < STATEMENT_BATCH_SCHEMA_VERSION {
         apply_v23(conn)?;
+    }
+    if version < 24 {
+        apply_v24(conn)?;
     }
 
     debug_assert_eq!(
@@ -1250,7 +1253,7 @@ fn apply_v20(conn: &Connection) -> Result<(), CliError> {
         for (name, _) in &triggers {
             conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
         }
-        extend_period_audit(conn)?;
+        rebuild_v4_audit(conn, false)?;
         for (_, sql) in &triggers {
             conn.execute_batch(sql)?;
         }
@@ -1384,16 +1387,55 @@ fn apply_v23(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
-fn extend_period_audit(conn: &Connection) -> Result<(), CliError> {
-    conn.execute_batch(
-        "CREATE TABLE audit_log_v20 (
+/// Admit the demo event without changing existing audit rows or their hashes.
+fn apply_v24(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        let triggers = [
+            "protect_policy_update",
+            "protect_proposal_resolution",
+            "protect_period_insert",
+            "protect_period_update",
+        ];
+        let mut definitions = Vec::with_capacity(triggers.len());
+        for name in triggers {
+            let definition: String = conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [name],
+                |row| row.get(0),
+            )?;
+            definitions.push(definition);
+            conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
+        }
+        rebuild_v4_audit(conn, true)?;
+        for definition in definitions {
+            conn.execute_batch(&definition)?;
+        }
+        conn.execute("INSERT INTO schema_version(version) VALUES (24)", [])?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        Ok(())
+    })
+}
+
+fn rebuild_v4_audit(conn: &Connection, include_demo: bool) -> Result<(), CliError> {
+    let (entity, action) = if include_demo {
+        use super::audit::{AuditAction, AuditEntity};
+        (
+            format!(",'{}'", AuditEntity::Demo),
+            format!(",'{}'", AuditAction::DemoSeed),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    conn.execute_batch(&format!(
+        "CREATE TABLE audit_log_rebuild (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 changed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 actor TEXT NOT NULL,
                 company_slug TEXT,
-                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule','schedule','security','lot','price','policy','proposal','spend_limit','period')),
+                entity TEXT NOT NULL CHECK(entity IN ('entry','transaction','budget','account','company','key','agent','rule','schedule','security','lot','price','policy','proposal','spend_limit','period'{entity})),
                 entity_id TEXT NOT NULL,
-                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset','schedule_cancel','schedule_run','policy_change','proposal_approve','proposal_reject','limit_set','period_close','period_reopen')),
+                action TEXT NOT NULL CHECK(action IN ('create','status_change','correlate','reverse','budget_set','budget_delete','account_delete','company_delete','key_init','token_issue','token_revoke','attach','rule_delete','metadata_set','metadata_unset','schedule_cancel','schedule_run','policy_change','proposal_approve','proposal_reject','limit_set','period_close','period_reopen'{action})),
                 before TEXT,
                 after TEXT,
                 prev_hash TEXT NOT NULL CHECK(length(prev_hash) = 64),
@@ -1404,12 +1446,12 @@ fn extend_period_audit(conn: &Connection) -> Result<(), CliError> {
                 CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
                 CHECK(hash_version != 1 OR agent_uri IS NULL)
             );
-            INSERT INTO audit_log_v20 SELECT * FROM audit_log ORDER BY id;
+            INSERT INTO audit_log_rebuild SELECT * FROM audit_log ORDER BY id;
             DROP TRIGGER protect_audit_insert;
             DROP TRIGGER protect_audit_update;
             DROP TRIGGER protect_audit_delete;
             DROP TABLE audit_log;
-            ALTER TABLE audit_log_v20 RENAME TO audit_log;
+            ALTER TABLE audit_log_rebuild RENAME TO audit_log;
             CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
             CREATE INDEX idx_audit_company_time ON audit_log(company_slug, changed_at);
             CREATE INDEX idx_audit_action ON audit_log(action);
@@ -1425,8 +1467,8 @@ fn extend_period_audit(conn: &Connection) -> Result<(), CliError> {
               OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
               OR NEW.hash_version != 4
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
-        ",
-    )?;
+        "
+    ))?;
     Ok(())
 }
 
@@ -1573,6 +1615,8 @@ mod tests {
             )
             .is_err()
         );
+        let forged_reopen = conn.execute("UPDATE period_locks SET closed_through = NULL", []);
+        assert!(forged_reopen.is_err());
         audit::verify_hash_chain(ReadConn::new(&conn))?;
         audit::verify_creations(ReadConn::new(&conn))?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;

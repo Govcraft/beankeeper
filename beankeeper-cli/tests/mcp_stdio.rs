@@ -260,6 +260,100 @@ fn stdio_and_cli_share_configured_actor_attribution() -> TestResult {
 }
 
 #[test]
+fn demo_provenance_matches_between_cli_and_mcp() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("demo.db");
+    let operator = "demo-initializer";
+    bk(&path)?
+        .env("BK_ACTOR", "environment-actor")
+        .env("USER", "os-user")
+        .args(["--actor", operator, "init", "--demo"])
+        .assert()
+        .success();
+
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let event = client.success("audit_log", &json!({"action":"demo_seed", "entity":"demo"}))?;
+    let cli_event = bk(&path)?
+        .args([
+            "--json",
+            "audit",
+            "log",
+            "--action",
+            "demo_seed",
+            "--entity",
+            "demo",
+        ])
+        .output()?;
+    assert!(cli_event.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli_event.stdout)?["data"],
+        event
+    );
+    assert_eq!(event.as_array().map(Vec::len), Some(1));
+    assert_eq!(event[0]["actor"], operator);
+    assert!(event[0]["company_slug"].is_null());
+    assert_eq!(
+        event[0]["after_display"]["message"],
+        "Generated the built-in demo data"
+    );
+
+    let mut offset = 0;
+    let mut companies = 0;
+    let mut posts = 0;
+    loop {
+        let response = client.call("audit_log", &json!({"limit":100, "offset":offset}))?;
+        let data = payload(&response)?;
+        for row in data.as_array().ok_or("audit rows")? {
+            match row["entity"].as_str() {
+                Some("company") => {
+                    companies += 1;
+                    assert_eq!(row["actor"], operator);
+                }
+                Some("demo") => assert_eq!(row, &event[0]),
+                _ => {
+                    assert_eq!(row["actor"], "demo", "{row}");
+                    if row["entity"] == "transaction" && row["action"] == "create" {
+                        posts += 1;
+                    }
+                }
+            }
+        }
+        let Some(next) = response["result"]["_meta"]["pagination"]["next_offset"].as_u64() else {
+            break;
+        };
+        offset = next;
+    }
+    assert_eq!(companies, 3);
+    let mut transaction_count = 0;
+    for company in ["acme-consulting", "acme-products", "personal"] {
+        let data = client.success("txn_list", &json!({"company":company}))?;
+        for txn in data.as_array().ok_or("demo transactions")? {
+            transaction_count += 1;
+            assert_eq!(txn["posted_by"], "demo", "{txn}");
+            let raw = txn["metadata"]
+                .as_str()
+                .ok_or("demo transaction metadata")?;
+            let metadata: Value = serde_json::from_str(raw)?;
+            assert_eq!(metadata["beankeeper_source"], "demo", "{txn}");
+        }
+    }
+    assert!(transaction_count > 0);
+    assert_eq!(posts, transaction_count);
+
+    let rejected = client.call(
+        "txn_meta_unset",
+        &json!({"company":"acme-consulting", "reference":"AC-001", "keys":["beankeeper_source"]}),
+    )?;
+    assert_eq!(payload(&rejected)?["code"], "VALIDATION");
+    assert_eq!(client.success("verify", &json!({}))?["status"], "healthy");
+    bk(&path)?.arg("verify").assert().success();
+    Ok(())
+}
+
+#[test]
 fn cli_and_mcp_return_the_same_validation_error_for_blank_actor_filters() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");

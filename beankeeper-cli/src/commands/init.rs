@@ -112,8 +112,10 @@ impl DemoLedger {
 /// Create a verified demo ledger at a fresh path for a trusted host such as Desktop.
 ///
 /// The built-in fixtures use the normal audited company, account and posting
-/// operations. A supplied passphrase encrypts the new database. The caller
-/// chooses the path and configures access and policy before serving the ledger.
+/// operations. The caller creates the companies and records the `demo_seed`
+/// event. A synthetic actor writes the generated activity. A supplied passphrase
+/// encrypts the new database. The caller configures access and policy before
+/// serving the ledger.
 ///
 /// # Errors
 /// Returns an error for an existing destination, a SQLite sidecar, an empty
@@ -137,7 +139,11 @@ pub fn create_demo_ledger(
     let directory = super::backup::staging_directory(path)?;
     let staged = NamedTempFile::new_in(directory.path())?;
     let db = Db::open(staged.path(), passphrase)?;
-    db.in_write_batch(|| populate_demo_data(&db, actor))?;
+    db.in_write_batch(|| {
+        seed_companies(&db, actor)?;
+        populate_demo_data(&db)?;
+        Granted::<Admin>::with_db(&db, actor, crate::db::audit::record_demo_seed)
+    })?;
     VerifiedLedger::read(&db)?;
     // Close the only connection so SQLite checkpoints its WAL before publication.
     drop(db);
@@ -270,7 +276,7 @@ fn dr_memo(code: &str, amount: i64, memo: &str) -> PostEntryParams {
 // Demo data population
 // ---------------------------------------------------------------------------
 
-/// Populate the database with three companies, charts of accounts, regular
+/// Populate the three demo companies with charts of accounts, regular
 /// transactions, and intercompany-linked mirror transactions.
 ///
 /// Companies:
@@ -282,8 +288,8 @@ fn dr_memo(code: &str, amount: i64, memo: &str) -> PostEntryParams {
 /// - Owner invests into acme-consulting from personal funds
 /// - acme-consulting pays acme-products for software licences
 /// - acme-consulting pays the owner (salary draw to personal)
-fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
-    seed_companies(db, actor)?;
+fn populate_demo_data(db: &Db) -> Result<(), CliError> {
+    let actor = &Actor::demo();
     seed_accounts(db, actor)?;
     seed_consulting_transactions(db, actor)?;
     seed_products_transactions(db, actor)?;
@@ -991,7 +997,8 @@ mod tests {
     #[test]
     fn demo_data_populates_and_balances() {
         let db = Db::open_in_memory().expect("open in-memory db");
-        populate_demo_data(&db, &fixture_actor("demo")).expect("populate demo data");
+        seed_companies(&db, &fixture_actor("initializer")).expect("create demo companies");
+        populate_demo_data(&db).expect("populate demo data");
 
         // Verify all three companies exist
         let companies = crate::db::list_companies(db.read()).expect("list companies");
@@ -1050,7 +1057,8 @@ mod tests {
     #[test]
     fn demo_intercompany_correlations_are_linked() {
         let db = Db::open_in_memory().expect("open in-memory db");
-        populate_demo_data(&db, &fixture_actor("demo")).expect("populate demo data");
+        seed_companies(&db, &fixture_actor("initializer")).expect("create demo companies");
+        populate_demo_data(&db).expect("populate demo data");
 
         // No orphaned correlations — every intercompany pair should be fully linked
         let orphans =

@@ -683,6 +683,11 @@ that default to the current year can be empty after 2025. Generated IDs and audi
 timestamps vary between runs; the sample dates, amounts, and report totals stay
 the same.
 
+Generated audit activity and postings are credited to `demo`. The initializer's
+actor is recorded on the three company creations and one ledger-wide `demo_seed`
+event. Each generated posting has `beankeeper_source` set to `demo` in its
+metadata. [Demo report and audit notes](docs/reports.md)
+
 | Company | Slug | Examples |
 |---------|------|----------|
 | Acme Consulting LLC | `acme-consulting` | Service revenue, payroll, budgets, import rule, recurring rent, contractor payments, loan, settlement |
