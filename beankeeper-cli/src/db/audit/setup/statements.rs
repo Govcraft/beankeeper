@@ -19,9 +19,7 @@ use crate::commands::{
     statement_source::{self, SourceRow},
     txn_import::{CsvMapping, read_csv_statement},
 };
-use crate::db::{
-    accounts, companies::CompanySlug, connection::ReadConn, ids::TransactionId, periods, rules,
-};
+use crate::db::{accounts, companies::CompanySlug, ids::TransactionId, periods, rules};
 use crate::error::CliError;
 use crate::output::{amounts::format_money, json::serialize_display};
 
@@ -272,7 +270,7 @@ pub(crate) fn prepare_in_session(
     }
 
     let profile = books::current_profile(session, &request.company)?;
-    let conn = ReadConn::new(session.connection);
+    let conn = session.read();
     let company = &request.company;
     let scope = crate::db::companies::Company::bind(conn, company.clone())?;
     let bank_code = request.bank.as_str();

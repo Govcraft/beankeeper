@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::input_values::{DecimalAmount, Month, PageLimit, PageOffset, Text};
 use super::inputs;
+use crate::capability::Capability;
 use crate::cli::{
     self, AccountCommand, BudgetCommand, Command, CompanyCommand, InvestmentCommand, PeriodCommand,
     SecurityCommand, TradeArgs, TxnCommand, TxnProposalCommand,
@@ -19,7 +20,7 @@ use crate::db::audit::setup::{
 };
 use crate::db::{Actor, Db, audit::MetadataTarget, metadata};
 use crate::error::CliError;
-use crate::operation::Operation;
+use crate::operation::{Operation, Permission};
 
 type Response = Result<(Value, Option<Value>), CliError>;
 
@@ -92,6 +93,19 @@ requests! {
 }
 
 impl Request {
+    pub(super) fn writes_ledger(&self) -> bool {
+        let operation = self.operation();
+        !matches!(
+            operation.permission(),
+            Permission::Capability(Capability::Read)
+                | Permission::ProposalList
+                | Permission::SetupStatus
+        ) && !matches!(
+            operation,
+            Operation::LedgerSetupOpeningPreview | Operation::TxnReconcile
+        )
+    }
+
     pub(super) fn execute(self, db: &Db, actor: &Actor) -> Response {
         match self {
             Self::Summary(input) => summary(db, input, actor),

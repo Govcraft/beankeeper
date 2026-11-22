@@ -8,7 +8,7 @@ use beankeeper::{
 };
 use chrono::NaiveDate;
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
 use super::audit::savepoint::AuditedTx;
@@ -260,16 +260,6 @@ pub fn list_schedules(scope: &super::companies::Company<'_>) -> Result<Vec<Sched
     ids.into_iter()
         .map(|id| get_schedule(conn, &company.as_str().parse()?, &id.parse()?))
         .collect()
-}
-
-pub(crate) fn list_schedules_on_connection(
-    conn: &Connection,
-    company: &crate::db::companies::CompanySlug,
-) -> Result<Vec<Schedule>, CliError> {
-    list_schedules(&crate::db::companies::Company::bind(
-        ReadConn::new(conn),
-        company.clone(),
-    )?)
 }
 
 pub(crate) fn get_schedule(

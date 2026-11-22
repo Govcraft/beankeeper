@@ -1,6 +1,7 @@
 //! Pagination remains additive to transaction arrays and counts matching rows.
 
 use beankeeper_cli::db::CreateAccountParams;
+use beankeeper_cli::identity::{Admin, Granted};
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -22,28 +23,25 @@ impl Ledger {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
-        companies::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
             ("4000", beankeeper::types::AccountType::Revenue),
         ] {
-            accounts::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme".parse()?,
-                    code,
-                    name: code,
-                    account_type: kind,
-                    default_tax_category: None,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme".parse()?,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
         }
         let journals: Vec<_> = (0..51)
             .map(|index| {

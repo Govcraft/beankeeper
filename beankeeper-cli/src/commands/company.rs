@@ -3,6 +3,7 @@ use crate::confirmation::confirm_deletion;
 use crate::db::companies;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::identity::{Admin, Granted};
 use crate::operation::Operation;
 use crate::output;
 
@@ -22,13 +23,9 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             name,
             description,
         } => {
-            let row = companies::create_company(
-                db.conn(),
-                &cli.principal(),
-                slug,
-                name,
-                description.as_deref(),
-            )?;
+            let row = Granted::<Admin>::with_db(&db, &cli.principal(), |grant| {
+                companies::create_company(grant, slug, name, description.as_deref())
+            })?;
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
             }
@@ -55,7 +52,9 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
                 return Ok(());
             };
             let actor = cli.principal();
-            crate::db::delete_company(db.conn(), &actor, slug, confirmed)?;
+            Granted::<Admin>::with_db(&db, &actor, |grant| {
+                crate::db::delete_company(grant, slug, confirmed)
+            })?;
             if format == OutputFormat::Json {
                 let meta = cli.meta(Operation::CompanyDelete, None);
                 let rendered = output::json::render_deleted(slug.as_str(), meta)?;
@@ -148,13 +147,9 @@ mod tests {
             execute_json(&db, &CompanyCommand::List)?,
             serde_json::json!([])
         );
-        companies::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         let delete = CompanyCommand::Delete {
             slug: "acme".parse()?,
             force: true,

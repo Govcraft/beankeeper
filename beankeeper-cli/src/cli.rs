@@ -220,11 +220,11 @@ impl Cli {
     pub(crate) fn verify_agent(&self, db: &crate::db::Db) -> Result<(), CliError> {
         if let Some(token) = &self.agent_token {
             // Retain verified attribution even when capability authorization fails.
-            let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
+            let identity = crate::identity::verify(db.read(), token.expose_secret())?;
             let _ = self.verified_agent.set(identity);
         }
         crate::identity::authorize_known_operation(
-            db.conn(),
+            db.read(),
             self.agent_token.as_ref().map(ExposeSecret::expose_secret),
             crate::commands::operation(&self.command),
         )?;

@@ -11,7 +11,10 @@ use crate::cli::{
 use crate::commands::report_currency::resolve_report_currency;
 use crate::commands::report_tax::{self, ResolvedTaxReport, TaxInvocation};
 use crate::db;
-use crate::db::connection::Db;
+use crate::db::{
+    companies::Company,
+    connection::{Db, ReadConn},
+};
 use crate::error::CliError;
 use crate::output;
 use crate::output::chart::{self, Chart, WithChart};
@@ -135,27 +138,27 @@ fn run_to(
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     chart::validate_request(cli)?;
-    db::audit::atomically(db.conn(), || run_resolved_to(cli, db, company, sub, output))
+    db.read_snapshot(|reader| run_resolved_to(cli, reader, company, sub, output))
 }
 
 fn run_resolved_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     sub: &ReportCommand,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    crate::db::companies::get_company(db.read(), &company.parse()?)?;
-    if let Some(result) = super::report_compare::try_run_to(cli, db, company, sub, output) {
+    crate::db::companies::get_company(reader, &company.parse()?)?;
+    if let Some(result) = super::report_compare::try_run_to(cli, reader, company, sub, output) {
         return result;
     }
 
-    if let Some(result) = super::report_periods::try_run_to(cli, db, company, sub, output) {
+    if let Some(result) = super::report_periods::try_run_to(cli, reader, company, sub, output) {
         return result;
     }
 
     let today = chrono::Local::now().date_naive();
-    ResolvedReport::resolve(db, company, sub, today)?.run(cli, db, company, output)
+    ResolvedReport::resolve(reader, company, sub, today)?.run(cli, reader, company, output)
 }
 
 enum ResolvedReport<'a> {
@@ -180,24 +183,24 @@ struct StatementWindow {
 
 impl<'a> ResolvedReport<'a> {
     fn resolve(
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         sub: &'a ReportCommand,
         today: NaiveDate,
     ) -> Result<Self, CliError> {
         let currency_for = |currency| {
-            resolve_report_currency(db.conn(), company, CurrencyArg::resolve_optional(currency)?)
+            resolve_report_currency(reader, company, CurrencyArg::resolve_optional(currency)?)
         };
         let window = |from, to| DateWindow::resolve(from, to, today);
         let range = |from, to| DateRange::resolve(from, to, today);
         Ok(match sub {
             ReportCommand::ScheduleC(args) => {
-                Self::Tax(TaxInvocation::ScheduleC(args).resolve(db, company, today)?)
+                Self::Tax(TaxInvocation::ScheduleC(args).resolve(reader, company, today)?)
             }
             ReportCommand::Vendor1099(args) => {
-                Self::Tax(TaxInvocation::Vendor1099(args).resolve(db, company, today)?)
+                Self::Tax(TaxInvocation::Vendor1099(args).resolve(reader, company, today)?)
             }
-            ReportCommand::Trend(args) => Self::Trend(args.resolve(db, company, today)?),
+            ReportCommand::Trend(args) => Self::Trend(args.resolve(reader, company, today)?),
             ReportCommand::TrialBalance {
                 from,
                 to,
@@ -218,7 +221,7 @@ impl<'a> ResolvedReport<'a> {
                 currency,
                 ..
             } => Self::resolve_balance(
-                db,
+                reader,
                 company,
                 account,
                 window(from.as_ref(), to.as_ref())?,
@@ -239,11 +242,11 @@ impl<'a> ResolvedReport<'a> {
                 currency_for(currency.as_ref())?,
             ),
             ReportCommand::BudgetVariance(args) => {
-                Self::BudgetVariance(BudgetVarianceOptions::resolve(db, company, args)?)
+                Self::BudgetVariance(BudgetVarianceOptions::resolve(reader, company, args)?)
             }
             ReportCommand::Reconciliation(args) => Self::Reconciliation(
                 super::report_reconciliation::ResolvedReconciliation::resolve(
-                    db, company, args, today,
+                    reader, company, args, today,
                 )?,
             ),
             ReportCommand::Ledger {
@@ -262,66 +265,67 @@ impl<'a> ResolvedReport<'a> {
                         currency: CurrencyArg::resolve_optional(currency.as_ref())?,
                         filter_metadata,
                     }
-                    .resolve(db.conn(), company)?,
+                    .resolve(reader, company)?,
                 )
             }
             ReportCommand::Aging(args) => Self::Aging(
-                super::report_aging::ResolvedAging::from_command(db, company, args, today)?,
+                super::report_aging::ResolvedAging::from_command(reader, company, args, today)?,
             ),
-            ReportCommand::CashFlow(args) => Self::CashFlow(args.resolve(db, company, today)?),
+            ReportCommand::CashFlow(args) => Self::CashFlow(args.resolve(reader, company, today)?),
         })
     }
 
     fn resolve_balance(
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         account: &str,
         dates: DateWindow,
         currency: Option<&CurrencyArg>,
     ) -> Result<Self, CliError> {
-        let account = db::get_account(
-            &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
-            account,
-        )?;
+        let account = db::get_account(&Company::bind(reader, company.parse()?)?, account)?;
         let currency =
-            resolve_report_currency(db.conn(), company, CurrencyArg::resolve_optional(currency)?)?;
+            resolve_report_currency(reader, company, CurrencyArg::resolve_optional(currency)?)?;
         Ok(Self::Balance(StatementWindow { dates, currency }, account))
     }
 
     fn run(
         self,
         cli: &Cli,
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         output: &mut ReportOutput<'_>,
     ) -> Result<(), CliError> {
         match self {
-            Self::Tax(tax) => report_tax::run_to(cli, db, company, tax, output),
-            Self::Trend(args) => super::report_trend::run_to(cli, db, company, args, output),
+            Self::Tax(tax) => report_tax::run_to(cli, reader, company, tax, output),
+            Self::Trend(args) => super::report_trend::run_to(cli, reader, company, args, output),
             Self::TrialBalance(window, account_type) => {
-                run_trial_balance(cli, db, company, &window, account_type, output)
+                run_trial_balance(cli, reader, company, &window, account_type, output)
             }
             Self::Balance(window, account) => {
-                run_balance(cli, db, company, &account, &window, output)
+                run_balance(cli, reader, company, &account, &window, output)
             }
             Self::IncomeStatement(dates, currency) => {
-                run_income_statement(cli, db, company, dates, currency, output)
+                run_income_statement(cli, reader, company, dates, currency, output)
             }
             Self::BalanceSheet(as_of, currency) => {
-                run_balance_sheet(cli, db, company, as_of, currency, output)
+                run_balance_sheet(cli, reader, company, as_of, currency, output)
             }
             Self::TaxSummary(dates, currency) => {
-                run_tax_summary(cli, db, company, dates, currency, output)
+                run_tax_summary(cli, reader, company, dates, currency, output)
             }
-            Self::BudgetVariance(options) => run_budget_variance(cli, db, company, options, output),
+            Self::BudgetVariance(options) => {
+                run_budget_variance(cli, reader, company, options, output)
+            }
             Self::Reconciliation(request) => {
-                super::report_reconciliation::run_resolved_to(cli, db, company, request, output)
+                super::report_reconciliation::run_resolved_to(cli, reader, company, request, output)
             }
-            Self::Ledger(args) => super::report_ledger::run_to(cli, db, company, args, output),
+            Self::Ledger(args) => super::report_ledger::run_to(cli, reader, company, args, output),
             Self::Aging(request) => {
-                super::report_aging::run_resolved_to(cli, db, company, request, output)
+                super::report_aging::run_resolved_to(cli, reader, company, request, output)
             }
-            Self::CashFlow(args) => super::report_cash_flow::run_to(cli, db, company, args, output),
+            Self::CashFlow(args) => {
+                super::report_cash_flow::run_to(cli, reader, company, args, output)
+            }
         }
     }
 }
@@ -329,7 +333,7 @@ impl<'a> ResolvedReport<'a> {
 /// Execute the `report trial-balance` subcommand.
 fn run_trial_balance(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     window: &StatementWindow,
     account_type: Option<AccountType>,
@@ -338,7 +342,7 @@ fn run_trial_balance(
     let currency = window.currency;
     let (from, to) = (window.dates.from, Some(window.dates.to));
     let balances = db::compute_trial_balance(
-        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        &Company::bind(reader, company.parse()?)?,
         account_type,
         from,
         to,
@@ -382,7 +386,7 @@ fn run_trial_balance(
 /// Execute the `report balance` subcommand.
 fn run_balance(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     account_row: &db::AccountRow,
     window: &StatementWindow,
@@ -391,7 +395,7 @@ fn run_balance(
     let currency = window.currency;
     let (from, to) = (window.dates.from, Some(window.dates.to));
     let (debit_total, credit_total) = db::compute_account_balance(
-        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        &Company::bind(reader, company.parse()?)?,
         &account_row.code,
         from,
         to,
@@ -453,13 +457,13 @@ fn run_balance(
 /// grouped into sections with subtotals and a net income (or net loss) line.
 fn run_income_statement(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     dates: DateRange,
     currency: Currency,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let stmt = compute_income_statement(db, company, dates, currency)?;
+    let stmt = compute_income_statement_on(reader, company, dates, currency)?;
 
     match output.format {
         OutputFormat::Table => {
@@ -503,25 +507,31 @@ pub fn compute_income_statement(
     dates: DateRange,
     currency: Currency,
 ) -> Result<output::statements::IncomeStatement, CliError> {
-    let conn = db.conn();
-    db::audit::atomically(conn, || {
-        db::companies::get_company_on_connection(conn, &company.parse()?)?;
-        let load = |kind: AccountType| {
-            db::compute_trial_balance(
-                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
-                Some(kind),
-                Some(dates.from()),
-                Some(dates.to()),
-                currency,
-            )
-        };
-        output::statements::build_income_statement(
-            dates,
+    db.read_snapshot(|reader| compute_income_statement_on(reader, company, dates, currency))
+}
+
+fn compute_income_statement_on(
+    conn: ReadConn<'_>,
+    company: &str,
+    dates: DateRange,
+    currency: Currency,
+) -> Result<output::statements::IncomeStatement, CliError> {
+    let scope = Company::bind(conn, company.parse()?)?;
+    let load = |kind: AccountType| {
+        db::compute_trial_balance(
+            &scope,
+            Some(kind),
+            Some(dates.from()),
+            Some(dates.to()),
             currency,
-            load(AccountType::Revenue)?,
-            load(AccountType::Expense)?,
         )
-    })
+    };
+    output::statements::build_income_statement(
+        dates,
+        currency,
+        load(AccountType::Revenue)?,
+        load(AccountType::Expense)?,
+    )
 }
 
 /// Execute the `report balance-sheet` subcommand.
@@ -532,13 +542,13 @@ pub fn compute_income_statement(
 /// Assets = Liabilities + Equity for any valid ledger.
 fn run_balance_sheet(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     as_of: NaiveDate,
     currency: Currency,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let sheet = compute_balance_sheet(db, company, as_of, currency)?;
+    let sheet = compute_balance_sheet_on(reader, company, as_of, currency)?;
 
     match output.format {
         OutputFormat::Table => {
@@ -579,27 +589,27 @@ pub fn compute_balance_sheet(
     as_of: NaiveDate,
     currency: Currency,
 ) -> Result<output::statements::BalanceSheet, CliError> {
-    let conn = db.conn();
-    db::audit::atomically(conn, || {
-        db::companies::get_company_on_connection(conn, &company.parse()?)?;
-        let load = |kind: AccountType| {
-            db::compute_trial_balance(
-                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
-                Some(kind),
-                None,
-                Some(as_of),
-                currency,
-            )
-        };
-        output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
-            as_of,
-            currency,
-            assets: load(AccountType::Asset)?,
-            liabilities: load(AccountType::Liability)?,
-            equity: load(AccountType::Equity)?,
-            revenue: load(AccountType::Revenue)?,
-            expenses: load(AccountType::Expense)?,
-        })
+    db.read_snapshot(|reader| compute_balance_sheet_on(reader, company, as_of, currency))
+}
+
+fn compute_balance_sheet_on(
+    conn: ReadConn<'_>,
+    company: &str,
+    as_of: NaiveDate,
+    currency: Currency,
+) -> Result<output::statements::BalanceSheet, CliError> {
+    let scope = Company::bind(conn, company.parse()?)?;
+    let load = |kind: AccountType| {
+        db::compute_trial_balance(&scope, Some(kind), None, Some(as_of), currency)
+    };
+    output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
+        as_of,
+        currency,
+        assets: load(AccountType::Asset)?,
+        liabilities: load(AccountType::Liability)?,
+        equity: load(AccountType::Equity)?,
+        revenue: load(AccountType::Revenue)?,
+        expenses: load(AccountType::Expense)?,
     })
 }
 
@@ -628,7 +638,7 @@ fn build_period_title(
 /// Execute the `report tax-summary` subcommand.
 fn run_tax_summary(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     dates: DateRange,
     currency: Currency,
@@ -636,7 +646,7 @@ fn run_tax_summary(
 ) -> Result<(), CliError> {
     let (from, to) = (Some(dates.from()), Some(dates.to()));
     let rows = db::compute_tax_summary(
-        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        &Company::bind(reader, company.parse()?)?,
         from,
         to,
         currency,
@@ -676,7 +686,11 @@ struct BudgetVarianceOptions {
 }
 
 impl BudgetVarianceOptions {
-    fn resolve(db: &Db, company: &str, args: &BudgetVarianceArgs) -> Result<Self, CliError> {
+    fn resolve(
+        reader: ReadConn<'_>,
+        company: &str,
+        args: &BudgetVarianceArgs,
+    ) -> Result<Self, CliError> {
         let coverage = if args.include_unbudgeted {
             db::BudgetCoverage::IncludeUnbudgeted
         } else {
@@ -686,7 +700,7 @@ impl BudgetVarianceOptions {
             months: budget_months(args.year, args.month, args.from, args.to)?,
             account_type: args.account_type,
             currency: resolve_report_currency(
-                db.conn(),
+                reader,
                 company,
                 CurrencyArg::resolve_optional(args.currency.as_ref())?,
             )?,
@@ -698,7 +712,7 @@ impl BudgetVarianceOptions {
 /// Execute the `report budget-variance` subcommand.
 fn run_budget_variance(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     opts: BudgetVarianceOptions,
     output: &mut ReportOutput<'_>,
@@ -709,8 +723,8 @@ fn run_budget_variance(
         currency,
         coverage,
     } = opts;
-    let report = db::compute_budget_variance(
-        db,
+    let report = db::budgets::compute_budget_variance_on(
+        reader,
         &db::BudgetVarianceParams {
             company_slug: &company.parse()?,
             currency,

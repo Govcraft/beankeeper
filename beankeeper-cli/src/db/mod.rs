@@ -23,6 +23,9 @@ pub mod spend_limits;
 pub mod transactions;
 pub mod verification;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use accounts::{
     CreateAccountParams, ListAccountParams, account_exists, create_account, get_account,
     list_account_codes, list_accounts, row_to_account,
@@ -33,8 +36,8 @@ pub use attachments::{
 };
 pub use audit::{
     Actor, AuditLogRow, ClearAction, ClearOutcome, ClearRequest, EntryStatus, ListAuditParams,
-    atomically, clear_entry, count_audit, delete_account, delete_budget, delete_company,
-    list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
+    clear_entry, count_audit, delete_account, delete_budget, delete_company, list_audit,
+    set_annual_budget, set_budget, set_entry_status, unclear_entry,
 };
 pub use budgets::{
     BudgetCoverage, BudgetMonths, BudgetVarianceParams, BudgetVarianceReport, ListBudgetParams,
@@ -45,7 +48,7 @@ pub use clearings::{
 };
 pub use companies::{company_exists, create_company, get_company, list_companies};
 pub use connection::Db;
-pub use schema::{ensure_schema, get_schema_version};
+pub use schema::get_schema_version;
 pub use transactions::{
     ConflictStrategy, ListTransactionParams, OrphanedCorrelation, PostEntryParams, PostResult,
     PostTransactionParams, count_transactions, find_orphaned_correlations,
@@ -420,62 +423,67 @@ fn push_transaction_dates<'a>(
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::identity::{Admin, Granted};
 
     use super::*;
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Acme Corp",
-            None,
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_company(
+                grant,
+                &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                "Acme Corp",
+                None,
+            )
+        })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "4000",
-                name: "Revenue",
-                account_type: beankeeper::types::AccountType::Revenue,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: beankeeper::types::AccountType::Revenue,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "2000",
-                name: "Payables",
-                account_type: beankeeper::types::AccountType::Liability,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "2000",
+                    name: "Payables",
+                    account_type: beankeeper::types::AccountType::Liability,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
@@ -527,9 +535,9 @@ mod tests {
     fn trial_balance_empty() {
         let db = setup();
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             None,
@@ -552,9 +560,9 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
 
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             None,
@@ -584,9 +592,9 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
 
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             Some(beankeeper::types::AccountType::Asset),
@@ -606,9 +614,9 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
 
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             None,
@@ -632,9 +640,9 @@ mod tests {
     fn account_balance_empty() {
         let db = setup();
         let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             "1000",
@@ -654,9 +662,9 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
 
         let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             "1000",
@@ -676,9 +684,9 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
 
         let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             "1000",
@@ -703,9 +711,9 @@ mod tests {
         post_sample(&db, "2024-03-15", 2000);
 
         let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::resolve(
-                db.conn(),
-                &"acme".parse().expect("fixture company"),
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
             )
             .expect("resolve fixture company"),
             "1000",
@@ -734,7 +742,7 @@ mod tests {
         post_sample(&db, "2024-03-15", 2000);
 
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             Some(
                 "2024-02-01"
@@ -764,7 +772,7 @@ mod tests {
         post_sample_in(&db, "2024-02-15", 700, Currency::MXN);
 
         let usd = compute_trial_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
             None,
@@ -779,7 +787,7 @@ mod tests {
         assert_eq!(cash.debit_total, 5000);
 
         let mxn = compute_trial_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
             Some(
@@ -797,7 +805,7 @@ mod tests {
         assert_eq!(cash.debit_total, 700);
 
         let eur = compute_trial_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
             None,
@@ -810,7 +818,7 @@ mod tests {
         );
 
         let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             "1000",
             None,
             None,
@@ -828,7 +836,7 @@ mod tests {
 
         // Every entry predates the window: all accounts are still listed, at zero.
         let rows = compute_trial_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             Some(
                 "2024-06-01"
@@ -850,7 +858,7 @@ mod tests {
 
         // Same for an `--to` cutoff before any activity.
         let rows = compute_trial_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
             Some(

@@ -13,7 +13,11 @@ use super::report::ReportOutput;
 use super::report_dates::DateRange;
 use super::report_periods::{Column, PeriodArg, period_columns};
 use crate::cli::{Cli, OutputFormat};
-use crate::db::{self, BalanceRow, connection::Db};
+use crate::db::{
+    self, BalanceRow,
+    companies::Company,
+    connection::{Db, ReadConn},
+};
 use crate::error::CliError;
 use crate::output::amounts::{MoneySequence, format_money};
 use crate::output::chart;
@@ -216,12 +220,12 @@ struct Series {
 
 pub(super) fn run_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     request: TrendRequest,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let report = compute_trend(db, company, request)?;
+    let report = compute_trend_on(reader, company, request)?;
     match output.format {
         OutputFormat::Json => {
             let meta = cli
@@ -247,13 +251,13 @@ pub(super) fn run_to(
 impl TrendArgs {
     pub(super) fn resolve(
         &self,
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         today: NaiveDate,
     ) -> Result<TrendRequest, CliError> {
         let dates = DateRange::resolve(self.from.as_ref(), self.to.as_ref(), today)?;
         let currency = super::report_currency::resolve_report_currency(
-            db.conn(),
+            reader,
             company,
             crate::cli::CurrencyArg::resolve_optional(self.currency.as_ref())?,
         )?;
@@ -276,46 +280,51 @@ pub fn compute_trend(
     company: &str,
     request: TrendRequest,
 ) -> Result<TrendReport, CliError> {
-    db::audit::atomically(db.conn(), || {
-        db::companies::get_company(db.read(), &company.parse()?)?;
-        let columns = period_columns(request.dates.from(), request.dates.to(), request.period)?;
-        let rows = columns
-            .iter()
-            .map(|column| column_rows(db, company, request.metric, request.currency, column));
-        let raw = match request.metric {
-            TrendMetric::Spending => spending_series(rows)?,
-            TrendMetric::NetWorth => net_worth_series(rows)?,
-        };
-        let series = raw
-            .into_iter()
-            .map(|series| TrendSeries {
-                code: series.code,
-                name: series.name,
-                amounts: series
-                    .amounts
-                    .into_iter()
-                    .map(|minor| Money::from_minor(i128::from(minor), request.currency))
-                    .collect(),
-            })
-            .collect();
-        Ok(TrendReport {
-            request,
-            columns: columns
+    db.read_snapshot(|reader| compute_trend_on(reader, company, request))
+}
+
+fn compute_trend_on(
+    reader: ReadConn<'_>,
+    company: &str,
+    request: TrendRequest,
+) -> Result<TrendReport, CliError> {
+    let scope = Company::bind(reader, company.parse()?)?;
+    let columns = period_columns(request.dates.from(), request.dates.to(), request.period)?;
+    let rows = columns
+        .iter()
+        .map(|column| column_rows(&scope, request.metric, request.currency, column));
+    let raw = match request.metric {
+        TrendMetric::Spending => spending_series(rows)?,
+        TrendMetric::NetWorth => net_worth_series(rows)?,
+    };
+    let series = raw
+        .into_iter()
+        .map(|series| TrendSeries {
+            code: series.code,
+            name: series.name,
+            amounts: series
+                .amounts
                 .into_iter()
-                .map(|column| TrendColumn {
-                    label: column.label,
-                    from: column.from,
-                    to: column.to,
-                })
+                .map(|minor| Money::from_minor(i128::from(minor), request.currency))
                 .collect(),
-            series,
         })
+        .collect();
+    Ok(TrendReport {
+        request,
+        columns: columns
+            .into_iter()
+            .map(|column| TrendColumn {
+                label: column.label,
+                from: column.from,
+                to: column.to,
+            })
+            .collect(),
+        series,
     })
 }
 
 fn column_rows(
-    db: &Db,
-    company: &str,
+    scope: &Company<'_>,
     metric: TrendMetric,
     currency: Currency,
     column: &Column,
@@ -324,13 +333,7 @@ fn column_rows(
         TrendMetric::Spending => (Some(AccountType::Expense), Some(column.from)),
         TrendMetric::NetWorth => (None, None),
     };
-    db::compute_trial_balance(
-        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
-        filter,
-        from,
-        Some(column.to),
-        currency,
-    )
+    db::compute_trial_balance(scope, filter, from, Some(column.to), currency)
 }
 
 fn overflow() -> CliError {

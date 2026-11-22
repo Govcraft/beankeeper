@@ -5,7 +5,7 @@ use std::fmt::Write;
 use beankeeper::types::{AccountType, Amount, Currency, Money};
 use chrono::{Month, NaiveDate};
 
-use super::connection::Db;
+use super::connection::{Db, ReadConn};
 use crate::db::{BudgetRow, BudgetVarianceRow};
 use crate::error::CliError;
 
@@ -258,10 +258,15 @@ pub fn compute_budget_variance(
     db: &Db,
     params: &BudgetVarianceParams<'_>,
 ) -> Result<BudgetVarianceReport, CliError> {
-    let rows = db.read_snapshot(|reader| {
-        let company = super::companies::Company::bind(reader, params.company_slug.clone())?;
-        load_variance_rows(&company, params)
-    })?;
+    db.read_snapshot(|reader| compute_budget_variance_on(reader, params))
+}
+
+pub(crate) fn compute_budget_variance_on(
+    reader: ReadConn<'_>,
+    params: &BudgetVarianceParams<'_>,
+) -> Result<BudgetVarianceReport, CliError> {
+    let company = super::companies::Company::bind(reader, params.company_slug.clone())?;
+    let rows = load_variance_rows(&company, params)?;
     let total = |select: fn(&BudgetVarianceRow) -> Money| {
         let amount = rows.iter().try_fold(Amount::new(0), |total, row| {
             total
@@ -448,7 +453,7 @@ mod tests {
 
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
     use crate::db::{Actor, Db, audit, create_account, create_company};
-    use crate::identity::{Budget, Granted};
+    use crate::identity::{Admin, Budget, Granted};
 
     fn test_actor() -> Actor {
         Actor::new("test")
@@ -494,71 +499,76 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Acme Corp",
-            None,
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_company(
+                grant,
+                &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                "Acme Corp",
+                None,
+            )
+        })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "4000",
-                name: "Revenue",
-                account_type: beankeeper::types::AccountType::Revenue,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: beankeeper::types::AccountType::Revenue,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "5000",
-                name: "Rent Expense",
-                account_type: beankeeper::types::AccountType::Expense,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "5000",
+                    name: "Rent Expense",
+                    account_type: beankeeper::types::AccountType::Expense,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "5100",
-                name: "Supplies",
-                account_type: beankeeper::types::AccountType::Expense,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "5100",
+                    name: "Supplies",
+                    account_type: beankeeper::types::AccountType::Expense,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }

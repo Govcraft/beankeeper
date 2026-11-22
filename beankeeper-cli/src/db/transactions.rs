@@ -864,6 +864,7 @@ pub fn find_orphaned_correlations(
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::identity::{Admin, Granted};
 
     use super::*;
     use crate::db::accounts::create_account;
@@ -872,43 +873,46 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Acme Corp",
-            None,
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_company(
+                grant,
+                &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                "Acme Corp",
+                None,
+            )
+        })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "4000",
-                name: "Revenue",
-                account_type: beankeeper::types::AccountType::Revenue,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: beankeeper::types::AccountType::Revenue,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
         db
     }
@@ -1131,7 +1135,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1142,19 +1146,20 @@ mod tests {
     #[test]
     fn list_transactions_with_account_filter() {
         let db = setup();
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "5000",
-                name: "Expenses",
-                account_type: beankeeper::types::AccountType::Expense,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "5000",
+                    name: "Expenses",
+                    account_type: beankeeper::types::AccountType::Expense,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
 
         let entries1 = sample_entries();
@@ -1190,7 +1195,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1217,7 +1222,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1237,29 +1242,31 @@ mod tests {
         };
 
         let actor = crate::db::Actor::new("fixture");
-        create_company(
-            db.conn(),
-            &actor,
-            &"other"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Other",
-            None,
-        )
-        .expect("create company");
-        create_account(
-            db.conn(),
-            &actor,
-            &CreateAccountParams {
-                company_slug: &"other"
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            create_company(
+                grant,
+                &"other"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1000",
-                name: "Other cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )
+                "Other",
+                None,
+            )
+        })
+        .expect("create company");
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"other"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "1000",
+                    name: "Other cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })
         .expect("create account");
         db.conn()
             .execute(
@@ -1269,7 +1276,7 @@ mod tests {
             )
             .expect("seed a mismatched transaction and entry company");
 
-        let company = Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+        let company = Company::bind(db.read(), "acme".parse().expect("fixture company"))
             .expect("bind transaction company");
         let entry_rows = get_entries_for_transaction(&company, id).expect("read entries");
         assert_eq!(entry_rows.len(), 2);
@@ -1298,7 +1305,7 @@ mod tests {
             0
         );
 
-        let other = Company::resolve(db.conn(), &"other".parse().expect("fixture company"))
+        let other = Company::bind(db.read(), "other".parse().expect("fixture company"))
             .expect("bind other company");
         assert!(
             get_entries_for_transaction(&other, id)
@@ -1364,7 +1371,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1387,7 +1394,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1464,7 +1471,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1487,7 +1494,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1501,7 +1508,7 @@ mod tests {
             ..Default::default()
         };
         let list2 = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp2,
         )
@@ -1525,7 +1532,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1554,7 +1561,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1566,19 +1573,20 @@ mod tests {
     #[test]
     fn list_transactions_with_direction_filter() {
         let db = setup();
-        create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "5000",
-                name: "Expenses",
-                account_type: beankeeper::types::AccountType::Expense,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "5000",
+                    name: "Expenses",
+                    account_type: beankeeper::types::AccountType::Expense,
+                    default_tax_category: None,
+                },
+            )
+        })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
 
         let entries = sample_entries();
@@ -1593,7 +1601,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1608,7 +1616,7 @@ mod tests {
             ..Default::default()
         };
         let list2 = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp2,
         )
@@ -1629,7 +1637,7 @@ mod tests {
 
         let lp = ListTransactionParams::default();
         let count = count_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1641,7 +1649,7 @@ mod tests {
             ..Default::default()
         };
         let count2 = count_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp2,
         )
@@ -1668,7 +1676,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1713,7 +1721,7 @@ mod tests {
             ..Default::default()
         };
         let list = list_transactions(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind fixture company"),
             &lp,
         )
@@ -1798,7 +1806,7 @@ mod tests {
                 ..Default::default()
             };
             let list = list_transactions(
-                &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+                &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                     .expect("bind fixture company"),
                 &lp,
             )
@@ -1806,7 +1814,7 @@ mod tests {
             assert_eq!(list.len(), expected, "filters {pairs:?}");
             assert_eq!(
                 count_transactions(
-                    &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+                    &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                         .expect("bind fixture company"),
                     &lp
                 )
@@ -1842,7 +1850,7 @@ mod tests {
         // Verify only one transaction exists
         let lp = ListTransactionParams::default();
         let count = count_transactions(
-            &Company::resolve(db.conn(), &"acme".parse()?).expect("bind fixture company"),
+            &Company::bind(db.read(), "acme".parse()?).expect("bind fixture company"),
             &lp,
         )?;
         assert_eq!(count, 1);

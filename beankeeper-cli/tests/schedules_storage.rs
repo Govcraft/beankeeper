@@ -1,5 +1,8 @@
 //! Schedule validation, atomic posting and audit preservation.
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use beankeeper::{core::Frequency, types::Currency};
 use beankeeper_cli::{
     db::{
@@ -10,7 +13,7 @@ use beankeeper_cli::{
         },
     },
     error::CliError,
-    identity::{Granted, Post},
+    identity::{Admin, Granted, Post},
 };
 use chrono::NaiveDate;
 
@@ -61,34 +64,42 @@ fn run_due(
 }
 
 fn audit_count(db: &Db) -> rusqlite::Result<i64> {
-    db.conn()
+    db.read()
         .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
 }
 
 fn fixture() -> Result<Db, CliError> {
-    let db = Db::open_in_memory()?;
-    companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"acme".parse()?,
-        "Acme",
-        None,
-    )?;
+    seed(Db::open_in_memory()?)
+}
+
+fn fixture_with_raw() -> Result<(tempfile::TempDir, Db, rusqlite::Connection), CliError> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("fixture.db");
+    let db = seed(Db::open(&path, None)?)?;
+    let raw = raw_ledger::open(&path, None)?;
+    Ok((directory, db, raw))
+}
+
+fn seed(db: Db) -> Result<Db, CliError> {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+    })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
     ] {
-        accounts::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code,
-                name: code,
-                account_type: kind,
-                default_tax_category: Some("default-tax"),
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            accounts::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: Some("default-tax"),
+                },
+            )
+        })?;
     }
     Ok(db)
 }
@@ -208,13 +219,14 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
     audit::verify_hash_chain(db.read())?;
     audit::verify_creations(db.read())?;
     assert!(
-        audit::delete_account(
-            db.conn(),
-            &actor,
-            &"acme".parse()?,
-            "1000",
-            beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
-        )
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            audit::delete_account(
+                grant,
+                &"acme".parse()?,
+                "1000",
+                beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+            )
+        })
         .is_err()
     );
     Ok(())
@@ -222,17 +234,17 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
 
 #[test]
 fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
-    let db = fixture()?;
+    let (_directory, db, raw) = fixture_with_raw()?;
     let before_audit = audit_count(&db)?;
     let actor = Actor::new("schedule-test");
     create_schedule(&db, &actor, "acme", &template()?)?;
-    db.conn().execute_batch(
+    raw.execute_batch(
         "CREATE TRIGGER fail_schedule_audit BEFORE INSERT ON audit_log
          WHEN NEW.action = 'schedule_run' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;",
     )?;
     assert!(run_due(&db, &actor, "acme", date("2026-03-31")?, false).is_err());
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
@@ -251,16 +263,16 @@ fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
 
 #[test]
 fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
-    let db = fixture()?;
+    let (_directory, db, raw) = fixture_with_raw()?;
     let actor = Actor::new("schedule-test");
     create_schedule(&db, &actor, "acme", &template()?)?;
-    db.conn().execute_batch(
+    raw.execute_batch(
         "CREATE TRIGGER fail_second_post BEFORE INSERT ON transactions
          WHEN NEW.date = '2026-02-28' BEGIN SELECT RAISE(ABORT, 'posting unavailable'); END;",
     )?;
     assert!(run_due(&db, &actor, "acme", date("2026-03-31")?, false).is_err());
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
@@ -280,13 +292,9 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
 fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("schedule-test");
-    companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"other".parse()?,
-        "Other",
-        None,
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        companies::create_company(grant, &"other".parse()?, "Other", None)
+    })?;
     let schedule = create_schedule(&db, &actor, "acme", &template()?)?;
     assert!(
         schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
@@ -304,22 +312,23 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     cancel_schedule(&db, &actor, "acme", &schedule.id)?;
     assert!(run_due(&db, &actor, "acme", date("2027-01-01")?, false)?.is_empty());
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 1);
-    let count: i64 = db.conn().query_row(
+    let count: i64 = db.read().query_row(
         "SELECT COUNT(*) FROM audit_log WHERE action = 'schedule_cancel'",
         [],
         |row| row.get(0),
     )?;
     assert_eq!(count, 1);
     assert!(
-        audit::delete_company(
-            db.conn(),
-            &actor,
-            &"acme".parse()?,
-            beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
-        )
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            audit::delete_company(
+                grant,
+                &"acme".parse()?,
+                beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+            )
+        })
         .is_err()
     );
     audit::verify_hash_chain(db.read())?;
@@ -328,16 +337,16 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
 
 #[test]
 fn invalid_persisted_template_is_rejected_before_posting() -> TestResult {
-    let db = fixture()?;
+    let (_directory, db, raw) = fixture_with_raw()?;
     let actor = Actor::new("schedule-test");
     create_schedule(&db, &actor, "acme", &template()?)?;
-    db.conn().execute(
+    raw.execute(
         "UPDATE schedule_entries SET amount = 1 WHERE direction = 'debit'",
         [],
     )?;
     assert!(run_due(&db, &actor, "acme", date("2026-03-31")?, false).is_err());
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
@@ -358,28 +367,25 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("concurrent.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"acme".parse()?,
-        "Acme",
-        None,
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+    })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
     ] {
-        accounts::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code,
-                name: code,
-                account_type: kind,
-                default_tax_category: None,
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            accounts::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )
+        })?;
     }
     create_schedule(&db, &Actor::new("creator"), "acme", &template()?)?;
     drop(db);
@@ -403,7 +409,6 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
             let path = path.clone();
             std::thread::spawn(move || -> Result<usize, CliError> {
                 let db = Db::open_existing(&path, None)?;
-                db.conn().busy_timeout(std::time::Duration::from_secs(10))?;
                 barrier.wait();
                 Ok(run_due(
                     &db,
@@ -423,7 +428,7 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     assert_eq!(posted, 3);
     let db = Db::open_existing(&path, None)?;
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 3);
     audit::verify_hash_chain(db.read())?;
@@ -498,7 +503,7 @@ fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
 
 #[test]
 fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
-    let db = fixture()?;
+    let (_directory, db, raw) = fixture_with_raw()?;
     let before_audit = audit_count(&db)?;
     let actor = Actor::new("schedule-limit-test");
     for count in [500, 501] {
@@ -507,7 +512,7 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     let before = serde_json::json!(schedules::list_schedules(
         &beankeeper_cli::db::companies::Company::bind(db.read(), "acme".parse()?)?
     )?);
-    db.conn().execute_batch(
+    raw.execute_batch(
         "CREATE TRIGGER reject_any_post BEFORE INSERT ON transactions
          BEGIN SELECT RAISE(ABORT, 'posting attempted before limit check'); END;",
     )?;
@@ -525,7 +530,7 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     );
     for table in ["transactions", "entries"] {
         let count: i64 =
-            db.conn()
+            db.read()
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                     row.get(0)
                 })?;
@@ -540,28 +545,25 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
 fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("schedule-limit-test");
-    companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"other".parse()?,
-        "Other",
-        None,
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        companies::create_company(grant, &"other".parse()?, "Other", None)
+    })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
     ] {
-        accounts::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"other".parse()?,
-                code,
-                name: code,
-                account_type: kind,
-                default_tax_category: None,
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            accounts::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"other".parse()?,
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )
+        })?;
     }
     let params = daily_template(1_001)?;
     create_schedule(&db, &actor, "other", &params)?;

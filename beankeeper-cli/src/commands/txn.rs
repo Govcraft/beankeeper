@@ -41,7 +41,7 @@ pub fn run(
             let execute = || {
                 use secrecy::ExposeSecret;
                 crate::identity::authorize_known_operation(
-                    db_handle.conn(),
+                    db_handle.read(),
                     cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
                     super::operation(&cli.command),
                 )?;
@@ -378,7 +378,7 @@ fn run_list_or_count(
     db_handle.read_snapshot(|reader| {
         let scope = Company::bind(reader, company.parse()?)?;
         lp.value_filter = list_value_filter(
-            db_handle.conn(),
+            db_handle.read(),
             company,
             currency
                 .as_ref()
@@ -400,7 +400,7 @@ fn run_list_or_count(
 }
 
 fn list_value_filter(
-    conn: &rusqlite::Connection,
+    conn: crate::db::connection::ReadConn<'_>,
     company: &str,
     currency: Option<Currency>,
     [gt, lt, eq]: [Option<&str>; 3],
@@ -605,7 +605,7 @@ fn execute_proposal(
             });
         }
         TxnProposalCommand::Proposals { include_rejected } => {
-            let rows = db::proposals::list(db.conn(), &company.parse()?, actor, *include_rejected)?;
+            let rows = db::proposals::list(db.read(), &company.parse()?, actor, *include_rejected)?;
             serde_json::to_value(
                 rows.iter()
                     .map(super::posting_output::ProposalJson::from)
@@ -1103,40 +1103,39 @@ fn orphaned_correlations(count: usize) -> CliError {
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::identity::{Admin, Granted};
 
     use super::*;
 
     fn fixture() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        db::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
-        db::create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )?;
-        db::create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "4000",
-                name: "Revenue",
-                account_type: beankeeper::types::AccountType::Revenue,
-                default_tax_category: Some("income"),
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            db::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: beankeeper::types::AccountType::Revenue,
+                    default_tax_category: Some("income"),
+                },
+            )
+        })?;
         Ok(db)
     }
 
@@ -1269,7 +1268,7 @@ mod tests {
         )?;
         assert_eq!(cleared["amount"], 400);
         assert_eq!(cleared["remaining_amount"], 600);
-        let actor: String = db.conn().query_row(
+        let actor: String = db.read().query_row(
             "SELECT actor FROM audit_log ORDER BY id DESC LIMIT 1",
             [],
             |row| row.get(0),
@@ -1326,13 +1325,13 @@ mod tests {
         };
         assert!(run_batch("batch-a,5\nbatch-b,11").is_err());
         let cleared: i64 =
-            db.conn()
+            db.read()
                 .query_row("SELECT count(*) FROM entry_clearings", [], |row| row.get(0))?;
         assert_eq!(cleared, 0);
         let result = run_batch("batch-a,5\nbatch-b,6")?;
         assert_eq!(result["cleared_count"], 2);
         assert_eq!(result["cleared_total"], 1100);
-        let actors: i64 = db.conn().query_row(
+        let actors: i64 = db.read().query_row(
             "SELECT count(*) FROM audit_log WHERE actor = 'mcp:batch-test'",
             [],
             |row| row.get(0),

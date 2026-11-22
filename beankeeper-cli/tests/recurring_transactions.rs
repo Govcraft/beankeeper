@@ -1,6 +1,7 @@
 //! Scheduled obligations and explicit, retry-safe posting through the CLI.
 
 use beankeeper_cli::db::CreateAccountParams;
+use beankeeper_cli::identity::{Admin, Granted};
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -24,13 +25,9 @@ impl Ledger {
         let path = dir.path().join("schedules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(
-                db.conn(),
-                &Actor::new("fixture"),
-                &company.parse()?,
-                company,
-                None,
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                companies::create_company(grant, &company.parse()?, company, None)
+            })?;
             for (code, kind, tax) in [
                 ("1000", beankeeper::types::AccountType::Asset, None),
                 (
@@ -44,17 +41,18 @@ impl Ledger {
                     Some("split-expense"),
                 ),
             ] {
-                accounts::create_account(
-                    db.conn(),
-                    &Actor::new("fixture"),
-                    &CreateAccountParams {
-                        company_slug: &company.parse()?,
-                        code,
-                        name: code,
-                        account_type: kind,
-                        default_tax_category: tax,
-                    },
-                )?;
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                    accounts::create_account(
+                        grant,
+                        &CreateAccountParams {
+                            company_slug: &company.parse()?,
+                            code,
+                            name: code,
+                            account_type: kind,
+                            default_tax_category: tax,
+                        },
+                    )
+                })?;
             }
         }
         Ok(Self { _dir: dir, path })
@@ -113,7 +111,7 @@ impl Ledger {
     fn count(&self, table: &str) -> Result<i64, Box<dyn Error>> {
         Ok(self
             .db()?
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
             })?)

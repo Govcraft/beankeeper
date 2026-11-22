@@ -15,11 +15,7 @@ pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn get_schema_version(conn: &Connection) -> Result<i64, CliError> {
-    read_schema_version(ReadConn::new(conn))
-}
-
-pub(crate) fn read_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
+pub fn get_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
     // Check whether the schema_version table exists at all.
     let table_exists: bool = reader.query_row(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
@@ -46,8 +42,8 @@ pub(crate) fn read_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError>
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
-    let version = get_schema_version(conn)?;
+pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
+    let version = get_schema_version(ReadConn::new(conn))?;
 
     if version > CURRENT_VERSION {
         return Err(CliError::Database(format!(
@@ -145,7 +141,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
 
     debug_assert_eq!(
-        get_schema_version(conn).unwrap_or(0),
+        get_schema_version(ReadConn::new(conn)).unwrap_or(0),
         CURRENT_VERSION,
         "schema version mismatch after migrations"
     );
@@ -1437,6 +1433,19 @@ fn extend_period_audit(conn: &Connection) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{Admin, Granted};
+
+    fn with_admin_fixture<T>(
+        conn: &Connection,
+        actor: &crate::db::Actor,
+        change: impl for<'a> FnOnce(
+            crate::identity::Granted<'a, crate::identity::Admin>,
+        ) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        crate::db::audit::savepoint::with_audited_tx(conn, "sp_admin_fixture", |tx| {
+            change(crate::identity::Granted::check(tx, actor)?)
+        })
+    }
 
     #[test]
     fn summary_reads_a_v22_snapshot_without_migration() -> Result<(), CliError> {
@@ -1446,13 +1455,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("legacy.db");
         let db = Db::open(&path, None)?;
-        create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         db.conn()
             .execute("DROP TABLE setup_statement_batches", [])?;
         db.conn().execute(
@@ -1467,7 +1472,7 @@ mod tests {
             StatementImportSummary::default()
         );
         assert_eq!(
-            read_schema_version(snapshot.read())?,
+            get_schema_version(snapshot.read())?,
             BOOK_PROFILE_SCHEMA_VERSION
         );
         Ok(())
@@ -1500,9 +1505,7 @@ mod tests {
             params![id, serde_json::to_string(&payload).map_err(|e| CliError::General(e.to_string()))?],
         )?;
         reject_v19_proposal(&conn, &owner, &id)?;
-        crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
-            audit::set_policy(grant, true)
-        })?;
+        with_admin_fixture(&conn, &owner, |grant| audit::set_policy(grant, true))?;
         let history = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
             Ok(conn
                 .prepare(
@@ -1521,13 +1524,13 @@ mod tests {
         let path = directory.path().join("v19.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
         let migrated = super::super::Db::open_existing(&path, None)?;
-        assert_eq!(get_schema_version(migrated.conn())?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(migrated.read())?, CURRENT_VERSION);
         assert_eq!(history(migrated.conn())?, before);
         crate::commands::verify::execute_json(&migrated)?;
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         assert_eq!(history(&conn)?, before);
-        assert!(super::super::policy::get(&conn)?.enforce);
+        assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
         assert_eq!(
             proposals::get(ReadConn::new(&conn), &"legacy".parse()?, &id.parse()?)?
                 .state
@@ -1555,7 +1558,7 @@ mod tests {
             ).is_err());
         }
         audit::change_legacy_policy_fixture(&conn, &owner, false)?;
-        crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
+        with_admin_fixture(&conn, &owner, |grant| {
             audit::change_period(
                 grant,
                 &"legacy".parse()?,
@@ -1609,18 +1612,16 @@ mod tests {
                 _ => conn.execute_batch("CREATE TABLE period_locks (collision TEXT)")?,
             }
             assert!(apply_v20(&conn).is_err());
-            assert_eq!(get_schema_version(&conn)?, 19);
+            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 19);
             assert!(conn.prepare("SELECT * FROM audit_log_v20").is_err());
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('protect_policy_update', 'protect_proposal_resolution')", [], |row| row.get(0),
             )?;
             assert_eq!(count, 2);
             if corruption == "collision" {
-                crate::identity::Granted::<crate::identity::Admin>::with(
-                    &conn,
-                    &super::super::Actor::new("owner"),
-                    |grant| super::super::audit::set_policy(grant, true),
-                )?;
+                with_admin_fixture(&conn, &super::super::Actor::new("owner"), |grant| {
+                    super::super::audit::set_policy(grant, true)
+                })?;
                 super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
         }
@@ -1632,7 +1633,7 @@ mod tests {
         let conn = v17_connection()?;
         apply_v18(&conn)?;
         let owner = super::super::Actor::new("owner");
-        crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
+        with_admin_fixture(&conn, &owner, |grant| {
             super::super::audit::set_policy(grant, true)
         })?;
         let history = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
@@ -1643,9 +1644,9 @@ mod tests {
         };
         let before = history(&conn)?;
         apply_v19(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, 19);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 19);
         assert_eq!(history(&conn)?, before);
-        assert!(super::super::policy::get(&conn)?.enforce);
+        assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
         super::super::audit::change_legacy_policy_fixture(&conn, &owner, false)?;
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(ReadConn::new(&conn))?;
@@ -1668,16 +1669,14 @@ mod tests {
                 _ => conn.execute_batch("CREATE TABLE agent_spend_limits (collision TEXT)")?,
             }
             assert!(apply_v19(&conn).is_err());
-            assert_eq!(get_schema_version(&conn)?, 18);
+            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 18);
             assert!(conn.prepare("SELECT * FROM txn_proposals").is_err());
             assert!(conn.prepare("SELECT * FROM audit_log_v19").is_err());
             if corruption == "collision" {
-                crate::identity::Granted::<crate::identity::Admin>::with(
-                    &conn,
-                    &super::super::Actor::new("owner"),
-                    |grant| super::super::audit::set_policy(grant, true),
-                )?;
-                assert!(super::super::policy::get(&conn)?.enforce);
+                with_admin_fixture(&conn, &super::super::Actor::new("owner"), |grant| {
+                    super::super::audit::set_policy(grant, true)
+                })?;
+                assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
                 super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
         }
@@ -1713,18 +1712,16 @@ mod tests {
         let before = hashes(&conn)?;
         assert_eq!(before.iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2]);
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
-        assert!(!super::super::policy::get(&conn)?.enforce);
+        assert!(!super::super::policy::get(ReadConn::new(&conn))?.enforce);
         // Simulate the explicit v2 insert emitted by a v17 binary.
         let result = conn.execute("INSERT INTO audit_log (id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
             SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 2 FROM audit_log ORDER BY id DESC LIMIT 1", []);
         assert!(result.is_err());
-        crate::identity::Granted::<crate::identity::Admin>::with(
-            &conn,
-            &super::super::Actor::new("owner"),
-            |grant| super::super::audit::set_policy(grant, true),
-        )?;
+        with_admin_fixture(&conn, &super::super::Actor::new("owner"), |grant| {
+            super::super::audit::set_policy(grant, true)
+        })?;
         assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(4));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(ReadConn::new(&conn))?;
@@ -1743,7 +1740,7 @@ mod tests {
         )?;
         assert_eq!(indexes, 4);
         ensure_schema(&conn)?;
-        assert!(super::super::policy::get(&conn)?.enforce);
+        assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
         Ok(())
     }
 
@@ -1757,7 +1754,7 @@ mod tests {
                 _ => conn.execute_batch("CREATE TABLE ledger_policy (collision TEXT)")?,
             }
             assert!(apply_v18(&conn).is_err());
-            assert_eq!(get_schema_version(&conn)?, 17);
+            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 17);
             assert!(conn.prepare("SELECT * FROM audit_log_v18").is_err());
             if corruption == "collision" {
                 // Rebuild had already run before the collision; its trigger change rolls back.
@@ -1779,8 +1776,8 @@ mod tests {
     fn fresh_schema_defaults_off_without_inventing_policy_history() -> Result<(), CliError> {
         let conn = open_conn();
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
-        assert!(!super::super::policy::get(&conn)?.enforce);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        assert!(!super::super::policy::get(ReadConn::new(&conn))?.enforce);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row
                 .get::<_, i64>(0))?,
@@ -1806,7 +1803,7 @@ mod tests {
         // Fail after creating the investment tables, while rebuilding auditing.
         conn.execute_batch("CREATE TABLE audit_log_v17 (collision TEXT)")?;
         assert!(apply_v17(&conn).is_err());
-        assert_eq!(get_schema_version(&conn)?, 16);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 16);
         let tables: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('securities','security_prices','investment_lots','lot_reliefs')",
             [], |r| r.get(0),
@@ -1835,7 +1832,7 @@ mod tests {
             assert!(conn.execute(sql, []).is_err(), "unprotected: {sql}");
         }
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -1853,7 +1850,7 @@ mod tests {
         )?;
         conn.execute_batch("CREATE TABLE schedules (collision TEXT)")?;
         assert!(apply_v16(&conn).is_err());
-        assert_eq!(get_schema_version(&conn)?, 15);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 15);
         conn.execute_batch("DROP TABLE schedules")?;
         apply_v16(&conn)?;
         let retained: String = conn.query_row(
@@ -1870,7 +1867,7 @@ mod tests {
                 .is_err()
         );
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -1920,7 +1917,7 @@ mod tests {
                 .is_err()
         );
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -1937,7 +1934,7 @@ mod tests {
                 conn.execute_batch("CREATE TABLE audit_log_v15 (collision TEXT);")?;
             }
             assert!(apply_v15(&conn).is_err());
-            assert_eq!(get_schema_version(&conn)?, 14);
+            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 14);
         }
         Ok(())
     }
@@ -1965,7 +1962,7 @@ mod tests {
         };
         let before = hashes(&conn)?;
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
         let actor = Actor::new("v14");
         let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
@@ -2006,7 +2003,7 @@ mod tests {
                 conn.execute_batch("CREATE TABLE audit_log_v14 (collision TEXT);")?;
             }
             assert!(apply_v14(&conn).is_err());
-            assert_eq!(get_schema_version(&conn)?, 13);
+            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 13);
             assert!(conn.prepare("SELECT * FROM categorization_rules").is_err());
         }
         Ok(())
@@ -2105,7 +2102,7 @@ mod tests {
             seed_v12_creation(&conn)?;
             conn.execute_batch(corruption)?;
             assert!(apply_v13(&conn).is_err());
-            assert_eq!(get_schema_version(&conn)?, 12);
+            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 12);
             assert!(conn.prepare("SELECT agent_uri FROM transactions").is_err());
             assert!(conn.prepare("SELECT * FROM identity_root").is_err());
         }
@@ -2158,7 +2155,7 @@ mod tests {
         let poster: Option<String> =
             conn.query_row("SELECT posted_by FROM transactions", [], |r| r.get(0))?;
         assert_eq!(poster, None);
-        assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -2173,7 +2170,7 @@ mod tests {
         }
         conn.execute_batch("CREATE TABLE audit_log_v12 (collision TEXT);")?;
         assert!(apply_v12(&conn).is_err());
-        assert_eq!(get_schema_version(&conn)?, 11);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 11);
         assert!(conn.prepare("SELECT posted_by FROM transactions").is_err());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))?;
         assert_eq!(count, 0);
@@ -2218,7 +2215,7 @@ mod tests {
             |r| r.get(0),
         )?;
         assert_eq!(indices, 3);
-        assert_eq!(get_schema_version(&conn)?, 11);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 11);
         Ok(())
     }
 
@@ -2233,7 +2230,7 @@ mod tests {
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
         apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
         apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(8));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(8));
 
         // A v8-shaped ledger: one transaction with a cleared, a reconciled,
         // and an uncleared entry.
@@ -2255,7 +2252,10 @@ mod tests {
         .unwrap_or_else(|e| panic!("seed v8 ledger: {e}"));
 
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         let mut stmt = conn
             .prepare(
@@ -2321,7 +2321,7 @@ mod tests {
     #[test]
     fn fresh_db_has_version_zero() {
         let conn = open_conn();
-        let v = get_schema_version(&conn);
+        let v = get_schema_version(ReadConn::new(&conn));
         assert_eq!(v.ok(), Some(0));
     }
 
@@ -2330,7 +2330,10 @@ mod tests {
         let conn = open_conn();
         let result = ensure_schema(&conn);
         assert!(result.is_ok());
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
     }
 
     #[test]
@@ -2338,7 +2341,10 @@ mod tests {
         let conn = open_conn();
         assert!(ensure_schema(&conn).is_ok());
         assert!(ensure_schema(&conn).is_ok());
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
     }
 
     #[test]
@@ -2417,11 +2423,14 @@ mod tests {
         // Apply v1 and v2 first
         apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
         apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(2));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(2));
 
         // Now run ensure_schema which should apply v3
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         // Verify the reference column exists by querying pragma
         let has_reference: bool =
@@ -2447,11 +2456,14 @@ mod tests {
         apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
         apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
         apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(3));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(3));
 
         // Now run ensure_schema which should apply v4
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         // Verify tax_category column on entries
         let has_tax_category: bool =
@@ -2491,11 +2503,14 @@ mod tests {
         let conn = open_conn();
         // Apply only v1
         apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(1));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(1));
 
         // Now run ensure_schema which should apply v2
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         // Verify attachments table exists
         let count: i64 = conn
@@ -2518,11 +2533,14 @@ mod tests {
         apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
         apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(6));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(6));
 
         // Now run ensure_schema which should apply v7
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         // Verify budgets table exists
         let count: i64 = conn
@@ -2560,11 +2578,14 @@ mod tests {
         apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
         apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(7));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(7));
 
         // Now run ensure_schema which should apply v8.
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         // Verify audit_log table exists.
         let count: i64 = conn
@@ -2589,7 +2610,7 @@ mod tests {
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
         apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
         apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(8));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(8));
 
         conn.execute(
             "INSERT INTO companies (slug, name) VALUES ('acme', 'Acme')",
@@ -2615,7 +2636,10 @@ mod tests {
         }
 
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         let mut stmt = conn
             .prepare("SELECT metadata FROM transactions ORDER BY id")
@@ -2668,11 +2692,14 @@ mod tests {
         apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
         apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
         apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(5));
+        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(5));
 
         // Now run ensure_schema which should apply v6
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
-        assert_eq!(get_schema_version(&conn).ok(), Some(CURRENT_VERSION));
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn)).ok(),
+            Some(CURRENT_VERSION)
+        );
 
         // Verify status column on entries
         let has_status: bool = conn

@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 
 use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
-use rusqlite::{Connection, types::Type};
+use rusqlite::types::Type;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::cli::{Cli, OutputFormat, ReconciliationMode};
@@ -35,7 +35,7 @@ mod settlement;
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db;
 use crate::db::companies::Company;
-use crate::db::connection::Db;
+use crate::db::connection::{Db, ReadConn};
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
@@ -342,7 +342,7 @@ pub(super) struct ResolvedReconciliation<'a> {
 
 impl<'a> ResolvedReconciliation<'a> {
     pub(super) fn resolve(
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         command: &'a crate::cli::ReconciliationCommandArgs,
         today: NaiveDate,
@@ -371,7 +371,8 @@ impl<'a> ResolvedReconciliation<'a> {
                 )?,
             },
         };
-        let (account, request) = resolve_cli_request(db.conn(), company, &args, Some(as_of))?;
+        let scope = Company::bind(reader, company.parse()?)?;
+        let (account, request) = resolve_cli_request(reader, &scope, &args, Some(as_of))?;
         Ok(Self {
             account,
             request,
@@ -382,24 +383,18 @@ impl<'a> ResolvedReconciliation<'a> {
 
 pub(super) fn run_resolved_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     resolved: ResolvedReconciliation<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let conn = db.conn();
-    let report = db::audit::atomically(conn, || {
-        let company_scope = Company::resolve(conn, &company.parse()?)?;
-        let report =
-            build_resolved_report(conn, &company_scope, resolved.account, resolved.request)?;
-        let report = match resolved.mode {
-            ReportMode::Bank => report,
-            ReportMode::Settlement { link_key } => {
-                settlement::apply(conn, &company_scope, report, link_key)?
-            }
-        };
-        report.check_difference()
-    })?;
+    let scope = Company::bind(reader, company.parse()?)?;
+    let report = build_resolved_report(reader, &scope, resolved.account, resolved.request)?;
+    let report = match resolved.mode {
+        ReportMode::Bank => report,
+        ReportMode::Settlement { link_key } => settlement::apply(reader, &scope, report, link_key)?,
+    }
+    .check_difference()?;
     render(cli, company, &report, output)
 }
 
@@ -429,7 +424,7 @@ pub(crate) fn run_to(
     args: &ReconciliationArgs<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let report = build_report(db.conn(), company, args)?;
+    let report = build_report(db, company, args)?;
     render(cli, company, &report, output)
 }
 
@@ -529,10 +524,9 @@ pub fn compute_reconciliation(
     company: &str,
     request: &ReconciliationRequest<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    let conn = db.conn();
-    db::audit::atomically(conn, || {
-        let company = Company::resolve(conn, &company.parse()?)?;
-        build_typed_report(conn, &company, request)?.check_difference()
+    db.read_snapshot(|reader| {
+        let scope = Company::bind(reader, company.parse()?)?;
+        build_typed_report(reader, &scope, request)?.check_difference()
     })
 }
 
@@ -549,20 +543,19 @@ pub fn compute_settlement_reconciliation(
     link_key: Option<&str>,
 ) -> Result<ReconciliationReport, CliError> {
     let link_key = settlement::resolve_link_key(request.statement, link_key)?;
-    let conn = db.conn();
-    db::audit::atomically(conn, || {
-        let company = Company::resolve(conn, &company.parse()?)?;
-        let report = build_typed_report(conn, &company, request)?;
-        settlement::apply(conn, &company, report, link_key)?.check_difference()
+    db.read_snapshot(|reader| {
+        let scope = Company::bind(reader, company.parse()?)?;
+        let report = build_typed_report(reader, &scope, request)?;
+        settlement::apply(reader, &scope, report, link_key)?.check_difference()
     })
 }
 
 fn build_typed_report(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &Company<'_>,
     request: &ReconciliationRequest<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    let account = db::accounts::get_account_on_connection(conn, company.slug(), request.account)?;
+    let account = db::accounts::get_account(company, request.account)?;
     build_resolved_report(
         conn,
         company,
@@ -583,34 +576,34 @@ fn build_typed_report(
 /// # Errors
 /// Returns [`CliError`] for invalid arguments or database failures.
 pub fn build_report(
-    conn: &Connection,
+    db: &Db,
     company: &str,
     args: &ReconciliationArgs<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    db::audit::atomically(conn, || {
-        let company = Company::resolve(conn, &company.parse()?)?;
-        build_cli_report(conn, &company, args)?.check_difference()
+    db.read_snapshot(|reader| {
+        let scope = Company::bind(reader, company.parse()?)?;
+        build_cli_report(reader, &scope, args)?.check_difference()
     })
 }
 
 fn build_cli_report(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &Company<'_>,
     args: &ReconciliationArgs<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    let (account, request) = resolve_cli_request(conn, company.slug().as_str(), args, args.to)?;
+    let (account, request) = resolve_cli_request(conn, company, args, args.to)?;
     build_resolved_report(conn, company, account, request)
 }
 
 fn resolve_cli_request<'a>(
-    conn: &Connection,
-    company: &str,
+    conn: ReadConn<'_>,
+    company: &Company<'_>,
     args: &ReconciliationArgs<'a>,
     as_of: Option<NaiveDate>,
 ) -> Result<(db::AccountRow, ResolvedRequest<'a>), CliError> {
     let filters = metadata_filter::parse_filters(args.filter_metadata)?;
-    let account = db::accounts::get_account_on_connection(conn, &company.parse()?, args.account)?;
-    let currency = resolve_currency(conn, company, args.currency)?;
+    let account = db::accounts::get_account(company, args.account)?;
+    let currency = resolve_currency(conn, company.slug().as_str(), args.currency)?;
     let statement_balance = args
         .statement_balance
         .map(|s| parse_signed_amount(s, currency).map(|units| money(units, currency)))
@@ -633,7 +626,7 @@ fn normalize_statement(statement: Option<&str>) -> Option<&str> {
 }
 
 fn build_resolved_report(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &Company<'_>,
     account: db::AccountRow,
     request: ResolvedRequest<'_>,
@@ -788,7 +781,7 @@ struct EntryQuery<'a> {
 /// cleared sums count clearings with `cleared_date <= to`, reconciled sums
 /// only reconciled clearings with `reconciled_date <= to`.
 fn load_entries(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     query: &EntryQuery<'_>,
 ) -> Result<Vec<EntryRow>, CliError> {
@@ -862,7 +855,7 @@ fn load_entries(
 /// Resolve the report currency via the shared report resolver
 /// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_currency(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     explicit: Option<Currency>,
 ) -> Result<Currency, CliError> {

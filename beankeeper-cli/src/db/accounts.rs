@@ -1,13 +1,13 @@
 use std::fmt::Write;
 
 use beankeeper::types::{Account, AccountCode, AccountType};
-use rusqlite::{Connection, params};
+use rusqlite::params;
 
 use super::AccountRow;
-use super::audit::{self, Actor, Creation};
+use super::audit;
 use super::companies::{Company, CompanySlug};
-use super::connection::ReadConn;
 use crate::error::CliError;
+use crate::identity::{Admin, Granted};
 
 /// Converts an [`AccountRow`] to the library's [`Account`](beankeeper::types::Account) type.
 ///
@@ -44,59 +44,11 @@ pub struct CreateAccountParams<'a> {
 /// Returns [`CliError::Validation`] for an invalid code or if the account
 /// already exists. Returns [`CliError::NotFound`] if the company does not exist.
 pub fn create_account(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Admin>,
     params: &CreateAccountParams<'_>,
 ) -> Result<AccountRow, CliError> {
-    let CreateAccountParams {
-        company_slug,
-        code,
-        name,
-        account_type,
-        default_tax_category,
-    } = *params;
-    let code = AccountCode::new(code)
-        .map_err(|error| CliError::Validation(format!("invalid account code '{code}': {error}")))?;
-
-    audit::atomically(conn, || {
-        let code = code.as_str();
-        let company = Company::bind(ReadConn::new(conn), company_slug.clone())?;
-
-        if account_exists(&company, code)? {
-            return Err(CliError::Validation(format!(
-                "account '{code}' already exists in company '{company_slug}'"
-            )));
-        }
-
-        conn.execute(
-            "INSERT INTO accounts (company_slug, code, name, type, default_tax_category) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                company_slug,
-                code,
-                name,
-                account_type.code(),
-                default_tax_category
-            ],
-        )?;
-
-        let row = get_account(&company, code)?;
-        audit::record_insert(
-            conn,
-            actor,
-            company_slug,
-            Creation::Account,
-            code,
-            &serde_json::json!({
-                "code": row.code,
-                "name": row.name,
-                "type": row.account_type.code(),
-                "company_slug": row.company_slug,
-                "default_tax_category": row.default_tax_category,
-                "created_at": row.created_at,
-            }),
-        )?;
-        Ok(row)
+    grant.mutate("sp_account_create", |tx, actor| {
+        audit::catalog::store_account(tx, actor, params)
     })
 }
 
@@ -152,14 +104,6 @@ pub fn list_accounts(
         accounts.push(row?);
     }
     Ok(accounts)
-}
-
-pub(crate) fn get_account_on_connection(
-    conn: &Connection,
-    company: &crate::db::companies::CompanySlug,
-    code: &str,
-) -> Result<AccountRow, CliError> {
-    get_account(&Company::bind(ReadConn::new(conn), company.clone())?, code)
 }
 
 /// Fetches a single account by company slug and code.
@@ -239,15 +183,16 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Acme Corp",
-            None,
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_company(
+                grant,
+                &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                "Acme Corp",
+                None,
+            )
+        })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
         db
     }
@@ -255,19 +200,20 @@ mod tests {
     #[test]
     fn create_and_get_account() {
         let db = setup();
-        let row = create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        );
+        let row = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        });
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.code, "1000");
@@ -289,19 +235,20 @@ mod tests {
     #[test]
     fn create_account_rejects_missing_company() {
         let db = setup();
-        let result = create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"nope"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        );
+        let result = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"nope"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        });
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
@@ -309,34 +256,36 @@ mod tests {
     fn duplicate_account_is_validation_error() {
         let db = setup();
         assert!(
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "1000",
+                        name: "Cash",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
+            .is_ok()
+        );
+        let result = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
             create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
+                grant,
                 &CreateAccountParams {
                     company_slug: &"acme"
                         .parse()
                         .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1000",
-                    name: "Cash",
+                    name: "Cash 2",
                     account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None
-                }
+                    default_tax_category: None,
+                },
             )
-            .is_ok()
-        );
-        let result = create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1000",
-                name: "Cash 2",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        );
+        });
         assert!(matches!(result, Err(CliError::Validation(_))));
     }
 
@@ -344,35 +293,37 @@ mod tests {
     fn list_accounts_returns_all() {
         let db = setup();
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "1000",
-                    name: "Cash",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "1000",
+                        name: "Cash",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "2000",
-                    name: "Payables",
-                    account_type: beankeeper::types::AccountType::Liability,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "2000",
+                        name: "Payables",
+                        account_type: beankeeper::types::AccountType::Liability,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         let params = ListAccountParams {
@@ -380,7 +331,7 @@ mod tests {
             name_filter: None,
         };
         let list = list_accounts(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind test company"),
             &params,
         )
@@ -392,35 +343,37 @@ mod tests {
     fn list_accounts_with_type_filter() {
         let db = setup();
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "1000",
-                    name: "Cash",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "1000",
+                        name: "Cash",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "2000",
-                    name: "Payables",
-                    account_type: beankeeper::types::AccountType::Liability,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "2000",
+                        name: "Payables",
+                        account_type: beankeeper::types::AccountType::Liability,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         let params = ListAccountParams {
@@ -428,7 +381,7 @@ mod tests {
             name_filter: None,
         };
         let list = list_accounts(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind test company"),
             &params,
         )
@@ -458,29 +411,31 @@ mod tests {
         let db = setup();
         let actor = crate::db::Actor::new("test");
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "1000",
-                    name: "Cash",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "1000",
+                        name: "Cash",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         assert!(
-            crate::db::delete_account(
-                db.conn(),
-                &actor,
-                &"acme".parse().expect("fixture company"),
-                "1000",
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
-            )
+            Granted::<Admin>::with_db(&db, &actor, |grant| {
+                crate::db::delete_account(
+                    grant,
+                    &"acme".parse()?,
+                    "1000",
+                    crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                )
+            })
             .is_ok()
         );
         assert!(
@@ -502,13 +457,14 @@ mod tests {
     fn delete_missing_account_is_not_found() {
         let db = setup();
         let actor = crate::db::Actor::new("test");
-        let result = crate::db::delete_account(
-            db.conn(),
-            &actor,
-            &"acme".parse().expect("fixture company"),
-            "9999",
-            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
-        );
+        let result = Granted::<Admin>::with_db(&db, &actor, |grant| {
+            crate::db::delete_account(
+                grant,
+                &"acme".parse()?,
+                "9999",
+                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+            )
+        });
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
@@ -516,35 +472,37 @@ mod tests {
     fn list_account_codes_returns_codes() {
         let db = setup();
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "1000",
-                    name: "Cash",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "1000",
+                        name: "Cash",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "2000",
-                    name: "Payables",
-                    account_type: beankeeper::types::AccountType::Liability,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "2000",
+                        name: "Payables",
+                        account_type: beankeeper::types::AccountType::Liability,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         let codes = list_account_codes(
@@ -585,51 +543,54 @@ mod tests {
     fn list_accounts_with_name_filter() {
         let db = setup();
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "1000",
-                    name: "Cash on Hand",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "1000",
+                        name: "Cash on Hand",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "1100",
-                    name: "Petty Cash",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "1100",
+                        name: "Petty Cash",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
         assert!(
-            create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    code: "2000",
-                    name: "Payables",
-                    account_type: beankeeper::types::AccountType::Liability,
-                    default_tax_category: None
-                }
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme"
+                            .parse()
+                            .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                        code: "2000",
+                        name: "Payables",
+                        account_type: beankeeper::types::AccountType::Liability,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .is_ok()
         );
 
@@ -638,7 +599,7 @@ mod tests {
             name_filter: Some("Cash"),
         };
         let list = list_accounts(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind test company"),
             &params,
         )
@@ -650,7 +611,7 @@ mod tests {
             name_filter: Some("Petty"),
         };
         let list2 = list_accounts(
-            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
                 .expect("bind test company"),
             &params2,
         )

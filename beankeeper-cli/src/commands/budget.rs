@@ -300,16 +300,13 @@ pub(crate) fn execute_set_json(
 mod tests {
     use super::*;
     use crate::cli::{AccountCommand, CompanyCommand};
+    use crate::identity::{Admin, Granted};
 
     fn ledger() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        db::companies::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         super::super::account::execute_json(
             &db,
             &"acme".parse()?,

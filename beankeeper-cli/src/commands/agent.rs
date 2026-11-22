@@ -6,12 +6,12 @@ use serde::Serialize;
 use crate::cli::{AgentCommand, AgentLimitCommand, Cli};
 use crate::db::spend_limits::{Cap, SpendLimit};
 use crate::error::CliError;
-use crate::identity::{self, IssueRequest};
+use crate::identity::{self, Admin, Granted, IssueRequest};
 use crate::output::amounts::OptionalMoneyField;
 
 pub(super) fn run_key(cli: &Cli) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    let data = identity::init_root(db.conn(), &cli.principal())?;
+    let data = Granted::<Admin>::with_db(&db, &cli.principal(), identity::init_root)?;
     render(cli, &data)
 }
 
@@ -29,21 +29,24 @@ pub fn run(cli: &Cli, command: &AgentCommand) -> Result<(), CliError> {
             ttl,
             public_key,
             generate_key,
-        } => identity::issue_credential(
-            db.conn(),
-            &actor,
-            &IssueRequest {
-                name,
-                capabilities: caps,
-                ttl: identity::parse_ttl(ttl)?,
-                public_key: public_key.as_deref(),
-                generate_key: *generate_key,
-            },
-        )?
+        } => Granted::<Admin>::with_db(&db, &actor, |grant| {
+            identity::issue_credential(
+                grant,
+                &IssueRequest {
+                    name,
+                    capabilities: caps,
+                    ttl: identity::parse_ttl(ttl)?,
+                    public_key: public_key.as_deref(),
+                    generate_key: *generate_key,
+                },
+            )
+        })?
         .response_json(),
         AgentCommand::Limit(sub) => run_limit(cli, &db, &actor, sub)?,
-        AgentCommand::List => identity::list(db.conn())?,
-        AgentCommand::Revoke { target } => identity::revoke(db.conn(), &actor, target)?,
+        AgentCommand::List => identity::list(db.read())?,
+        AgentCommand::Revoke { target } => {
+            Granted::<Admin>::with_db(&db, &actor, |grant| identity::revoke(grant, target))?
+        }
     };
     render(cli, &data)
 }
@@ -70,11 +73,10 @@ fn run_limit(
     sub: &AgentLimitCommand,
 ) -> Result<serde_json::Value, CliError> {
     use crate::db::{audit, spend_limits};
-    use crate::identity::{Admin, Granted};
     use secrecy::ExposeSecret;
-    audit::atomically(db.conn(), || {
+    let run = || {
         identity::authorize_known_operation(
-            db.conn(),
+            db.read(),
             cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
             super::operation(&cli.command),
         )?;
@@ -125,7 +127,12 @@ fn run_limit(
             }
         };
         value.map_err(|error| CliError::General(error.to_string()))
-    })
+    };
+    if matches!(sub, AgentLimitCommand::Show { .. }) {
+        db.read_snapshot(|_| run())
+    } else {
+        db.in_write_batch(run)
+    }
 }
 
 #[derive(Serialize)]

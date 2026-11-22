@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use super::super::{AuditAction, AuditChange, AuditEntity, record};
 use super::requests::SetupReference;
 use super::statements::{StatementFormat, StatementPreview, StatementRequest, prepare_in_session};
-use super::{ActiveSession, Generation, SessionState, find_session, with_active_session};
+use super::{ActiveSession, Generation, SessionState, find_session, with_active_setup_write};
 use crate::db::companies::CompanySlug;
 use crate::db::connection::{Db, ReadConn};
 use crate::db::ids::{StatementBatchId, TransactionId};
@@ -169,9 +169,9 @@ pub(crate) fn summary(
     reader: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<StatementImportSummary, CliError> {
-    use crate::db::schema::{STATEMENT_BATCH_SCHEMA_VERSION, read_schema_version};
+    use crate::db::schema::{STATEMENT_BATCH_SCHEMA_VERSION, get_schema_version};
 
-    if read_schema_version(reader)? < STATEMENT_BATCH_SCHEMA_VERSION {
+    if get_schema_version(reader)? < STATEMENT_BATCH_SCHEMA_VERSION {
         return Ok(StatementImportSummary::default());
     }
     let (summary, valid) = reader.query_row(
@@ -369,7 +369,7 @@ fn reserve(
     request_hash: &Sha256Hex,
     prepare: impl FnOnce() -> Result<FrozenBatch, CliError>,
 ) -> Result<StatementReview, CliError> {
-    let conn = session.connection;
+    let conn = session.tx.connection();
     let reader = ReadConn::new(conn);
     let generation = session.session.generation;
     let previous = reader
@@ -425,7 +425,7 @@ pub(crate) fn preview(
     reference: &SetupReference,
     request: &StatementRequest,
 ) -> Result<StatementReview, CliError> {
-    with_active_session(db, actor, request.generation, |session| {
+    with_active_setup_write(db, actor, request.generation, |session| {
         reserve(
             session,
             &request.company,
@@ -483,7 +483,7 @@ fn freeze(
             existing_transaction: row.existing_transaction,
         };
         if let Some(id) = row.existing_transaction {
-            require_existing_match(ReadConn::new(session.connection), &batch, &row, id)?;
+            require_existing_match(session.read(), &batch, &row, id)?;
         }
         batch.rows.push(row);
     }
@@ -497,10 +497,11 @@ pub(crate) fn commit(
     batch_id: StatementBatchId,
     expected: &Sha256Hex,
 ) -> Result<StatementReceipt, CliError> {
-    db.with_audited_tx("sp_atomic_batch", |tx| {
+    db.with_audited_tx("sp_statement_import", |tx| {
+        super::super::reserve_ledger_writer(tx)?;
         let grant = Granted::<StatementApprover>::check(tx, actor)?;
-        let conn = db.conn();
-        let reader = ReadConn::new(conn);
+        let conn = tx.connection();
+        let reader = tx.read();
         let preview = load(reader, company, batch_id)?;
         if &preview.stamp.preview_sha256 != expected {
             return Err(CliError::Validation(format!(
@@ -510,7 +511,7 @@ pub(crate) fn commit(
         if let Some(receipt) = receipt_for(reader, &preview)? {
             return Ok(receipt);
         }
-        authorize_first_commit(conn, &grant, &preview)?;
+        authorize_first_commit(reader, &grant, &preview)?;
         let receipt = apply_batch(tx, grant.actor(), &preview)?;
         record_event(
             conn,
@@ -626,7 +627,7 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
 }
 
 fn authorize_first_commit(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     grant: &Granted<'_, StatementApprover>,
     preview: &StoredPreview,
 ) -> Result<(), CliError> {

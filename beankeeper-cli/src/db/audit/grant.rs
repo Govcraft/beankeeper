@@ -2,8 +2,6 @@
 
 use std::marker::PhantomData;
 
-use rusqlite::Connection;
-
 use super::savepoint::{AuditedTx, with_audited_tx};
 use crate::capability::Capability;
 use crate::db::{Actor, Db};
@@ -134,10 +132,10 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
     }
 
     fn require_current(tx: &AuditedTx<'_>, actor: &Actor) -> Result<(), CliError> {
-        let conn = tx.connection();
-        let enforce = crate::db::policy::get(conn)?.enforce || C::EXPLICIT;
+        let reader = tx.read();
+        let enforce = crate::db::policy::get(reader)?.enforce || C::EXPLICIT;
         if let Some(agent) = actor.identity() {
-            agent.check_live(conn)?;
+            agent.check_live(reader)?;
             if agent.enforces_permissions(enforce)
                 && !agent.allows(C::REQUIRED)?
                 && !C::ALTERNATE
@@ -174,23 +172,8 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
     }
 }
 
-impl Granted<'_, Admin> {
-    /// Run an authorized policy mutation for an existing SQLite connection.
-    /// # Errors
-    /// Returns authorization or storage errors and rolls back callback failures.
-    pub fn with<T>(
-        conn: &Connection,
-        actor: &Actor,
-        run: impl for<'grant> FnOnce(Granted<'grant, Admin>) -> Result<T, CliError>,
-    ) -> Result<T, CliError> {
-        with_audited_tx(conn, "sp_atomic_batch", |tx| {
-            run(Granted::check(tx, actor)?)
-        })
-    }
-}
-
 impl<'a> Granted<'a, SetupOwner> {
-    pub(crate) const fn setup_connection(&self) -> &'a Connection {
-        self.tx.connection()
+    pub(super) const fn audited_tx(&self) -> &'a AuditedTx<'a> {
+        self.tx
     }
 }

@@ -12,9 +12,9 @@ use crate::identity::{Admin, Granted};
 pub fn run(cli: &Cli, command: &PolicyCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
     let data = match command {
-        PolicyCommand::Show => policy::get(db.conn())?,
+        PolicyCommand::Show => policy::get(db.read())?,
         PolicyCommand::Set { enforce } => {
-            Granted::<Admin>::with(db.conn(), &cli.principal(), |grant| {
+            Granted::<Admin>::with_db(&db, &cli.principal(), |grant| {
                 audit::set_policy(grant, enforce.enabled())
             })?
         }

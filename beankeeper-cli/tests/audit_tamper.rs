@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db, PostEntryParams, PostResult, PostTransactionParams};
-use beankeeper_cli::identity::{Granted, Reconcile};
+use beankeeper_cli::identity::{Admin, Granted, Reconcile};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
@@ -21,39 +21,43 @@ struct Ledger {
 }
 
 impl Ledger {
+    fn raw(&self) -> rusqlite::Result<rusqlite::Connection> {
+        let connection = rusqlite::Connection::open(&self.path)?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        Ok(connection)
+    }
+
     fn new() -> Result<Self, Box<dyn Error>> {
         let dir = tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
-        db::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
-        db::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )?;
-        db::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "4000",
-                name: "Revenue",
-                account_type: beankeeper::types::AccountType::Revenue,
-                default_tax_category: None,
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: beankeeper::types::AccountType::Revenue,
+                    default_tax_category: None,
+                },
+            )
+        })?;
         Ok(Self { dir, path, db })
     }
 
@@ -100,7 +104,7 @@ impl Ledger {
 
     fn count(&self, table: &str) -> Result<i64, rusqlite::Error> {
         self.db
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
     }
 }
@@ -254,7 +258,7 @@ fn posts_and_reversals_record_creators_and_skip_retries_without_new_audit_rows()
 fn creation_audit_failure_rolls_back_posting_and_chain_sequence() -> TestResult {
     let ledger = Ledger::new()?;
     let creations = ledger.count("audit_log")?;
-    ledger.db.conn().execute_batch(
+    ledger.raw()?.execute_batch(
         "CREATE TRIGGER fail_creation BEFORE INSERT ON audit_log
         WHEN NEW.action = 'create' BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
     )?;
@@ -263,10 +267,7 @@ fn creation_audit_failure_rolls_back_posting_and_chain_sequence() -> TestResult 
         assert_eq!(ledger.count(table)?, 0);
     }
     assert_eq!(ledger.count("audit_log")?, creations);
-    ledger
-        .db
-        .conn()
-        .execute_batch("DROP TRIGGER fail_creation;")?;
+    ledger.raw()?.execute_batch("DROP TRIGGER fail_creation;")?;
     assert_eq!(ledger.post("original")?, PostResult::Created(1.try_into()?));
     success(&ledger.verify()?)?;
     Ok(())
@@ -291,10 +292,9 @@ fn verify_reports_first_modified_hash_link_for_each_canonical_field() -> TestRes
         ledger.post("first")?;
         ledger.post("second")?;
         ledger
-            .db
-            .conn()
+            .raw()?
             .execute_batch("DROP TRIGGER protect_audit_update;")?;
-        ledger.db.conn().execute(
+        ledger.raw()?.execute(
             &format!("UPDATE audit_log SET {assignment} WHERE id = 1"),
             [],
         )?;
@@ -319,12 +319,10 @@ fn verify_detects_deleted_prefix_middle_tail_and_entire_chain() -> TestResult {
             ledger.post(reference)?;
         }
         ledger
-            .db
-            .conn()
+            .raw()?
             .execute_batch("DROP TRIGGER protect_audit_delete;")?;
         ledger
-            .db
-            .conn()
+            .raw()?
             .execute(&format!("DELETE FROM audit_log WHERE {condition}"), [])?;
         failure(&ledger.verify()?, expected)?;
     }
@@ -373,7 +371,7 @@ fn verify_rechecks_balance_positive_amounts_currency_and_entry_ownership() -> Te
 fn verify_detects_balanced_rewrites_via_creation_snapshot() -> TestResult {
     let ledger = Ledger::new()?;
     ledger.post("first")?;
-    ledger.db.conn().execute_batch(
+    ledger.raw()?.execute_batch(
         "DROP TRIGGER protect_entries_update;
         UPDATE entries SET amount = 200;",
     )?;
@@ -388,7 +386,7 @@ fn creation_verification_detects_rewritten_date_text() -> TestResult {
     let ledger = Ledger::new()?;
     ledger.post("date-spelling")?;
     success(&ledger.verify()?)?;
-    ledger.db.conn().execute_batch(
+    ledger.raw()?.execute_batch(
         "DROP TRIGGER protect_transactions_update;
         UPDATE transactions SET date = '2026-1-1' WHERE id = 1;",
     )?;
@@ -411,7 +409,7 @@ fn allowed_clearing_and_metadata_mutations_keep_verification_healthy() -> TestRe
             db::EntryStatus::Cleared,
         )
     })?;
-    ledger.db.conn().execute(
+    ledger.raw()?.execute(
         "UPDATE transactions SET metadata = ?1 WHERE id = 1",
         params![r#"{"note":"allowed"}"#],
     )?;
@@ -456,7 +454,7 @@ fn cli_post_and_every_import_format_honor_explicit_actor_and_environment() -> Te
     }
     let mut stmt = ledger
         .db
-        .conn()
+        .read()
         .prepare("SELECT posted_by FROM transactions ORDER BY id")?;
     let posters = stmt
         .query_map([], |r| r.get::<_, String>(0))?
@@ -478,10 +476,10 @@ fn posting_after_tail_removal_fails_without_hiding_evidence() -> TestResult {
     let last_retained: i64 =
         ledger
             .db
-            .conn()
+            .read()
             .query_row("SELECT MAX(id) - 1 FROM audit_log", [], |row| row.get(0))?;
     let audit_count = ledger.count("audit_log")?;
-    ledger.db.conn().execute_batch(
+    ledger.raw()?.execute_batch(
         "DROP TRIGGER protect_audit_delete;
         DELETE FROM audit_log WHERE id = (SELECT MAX(id) FROM audit_log);",
     )?;
@@ -503,7 +501,7 @@ fn verify_detects_deleted_posting_and_erased_poster_against_creation_audit() -> 
     ] {
         let ledger = Ledger::new()?;
         ledger.post("first")?;
-        ledger.db.conn().execute_batch(tamper)?;
+        ledger.raw()?.execute_batch(tamper)?;
         failure(&ledger.verify()?, "creation audit record")?;
     }
     Ok(())

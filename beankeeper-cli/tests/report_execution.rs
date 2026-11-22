@@ -1,6 +1,8 @@
 //! The in-process report API preserves CLI payloads without a stdout transport.
 
+use beankeeper_cli::identity::{Admin, Granted};
 use std::error::Error;
+use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::cargo::CommandCargoExt;
@@ -107,21 +109,26 @@ const CASES: &[&[&str]] = &[
     ],
 ];
 
-#[test]
-fn in_process_reports_match_every_cli_report_payload() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let path = dir.path().join("ledger.db");
+fn run_bk(path: &Path, args: &[&str]) -> TestResult {
     let output = Command::cargo_bin("bk")?
-        .args(["--db"])
-        .arg(&path)
-        .args(["init", "--demo", "--quiet"])
+        .arg("--db")
+        .arg(path)
+        .args(args)
         .env_remove("BEANKEEPER_PASSPHRASE_CMD")
         .output()?;
     assert!(
         output.status.success(),
-        "{}",
+        "{args:?}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(())
+}
+
+#[test]
+fn in_process_reports_match_every_cli_report_payload() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger.db");
+    run_bk(&path, &["init", "--demo", "--quiet"])?;
     let db = Db::open_existing(&path, None)?;
     for args in CASES {
         let mut argv = vec!["bk", "--company", "acme-consulting", "--quiet", "report"];
@@ -163,13 +170,9 @@ fn in_process_reports_match_every_cli_report_payload() -> TestResult {
 #[test]
 fn in_process_reports_preserve_validation_and_missing_company_errors() -> TestResult {
     let db = Db::open_in_memory()?;
-    beankeeper_cli::db::companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"test".parse()?,
-        "Test",
-        None,
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        beankeeper_cli::db::companies::create_company(grant, &"test".parse()?, "Test", None)
+    })?;
     let cli = Cli::try_parse_from(["bk", "report", "trial-balance", "--from", "invalid"])?;
     let BkCommand::Report(args) = &cli.command else {
         return Err("expected report command".into());

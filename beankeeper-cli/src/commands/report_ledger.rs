@@ -30,12 +30,12 @@ use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::params_from_iter;
 use serde::{Serialize, Serializer};
 
 use crate::cli::{Cli, OutputFormat};
 use crate::db;
-use crate::db::connection::Db;
+use crate::db::connection::{Db, ReadConn};
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
@@ -67,7 +67,7 @@ pub(super) struct LedgerRequest<'a> {
 impl<'a> LedgerOptions<'a> {
     pub(super) fn resolve(
         &self,
-        conn: &Connection,
+        conn: ReadConn<'_>,
         company: &str,
     ) -> Result<LedgerRequest<'a>, CliError> {
         Ok(LedgerRequest {
@@ -227,18 +227,18 @@ pub fn run(
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    let report = build_report(db.conn(), company, opts)?;
+    let report = db.read_snapshot(|reader| build_report(reader, company, opts))?;
     write_report(cli, company, &report, &mut output)
 }
 
 pub(super) fn run_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     request: LedgerRequest<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let report = build_report_for_request(db.conn(), company, request)?;
+    let report = build_report_for_request(reader, company, request)?;
     write_report(cli, company, &report, output)
 }
 
@@ -278,11 +278,11 @@ fn write_report(
 ///
 /// See [`run`].
 pub fn build_report(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     opts: &LedgerOptions<'_>,
 ) -> Result<LedgerReport, CliError> {
-    if !db::companies::company_exists_on_connection(conn, &company.parse()?)? {
+    if !db::companies::company_exists(conn, &company.parse()?)? {
         return Err(CliError::NotFound(format!("company '{company}' not found")));
     }
 
@@ -299,13 +299,13 @@ pub fn build_report(
 }
 
 fn build_report_for_request(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     request: LedgerRequest<'_>,
 ) -> Result<LedgerReport, CliError> {
     let currency = request.currency;
 
-    let scope = db::companies::Company::resolve(conn, &company.parse()?)?;
+    let scope = db::companies::Company::bind(conn, company.parse()?)?;
     let explicit = !request.accounts.is_empty();
     let accounts: Vec<db::AccountRow> = if explicit {
         let codes: BTreeSet<&str> = request.accounts.iter().map(String::as_str).collect();
@@ -351,7 +351,7 @@ fn build_report_for_request(
 /// Resolve the report currency via the shared report resolver
 /// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_ledger_currency(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     explicit: Option<Currency>,
 ) -> Result<Currency, CliError> {
@@ -402,7 +402,7 @@ struct StatementScope<'a> {
 
 /// Build the statement for a single account.
 fn account_statement(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     acct: &db::AccountRow,
     scope: &StatementScope<'_>,

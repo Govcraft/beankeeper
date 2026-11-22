@@ -1,5 +1,8 @@
 //! Persisted categorization, import integration, and audit guarantees (issue #6).
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
@@ -7,7 +10,7 @@ use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{Actor, Db, accounts, audit, companies, rules};
-use beankeeper_cli::identity::{Granted, Post};
+use beankeeper_cli::identity::{Admin, Granted, Post};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -24,13 +27,9 @@ impl Ledger {
         let path = dir.path().join("rules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(
-                db.conn(),
-                &Actor::new("fixture"),
-                &company.parse()?,
-                company,
-                None,
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                companies::create_company(grant, &company.parse()?, company, None)
+            })?;
             for (code, kind, tax) in [
                 ("1000", beankeeper::types::AccountType::Asset, None),
                 (
@@ -49,17 +48,18 @@ impl Ledger {
                     Some("fallback"),
                 ),
             ] {
-                accounts::create_account(
-                    db.conn(),
-                    &Actor::new("fixture"),
-                    &CreateAccountParams {
-                        company_slug: &company.parse()?,
-                        code,
-                        name: code,
-                        account_type: kind,
-                        default_tax_category: tax,
-                    },
-                )?;
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                    accounts::create_account(
+                        grant,
+                        &CreateAccountParams {
+                            company_slug: &company.parse()?,
+                            code,
+                            name: code,
+                            account_type: kind,
+                            default_tax_category: tax,
+                        },
+                    )
+                })?;
             }
         }
         Ok(Self { dir, path })
@@ -120,7 +120,7 @@ impl Ledger {
     fn count(&self, table: &str) -> Result<i64, Box<dyn Error>> {
         let db = Db::open_existing(&self.path, None)?;
         Ok(db
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
             })?)
@@ -271,7 +271,7 @@ fn csv_categorizes_both_directions_preserves_fallback_and_isolates_companies() -
         3
     );
     let db = Db::open_existing(&ledger.path, None)?;
-    let mut stmt = db.conn().prepare("SELECT t.description, e.account_code, e.direction, e.amount, e.tax_category FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE t.company_slug = 'acme' AND e.account_code != '1000' ORDER BY t.id")?;
+    let mut stmt = db.read().prepare("SELECT t.description, e.account_code, e.direction, e.amount, e.tax_category FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE t.company_slug = 'acme' AND e.account_code != '1000' ORDER BY t.id")?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -309,7 +309,7 @@ fn csv_categorizes_both_directions_preserves_fallback_and_isolates_companies() -
             ),
         ]
     );
-    let other_fallback: i64 = db.conn().query_row(
+    let other_fallback: i64 = db.read().query_row(
         "SELECT COUNT(*) FROM entries WHERE company_slug = 'other' AND account_code = '9000'",
         [],
         |r| r.get(0),
@@ -434,7 +434,7 @@ fn ofx_matches_name_and_memo_applies_tax_defaults_and_preserves_references() -> 
         3
     );
     let db = Db::open_existing(&ledger.path, None)?;
-    let mut stmt = db.conn().prepare("SELECT e.account_code, e.direction, e.amount, e.tax_category FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE e.account_code != '1000' ORDER BY t.id")?;
+    let mut stmt = db.read().prepare("SELECT e.account_code, e.direction, e.amount, e.tax_category FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE e.account_code != '1000' ORDER BY t.id")?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -477,27 +477,27 @@ fn ofx_dry_run_and_posting_both_reject_self_posting_rules() -> TestResult {
 
 #[test]
 fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
-    let db = Db::open_in_memory()?;
-    companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"acme".parse()?,
-        "Acme",
-        None,
-    )?;
-    accounts::create_account(
-        db.conn(),
-        &Actor::new("fixture"),
-        &CreateAccountParams {
-            company_slug: &"acme".parse()?,
-            code: "5000",
-            name: "Dining",
-            account_type: beankeeper::types::AccountType::Expense,
-            default_tax_category: None,
-        },
-    )?;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("rules.db");
+    let db = Db::open(&path, None)?;
+    let raw = raw_ledger::open(&path, None)?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+    })?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        accounts::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "5000",
+                name: "Dining",
+                account_type: beankeeper::types::AccountType::Expense,
+                default_tax_category: None,
+            },
+        )
+    })?;
     let actor = Actor::new("rules-test");
-    db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
+    raw.execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     Granted::<Post>::with_db(&db, &actor, |grant| {
         assert!(rules::create_rule(grant, &"acme".parse()?, "coffee".parse()?, "5000", 0).is_err());
         Ok(())
@@ -509,11 +509,11 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
         )?)?
         .is_empty()
     );
-    db.conn().execute_batch("DROP TRIGGER fail_rule_audit;")?;
+    raw.execute_batch("DROP TRIGGER fail_rule_audit;")?;
     let rule = Granted::<Post>::with_db(&db, &actor, |grant| {
         rules::create_rule(grant, &"acme".parse()?, "coffee".parse()?, "5000", 0)
     })?;
-    db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
+    raw.execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     Granted::<Post>::with_db(&db, &actor, |grant| {
         assert!(
             audit::delete_rule(

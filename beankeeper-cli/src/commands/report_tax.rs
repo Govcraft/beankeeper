@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use super::report::ReportOutput;
 use crate::cli::{Cli, OutputFormat};
-use crate::db::connection::Db;
+use crate::db::connection::{Db, ReadConn};
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::output::json::serialize_display;
@@ -99,14 +99,21 @@ pub fn build_schedule_c(
     period: Period,
     currency: Currency,
 ) -> Result<TaxReport<ScheduleSummary>, CliError> {
-    crate::db::audit::atomically(db.conn(), || {
-        crate::db::companies::get_company(db.read(), &company.parse()?)?;
-        let entries = load_entries(db, company, period, currency)?;
-        Ok(TaxReport {
-            period,
-            currency,
-            summary: schedule::build(&entries, currency)?,
-        })
+    db.read_snapshot(|reader| build_schedule_c_on(reader, company, period, currency))
+}
+
+fn build_schedule_c_on(
+    reader: ReadConn<'_>,
+    company: &str,
+    period: Period,
+    currency: Currency,
+) -> Result<TaxReport<ScheduleSummary>, CliError> {
+    crate::db::companies::get_company(reader, &company.parse()?)?;
+    let entries = load_entries(reader, company, period, currency)?;
+    Ok(TaxReport {
+        period,
+        currency,
+        summary: schedule::build(&entries, currency)?,
     })
 }
 
@@ -124,15 +131,22 @@ pub fn build_vendors(
     period: Period,
     threshold: VendorThreshold,
 ) -> Result<TaxReport<VendorSummary>, CliError> {
-    crate::db::audit::atomically(db.conn(), || {
-        crate::db::companies::get_company(db.read(), &company.parse()?)?;
-        let currency = threshold.money().currency();
-        let entries = load_entries(db, company, period, currency)?;
-        Ok(TaxReport {
-            period,
-            currency,
-            summary: vendors::build(&entries, threshold)?,
-        })
+    db.read_snapshot(|reader| build_vendors_on(reader, company, period, threshold))
+}
+
+fn build_vendors_on(
+    reader: ReadConn<'_>,
+    company: &str,
+    period: Period,
+    threshold: VendorThreshold,
+) -> Result<TaxReport<VendorSummary>, CliError> {
+    crate::db::companies::get_company(reader, &company.parse()?)?;
+    let currency = threshold.money().currency();
+    let entries = load_entries(reader, company, period, currency)?;
+    Ok(TaxReport {
+        period,
+        currency,
+        summary: vendors::build(&entries, threshold)?,
     })
 }
 
@@ -157,7 +171,7 @@ pub(super) enum ResolvedTaxReport {
 impl TaxInvocation<'_> {
     pub(super) fn resolve(
         self,
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         today: chrono::NaiveDate,
     ) -> Result<ResolvedTaxReport, CliError> {
@@ -166,7 +180,7 @@ impl TaxInvocation<'_> {
             Self::Vendor1099(args) => &args.period,
         };
         let currency = super::report_currency::resolve_report_currency(
-            db.conn(),
+            reader,
             company,
             crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
         )?;
@@ -185,14 +199,14 @@ impl TaxInvocation<'_> {
 
 pub(super) fn run_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     request: ResolvedTaxReport,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     match request {
         ResolvedTaxReport::ScheduleC { period, currency } => {
-            let report = build_schedule_c(db, company, period, currency)?;
+            let report = build_schedule_c_on(reader, company, period, currency)?;
             match output.format {
                 OutputFormat::Json => {
                     let meta = cli
@@ -208,7 +222,7 @@ pub(super) fn run_to(
         }
         ResolvedTaxReport::Vendor1099 { period, threshold } => {
             let currency = threshold.money().currency();
-            let report = build_vendors(db, company, period, threshold)?;
+            let report = build_vendors_on(reader, company, period, threshold)?;
             match output.format {
                 OutputFormat::Json => {
                     let meta = cli
@@ -230,12 +244,12 @@ pub(super) fn run_to(
 }
 
 fn load_entries(
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     period: Period,
     currency: Currency,
 ) -> Result<Vec<TaxEntry>, CliError> {
-    let mut stmt = db.conn().prepare(
+    let mut stmt = reader.prepare(
         "SELECT t.id, t.metadata, a.code, a.name, a.type, e.tax_category, e.direction, e.amount
          FROM transactions t JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
          JOIN accounts a ON a.company_slug = e.company_slug AND a.code = e.account_code

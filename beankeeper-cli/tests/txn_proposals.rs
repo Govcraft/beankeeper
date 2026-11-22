@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db, transactions};
-use beankeeper_cli::identity::{self, IssueRequest};
+use beankeeper_cli::identity::{self, Admin, Granted, IssueRequest};
 use secrecy::SecretString;
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
@@ -28,6 +28,14 @@ struct Agent {
 }
 
 impl Ledger {
+    fn raw(&self) -> Result<rusqlite::Connection, Box<dyn Error>> {
+        let connection = rusqlite::Connection::open(&self.path)?;
+        let passphrase = std::fs::read_to_string(&self.passphrase_file)?;
+        connection.pragma_update(None, "key", passphrase)?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        Ok(connection)
+    }
+
     fn new() -> Result<Self, Box<dyn Error>> {
         let dir = tempdir()?;
         let path = dir.path().join("proposals.db");
@@ -36,31 +44,28 @@ impl Ledger {
         let passphrase: SecretString = "proposal-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
         for company in ["acme", "other"] {
-            db::create_company(
-                db.conn(),
-                &Actor::new("fixture"),
-                &company.parse()?,
-                company,
-                None,
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                db::create_company(grant, &company.parse()?, company, None)
+            })?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("5000", beankeeper::types::AccountType::Expense),
             ] {
-                db::create_account(
-                    db.conn(),
-                    &Actor::new("fixture"),
-                    &CreateAccountParams {
-                        company_slug: &company.parse()?,
-                        code,
-                        name: code,
-                        account_type: kind,
-                        default_tax_category: Some("default-tax"),
-                    },
-                )?;
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                    db::create_account(
+                        grant,
+                        &CreateAccountParams {
+                            company_slug: &company.parse()?,
+                            code,
+                            name: code,
+                            account_type: kind,
+                            default_tax_category: Some("default-tax"),
+                        },
+                    )
+                })?;
             }
         }
-        identity::init_root(db.conn(), &Actor::new("owner"))?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
         Ok(Self {
             _dir: dir,
             path,
@@ -116,17 +121,18 @@ impl Ledger {
     }
 
     fn issue(&self, grants: &[&str]) -> Result<Agent, Box<dyn Error>> {
-        let issued = identity::issue(
-            self.db.conn(),
-            &Actor::new("owner"),
-            &IssueRequest {
-                name: "review",
-                capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                ttl: Duration::from_secs(3600),
-                public_key: None,
-                generate_key: true,
-            },
-        )?;
+        let issued = Granted::<Admin>::with_db(&self.db, &Actor::new("owner"), |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name: "review",
+                    capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
         Ok(Agent {
             token: issued["token"].as_str().ok_or("missing token")?.to_owned(),
             uri: issued["agent_uri"]
@@ -164,7 +170,7 @@ impl Ledger {
     fn count(&self, table: &str) -> Result<i64, Box<dyn Error>> {
         Ok(self
             .db
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
             })?)
@@ -206,7 +212,7 @@ fn assert_approved_details(
     assert_eq!(txn.agent_uri.as_deref(), Some(approver.uri.as_str()));
     assert_eq!(
         txn.token_jti.as_deref(),
-        Some(identity::verify(ledger.db.conn(), &approver.token)?.jti())
+        Some(identity::verify(ledger.db.read(), &approver.token)?.jti())
     );
     assert_eq!(txn.posted_by.as_deref(), Some("reviewer"));
     assert_eq!(txn.description, "Office supplies");
@@ -291,7 +297,7 @@ fn approval_preserves_posting_details_attributes_approver_and_audits_proposer() 
     )?;
     assert_eq!(resolved["status"], "approved");
     assert_approved_details(&ledger, &proposal, &resolved, &approver)?;
-    let approval_snapshot: String = ledger.db.conn().query_row(
+    let approval_snapshot: String = ledger.db.read().query_row(
         "SELECT after FROM audit_log WHERE action = 'proposal_approve'",
         [],
         |row| row.get(0),
@@ -669,7 +675,7 @@ fn invalid_proposals_and_failed_approvals_do_not_leave_partial_history() -> Test
     assert_eq!(ledger.count("txn_proposals")?, 0);
     let proposal = ledger.propose(&proposer, "atomic")?;
     let audits = ledger.count("audit_log")?;
-    ledger.db.conn().execute_batch("CREATE TRIGGER reject_test_post BEFORE INSERT ON transactions BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;")?;
+    ledger.raw()?.execute_batch("CREATE TRIGGER reject_test_post BEFORE INSERT ON transactions BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;")?;
     assert!(
         !ledger
             .call("acme", &["txn", "approve", id(&proposal)?], None)?
@@ -679,15 +685,14 @@ fn invalid_proposals_and_failed_approvals_do_not_leave_partial_history() -> Test
     assert_eq!(ledger.count("transactions")?, 0);
     assert_eq!(ledger.count("entries")?, 0);
     assert_eq!(ledger.count("audit_log")?, audits);
-    let status: String = ledger.db.conn().query_row(
+    let status: String = ledger.db.read().query_row(
         "SELECT status FROM txn_proposals WHERE id = ?1",
         [id(&proposal)?],
         |row| row.get(0),
     )?;
     assert_eq!(status, "pending");
     ledger
-        .db
-        .conn()
+        .raw()?
         .execute_batch("DROP TRIGGER reject_test_post;")?;
     ledger.run("acme", &["txn", "approve", id(&proposal)?], None)?;
     ledger.run("acme", &["verify"], None)?;
@@ -783,7 +788,7 @@ fn period_lock_blocks_approval_atomically_and_reopen_requires_admin() -> TestRes
     ledger.run("acme", &["txn", "approve", id], Some(&approver.token))?;
     assert_eq!(ledger.count("transactions")?, 1);
     ledger.run("acme", &["verify"], Some(&approver.token))?;
-    let attribution: (Option<String>, Option<String>) = ledger.db.conn().query_row(
+    let attribution: (Option<String>, Option<String>) = ledger.db.read().query_row(
         "SELECT agent_uri, token_jti FROM audit_log WHERE action = 'period_reopen'",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),

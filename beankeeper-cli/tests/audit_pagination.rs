@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt as _;
 use beankeeper_cli::db::{self, Actor, Db, PostEntryParams, PostTransactionParams};
-use beankeeper_cli::identity::{Granted, Reconcile};
+use beankeeper_cli::identity::{Admin, Granted, Reconcile};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -25,35 +25,33 @@ impl Ledger {
         let path = dir.path().join("audit.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            db::create_company(
-                db.conn(),
-                &Actor::new("fixture"),
-                &company.parse()?,
-                company,
-                None,
-            )?;
-            db::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &company.parse()?,
-                    code: "1000",
-                    name: "Cash",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None,
-                },
-            )?;
-            db::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &company.parse()?,
-                    code: "4000",
-                    name: "Revenue",
-                    account_type: beankeeper::types::AccountType::Revenue,
-                    default_tax_category: None,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                db::create_company(grant, &company.parse()?, company, None)
+            })?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                db::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &company.parse()?,
+                        code: "1000",
+                        name: "Cash",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                db::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &company.parse()?,
+                        code: "4000",
+                        name: "Revenue",
+                        account_type: beankeeper::types::AccountType::Revenue,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
         }
         let ledger = Self {
             _dir: dir,
@@ -182,7 +180,7 @@ fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
     let ledger = Ledger::new()?;
     let expected_ids = ledger
         .db
-        .conn()
+        .read()
         .prepare(
             "SELECT id FROM audit_log WHERE company_slug = 'acme' AND entity = 'transaction' ORDER BY id DESC",
         )?
@@ -244,7 +242,7 @@ fn audit_snapshot_companions_preserve_original_strings_and_hashes() -> TestResul
     let rows = value["data"].as_array().ok_or("audit array")?;
     assert_eq!(rows.len(), 3);
     for (row, expected) in rows.iter().zip(["1.234", "1234", "12.34"]) {
-        let raw: String = ledger.db.conn().query_row(
+        let raw: String = ledger.db.read().query_row(
             "SELECT after FROM audit_log WHERE id = ?1",
             [row["id"].as_i64().ok_or("audit id")?],
             |row| row.get(0),
@@ -259,7 +257,7 @@ fn audit_snapshot_companions_preserve_original_strings_and_hashes() -> TestResul
     }
     ledger
         .db
-        .conn()
+        .read()
         .query_row(
             "SELECT COUNT(*) FROM audit_log WHERE entity = 'transaction' AND action = 'create' AND length(row_hash) = 64",
             [],

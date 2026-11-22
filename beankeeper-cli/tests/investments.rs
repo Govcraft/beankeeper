@@ -1,5 +1,8 @@
 //! Exact lot selection, historical valuation, and atomic audited trade storage.
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use beankeeper::core::{LotMethod, PositiveQuantity, Quantity};
 use beankeeper::types::{Currency, Money, NonNegativeMoney, PositiveMoney};
 use beankeeper_cli::db::CreateAccountParams;
@@ -84,15 +87,22 @@ fn minor(value: impl Into<Money>) -> i128 {
 }
 
 fn fixture() -> Result<Db, CliError> {
-    let db = Db::open_in_memory()?;
+    seed(Db::open_in_memory()?)
+}
+
+fn fixture_with_raw() -> Result<(tempfile::TempDir, Db, rusqlite::Connection), CliError> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("fixture.db");
+    let db = seed(Db::open(&path, None)?)?;
+    let raw = raw_ledger::open(&path, None)?;
+    Ok((directory, db, raw))
+}
+
+fn seed(db: Db) -> Result<Db, CliError> {
     for company in ["acme", "other"] {
-        companies::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &company.parse()?,
-            company,
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            companies::create_company(grant, &company.parse()?, company, None)
+        })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
             ("1200", beankeeper::types::AccountType::Asset),
@@ -100,17 +110,18 @@ fn fixture() -> Result<Db, CliError> {
             ("4000", beankeeper::types::AccountType::Revenue),
             ("5000", beankeeper::types::AccountType::Expense),
         ] {
-            accounts::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &company.parse()?,
-                    code,
-                    name: code,
-                    account_type: kind,
-                    default_tax_category: None,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &company.parse()?,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
         }
         for symbol in ["ABC", "XYZ"] {
             create_security(
@@ -156,7 +167,7 @@ fn sale(shares: &str, proceeds: i64, day: &str) -> Result<SellParams, CliError> 
 }
 
 fn state(db: &Db) -> Result<(i64, i64, i64, i64), CliError> {
-    Ok(db.conn().query_row(
+    Ok(db.read().query_row(
         "SELECT (SELECT COUNT(*) FROM transactions),
                 (SELECT COUNT(*) FROM investment_lots),
                 (SELECT COUNT(*) FROM lot_reliefs),
@@ -443,12 +454,12 @@ fn relief_or_audit_failure_rolls_back_the_entire_sale() -> TestResult {
          WHEN NEW.entity = 'lot'
          BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;",
     ] {
-        let db = fixture()?;
+        let (_directory, db, raw) = fixture_with_raw()?;
         let actor = Actor::new("investment-test");
         buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
         buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
         let before = state(&db)?;
-        db.conn().execute_batch(trigger)?;
+        raw.execute_batch(trigger)?;
         assert!(sell(&db, &actor, "acme", &sale("2", 450, "2026-01-03")?).is_err());
         assert_eq!(state(&db)?, before);
         let lots = investments::list_lots(
@@ -466,10 +477,10 @@ fn relief_or_audit_failure_rolls_back_the_entire_sale() -> TestResult {
 
 #[test]
 fn lot_creation_failure_rolls_back_the_purchase_posting() -> TestResult {
-    let db = fixture()?;
+    let (_directory, db, raw) = fixture_with_raw()?;
     let actor = Actor::new("investment-test");
     let before = state(&db)?;
-    db.conn().execute_batch(
+    raw.execute_batch(
         "CREATE TRIGGER fail_lot BEFORE INSERT ON investment_lots
          BEGIN SELECT RAISE(ABORT, 'lot unavailable'); END;",
     )?;
@@ -595,7 +606,7 @@ fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult 
 
 #[test]
 fn investment_records_cannot_be_updated_deleted_or_replaced() -> TestResult {
-    let db = fixture()?;
+    let (_directory, db, raw) = fixture_with_raw()?;
     let actor = Actor::new("investment-test");
     buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-01")?)?;
     sell(&db, &actor, "acme", &sale("1", 150, "2026-01-02")?)?;
@@ -621,22 +632,21 @@ fn investment_records_cannot_be_updated_deleted_or_replaced() -> TestResult {
             format!("DELETE FROM {table}"),
             format!("INSERT OR REPLACE INTO {table} SELECT * FROM {table}"),
         ] {
-            assert!(db.conn().execute_batch(&sql).is_err(), "{sql}");
+            assert!(raw.execute_batch(&sql).is_err(), "{sql}");
         }
     }
     assert!(
-        db.conn()
-            .execute_batch(
-                "INSERT OR REPLACE INTO security_prices (id,company_slug,symbol,date,price)
+        raw.execute_batch(
+            "INSERT OR REPLACE INTO security_prices (id,company_slug,symbol,date,price)
          SELECT 'replacement-price',company_slug,symbol,date,price FROM security_prices"
-            )
-            .is_err()
+        )
+        .is_err()
     );
-    assert!(db.conn().execute_batch(
+    assert!(raw.execute_batch(
         "INSERT OR REPLACE INTO investment_lots (id,company_slug,symbol,asset,quantity,cost_basis,acquired_date,transaction_id)
          SELECT 'replacement-lot',company_slug,symbol,asset,quantity,cost_basis,acquired_date,transaction_id FROM investment_lots"
     ).is_err());
-    assert!(db.conn().execute_batch(
+    assert!(raw.execute_batch(
         "INSERT OR REPLACE INTO lot_reliefs (id,company_slug,lot_id,quantity,cost_basis,date,transaction_id)
          SELECT 'replacement-relief',company_slug,lot_id,quantity,cost_basis,date,transaction_id FROM lot_reliefs"
     ).is_err());

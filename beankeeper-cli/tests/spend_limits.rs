@@ -1,5 +1,8 @@
 //! Agent spend controls through the real CLI and persisted ledger.
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
@@ -9,7 +12,7 @@ use std::time::Duration;
 use agent_uri_attestation::{AttestationClaims, Issuer, SigningKey};
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db};
-use beankeeper_cli::identity::{self, IssueRequest};
+use beankeeper_cli::identity::{self, Admin, Granted, IssueRequest};
 use rusqlite::params;
 use secrecy::SecretString;
 use serde_json::Value;
@@ -38,39 +41,40 @@ impl Ledger {
         let passphrase: SecretString = "spend-limit-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
         for company in ["acme", "other"] {
-            db::create_company(
-                db.conn(),
-                &Actor::new("fixture"),
-                &company.parse()?,
-                company,
-                None,
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                db::create_company(grant, &company.parse()?, company, None)
+            })?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("2000", beankeeper::types::AccountType::Liability),
                 ("5000", beankeeper::types::AccountType::Expense),
                 ("5100", beankeeper::types::AccountType::Expense),
             ] {
-                db::create_account(
-                    db.conn(),
-                    &Actor::new("fixture"),
-                    &CreateAccountParams {
-                        company_slug: &company.parse()?,
-                        code,
-                        name: code,
-                        account_type: kind,
-                        default_tax_category: None,
-                    },
-                )?;
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                    db::create_account(
+                        grant,
+                        &CreateAccountParams {
+                            company_slug: &company.parse()?,
+                            code,
+                            name: code,
+                            account_type: kind,
+                            default_tax_category: None,
+                        },
+                    )
+                })?;
             }
         }
-        identity::init_root(db.conn(), &Actor::new("owner"))?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
         Ok(Self {
             dir,
             path,
             passphrase_file,
             db,
         })
+    }
+
+    fn raw(&self) -> rusqlite::Result<rusqlite::Connection> {
+        raw_ledger::open(&self.path, Some("spend-limit-test-passphrase"))
     }
 
     fn call(
@@ -120,17 +124,18 @@ impl Ledger {
     }
 
     fn issue(&self, grants: &[&str]) -> Result<Agent, Box<dyn Error>> {
-        let issued = identity::issue(
-            self.db.conn(),
-            &Actor::new("owner"),
-            &IssueRequest {
-                name: "spender",
-                capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                ttl: Duration::from_secs(3600),
-                public_key: None,
-                generate_key: true,
-            },
-        )?;
+        let issued = Granted::<Admin>::with_db(&self.db, &Actor::new("owner"), |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name: "spender",
+                    capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
         Ok(Agent {
             token: issued["token"].as_str().ok_or("missing token")?.to_owned(),
             uri: issued["agent_uri"]
@@ -142,8 +147,8 @@ impl Ledger {
 
     fn issue_for_uri(&self, uri: &str, grants: &[&str]) -> Result<Agent, Box<dyn Error>> {
         let registered = self.issue(grants)?;
-        let second_identity = identity::verify(self.db.conn(), &registered.token)?;
-        let (root, raw): (String, Vec<u8>) = self.db.conn().query_row(
+        let second_identity = identity::verify(self.db.read(), &registered.token)?;
+        let (root, raw): (String, Vec<u8>) = self.db.read().query_row(
             "SELECT trust_root, private_key FROM identity_root",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -158,7 +163,7 @@ impl Ledger {
             .ttl(Duration::from_secs(3600))
             .build()?;
         // Reissue a second registered token for the same agent, as on key rotation.
-        self.db.conn().execute(
+        self.raw()?.execute(
             "UPDATE agent_tokens SET agent_uri = ?1, agent_key = ?2 WHERE jti = ?3",
             params![claims.agent_uri, claims.agent_key, claims.jti],
         )?;
@@ -178,7 +183,7 @@ impl Ledger {
     fn count(&self, table: &str) -> Result<i64, Box<dyn Error>> {
         Ok(self
             .db
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
             })?)
@@ -313,7 +318,7 @@ fn daily_limit_uses_transaction_date_and_pending_proposals_do_not_consume_it() -
     let stored_date: String =
         ledger
             .db
-            .conn()
+            .read()
             .query_row("SELECT date FROM transactions", [], |row| row.get(0))?;
     assert_eq!(stored_date, "2026-01-01");
     forbidden(&ledger.post(&agent, "400", "2026-01-01")?)?;
@@ -653,7 +658,7 @@ fn imports_loans_and_scheduled_postings_cannot_bypass_spend_limits() -> TestResu
     let next_due: String =
         ledger
             .db
-            .conn()
+            .read()
             .query_row("SELECT next_due FROM schedules", [], |row| row.get(0))?;
     assert_eq!(next_due, "2026-01-01");
     ledger.run("acme", &["verify"], Some(&agent.token))?;
@@ -667,10 +672,10 @@ fn approve_only_token_can_resolve_proposals_created_by_another_token_for_its_uri
     let reviewer = ledger.issue_for_uri(&proposer.uri, &["ledger/approve"])?;
     let read = ledger.issue(&["ledger/read"])?;
     ledger.run("acme", &["policy", "set", "--enforce", "on"], None)?;
-    let reviewer_identity = identity::verify(ledger.db.conn(), &reviewer.token)?;
+    let reviewer_identity = identity::verify(ledger.db.read(), &reviewer.token)?;
     assert_ne!(
         reviewer_identity.jti(),
-        identity::verify(ledger.db.conn(), &proposer.token)?.jti()
+        identity::verify(ledger.db.read(), &proposer.token)?.jti()
     );
     for operation in ["reject", "withdraw"] {
         let proposal = ledger.run(
