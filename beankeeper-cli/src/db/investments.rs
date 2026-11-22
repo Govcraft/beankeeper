@@ -18,6 +18,7 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Type, V
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 use serde::{Serialize, Serializer};
 
+use super::connection::ReadConn;
 use super::{Actor, PostEntryParams, PostResult, PostTransactionParams, audit};
 use crate::error::CliError;
 
@@ -371,7 +372,7 @@ fn security_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Security> {
 ///
 /// # Errors
 /// Returns not-found or storage errors.
-pub fn get_security(conn: &Connection, company: &str, symbol: &str) -> Result<Security, CliError> {
+pub fn get_security(conn: ReadConn<'_>, company: &str, symbol: &str) -> Result<Security, CliError> {
     conn.query_row(
         "SELECT symbol, name, currency FROM securities WHERE company_slug = ?1 AND symbol = ?2",
         params![company, symbol],
@@ -401,12 +402,12 @@ pub fn create_security(
         ));
     }
     audit::atomically(conn, || {
-        super::companies::get_company(super::connection::ReadConn::new(conn), company)?;
+        super::companies::get_company(ReadConn::new(conn), company)?;
         conn.execute(
             "INSERT INTO securities(company_slug,symbol,name,currency) VALUES (?1,?2,?3,?4)",
             params![company, p.symbol, p.name, p.currency.code()],
         )?;
-        let security = get_security(conn, company, &p.symbol)?;
+        let security = get_security(ReadConn::new(conn), company, &p.symbol)?;
         audit::record_insert(
             conn,
             actor,
@@ -431,8 +432,8 @@ pub(crate) fn valid_symbol(symbol: &str) -> bool {
 ///
 /// # Errors
 /// Returns storage errors or not-found for an unknown company.
-pub fn list_securities(conn: &Connection, company: &str) -> Result<Vec<Security>, CliError> {
-    super::companies::get_company(super::connection::ReadConn::new(conn), company)?;
+pub fn list_securities(conn: ReadConn<'_>, company: &str) -> Result<Vec<Security>, CliError> {
+    super::companies::get_company(conn, company)?;
     let mut stmt = conn.prepare(
         "SELECT symbol,name,currency FROM securities WHERE company_slug = ?1 ORDER BY symbol",
     )?;
@@ -453,7 +454,7 @@ pub fn record_price(
 ) -> Result<Price, CliError> {
     let stored_price = minor(p.price)?;
     audit::atomically(conn, || {
-        let security = get_security(conn, company, &p.symbol)?;
+        let security = get_security(ReadConn::new(conn), company, &p.symbol)?;
         require_currency(p.price.money(), security.currency)?;
         let price = Price {
             currency: security.currency,
@@ -482,7 +483,7 @@ fn check_trade(
     asset: &str,
     date: NaiveDate,
 ) -> Result<Security, CliError> {
-    let security = get_security(conn, company, symbol)?;
+    let security = get_security(ReadConn::new(conn), company, symbol)?;
     let mut statement = conn.prepare_cached(
         "SELECT acquired_date FROM investment_lots WHERE company_slug=?1 AND symbol=?2 AND asset=?3
          UNION ALL
@@ -508,7 +509,7 @@ fn checked_account(
     error: &str,
 ) -> Result<Account, CliError> {
     let account = super::accounts::row_to_account(&super::accounts::get_account(
-        super::connection::ReadConn::new(conn),
+        ReadConn::new(conn),
         company,
         code,
     )?)?;
@@ -672,7 +673,7 @@ pub fn buy(
 }
 
 fn lots_at(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     security: &Security,
     cutoff: Option<NaiveDate>,
@@ -740,12 +741,12 @@ fn lots_at(
 ///
 /// # Errors
 /// Returns unknown-security, storage or invalid persisted quantity errors.
-pub fn list_lots(conn: &Connection, company: &str, symbol: &str) -> Result<Vec<Lot>, CliError> {
+pub fn list_lots(conn: ReadConn<'_>, company: &str, symbol: &str) -> Result<Vec<Lot>, CliError> {
     lots_at(conn, company, &get_security(conn, company, symbol)?, None)
 }
 
 fn select_relief(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     security: &Security,
     p: &SellParams,
@@ -877,7 +878,7 @@ pub fn sell(
             AccountType::Revenue,
             "gain account must have type revenue; losses debit that account",
         )?;
-        let relief = select_relief(conn, company, &security, p)?;
+        let relief = select_relief(ReadConn::new(conn), company, &security, p)?;
         let zero = NonNegativeMoney::zero(security.currency);
         let basis = relief
             .iter()
@@ -930,7 +931,9 @@ pub fn holdings(
     company: &str,
     as_of: NaiveDate,
 ) -> Result<Vec<Holding>, CliError> {
-    audit::atomically(conn, || holdings_snapshot(conn, company, as_of))
+    audit::atomically(conn, || {
+        holdings_snapshot(ReadConn::new(conn), company, as_of)
+    })
 }
 
 struct DatedPrice {
@@ -939,7 +942,7 @@ struct DatedPrice {
 }
 
 fn latest_price(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     security: &Security,
     as_of: NaiveDate,
@@ -967,7 +970,7 @@ struct Position {
 }
 
 fn holdings_snapshot(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     as_of: NaiveDate,
 ) -> Result<Vec<Holding>, CliError> {
