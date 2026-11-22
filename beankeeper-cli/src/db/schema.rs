@@ -1439,6 +1439,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn summary_reads_a_v22_snapshot_without_migration() -> Result<(), CliError> {
+        use crate::commands::setup::{StatementImportSummary, statement_import_summary};
+        use crate::db::{Actor, Db, create_company};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("legacy.db");
+        let db = Db::open(&path, None)?;
+        create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db.conn()
+            .execute("DROP TABLE setup_statement_batches", [])?;
+        db.conn().execute(
+            "DELETE FROM schema_version WHERE version > ?1",
+            [BOOK_PROFILE_SCHEMA_VERSION],
+        )?;
+        drop(db);
+
+        let snapshot = Db::open_compatible_snapshot(&path, None, BOOK_PROFILE_SCHEMA_VERSION)?;
+        assert_eq!(
+            statement_import_summary(&snapshot, &"acme".parse()?)?,
+            StatementImportSummary::default()
+        );
+        assert_eq!(
+            read_schema_version(snapshot.read())?,
+            BOOK_PROFILE_SCHEMA_VERSION
+        );
+        Ok(())
+    }
+
+    #[test]
     fn v20_preserves_v19_policy_proposals_and_mixed_hashes() -> Result<(), CliError> {
         use super::super::{Actor, audit, periods, proposals, verification};
         use mti::prelude::*;
