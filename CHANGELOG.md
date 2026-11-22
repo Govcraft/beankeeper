@@ -23,6 +23,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Fixed
 
+- MCP writes honor the configured actor and use the verified agent URI when no
+  label is configured, matching CLI attribution. Filter audit rows by actor
+  with `audit_log.actor` or `bk audit log --by-actor`. ([#233](https://github.com/Govcraft/beankeeper/issues/233))
+
 - Transaction list and count interpret amount filters in one currency. They
   infer a sole transaction currency and require an explicit choice when the
   company uses several. Applies to both CLI and MCP.

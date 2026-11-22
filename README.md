@@ -51,7 +51,7 @@ A successful `bk export --output-format json` writes a standalone `{"beankeeper_
 
 Database triggers reject changes to posted financial fields, entry details, and audit records, including deletion and replacement. Transaction metadata and entry clearance status remain mutable for correlation, reversals, and reconciliation. Supported mutations append an actor, timestamp, and before/after snapshots in the same atomic operation.
 
-Every new posting, including imports and reversals, stores `posted_by` and a `create` audit record containing its immutable transaction and entry details. Set the principal with `--actor NAME` or `BK_ACTOR`. `bk txn show` displays the poster; JSON transaction output includes `posted_by`. Legacy transactions have an unknown poster (`null` in JSON).
+Every new posting, including imports and reversals, stores `posted_by` and a `create` audit record containing its immutable transaction and entry details. Set the actor label with `--actor NAME` or `BK_ACTOR` on the CLI or MCP server. Both use the verified agent URI as the actor when a token is present and no label is configured. `bk txn show` displays the poster; JSON transaction output includes `posted_by`. Legacy transactions have an unknown poster (`null` in JSON).
 
 `bk verify` checks every company in one ledger snapshot. It reports currency-by-currency
 debit and credit totals, row counts, named checks, and the SHA-256 audit-chain head
@@ -432,6 +432,14 @@ your assistant to launch the server. Each process opens one database and resolve
 its passphrase once at startup. Missing databases and incorrect passphrases fail
 before the protocol starts.
 
+Both stdio and HTTP choose the recorded actor in this order: `--actor`,
+`BK_ACTOR`, verified agent URI, then a sanitized `mcp:<client>` name. MCP uses
+`mcp:unknown` when none is available. A verified request also records its signed
+`agent_uri` and `token_jti`, including when the server has a configured label.
+Find changes with `audit_log` using `actor` for the exact label or `agent` for
+the verified URI. The CLI equivalents are `bk audit log --by-actor NAME` and
+`bk audit log --agent URI`. Supplying both filters matches both fields.
+
 For Claude Desktop, add this entry to `claude_desktop_config.json`, adjusting the
 absolute binary and database paths:
 
@@ -519,9 +527,8 @@ are accepted conflict strategies. Inputs use decimal major-unit strings, and res
 use the same data payload and integer minor units as `bk --json`. Results are
 available as JSON text content and, where the negotiated MCP protocol permits the
 payload's shape, `structuredContent`. Tool failures set `isError: true` with
-`{code, message}`. `financial_summary` instead returns the full CLI envelope on
-both success and failure. Audited writes use `mcp:<client name>` from the MCP handshake,
-with a sanitized name or `mcp:unknown`. Creation auditing is unchanged.
+`{code, message}`. `financial_summary` returns the full CLI envelope on both
+success and failure.
 
 Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and a
 `values` array such as `["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset`

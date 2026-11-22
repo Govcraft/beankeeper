@@ -4,7 +4,10 @@ For beankeeper-cli 0.27.0 (`bk`).
 
 All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`, `--agent-token TOKEN`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
 
-`--actor NAME` sets the principal recorded in the audit trail for any mutating command (see [Audit](#audit)). It falls back to the `BK_ACTOR` environment variable, then the OS user, then `"cli"`.
+`--actor NAME` sets the label recorded in the audit trail. The CLI and MCP fall
+back to `BK_ACTOR`, then the verified agent URI. Without any of those, the CLI
+uses the OS user or `cli`, and MCP uses a sanitized `mcp:<client>` label or
+`mcp:unknown`. See [Audit](#audit).
 `--agent-token TOKEN` / `BK_AGENT_TOKEN` optionally records verified local identity;
 invalid, expired or revoked supplied tokens return `UNAUTHORIZED` (exit 6).
 Tokens are optional while enforcement is off (the default). With enforcement on,
@@ -445,8 +448,8 @@ It retains `txn_proposals`, `security_list`, `investment_lots`,
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
 excludes it from read-only discovery and calls. Capability enforcement may
 further restrict discovery: stdio filters at startup and HTTP per request.
-Audited writes use `mcp:<sanitized client name>` from `initialize.clientInfo.name`,
-falling back to `mcp:unknown`.
+`audit_log` accepts `actor` for the exact recorded label and `agent` for the
+verified agent URI. Supply both to match both fields.
 
 Results match the CLI JSON `data` payload. JSON text content is always included;
 `structuredContent` is also supplied when its shape is supported by the negotiated
@@ -1570,6 +1573,7 @@ all by default).
 ```bash
 bk audit log                                      # 50 most recent changes
 bk audit log --company acme                        # one company
+bk audit log --by-actor month-end                  # one recorded actor label
 bk audit log --entity entry                        # clearance/reconciliation history
 bk audit log --action company-delete --limit 100   # last 100 company deletions
 bk audit log --json                                # full before/after snapshots
@@ -1577,6 +1581,7 @@ bk audit log --json                                # full before/after snapshots
 
 **Flags:**
 - `--company SLUG`: Restrict to one company
+- `--by-actor NAME` and `--agent URI`: Match the recorded label and verified URI respectively. Both filters apply when supplied together.
 - `--entity KIND`: One of `entry`, `transaction`, `budget`, `account`, `company`
 - `--action KIND`: One of `metadata_set`, `metadata_unset`, `status-change`, `correlate`, `reverse`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
 - `--limit N` (default: 50), `--offset N` (default: 0)

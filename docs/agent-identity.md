@@ -245,10 +245,14 @@ bk verify
 New transactions (including CSV/JSON/OFX imports and reversals) and their audit
 rows carry `agent_uri` and `token_jti`. All CLI mutations to existing ledgers,
 including company/account creation, attachments and key/token management, are
-audited. `posted_by` and audit `actor` keep their previous named-actor meaning:
-`--actor`, then `BK_ACTOR`, then the OS user, then `cli`. Transaction show/list
-JSON exposes the two identity fields; table detail and audit output show them
-too. JSON envelopes include `meta.agent` only for a verified supplied token.
+audited. The CLI and both MCP transports use `--actor` first, `BK_ACTOR` second,
+and the verified agent URI third for `posted_by` and audit `actor`. With none of
+these available, the CLI uses the OS user or `cli` and MCP uses a sanitized
+`mcp:<client>` label or `mcp:unknown`. A configured label can be shared by
+several agents. Use `bk audit log --by-actor NAME` or MCP `audit_log` with `actor`
+to find that label, and `--agent URI` or `agent` to find a verified identity.
+Transaction show/list JSON, table detail and audit output include both identity
+fields. JSON envelopes include `meta.agent` only for a verified supplied token.
 Successful exports retain their standalone file format.
 
 `agent list` returns public issuance records and `revoked_at`, with no token or
@@ -271,8 +275,7 @@ credential argument. Startup verifies it before starting the protocol; each
 call rechecks expiry and revocations against the database. Revoking a token in
 another CLI process takes effect on the next call without restarting MCP.
 Errors use the normal MCP `{code, message}` tool error with `isError: true`.
-Without a token, the actor remains `mcp:<client>`; with one it remains the same
-named actor with the additional verified URI and token ID. When enforcement is on, startup registers only tools covered by the supplied
+When enforcement is on, startup registers only tools covered by the supplied
 token. Each call rechecks the current policy and required grant as well as token
 validity. A session started while enforcement was off cannot bypass a later
 policy change: calls then fail with `UNAUTHORIZED` or `FORBIDDEN` as appropriate.
@@ -295,8 +298,8 @@ OAuth flow or discovery. Tool calls recheck validity and current policy inside
 the same database transaction as execution. With enforcement on, insufficient
 grants produce the usual MCP `FORBIDDEN` tool error. HTTP `tools/list` reflects
 the current requesting token and current policy, so agents with different grants
-can share a server. Audited writes retain `mcp:<client>` plus the verified URI and
-token ID of the request that made the call. `--read-only` is still a process ceiling.
+can share a server. Each audited write records the verified URI and token ID
+of the request that made the call. `--read-only` is still a process ceiling.
 
 `--bind` accepts an IP address and port, including port 0. Non-loopback addresses
 require `--allow-remote`. This is plaintext HTTP without TLS, not a hosted-tier
