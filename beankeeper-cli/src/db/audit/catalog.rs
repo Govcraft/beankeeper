@@ -10,6 +10,7 @@ use crate::db::{AccountRow, CompanyRow};
 use crate::error::CliError;
 
 /// A company creation request carrying its validated slug to storage.
+#[derive(Clone, Copy)]
 pub(in crate::db) struct CompanyCreation<'a> {
     slug: &'a CompanySlug,
     name: &'a str,
