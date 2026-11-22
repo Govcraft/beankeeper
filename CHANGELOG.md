@@ -6,6 +6,16 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.30.0] - Unreleased
+
+### Added
+
+- Signed per-agent write modes let the bookkeeper preset post directly by
+  default. Issue a grant with `--write-mode propose-only` to make `bk txn post`
+  and MCP `txn_post` reserve pending proposals. The owner can undo a direct
+  post with an immediate audited reversal in either interface.
+  ([#244](https://github.com/Govcraft/beankeeper/issues/244))
+
 ## [0.29.1] - Unreleased
 
 ### Fixed

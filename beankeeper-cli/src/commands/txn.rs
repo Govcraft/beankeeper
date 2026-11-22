@@ -10,10 +10,11 @@ use crate::cli::{
     TxnProposalCommand, TxnReverseArgs, resolve_format,
 };
 use crate::db::amounts::PositiveMinorUnits;
-use crate::db::companies::{AllCompanies, Company};
+use crate::db::audit::grant::PostingGrant;
+use crate::db::companies::{AllCompanies, Company, CompanySlug};
 use crate::db::connection::Db;
 use crate::db::transactions::TransactionValueFilter;
-use crate::db::{self, attachments, transactions};
+use crate::db::{self, attachments, proposals, transactions};
 use crate::error::CliError;
 use crate::identity::{Approve, Granted, Post, Propose, ResolveProposal, Reverse};
 use crate::output;
@@ -29,10 +30,23 @@ pub fn run(
     sub: &TxnCommand,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
+    if matches!(sub, TxnCommand::Reconcile) {
+        return run_reconcile_all(cli, AllCompanies);
+    }
+    run_for_company(cli, &company.parse()?, sub, meta)
+}
+
+pub(super) fn run_for_company(
+    cli: &Cli,
+    slug: &CompanySlug,
+    sub: &TxnCommand,
+    meta: Option<output::json::Meta>,
+) -> Result<(), CliError> {
     let db_handle = cli.open_db()?;
     if !matches!(sub, TxnCommand::Reconcile) {
-        crate::db::companies::get_company(db_handle.read(), &company.parse()?)?;
+        db::get_company(db_handle.read(), slug)?;
     }
+    let company = slug.as_str();
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
@@ -45,7 +59,7 @@ pub fn run(
                     cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
                     super::operation(&cli.command),
                 )?;
-                execute_proposal(&db_handle, company, args, &cli.principal())
+                execute_proposal(&db_handle, slug, args, &cli.principal())
             };
             let data = if matches!(args, TxnProposalCommand::Proposals { .. }) {
                 db_handle.read_snapshot(|_| execute())?
@@ -68,9 +82,13 @@ pub fn run(
         }
         TxnCommand::Meta(sub) => super::txn_meta::run(cli, &db_handle, company, sub),
         TxnCommand::Post(args) => {
-            let actor = cli.principal();
-            let result = execute_post(&db_handle, company, args, &actor)?;
-            print_post_result(cli, company, result)
+            let result = execute_posting(
+                &db_handle,
+                slug,
+                &PostingRequest::try_from(args)?,
+                &cli.principal(),
+            )?;
+            print_posting_outcome(cli, company, result)
         }
         TxnCommand::List(args) => run_list_or_count(
             cli,
@@ -204,22 +222,31 @@ pub fn execute_json_with_pagination(
     sub: &TxnCommand,
     actor: &db::Actor,
 ) -> Result<(serde_json::Value, Option<serde_json::Value>), CliError> {
-    if !matches!(sub, TxnCommand::Reconcile) {
+    if !matches!(
+        sub,
+        TxnCommand::Reconcile | TxnCommand::Post(_) | TxnCommand::Proposal(_)
+    ) {
         db::get_company(db_handle.read(), &company.parse()?)?;
     }
     let mut out = Vec::new();
     match sub {
         TxnCommand::Proposal(args) => {
-            return execute_proposal(db_handle, company, args, actor).map(|data| (data, None));
+            let slug = company.parse()?;
+            db::get_company(db_handle.read(), &slug)?;
+            return execute_proposal(db_handle, &slug, args, actor).map(|data| (data, None));
         }
         TxnCommand::Meta(sub) => {
             return super::txn_meta::execute_json(db_handle, company, sub, actor)
                 .map(|data| (data, None));
         }
         TxnCommand::Post(args) => {
-            let result = execute_post(db_handle, company, args, actor)?;
-            let meta = cli.meta(Operation::TxnPost, Some(company));
-            out = output::json::render_post_result(result, meta)?.into_bytes();
+            let result = execute_posting(
+                db_handle,
+                &company.parse()?,
+                &PostingRequest::try_from(args)?,
+                actor,
+            )?;
+            return result.into_data().map(|data| (data, None));
         }
         TxnCommand::List(args) => run_list_or_count(
             cli,
@@ -592,20 +619,21 @@ pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, 
 /// Execute a proposal operation through the shared CLI/MCP implementation.
 fn execute_proposal(
     db: &Db,
-    company: &str,
+    company: &CompanySlug,
     args: &TxnProposalCommand,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
     let value = match args {
         TxnProposalCommand::Propose(args) => {
-            return with_post_params(company, &PostingRequest::try_from(args)?, actor, |params| {
-                Granted::<Propose>::with_db(db, actor, |grant| {
-                    super::posting_output::create_proposal_json(grant, params)
-                })
-            });
+            return execute_proposal_posting_json(
+                db,
+                company,
+                &PostingRequest::try_from(args)?,
+                actor,
+            );
         }
         TxnProposalCommand::Proposals { include_rejected } => {
-            let rows = db::proposals::list(db.read(), &company.parse()?, actor, *include_rejected)?;
+            let rows = db::proposals::list(db.read(), company, actor, *include_rejected)?;
             serde_json::to_value(
                 rows.iter()
                     .map(super::posting_output::ProposalJson::from)
@@ -614,13 +642,13 @@ fn execute_proposal(
         }
         TxnProposalCommand::Approve { id } => {
             let row = Granted::<Approve>::with_db(db, actor, |grant| {
-                db::audit::approve_proposal(grant, &company.parse()?, id)
+                db::audit::approve_proposal(grant, company, id)
             })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
         TxnProposalCommand::Reject { id, reason } => {
             let row = Granted::<ResolveProposal>::with_db(db, actor, |grant| {
-                db::audit::reject_proposal(grant, &company.parse()?, id, reason.as_deref())
+                db::audit::reject_proposal(grant, company, id, reason.as_deref())
             })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
@@ -628,24 +656,18 @@ fn execute_proposal(
     value.map_err(|error| CliError::General(error.to_string()))
 }
 
-/// Execute the validated normal posting path.
-fn execute_post(
-    db: &Db,
-    company: &str,
-    args: &PostingArgs,
-    actor: &db::Actor,
-) -> Result<transactions::PostResult, CliError> {
-    with_post_params(company, &PostingRequest::try_from(args)?, actor, |params| {
-        Granted::<Post>::with_db(db, actor, |grant| {
-            transactions::post_from_source(grant, params, transactions::PostingSource::Command)
-        })
-    })
+pub(crate) enum PostingOutcome {
+    Posted(transactions::PostResult),
+    Proposed(proposals::ProposalCreation),
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum PostingMode {
-    Post,
-    Propose,
+impl PostingOutcome {
+    pub(crate) fn into_data(self) -> Result<serde_json::Value, CliError> {
+        match self {
+            Self::Posted(result) => output::json::post_result_data(result),
+            Self::Proposed(result) => super::posting_output::proposal_creation_data(result),
+        }
+    }
 }
 
 /// Shared request after each transport has decoded its posting inputs.
@@ -698,27 +720,58 @@ fn resolve_posting_date(
     )
 }
 
-pub(crate) fn execute_posting_json(
+pub(crate) fn execute_posting(
     db: &Db,
-    company: &str,
+    company: &CompanySlug,
     request: &PostingRequest,
     actor: &db::Actor,
-    mode: PostingMode,
-) -> Result<serde_json::Value, CliError> {
-    db::get_company(db.read(), &company.parse()?)?;
-    with_post_params(company, request, actor, |params| match mode {
-        PostingMode::Post => Granted::<Post>::with_db(db, actor, |grant| {
-            transactions::post_from_source(grant, params, transactions::PostingSource::Command)
+) -> Result<PostingOutcome, CliError> {
+    db::get_company(db.read(), company)?;
+    with_post_params(company, request, actor, |params| {
+        PostingGrant::with_db(db, actor, |grant| match grant {
+            PostingGrant::Direct(grant) => {
+                transactions::post_from_source(grant, params, transactions::PostingSource::Command)
+                    .map(PostingOutcome::Posted)
+            }
+            PostingGrant::Proposal(grant) => {
+                proposals::create_from_command(grant, params).map(PostingOutcome::Proposed)
+            }
         })
-        .and_then(output::json::post_result_data),
-        PostingMode::Propose => Granted::<Propose>::with_db(db, actor, |grant| {
-            super::posting_output::create_proposal_json(grant, params)
-        }),
     })
 }
 
+pub(crate) fn execute_proposal_posting_json(
+    db: &Db,
+    company: &CompanySlug,
+    request: &PostingRequest,
+    actor: &db::Actor,
+) -> Result<serde_json::Value, CliError> {
+    db::get_company(db.read(), company)?;
+    with_post_params(company, request, actor, |params| {
+        Granted::<Propose>::with_db(db, actor, |grant| {
+            proposals::create_from_command(grant, params)
+        })
+    })
+    .and_then(super::posting_output::proposal_creation_data)
+}
+
+pub(super) fn execute_direct_posting_json(
+    db: &Db,
+    company: &CompanySlug,
+    request: &PostingRequest,
+    actor: &db::Actor,
+) -> Result<serde_json::Value, CliError> {
+    db::get_company(db.read(), company)?;
+    with_post_params(company, request, actor, |params| {
+        Granted::<Post>::with_db(db, actor, |grant| {
+            transactions::post_from_source(grant, params, transactions::PostingSource::Command)
+        })
+    })
+    .and_then(output::json::post_result_data)
+}
+
 fn with_post_params<T>(
-    company: &str,
+    company: &CompanySlug,
     request: &PostingRequest,
     actor: &db::Actor,
     action: impl FnOnce(&transactions::PostTransactionParams<'_>) -> Result<T, CliError>,
@@ -759,7 +812,7 @@ fn with_post_params<T>(
     // idempotency/dedup key, so the raw value is also what conflict checks
     // compare against.
     let params = transactions::PostTransactionParams {
-        company_slug: &company.parse()?,
+        company_slug: company,
         description,
         metadata,
         currency,
@@ -790,28 +843,35 @@ fn conflict_strategy(arg: crate::cli::OnConflictArg) -> transactions::ConflictSt
 }
 
 /// Report a posted (or skipped) transaction: JSON on stdout, status on stderr.
-fn print_post_result(
+fn print_posting_outcome(
     cli: &Cli,
     company: &str,
-    post_result: transactions::PostResult,
+    outcome: PostingOutcome,
 ) -> Result<(), CliError> {
-    let format = crate::cli::resolve_format(None, cli);
-    if format == crate::cli::OutputFormat::Json {
+    if !cli.verbosity.quiet {
+        describe_posting(&outcome);
+    }
+    if resolve_format(None, cli) == OutputFormat::Json {
         let meta = cli.meta(Operation::TxnPost, Some(company));
-        let rendered = crate::output::json::render_post_result(post_result, meta)?;
+        let rendered = output::json::envelope_ok(meta, outcome.into_data()?)?;
         println!("{rendered}");
     }
+    Ok(())
+}
 
-    if !cli.verbosity.quiet {
-        match post_result {
-            transactions::PostResult::Created(id) => eprintln!("[ok] transaction #{id} posted"),
-            transactions::PostResult::Skipped(id) => {
-                eprintln!("[skipped] duplicate reference; transaction already exists (id: {id})");
-            }
+fn describe_posting(outcome: &PostingOutcome) {
+    match outcome {
+        PostingOutcome::Posted(transactions::PostResult::Created(id)) => {
+            eprintln!("[ok] transaction #{id} posted");
+        }
+        PostingOutcome::Proposed(proposals::ProposalCreation::Created(proposal)) => {
+            eprintln!("[ok] proposal {} is pending approval", proposal.id);
+        }
+        PostingOutcome::Posted(transactions::PostResult::Skipped(id))
+        | PostingOutcome::Proposed(proposals::ProposalCreation::Skipped(id)) => {
+            eprintln!("[skipped] duplicate reference; transaction already exists (id: {id})");
         }
     }
-
-    Ok(())
 }
 
 /// Execute the `txn list` subcommand.

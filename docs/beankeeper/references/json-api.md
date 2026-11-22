@@ -229,11 +229,12 @@ transaction identity without attaching the newly calculated split. Read
 
 ### `txn post`
 
+Direct grants return a posted transaction ID. The unused ID field is omitted.
+
 ```json
 {
   "data": {
     "id": 42,
-    "existing_id": null,
     "created": true,
     "skipped": false
   }
@@ -245,13 +246,18 @@ When `--on-conflict skip` and reference already exists:
 ```json
 {
   "data": {
-    "id": null,
     "existing_id": 42,
     "created": false,
     "skipped": true
   }
 }
 ```
+
+A `propose-only` grant returns the same pending proposal payload as
+`txn propose`, with a `proposal_…` ID, `status: "pending"` and a null
+`transaction_id`. With `--on-conflict skip`, an already posted reference
+returns `{"status":"skipped","transaction_id":42}`. MCP `txn_post` returns
+the same data payloads.
 
 ### `txn meta set/unset`
 
@@ -271,7 +277,7 @@ unknown company-scoped IDs or references fail with `NOT_FOUND`.
 
 ### `txn reverse` (alias `txn void`)
 
-Uses the same `data` shape as `txn post`, with `meta.command` equal to
+Uses the direct posting `data` shape, with `meta.command` equal to
 `txn.reverse`. A new mirror returns `id`, `created: true`, `skipped: false`.
 Retrying with an explicit reference matching the linked reversal returns
 `existing_id`, `created: false`, `skipped: true`, without another audit row.

@@ -12,7 +12,7 @@ use crate::cli::{
     InvestmentCommand, PeriodCommand, SecurityCommand, TradeArgs, TxnCommand, TxnProposalCommand,
 };
 use crate::commands;
-use crate::commands::txn::{PostingMode, PostingRequest};
+use crate::commands::txn::PostingRequest;
 use crate::confirmation::Confirmed;
 use crate::db::audit::setup::{
     books::{self, BookChange},
@@ -508,11 +508,15 @@ fn call_account_create(db: &Db, actor: &Actor, input: inputs::AccountCreate) -> 
 }
 
 fn call_txn_post(db: &Db, actor: &Actor, input: inputs::TxnPost) -> Response {
-    posting(db, input, actor, PostingMode::Post)
+    let (company, request) = posting_request(input)?;
+    unpaged(commands::txn::execute_posting(db, &company, &request, actor)?.into_data())
 }
 
 fn call_txn_propose(db: &Db, actor: &Actor, input: inputs::TxnPost) -> Response {
-    posting(db, input, actor, PostingMode::Propose)
+    let (company, request) = posting_request(input)?;
+    unpaged(commands::txn::execute_proposal_posting_json(
+        db, &company, &request, actor,
+    ))
 }
 
 fn call_txn_proposals(db: &Db, actor: &Actor, input: inputs::TxnProposals) -> Response {
@@ -937,7 +941,9 @@ fn clear_options(
     }
 }
 
-fn posting(db: &Db, input: inputs::TxnPost, actor: &Actor, mode: PostingMode) -> Response {
+fn posting_request(
+    input: inputs::TxnPost,
+) -> Result<(crate::db::companies::CompanySlug, PostingRequest), CliError> {
     let currency = input.currency.map_or(Currency::USD, Text::into_inner);
     let lines = |lines: super::input_values::NonEmpty<inputs::Line>| {
         lines
@@ -971,13 +977,7 @@ fn posting(db: &Db, input: inputs::TxnPost, actor: &Actor, mode: PostingMode) ->
             .map_or(cli::OnConflictArg::Error, Into::into),
         tax: commands::txn::parse_tax_args(&input.tax)?,
     };
-    unpaged(commands::txn::execute_posting_json(
-        db,
-        input.company.into_inner().as_str(),
-        &request,
-        actor,
-        mode,
-    ))
+    Ok((input.company.into_inner(), request))
 }
 
 fn list_limit(limit: Option<&PageLimit>) -> Result<cli::TxnPageLimit, CliError> {

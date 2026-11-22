@@ -491,6 +491,46 @@ fn http_enforces_current_request_capabilities_and_policy() -> TestResult {
 }
 
 #[test]
+fn http_resolves_the_posting_mode_of_each_request() -> TestResult {
+    use beankeeper_cli::identity::WriteMode;
+    use secrecy::ExposeSecret as _;
+
+    let ledger = Ledger::new()?;
+    let db = ledger.db()?;
+    let proposer = Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
+        identity::issue_credential_with_mode(
+            grant,
+            &IssueRequest {
+                name: "http_proposer",
+                capabilities: &["ledger/read".into(), "ledger/post".into()],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+            WriteMode::ProposeOnly,
+        )
+    })?;
+    ledger.enforce()?;
+    let propose_only = proposer.token().expose_secret();
+    let direct = token(&ledger.writer)?;
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(direct), "Bookkeeper Client")?;
+    let tools = server.tools(Some(propose_only))?;
+    assert!(tools.contains(&"txn_post".into()));
+    assert!(!tools.contains(&"txn_approve".into()));
+    let pending = payload(&server.call("txn_post", posting("queued"), Some(propose_only))?)?;
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(pending["proposer_uri"], proposer.agent_uri.as_str());
+    let posted = payload(&server.call("txn_post", posting("posted"), Some(direct))?)?;
+    assert_eq!(posted["created"], true);
+    let transactions =
+        payload(&server.call("txn_list", json!({"company":"acme"}), Some(direct))?)?;
+    assert_eq!(transactions.as_array().map(Vec::len), Some(1));
+    assert_eq!(transactions[0]["id"], posted["id"]);
+    server.finish(&[direct, propose_only])
+}
+
+#[test]
 fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult {
     let ledger = Ledger::new()?;
     let db = ledger.db()?;

@@ -551,7 +551,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Post balanced debits and credits in decimal major units. Always pass reference and on_conflict=skip for safe retries. Conflict strategies are error or skip. Use txn_meta_set/unset to annotate existing postings."
+        description = "Record balanced debits and credits in decimal major units. Direct grants post immediately and return a transaction ID. A propose-only grant reserves the same input and returns a pending proposal ID for approval. Pass a stable reference and on_conflict=skip to skip an already posted reference. Use txn_proposals to find a pending reference."
     )]
     async fn txn_post(
         &self,
@@ -562,7 +562,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Propose balanced debits and credits for approval without posting them. Uses the same major-unit amounts and posting flags as txn_post. Requires a verified proposer identity and ledger/propose when enforcement is enabled. Pending references are reserved."
+        description = "Explicitly reserve a balanced posting for sign-off. Use txn_post for ordinary bookkeeping; it follows the agent's write mode. This tool uses the same arguments and reserves the reference until resolution. Requires a verified proposer identity and ledger/propose when enforcement is enabled."
     )]
     async fn txn_propose(
         &self,
@@ -584,7 +584,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Approve a pending proposal and atomically post it through the audited transaction path. Requires ledger/approve when enforcement is enabled. Approval can exceed the proposer's spend limits and is attributed to the approver."
+        description = "Approve a pending proposal and post it atomically as the approver. Requires ledger/approve when enforcement is enabled. Direct posts have already landed and can be undone with txn_reverse."
     )]
     async fn txn_approve(
         &self,
@@ -606,7 +606,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Reverse a transaction with a linked mirror posting. Pass the same explicit reference on retries to return the existing reversal. Reconciled transactions cannot be reversed; existing clearings stay on the original."
+        description = "Undo a posted transaction in one step by appending an audited, linked mirror posting under the caller's identity. Requires ledger/reverse when enforcement is enabled. Pass the same explicit reference on retries to return the existing reversal. Reconciled transactions cannot be reversed; existing clearings stay on the original."
     )]
     async fn txn_reverse(
         &self,
@@ -831,7 +831,7 @@ impl ServerHandler for LedgerServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("beankeeper", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Amounts in inputs use decimal major-unit strings; amounts in results retain integer minor units and add decimal-string _display companions. txn_list and audit_log return pagination in result _meta.pagination. Always pass a reference to txn_post, and on_conflict=skip for safe retries. Direct posts enforce per-agent spend limits. Use txn_propose to request approval when a post exceeds a limit; txn_approve requires its own grant and posts as the approver. Pending proposals are outside the ledger until approved. Company is required for company-scoped tools. Never pass database paths or secrets to tools.")
+            .with_instructions("Amounts in inputs use decimal major-unit strings; amounts in results retain integer minor units and add decimal-string _display companions. txn_list and audit_log return pagination in result _meta.pagination. Use txn_post with a stable reference and on_conflict=skip for posted retries. Direct is the default. Tell the owner what posted and give them the transaction ID for one-step undo with txn_reverse. A propose-only grant returns a pending proposal; report it as pending until an approver posts it with txn_approve. Company is required for company-scoped tools. Never pass database paths or secrets to tools.")
     }
 }
 

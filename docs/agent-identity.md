@@ -88,7 +88,7 @@ and read-only contract, with a Rust integration example.
 
 `--ttl` accepts a positive integer followed by `s`, `m`, `h` or `d`, up to `30d`;
 the default is `8h`. Issue output includes `agent_uri`, `token_jti`, `agent_key`
-(the public key), `capabilities`, `issued_at`, `expires_at` and `token`.
+(the public key), `capabilities`, `write_mode`, `issued_at`, `expires_at` and `token`.
 `--generate-key` also prints `private_key` once, a 64-character hex Ed25519 seed.
 The agent private key and complete token are never stored in the registry or
 audit snapshots. Store that seed securely if future signing is needed.
@@ -143,6 +143,34 @@ existing encrypted ledger requires its current passphrase so its policy can be
 checked; an unreadable ledger is never erased. A standalone `loan schedule`
 calculation still works without a database; with an existing ledger, it follows
 that ledger's read policy.
+
+## Agent write modes and undo
+
+`direct` is the default, including for existing tokens. With the bookkeeper
+grants (`ledger/read,ledger/post,ledger/propose`), `bk txn post` and `txn_post`
+post immediately on enforced and unenforced ledgers. Ordinary results retain
+the transaction `id` and `created` fields. Inform the owner after the write and
+include its company and transaction ID.
+
+For sign-off, issue the credential with `bk agent issue --write-mode propose-only`.
+This replaces `ledger/post` with `ledger/propose` and signs the restriction into
+the credential. It requires one of those two grants at issuance and is
+incompatible with approval, reversal, administration and setup grants. The
+restriction applies with enforcement off too. The same post command or tool
+returns the proposal payload with `status: "pending"`, a `proposal_…` `id`, and
+a null `transaction_id`. A distinct credential can approve it. Change an
+existing agent's mode by issuing a replacement token and revoking the old one.
+`bk agent list` displays the mode of each issued credential. The explicit
+`txn propose` command and `txn_propose` tool also support ad hoc sign-off.
+
+Use `bk --company COMPANY txn reverse ID` or
+`txn_reverse` with `{"company":"COMPANY","id":ID}` for one-step undo. Reversal
+requires `ledger/reverse` when enforcement is on. It appends a linked mirror
+posting and records the original transaction's reversal in audit history under
+the undoing owner's identity. Query `bk audit log --by-actor ACTOR` or set
+`audit_log.actor` to find either person's changes. Reversal still enforces date,
+period-close and reconciliation rules. Reuse the same explicit reference to
+retry a reversal safely.
 
 ## Spend limits and proposals
 

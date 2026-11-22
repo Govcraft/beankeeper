@@ -126,13 +126,24 @@ appending. Close/reopen events record the actor and before/after state; `verify`
 checks cutoff integrity. See [period commands](docs/beankeeper/references/commands.md#period-close-and-locking)
 for output fields, history, and retry behavior.
 
-### Spend limits and approval gates
+### Direct posting and optional sign-off
 
-CLI 0.26.0 adds per-agent, per-company spend limits and pending proposals:
+The bookkeeper preset posts directly with `bk txn post` or MCP `txn_post`,
+including when ledger enforcement is on. The result identifies the posted
+transaction. Tell the owner what was posted and give them the transaction ID
+to undo it. An owner with `ledger/reverse` can run `bk txn reverse ID` or call
+`txn_reverse`. The undo appends a linked reversal immediately and preserves
+the original. Use `bk audit log --by-actor` or `audit_log` with `actor` to find
+both actions.
+
+To opt one credential into sign-off, issue it with `--write-mode propose-only`.
+The same posting command or tool then returns a pending proposal with a
+`proposal_…` ID. A separate reviewer approves it with `bk txn approve` or MCP
+`txn_approve`.
 
 ```sh
-bk agent limit set "$AGENT_URI" --company acme --currency USD --max-post 500 --daily-limit 2000
-bk --agent-token "$POSTER_TOKEN" --company acme txn propose \
+bk agent issue --name bookkeeper --public-key "$AGENT_PUBLIC_KEY" --write-mode propose-only
+bk --agent-token "$PROPOSER_TOKEN" --company acme txn post \
   -d "Equipment purchase" --debit 5000:750 --credit 1000:750 --reference equipment-001
 bk --agent-token "$REVIEWER_TOKEN" --company acme txn proposals
 bk --agent-token "$REVIEWER_TOKEN" --company acme txn approve PROPOSAL_ID
@@ -145,6 +156,8 @@ token, reserves its reference, and stays outside posted transactions and their
 audit chain until resolution. Approval posts atomically with the approver's
 identity and a reserved `proposal_id` metadata link; its audit record preserves
 the proposer and the reviewed payload.
+
+### Existing spend limits
 
 Limits measure total debits, including split entries, and apply through the
 shared posting path, including imports, loans, investments and schedules.
@@ -494,7 +507,7 @@ mutation tools are absent and cannot be called.
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |
-| `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Post, reverse and annotate transactions |
+| `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Record a transaction using the grant's write mode, undo a posting, or edit annotations |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |

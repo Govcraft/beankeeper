@@ -12,7 +12,9 @@ use super::grant::{Admin, Granted, SetupOwner};
 use super::{Actor, IdentityEvent, record_identity, savepoint::AuditedTx};
 use crate::capability::Capability;
 use crate::error::CliError;
-use crate::identity::{IssueRequest, IssuedCredential, ledger_encrypted, prepare_credential};
+use crate::identity::{
+    IssueRequest, IssuedCredential, WriteMode, ledger_encrypted, prepare_credential,
+};
 
 /// Create one trust root, preserving any existing key. Private material stays in `SQLCipher`.
 ///
@@ -79,6 +81,18 @@ pub fn issue_credential(
     grant: Granted<'_, Admin>,
     request: &IssueRequest<'_>,
 ) -> Result<IssuedCredential, CliError> {
+    issue_credential_with_mode(grant, request, WriteMode::default())
+}
+
+/// Issue a credential with the requested signed write mode.
+///
+/// # Errors
+/// Returns validation errors for incompatible grants or invalid issuance inputs.
+pub fn issue_credential_with_mode(
+    grant: Granted<'_, Admin>,
+    request: &IssueRequest<'_>,
+    write_mode: WriteMode,
+) -> Result<IssuedCredential, CliError> {
     if request
         .capabilities
         .iter()
@@ -89,7 +103,7 @@ pub fn issue_credential(
         ));
     }
     grant.mutate("sp_token_issue", |tx, actor| {
-        issue_in_scope(tx, actor, request)
+        issue_in_scope(tx, actor, request, write_mode)
     })
 }
 
@@ -109,6 +123,7 @@ pub(super) fn issue_setup_credential(
             public_key: Some(public_key),
             generate_key: false,
         },
+        WriteMode::default(),
     )
 }
 
@@ -116,8 +131,9 @@ fn issue_in_scope(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     request: &IssueRequest<'_>,
+    write_mode: WriteMode,
 ) -> Result<IssuedCredential, CliError> {
-    let credential = prepare_credential(tx.read(), request)?;
+    let credential = prepare_credential(tx.read(), request, write_mode)?;
     let conn = tx.connection();
     let capabilities = serde_json::to_string(&credential.capabilities)
         .map_err(|error| CliError::General(error.to_string()))?;

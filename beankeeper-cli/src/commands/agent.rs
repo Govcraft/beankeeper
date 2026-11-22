@@ -26,11 +26,12 @@ pub fn run(cli: &Cli, command: &AgentCommand) -> Result<(), CliError> {
         AgentCommand::Issue {
             name,
             caps,
+            write_mode,
             ttl,
             public_key,
             generate_key,
         } => Granted::<Admin>::with_db(&db, &actor, |grant| {
-            identity::issue_credential(
+            identity::issue_credential_with_mode(
                 grant,
                 &IssueRequest {
                     name,
@@ -39,6 +40,7 @@ pub fn run(cli: &Cli, command: &AgentCommand) -> Result<(), CliError> {
                     public_key: public_key.as_deref(),
                     generate_key: *generate_key,
                 },
+                *write_mode,
             )
         })?
         .response_json(),
