@@ -2,6 +2,7 @@
 
 use std::{fmt, str::FromStr};
 
+use agent_uri::CapabilityPath;
 use serde::Serialize;
 
 use crate::{capability::Capability, error::CliError};
@@ -80,28 +81,62 @@ impl WriteMode {
                     | Capability::Setup
             )
     }
+}
 
-    pub(super) fn capabilities_for_issuance(
-        self,
-        requested: &[String],
-    ) -> Result<Vec<String>, CliError> {
+/// Capability claims validated for one subject namespace and write mode.
+pub(super) struct IssuanceGrants {
+    mode: WriteMode,
+    paths: Vec<String>,
+    scope: &'static str,
+}
+
+impl TryFrom<(WriteMode, &[String])> for IssuanceGrants {
+    type Error = CliError;
+
+    fn try_from((mode, requested): (WriteMode, &[String])) -> Result<Self, Self::Error> {
         // Honor the signed restriction even when the reserved path was supplied
         // explicitly by an older caller using the raw capabilities API.
-        if !self.restricts_capabilities() && !Self::from(requested).restricts_capabilities() {
-            return Ok(requested.to_vec());
-        }
+        let mode = match mode {
+            WriteMode::Direct => WriteMode::from(requested),
+            WriteMode::ProposeOnly => mode,
+        };
+        let paths = match mode {
+            WriteMode::Direct => requested.to_vec(),
+            WriteMode::ProposeOnly => Self::proposal_paths(requested)?,
+        };
+        let scope = Self::scope_for(&paths)?;
+        Ok(Self { mode, paths, scope })
+    }
+}
+
+impl From<IssuanceGrants> for Vec<String> {
+    fn from(grants: IssuanceGrants) -> Self {
+        grants.paths
+    }
+}
+
+impl IssuanceGrants {
+    pub(super) const fn mode(&self) -> WriteMode {
+        self.mode
+    }
+
+    pub(super) const fn scope(&self) -> &'static str {
+        self.scope
+    }
+
+    fn proposal_paths(requested: &[String]) -> Result<Vec<String>, CliError> {
         let mut paths = Vec::new();
         let mut can_propose = false;
         for path in requested {
             match Capability::from_path(path) {
                 Some(Capability::Post | Capability::Propose) => can_propose = true,
-                Some(capability) if !Self::ProposeOnly.permits(capability) => {
+                Some(capability) if !WriteMode::ProposeOnly.permits(capability) => {
                     return Err(CliError::Validation(format!(
                         "propose-only cannot be combined with {}",
                         capability.path()
                     )));
                 }
-                _ if path == Self::PROPOSAL_CLAIM => (),
+                _ if path == WriteMode::PROPOSAL_CLAIM => (),
                 _ => paths.push(path.clone()),
             }
         }
@@ -111,7 +146,33 @@ impl WriteMode {
             ));
         }
         paths.push(Capability::Propose.path().to_owned());
-        paths.push(Self::PROPOSAL_CLAIM.to_owned());
+        paths.push(WriteMode::PROPOSAL_CLAIM.to_owned());
         Ok(paths)
+    }
+
+    fn scope_for(capabilities: &[String]) -> Result<&'static str, CliError> {
+        let mut scope = None;
+        for capability in capabilities {
+            CapabilityPath::parse(capability)
+                .map_err(|error| CliError::Validation(error.to_string()))?;
+            let namespace = if capability.starts_with("ledger/") {
+                "ledger"
+            } else if capability.starts_with("ui/") {
+                "ui"
+            } else {
+                return Err(CliError::Validation(
+                    "issue explicit ledger/* or ui/* grants; bare namespace grants are not allowed"
+                        .into(),
+                ));
+            };
+            if scope.is_some_and(|scope| scope != namespace) {
+                return Err(CliError::Validation(
+                    "ledger/* and ui/* grants require separate tokens to preserve attestation scope"
+                        .into(),
+                ));
+            }
+            scope = Some(namespace);
+        }
+        scope.ok_or_else(|| CliError::Validation("at least one explicit grant is required".into()))
     }
 }

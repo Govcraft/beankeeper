@@ -3,7 +3,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use agent_uri::{AgentId, AgentUri, CapabilityPath};
+use agent_uri::{AgentId, AgentUri};
 use agent_uri_attestation::{
     AttestationClaims, Denylist, Issuer, SigningKey, Verifier, VerifyingKey,
 };
@@ -27,6 +27,7 @@ use crate::error::CliError;
 use crate::operation::{Operation, Permission};
 
 mod write_mode;
+use write_mode::IssuanceGrants;
 pub use write_mode::WriteMode;
 
 /// Identity claims accepted by the ledger's verifier.
@@ -451,8 +452,9 @@ pub(crate) fn prepare_credential(
     request: &IssueRequest<'_>,
     write_mode: WriteMode,
 ) -> Result<IssuedCredential, CliError> {
-    let capabilities = write_mode.capabilities_for_issuance(request.capabilities)?;
-    let scope = issuance_scope(&capabilities)?;
+    let grants = IssuanceGrants::try_from((write_mode, request.capabilities))?;
+    let scope = grants.scope();
+    let write_mode = grants.mode();
     if request.public_key.is_some() == request.generate_key {
         return Err(CliError::Usage(
             "supply --public-key BASE64 or --generate-key".into(),
@@ -490,7 +492,7 @@ pub(crate) fn prepare_credential(
         .jti(token_jti.to_string())
         .agent_uri(uri.to_string())
         .agent_key(&agent_key)
-        .capabilities(capabilities)
+        .capabilities(Vec::from(grants))
         .issuer(&root)
         .ttl(request.ttl)
         .build()
@@ -502,7 +504,7 @@ pub(crate) fn prepare_credential(
         agent_uri: uri,
         token_jti,
         agent_key: claims.agent_key,
-        write_mode: WriteMode::from(claims.capabilities.as_slice()),
+        write_mode,
         capabilities: claims.capabilities,
         issued_at: claims.iat,
         expires_at: claims.exp,
@@ -520,34 +522,6 @@ fn generated_key_hex(key: &SigningKey) -> SecretString {
         let _ = write!(hex, "{byte:02x}");
     }
     hex.into()
-}
-
-// The attestation builder and issuer both enforce subject scope. Keep grants
-// verbatim and select their namespace instead of weakening that validation.
-fn issuance_scope(capabilities: &[String]) -> Result<&'static str, CliError> {
-    let mut scope = None;
-    for capability in capabilities {
-        CapabilityPath::parse(capability)
-            .map_err(|error| CliError::Validation(error.to_string()))?;
-        let namespace = if capability.starts_with("ledger/") {
-            "ledger"
-        } else if capability.starts_with("ui/") {
-            "ui"
-        } else {
-            return Err(CliError::Validation(
-                "issue explicit ledger/* or ui/* grants; bare namespace grants are not allowed"
-                    .into(),
-            ));
-        };
-        if scope.is_some_and(|scope| scope != namespace) {
-            return Err(CliError::Validation(
-                "ledger/* and ui/* grants require separate tokens to preserve attestation scope"
-                    .into(),
-            ));
-        }
-        scope = Some(namespace);
-    }
-    scope.ok_or_else(|| CliError::Validation("at least one explicit grant is required".into()))
 }
 
 /// List issued claims without returning tokens or private keys.
