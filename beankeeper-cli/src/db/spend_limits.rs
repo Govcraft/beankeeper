@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use agent_uri::AgentUri;
 use beankeeper::types::Currency;
 use chrono::NaiveDate;
-use rusqlite::{Connection, params};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use super::companies::CompanySlug;
@@ -331,11 +331,11 @@ pub(crate) fn debit_total(entries: &[PostEntryParams]) -> Result<i64, CliError> 
 }
 
 /// Check limits before the insertion, inside the posting's savepoint.
-pub(crate) fn check(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<(), CliError> {
+pub(crate) fn check(conn: ReadConn<'_>, p: &PostTransactionParams<'_>) -> Result<(), CliError> {
     let Some(uri) = p.actor.agent_uri() else {
         return Ok(());
     };
-    let limits = list(ReadConn::new(conn), uri, Some(p.company_slug))?;
+    let limits = list(conn, uri, Some(p.company_slug))?;
     if limits.is_empty() {
         return Ok(());
     }
@@ -365,7 +365,7 @@ pub(crate) fn check(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<
 }
 
 fn daily_used(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     currency: Currency,
     uri: &str,
@@ -513,7 +513,7 @@ mod tests {
         Ok(())
     }
 
-    fn legacy_post(conn: &Connection, uri: &str, date: &str) -> Result<(), CliError> {
+    fn legacy_post(conn: &rusqlite::Connection, uri: &str, date: &str) -> Result<(), CliError> {
         // Simulate a v18 posting, which persisted the caller's raw date spelling.
         conn.execute(
             "INSERT INTO transactions(company_slug, description, currency, date, agent_uri, token_jti)
@@ -557,12 +557,12 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 1, 1)
             .ok_or_else(|| CliError::General("invalid test date".into()))?;
         assert_eq!(
-            daily_used(db.conn(), "acme", Currency::USD, limit.agent_uri(), date)?,
+            daily_used(db.read(), "acme", Currency::USD, limit.agent_uri(), date)?,
             80000
         );
         legacy_post(db.conn(), limit.agent_uri(), "invalid-date")?;
         assert!(matches!(
-            daily_used(db.conn(), "acme", Currency::USD, limit.agent_uri(), date),
+            daily_used(db.read(), "acme", Currency::USD, limit.agent_uri(), date),
             Err(CliError::Database(_))
         ));
         Ok(())

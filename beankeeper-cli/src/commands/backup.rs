@@ -28,16 +28,10 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
     let db = cli.open_db()?;
     let directory = staging_directory(output)?;
     let staged = NamedTempFile::new_in(directory.path())?;
-    let path = staged
-        .path()
-        .to_str()
-        .ok_or_else(|| CliError::Usage("snapshot destination must be a UTF-8 path".into()))?;
-    // SQLCipher inherits the main database key for VACUUM's attached database.
-    // SQLite reads a consistent transaction, including committed WAL contents.
-    db.conn().execute("VACUUM INTO ?1", [path])?;
+    db.snapshot_into(staged.path())?;
     let snapshot = Db::open_snapshot(staged.path(), cli.resolve_passphrase()?)?;
     let version = super::verify::verify(&snapshot)?;
-    let encrypted = is_encrypted(&snapshot);
+    let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
     publish(staged, &cli.db, output, force)?;
     report(cli, Operation::Backup, output, version, encrypted)
@@ -66,7 +60,7 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
     let snapshot = Db::open_snapshot(staged.path(), cli.resolve_passphrase()?)?;
     cli.verify_agent(&snapshot)?;
     let version = super::verify::verify(&snapshot)?;
-    let encrypted = is_encrypted(&snapshot);
+    let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
     if destination.try_exists()? {
         // Inspect a private copy: even read-only SQLite connections can create
@@ -85,12 +79,6 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
     }
     publish(staged, input, destination, force)?;
     report(cli, Operation::Restore, destination, version, encrypted)
-}
-
-fn is_encrypted(db: &Db) -> bool {
-    db.conn()
-        .query_row("PRAGMA cipher_salt", [], |row| row.get::<_, String>(0))
-        .is_ok_and(|salt| !salt.is_empty())
 }
 
 fn staging_directory(destination: &Path) -> Result<tempfile::TempDir, CliError> {

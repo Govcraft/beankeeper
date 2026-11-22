@@ -631,19 +631,20 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
             )
         })?;
         let before = state(&db)?;
-        let error = audit::reverse_transaction(
-            db.conn(),
-            &audit::ReverseTransactionParams {
-                company_slug: "acme",
-                id,
-                date: "2026-01-03"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-                description: None,
-                reference: None,
-                actor: &actor,
-            },
-        )
+        let error = Granted::<beankeeper_cli::identity::Reverse>::with_db(&db, &actor, |grant| {
+            audit::reverse_transaction(
+                grant,
+                &audit::ReverseTransactionParams {
+                    company_slug: "acme",
+                    id,
+                    date: "2026-01-03".parse().map_err(|error: chrono::ParseError| {
+                        CliError::Validation(error.to_string())
+                    })?,
+                    description: None,
+                    reference: None,
+                },
+            )
+        })
         .unwrap_err();
         assert!(
             error

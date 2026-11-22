@@ -56,9 +56,8 @@ impl Ledger {
             entry("1000", beankeeper::types::DebitOrCredit::Debit),
             entry("4000", beankeeper::types::DebitOrCredit::Credit),
         ];
-        db::post_transaction(
-            self.db.conn(),
-            &PostTransactionParams {
+        {
+            let params = PostTransactionParams {
                 company_slug: "acme",
                 description: "Sale",
                 metadata: None,
@@ -71,8 +70,13 @@ impl Ledger {
                 reference: Some(reference),
                 on_conflict: db::ConflictStrategy::Skip,
                 actor: &Actor::new("posting-agent"),
-            },
-        )
+            };
+            beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Post>::with_db(
+                &self.db,
+                params.actor,
+                |grant| db::post_transaction(grant, &params),
+            )
+        }
     }
 
     fn command(&self) -> Result<Command, Box<dyn Error>> {
@@ -535,9 +539,8 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
     for entry in &mut entries {
         entry.amount = i64::MAX.try_into()?;
     }
-    db::post_transaction(
-        ledger.db.conn(),
-        &PostTransactionParams {
+    {
+        let params = PostTransactionParams {
             company_slug: "acme",
             description: "Large balance",
             metadata: None,
@@ -550,8 +553,13 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
             reference: None,
             on_conflict: db::ConflictStrategy::Error,
             actor: &Actor::new("large-poster"),
-        },
-    )?;
+        };
+        beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Post>::with_db(
+            &ledger.db,
+            params.actor,
+            |grant| db::post_transaction(grant, &params),
+        )
+    }?;
     success(&ledger.verify()?)?;
     Ok(())
 }

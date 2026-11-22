@@ -53,13 +53,12 @@ fn proposals_require_immutable_payloads_and_audited_terminal_transitions() -> Te
         assert!(db.conn().execute(sql, [&id]).is_err(), "unprotected: {sql}");
     }
     verify::execute_json(&db)?;
-    let outcome = audit::reject_proposal(
-        db.conn(),
-        &Actor::new("reviewer"),
-        "acme",
-        &id.parse()?,
-        Some("No"),
-    )?;
+    let outcome =
+        beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
+            &db,
+            &Actor::new("reviewer"),
+            |grant| audit::reject_proposal(grant, "acme", &id.parse()?, Some("No")),
+        )?;
     assert_eq!(outcome.state.code(), "rejected");
     verify::execute_json(&db)?;
     assert!(
@@ -76,12 +75,10 @@ fn proposals_require_immutable_payloads_and_audited_terminal_transitions() -> Te
 #[test]
 fn verify_detects_changed_resolution_even_if_protection_triggers_are_removed() -> TestResult {
     let (db, id) = pending()?;
-    audit::reject_proposal(
-        db.conn(),
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
+        &db,
         &Actor::new("reviewer"),
-        "acme",
-        &id.parse()?,
-        Some("No"),
+        |grant| audit::reject_proposal(grant, "acme", &id.parse()?, Some("No")),
     )?;
     db.conn().execute_batch(
         "DROP TRIGGER protect_proposal_payload; DROP TRIGGER protect_proposal_resolution;",
@@ -105,13 +102,12 @@ fn resolution_preserves_the_direction_spelling_of_a_legacy_proposal() -> TestRes
         "account_code": "1000", "direction": "DEBIT", "amount": 100,
         "memo": null, "tax_category": null
     }]))?;
-    let proposal = audit::reject_proposal(
-        db.conn(),
-        &Actor::new("reviewer"),
-        "acme",
-        &id.parse()?,
-        None,
-    )?;
+    let proposal =
+        beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
+            &db,
+            &Actor::new("reviewer"),
+            |grant| audit::reject_proposal(grant, "acme", &id.parse()?, None),
+        )?;
     assert_eq!(proposal.payload.entries[0].direction, DebitOrCredit::Debit);
     let direction: String = db.conn().query_row(
         "SELECT json_extract(after, '$.payload.entries[0].direction')

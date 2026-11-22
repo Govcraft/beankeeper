@@ -13,13 +13,30 @@ mod sealed {
     pub trait GrantKind {
         const REQUIRED: crate::capability::Capability;
         const EXPLICIT: bool = false;
+        const ALTERNATE: Option<crate::capability::Capability> = None;
     }
 }
 
-pub(crate) enum Approve {}
+/// Authority to approve an existing proposal.
+pub enum Approve {}
 
 impl sealed::GrantKind for Approve {
     const REQUIRED: Capability = Capability::Approve;
+}
+
+/// Authority to reserve a posting proposal.
+pub enum Propose {}
+
+impl sealed::GrantKind for Propose {
+    const REQUIRED: Capability = Capability::Propose;
+}
+
+/// Authority to withdraw an owned proposal or reject with approval authority.
+pub enum ResolveProposal {}
+
+impl sealed::GrantKind for ResolveProposal {
+    const REQUIRED: Capability = Capability::Approve;
+    const ALTERNATE: Option<Capability> = Some(Capability::Propose);
 }
 
 /// Authority to change ledger policy and administer the ledger.
@@ -34,6 +51,13 @@ pub enum Post {}
 
 impl sealed::GrantKind for Post {
     const REQUIRED: Capability = Capability::Post;
+}
+
+/// Authority to reverse an existing posting.
+pub enum Reverse {}
+
+impl sealed::GrantKind for Reverse {
+    const REQUIRED: Capability = Capability::Reverse;
 }
 
 /// Authority to set and delete ledger budgets.
@@ -114,7 +138,13 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
         let enforce = crate::db::policy::get(conn)?.enforce || C::EXPLICIT;
         if let Some(agent) = actor.identity() {
             agent.check_live(conn)?;
-            if agent.enforces_permissions(enforce) && !agent.allows(C::REQUIRED)? {
+            if agent.enforces_permissions(enforce)
+                && !agent.allows(C::REQUIRED)?
+                && !C::ALTERNATE
+                    .map(|capability| agent.allows(capability))
+                    .transpose()?
+                    .unwrap_or(false)
+            {
                 return Err(CliError::Forbidden(format!(
                     "operation requires capability {}",
                     C::REQUIRED.path()

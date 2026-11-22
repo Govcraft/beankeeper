@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 
-use super::audit::savepoint::{AuditedTx, with_audited_tx};
+use super::audit::savepoint::{AuditedTx, with_audited_tx, with_rolled_back_audited_tx};
 use crate::error::CliError;
 
 mod read;
@@ -142,6 +142,44 @@ impl Db {
         run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
         with_audited_tx(&self.conn, name, run)
+    }
+
+    /// Give a sequence of authorized mutations one reserved SQLite writer.
+    pub(crate) fn in_write_batch<T>(
+        &self,
+        run: impl FnOnce() -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        self.with_audited_tx("sp_write_batch", |tx| {
+            super::audit::reserve_ledger_writer(tx)?;
+            run()
+        })
+    }
+
+    /// Exercise actual mutation checks and discard all of the writes.
+    pub(crate) fn preview_write_batch<T>(
+        &self,
+        run: impl FnOnce() -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        with_rolled_back_audited_tx(&self.conn, "sp_write_preview", |tx| {
+            super::audit::reserve_ledger_writer(tx)?;
+            run()
+        })
+    }
+
+    /// Write a consistent copy, including committed WAL contents.
+    pub(crate) fn snapshot_into(&self, path: &Path) -> Result<(), CliError> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| CliError::Usage("snapshot destination must be a UTF-8 path".into()))?;
+        // SQLCipher inherits the main database key for the attached copy.
+        self.conn.execute("VACUUM INTO ?1", [path])?;
+        Ok(())
+    }
+
+    pub(crate) fn has_cipher_salt(&self) -> bool {
+        self.conn
+            .query_row("PRAGMA cipher_salt", [], |row| row.get::<_, String>(0))
+            .is_ok_and(|salt| !salt.is_empty())
     }
 
     /// Borrows this ledger for query-only access without exposing its SQLite connection.

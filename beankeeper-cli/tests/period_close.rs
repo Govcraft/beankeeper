@@ -264,9 +264,8 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
     let actor = Actor::new("direct");
     let before = ledger.state()?;
     assert!(matches!(
-        transactions::post_transaction(
-            ledger.db.conn(),
-            &transactions::PostTransactionParams {
+        {
+            let params = transactions::PostTransactionParams {
                 company_slug: "acme",
                 description: "Bypass",
                 currency: beankeeper::types::Currency::USD,
@@ -279,8 +278,13 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
                 reference: None,
                 on_conflict: transactions::ConflictStrategy::Error,
                 actor: &actor,
-            }
-        ),
+            };
+            beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Post>::with_db(
+                &ledger.db,
+                params.actor,
+                |grant| transactions::post_transaction(grant, &params),
+            )
+        },
         Err(CliError::Validation(_))
     ));
     assert!(ledger.db.conn().execute("INSERT INTO transactions (company_slug, description, date) VALUES ('acme', 'bypass', '2026-01-31')", []).is_err());
@@ -316,7 +320,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
             Err(CliError::Database(_))
         ));
         assert!(matches!(
-            periods::check_posting(ledger.db.conn(), "acme", "2026-02-01".parse()?),
+            periods::ensure_open(ledger.db.read(), "acme", "2026-02-01".parse()?),
             Err(CliError::Database(_))
         ));
     }

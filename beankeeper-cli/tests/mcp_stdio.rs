@@ -3614,7 +3614,7 @@ fn assert_opening_reservation(
     let id = reserved["proposal_id"]
         .as_str()
         .ok_or("missing proposal ID")?;
-    let pending = beankeeper_cli::db::proposals::get(db.conn(), "home", &id.parse()?)?;
+    let pending = beankeeper_cli::db::proposals::get(db.read(), "home", &id.parse()?)?;
     assert_eq!(pending.state.code(), "pending");
     assert_eq!(
         pending.payload.reference.as_deref(),
@@ -3696,7 +3696,7 @@ fn assert_opening_approval_denials(
     let failure: Value = serde_json::from_slice(&rejected.stderr)?;
     assert_eq!(failure["error"]["code"], "FORBIDDEN");
     assert_eq!(
-        beankeeper_cli::db::proposals::get(db.conn(), "home", &id.parse()?)?
+        beankeeper_cli::db::proposals::get(db.read(), "home", &id.parse()?)?
             .state
             .code(),
         "pending"
@@ -3720,7 +3720,7 @@ fn assert_opening_requires_review_after_finish(
         .assert()
         .success();
     assert_eq!(
-        beankeeper_cli::db::proposals::get(db.conn(), "home", &id.parse()?)?
+        beankeeper_cli::db::proposals::get(db.read(), "home", &id.parse()?)?
             .state
             .code(),
         "approved"
@@ -3824,7 +3824,7 @@ fn assert_owner_approves_opening(
     assert_eq!(entries[1].account_code, "3000");
     assert_eq!(entries[1].amount.minor_units(), 12_345);
     assert_eq!(
-        beankeeper_cli::db::proposals::get(db.conn(), "home", &proposal_id.parse()?)?
+        beankeeper_cli::db::proposals::get(db.read(), "home", &proposal_id.parse()?)?
             .state
             .code(),
         "approved"

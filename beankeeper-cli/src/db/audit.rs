@@ -34,6 +34,8 @@ use crate::db::ids::{BudgetId, ClearingId, EntryId, PartnerTransactionId, Transa
 use crate::error::CliError;
 
 mod attachment;
+mod posting;
+pub(super) use posting::persist_posting;
 pub(crate) mod grant;
 pub(super) mod investment;
 pub(super) mod savepoint;
@@ -679,26 +681,6 @@ pub fn clear_spend_limits(
     })
 }
 
-pub(super) fn require_capability(
-    conn: &Connection,
-    actor: &Actor,
-    required: crate::capability::Capability,
-) -> Result<(), CliError> {
-    if !super::policy::get(conn)?.enforce {
-        return Ok(());
-    }
-    let identity = actor.identity().ok_or_else(|| {
-        CliError::Unauthorized("ledger enforcement requires an agent token".into())
-    })?;
-    if !identity.allows(required)? {
-        return Err(CliError::Forbidden(format!(
-            "operation requires capability {}",
-            required.path()
-        )));
-    }
-    Ok(())
-}
-
 /// Close through an inclusive company cutoff, or explicitly reopen it with a reason.
 /// Authorization, state change, and audit snapshot share one savepoint.
 ///
@@ -805,12 +787,11 @@ fn resolve_period_change(
 /// # Errors
 /// Rejects insufficient grants, resolved/missing proposals and invalid postings.
 pub fn approve_proposal(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Approve>,
     company: &str,
     id: &super::proposals::ProposalId,
 ) -> Result<super::proposals::Proposal, CliError> {
-    super::proposals::approve(conn, actor, company, id)
+    super::proposals::approve(grant, company, id)
 }
 
 /// Withdraw an owned pending request, or reject another request with an approval grant.
@@ -818,13 +799,41 @@ pub fn approve_proposal(
 /// # Errors
 /// Returns authorization, lookup, validation or storage errors.
 pub fn reject_proposal(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::ResolveProposal>,
     company: &str,
     id: &super::proposals::ProposalId,
     reason: Option<&str>,
 ) -> Result<super::proposals::Proposal, CliError> {
-    super::proposals::reject(conn, actor, company, id, reason)
+    super::proposals::reject(grant, company, id, reason)
+}
+
+pub(super) fn require_setup_proposal_reviewer<'a>(
+    tx: &savepoint::AuditedTx<'_>,
+    actor: &'a Actor,
+) -> Result<&'a crate::identity::VerifiedAgent, CliError> {
+    crate::identity::require_live_capability(
+        tx.connection(),
+        actor,
+        crate::capability::Capability::Approve,
+    )
+}
+
+pub(super) fn insert_pending_proposal(
+    tx: &savepoint::AuditedTx<'_>,
+    company: &str,
+    id: &super::proposals::ProposalId,
+    payload: &super::proposals::PostingPayload,
+    total: i64,
+    identity: &crate::identity::VerifiedAgent,
+) -> Result<(), CliError> {
+    let json =
+        serde_json::to_string(payload).map_err(|error| CliError::General(error.to_string()))?;
+    tx.connection().execute(
+        "INSERT INTO txn_proposals(id, company_slug, status, payload, reference, debit_total, currency, proposer_uri, proposer_jti)
+         VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id.as_str(), company, json, payload.reference, total, payload.currency, identity.uri(), identity.jti()],
+    )?;
+    Ok(())
 }
 
 pub(super) fn record_proposal_resolution(
@@ -832,7 +841,8 @@ pub(super) fn record_proposal_resolution(
 ) -> Result<super::proposals::Proposal, CliError> {
     use super::proposals::ProposalState;
 
-    let (conn, actor, before, after) = transition.into_parts();
+    let (tx, actor, before, after) = transition.into_parts();
+    let conn = tx.connection();
     let (action, resolution, transaction_id) = match &after.state {
         ProposalState::Approved {
             resolution,
@@ -975,15 +985,15 @@ fn posting_snapshot(
 }
 
 /// Records creation inside the posting savepoint, including every entry.
-pub(super) fn record_creation(
-    conn: &Connection,
+fn record_creation(
+    tx: &savepoint::AuditedTx<'_>,
     actor: &Actor,
     company: &str,
     id: TransactionId,
 ) -> Result<(), CliError> {
-    let posting = posting_snapshot(ReadConn::new(conn), company, id, 2)?;
+    let posting = posting_snapshot(tx.read(), company, id, 2)?;
     record(
-        conn,
+        tx.connection(),
         actor,
         AuditChange {
             company_slug: Some(company),
@@ -1527,68 +1537,67 @@ impl Reconciliation<'_> {
 /// Returns `CliError::NotFound` if the partner does not exist,
 /// `CliError::Validation` if it belongs to the same company or is already
 /// correlated, or `CliError::Sqlite` on database errors.
-pub fn correlate_partner(
-    conn: &Connection,
+fn correlate_partner(
+    tx: &savepoint::AuditedTx<'_>,
     actor: &Actor,
     new_company: &str,
     new_txn_id: TransactionId,
     partner_id: PartnerTransactionId,
 ) -> Result<(), CliError> {
-    in_savepoint(conn, "sp_correlate", || {
-        let (partner_company, partner_metadata): (String, Option<String>) = conn
-            .query_row(
-                "SELECT company_slug, metadata FROM transactions WHERE id = ?1",
-                params![partner_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(|_| CliError::NotFound(format!("transaction #{partner_id} not found")))?;
+    let (partner_company, partner_metadata): (String, Option<String>) = tx
+        .read()
+        .query_row(
+            "SELECT company_slug, metadata FROM transactions WHERE id = ?1",
+            params![partner_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| CliError::NotFound(format!("transaction #{partner_id} not found")))?;
 
-        if partner_company == new_company {
-            return Err(CliError::Validation(format!(
-                "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'"
-            )));
-        }
+    if partner_company == new_company {
+        return Err(CliError::Validation(format!(
+            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'"
+        )));
+    }
 
-        // Same rule as the reconcile query: only a valid JSON object with a
-        // non-null `correlate` key counts. A memo that merely mentions the
-        // word "correlate" does not block linking (issue #17).
-        if metadata::has_correlate(partner_metadata.as_deref()) {
-            return Err(CliError::Validation(format!(
-                "transaction #{partner_id} is already correlated"
-            )));
-        }
+    // Same rule as the reconcile query: only a valid JSON object with a
+    // non-null `correlate` key counts. A memo that merely mentions the
+    // word "correlate" does not block linking (issue #17).
+    if metadata::has_correlate(partner_metadata.as_deref()) {
+        return Err(CliError::Validation(format!(
+            "transaction #{partner_id} is already correlated"
+        )));
+    }
 
-        // Normalizes legacy free-text metadata to `{"memo": ...}` and splices
-        // in the correlate key, so the partner's metadata stays a JSON object.
-        let updated = metadata::with_correlate(partner_metadata.as_deref(), new_txn_id.into())?;
+    // Normalizes legacy free-text metadata to `{"memo": ...}` and splices
+    // in the correlate key, so the partner's metadata stays a JSON object.
+    let updated = metadata::with_correlate(partner_metadata.as_deref(), new_txn_id.into())?;
 
-        conn.execute(
-            "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
-            params![updated, partner_id],
-        )?;
+    tx.connection().execute(
+        "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
+        params![updated, partner_id],
+    )?;
 
-        record(
-            conn,
-            actor,
-            AuditChange {
-                company_slug: Some(partner_company.as_str()),
-                entity: AuditEntity::Transaction,
-                entity_id: &partner_id.to_string(),
-                action: AuditAction::Correlate,
-                snapshots: (
-                    Some(&snapshot(
-                        &serde_json::json!({ "metadata": partner_metadata }),
-                    )),
-                    Some(&snapshot(&serde_json::json!({
-                        "metadata": updated,
-                        "correlated_with": new_txn_id,
-                    }))),
-                ),
-            },
-        )?;
+    record(
+        tx.connection(),
+        actor,
+        AuditChange {
+            company_slug: Some(partner_company.as_str()),
+            entity: AuditEntity::Transaction,
+            entity_id: &partner_id.to_string(),
+            action: AuditAction::Correlate,
+            snapshots: (
+                Some(&snapshot(
+                    &serde_json::json!({ "metadata": partner_metadata }),
+                )),
+                Some(&snapshot(&serde_json::json!({
+                    "metadata": updated,
+                    "correlated_with": new_txn_id,
+                }))),
+            ),
+        },
+    )?;
 
-        Ok(())
-    })
+    Ok(())
 }
 
 /// Inputs for an atomic, audited reversal of a transaction in one company.
@@ -1599,19 +1608,18 @@ pub struct ReverseTransactionParams<'a> {
     pub description: Option<&'a str>,
     /// An explicit reference also permits retrying the same reversal.
     pub reference: Option<&'a str>,
-    pub actor: &'a Actor,
 }
 
 /// A checked reverse request and its exact original, minted by the audited path.
 pub(super) struct ReversalPosting<'a> {
-    conn: &'a Connection,
+    tx: &'a savepoint::AuditedTx<'a>,
     original_id: TransactionId,
     params: super::transactions::PostTransactionParams<'a>,
 }
 
 impl<'a> ReversalPosting<'a> {
-    pub(super) const fn connection(&self) -> &'a Connection {
-        self.conn
+    pub(super) const fn transaction(&self) -> &'a savepoint::AuditedTx<'a> {
+        self.tx
     }
 
     pub(super) const fn params(&self) -> &super::transactions::PostTransactionParams<'a> {
@@ -1634,12 +1642,13 @@ impl<'a> ReversalPosting<'a> {
 /// dates or postings, duplicate references, and database failures. Every write
 /// is rolled back together on failure.
 pub fn reverse_transaction(
-    conn: &Connection,
+    grant: grant::Granted<'_, grant::Reverse>,
     p: &ReverseTransactionParams<'_>,
 ) -> Result<super::transactions::PostResult, CliError> {
     use super::transactions::{PostResult, PostTransactionParams, get_transaction};
 
-    in_savepoint(conn, "sp_reverse", || {
+    grant.mutate("sp_reverse", |tx, actor| {
+        let conn = tx.connection();
         let (original, entries) = get_transaction(ReadConn::new(conn), p.company_slug, p.id)?;
         reject_investment_reversal(conn, p.id)?;
         let mut original_metadata: serde_json::Value = original
@@ -1663,7 +1672,7 @@ pub fn reverse_transaction(
             .reference
             .map_or_else(|| format!("reversal-of-{}", p.id), str::to_string);
         let result = super::transactions::post_reversal(ReversalPosting {
-            conn,
+            tx,
             original_id: p.id,
             params: PostTransactionParams {
                 company_slug: p.company_slug,
@@ -1675,7 +1684,7 @@ pub fn reverse_transaction(
                 correlate: None,
                 reference: Some(&reference),
                 on_conflict: super::transactions::ConflictStrategy::Error,
-                actor: p.actor,
+                actor,
             },
         })?;
         let PostResult::Created(reversal_id) = result else {
@@ -1691,7 +1700,7 @@ pub fn reverse_transaction(
         )?;
         record(
             conn,
-            p.actor,
+            actor,
             AuditChange {
                 company_slug: Some(p.company_slug),
                 entity: AuditEntity::Transaction,
@@ -2323,7 +2332,7 @@ pub fn delete_rule(
 }
 
 /// Reserve the writer before a grant reads policy and identity.
-fn reserve_ledger_writer(tx: &savepoint::AuditedTx<'_>) -> Result<(), CliError> {
+pub(super) fn reserve_ledger_writer(tx: &savepoint::AuditedTx<'_>) -> Result<(), CliError> {
     tx.connection()
         .execute("UPDATE ledger_policy SET enforce = enforce WHERE 0", [])?;
     Ok(())
@@ -2384,7 +2393,7 @@ pub(super) fn post_in_audited_scope(
     tx: &savepoint::AuditedTx<'_>,
     params: &super::transactions::PostTransactionParams<'_>,
 ) -> Result<super::transactions::PostResult, CliError> {
-    super::transactions::post_transaction(tx.connection(), params)
+    super::transactions::post_direct(tx, params, super::transactions::PostingSource::Storage)
 }
 
 /// Change execution progress and append the complete before/after snapshot.
@@ -3180,13 +3189,15 @@ mod tests {
         let partner_id = conn.last_insert_rowid();
 
         let actor = Actor::new("tester");
-        correlate_partner(
-            conn,
-            &actor,
-            "acme",
-            fixture_txn(1),
-            crate::db::ids::fixture_id(partner_id),
-        )
+        savepoint::with_audited_tx(conn, "sp_correlate_fixture", |tx| {
+            correlate_partner(
+                tx,
+                &actor,
+                "acme",
+                fixture_txn(1),
+                crate::db::ids::fixture_id(partner_id),
+            )
+        })
         .expect("correlate");
 
         let meta: String = conn
@@ -3205,13 +3216,13 @@ mod tests {
 
         // Now it really is correlated, so a second link is refused.
         assert!(
-            correlate_partner(
-                conn,
+            savepoint::with_audited_tx(conn, "sp_correlate_fixture", |tx| correlate_partner(
+                tx,
                 &actor,
                 "acme",
                 fixture_txn(1),
                 crate::db::ids::fixture_id(partner_id)
-            )
+            ))
             .is_err()
         );
     }

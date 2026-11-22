@@ -3,7 +3,7 @@
 use std::{fmt, str::FromStr};
 
 use chrono::{Datelike as _, NaiveDate};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::OptionalExtension;
 use serde::{Serialize, Serializer};
 
 use super::connection::ReadConn;
@@ -261,15 +261,21 @@ pub fn get(conn: ReadConn<'_>, company: &str) -> Result<Option<PeriodLock>, CliE
 
 /// Proof that a company and posting date passed the period gate on this connection.
 #[must_use]
-pub struct OpenPeriod<'a> {
-    conn: &'a Connection,
+pub(super) struct OpenPeriod<'a> {
+    tx: &'a super::audit::savepoint::AuditedTx<'a>,
     company: &'a str,
     date: NaiveDate,
 }
 
 impl<'a> OpenPeriod<'a> {
-    pub(super) const fn into_parts(self) -> (&'a Connection, &'a str, NaiveDate) {
-        (self.conn, self.company, self.date)
+    pub(super) const fn into_parts(
+        self,
+    ) -> (
+        &'a super::audit::savepoint::AuditedTx<'a>,
+        &'a str,
+        NaiveDate,
+    ) {
+        (self.tx, self.company, self.date)
     }
 }
 
@@ -277,25 +283,20 @@ impl<'a> OpenPeriod<'a> {
 /// Check and consume the result inside the same savepoint as the posting.
 /// # Errors
 /// Returns validation for a locked date, or database errors for inconsistent state.
-pub fn check_posting<'a>(
-    conn: &'a Connection,
+pub(super) fn check_posting<'a>(
+    tx: &'a super::audit::savepoint::AuditedTx<'a>,
     company: &'a str,
     date: NaiveDate,
 ) -> Result<OpenPeriod<'a>, CliError> {
-    ensure_open(ReadConn::new(conn), company, date)?;
-    Ok(OpenPeriod {
-        conn,
-        company,
-        date,
-    })
+    ensure_open(tx.read(), company, date)?;
+    Ok(OpenPeriod { tx, company, date })
 }
 
-/// Validate a proposed posting date without creating a writer witness.
-pub(super) fn ensure_open(
-    conn: ReadConn<'_>,
-    company: &str,
-    date: NaiveDate,
-) -> Result<(), CliError> {
+/// Check that the company can accept a posting on this date.
+///
+/// # Errors
+/// Rejects closed dates or inconsistent persisted period state.
+pub fn ensure_open(conn: ReadConn<'_>, company: &str, date: NaiveDate) -> Result<(), CliError> {
     if let Some(cutoff) = get(conn, company)?.and_then(|lock| lock.closed_through())
         && date <= cutoff.date()
     {

@@ -21,6 +21,7 @@ use crate::cli::{Cli, ImportFormat, InputSource};
 use crate::db::connection::{Db, ReadConn};
 use crate::db::{accounts, transactions};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 use crate::output::amounts::format_money_grouped;
 use crate::output::json;
 
@@ -427,7 +428,9 @@ fn insert_transaction(
         actor: ctx.actor,
     };
 
-    match transactions::post_transaction(ctx.conn, &params) {
+    match Granted::<Post>::with_db(ctx.db, ctx.actor, |grant| {
+        transactions::post_transaction(grant, &params)
+    }) {
         Ok(transactions::PostResult::Created(id)) => {
             TransactionOutcome::Imported(ImportedTransaction {
                 id: Some(id),
@@ -474,7 +477,7 @@ struct StatementContext<'a> {
     reader: ReadConn<'a>,
     rules: &'a [crate::db::rules::Rule],
     actor: &'a crate::db::Actor,
-    conn: &'a rusqlite::Connection,
+    db: &'a Db,
     company: &'a str,
     account_code: &'a str,
     suspense_code: &'a str,
@@ -598,7 +601,6 @@ pub fn run_import_ofx(
     dry_run: bool,
     on_conflict: crate::cli::OnConflictArg,
 ) -> Result<(), CliError> {
-    let conn = db_handle.conn();
     let verbose = cli.verbosity.verbose;
     let actor = cli.principal();
     let rules = crate::db::rules::list_rules(db_handle.read(), company)?;
@@ -627,7 +629,7 @@ pub fn run_import_ofx(
             reader: db_handle.read(),
             rules: &rules,
             actor: &actor,
-            conn,
+            db: db_handle,
             company,
             account_code,
             suspense_code,

@@ -3,10 +3,10 @@ use std::fmt::Write;
 use beankeeper::core::{JournalEntry, Transaction, TransactionError};
 use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
 use chrono::NaiveDate;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 
 use super::amounts::PositiveMinorUnits;
-use super::audit::{self, Actor};
+use super::audit::{self, Actor, savepoint::AuditedTx};
 use super::companies::{AllCompanies, Company, CompanySlug, company_exists};
 use super::connection::ReadConn;
 use super::metadata;
@@ -16,6 +16,7 @@ use super::{
     ids::{PartnerTransactionId, TransactionId},
 };
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 
 /// Check source identity before applying mutable import categorization rules.
 pub(crate) fn reference_exists(
@@ -115,24 +116,35 @@ pub enum PostResult {
 ///
 /// Returns `CliError::Validation` for invalid dates, currency, accounts or
 /// entries. Returns `CliError::Sqlite` for storage errors.
+///
+/// Posting requires authority for this operation and ledger.
+/// ```compile_fail
+/// use beankeeper_cli::db::transactions::{PostTransactionParams, post_transaction};
+/// use beankeeper_cli::identity::{Granted, Reverse};
+/// fn wrong_grant(grant: Granted<'_, Reverse>, params: &PostTransactionParams<'_>) {
+///     let _ = post_transaction(grant, params);
+/// }
+/// ```
 pub fn post_transaction(
-    conn: &Connection,
+    grant: Granted<'_, Post>,
     params: &PostTransactionParams<'_>,
 ) -> Result<PostResult, CliError> {
-    if params.entries.is_empty() {
-        return Err(CliError::Validation(
-            "transaction must have at least one entry".to_string(),
-        ));
-    }
+    post_from_source(grant, params, PostingSource::Storage)
+}
 
-    post(conn, &Posting::Direct(params))
+#[cfg(test)]
+pub(crate) fn post_fixture(
+    db: &super::Db,
+    params: &PostTransactionParams<'_>,
+) -> Result<PostResult, CliError> {
+    Granted::<Post>::with_db(db, params.actor, |grant| post_transaction(grant, params))
 }
 
 pub(super) fn post_approved_transaction(
     approval: super::proposals::ApprovedPosting<'_>,
 ) -> Result<PostResult, CliError> {
     post_with_source(
-        approval.connection(),
+        approval.transaction(),
         &Posting::Approved(approval),
         PostingSource::Proposal,
     )
@@ -142,7 +154,7 @@ pub(in crate::db) fn post_approved_statement(
     approval: audit::setup::statement_batches::ApprovedStatementPosting<'_>,
 ) -> Result<PostResult, CliError> {
     post_with_source(
-        approval.connection(),
+        approval.transaction(),
         &Posting::ApprovedStatement(approval),
         PostingSource::Proposal,
     )
@@ -158,15 +170,35 @@ pub(crate) enum PostingSource {
 }
 
 pub(crate) fn post_from_source(
-    conn: &Connection,
+    grant: Granted<'_, Post>,
     params: &PostTransactionParams<'_>,
     source: PostingSource,
 ) -> Result<PostResult, CliError> {
-    post_with_source(conn, &Posting::Direct(params), source)
+    grant.mutate("sp_authorized_post", |tx, actor| {
+        let params = PostTransactionParams { actor, ..*params };
+        post_direct(tx, &params, source)
+    })
+}
+
+pub(super) fn post_direct(
+    tx: &AuditedTx<'_>,
+    params: &PostTransactionParams<'_>,
+    source: PostingSource,
+) -> Result<PostResult, CliError> {
+    if source == PostingSource::Storage && params.entries.is_empty() {
+        return Err(CliError::Validation(
+            "transaction must have at least one entry".to_string(),
+        ));
+    }
+    post_with_source(tx, &Posting::Direct(params), source)
 }
 
 pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<PostResult, CliError> {
-    post(reversal.connection(), &Posting::Reversal(reversal))
+    post_with_source(
+        reversal.transaction(),
+        &Posting::Reversal(reversal),
+        PostingSource::Storage,
+    )
 }
 
 enum Posting<'a> {
@@ -176,34 +208,12 @@ enum Posting<'a> {
     Reversal(audit::ReversalPosting<'a>),
 }
 
-fn post(conn: &Connection, posting: &Posting<'_>) -> Result<PostResult, CliError> {
-    post_with_source(conn, posting, PostingSource::Storage)
-}
-
 fn post_with_source(
-    conn: &Connection,
+    tx: &AuditedTx<'_>,
     posting: &Posting<'_>,
     source: PostingSource,
 ) -> Result<PostResult, CliError> {
-    // Use a savepoint so we can roll back on error without affecting
-    // any outer transaction.
-    conn.execute_batch("SAVEPOINT post_txn")?;
-
-    let result = post_transaction_inner(conn, posting, source);
-
-    match &result {
-        Ok(_) => conn.execute_batch("RELEASE post_txn")?,
-        Err(_) => conn.execute_batch("ROLLBACK TO post_txn; RELEASE post_txn")?,
-    }
-
-    result
-}
-
-fn post_transaction_inner(
-    conn: &Connection,
-    posting: &Posting<'_>,
-    source: PostingSource,
-) -> Result<PostResult, CliError> {
+    let reader = tx.read();
     let approved;
     let p = match posting {
         Posting::Direct(params) => *params,
@@ -220,11 +230,11 @@ fn post_transaction_inner(
     // Command and import diagnostics precede idempotency. Raw API retries
     // look up the existing reference before validating entries.
     let prepared = (source != PostingSource::Storage)
-        .then(|| build_journal(conn, p, source))
+        .then(|| build_journal(reader, p, source))
         .transpose()?;
     // Check for duplicate reference before inserting.
     if let Some(ref_str) = p.reference {
-        let existing: Option<TransactionId> = conn
+        let existing: Option<TransactionId> = reader
             .query_row(
                 "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
                 params![p.company_slug, ref_str],
@@ -249,13 +259,13 @@ fn post_transaction_inner(
     if !matches!(posting, Posting::Approved(_))
         && let Some(reference) = p.reference
     {
-        super::proposals::check_reference(conn, p.company_slug, reference)?;
+        super::proposals::check_reference(reader, p.company_slug, reference)?;
     }
     if !matches!(
         posting,
         Posting::Approved(_) | Posting::ApprovedStatement(_)
     ) {
-        super::spend_limits::check(conn, p)?;
+        super::spend_limits::check(reader, p)?;
     }
 
     let journal = match prepared {
@@ -267,9 +277,9 @@ fn post_transaction_inner(
             }
             journal
         }
-        None => build_journal(conn, p, source)?,
+        None => build_journal(reader, p, source)?,
     };
-    let period = super::periods::check_posting(conn, p.company_slug, journal.date())?;
+    let period = super::periods::check_posting(tx, p.company_slug, journal.date())?;
     let validated = ValidatedPosting {
         journal,
         period,
@@ -287,35 +297,45 @@ fn post_transaction_inner(
         None => metadata.map(metadata::NormalizedMetadata::into_string),
         Some(partner_id) => Some(metadata::with_correlation(metadata, partner_id)?),
     };
-    persist_posting(validated, effective_metadata.as_deref())
+    audit::persist_posting(validated, effective_metadata.as_deref())
 }
 
 /// The only input to the posting insert. The validated journal and open
 /// period both come from this request and connection.
-struct ValidatedPosting<'a> {
+pub(super) struct ValidatedPosting<'a> {
     journal: Transaction,
     period: super::periods::OpenPeriod<'a>,
     request: &'a PostTransactionParams<'a>,
 }
 
+impl<'a> ValidatedPosting<'a> {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        Transaction,
+        super::periods::OpenPeriod<'a>,
+        &'a PostTransactionParams<'a>,
+    ) {
+        (self.journal, self.period, self.request)
+    }
+}
+
 /// Build a sealed journal for posting or for a preview without storage effects.
 pub(crate) fn build_journal(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     request: &PostTransactionParams<'_>,
     source: PostingSource,
 ) -> Result<Transaction, CliError> {
     let currency = request.currency;
     let mut journal = JournalEntry::new(request.date, request.description, currency);
     for entry in request.entries {
-        let account = super::accounts::get_account(
-            ReadConn::new(conn),
-            request.company_slug,
-            &entry.account_code,
-        )
-        .map_err(|error| match (source, error) {
-            (PostingSource::Storage, CliError::NotFound(message)) => CliError::Validation(message),
-            (_, error) => error,
-        })?;
+        let account = super::accounts::get_account(conn, request.company_slug, &entry.account_code)
+            .map_err(|error| match (source, error) {
+                (PostingSource::Storage, CliError::NotFound(message)) => {
+                    CliError::Validation(message)
+                }
+                (_, error) => error,
+            })?;
         let default_tax = if matches!(source, PostingSource::Command | PostingSource::Import) {
             account.default_tax_category.as_deref()
         } else {
@@ -391,64 +411,6 @@ fn posting_entry(
         Some(category) => entry.with_tax_category(category),
         None => entry,
     })
-}
-
-fn persist_posting(
-    posting: ValidatedPosting<'_>,
-    effective_metadata: Option<&str>,
-) -> Result<PostResult, CliError> {
-    let ValidatedPosting {
-        journal,
-        period,
-        request: p,
-    } = posting;
-    let (conn, company, date) = period.into_parts();
-    conn.execute(
-        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by, agent_uri, token_jti) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            company,
-            journal.description(),
-            effective_metadata,
-            journal.currency().code(),
-            date,
-            p.reference,
-            p.actor.name(),
-            p.actor.agent_uri(),
-            p.actor.token_jti()
-        ],
-    )?;
-
-    let txn_id = TransactionId::try_from(conn.last_insert_rowid())?;
-
-    for entry in journal.entries() {
-        let minor = i64::try_from(entry.amount().amount().minor_units()).map_err(invalid)?;
-        conn.execute(
-            "INSERT INTO entries \
-             (transaction_id, account_code, company_slug, direction, amount, memo, tax_category, status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'uncleared')",
-            params![
-                txn_id,
-                entry.account().code().as_str(),
-                company,
-                entry.direction().code(),
-                minor,
-                entry.memo(),
-                entry.tax_category()
-            ],
-        )?;
-    }
-
-    // If correlating, update the partner transaction bidirectionally. The
-    // partner's metadata is mutated in place, so it goes through the audited
-    // mutation path rather than a bare in-place write here.
-    if let Some(partner_id) = p.correlate {
-        audit::correlate_partner(conn, p.actor, company, txn_id, partner_id)?;
-    }
-
-    audit::record_creation(conn, p.actor, company, txn_id)?;
-
-    Ok(PostResult::Created(txn_id))
 }
 
 /// Currency and optional entry amount bounds for a transaction search.
@@ -1015,7 +977,7 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p = make_params(&entries, "Test sale", None, "2024-01-15");
-        let id = post_transaction(db.conn(), &p);
+        let id = post_fixture(&db, &p);
         assert!(id.is_ok());
         let PostResult::Created(id) = id.unwrap_or_else(|e| panic!("post failed: {e}")) else {
             panic!("expected Created");
@@ -1049,7 +1011,7 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p = make_params(&entries, "Test", Some(r#"{"ref":"INV-001"}"#), "2024-01-15");
-        let id = post_transaction(db.conn(), &p);
+        let id = post_fixture(&db, &p);
         assert!(id.is_ok());
         let PostResult::Created(id) = id.unwrap_or_else(|e| panic!("post failed: {e}")) else {
             panic!("expected Created");
@@ -1078,7 +1040,7 @@ mod tests {
         for entries in [unbalanced.as_slice(), two_debits.as_slice(), &balanced[..1]] {
             let request = make_params(entries, "Invalid", None, "2026-01-05");
             assert!(matches!(
-                post_transaction(db.conn(), &request),
+                post_fixture(&db, &request),
                 Err(CliError::Validation(_))
             ));
         }
@@ -1102,7 +1064,7 @@ mod tests {
             let metadata = format!(r#"{{"{key}":999}}"#);
             let request = make_params(&entries, "Forged link", Some(&metadata), "2024-01-15");
             assert!(matches!(
-                post_transaction(db.conn(), &request),
+                post_fixture(&db, &request),
                 Err(CliError::Validation(_))
             ));
         }
@@ -1114,7 +1076,7 @@ mod tests {
     fn post_empty_entries_is_validation_error() {
         let db = setup();
         let p = make_params(&[], "Empty", None, "2024-01-15");
-        let result = post_transaction(db.conn(), &p);
+        let result = post_fixture(&db, &p);
         assert!(matches!(result, Err(CliError::Validation(_))));
     }
 
@@ -1145,9 +1107,9 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p1 = make_params(&entries, "First", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries, "Second", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.limit = 100;
@@ -1173,7 +1135,7 @@ mod tests {
 
         let entries1 = sample_entries();
         let p1 = make_params(&entries1, "Sale", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
 
         let entries2 = vec![
             PostEntryParams {
@@ -1196,7 +1158,7 @@ mod tests {
             },
         ];
         let p2 = make_params(&entries2, "Expense", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.account_filter = Some("5000");
@@ -1211,11 +1173,11 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p1 = make_params(&entries, "Jan", None, "2024-01-15");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries, "Feb", None, "2024-02-15");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
         let p3 = make_params(&entries, "Mar", None, "2024-03-15");
-        assert!(post_transaction(db.conn(), &p3).is_ok());
+        assert!(post_fixture(&db, &p3).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.from_date = NaiveDate::from_ymd_opt(2024, 2, 1);
@@ -1231,7 +1193,7 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p = make_params(&entries, "Test", None, "2024-01-15");
-        let id = post_transaction(db.conn(), &p).unwrap_or_else(|e| panic!("post failed: {e}"));
+        let id = post_fixture(&db, &p).unwrap_or_else(|e| panic!("post failed: {e}"));
         let PostResult::Created(id) = id else {
             panic!("expected Created");
         };
@@ -1326,7 +1288,7 @@ mod tests {
             },
         ];
         let p = make_params(&entries, "Bad", None, "2024-01-15");
-        let result = post_transaction(db.conn(), &p);
+        let result = post_fixture(&db, &p);
         // The foreign key violation should cause an error
         assert!(result.is_err());
 
@@ -1342,9 +1304,9 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p1 = make_params(&entries, "AWS monthly bill", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries, "Office supplies", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.description_like = Some("AWS");
@@ -1411,9 +1373,9 @@ mod tests {
             },
         ];
         let p1 = make_params(&small_entries, "Small", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&big_entries, "Big", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.value_filter = TransactionValueFilter::from_bounds(Some(Money::usd(10000)), None, None)
@@ -1429,7 +1391,7 @@ mod tests {
         let db = setup();
         let entries = sample_entries(); // amount 5000
         let p1 = make_params(&entries, "Exact", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.value_filter = TransactionValueFilter::from_bounds(None, None, Some(Money::usd(5000)))
@@ -1452,9 +1414,9 @@ mod tests {
         let entries = sample_entries();
         let mut p1 = make_params(&entries, "With ref", None, "2024-01-01");
         p1.reference = Some("INV-001");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries, "No ref", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.reference_filter = Some("INV-001");
@@ -1474,9 +1436,9 @@ mod tests {
             Some(r#"{"vendor":"AWS"}"#),
             "2024-01-01",
         );
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries, "Untagged", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.metadata_like = Some("AWS");
@@ -1504,7 +1466,7 @@ mod tests {
 
         let entries = sample_entries();
         let p1 = make_params(&entries, "Sale", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
 
         // Filter for transactions where account 1000 has a debit entry
         let mut lp = ListTransactionParams::for_company("acme");
@@ -1528,11 +1490,11 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p1 = make_params(&entries, "First", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries, "Second", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
         let p3 = make_params(&entries, "Third", None, "2024-01-03");
-        assert!(post_transaction(db.conn(), &p3).is_ok());
+        assert!(post_fixture(&db, &p3).is_ok());
 
         let lp = ListTransactionParams::for_company("acme");
         let count = count_transactions(db.read(), &lp).unwrap_or(0);
@@ -1549,11 +1511,11 @@ mod tests {
         let db = setup();
         let entries = sample_entries();
         let p1 = make_params(&entries, "AWS January", None, "2024-01-15");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries, "AWS February", None, "2024-02-15");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
         let p3 = make_params(&entries, "Office supplies", None, "2024-01-20");
-        assert!(post_transaction(db.conn(), &p3).is_ok());
+        assert!(post_fixture(&db, &p3).is_ok());
 
         // Combine description + date range
         let mut lp = ListTransactionParams::for_company("acme");
@@ -1591,9 +1553,9 @@ mod tests {
         let entries_no_tax = sample_entries();
 
         let p1 = make_params(&entries_with_tax, "Taxed", None, "2024-01-01");
-        assert!(post_transaction(db.conn(), &p1).is_ok());
+        assert!(post_fixture(&db, &p1).is_ok());
         let p2 = make_params(&entries_no_tax, "Untaxed", None, "2024-01-02");
-        assert!(post_transaction(db.conn(), &p2).is_ok());
+        assert!(post_fixture(&db, &p2).is_ok());
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.tax_category_filter = Some("sched-c:24b");
@@ -1609,7 +1571,7 @@ mod tests {
         let entries = sample_entries();
         let p = make_params(&entries, "Memo", Some("open:1000"), "2024-01-15");
         let PostResult::Created(id) =
-            post_transaction(db.conn(), &p).unwrap_or_else(|e| panic!("post failed: {e}"))
+            post_fixture(&db, &p).unwrap_or_else(|e| panic!("post failed: {e}"))
         else {
             panic!("expected Created");
         };
@@ -1648,7 +1610,7 @@ mod tests {
         ];
         for m in metas {
             let p = make_params(&entries, m, Some(m), "2024-01-01");
-            assert!(post_transaction(db.conn(), &p).is_ok());
+            assert!(post_fixture(&db, &p).is_ok());
         }
         // A pre-v9 free-text row must not break the json_extract filter.
         db.conn()
@@ -1690,7 +1652,7 @@ mod tests {
         let entries = sample_entries();
         let mut p1 = make_params(&entries, "First", None, "2024-01-01");
         p1.reference = Some("REF-1");
-        let res1 = post_transaction(db.conn(), &p1)?;
+        let res1 = post_fixture(&db, &p1)?;
         let PostResult::Created(id1) = res1 else {
             panic!("expected Created");
         };
@@ -1698,7 +1660,7 @@ mod tests {
         let mut p2 = make_params(&entries, "Duplicate", None, "2024-01-01");
         p2.reference = Some("REF-1");
         p2.on_conflict = ConflictStrategy::Skip;
-        let res2 = post_transaction(db.conn(), &p2)?;
+        let res2 = post_fixture(&db, &p2)?;
         assert_eq!(res2, PostResult::Skipped(id1));
 
         // Verify only one transaction exists

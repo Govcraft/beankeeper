@@ -424,8 +424,8 @@ mod tests {
         reference: Option<&str>,
         metadata: Option<&str>,
     ) -> Result<crate::db::ids::TransactionId, CliError> {
-        let result = db::post_transaction(
-            db.conn(),
+        let result = db::transactions::post_fixture(
+            db,
             &PostTransactionParams {
                 company_slug: "co",
                 description: "Attention fixture",

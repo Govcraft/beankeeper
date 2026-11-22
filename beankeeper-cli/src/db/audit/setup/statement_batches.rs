@@ -518,7 +518,7 @@ pub(crate) fn commit(
             return Ok(receipt);
         }
         authorize_first_commit(conn, &grant, &preview)?;
-        let receipt = apply_batch(conn, grant.actor(), &preview)?;
+        let receipt = apply_batch(tx, grant.actor(), &preview)?;
         record_event(
             conn,
             grant.actor(),
@@ -675,7 +675,7 @@ fn authorize_first_commit(
 }
 
 fn apply_batch(
-    conn: &Connection,
+    tx: &super::super::savepoint::AuditedTx<'_>,
     actor: &Actor,
     preview: &StoredPreview,
 ) -> Result<StatementReceipt, CliError> {
@@ -697,7 +697,7 @@ fn apply_batch(
     };
     for row in &batch.rows {
         let (transaction_id, items) = if let Some(id) = row.existing_transaction {
-            require_existing_match(ReadConn::new(conn), batch, row, id)?;
+            require_existing_match(tx.read(), batch, row, id)?;
             (id, &mut receipt.preexisting)
         } else {
             let entry_params: Vec<_> = row
@@ -706,7 +706,7 @@ fn apply_batch(
                 .map(FrozenEntry::posting_params)
                 .collect();
             let result = transactions::post_approved_statement(ApprovedStatementPosting {
-                conn,
+                tx,
                 actor,
                 batch,
                 row,
@@ -776,7 +776,7 @@ fn require_existing_match(
 }
 
 pub(in crate::db) struct ApprovedStatementPosting<'a> {
-    conn: &'a Connection,
+    tx: &'a super::super::savepoint::AuditedTx<'a>,
     actor: &'a Actor,
     batch: &'a FrozenBatch,
     row: &'a FrozenRow,
@@ -784,8 +784,8 @@ pub(in crate::db) struct ApprovedStatementPosting<'a> {
 }
 
 impl<'a> ApprovedStatementPosting<'a> {
-    pub(in crate::db) fn connection(&self) -> &'a Connection {
-        self.conn
+    pub(in crate::db) fn transaction(&self) -> &'a super::super::savepoint::AuditedTx<'a> {
+        self.tx
     }
 
     pub(in crate::db) fn params(&self) -> PostTransactionParams<'_> {

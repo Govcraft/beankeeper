@@ -5,7 +5,6 @@ use beankeeper::core::investments::PositiveQuantity;
 use beankeeper::loan::{AnnualRate, LoanTerm, LoanTerms};
 use beankeeper::types::{Amount, Currency, Money, NonNegativeMoney, PositiveMoney};
 use chrono::NaiveDate;
-use rusqlite::Connection;
 
 use super::{cr, cr_tax, dr, dr_tax, post, post_with_metadata, seed_company_accounts};
 use crate::db::{self, Actor, Db, audit, investments, rules, schedules};
@@ -57,9 +56,9 @@ pub(super) fn seed(db: &Db, actor: &Actor) -> Result<(), CliError> {
         )],
     )?;
     seed_automation(db, actor)?;
-    seed_tax_payments(conn, actor)?;
+    seed_tax_payments(db, actor)?;
     seed_investments(db, actor)?;
-    seed_loan(conn, actor)?;
+    seed_loan(db, actor)?;
     seed_settlement(db, actor)
 }
 
@@ -111,13 +110,13 @@ fn seed_automation(db: &Db, actor: &Actor) -> Result<(), CliError> {
     Ok(())
 }
 
-fn seed_tax_payments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
+fn seed_tax_payments(db: &Db, actor: &Actor) -> Result<(), CliError> {
     for (reference, date, amount) in [
         ("AC-CONTRACT-001", "2025-01-24", 90_000),
         ("AC-CONTRACT-002", "2025-02-24", 60_000),
     ] {
         post_with_metadata(
-            (conn, actor),
+            (db, actor),
             "acme-consulting",
             (
                 "Contractor payment - Example Design Studio (fictional)",
@@ -129,7 +128,7 @@ fn seed_tax_payments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         )?;
     }
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Quarterly office supplies",
         "2025-03-03",
@@ -209,7 +208,7 @@ fn seed_investments(db: &Db, actor: &Actor) -> Result<(), CliError> {
     Ok(())
 }
 
-fn seed_loan(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
+fn seed_loan(db: &Db, actor: &Actor) -> Result<(), CliError> {
     // Loans are stateless: store the funding and first calculated payment,
     // then show the original terms in the walkthrough's loan schedule command.
     let terms = LoanTerms::new(
@@ -231,7 +230,7 @@ fn seed_loan(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
             .map_err(|error| CliError::Validation(format!("invalid demo loan amount: {error}")))
     };
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Business loan funding: $12,000 at 6% for 12 months",
         "2025-01-01",
@@ -239,7 +238,7 @@ fn seed_loan(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         ("AC-LOAN-FUNDING", None),
     )?;
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Business loan payment 1",
         "2025-02-01",
@@ -254,9 +253,8 @@ fn seed_loan(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
 }
 
 fn seed_settlement(db: &Db, actor: &Actor) -> Result<(), CliError> {
-    let conn = db.conn();
     let charge = post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Settlement example - client invoice",
         "2025-03-01",
@@ -264,7 +262,7 @@ fn seed_settlement(db: &Db, actor: &Actor) -> Result<(), CliError> {
         ("AC-SETTLE-INVOICE", None),
     )?;
     let payment = post_with_metadata(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         ("Settlement example - partial payment", "2025-03-25"),
         &[dr("1000", 162_000), cr("1150", 162_000)],

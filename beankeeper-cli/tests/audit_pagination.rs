@@ -86,9 +86,8 @@ impl Ledger {
                 tax_category: None,
             },
         ];
-        db::post_transaction(
-            self.db.conn(),
-            &PostTransactionParams {
+        {
+            let params = PostTransactionParams {
                 company_slug: company,
                 description: "Sale",
                 metadata: None,
@@ -101,8 +100,13 @@ impl Ledger {
                 reference: None,
                 on_conflict: db::ConflictStrategy::Error,
                 actor: &Actor::new("test"),
-            },
-        )?;
+            };
+            beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Post>::with_db(
+                &self.db,
+                params.actor,
+                |grant| db::post_transaction(grant, &params),
+            )
+        }?;
         Ok(())
     }
 
