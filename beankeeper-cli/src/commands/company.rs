@@ -1,7 +1,10 @@
 use crate::cli::{Cli, CompanyCommand, OutputFormat, resolve_format};
 use crate::confirmation::confirm_deletion;
-use crate::db::companies;
 use crate::db::connection::Db;
+use crate::db::{
+    Actor, CompanyRow,
+    companies::{self, CompanySlug},
+};
 use crate::error::CliError;
 use crate::identity::{Admin, Granted};
 use crate::operation::Operation;
@@ -23,9 +26,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             name,
             description,
         } => {
-            let row = Granted::<Admin>::with_db(&db, &cli.principal(), |grant| {
-                companies::create_company(grant, slug, name, description.as_deref())
-            })?;
+            let row = create(&db, &cli.principal(), slug, name, description.as_deref())?;
             if !cli.verbosity.quiet {
                 eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
             }
@@ -69,6 +70,18 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
     Ok(())
 }
 
+pub(crate) fn create(
+    db: &Db,
+    actor: &Actor,
+    slug: &CompanySlug,
+    name: &str,
+    description: Option<&str>,
+) -> Result<CompanyRow, CliError> {
+    Granted::<Admin>::with_db(db, actor, |grant| {
+        companies::create_company(grant, slug, name, description)
+    })
+}
+
 /// Render company rows in the requested format.
 fn render_companies(
     rows: &[crate::db::CompanyRow],
@@ -101,21 +114,12 @@ fn render_companies(
 ///
 /// Returns the same validation and database errors as the CLI.
 pub fn execute_json(db: &Db, sub: &CompanyCommand) -> Result<serde_json::Value, CliError> {
-    let (command, rows) = match sub {
-        CompanyCommand::List => (
-            Operation::CompanyList,
-            companies::list_companies(db.read())?,
-        ),
-        CompanyCommand::Show { slug } => (
-            Operation::CompanyShow,
-            vec![companies::get_company(db.read(), slug)?],
-        ),
-        _ => return Err(CliError::Usage("unsupported MCP company operation".into())),
+    let rows = match sub {
+        CompanyCommand::List => companies::list_companies(db.read())?,
+        CompanyCommand::Show { slug } => vec![companies::get_company(db.read(), slug)?],
+        _ => return Err(CliError::Usage("company read requires list or show".into())),
     };
-    json_data(&output::json::render_companies(
-        &rows,
-        output::json::meta(command, None),
-    )?)
+    serde_json::to_value(rows).map_err(|error| CliError::General(error.to_string()))
 }
 
 pub(crate) fn json_data(rendered: &str) -> Result<serde_json::Value, CliError> {
@@ -132,7 +136,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_company_api_never_creates_or_deletes() -> Result<(), CliError> {
+    fn read_json_rejects_mutating_company_commands() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
         let create = CompanyCommand::Create {
             slug: "acme".parse()?,

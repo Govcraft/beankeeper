@@ -179,14 +179,6 @@ pub(crate) fn envelope_ok<T: Serialize>(meta: Meta, data: T) -> Result<String, C
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-pub struct CompanyJson {
-    slug: crate::db::companies::CompanySlug,
-    name: String,
-    description: Option<String>,
-    created_at: String,
-}
-
-#[derive(Serialize)]
 pub struct AccountJson {
     code: String,
     name: String,
@@ -364,17 +356,7 @@ pub struct BalanceJson {
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
 pub fn render_companies(companies: &[CompanyRow], meta: Meta) -> Result<String, CliError> {
-    let rows: Vec<CompanyJson> = companies
-        .iter()
-        .map(|c| CompanyJson {
-            slug: c.slug.clone(),
-            name: c.name.clone(),
-            description: c.description.clone(),
-            created_at: c.created_at.clone(),
-        })
-        .collect();
-
-    envelope_ok(meta, rows)
+    envelope_ok(meta, companies)
 }
 
 /// Render a list of accounts as an enveloped JSON response.

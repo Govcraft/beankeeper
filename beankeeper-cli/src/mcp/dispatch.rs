@@ -66,6 +66,8 @@ requests! {
     InvestmentHoldings(InvestmentHoldings),
     CompanyList(Empty),
     CompanyShow(CompanyShow),
+    CompanyCreate(CompanyCreate),
+    CompanyDelete(CompanyShow),
     AccountList(AccountList),
     AccountShow(AccountShow),
     AccountCreate(AccountCreate),
@@ -179,6 +181,22 @@ impl Request {
             Self::InvestmentHoldings(input) => call_investment_holdings(db, actor, input),
             Self::CompanyList(_) => call_company_list(db),
             Self::CompanyShow(input) => call_company_show(db, input),
+            Self::CompanyCreate(input) => {
+                let row = commands::company::create(
+                    db,
+                    actor,
+                    &input.slug.into_inner(),
+                    &input.name,
+                    input.description.as_deref(),
+                )?;
+                unpaged(encode([row]))
+            }
+            Self::CompanyDelete(input) => unpaged(
+                crate::identity::Granted::<crate::identity::Admin>::with_db(db, actor, |grant| {
+                    crate::db::audit::request_company_deletion(grant, &input.slug.into_inner())
+                })
+                .map(|impossible| match impossible {}),
+            ),
             Self::AccountList(input) => call_account_list(db, actor, input),
             Self::AccountShow(input) => call_account_show(db, actor, input),
             Self::AccountCreate(input) => call_account_create(db, actor, input),

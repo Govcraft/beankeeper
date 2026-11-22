@@ -10,6 +10,8 @@ pub enum CliError {
     Unauthorized(String),
     /// Verified token lacks the required capability. Exit code 7.
     Forbidden(String),
+    /// A permanent action needs the owner's confirmation. Exit code 2.
+    ConfirmationRequired(String),
     /// Validation error (unbalanced transaction, invalid account). Exit code 3.
     Validation(String),
     /// Database error (I/O, corruption). Exit code 4.
@@ -37,6 +39,8 @@ pub enum ErrorCode {
     Unauthorized,
     /// An authenticated token is missing a required capability.
     Forbidden,
+    /// A permanent action needs the owner's confirmation.
+    ConfirmationRequired,
     /// Inputs violate a domain rule.
     Validation,
     /// The ledger could not be read or written.
@@ -59,6 +63,7 @@ impl ErrorCode {
             Self::Usage => "USAGE",
             Self::Unauthorized => "UNAUTHORIZED",
             Self::Forbidden => "FORBIDDEN",
+            Self::ConfirmationRequired => "CONFIRMATION_REQUIRED",
             Self::Validation => "VALIDATION",
             Self::Database => "DATABASE",
             Self::NotFound => "NOT_FOUND",
@@ -70,7 +75,7 @@ impl ErrorCode {
 
     const fn exit_code(self) -> u8 {
         match self {
-            Self::Usage | Self::Unimplemented => 2,
+            Self::Usage | Self::Unimplemented | Self::ConfirmationRequired => 2,
             Self::Validation => 3,
             Self::Database => 4,
             Self::NotFound => 5,
@@ -105,6 +110,7 @@ impl CliError {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::Forbidden(_) => ErrorCode::Forbidden,
+            Self::ConfirmationRequired(_) => ErrorCode::ConfirmationRequired,
             Self::Io(_) => ErrorCode::Io,
             Self::General(_) => ErrorCode::General,
         }
@@ -163,6 +169,7 @@ impl fmt::Display for CliError {
             Self::Usage(msg)
             | Self::Unauthorized(msg)
             | Self::Forbidden(msg)
+            | Self::ConfirmationRequired(msg)
             | Self::Validation(msg)
             | Self::Database(msg)
             | Self::NotFound(msg)
@@ -184,6 +191,7 @@ impl std::error::Error for CliError {
             Self::Usage(_)
             | Self::Unauthorized(_)
             | Self::Forbidden(_)
+            | Self::ConfirmationRequired(_)
             | Self::Validation(_)
             | Self::Database(_)
             | Self::NotFound(_)

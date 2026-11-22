@@ -490,6 +490,28 @@ impl LedgerServer {
         self.execute(Request::CompanyList(input), context).await
     }
 
+    #[tool(
+        description = "Create a company by slug, name and optional description. Requires ledger/admin when enforcement applies. Records an audit row."
+    )]
+    async fn company_create(
+        &self,
+        Parameters(input): Parameters<inputs::CompanyCreate>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::CompanyCreate(input), context).await
+    }
+
+    #[tool(
+        description = "Check whether a company can be deleted. Requires ledger/admin when enforcement applies. If eligible, returns CONFIRMATION_REQUIRED so the owner can confirm in a local terminal."
+    )]
+    async fn company_delete(
+        &self,
+        Parameters(input): Parameters<inputs::CompanyShow>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::CompanyDelete(input), context).await
+    }
+
     #[tool(description = "Show one company by slug.")]
     async fn company_show(
         &self,

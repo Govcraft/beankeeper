@@ -93,6 +93,14 @@ pub(super) struct CompanyShow {
     pub slug: Company,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CompanyCreate {
+    pub slug: Company,
+    pub name: String,
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AccountCreate {

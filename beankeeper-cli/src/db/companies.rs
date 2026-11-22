@@ -146,7 +146,7 @@ fn validate_slug(slug: &str) -> Result<(), CliError> {
 ///
 /// # Errors
 ///
-/// Returns `CliError::Validation` if the slug is invalid or already taken.
+/// Returns `CliError::Validation` if the slug is already taken.
 /// Returns `CliError::Sqlite` on database errors.
 pub fn create_company(
     grant: Granted<'_, Admin>,
@@ -155,7 +155,11 @@ pub fn create_company(
     description: Option<&str>,
 ) -> Result<CompanyRow, CliError> {
     grant.mutate("sp_company_create", |tx, actor| {
-        audit::catalog::store_company(tx, actor, slug, name, description)
+        audit::catalog::store_company(
+            tx,
+            actor,
+            audit::catalog::CompanyCreation::new(slug, name, description),
+        )
     })
 }
 

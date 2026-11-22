@@ -428,6 +428,49 @@ fn cli_leaf_paths(command: &clap::Command, prefix: &str) -> BTreeSet<String> {
 }
 
 #[test]
+fn cli_mutations_have_mcp_tools_or_documented_exclusions() -> TestResult {
+    use beankeeper_cli::{capability::Capability, cli::Cli, operation::Operation};
+    use clap::CommandFactory;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    bk(&path)?.arg("init").assert().success();
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let tools = client.request("tools/list", &json!({}))?;
+    let tool_operations = tool_names(&tools)?
+        .into_iter()
+        .map(str::parse)
+        .collect::<Result<Vec<Operation>, _>>()?;
+
+    let mut excluded = BTreeSet::new();
+    for path in cli_leaf_paths(&Cli::command(), "bk") {
+        let name = path.trim_start_matches("bk ").replace(' ', ".");
+        let operation = name.parse::<Operation>()?;
+        if operation == Operation::McpServe || Capability::for_operation(&name)? == Capability::Read
+        {
+            continue;
+        }
+        if !tool_operations.contains(&operation) || operation == Operation::CompanyDelete {
+            excluded.insert(path);
+        }
+    }
+    let reference = repository_doc("docs/beankeeper/references/commands.md")?;
+    let documented = catalog_names(doc_section(
+        &reference,
+        "### Intentional CLI-only mutations\n",
+    ));
+    assert_eq!(
+        excluded.iter().map(String::as_str).collect::<BTreeSet<_>>(),
+        documented,
+        "every CLI mutation needs an MCP tool or an intentional exclusion in the command reference"
+    );
+    Ok(())
+}
+
+#[test]
 fn skill_command_overview_covers_every_canonical_cli_operation() -> TestResult {
     use clap::CommandFactory;
 
@@ -465,6 +508,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "period_list",
     "company_list",
     "company_show",
+    "company_create",
+    "company_delete",
     "account_list",
     "account_show",
     "account_create",
@@ -805,6 +850,94 @@ fn tool_errors_preserve_codes_and_audited_writes_attribute_the_client() -> TestR
 }
 
 #[test]
+fn company_tools_share_cli_results_checks_and_audit() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let company = json!({"slug":"new-company", "name":"New Company", "description":"Test book"});
+    let created = client.success("company_create", &company)?;
+    let shown = bk(&path)?
+        .args(["--json", "company", "show", "new-company"])
+        .output()?;
+    assert!(shown.status.success());
+    let cli: Value = serde_json::from_slice(&shown.stdout)?;
+    assert_eq!(created, cli["data"]);
+
+    let duplicate = client.call("company_create", &company)?;
+    assert_eq!(payload(&duplicate)?["code"], "VALIDATION");
+    assert_parameter_rejection(
+        &client.call("company_create", &json!({"slug":"Bad Slug", "name":"Bad"}))?,
+        "invalid company slug",
+    );
+    let audit = client.success(
+        "audit_log",
+        &json!({"company":"new-company", "entity":"company"}),
+    )?;
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+    assert_eq!(audit[0]["action"], "create");
+    assert_eq!(audit[0]["actor"], "mcp:codex-test-client");
+
+    let empty = json!({"slug":"new-company"});
+    let confirmation = payload(&client.call("company_delete", &empty)?)?;
+    assert_eq!(confirmation["code"], "CONFIRMATION_REQUIRED");
+    assert!(
+        confirmation["message"]
+            .as_str()
+            .ok_or("owner instructions")?
+            .contains("bk company delete new-company")
+    );
+    assert_parameter_rejection(
+        &client.call(
+            "company_delete",
+            &json!({"slug":"new-company", "force":true}),
+        )?,
+        "unknown field",
+    );
+    assert_eq!(client.success("company_show", &empty)?, created);
+
+    client.success("txn_post", &posting("keep-this-posting"))?;
+    let retained = payload(&client.call("company_delete", &json!({"slug":"acme"}))?)?;
+    let cli_refusal = bk(&path)?
+        .args(["--json", "company", "delete", "acme", "--force"])
+        .output()?;
+    let error: Value = serde_json::from_slice(&cli_refusal.stderr)?;
+    assert_eq!(retained, error["error"]);
+    assert_eq!(retained["code"], "VALIDATION");
+    let message = retained["message"].as_str().ok_or("refusal message")?;
+    assert!(message.contains("ledger is append-only"));
+    assert!(message.contains("reverse them"));
+
+    bk(&path)?
+        .args([
+            "--actor",
+            "owner",
+            "company",
+            "delete",
+            "new-company",
+            "--force",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        payload(&client.call("company_delete", &empty)?)?["code"],
+        "NOT_FOUND"
+    );
+    let audit = client.success(
+        "audit_log",
+        &json!({"company":"new-company", "entity":"company", "action":"company_delete"}),
+    )?;
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+    assert_eq!(audit[0]["actor"], "owner");
+    client.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
 fn mcp_writes_have_chained_audit_records_and_pass_cli_verification() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -1004,6 +1137,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(!names.contains("period_close"));
     assert!(!names.contains("period_reopen"));
     for name in [
+        "company_create",
+        "company_delete",
         "security_create",
         "security_price",
         "investment_buy",
@@ -1038,6 +1173,13 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(!names.contains("txn_reconcile"));
     let response = client.call("txn_post", &posting("read-only"))?;
     assert!(response.get("error").is_some() || response["result"]["isError"] == true);
+    for (name, input) in [
+        ("company_create", json!({"slug":"empty", "name":"Empty"})),
+        ("company_delete", json!({"slug":"acme"})),
+    ] {
+        let response = client.call(name, &input)?;
+        assert!(response.get("error").is_some() || response["result"]["isError"] == true);
+    }
     let transactions = client.success("txn_list", &json!({"company":"acme"}))?;
     assert_eq!(transactions.as_array().map(Vec::len), Some(0));
     Ok(())
@@ -2148,6 +2290,12 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
         ),
         ("txn_reconcile", json!({}), "ledger/reconcile"),
         (
+            "company_create",
+            json!({"slug":"empty", "name":"Empty"}),
+            "ledger/admin",
+        ),
+        ("company_delete", json!({"slug":"acme"}), "ledger/admin"),
+        (
             "account_create",
             json!({"company":"acme", "code":"2000", "name":"Loan", "account_type":"liability"}),
             "ledger/admin",
@@ -2825,7 +2973,7 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     let status = setup_client.success("ledger_setup_status", &json!({}))?;
     assert_eq!(status["transactions"], 0);
 
-    let book = exercise_setup_books(&mut setup_client, &db, generation)?;
+    let book = exercise_setup_books(&mut setup_client, &mut owner_client, &db, generation)?;
     assert_setup_book_facts(&mut setup_client, &path, &passphrase_path, setup_token)?;
     assert_existing_book_initializes_in_place(
         &mut setup_client,
@@ -3404,6 +3552,7 @@ fn assert_setup_book_facts(
 
 fn exercise_setup_books(
     client: &mut Client,
+    owner: &mut Client,
     db: &beankeeper_cli::db::Db,
     generation: i64,
 ) -> Result<Value, Box<dyn Error>> {
@@ -3415,6 +3564,13 @@ fn exercise_setup_books(
     let book = client.success("ledger_setup_book_create", &initial)?;
     assert_eq!(book["profile"]["company"], "home");
     assert_eq!(book["profile"]["purpose"], "personal");
+    let refusal = payload(&owner.call("company_delete", &json!({"slug":"home"}))?)?;
+    assert_eq!(refusal["code"], "VALIDATION");
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("retained setup records"))
+    );
     let count = setup_audit_count(db)?;
     assert_eq!(client.success("ledger_setup_book_create", &initial)?, book);
     assert_eq!(setup_audit_count(db)?, count);

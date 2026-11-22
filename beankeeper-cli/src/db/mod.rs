@@ -68,7 +68,7 @@ use crate::error::CliError;
 // ---------------------------------------------------------------------------
 
 /// A row from the `companies` table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CompanyRow {
     pub slug: companies::CompanySlug,
     pub name: String,
