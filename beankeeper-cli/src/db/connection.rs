@@ -140,11 +140,71 @@ impl Db {
     pub fn read(&self) -> ReadConn<'_> {
         ReadConn::new(&self.conn)
     }
+
+    /// Run queries against one SQLite snapshot.
+    ///
+    /// Values can be returned from the callback. Its reader and prepared
+    /// statements borrow the snapshot for the duration of the callback.
+    ///
+    /// ```compile_fail
+    /// use beankeeper_cli::db::{Db, connection::ReadConn};
+    /// use beankeeper_cli::error::CliError;
+    ///
+    /// fn escape(db: &Db) -> Result<ReadConn<'_>, CliError> {
+    ///     db.read_snapshot(|reader| Ok(reader))
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use beankeeper_cli::db::{Db, connection::ReadStatement};
+    /// use beankeeper_cli::error::CliError;
+    ///
+    /// fn escape(db: &Db) -> Result<ReadStatement<'_>, CliError> {
+    ///     db.read_snapshot(|reader| Ok(reader.prepare("SELECT 1")?))
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns a callback error or a database error from the savepoint.
+    pub fn read_snapshot<T>(
+        &self,
+        run: impl for<'snapshot> FnOnce(ReadConn<'snapshot>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        super::audit::atomically(&self.conn, || run(self.read()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_snapshot_retains_one_view_and_releases_it_on_error() -> Result<(), CliError> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("books.db");
+        let writer = Db::open(&path, None)?;
+        let db = Db::open_snapshot(&path, None)?;
+        let count = |reader: ReadConn<'_>| -> Result<i64, CliError> {
+            Ok(reader.query_row("SELECT COUNT(*) FROM companies", [], |row| row.get(0))?)
+        };
+
+        let result: Result<(), CliError> = db.read_snapshot(|reader| {
+            assert_eq!(count(reader)?, 0);
+            super::super::create_company(
+                writer.conn(),
+                &super::super::Actor::new("fixture"),
+                "acme",
+                "Acme",
+                None,
+            )?;
+            assert_eq!(count(reader)?, 0);
+            Err(CliError::Validation("stop snapshot".into()))
+        });
+        assert!(matches!(result, Err(CliError::Validation(message)) if message == "stop snapshot"));
+        assert!(db.conn.is_autocommit());
+        assert_eq!(count(db.read())?, 1);
+        Ok(())
+    }
 
     #[test]
     fn open_in_memory_succeeds() {

@@ -17,7 +17,7 @@ use crate::output::json;
 /// Returns validation, persistence, or output errors.
 pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::get_company(db.read(), company)?;
     let actor = cli.principal();
     let data = match command {
         ScheduleCommand::Create(args) => {
@@ -26,7 +26,7 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
             serde_json::to_value(ScheduleJson::from(&schedule))
         }
         ScheduleCommand::List { all, due_through } => {
-            let rows: Vec<_> = schedules::list_schedules(db.conn(), company)?
+            let rows: Vec<_> = schedules::list_schedules(db.read(), company)?
                 .into_iter()
                 .filter(|row| *all || row.state.next_due().is_some())
                 .filter(|row| {

@@ -48,13 +48,13 @@ pub fn run(
 
 /// Export all data as JSON.
 fn export_json(db: &Db) -> Result<String, CliError> {
-    let companies = db::list_companies(db.conn())?;
+    let companies = db::list_companies(db.read())?;
 
     let mut company_exports = Vec::new();
 
     for company in &companies {
         let accounts = db::list_accounts(
-            db.conn(),
+            db.read(),
             &db::accounts::ListAccountParams {
                 company_slug: &company.slug,
                 type_filter: None,
@@ -64,7 +64,7 @@ fn export_json(db: &Db) -> Result<String, CliError> {
         let scope = Company::resolve(db.conn(), &company.slug)?;
         let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
         txn_params.limit = i64::MAX;
-        let transactions = db::list_transactions(db.conn(), &txn_params)?;
+        let transactions = db::list_transactions(db.read(), &txn_params)?;
 
         let mut txn_exports = Vec::new();
         for txn in &transactions {
@@ -129,7 +129,7 @@ fn export_json(db: &Db) -> Result<String, CliError> {
 /// 2. Accounts
 /// 3. Transactions with entries
 fn export_csv(db: &Db) -> Result<String, CliError> {
-    let companies = db::list_companies(db.conn())?;
+    let companies = db::list_companies(db.read())?;
 
     let mut sections = Vec::new();
 
@@ -141,7 +141,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
     let mut all_accounts = Vec::new();
     for company in &companies {
         let accounts = db::list_accounts(
-            db.conn(),
+            db.read(),
             &db::accounts::ListAccountParams {
                 company_slug: &company.slug,
                 type_filter: None,
@@ -187,7 +187,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         let scope = Company::resolve(db.conn(), &company.slug)?;
         let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
         txn_params.limit = i64::MAX;
-        let transactions = db::list_transactions(db.conn(), &txn_params)?;
+        let transactions = db::list_transactions(db.read(), &txn_params)?;
         for txn in &transactions {
             let entries = db::get_entries_for_transaction(&scope, txn.id)?;
             for entry in &entries {

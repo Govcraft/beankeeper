@@ -13,7 +13,9 @@ use super::{
     requests::{SetupReference, apply_once, digest},
     with_active_session,
 };
-use crate::db::{Actor, Db, accounts, companies::CompanySlug, periods, proposals};
+use crate::db::{
+    Actor, Db, accounts, companies::CompanySlug, connection::ReadConn, periods, proposals,
+};
 use crate::error::CliError;
 use crate::output::{amounts::format_money, json::serialize_display};
 
@@ -208,8 +210,11 @@ fn prepare<'a>(
         }
     }
     let journal = journal.post()?;
-    let _period =
-        periods::check_posting(session.connection, request.company.as_str(), journal.date())?;
+    periods::ensure_open(
+        ReadConn::new(session.connection),
+        request.company.as_str(),
+        journal.date(),
+    )?;
     let details = PreviewDetails {
         company: &request.company,
         profile_revision: profile.revision,
@@ -239,11 +244,15 @@ fn opening_entry(
     line: &OpeningLine,
     direction: DebitOrCredit,
 ) -> Result<Entry, CliError> {
-    let row = accounts::get_account(session.connection, company.as_str(), line.account.as_str())
-        .map_err(|error| match error {
-            CliError::NotFound(message) => CliError::Validation(message),
-            other => other,
-        })?;
+    let row = accounts::get_account(
+        ReadConn::new(session.connection),
+        company.as_str(),
+        line.account.as_str(),
+    )
+    .map_err(|error| match error {
+        CliError::NotFound(message) => CliError::Validation(message),
+        other => other,
+    })?;
     let account = accounts::row_to_account(&row)?;
     let amount = line.amount.money();
     let entry = match &line.memo {

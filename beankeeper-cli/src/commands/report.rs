@@ -145,7 +145,7 @@ fn run_resolved_to(
     sub: &ReportCommand,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    crate::db::companies::get_company(db.conn(), company)?;
+    crate::db::companies::get_company(db.read(), company)?;
     if let Some(result) = super::report_compare::try_run_to(cli, db, company, sub, output) {
         return result;
     }
@@ -280,7 +280,7 @@ impl<'a> ResolvedReport<'a> {
         dates: DateWindow,
         currency: Option<&CurrencyArg>,
     ) -> Result<Self, CliError> {
-        let account = db::get_account(db.conn(), company, account)?;
+        let account = db::get_account(db.read(), company, account)?;
         let currency =
             resolve_report_currency(db.conn(), company, CurrencyArg::resolve_optional(currency)?)?;
         Ok(Self::Balance(StatementWindow { dates, currency }, account))
@@ -496,7 +496,7 @@ pub fn compute_income_statement(
 ) -> Result<output::statements::IncomeStatement, CliError> {
     let conn = db.conn();
     db::audit::atomically(conn, || {
-        db::companies::get_company(conn, company)?;
+        db::companies::get_company_on_connection(conn, company)?;
         let from = dates.from().to_string();
         let to = dates.to().to_string();
         let load = |kind: AccountType| {
@@ -568,7 +568,7 @@ pub fn compute_balance_sheet(
 ) -> Result<output::statements::BalanceSheet, CliError> {
     let conn = db.conn();
     db::audit::atomically(conn, || {
-        db::companies::get_company(conn, company)?;
+        db::companies::get_company_on_connection(conn, company)?;
         let to = as_of.to_string();
         let load = |kind: AccountType| {
             db::compute_trial_balance(conn, company, Some(kind), None, Some(&to), currency)
@@ -688,7 +688,7 @@ fn run_budget_variance(
         coverage,
     } = opts;
     let report = db::compute_budget_variance(
-        db.conn(),
+        db,
         &db::BudgetVarianceParams {
             company_slug: company,
             currency,

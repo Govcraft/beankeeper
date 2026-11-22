@@ -29,7 +29,7 @@ pub fn run(
 ) -> Result<(), CliError> {
     let db_handle = cli.open_db()?;
     if !matches!(sub, TxnCommand::Reconcile) {
-        crate::db::companies::get_company(db_handle.conn(), company)?;
+        crate::db::companies::get_company(db_handle.read(), company)?;
     }
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
@@ -199,7 +199,7 @@ pub fn execute_json_with_pagination(
     actor: &db::Actor,
 ) -> Result<(serde_json::Value, Option<serde_json::Value>), CliError> {
     if !matches!(sub, TxnCommand::Reconcile) {
-        db::get_company(db_handle.conn(), company)?;
+        db::get_company(db_handle.read(), company)?;
     }
     let mut out = Vec::new();
     match sub {
@@ -260,7 +260,7 @@ pub fn execute_json_with_pagination(
 }
 
 pub(crate) fn execute_reconcile_json(db_handle: &Db) -> Result<serde_json::Value, CliError> {
-    let orphans = transactions::find_orphaned_correlations(db_handle.conn(), AllCompanies)?;
+    let orphans = transactions::find_orphaned_correlations(db_handle.read(), AllCompanies)?;
     if orphans.is_empty() {
         Ok(serde_json::Value::Array(Vec::new()))
     } else {
@@ -681,7 +681,7 @@ pub(crate) fn execute_posting_json(
     actor: &db::Actor,
     mode: PostingMode,
 ) -> Result<serde_json::Value, CliError> {
-    db::get_company(db.conn(), company)?;
+    db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| match mode {
         PostingMode::Post => {
             transactions::post_from_source(db.conn(), params, transactions::PostingSource::Command)
@@ -802,8 +802,8 @@ fn run_list(
     use_color: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let rows = transactions::list_transactions(db_handle.conn(), params)?;
-    let total = transactions::count_transactions(db_handle.conn(), params)?;
+    let rows = transactions::list_transactions(db_handle.read(), params)?;
+    let total = transactions::count_transactions(db_handle.read(), params)?;
     let pagination = output::json::Pagination::new(params.limit, params.offset, rows.len(), total);
 
     match format {
@@ -858,7 +858,7 @@ fn run_count(
     format: OutputFormat,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let count = transactions::count_transactions(db_handle.conn(), params)?;
+    let count = transactions::count_transactions(db_handle.read(), params)?;
 
     match format {
         OutputFormat::Json => {
@@ -897,7 +897,7 @@ fn run_show(
     let (format, use_color) = display;
     let company_scope = Company::resolve(db_handle.conn(), company)?;
     let (txn, entries) = transactions::get_scoped_transaction(&company_scope, id)?;
-    let att_rows = attachments::list_attachments(db_handle.conn(), company, id.try_into()?)?;
+    let att_rows = attachments::list_attachments(db_handle.read(), company, id.try_into()?)?;
     let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
     for e in &entries {
         clearings.insert(
@@ -1033,7 +1033,7 @@ fn render_reconcile(
     out: &mut dyn Write,
     meta: output::json::Meta,
 ) -> Result<(), CliError> {
-    let orphans = transactions::find_orphaned_correlations(db_handle.conn(), scope)?;
+    let orphans = transactions::find_orphaned_correlations(db_handle.read(), scope)?;
 
     if orphans.is_empty() {
         match format {

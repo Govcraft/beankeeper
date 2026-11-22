@@ -8,7 +8,7 @@ use beankeeper::core::{JournalEntry, Transaction};
 use beankeeper::types::{
     Account, AccountCode, AccountType, Currency, DebitOrCredit, Entry, PositiveMoney, Sha256Hex,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -19,7 +19,9 @@ use crate::commands::{
     statement_source::{self, SourceRow},
     txn_import::{CsvMapping, read_csv_statement},
 };
-use crate::db::{accounts, companies::CompanySlug, ids::TransactionId, periods, rules};
+use crate::db::{
+    accounts, companies::CompanySlug, connection::ReadConn, ids::TransactionId, periods, rules,
+};
 use crate::error::CliError;
 use crate::output::{amounts::format_money, json::serialize_display};
 
@@ -270,7 +272,7 @@ pub(crate) fn prepare_in_session(
     }
 
     let profile = books::current_profile(session, &request.company)?;
-    let conn = session.connection;
+    let conn = ReadConn::new(session.connection);
     let company = request.company.as_str();
     let bank_code = request.bank.as_str();
     let suspense_code = request.suspense.as_str();
@@ -331,7 +333,7 @@ pub(crate) fn prepare_in_session(
         .map(|row| row.journal.date())
         .min()
     {
-        let _period = periods::check_posting(conn, company, first_new_date)?;
+        periods::ensure_open(conn, company, first_new_date)?;
     }
 
     Ok(StatementPreview {
@@ -354,7 +356,7 @@ struct StatementAccount {
 }
 
 impl StatementAccount {
-    fn load(conn: &Connection, company: &str, code: &str) -> Result<Self, CliError> {
+    fn load(conn: ReadConn<'_>, company: &str, code: &str) -> Result<Self, CliError> {
         let row = accounts::get_account(conn, company, code)?;
         Ok(Self {
             account: accounts::row_to_account(&row)?,

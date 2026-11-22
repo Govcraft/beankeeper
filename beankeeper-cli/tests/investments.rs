@@ -192,7 +192,7 @@ fn a_sale_can_exhaust_one_lot_and_partially_relieve_another() -> TestResult {
     assert_eq!(sold.relief.len(), 2);
     assert_eq!(sold.relief[0].quantity.to_string(), "1");
     assert_eq!(sold.relief[1].quantity.to_string(), "0.5");
-    let lots = investments::list_lots(db.conn(), "acme", "ABC")?;
+    let lots = investments::list_lots(db.read(), "acme", "ABC")?;
     assert_eq!(lots[0].remaining_quantity.to_string(), "0");
     assert_eq!(lots[1].remaining_quantity.to_string(), "0.5");
     assert_eq!(minor(lots[1].remaining_cost_basis), 100);
@@ -216,7 +216,7 @@ fn same_date_lots_have_a_stable_id_tiebreaker() -> TestResult {
             "acme",
             &purchase("1", 200, "2026-01-01")?,
         )?;
-        let lots = investments::list_lots(db.conn(), "acme", "ABC")?;
+        let lots = investments::list_lots(db.read(), "acme", "ABC")?;
         assert!(lots[0].id < lots[1].id);
         let expected = &lots[usize::from(method == LotSelection::Lifo)];
         let mut params = sale("1", 150, "2026-01-01")?;
@@ -264,7 +264,7 @@ fn specific_lots_are_scoped_to_company_symbol_and_account() -> TestResult {
     let sold = investments::sell(db.conn(), &actor, "acme", &params)?;
     assert_eq!(minor(sold.cost_basis), 200);
     assert_eq!(sold.relief[0].lot_id, lot);
-    let lots = investments::list_lots(db.conn(), "acme", "ABC")?;
+    let lots = investments::list_lots(db.read(), "acme", "ABC")?;
     assert_eq!(minor(lots[0].remaining_cost_basis), 100);
     assert_eq!(lots[1].remaining_quantity.to_string(), "0");
     verify(&db)
@@ -288,10 +288,10 @@ fn fractional_partial_sales_conserve_the_original_basis() -> TestResult {
     }
     assert_eq!(costs, [33, 34, 33]);
     assert_eq!(costs.iter().sum::<i128>(), 100);
-    let lots = investments::list_lots(db.conn(), "acme", "ABC")?;
+    let lots = investments::list_lots(db.read(), "acme", "ABC")?;
     assert_eq!(lots[0].remaining_quantity.to_string(), "0");
     assert_eq!(minor(lots[0].remaining_cost_basis), 0);
-    assert!(investments::holdings(db.conn(), "acme", date("2026-01-04")?)?.is_empty());
+    assert!(investments::holdings(&db, "acme", date("2026-01-04")?)?.is_empty());
     verify(&db)
 }
 
@@ -319,27 +319,27 @@ fn historical_holdings_apply_only_trades_and_prices_known_at_the_cutoff() -> Tes
         )?;
     }
     let before = state(&db)?;
-    let unpriced = investments::holdings(db.conn(), "acme", date("2026-01-01")?)?;
+    let unpriced = investments::holdings(&db, "acme", date("2026-01-01")?)?;
     assert_eq!(unpriced[0].quantity.to_string(), "3");
     assert_eq!(minor(unpriced[0].cost_basis), 300);
     assert_eq!(unpriced[0].latest_price, None);
     assert_eq!(unpriced[0].market_value, None);
     assert_eq!(unpriced[0].unrealized_gain, None);
-    let prior = investments::holdings(db.conn(), "acme", date("2026-01-02")?)?;
+    let prior = investments::holdings(&db, "acme", date("2026-01-02")?)?;
     assert_eq!(prior[0].quantity.to_string(), "3");
     assert_eq!(prior[0].market_value.map(minor), Some(360));
     assert_eq!(prior[0].unrealized_gain.map(minor), Some(60));
-    let current = investments::holdings(db.conn(), "acme", date("2026-01-03")?)?;
+    let current = investments::holdings(&db, "acme", date("2026-01-03")?)?;
     assert_eq!(current[0].quantity.to_string(), "2");
     assert_eq!(minor(current[0].cost_basis), 200);
     assert_eq!(current[0].latest_price.map(minor), Some(120));
     assert_eq!(current[0].price_date, Some(date("2026-01-02")?));
     assert_eq!(current[0].market_value.map(minor), Some(240));
     assert_eq!(current[0].unrealized_gain.map(minor), Some(40));
-    let future = investments::holdings(db.conn(), "acme", date("2026-01-04")?)?;
+    let future = investments::holdings(&db, "acme", date("2026-01-04")?)?;
     assert_eq!(future[0].market_value.map(minor), Some(500));
-    assert!(investments::holdings(db.conn(), "other", date("2026-01-04")?)?.is_empty());
-    assert!(investments::holdings(db.conn(), "acme", date("2025-12-31")?)?.is_empty());
+    assert!(investments::holdings(&db, "other", date("2026-01-04")?)?.is_empty());
+    assert!(investments::holdings(&db, "acme", date("2025-12-31")?)?.is_empty());
     assert_eq!(state(&db)?, before);
     verify(&db)
 }
@@ -363,8 +363,8 @@ fn dates_across_the_four_digit_year_boundary_keep_chronological_order() -> TestR
     }
     let before = state(&db)?;
     assert!(investments::sell(db.conn(), &actor, "acme", &sale("1", 150, "9999-12-31")?).is_err());
-    let prior = investments::holdings(db.conn(), "acme", date("9999-12-31")?)?;
-    let current = investments::holdings(db.conn(), "acme", date("+10000-01-01")?)?;
+    let prior = investments::holdings(&db, "acme", date("9999-12-31")?)?;
+    let current = investments::holdings(&db, "acme", date("+10000-01-01")?)?;
     assert_eq!(prior[0].market_value.map(minor), Some(120));
     assert_eq!(current[0].market_value.map(minor), Some(500));
     assert_eq!(state(&db)?, before);
@@ -409,7 +409,7 @@ fn oversells_and_duplicate_references_leave_no_partial_state() -> TestResult {
     duplicate.reference = Some("buy-1".into());
     assert!(investments::sell(db.conn(), &actor, "acme", &duplicate).is_err());
     assert_eq!(state(&db)?, before);
-    let lots = investments::list_lots(db.conn(), "acme", "ABC")?;
+    let lots = investments::list_lots(db.read(), "acme", "ABC")?;
     assert_eq!(lots[0].remaining_quantity.to_string(), "1");
     assert_eq!(minor(lots[0].remaining_cost_basis), 100);
     verify(&db)
@@ -445,7 +445,7 @@ fn relief_or_audit_failure_rolls_back_the_entire_sale() -> TestResult {
             investments::sell(db.conn(), &actor, "acme", &sale("2", 450, "2026-01-03")?).is_err()
         );
         assert_eq!(state(&db)?, before);
-        let lots = investments::list_lots(db.conn(), "acme", "ABC")?;
+        let lots = investments::list_lots(db.read(), "acme", "ABC")?;
         assert_eq!(lots[0].remaining_quantity.to_string(), "1");
         assert_eq!(minor(lots[0].remaining_cost_basis), 100);
         assert_eq!(lots[1].remaining_quantity.to_string(), "1");
@@ -489,7 +489,7 @@ fn aggregate_basis_overflow_rejects_reports_and_sales_without_changes() -> TestR
     )?;
     investments::buy(db.conn(), &actor, "acme", &purchase("1", 1, "2026-01-02")?)?;
     let before = state(&db)?;
-    let report_error = investments::holdings(db.conn(), "acme", date("2026-01-03")?).unwrap_err();
+    let report_error = investments::holdings(&db, "acme", date("2026-01-03")?).unwrap_err();
     assert!(report_error.to_string().contains("overflow"));
     let sell_error =
         investments::sell(db.conn(), &actor, "acme", &sale("2", 0, "2026-01-03")?).unwrap_err();
@@ -515,7 +515,7 @@ fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
     )?;
     let before = state(&db)?;
     assert!(
-        investments::holdings(db.conn(), "acme", date("2026-01-01")?)
+        investments::holdings(&db, "acme", date("2026-01-01")?)
             .unwrap_err()
             .to_string()
             .contains("overflow")
@@ -530,7 +530,7 @@ fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
         investments::buy(db.conn(), &actor, "other", &params)?;
     }
     assert!(
-        investments::holdings(db.conn(), "other", date("2026-01-02")?)
+        investments::holdings(&db, "other", date("2026-01-02")?)
             .unwrap_err()
             .to_string()
             .contains("overflow")
@@ -715,7 +715,7 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
         );
         assert_eq!(state(&db)?, before);
     }
-    let lots = investments::list_lots(db.conn(), "acme", "ABC")?;
+    let lots = investments::list_lots(db.read(), "acme", "ABC")?;
     assert_eq!(lots[0].remaining_quantity.to_string(), "1");
     assert_eq!(minor(lots[0].remaining_cost_basis), 100);
     verify(&db)

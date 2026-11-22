@@ -100,7 +100,7 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     for invalid in cases {
         assert!(schedules::create_schedule(db.conn(), &actor, "acme", &invalid).is_err());
     }
-    assert!(schedules::list_schedules(db.conn(), "acme")?.is_empty());
+    assert!(schedules::list_schedules(db.read(), "acme")?.is_empty());
     assert_eq!(audit_count(&db)?, before_audit);
     Ok(())
 }
@@ -123,7 +123,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
             .all(|occurrence| occurrence.transaction_id.is_none())
     );
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0]
+        schedules::list_schedules(db.read(), "acme")?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -142,7 +142,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
             .iter()
             .all(|occurrence| occurrence.transaction_id.is_some())
     );
-    let completed = &schedules::list_schedules(db.conn(), "acme")?[0];
+    let completed = &schedules::list_schedules(db.read(), "acme")?[0];
     assert_eq!(completed.state, ScheduleState::Completed);
     assert_eq!(completed.state.next_due(), None);
     assert!(schedules::run_due(db.conn(), &actor, "acme", date("2027-01-01")?, false)?.is_empty());
@@ -177,7 +177,7 @@ fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0]
+        schedules::list_schedules(db.read(), "acme")?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -202,7 +202,7 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0]
+        schedules::list_schedules(db.read(), "acme")?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -217,7 +217,7 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     let actor = Actor::new("schedule-test");
     companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
     let schedule = schedules::create_schedule(db.conn(), &actor, "acme", &template()?)?;
-    assert!(schedules::list_schedules(db.conn(), "other")?.is_empty());
+    assert!(schedules::list_schedules(db.read(), "other")?.is_empty());
     assert!(schedules::cancel_schedule(db.conn(), &actor, "other", &schedule.id).is_err());
     let posted = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-31")?, false)?;
     assert_eq!(posted.len(), 1);
@@ -264,7 +264,7 @@ fn invalid_persisted_template_is_rejected_before_posting() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0]
+        schedules::list_schedules(db.read(), "acme")?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -351,7 +351,7 @@ fn finite_schedules_complete_at_the_supported_date_boundary() -> TestResult {
         let posted = schedules::run_due(db.conn(), &actor, "acme", NaiveDate::MAX, false)?;
         assert_eq!(posted.len(), 1);
         assert_eq!(posted[0].date, start_date);
-        let completed = &schedules::list_schedules(db.conn(), "acme")?[0];
+        let completed = &schedules::list_schedules(db.read(), "acme")?[0];
         assert_eq!(completed.state, ScheduleState::Completed);
         assert_eq!(completed.state.next_due(), None);
         assert!(schedules::run_due(db.conn(), &actor, "acme", NaiveDate::MAX, false)?.is_empty());
@@ -380,7 +380,7 @@ fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
     assert_eq!(posted.len(), DEFAULT_RUN_LIMIT);
     assert!(posted.iter().all(|row| row.transaction_id.is_some()));
     assert_eq!(
-        schedules::list_schedules(db.conn(), "acme")?[0]
+        schedules::list_schedules(db.read(), "acme")?[0]
             .state
             .code(),
         "completed"
@@ -399,7 +399,7 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     for count in [500, 501] {
         schedules::create_schedule(db.conn(), &actor, "acme", &daily_template(count)?)?;
     }
-    let before = serde_json::json!(schedules::list_schedules(db.conn(), "acme")?);
+    let before = serde_json::json!(schedules::list_schedules(db.read(), "acme")?);
     db.conn().execute_batch(
         "CREATE TRIGGER reject_any_post BEFORE INSERT ON transactions
          BEGIN SELECT RAISE(ABORT, 'posting attempted before limit check'); END;",
@@ -412,7 +412,7 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     assert!(error.to_string().contains("1000 occurrences"));
     assert!(error.to_string().contains("--allow-large-run"));
     assert_eq!(
-        serde_json::json!(schedules::list_schedules(db.conn(), "acme")?),
+        serde_json::json!(schedules::list_schedules(db.read(), "acme")?),
         before
     );
     for table in ["transactions", "entries"] {
@@ -461,7 +461,7 @@ fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> Te
     let posted = schedules::run_due(db.conn(), &actor, "acme", date("2020-01-01")?, false)?;
     assert_eq!(posted.len(), 1);
     assert_eq!(
-        schedules::list_schedules(db.conn(), "other")?[0]
+        schedules::list_schedules(db.read(), "other")?[0]
             .state
             .next_due(),
         Some(params.start_date)

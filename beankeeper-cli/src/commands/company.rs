@@ -35,7 +35,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             render_companies(&[row], Operation::CompanyCreate, format, use_color, cli)?;
         }
         CompanyCommand::List => {
-            let rows = companies::list_companies(db.conn())?;
+            let rows = companies::list_companies(db.read())?;
             render_companies(&rows, Operation::CompanyList, format, use_color, cli)?;
             if !cli.verbosity.quiet {
                 let count = rows.len();
@@ -46,7 +46,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             }
         }
         CompanyCommand::Show { slug } => {
-            let row = companies::get_company(db.conn(), slug)?;
+            let row = companies::get_company(db.read(), slug)?;
             render_companies(&[row], Operation::CompanyShow, format, use_color, cli)?;
         }
         CompanyCommand::Delete { slug, force } => {
@@ -105,11 +105,11 @@ pub fn execute_json(db: &Db, sub: &CompanyCommand) -> Result<serde_json::Value, 
     let (command, rows) = match sub {
         CompanyCommand::List => (
             Operation::CompanyList,
-            companies::list_companies(db.conn())?,
+            companies::list_companies(db.read())?,
         ),
         CompanyCommand::Show { slug } => (
             Operation::CompanyShow,
-            vec![companies::get_company(db.conn(), slug)?],
+            vec![companies::get_company(db.read(), slug)?],
         ),
         _ => return Err(CliError::Usage("unsupported MCP company operation".into())),
     };

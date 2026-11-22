@@ -673,7 +673,7 @@ pub fn set_spend_limit(
         let company = limit.company().as_str();
         let currency = limit.currency();
         let caps = limit.caps();
-        super::companies::get_company(conn, company)?;
+        super::companies::get_company(ReadConn::new(conn), company)?;
         let before = super::spend_limits::list(conn, uri, Some(company))?
             .into_iter()
             .find(|row| row.currency() == currency);
@@ -775,8 +775,8 @@ pub fn change_period(
 
     in_savepoint(conn, "sp_period_change", || {
         require_capability(conn, actor, crate::capability::Capability::Admin)?;
-        super::companies::get_company(conn, company)?;
-        let before = super::periods::get(conn, company)?;
+        super::companies::get_company(ReadConn::new(conn), company)?;
+        let before = super::periods::get(ReadConn::new(conn), company)?;
         let previous = before.as_ref().and_then(PeriodLock::closed_through);
         let (state, action) = resolve_period_change(change, previous)?;
         let changed_at =
@@ -2062,7 +2062,8 @@ pub fn delete_account(
     in_savepoint(conn, "sp_account_delete", || {
         // Reading the row first both yields the snapshot and produces the
         // `NotFound` error when the account is absent.
-        let row: AccountRow = super::accounts::get_account(conn, company_slug, code)?;
+        let row: AccountRow =
+            super::accounts::get_account(ReadConn::new(conn), company_slug, code)?;
 
         let schedules: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schedule_entries WHERE company_slug = ?1 AND account_code = ?2",
@@ -2146,7 +2147,7 @@ pub fn delete_company(
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     in_savepoint(conn, "sp_company_delete", || {
-        let row: CompanyRow = super::companies::get_company(conn, slug)?;
+        let row: CompanyRow = super::companies::get_company(ReadConn::new(conn), slug)?;
         let securities: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM securities WHERE company_slug = ?1)",
             [slug],
@@ -2246,7 +2247,7 @@ pub fn delete_rule(
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     atomically(conn, || {
-        let rule = super::rules::list_rules(conn, company)?
+        let rule = super::rules::list_rules(ReadConn::new(conn), company)?
             .into_iter()
             .find(|rule| &rule.id == id)
             .ok_or_else(|| {
@@ -2355,7 +2356,7 @@ fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::V
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn count_audit(conn: &Connection, params: &ListAuditParams<'_>) -> Result<i64, CliError> {
+pub fn count_audit(conn: ReadConn<'_>, params: &ListAuditParams<'_>) -> Result<i64, CliError> {
     let (filter, values) = audit_filter(params);
     Ok(conn.query_row(
         &format!("SELECT COUNT(*){filter}"),
@@ -2370,7 +2371,7 @@ pub fn count_audit(conn: &Connection, params: &ListAuditParams<'_>) -> Result<i6
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_audit(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     params: &ListAuditParams<'_>,
 ) -> Result<Vec<AuditLogRow>, CliError> {
     let (filter, mut values) = audit_filter(params);
@@ -2561,8 +2562,8 @@ mod tests {
             limit: 10,
             offset: 0,
         };
-        let records = list_audit(db.conn(), &filters)?;
-        assert_eq!(count_audit(db.conn(), &filters)?, 1);
+        let records = list_audit(db.read(), &filters)?;
+        assert_eq!(count_audit(db.read(), &filters)?, 1);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].entity, AuditEntity::Transaction);
         assert_eq!(records[0].action, AuditAction::Attach);
@@ -2666,9 +2667,19 @@ mod tests {
             crate::db::store_attachment(connection, &actor, &attachment)
                 .expect_err("attachment creation must fail on audit error"),
         );
-        assert!(!crate::db::company_exists(connection, "new")?);
-        assert!(!crate::db::account_exists(connection, "acme", "1100")?);
-        assert!(crate::db::list_attachments(connection, "acme", transaction_id)?.is_empty());
+        assert!(!crate::db::company_exists(
+            ReadConn::new(connection),
+            "new"
+        )?);
+        assert!(!crate::db::account_exists(
+            ReadConn::new(connection),
+            "acme",
+            "1100"
+        )?);
+        assert!(
+            crate::db::list_attachments(ReadConn::new(connection), "acme", transaction_id)?
+                .is_empty()
+        );
         assert!(connection.is_autocommit());
         Ok(())
     }

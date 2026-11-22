@@ -52,7 +52,7 @@ fn compute<'a>(
     sub: &'a BudgetCommand,
     actor: &db::Actor,
 ) -> Result<Option<BudgetData<'a>>, CliError> {
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::get_company(db.read(), company)?;
     match sub {
         BudgetCommand::Set(args) => {
             let request = BudgetSetRequest::from_cli(args)?;
@@ -64,7 +64,7 @@ fn compute<'a>(
             account,
             month,
         } => db::list_budgets(
-            db.conn(),
+            db.read(),
             &db::ListBudgetParams {
                 company_slug: company,
                 year: *year,
@@ -181,7 +181,7 @@ fn set(
         currency,
         notes,
     } = *request;
-    if !db::account_exists(db.conn(), company, account)? {
+    if !db::account_exists(db.read(), company, account)? {
         return Err(CliError::NotFound(format!(
             "account '{account}' not found in company '{company}'"
         )));
@@ -286,7 +286,7 @@ pub(crate) fn execute_set_json(
     request: &BudgetSetRequest<'_>,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::get_company(db.read(), company)?;
     let rows = set(db, company, request, actor)?;
     super::company::json_data(&output::json::render_budgets(
         &rows,

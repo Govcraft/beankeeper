@@ -43,7 +43,7 @@ pub fn execute(
             company,
             periods::PeriodChange::Reopen(reason.parse()?),
         )?]),
-        PeriodCommand::List => periods::list(db.conn(), company),
+        PeriodCommand::List => periods::list(db.read(), company),
     }
 }
 

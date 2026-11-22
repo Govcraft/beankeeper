@@ -294,7 +294,7 @@ pub fn build_report(
     company: &str,
     opts: &LedgerOptions<'_>,
 ) -> Result<LedgerReport, CliError> {
-    if !db::company_exists(conn, company)? {
+    if !db::companies::company_exists_on_connection(conn, company)? {
         return Err(CliError::NotFound(format!("company '{company}' not found")));
     }
 
@@ -324,10 +324,10 @@ fn build_report_for_request(
         let codes: BTreeSet<&str> = request.accounts.iter().map(String::as_str).collect();
         codes
             .into_iter()
-            .map(|code| db::get_account(conn, company, code))
+            .map(|code| db::accounts::get_account_on_connection(conn, company, code))
             .collect::<Result<_, _>>()?
     } else {
-        db::list_accounts(
+        db::accounts::list_accounts_on_connection(
             conn,
             &db::ListAccountParams {
                 company_slug: company,

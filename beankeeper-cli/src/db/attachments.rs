@@ -10,6 +10,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 use super::audit::{self, Actor};
+use super::connection::ReadConn;
 use super::ids::{AttachmentId, EntryId, TransactionId};
 use crate::error::CliError;
 
@@ -57,7 +58,7 @@ pub fn store_attachment(
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_attachments(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company_slug: &str,
     transaction_id: TransactionId,
 ) -> Result<Vec<AttachmentRow>, CliError> {
@@ -84,7 +85,7 @@ pub fn list_attachments(
 /// Returns `CliError::NotFound` if the attachment does not exist.
 /// Returns `CliError::Sqlite` on database errors.
 pub fn get_attachment(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company_slug: &str,
     attachment_id: AttachmentId,
 ) -> Result<AttachmentRow, CliError> {
@@ -282,7 +283,7 @@ mod tests {
         let att_id = store_attachment(db.conn(), &Actor::new("fixture"), &params)?;
         assert!(att_id.get() > 0);
 
-        let attachments = list_attachments(db.conn(), "acme", txn_id)?;
+        let attachments = list_attachments(db.read(), "acme", txn_id)?;
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].uri, uri);
         assert_eq!(attachments[0].document_type, DocumentType::Receipt);
@@ -335,7 +336,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("store failed: {e}"));
 
         let att =
-            get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
+            get_attachment(db.read(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.id, att_id);
         assert_eq!(att.document_type, DocumentType::Invoice);
         assert!(att.hash.is_none());
@@ -351,7 +352,7 @@ mod tests {
 
         db.conn()
             .execute(insert, params![txn_id, HELLO_WORLD_HASH])?;
-        let row = get_attachment(db.conn(), "acme", db.conn().last_insert_rowid().try_into()?)
+        let row = get_attachment(db.read(), "acme", db.conn().last_insert_rowid().try_into()?)
             .unwrap_or_else(|e| panic!("read existing attachment: {e}"));
         assert_eq!(
             row.hash.as_ref().map(Sha256Hex::as_str),
@@ -359,7 +360,7 @@ mod tests {
         );
 
         db.conn().execute(insert, params![txn_id, "aéééééé"])?;
-        let result = list_attachments(db.conn(), "acme", txn_id);
+        let result = list_attachments(db.read(), "acme", txn_id);
         assert!(matches!(
             result,
             Err(CliError::Sqlite(rusqlite::Error::FromSqlConversionFailure(6, Type::Text, error)))
@@ -372,7 +373,7 @@ mod tests {
     #[test]
     fn get_attachment_not_found() -> Result<(), CliError> {
         let db = setup();
-        let result = get_attachment(db.conn(), "acme", 9999.try_into()?);
+        let result = get_attachment(db.read(), "acme", 9999.try_into()?);
         assert!(matches!(result, Err(CliError::NotFound(_))));
         Ok(())
     }
@@ -439,7 +440,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("store failed: {e}"));
 
         let att =
-            get_attachment(db.conn(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
+            get_attachment(db.read(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.entry_id, Some(entry_id));
         Ok(())
     }

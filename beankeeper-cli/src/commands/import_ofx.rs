@@ -18,7 +18,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::cli::{Cli, ImportFormat, InputSource};
-use crate::db::connection::Db;
+use crate::db::connection::{Db, ReadConn};
 use crate::db::{accounts, transactions};
 use crate::error::CliError;
 use crate::output::amounts::format_money_grouped;
@@ -294,7 +294,8 @@ pub(crate) fn prepare_transaction(
 /// Post one prepared transaction, returning the outcome.
 fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> TransactionOutcome {
     // Pre-check for duplicates; an early outcome means we must not post.
-    if let Some(outcome) = check_conflict(ctx.conn, ctx.company, prepared, ctx.conflict_strategy) {
+    if let Some(outcome) = check_conflict(ctx.reader, ctx.company, prepared, ctx.conflict_strategy)
+    {
         return outcome;
     }
 
@@ -329,7 +330,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
 /// under the active strategy, or a lookup error) and `None` when posting may
 /// proceed.
 fn check_conflict(
-    conn: &rusqlite::Connection,
+    conn: ReadConn<'_>,
     company: &str,
     prepared: &PreparedTransaction,
     conflict_strategy: transactions::ConflictStrategy,
@@ -387,7 +388,7 @@ fn build_entries(
             direction: beankeeper::types::DebitOrCredit::Debit,
             amount: prepared.amount_minor,
             memo: None,
-            tax_category: accounts::get_account(ctx.conn, ctx.company, debit_code)?
+            tax_category: accounts::get_account(ctx.reader, ctx.company, debit_code)?
                 .default_tax_category,
         },
         transactions::PostEntryParams {
@@ -395,7 +396,7 @@ fn build_entries(
             direction: beankeeper::types::DebitOrCredit::Credit,
             amount: prepared.amount_minor,
             memo: None,
-            tax_category: accounts::get_account(ctx.conn, ctx.company, credit_code)?
+            tax_category: accounts::get_account(ctx.reader, ctx.company, credit_code)?
                 .default_tax_category,
         },
     ])
@@ -464,6 +465,7 @@ enum TransactionOutcome {
 
 /// Context for processing a statement's transactions.
 struct StatementContext<'a> {
+    reader: ReadConn<'a>,
     rules: &'a [crate::db::rules::Rule],
     actor: &'a crate::db::Actor,
     conn: &'a rusqlite::Connection,
@@ -593,7 +595,7 @@ pub fn run_import_ofx(
     let conn = db_handle.conn();
     let verbose = cli.verbosity.verbose;
     let actor = cli.principal();
-    let rules = crate::db::rules::list_rules(conn, company)?;
+    let rules = crate::db::rules::list_rules(db_handle.read(), company)?;
     let format = crate::cli::resolve_format(None, cli);
 
     let conflict_strategy = match on_conflict {
@@ -601,7 +603,7 @@ pub fn run_import_ofx(
         crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
     };
 
-    validate_accounts(conn, company, account_code, suspense_code)?;
+    validate_accounts(db_handle.read(), company, account_code, suspense_code)?;
 
     // Read and parse OFX.
     let content = file.read_text()?;
@@ -616,6 +618,7 @@ pub fn run_import_ofx(
     for stmt in statements(&doc) {
         let currency = validate_currency(stmt.currency)?;
         let ctx = StatementContext {
+            reader: db_handle.read(),
             rules: &rules,
             actor: &actor,
             conn,
@@ -639,7 +642,7 @@ pub fn run_import_ofx(
 }
 
 fn validate_accounts(
-    conn: &rusqlite::Connection,
+    conn: ReadConn<'_>,
     company: &str,
     bank: &str,
     suspense: &str,

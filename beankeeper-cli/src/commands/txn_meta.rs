@@ -66,7 +66,7 @@ pub(crate) fn execute_structured(
     target: audit::MetadataTarget<'_>,
     edit: &metadata::MetadataEdit,
 ) -> Result<serde_json::Value, CliError> {
-    crate::db::get_company(db.conn(), company)?;
+    crate::db::get_company(db.read(), company)?;
     let result = audit::edit_metadata(db.conn(), actor, company, target, edit)?;
     serde_json::to_value(result).map_err(|error| CliError::General(error.to_string()))
 }

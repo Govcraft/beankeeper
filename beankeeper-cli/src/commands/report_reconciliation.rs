@@ -551,7 +551,8 @@ fn build_typed_report(
     company: &Company<'_>,
     request: &ReconciliationRequest<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    let account = db::get_account(conn, company.slug().as_str(), request.account)?;
+    let account =
+        db::accounts::get_account_on_connection(conn, company.slug().as_str(), request.account)?;
     build_resolved_report(
         conn,
         company,
@@ -602,7 +603,7 @@ fn resolve_cli_request<'a>(
     as_of: Option<NaiveDate>,
 ) -> Result<(db::AccountRow, ResolvedRequest<'a>), CliError> {
     let filters = metadata_filter::parse_filters(args.filter_metadata)?;
-    let account = db::get_account(conn, company, args.account)?;
+    let account = db::accounts::get_account_on_connection(conn, company, args.account)?;
     let currency = resolve_currency(conn, company, args.currency)?;
     let statement_balance = args
         .statement_balance

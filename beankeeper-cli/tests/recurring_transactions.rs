@@ -491,7 +491,7 @@ fn pending_schedule_prevents_account_deletion() -> TestResult {
         .output()?;
     assert_eq!(blocked.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("schedule"));
-    assert!(accounts::get_account(ledger.db()?.conn(), "acme", "5000").is_ok());
+    assert!(accounts::get_account(ledger.db()?.read(), "acme", "5000").is_ok());
     assert_eq!(ledger.count("audit_log")?, audits);
     Ok(())
 }

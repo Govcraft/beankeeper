@@ -38,7 +38,7 @@ pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
         let version = schema::read_schema_version(reader)?;
         crate::db::audit::verify_hash_chain(reader)?;
         crate::db::policy::get(db.conn())?;
-        crate::db::periods::verify(db.conn())?;
+        crate::db::periods::verify(reader)?;
         crate::db::proposals::verify_resolutions(db.conn())?;
         crate::db::spend_limits::verify(db.conn())?;
         crate::db::verification::verify_accounting(reader)?;

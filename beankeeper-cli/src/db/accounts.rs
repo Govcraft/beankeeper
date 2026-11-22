@@ -5,6 +5,7 @@ use rusqlite::{Connection, params};
 
 use super::AccountRow;
 use super::audit::{self, Actor, Creation};
+use super::connection::ReadConn;
 use crate::error::CliError;
 
 /// Converts an [`AccountRow`] to the library's [`Account`](beankeeper::types::Account) type.
@@ -59,13 +60,14 @@ pub fn create_account(
     audit::atomically(conn, || {
         let code = code.as_str();
         // Verify the company exists
-        if !super::companies::company_exists(conn, company_slug)? {
+        if !super::companies::company_exists(super::connection::ReadConn::new(conn), company_slug)?
+        {
             return Err(CliError::NotFound(format!(
                 "company '{company_slug}' not found"
             )));
         }
 
-        if account_exists(conn, company_slug, code)? {
+        if account_exists(ReadConn::new(conn), company_slug, code)? {
             return Err(CliError::Validation(format!(
                 "account '{code}' already exists in company '{company_slug}'"
             )));
@@ -83,7 +85,7 @@ pub fn create_account(
             ],
         )?;
 
-        let row = get_account(conn, company_slug, code)?;
+        let row = get_account(ReadConn::new(conn), company_slug, code)?;
         audit::record_insert(
             conn,
             actor,
@@ -119,7 +121,7 @@ pub struct ListAccountParams<'a> {
 ///
 /// Returns [`CliError::Sqlite`] on any database error.
 pub fn list_accounts(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     params: &ListAccountParams<'_>,
 ) -> Result<Vec<AccountRow>, CliError> {
     let mut sql = String::from(
@@ -159,13 +161,28 @@ pub fn list_accounts(
     Ok(accounts)
 }
 
+pub(crate) fn list_accounts_on_connection(
+    conn: &Connection,
+    params: &ListAccountParams<'_>,
+) -> Result<Vec<AccountRow>, CliError> {
+    list_accounts(ReadConn::new(conn), params)
+}
+
+pub(crate) fn get_account_on_connection(
+    conn: &Connection,
+    company: &str,
+    code: &str,
+) -> Result<AccountRow, CliError> {
+    get_account(ReadConn::new(conn), company, code)
+}
+
 /// Fetches a single account by company slug and code.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::NotFound`] if the account does not exist.
 pub fn get_account(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company_slug: &str,
     code: &str,
 ) -> Result<AccountRow, CliError> {
@@ -201,7 +218,11 @@ fn decode_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn account_exists(conn: &Connection, company_slug: &str, code: &str) -> Result<bool, CliError> {
+pub fn account_exists(
+    conn: ReadConn<'_>,
+    company_slug: &str,
+    code: &str,
+) -> Result<bool, CliError> {
     let exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM accounts WHERE company_slug = ?1 AND code = ?2",
         params![company_slug, code],
@@ -215,7 +236,7 @@ pub fn account_exists(conn: &Connection, company_slug: &str, code: &str) -> Resu
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn list_account_codes(conn: &Connection, company_slug: &str) -> Result<Vec<String>, CliError> {
+pub fn list_account_codes(conn: ReadConn<'_>, company_slug: &str) -> Result<Vec<String>, CliError> {
     let mut stmt =
         conn.prepare("SELECT code FROM accounts WHERE company_slug = ?1 ORDER BY code")?;
 
@@ -266,7 +287,7 @@ mod tests {
         assert_eq!(row.code, "1000");
         assert_eq!(row.account_type, AccountType::Asset);
 
-        let fetched = get_account(db.conn(), "acme", "1000");
+        let fetched = get_account(db.read(), "acme", "1000");
         assert!(fetched.is_ok());
     }
 
@@ -354,7 +375,7 @@ mod tests {
             type_filter: None,
             name_filter: None,
         };
-        let list = list_accounts(db.conn(), &params).unwrap_or_default();
+        let list = list_accounts(db.read(), &params).unwrap_or_default();
         assert_eq!(list.len(), 2);
     }
 
@@ -394,7 +415,7 @@ mod tests {
             type_filter: Some(AccountType::Asset),
             name_filter: None,
         };
-        let list = list_accounts(db.conn(), &params).unwrap_or_default();
+        let list = list_accounts(db.read(), &params).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].code, "1000");
     }
@@ -402,7 +423,7 @@ mod tests {
     #[test]
     fn get_missing_account_is_not_found() {
         let db = setup();
-        let result = get_account(db.conn(), "acme", "9999");
+        let result = get_account(db.read(), "acme", "9999");
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
@@ -434,7 +455,7 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(!account_exists(db.conn(), "acme", "1000").unwrap_or(true));
+        assert!(!account_exists(db.read(), "acme", "1000").unwrap_or(true));
     }
 
     #[test]
@@ -482,7 +503,7 @@ mod tests {
             )
             .is_ok()
         );
-        let codes = list_account_codes(db.conn(), "acme").unwrap_or_default();
+        let codes = list_account_codes(db.read(), "acme").unwrap_or_default();
         assert_eq!(codes, vec!["1000", "2000"]);
     }
 
@@ -558,7 +579,7 @@ mod tests {
             type_filter: None,
             name_filter: Some("Cash"),
         };
-        let list = list_accounts(db.conn(), &params).unwrap_or_default();
+        let list = list_accounts(db.read(), &params).unwrap_or_default();
         assert_eq!(list.len(), 2);
 
         let params2 = ListAccountParams {
@@ -566,7 +587,7 @@ mod tests {
             type_filter: Some(AccountType::Asset),
             name_filter: Some("Petty"),
         };
-        let list2 = list_accounts(db.conn(), &params2).unwrap_or_default();
+        let list2 = list_accounts(db.read(), &params2).unwrap_or_default();
         assert_eq!(list2.len(), 1);
         assert_eq!(list2[0].code, "1100");
     }

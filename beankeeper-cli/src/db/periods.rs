@@ -6,6 +6,7 @@ use chrono::{Datelike as _, NaiveDate};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Serialize, Serializer};
 
+use super::connection::ReadConn;
 use crate::error::CliError;
 
 /// A calendar date representable in the ledger's canonical cutoff format.
@@ -217,7 +218,7 @@ fn inconsistent_history(company: &str) -> CliError {
 ///
 /// # Errors
 /// Returns a database error for missing, invalid, or unaudited state.
-pub fn get(conn: &Connection, company: &str) -> Result<Option<PeriodLock>, CliError> {
+pub fn get(conn: ReadConn<'_>, company: &str) -> Result<Option<PeriodLock>, CliError> {
     let state = conn
         .query_row(
             "SELECT company_slug, closed_through, changed_at, actor, reason
@@ -281,13 +282,7 @@ pub fn check_posting<'a>(
     company: &'a str,
     date: NaiveDate,
 ) -> Result<OpenPeriod<'a>, CliError> {
-    if let Some(cutoff) = get(conn, company)?.and_then(|lock| lock.closed_through())
-        && date <= cutoff.date()
-    {
-        return Err(CliError::Validation(format!(
-            "transaction date {date} is in a closed period for company '{company}' (closed through {cutoff}); use period reopen with a reason to unlock it"
-        )));
-    }
+    ensure_open(ReadConn::new(conn), company, date)?;
     Ok(OpenPeriod {
         conn,
         company,
@@ -295,10 +290,26 @@ pub fn check_posting<'a>(
     })
 }
 
+/// Validate a proposed posting date without creating a writer witness.
+pub(super) fn ensure_open(
+    conn: ReadConn<'_>,
+    company: &str,
+    date: NaiveDate,
+) -> Result<(), CliError> {
+    if let Some(cutoff) = get(conn, company)?.and_then(|lock| lock.closed_through())
+        && date <= cutoff.date()
+    {
+        return Err(CliError::Validation(format!(
+            "transaction date {date} is in a closed period for company '{company}' (closed through {cutoff}); use period reopen with a reason to unlock it"
+        )));
+    }
+    Ok(())
+}
+
 /// Verify stored rows and histories, including histories whose row was removed.
 /// # Errors
 /// Returns database errors for inconsistent state or missing company tenancy.
-pub fn verify(conn: &Connection) -> Result<(), CliError> {
+pub fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
     let mut stmt = conn.prepare(
         "SELECT company_slug FROM period_locks
          UNION SELECT company_slug FROM audit_log WHERE entity = 'period'",
@@ -314,7 +325,7 @@ pub fn verify(conn: &Connection) -> Result<(), CliError> {
 /// List the company's current state, including the last reopen if any.
 /// # Errors
 /// Returns database errors for inconsistent state or an unknown company.
-pub fn list(conn: &Connection, company: &str) -> Result<Vec<PeriodLock>, CliError> {
+pub fn list(conn: ReadConn<'_>, company: &str) -> Result<Vec<PeriodLock>, CliError> {
     super::companies::get_company(conn, company)?;
     Ok(get(conn, company)?.into_iter().collect())
 }

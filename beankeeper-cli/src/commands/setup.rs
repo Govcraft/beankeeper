@@ -60,7 +60,7 @@ pub fn statement_import_summary(
     company: &CompanySlug,
 ) -> Result<StatementImportSummary, CliError> {
     crate::db::audit::atomically(db.conn(), || {
-        crate::db::get_company(db.conn(), company.as_str())?;
+        crate::db::get_company(db.read(), company.as_str())?;
         statement_batches::summary(db.read(), company)
     })
 }

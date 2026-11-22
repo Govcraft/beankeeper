@@ -11,6 +11,7 @@ use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+use super::connection::ReadConn;
 use super::{Actor, PostEntryParams, PostResult, PostTransactionParams, audit, transactions};
 use crate::error::CliError;
 
@@ -176,11 +177,15 @@ pub fn create_schedule(
     params: &CreateScheduleParams,
 ) -> Result<Schedule, CliError> {
     audit::atomically(conn, || {
-        super::companies::get_company(conn, company)?;
+        super::companies::get_company(super::connection::ReadConn::new(conn), company)?;
         validate_template(params)?;
         let mut entries = params.entries.clone();
         for entry in &mut entries {
-            let account = super::accounts::get_account(conn, company, &entry.account_code)?;
+            let account = super::accounts::get_account(
+                super::connection::ReadConn::new(conn),
+                company,
+                &entry.account_code,
+            )?;
             super::accounts::row_to_account(&account)?;
             if entry.tax_category.is_none() {
                 entry.tax_category = account.default_tax_category;
@@ -291,7 +296,7 @@ fn validate_entries(entries: &[PostEntryParams]) -> Result<(), CliError> {
 ///
 /// # Errors
 /// Returns storage errors or errors decoding invalid stored dates or IDs.
-pub fn list_schedules(conn: &Connection, company: &str) -> Result<Vec<Schedule>, CliError> {
+pub fn list_schedules(conn: ReadConn<'_>, company: &str) -> Result<Vec<Schedule>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT id FROM schedules WHERE company_slug = ?1 ORDER BY next_due IS NULL, next_due, id",
     )?;
@@ -303,8 +308,15 @@ pub fn list_schedules(conn: &Connection, company: &str) -> Result<Vec<Schedule>,
         .collect()
 }
 
-pub(crate) fn get_schedule(
+pub(crate) fn list_schedules_on_connection(
     conn: &Connection,
+    company: &str,
+) -> Result<Vec<Schedule>, CliError> {
+    list_schedules(ReadConn::new(conn), company)
+}
+
+pub(crate) fn get_schedule(
+    conn: ReadConn<'_>,
     company: &str,
     id: &ScheduleId,
 ) -> Result<Schedule, CliError> {
@@ -384,7 +396,7 @@ pub fn cancel_schedule(
 ) -> Result<Schedule, CliError> {
     audit::atomically(conn, || {
         audit::lock_schedule_writer(conn)?;
-        let before = get_schedule(conn, company, id)?;
+        let before = get_schedule(ReadConn::new(conn), company, id)?;
         if before.state.next_due().is_none() {
             return Ok(before);
         }
@@ -443,7 +455,7 @@ pub fn run_due_with_options(
         if !options.dry_run {
             audit::lock_schedule_writer(conn)?;
         }
-        let schedules: Vec<_> = list_schedules(conn, company)?
+        let schedules: Vec<_> = list_schedules(ReadConn::new(conn), company)?
             .into_iter()
             .filter(|schedule| schedule.state.next_due().is_some())
             .collect();
@@ -521,8 +533,11 @@ fn execute_schedule(
 ) -> Result<(), CliError> {
     validate_entries(&before.entries)?;
     for entry in &before.entries {
-        let account =
-            super::accounts::get_account(conn, &before.company_slug, &entry.account_code)?;
+        let account = super::accounts::get_account(
+            super::connection::ReadConn::new(conn),
+            &before.company_slug,
+            &entry.account_code,
+        )?;
         super::accounts::row_to_account(&account)?;
     }
     let mut after = before.clone();
