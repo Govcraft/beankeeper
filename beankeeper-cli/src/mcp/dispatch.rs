@@ -50,6 +50,7 @@ requests! {
     LedgerSetupChartApply(LedgerSetupChartApply),
     LedgerSetupAccountAdd(LedgerSetupAccountAdd),
     LedgerSetupOpeningPreview(LedgerSetupOpeningPreview),
+    LedgerSetupOpeningReserve(LedgerSetupOpeningReserve),
     SecurityCreate(SecurityCreate),
     SecurityList(CompanyScope),
     SecurityPrice(SecurityPrice),
@@ -151,6 +152,7 @@ impl Request {
                 },
             ),
             Self::LedgerSetupOpeningPreview(input) => setup_opening_preview(db, actor, input),
+            Self::LedgerSetupOpeningReserve(input) => setup_opening_reserve(db, actor, input),
             Self::Report(input) => super::report_input::execute(db, input),
             Self::SecurityCreate(input) => call_security_create(db, actor, input),
             Self::SecurityList(input) => call_security_list(db, actor, input),
@@ -220,6 +222,27 @@ fn setup_opening_preview(
     actor: &Actor,
     input: inputs::LedgerSetupOpeningPreview,
 ) -> Response {
+    let request = opening_request(input)?;
+    let preview = openings::preview(db, actor, &request)?;
+    unpaged(serde_json::to_value(preview).map_err(|error| CliError::General(error.to_string())))
+}
+
+fn setup_opening_reserve(
+    db: &Db,
+    actor: &Actor,
+    input: inputs::LedgerSetupOpeningReserve,
+) -> Response {
+    let request = opening_request(input.opening)?;
+    unpaged(openings::reserve(
+        db,
+        actor,
+        &request,
+        &input.reference.into_inner(),
+        &input.fingerprint.into_inner(),
+    ))
+}
+
+fn opening_request(input: inputs::LedgerSetupOpeningPreview) -> Result<OpeningRequest, CliError> {
     let currency = input.currency.into_inner();
     let lines = |side: super::input_values::NonEmpty<inputs::Line>| {
         side.into_vec()
@@ -231,7 +254,7 @@ fn setup_opening_preview(
             })
             .collect::<Result<Vec<_>, _>>()
     };
-    let request = OpeningRequest {
+    Ok(OpeningRequest {
         company: input.company.into_inner(),
         generation: input.generation,
         date: input.date.into_inner().date(),
@@ -241,9 +264,7 @@ fn setup_opening_preview(
             .unwrap_or_else(|| openings::DEFAULT_DESCRIPTION.to_string()),
         debits: lines(input.debits)?,
         credits: lines(input.credits)?,
-    };
-    let preview = openings::preview(db, actor, &request)?;
-    unpaged(serde_json::to_value(preview).map_err(|error| CliError::General(error.to_string())))
+    })
 }
 
 fn call_security_create(db: &Db, actor: &Actor, input: inputs::SecurityCreate) -> Response {

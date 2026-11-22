@@ -367,6 +367,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk setup status` | Read ledger readiness before configuring a new ledger or continuing onboarding |
 | `bk setup book-show` | Read a book's saved profile, currency, fiscal year, and accounts |
 | `bk setup opening-preview` | Check the proposed opening journal and its totals in an active setup generation |
+| `bk setup opening-reserve` | Hold the exact reviewed preview for owner approval and return its proposal ID |
 | `bk report trial-balance` | All accounts with debit/credit totals |
 | `bk report balance` | Single account balance |
 | `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |

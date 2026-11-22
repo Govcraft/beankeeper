@@ -420,6 +420,18 @@ impl LedgerServer {
             .await
     }
 
+    #[tool(
+        description = "Reserve the exact previewed opening journal for the existing approval workflow."
+    )]
+    async fn ledger_setup_opening_reserve(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupOpeningReserve>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupOpeningReserve(input), context)
+            .await
+    }
+
     #[tool(description = "List companies in the ledger.")]
     async fn company_list(
         &self,

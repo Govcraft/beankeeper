@@ -233,6 +233,10 @@ pub struct ActiveSession<'a> {
 }
 
 impl ActiveSession<'_> {
+    pub(in crate::db) const fn connection(&self) -> &Connection {
+        self.connection
+    }
+
     /// Verified session metadata.
     #[must_use]
     pub const fn session(&self) -> &Session {

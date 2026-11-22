@@ -2,7 +2,7 @@
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountType, Currency},
+    types::{AccountCode, AccountType, Currency, Sha256Hex},
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -359,6 +359,16 @@ pub(super) struct LedgerSetupOpeningPreview {
     pub description: Option<String>,
     pub debits: NonEmpty<Line>,
     pub credits: NonEmpty<Line>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupOpeningReserve {
+    pub opening: LedgerSetupOpeningPreview,
+    /// Stable reference to reuse for an exact retry.
+    pub reference: Text<SetupReference>,
+    /// Fingerprint returned by the preview.
+    pub fingerprint: Text<Sha256Hex>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
