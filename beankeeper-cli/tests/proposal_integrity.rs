@@ -11,6 +11,10 @@ use rusqlite::params;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn pending() -> Result<(Db, String), Box<dyn Error>> {
+    pending_with_entries(serde_json::json!([]))
+}
+
+fn pending_with_entries(entries: serde_json::Value) -> Result<(Db, String), Box<dyn Error>> {
     let db = Db::open_in_memory()?;
     db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
     let id = "proposal".create_type_id::<V7>().to_string();
@@ -24,10 +28,12 @@ fn pending() -> Result<(Db, String), Box<dyn Error>> {
         reference: None,
         on_conflict: ConflictStrategy::Error,
     };
+    let mut payload = serde_json::to_value(payload)?;
+    payload["entries"] = entries;
     db.conn().execute(
         "INSERT INTO txn_proposals(id, company_slug, status, payload, debit_total, currency, proposer_uri, proposer_jti)
          VALUES (?1, 'acme', 'pending', ?2, 100, 'USD', 'test-proposer', 'test-jti')",
-        params![id, serde_json::to_string(&payload)?],
+        params![id, payload.to_string()],
     )?;
     Ok((db, id))
 }
@@ -75,5 +81,36 @@ fn verify_detects_changed_resolution_even_if_protection_triggers_are_removed() -
         verify::execute_json(&db),
         Err(beankeeper_cli::error::CliError::Database(_))
     ));
+    Ok(())
+}
+
+#[test]
+fn resolution_preserves_the_direction_spelling_of_a_legacy_proposal() -> TestResult {
+    use beankeeper::types::DebitOrCredit;
+
+    let (db, id) = pending_with_entries(serde_json::json!([{
+        "account_code": "1000", "direction": "DEBIT", "amount": 100,
+        "memo": null, "tax_category": null
+    }]))?;
+    let proposal = audit::reject_proposal(db.conn(), &Actor::new("reviewer"), "acme", &id, None)?;
+    assert_eq!(proposal.payload.entries[0].direction, DebitOrCredit::Debit);
+    let direction: String = db.conn().query_row(
+        "SELECT json_extract(after, '$.payload.entries[0].direction')
+         FROM audit_log WHERE entity = 'proposal' AND entity_id = ?1",
+        [&id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(direction, "DEBIT");
+    verify::execute_json(&db)?;
+
+    db.conn().execute_batch(
+        "DROP TRIGGER protect_proposal_payload; DROP TRIGGER protect_proposal_resolution;",
+    )?;
+    db.conn().execute(
+        "UPDATE txn_proposals SET payload = json_set(payload, '$.entries[0].direction', 'debit')
+         WHERE id = ?1",
+        [&id],
+    )?;
+    assert!(verify::execute_json(&db).is_err());
     Ok(())
 }

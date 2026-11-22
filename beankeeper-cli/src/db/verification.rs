@@ -33,7 +33,6 @@ pub fn verify_accounting(conn: ReadConn<'_>) -> Result<(), CliError> {
         let mut count = 0_usize;
         while let Some(entry) = rows.next()? {
             let entry_company: String = entry.get(0)?;
-            let direction: String = entry.get(1)?;
             let amount: i64 = entry.get(2)?;
             if entry_company != company {
                 return Err(invalid("entry belongs to another company"));
@@ -41,7 +40,8 @@ pub fn verify_accounting(conn: ReadConn<'_>) -> Result<(), CliError> {
             if amount <= 0 {
                 return Err(invalid("entry amount must be positive"));
             }
-            let direction = DebitOrCredit::from_code(&direction)
+            let direction: DebitOrCredit = entry
+                .get(1)
                 .map_err(|_| invalid("invalid entry direction"))?;
             balance += i128::from(direction.sign()) * i128::from(amount);
             count += 1;

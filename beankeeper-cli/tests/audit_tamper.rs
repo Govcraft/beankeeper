@@ -51,7 +51,10 @@ impl Ledger {
     }
 
     fn post(&self, reference: &str) -> Result<PostResult, beankeeper_cli::error::CliError> {
-        let entries = [entry("1000", "debit"), entry("4000", "credit")];
+        let entries = [
+            entry("1000", beankeeper::types::DebitOrCredit::Debit),
+            entry("4000", beankeeper::types::DebitOrCredit::Credit),
+        ];
         db::post_transaction(
             self.db.conn(),
             &PostTransactionParams {
@@ -89,10 +92,10 @@ impl Ledger {
     }
 }
 
-fn entry(code: &str, direction: &str) -> PostEntryParams {
+fn entry(code: &str, direction: beankeeper::types::DebitOrCredit) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
-        direction: direction.into(),
+        direction,
         amount: 100,
         memo: None,
         tax_category: None,
@@ -503,10 +506,10 @@ fn dry_runs_and_skipped_imports_leave_creation_history_unchanged() -> TestResult
 fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
     let ledger = Ledger::new()?;
     let mut entries = vec![
-        entry("1000", "debit"),
-        entry("1000", "debit"),
-        entry("4000", "credit"),
-        entry("4000", "credit"),
+        entry("1000", beankeeper::types::DebitOrCredit::Debit),
+        entry("1000", beankeeper::types::DebitOrCredit::Debit),
+        entry("4000", beankeeper::types::DebitOrCredit::Credit),
+        entry("4000", beankeeper::types::DebitOrCredit::Credit),
     ];
     for entry in &mut entries {
         entry.amount = i64::MAX;

@@ -400,7 +400,7 @@ fn account_statement(
         code: acct.code.clone(),
         name: acct.name.clone(),
         account_type: acct.account_type.code().to_owned(),
-        normal_balance: if debit_normal { "debit" } else { "credit" },
+        normal_balance: acct.account_type.normal_balance().code(),
         opening_balance,
         entries,
         total_debits,

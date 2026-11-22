@@ -213,7 +213,7 @@ fn recurring(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> 
         let amount = schedule
             .entries
             .iter()
-            .filter(|entry| entry.direction == "debit")
+            .filter(|entry| entry.direction.is_debit())
             .try_fold(0, |sum, entry| add(sum, entry.amount))?;
         let before = count;
         while let Some(date) = future_occurrence(schedule, index)? {
@@ -405,10 +405,14 @@ mod tests {
         Ok(db)
     }
 
-    fn entry(code: &str, direction: &str, amount: i64) -> PostEntryParams {
+    fn entry(
+        code: &str,
+        direction: beankeeper::types::DebitOrCredit,
+        amount: i64,
+    ) -> PostEntryParams {
         PostEntryParams {
             account_code: code.into(),
-            direction: direction.into(),
+            direction,
             amount,
             memo: None,
             tax_category: None,
@@ -432,8 +436,8 @@ mod tests {
                 currency: "USD",
                 date,
                 entries: &[
-                    entry(accounts.0, "debit", amount),
-                    entry(accounts.1, "credit", amount),
+                    entry(accounts.0, beankeeper::types::DebitOrCredit::Debit, amount),
+                    entry(accounts.1, beankeeper::types::DebitOrCredit::Credit, amount),
                 ],
                 correlate: None,
                 reference,
@@ -544,7 +548,10 @@ mod tests {
             start_date: "2020-01-01".parse()?,
             frequency: Frequency::Daily,
             end_date: None,
-            entries: vec![entry("5000", "debit", 100), entry("1000", "credit", 100)],
+            entries: vec![
+                entry("5000", beankeeper::types::DebitOrCredit::Debit, 100),
+                entry("1000", beankeeper::types::DebitOrCredit::Credit, 100),
+            ],
             metadata: None,
         };
         db::schedules::create_schedule(db.conn(), &Actor::new("test"), "co", &params)?;
@@ -571,7 +578,10 @@ mod tests {
             start_date: "2024-02-03".parse()?,
             frequency: Frequency::Once,
             end_date: None,
-            entries: vec![entry("5000", "debit", 100), entry("1000", "credit", 100)],
+            entries: vec![
+                entry("5000", beankeeper::types::DebitOrCredit::Debit, 100),
+                entry("1000", beankeeper::types::DebitOrCredit::Credit, 100),
+            ],
             metadata: None,
         };
         db::schedules::create_schedule(db.conn(), &actor, "co", &params)?;
@@ -600,7 +610,10 @@ mod tests {
             start_date: "2024-01-31".parse()?,
             frequency: Frequency::Monthly,
             end_date: Some("2024-03-15".parse()?),
-            entries: vec![entry("5000", "debit", 100), entry("1000", "credit", 100)],
+            entries: vec![
+                entry("5000", beankeeper::types::DebitOrCredit::Debit, 100),
+                entry("1000", beankeeper::types::DebitOrCredit::Credit, 100),
+            ],
             metadata: None,
         };
         db::schedules::create_schedule(db.conn(), &Actor::new("test"), "co", &params)?;

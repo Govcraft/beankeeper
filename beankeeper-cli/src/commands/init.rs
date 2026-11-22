@@ -146,7 +146,7 @@ use crate::db::transactions::PostEntryParams;
 fn dr(code: &str, amount: i64) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
-        direction: "debit".into(),
+        direction: beankeeper::types::DebitOrCredit::Debit,
         amount,
         memo: None,
         tax_category: None,
@@ -156,7 +156,7 @@ fn dr(code: &str, amount: i64) -> PostEntryParams {
 fn cr(code: &str, amount: i64) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
-        direction: "credit".into(),
+        direction: beankeeper::types::DebitOrCredit::Credit,
         amount,
         memo: None,
         tax_category: None,
@@ -166,7 +166,7 @@ fn cr(code: &str, amount: i64) -> PostEntryParams {
 fn dr_tax(code: &str, amount: i64, tax: &str) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
-        direction: "debit".into(),
+        direction: beankeeper::types::DebitOrCredit::Debit,
         amount,
         memo: None,
         tax_category: Some(tax.into()),
@@ -176,7 +176,7 @@ fn dr_tax(code: &str, amount: i64, tax: &str) -> PostEntryParams {
 fn cr_tax(code: &str, amount: i64, tax: &str) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
-        direction: "credit".into(),
+        direction: beankeeper::types::DebitOrCredit::Credit,
         amount,
         memo: None,
         tax_category: Some(tax.into()),
@@ -186,7 +186,7 @@ fn cr_tax(code: &str, amount: i64, tax: &str) -> PostEntryParams {
 fn dr_memo(code: &str, amount: i64, memo: &str) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
-        direction: "debit".into(),
+        direction: beankeeper::types::DebitOrCredit::Debit,
         amount,
         memo: Some(memo.into()),
         tax_category: None,

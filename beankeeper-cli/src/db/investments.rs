@@ -564,7 +564,7 @@ fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
         require_currency(money, p.currency)?;
         entries.push(PostEntryParams {
             account_code: entry.account.code().as_str().into(),
-            direction: entry.direction.code().into(),
+            direction: entry.direction,
             amount: minor(money)?,
             memo: None,
             tax_category: None,

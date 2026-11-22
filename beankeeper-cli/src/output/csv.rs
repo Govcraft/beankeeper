@@ -15,8 +15,8 @@ fn csv_err(e: &csv::Error) -> CliError {
 /// Derive the normal-balance direction from a lowercase account-type string.
 fn normal_balance_for(account_type: &str) -> &'static str {
     match account_type {
-        "asset" | "expense" => "debit",
-        "liability" | "equity" | "revenue" => "credit",
+        "asset" | "expense" => beankeeper::types::DebitOrCredit::Debit.code(),
+        "liability" | "equity" | "revenue" => beankeeper::types::DebitOrCredit::Credit.code(),
         _ => "unknown",
     }
 }

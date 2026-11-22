@@ -385,7 +385,7 @@ fn build_entries(
     Ok(vec![
         transactions::PostEntryParams {
             account_code: debit_code.to_string(),
-            direction: "debit".to_string(),
+            direction: beankeeper::types::DebitOrCredit::Debit,
             amount: prepared.amount_minor,
             memo: None,
             tax_category: accounts::get_account(ctx.conn, ctx.company, debit_code)?
@@ -393,7 +393,7 @@ fn build_entries(
         },
         transactions::PostEntryParams {
             account_code: credit_code.to_string(),
-            direction: "credit".to_string(),
+            direction: beankeeper::types::DebitOrCredit::Credit,
             amount: prepared.amount_minor,
             memo: None,
             tax_category: accounts::get_account(ctx.conn, ctx.company, credit_code)?

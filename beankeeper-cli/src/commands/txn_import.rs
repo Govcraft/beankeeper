@@ -98,26 +98,10 @@ impl InputAmount {
 #[serde(deny_unknown_fields)]
 struct InputEntry {
     account_code: String,
-    direction: EntryDirection,
+    direction: DebitOrCredit,
     amount: InputAmount,
     memo: Option<String>,
     tax_category: Option<String>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-enum EntryDirection {
-    Debit,
-    Credit,
-}
-
-impl EntryDirection {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Debit => "debit",
-            Self::Credit => "credit",
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -134,7 +118,7 @@ struct InputTransaction {
 #[derive(Serialize)]
 struct PreparedEntry {
     account_code: String,
-    direction: EntryDirection,
+    direction: DebitOrCredit,
     amount: i64,
     memo: Option<String>,
     tax_category: Option<String>,
@@ -251,8 +235,8 @@ fn prepare_csv(
         .checked_abs()
         .ok_or_else(|| invalid("amount is too large"))?;
     let entries = [
-        (debit, EntryDirection::Debit),
-        (credit, EntryDirection::Credit),
+        (debit, DebitOrCredit::Debit),
+        (credit, DebitOrCredit::Credit),
     ]
     .into_iter()
     .map(|(account, direction)| PreparedEntry {
@@ -372,10 +356,7 @@ pub(crate) fn read_csv_statement(
                 date: row.date,
                 description: row.description,
                 amount,
-                bank_direction: match bank_entry.direction {
-                    EntryDirection::Debit => DebitOrCredit::Debit,
-                    EntryDirection::Credit => DebitOrCredit::Credit,
-                },
+                bank_direction: bank_entry.direction,
                 metadata: None,
             })
         })
@@ -461,7 +442,7 @@ fn post_import(
         .iter()
         .map(|entry| transactions::PostEntryParams {
             account_code: entry.account_code.clone(),
-            direction: entry.direction.as_str().into(),
+            direction: entry.direction,
             amount: entry.amount,
             memo: entry.memo.clone(),
             tax_category: entry.tax_category.clone(),

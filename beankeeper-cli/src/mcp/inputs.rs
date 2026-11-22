@@ -2,7 +2,7 @@
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountType, Currency, Sha256Hex},
+    types::{AccountCode, AccountType, Currency, DebitOrCredit, Sha256Hex},
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -58,11 +58,11 @@ pub(super) enum OnConflictArg {
     Skip,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub(super) enum DirectionArg {
-    Debit,
-    Credit,
+fn optional_direction_schema(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "type": ["string", "null"],
+        "enum": [DebitOrCredit::Debit.code(), DebitOrCredit::Credit.code(), Value::Null]
+    })
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -155,7 +155,8 @@ pub(super) struct TxnList {
     #[serde(default)]
     pub meta: Vec<String>,
     pub tax_category: Option<String>,
-    pub direction: Option<DirectionArg>,
+    #[schemars(schema_with = "optional_direction_schema")]
+    pub direction: Option<DebitOrCredit>,
     #[serde(default)]
     pub count: bool,
 }

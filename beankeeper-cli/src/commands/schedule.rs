@@ -117,13 +117,16 @@ fn create_params(command: &ScheduleCommand) -> Result<schedules::CreateScheduleP
     let currency = currency.resolve()?;
     let tax = super::txn::parse_tax_args(tax)?;
     let mut entries = Vec::new();
-    for (args, direction) in [(debit, "debit"), (credit, "credit")] {
+    for (args, direction) in [
+        (debit, beankeeper::types::DebitOrCredit::Debit),
+        (credit, beankeeper::types::DebitOrCredit::Credit),
+    ] {
         for arg in args {
             let (account_code, amount, memo) = super::txn::parse_entry_arg(arg, currency)?;
             entries.push(PostEntryParams {
                 tax_category: tax.get(&account_code).cloned(),
                 account_code,
-                direction: direction.into(),
+                direction,
                 amount,
                 memo,
             });

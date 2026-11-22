@@ -68,14 +68,14 @@ impl Ledger {
         let entries = [
             PostEntryParams {
                 account_code: "1000".into(),
-                direction: "debit".into(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 1234,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
-                direction: "credit".into(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 1234,
                 memo: None,
                 tax_category: None,

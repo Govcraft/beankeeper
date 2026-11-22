@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use beankeeper::types::{Currency, CurrencyError};
+use beankeeper::types::{Currency, CurrencyError, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -1712,8 +1712,8 @@ pub struct TxnListArgs {
     pub tax_category: Option<String>,
 
     /// Filter entries by direction.
-    #[arg(long, value_enum)]
-    pub direction: Option<DirectionArg>,
+    #[arg(long, value_parser = direction_parser())]
+    pub direction: Option<DebitOrCredit>,
 
     /// Return only the count of matching transactions.
     #[arg(long)]
@@ -2450,22 +2450,11 @@ impl InputSource {
     }
 }
 
-/// Entry direction argument for CLI.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectionArg {
-    Debit,
-    Credit,
-}
+fn direction_parser() -> impl clap::builder::TypedValueParser<Value = DebitOrCredit> {
+    use clap::builder::{PossibleValuesParser, TypedValueParser as _};
 
-impl DirectionArg {
-    /// Returns the lowercase string representation.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Debit => "debit",
-            Self::Credit => "credit",
-        }
-    }
+    PossibleValuesParser::new([DebitOrCredit::Debit.code(), DebitOrCredit::Credit.code()])
+        .try_map(|value| DebitOrCredit::from_code(&value))
 }
 
 /// Clearance status argument for CLI.

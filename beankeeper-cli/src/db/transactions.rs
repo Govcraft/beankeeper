@@ -29,10 +29,21 @@ pub(crate) fn reference_exists(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PostEntryParams {
     pub account_code: String,
-    pub direction: String,
+    #[serde(deserialize_with = "deserialize_post_direction")]
+    pub direction: DebitOrCredit,
     pub amount: i64,
     pub memo: Option<String>,
     pub tax_category: Option<String>,
+}
+
+// Historical proposals created through the Rust API may have mixed-case directions.
+fn deserialize_post_direction<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<DebitOrCredit, D::Error> {
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    DebitOrCredit::from_code(&value)
+        .or_else(|_| DebitOrCredit::from_code(&value.to_ascii_lowercase()))
+        .map_err(serde::de::Error::custom)
 }
 
 /// Conflict resolution strategy for duplicate references.
@@ -380,20 +391,10 @@ fn posting_entry(
     tax: Option<&str>,
     source: PostingSource,
 ) -> Result<Entry, CliError> {
-    let direction = if raw.direction.eq_ignore_ascii_case("debit") {
-        DebitOrCredit::Debit
-    } else if raw.direction.eq_ignore_ascii_case("credit") {
-        DebitOrCredit::Credit
-    } else {
-        return Err(CliError::Validation(format!(
-            "invalid direction '{}'; expected 'debit' or 'credit'",
-            raw.direction,
-        )));
-    };
     let money = Money::from_minor(i128::from(raw.amount), currency);
     let entry = match &raw.memo {
-        Some(memo) => Entry::with_memo(account, money, direction, memo),
-        None => Entry::new(account, money, direction),
+        Some(memo) => Entry::with_memo(account, money, raw.direction, memo),
+        None => Entry::new(account, money, raw.direction),
     }
     .map_err(|error| entry_error(error, source))?;
     Ok(match tax {
@@ -551,7 +552,7 @@ pub struct ListTransactionParams<'a> {
     /// Exact match on entry tax category.
     pub tax_category_filter: Option<&'a str>,
     /// Filter entries by direction ("debit" or "credit").
-    pub direction_filter: Option<&'a str>,
+    pub direction_filter: Option<DebitOrCredit>,
 }
 
 impl<'a> ListTransactionParams<'a> {
@@ -634,7 +635,7 @@ fn build_list_query(
 
     if let Some(direction) = params.direction_filter {
         let _ = write!(sql, " AND e.direction = ?{param_idx}");
-        param_values.push(Box::new(direction.to_string()));
+        param_values.push(Box::new(direction));
         param_idx += 1;
     }
 
@@ -946,14 +947,14 @@ mod tests {
         vec![
             PostEntryParams {
                 account_code: "1000".to_string(),
-                direction: "debit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".to_string(),
-                direction: "credit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
@@ -1034,7 +1035,7 @@ mod tests {
         let mut unbalanced = sample_entries();
         unbalanced[0].amount += 1;
         let mut two_debits = sample_entries();
-        two_debits[1].direction = "debit".into();
+        two_debits[1].direction = DebitOrCredit::Debit;
         let balanced = sample_entries();
         for (entries, currency) in [
             (unbalanced.as_slice(), "USD"),
@@ -1087,18 +1088,18 @@ mod tests {
     }
 
     #[test]
-    fn post_invalid_direction_is_validation_error() {
-        let db = setup();
-        let entries = vec![PostEntryParams {
-            account_code: "1000".to_string(),
-            direction: "INVALID".to_string(),
-            amount: 5000,
-            memo: None,
-            tax_category: None,
-        }];
-        let p = make_params(&entries, "Bad", None, "2024-01-15");
-        let result = post_transaction(db.conn(), &p);
-        assert!(matches!(result, Err(CliError::Validation(_))));
+    fn posting_entry_decodes_historical_direction_spelling() -> Result<(), serde_json::Error> {
+        let mut input = serde_json::json!({
+            "account_code": "1000",
+            "direction": "DEBIT",
+            "amount": 5000
+        });
+        let entry: PostEntryParams = serde_json::from_value(input.clone())?;
+        assert_eq!(entry.direction, DebitOrCredit::Debit);
+        assert_eq!(serde_json::to_value(entry)?["direction"], "debit");
+        input["direction"] = serde_json::json!("INVALID");
+        assert!(serde_json::from_value::<PostEntryParams>(input).is_err());
+        Ok(())
     }
 
     #[test]
@@ -1146,14 +1147,14 @@ mod tests {
         let entries2 = vec![
             PostEntryParams {
                 account_code: "5000".to_string(),
-                direction: "debit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 1000,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "1000".to_string(),
-                direction: "credit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 1000,
                 memo: None,
                 tax_category: None,
@@ -1268,14 +1269,14 @@ mod tests {
         let entries = vec![
             PostEntryParams {
                 account_code: "1000".to_string(),
-                direction: "debit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "9999".to_string(),
-                direction: "credit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
@@ -1329,14 +1330,14 @@ mod tests {
         let small_entries = vec![
             PostEntryParams {
                 account_code: "1000".into(),
-                direction: "debit".into(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 1000,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
-                direction: "credit".into(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 1000,
                 memo: None,
                 tax_category: None,
@@ -1345,14 +1346,14 @@ mod tests {
         let big_entries = vec![
             PostEntryParams {
                 account_code: "1000".into(),
-                direction: "debit".into(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 50000,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
-                direction: "credit".into(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 50000,
                 memo: None,
                 tax_category: None,
@@ -1457,7 +1458,7 @@ mod tests {
         // Filter for transactions where account 1000 has a debit entry
         let mut lp = ListTransactionParams::for_company("acme");
         lp.account_filter = Some("1000");
-        lp.direction_filter = Some("debit");
+        lp.direction_filter = Some(DebitOrCredit::Debit);
         lp.limit = 100;
         let list = list_transactions(db.conn(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
@@ -1465,7 +1466,7 @@ mod tests {
         // Filter for transactions where account 1000 has a credit entry (none)
         let mut lp2 = ListTransactionParams::for_company("acme");
         lp2.account_filter = Some("1000");
-        lp2.direction_filter = Some("credit");
+        lp2.direction_filter = Some(DebitOrCredit::Credit);
         lp2.limit = 100;
         let list2 = list_transactions(db.conn(), &lp2).unwrap_or_default();
         assert_eq!(list2.len(), 0);
@@ -1519,14 +1520,14 @@ mod tests {
         let entries_with_tax = vec![
             PostEntryParams {
                 account_code: "1000".into(),
-                direction: "debit".into(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 5000,
                 memo: None,
                 tax_category: Some("sched-c:24b".into()),
             },
             PostEntryParams {
                 account_code: "4000".into(),
-                direction: "credit".into(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,

@@ -228,14 +228,14 @@ mod tests {
         let entries = vec![
             transactions::PostEntryParams {
                 account_code: "1000".to_string(),
-                direction: "debit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Debit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,
             },
             transactions::PostEntryParams {
                 account_code: "4000".to_string(),
-                direction: "credit".to_string(),
+                direction: beankeeper::types::DebitOrCredit::Credit,
                 amount: 5000,
                 memo: None,
                 tax_category: None,

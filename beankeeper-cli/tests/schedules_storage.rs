@@ -50,16 +50,19 @@ fn template() -> Result<CreateScheduleParams, CliError> {
         frequency: Frequency::Monthly,
         end_date: Some(date("2026-03-31")?),
         metadata: Some("{\"vendor\":\"landlord\"}".into()),
-        entries: [("5000", "debit"), ("1000", "credit")]
-            .into_iter()
-            .map(|(account, direction)| PostEntryParams {
-                account_code: account.into(),
-                direction: direction.into(),
-                amount: 125_000,
-                memo: Some("rent memo".into()),
-                tax_category: None,
-            })
-            .collect(),
+        entries: [
+            ("5000", beankeeper::types::DebitOrCredit::Debit),
+            ("1000", beankeeper::types::DebitOrCredit::Credit),
+        ]
+        .into_iter()
+        .map(|(account, direction)| PostEntryParams {
+            account_code: account.into(),
+            direction,
+            amount: 125_000,
+            memo: Some("rent memo".into()),
+            tax_category: None,
+        })
+        .collect(),
     })
 }
 
@@ -76,7 +79,7 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     invalid.entries[0].amount = 0;
     cases.push(invalid);
     let mut invalid = template()?;
-    invalid.entries[0].direction = "invalid".into();
+    invalid.entries[0].direction = beankeeper::types::DebitOrCredit::Credit;
     cases.push(invalid);
     let mut invalid = template()?;
     invalid.entries[0].account_code = "missing".into();

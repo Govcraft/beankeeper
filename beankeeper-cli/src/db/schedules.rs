@@ -271,14 +271,9 @@ fn validate_entries(entries: &[PostEntryParams]) -> Result<(), CliError> {
                 "schedule entry amounts must be positive".into(),
             ));
         }
-        let total = match entry.direction.as_str() {
-            "debit" => &mut debit,
-            "credit" => &mut credit,
-            _ => {
-                return Err(CliError::Validation(
-                    "schedule entry direction must be debit or credit".into(),
-                ));
-            }
+        let total = match entry.direction {
+            beankeeper::types::DebitOrCredit::Debit => &mut debit,
+            beankeeper::types::DebitOrCredit::Credit => &mut credit,
         };
         *total = total
             .checked_add(entry.amount)

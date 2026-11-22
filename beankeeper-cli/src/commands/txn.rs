@@ -365,7 +365,7 @@ fn run_list_or_count(
     let meta_eq = db::metadata_filter::parse_filters(meta)?;
     lp.meta_eq = &meta_eq;
     lp.tax_category_filter = tax_category.as_deref();
-    lp.direction_filter = direction.map(crate::cli::DirectionArg::as_str);
+    lp.direction_filter = *direction;
 
     db::audit::atomically(db_handle.conn(), || {
         lp.value_filter = list_value_filter(
@@ -725,7 +725,7 @@ fn with_post_params<T>(
                 .iter()
                 .map(|(code, amount, memo)| transactions::PostEntryParams {
                     account_code: code.clone(),
-                    direction: direction.code().into(),
+                    direction,
                     amount: *amount,
                     memo: memo.clone(),
                     tax_category: tax_map.get(code).cloned(),
