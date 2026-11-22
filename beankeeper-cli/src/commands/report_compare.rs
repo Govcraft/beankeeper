@@ -665,7 +665,7 @@ fn run(
             crate::cli::CurrencyArg::resolve_optional(req.currency)?,
         )?;
         if let Some(account) = req.kind.account() {
-            db::accounts::get_account(db.conn(), company, account)?;
+            db::accounts::get_account(db.read(), company, account)?;
         }
         let context = Context {
             cli,

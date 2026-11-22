@@ -240,7 +240,7 @@ pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>
             None
         };
         let accounts = list_accounts(
-            conn,
+            db.read(),
             &ListAccountParams {
                 company_slug: company.as_str(),
                 type_filter: None,

@@ -1435,10 +1435,10 @@ fn resolve_accounts(
     include_children: bool,
 ) -> Result<Vec<db::AccountRow>, CliError> {
     for code in requested {
-        db::get_account(conn, company, code)?;
+        db::accounts::get_account_on_connection(conn, company, code)?;
     }
     let all = if include_children {
-        db::list_accounts(
+        db::accounts::list_accounts_on_connection(
             conn,
             &db::ListAccountParams {
                 company_slug: company,
@@ -1452,7 +1452,7 @@ fn resolve_accounts(
     let all_codes: Vec<&str> = all.iter().map(|a| a.code.as_str()).collect();
     select_accounts(requested, &all_codes, include_children)?
         .iter()
-        .map(|code| db::get_account(conn, company, code))
+        .map(|code| db::accounts::get_account_on_connection(conn, company, code))
         .collect()
 }
 

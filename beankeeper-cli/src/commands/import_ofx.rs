@@ -18,7 +18,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::cli::{Cli, ImportFormat, InputSource};
-use crate::db::connection::Db;
+use crate::db::connection::{Db, ReadConn};
 use crate::db::{accounts, transactions};
 use crate::error::CliError;
 use crate::output::amounts::format_money_grouped;
@@ -387,7 +387,7 @@ fn build_entries(
             direction: beankeeper::types::DebitOrCredit::Debit,
             amount: prepared.amount_minor,
             memo: None,
-            tax_category: accounts::get_account(ctx.conn, ctx.company, debit_code)?
+            tax_category: accounts::get_account(ctx.reader, ctx.company, debit_code)?
                 .default_tax_category,
         },
         transactions::PostEntryParams {
@@ -395,7 +395,7 @@ fn build_entries(
             direction: beankeeper::types::DebitOrCredit::Credit,
             amount: prepared.amount_minor,
             memo: None,
-            tax_category: accounts::get_account(ctx.conn, ctx.company, credit_code)?
+            tax_category: accounts::get_account(ctx.reader, ctx.company, credit_code)?
                 .default_tax_category,
         },
     ])
@@ -464,6 +464,7 @@ enum TransactionOutcome {
 
 /// Context for processing a statement's transactions.
 struct StatementContext<'a> {
+    reader: ReadConn<'a>,
     rules: &'a [crate::db::rules::Rule],
     actor: &'a crate::db::Actor,
     conn: &'a rusqlite::Connection,
@@ -601,7 +602,7 @@ pub fn run_import_ofx(
         crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
     };
 
-    validate_accounts(conn, company, account_code, suspense_code)?;
+    validate_accounts(db_handle.read(), company, account_code, suspense_code)?;
 
     // Read and parse OFX.
     let content = file.read_text()?;
@@ -616,6 +617,7 @@ pub fn run_import_ofx(
     for stmt in statements(&doc) {
         let currency = validate_currency(stmt.currency)?;
         let ctx = StatementContext {
+            reader: db_handle.read(),
             rules: &rules,
             actor: &actor,
             conn,
@@ -639,7 +641,7 @@ pub fn run_import_ofx(
 }
 
 fn validate_accounts(
-    conn: &rusqlite::Connection,
+    conn: ReadConn<'_>,
     company: &str,
     bank: &str,
     suspense: &str,

@@ -181,7 +181,7 @@ fn set(
         currency,
         notes,
     } = *request;
-    if !db::account_exists(db.conn(), company, account)? {
+    if !db::account_exists(db.read(), company, account)? {
         return Err(CliError::NotFound(format!(
             "account '{account}' not found in company '{company}'"
         )));

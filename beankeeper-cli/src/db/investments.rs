@@ -507,8 +507,11 @@ fn checked_account(
     expected: AccountType,
     error: &str,
 ) -> Result<Account, CliError> {
-    let account =
-        super::accounts::row_to_account(&super::accounts::get_account(conn, company, code)?)?;
+    let account = super::accounts::row_to_account(&super::accounts::get_account(
+        super::connection::ReadConn::new(conn),
+        company,
+        code,
+    )?)?;
     if account.account_type() == expected {
         Ok(account)
     } else {

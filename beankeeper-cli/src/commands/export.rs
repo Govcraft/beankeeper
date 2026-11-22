@@ -54,7 +54,7 @@ fn export_json(db: &Db) -> Result<String, CliError> {
 
     for company in &companies {
         let accounts = db::list_accounts(
-            db.conn(),
+            db.read(),
             &db::accounts::ListAccountParams {
                 company_slug: &company.slug,
                 type_filter: None,
@@ -141,7 +141,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
     let mut all_accounts = Vec::new();
     for company in &companies {
         let accounts = db::list_accounts(
-            db.conn(),
+            db.read(),
             &db::accounts::ListAccountParams {
                 company_slug: &company.slug,
                 type_filter: None,

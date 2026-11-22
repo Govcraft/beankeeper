@@ -2062,7 +2062,8 @@ pub fn delete_account(
     in_savepoint(conn, "sp_account_delete", || {
         // Reading the row first both yields the snapshot and produces the
         // `NotFound` error when the account is absent.
-        let row: AccountRow = super::accounts::get_account(conn, company_slug, code)?;
+        let row: AccountRow =
+            super::accounts::get_account(ReadConn::new(conn), company_slug, code)?;
 
         let schedules: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schedule_entries WHERE company_slug = ?1 AND account_code = ?2",
@@ -2670,7 +2671,11 @@ mod tests {
             ReadConn::new(connection),
             "new"
         )?);
-        assert!(!crate::db::account_exists(connection, "acme", "1100")?);
+        assert!(!crate::db::account_exists(
+            ReadConn::new(connection),
+            "acme",
+            "1100"
+        )?);
         assert!(
             crate::db::list_attachments(ReadConn::new(connection), "acme", transaction_id)?
                 .is_empty()

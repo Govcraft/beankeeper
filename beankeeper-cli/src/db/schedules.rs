@@ -180,7 +180,11 @@ pub fn create_schedule(
         validate_template(params)?;
         let mut entries = params.entries.clone();
         for entry in &mut entries {
-            let account = super::accounts::get_account(conn, company, &entry.account_code)?;
+            let account = super::accounts::get_account(
+                super::connection::ReadConn::new(conn),
+                company,
+                &entry.account_code,
+            )?;
             super::accounts::row_to_account(&account)?;
             if entry.tax_category.is_none() {
                 entry.tax_category = account.default_tax_category;
@@ -521,8 +525,11 @@ fn execute_schedule(
 ) -> Result<(), CliError> {
     validate_entries(&before.entries)?;
     for entry in &before.entries {
-        let account =
-            super::accounts::get_account(conn, &before.company_slug, &entry.account_code)?;
+        let account = super::accounts::get_account(
+            super::connection::ReadConn::new(conn),
+            &before.company_slug,
+            &entry.account_code,
+        )?;
         super::accounts::row_to_account(&account)?;
     }
     let mut after = before.clone();

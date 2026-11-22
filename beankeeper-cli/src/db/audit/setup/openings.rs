@@ -244,11 +244,15 @@ fn opening_entry(
     line: &OpeningLine,
     direction: DebitOrCredit,
 ) -> Result<Entry, CliError> {
-    let row = accounts::get_account(session.connection, company.as_str(), line.account.as_str())
-        .map_err(|error| match error {
-            CliError::NotFound(message) => CliError::Validation(message),
-            other => other,
-        })?;
+    let row = accounts::get_account(
+        ReadConn::new(session.connection),
+        company.as_str(),
+        line.account.as_str(),
+    )
+    .map_err(|error| match error {
+        CliError::NotFound(message) => CliError::Validation(message),
+        other => other,
+    })?;
     let account = accounts::row_to_account(&row)?;
     let amount = line.amount.money();
     let entry = match &line.memo {

@@ -465,7 +465,7 @@ fn run_batch<'a>(
     account: &'a str,
     lines: &[BatchLine],
 ) -> Result<ClearedBatch<'a>, CliError> {
-    db::get_account(ctx.conn, ctx.company, account)?;
+    db::accounts::get_account_on_connection(ctx.conn, ctx.company, account)?;
     if ctx.status == ClearanceArg::Uncleared && lines.iter().any(|l| l.amount.is_some()) {
         return Err(CliError::Usage(
             "amounts cannot be used with --status uncleared".into(),

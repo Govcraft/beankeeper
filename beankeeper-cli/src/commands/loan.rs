@@ -160,7 +160,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         ),
         (&args.paying_account, beankeeper::types::AccountType::Asset),
     ] {
-        let account = crate::db::accounts::get_account(db.conn(), company, code)?;
+        let account = crate::db::accounts::get_account(db.read(), company, code)?;
         if account.account_type != expected {
             return Err(CliError::Validation(format!(
                 "loan account '{code}' must have type {}, found {}",

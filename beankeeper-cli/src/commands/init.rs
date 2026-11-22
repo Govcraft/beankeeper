@@ -917,7 +917,7 @@ mod tests {
         for (slug, expected_count) in &expected_accounts {
             // Verify accounts exist
             let accounts = crate::db::list_accounts(
-                db.conn(),
+                db.read(),
                 &crate::db::ListAccountParams {
                     company_slug: slug,
                     type_filter: None,

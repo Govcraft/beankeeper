@@ -157,7 +157,7 @@ pub fn create_rule(
     priority: i32,
 ) -> Result<Rule, CliError> {
     super::audit::atomically(conn, || {
-        super::accounts::get_account(conn, company, account)?;
+        super::accounts::get_account(ReadConn::new(conn), company, account)?;
         let rule = Rule {
             id: RuleId::generate(),
             company_slug: company.to_string(),

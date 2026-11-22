@@ -308,13 +308,15 @@ pub(crate) fn build_journal(
     }
     let mut journal = JournalEntry::new(date, request.description, currency);
     for entry in request.entries {
-        let account = super::accounts::get_account(conn, request.company_slug, &entry.account_code)
-            .map_err(|error| match (source, error) {
-                (PostingSource::Storage, CliError::NotFound(message)) => {
-                    CliError::Validation(message)
-                }
-                (_, error) => error,
-            })?;
+        let account = super::accounts::get_account(
+            super::connection::ReadConn::new(conn),
+            request.company_slug,
+            &entry.account_code,
+        )
+        .map_err(|error| match (source, error) {
+            (PostingSource::Storage, CliError::NotFound(message)) => CliError::Validation(message),
+            (_, error) => error,
+        })?;
         let default_tax = if matches!(source, PostingSource::Command | PostingSource::Import) {
             account.default_tax_category.as_deref()
         } else {

@@ -121,11 +121,14 @@ fn compute(
                     Ok(AccountData::Balances(rows))
                 })
             } else {
-                Ok(AccountData::Rows(accounts::list_accounts(conn, &filter)?))
+                Ok(AccountData::Rows(accounts::list_accounts(
+                    db.read(),
+                    &filter,
+                )?))
             }
         }
         AccountCommand::Show { code } => Ok(AccountData::Rows(vec![accounts::get_account(
-            db.conn(),
+            db.read(),
             company,
             code,
         )?])),

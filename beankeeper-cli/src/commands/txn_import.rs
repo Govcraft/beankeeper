@@ -495,7 +495,7 @@ fn load_csv_rules(
         return Ok(Vec::new());
     }
     for code in [bank, suspense].into_iter().flatten() {
-        accounts::get_account(db.conn(), company, code)
+        accounts::get_account(db.read(), company, code)
             .map_err(|error| invalid(format!("CSV account validation: {error}")))?;
     }
     db::rules::list_rules(db.read(), company)

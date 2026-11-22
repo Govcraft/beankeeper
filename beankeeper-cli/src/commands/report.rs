@@ -280,7 +280,7 @@ impl<'a> ResolvedReport<'a> {
         dates: DateWindow,
         currency: Option<&CurrencyArg>,
     ) -> Result<Self, CliError> {
-        let account = db::get_account(db.conn(), company, account)?;
+        let account = db::get_account(db.read(), company, account)?;
         let currency =
             resolve_report_currency(db.conn(), company, CurrencyArg::resolve_optional(currency)?)?;
         Ok(Self::Balance(StatementWindow { dates, currency }, account))
