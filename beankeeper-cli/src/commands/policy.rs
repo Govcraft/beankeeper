@@ -1,11 +1,9 @@
 //! Inspect and change the ledger's capability enforcement policy.
 
-use secrecy::ExposeSecret;
-
-use crate::capability::Capability;
 use crate::cli::{Cli, PolicyCommand};
 use crate::db::{audit, policy};
 use crate::error::CliError;
+use crate::identity::{Admin, Granted};
 
 /// Execute a policy command, authorizing changes inside their savepoint.
 ///
@@ -15,14 +13,11 @@ pub fn run(cli: &Cli, command: &PolicyCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
     let data = match command {
         PolicyCommand::Show => policy::get(db.conn())?,
-        PolicyCommand::Set { enforce } => audit::atomically(db.conn(), || {
-            crate::identity::authorize(
-                db.conn(),
-                cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
-                Capability::Admin,
-            )?;
-            audit::set_policy(db.conn(), &cli.principal(), enforce.enabled())
-        })?,
+        PolicyCommand::Set { enforce } => {
+            Granted::<Admin>::with(db.conn(), &cli.principal(), |grant| {
+                audit::set_policy(grant, enforce.enabled())
+            })?
+        }
     };
     if cli.is_json() {
         println!(

@@ -600,46 +600,62 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
     Ok(())
 }
 
-/// Change policy and append its before/after record in the same savepoint.
+/// Change ledger policy using a single administrator grant.
 /// Repeating the same state is a no-op.
 ///
 /// # Errors
-/// Returns policy integrity or database errors; failures roll back both writes.
+/// Returns policy integrity or database errors. The grant's savepoint rolls back any failed change.
 pub fn set_policy(
+    grant: crate::identity::Granted<'_, crate::identity::Admin>,
+    enforce: bool,
+) -> Result<super::policy::LedgerPolicy, CliError> {
+    let (conn, actor) = grant.into_parts();
+    atomically(conn, || {
+        let current = crate::identity::Granted::<crate::identity::Admin>::check(conn, actor)?;
+        record_policy_change(current.connection(), current.actor(), enforce)
+    })
+}
+
+fn record_policy_change(
     conn: &Connection,
     actor: &Actor,
     enforce: bool,
 ) -> Result<super::policy::LedgerPolicy, CliError> {
-    atomically(conn, || {
-        let before = super::policy::get(conn)?;
-        if before.enforce == enforce {
-            return Ok(before);
-        }
-        let after = super::policy::LedgerPolicy {
-            enforce,
-            updated_at: conn.query_row(
-                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-                [],
-                |row| row.get(0),
-            )?,
-        };
-        record(
-            conn,
-            actor,
-            AuditChange {
-                company_slug: None,
-                entity: AuditEntity::Policy,
-                entity_id: "1",
-                action: AuditAction::PolicyChange,
-                snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
-            },
-        )?;
-        conn.execute(
-            "UPDATE ledger_policy SET enforce = ?1, updated_at = ?2 WHERE singleton = 1",
-            params![after.enforce, after.updated_at],
-        )?;
-        Ok(after)
-    })
+    let before = super::policy::get(conn)?;
+    if before.enforce == enforce {
+        return Ok(before);
+    }
+    let after = super::policy::LedgerPolicy {
+        enforce,
+        updated_at: conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+            row.get(0)
+        })?,
+    };
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: None,
+            entity: AuditEntity::Policy,
+            entity_id: "1",
+            action: AuditAction::PolicyChange,
+            snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
+        },
+    )?;
+    conn.execute(
+        "UPDATE ledger_policy SET enforce = ?1, updated_at = ?2 WHERE singleton = 1",
+        params![after.enforce, after.updated_at],
+    )?;
+    Ok(after)
+}
+
+#[cfg(test)]
+pub(super) fn change_legacy_policy_fixture(
+    conn: &Connection,
+    actor: &Actor,
+    enforce: bool,
+) -> Result<super::policy::LedgerPolicy, CliError> {
+    atomically(conn, || record_policy_change(conn, actor, enforce))
 }
 
 /// Set one currency's limits with a before/after audit record.

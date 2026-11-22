@@ -103,6 +103,13 @@ impl sealed::GrantKind for Approve {
     const REQUIRED: Capability = Capability::Approve;
 }
 
+/// Authority to change ledger policy and administer the ledger.
+pub enum Admin {}
+
+impl sealed::GrantKind for Admin {
+    const REQUIRED: Capability = Capability::Admin;
+}
+
 pub(crate) enum SetupOwner {}
 
 impl sealed::GrantKind for SetupOwner {
@@ -111,13 +118,32 @@ impl sealed::GrantKind for SetupOwner {
 }
 
 /// Authorization for a single capability, bound to this ledger and principal.
-pub(crate) struct Granted<'a, C> {
+pub struct Granted<'a, C> {
     conn: &'a Connection,
     actor: &'a Actor,
     capability: PhantomData<C>,
 }
 
 impl<'a, C: sealed::GrantKind> Granted<'a, C> {
+    /// Run one authorized mutation inside its ledger's savepoint.
+    ///
+    /// The grant is bound to the current actor and connection. The callback's
+    /// result cannot retain the grant.
+    ///
+    /// # Errors
+    /// Returns authorization or storage errors and rolls back callback failures.
+    pub fn with<T>(
+        conn: &Connection,
+        actor: &Actor,
+        run: impl for<'grant> FnOnce(Granted<'grant, C>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        crate::db::audit::atomically(conn, || run(Granted::check(conn, actor)?))
+    }
+
+    pub(crate) const fn into_parts(self) -> (&'a Connection, &'a Actor) {
+        (self.conn, self.actor)
+    }
+
     // Call inside the same audited savepoint as the operation.
     pub(crate) fn check(conn: &'a Connection, actor: &'a Actor) -> Result<Self, CliError> {
         let enforce = crate::db::policy::get(conn)?.enforce || C::EXPLICIT;
