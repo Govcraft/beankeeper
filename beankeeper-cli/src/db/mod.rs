@@ -7,7 +7,6 @@ pub mod budgets;
 pub mod clearings;
 pub mod companies;
 pub mod connection;
-pub(crate) mod direction;
 pub mod ids;
 pub mod investments;
 pub mod metadata;
@@ -454,10 +453,10 @@ mod tests {
     }
 
     fn post_sample(db: &Db, date: &str, amount: i64) {
-        post_sample_in(db, date, amount, "USD");
+        post_sample_in(db, date, amount, Currency::USD);
     }
 
-    fn post_sample_in(db: &Db, date: &str, amount: i64, currency: &str) {
+    fn post_sample_in(db: &Db, date: &str, amount: i64, currency: Currency) {
         let entries = vec![
             transactions::PostEntryParams {
                 account_code: "1000".to_string(),
@@ -655,7 +654,7 @@ mod tests {
     fn balances_filter_by_currency() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
-        post_sample_in(&db, "2024-02-15", 700, "MXN");
+        post_sample_in(&db, "2024-02-15", 700, Currency::MXN);
 
         let usd = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::USD)?;
         // Zero-balance accounts are still listed.

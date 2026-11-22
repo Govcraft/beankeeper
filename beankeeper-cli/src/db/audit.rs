@@ -38,67 +38,7 @@ pub mod setup;
 
 pub(super) use attachment::store_attachment;
 
-// ---------------------------------------------------------------------------
-// Typed clearance status -- illegal states are unrepresentable
-// ---------------------------------------------------------------------------
-
-/// Clearance status of a ledger entry.
-///
-/// Replaces the previously stringly-typed `status` so that every transition is
-/// total and the set of legal states is fixed by the type, not by a runtime
-/// string check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EntryStatus {
-    /// Not yet matched against a statement.
-    Uncleared,
-    /// Matched against a statement but not part of a closed reconciliation.
-    Cleared,
-    /// Locked in by a completed reconciliation.
-    Reconciled,
-}
-
-impl EntryStatus {
-    /// Returns the lowercase string representation stored in the database.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Uncleared => "uncleared",
-            Self::Cleared => "cleared",
-            Self::Reconciled => "reconciled",
-        }
-    }
-}
-
-impl FromStr for EntryStatus {
-    type Err = CliError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "uncleared" => Ok(Self::Uncleared),
-            "cleared" => Ok(Self::Cleared),
-            "reconciled" => Ok(Self::Reconciled),
-            other => Err(CliError::Validation(format!(
-                "invalid entry status '{other}'"
-            ))),
-        }
-    }
-}
-
-impl std::fmt::Display for EntryStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl rusqlite::types::FromSql for EntryStatus {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        value
-            .as_str()?
-            .parse()
-            .map_err(|error: CliError| rusqlite::types::FromSqlError::Other(Box::new(error)))
-    }
-}
+pub use beankeeper::types::ClearanceStatus as EntryStatus;
 
 // ---------------------------------------------------------------------------
 // Actor -- the principal recorded against every change
@@ -1677,7 +1617,7 @@ pub fn reverse_transaction(
                 company_slug: p.company_slug,
                 description: &description,
                 metadata: None,
-                currency: original.currency.code(),
+                currency: original.currency,
                 date: &date.to_string(),
                 entries: &entries,
                 correlate: None,

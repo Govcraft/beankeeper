@@ -247,7 +247,7 @@ mod tests {
             company_slug: "acme",
             description: "Sale",
             metadata: None,
-            currency: "USD",
+            currency: beankeeper::types::Currency::USD,
             date: "2024-01-15",
             entries: &entries,
             correlate: None,

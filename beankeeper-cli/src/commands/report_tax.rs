@@ -257,7 +257,7 @@ fn load_entries(
                 account_name: row.get(3)?,
                 account_type: row.get(4)?,
                 tax_category: row.get(5)?,
-                direction: crate::db::direction::read(row, 6)?,
+                direction: row.get(6)?,
                 amount: row.get(7)?,
             })
         },

@@ -466,7 +466,7 @@ fn account_statement(
     values.push(to.map(|date| date.to_string()));
     let values = with_filter_params(values, &filter);
     let raw = stmt.query_map(params_from_iter(values), |row| {
-        let direction = crate::db::direction::read(row, 6)?;
+        let direction = row.get(6)?;
         let amount: i64 = row.get(7)?;
         let (debit, credit) = match direction {
             DebitOrCredit::Debit => (amount, 0),

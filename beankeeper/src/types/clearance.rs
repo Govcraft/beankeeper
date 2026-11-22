@@ -6,7 +6,6 @@ use std::str::FromStr;
 /// This tracks whether an entry has been verified against an external
 /// statement (e.g., bank reconciliation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
 pub enum ClearanceStatus {
     /// The entry has not been verified (default).
     #[default]

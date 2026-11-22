@@ -21,13 +21,13 @@ pub fn verify_accounting(conn: ReadConn<'_>) -> Result<(), CliError> {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
+            r.get::<_, Currency>(2),
         ))
     })?;
     for row in rows {
         let (id, company, currency) = row?;
         let invalid = |reason: &str| CliError::Database(format!("transaction #{id}: {reason}"));
-        Currency::from_code(&currency).map_err(|_| invalid("invalid transaction currency"))?;
+        currency.map_err(|_| invalid("invalid transaction currency"))?;
         let mut rows = entries.query(params![id])?;
         let mut balance = 0_i128;
         let mut count = 0_usize;

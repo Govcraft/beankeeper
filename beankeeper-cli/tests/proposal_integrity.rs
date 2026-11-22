@@ -21,7 +21,7 @@ fn pending_with_entries(entries: serde_json::Value) -> Result<(Db, String), Box<
     let payload = PostingPayload {
         description: "Review".into(),
         metadata: None,
-        currency: "USD".into(),
+        currency: beankeeper::types::Currency::USD,
         date: "2026-11-20".into(),
         entries: Vec::new(),
         correlate: None,

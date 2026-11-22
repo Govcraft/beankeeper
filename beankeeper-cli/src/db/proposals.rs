@@ -1,5 +1,6 @@
 //! Pending, immutable posting requests. Only audited resolution mutates them.
 
+use beankeeper::types::Currency;
 use mti::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -61,7 +62,7 @@ impl Serialize for ProposalId {
 pub struct PostingPayload {
     pub description: String,
     pub metadata: Option<String>,
-    pub currency: String,
+    pub currency: Currency,
     pub date: String,
     pub entries: Vec<PostEntryParams>,
     pub correlate: Option<i64>,
@@ -77,7 +78,7 @@ impl PostingPayload {
             company_slug: company,
             description: &self.description,
             metadata: self.metadata.as_deref(),
-            currency: &self.currency,
+            currency: self.currency,
             date: &self.date,
             entries: &self.entries,
             correlate: self.correlate,
@@ -243,7 +244,7 @@ pub struct Proposal {
     pub(crate) payload_json: serde_json::Value,
     pub reference: Option<String>,
     pub debit_total: i64,
-    pub currency: String,
+    pub currency: Currency,
     pub proposer_uri: String,
     pub proposer_jti: String,
     pub created_at: String,
@@ -624,7 +625,7 @@ fn reserve(
         let payload = PostingPayload {
             description: p.description.into(),
             metadata: p.metadata.map(str::to_owned),
-            currency: p.currency.into(),
+            currency: p.currency,
             date: p.date.into(),
             entries: p
                 .entries
@@ -683,7 +684,7 @@ pub(in crate::db) fn reserve_setup_opening(
     let payload = PostingPayload {
         description: journal.description().to_owned(),
         metadata: None,
-        currency: journal.currency().code().into(),
+        currency: journal.currency(),
         date: journal.date().to_string(),
         entries,
         correlate: None,

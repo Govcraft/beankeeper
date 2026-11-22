@@ -14,7 +14,7 @@ use beankeeper::{
 };
 use chrono::NaiveDate;
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Type, ValueRef};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 use serde::{Serialize, Serializer};
 
@@ -358,13 +358,10 @@ fn serialize_optional_minor<'a, S: Serializer, T: Copy + Into<Money> + 'a>(
 }
 
 fn security_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Security> {
-    let currency = Currency::from_code(&row.get::<_, String>(2)?).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
-    })?;
     Ok(Security {
         symbol: row.get(0)?,
         name: row.get(1)?,
-        currency,
+        currency: row.get(2)?,
     })
 }
 
@@ -580,7 +577,7 @@ fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
             company_slug: p.company,
             description: p.description,
             metadata: Some(p.metadata),
-            currency: p.currency.code(),
+            currency: p.currency,
             date: &p.date.to_string(),
             entries: &entries,
             correlate: None,

@@ -467,7 +467,7 @@ fn find_profile<'a>(
                     row.get::<_, i64>(0)?,
                     row.get::<_, Option<i64>>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, Currency>(3)?,
                     row.get::<_, String>(4)?,
                 ))
             },
@@ -487,7 +487,7 @@ fn find_profile<'a>(
             .map_err(|_| corrupt())?,
         settings: BookSettings {
             purpose: purpose.parse().map_err(|_| corrupt())?,
-            base_currency: Currency::from_code(&currency).map_err(|_| corrupt())?,
+            base_currency: currency,
             fiscal_year_start: fiscal_year_start.parse().map_err(|_| corrupt())?,
         },
     }))

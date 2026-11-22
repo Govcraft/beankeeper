@@ -265,7 +265,7 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
             &transactions::PostTransactionParams {
                 company_slug: "acme",
                 description: "Bypass",
-                currency: "USD",
+                currency: beankeeper::types::Currency::USD,
                 date: "2026-1-31",
                 entries: &entries,
                 metadata: None,

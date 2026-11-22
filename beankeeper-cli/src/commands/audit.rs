@@ -233,7 +233,7 @@ fn snapshot_currency(
         }
         _ => return Ok(None),
     };
-    let code: Option<String> = db
+    let currency = db
         .read()
         .query_row(
             sql,
@@ -241,5 +241,5 @@ fn snapshot_currency(
             |r| r.get(0),
         )
         .optional()?;
-    Ok(code.and_then(|code| Currency::from_code(&code).ok()))
+    Ok(currency)
 }

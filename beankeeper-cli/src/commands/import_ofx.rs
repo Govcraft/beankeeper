@@ -412,7 +412,7 @@ fn insert_transaction(
         company_slug: ctx.company,
         description: &prepared.description,
         metadata: Some(&prepared.metadata),
-        currency: prepared.currency.code(),
+        currency: prepared.currency,
         date: &prepared.date.to_string(),
         entries,
         correlate: None,
