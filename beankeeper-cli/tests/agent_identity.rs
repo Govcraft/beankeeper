@@ -75,12 +75,18 @@ impl Ledger {
     }
 
     fn command(&self) -> Result<Command, Box<dyn Error>> {
+        let mut cmd = self.command_with_resolved_actor()?;
+        cmd.args(["--actor", "host-process"]);
+        Ok(cmd)
+    }
+
+    fn command_with_resolved_actor(&self) -> Result<Command, Box<dyn Error>> {
         let mut cmd = Command::cargo_bin("bk")?;
         cmd.arg("--db")
             .arg(&self.path)
             .arg("--passphrase-file")
             .arg(&self.passphrase_file)
-            .args(["--json", "--company", "acme", "--actor", "host-process"]);
+            .args(["--json", "--company", "acme"]);
         for var in [
             "BK_AGENT_TOKEN",
             "BK_ACTOR",
@@ -150,6 +156,173 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, Box<dyn Error>> {
     value[key]
         .as_str()
         .ok_or_else(|| format!("missing {key}").into())
+}
+
+const BOOKKEEPER_GRANTS: &str = "ledger/read,ledger/post,ledger/propose";
+
+fn issue_write_grant(
+    ledger: &Ledger,
+    name: &str,
+    caps: &str,
+    mode_args: &[&str],
+) -> Result<Value, Box<dyn Error>> {
+    let mut args = vec![
+        "agent",
+        "issue",
+        "--name",
+        name,
+        "--generate-key",
+        "--caps",
+        caps,
+    ];
+    args.extend_from_slice(mode_args);
+    Ok(ledger.run(&args, None)?["data"].clone())
+}
+
+fn post_as_verified_actor(
+    ledger: &Ledger,
+    token: &str,
+    reference: &str,
+) -> Result<Value, Box<dyn Error>> {
+    Ok(success(
+        &ledger
+            .command_with_resolved_actor()?
+            .env("BK_AGENT_TOKEN", token)
+            .args([
+                "txn",
+                "post",
+                "-d",
+                "Sale",
+                "--date",
+                "2026-01-01",
+                "--debit",
+                "1000:10",
+                "--credit",
+                "4000:10",
+                "--reference",
+                reference,
+            ])
+            .output()?,
+    )?["data"]
+        .clone())
+}
+
+#[test]
+fn default_bookkeeper_posts_and_owner_undoes_under_either_policy() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.run(&["key", "init"], None)?;
+    let bookkeeper = issue_write_grant(&ledger, "bookkeeper", BOOKKEEPER_GRANTS, &[])?;
+    assert_eq!(bookkeeper["write_mode"], "direct");
+    let owner = issue_write_grant(
+        &ledger,
+        "owner",
+        "ledger/read,ledger/admin,ledger/reverse",
+        &[],
+    )?;
+    let owner_token = text(&owner, "token")?;
+    let owner_uri = text(&owner, "agent_uri")?;
+    let bookkeeper_uri = text(&bookkeeper, "agent_uri")?;
+    for mode in ["off", "on"] {
+        ledger.run(&["policy", "set", "--enforce", mode], Some(owner_token))?;
+        let posted = post_as_verified_actor(&ledger, text(&bookkeeper, "token")?, mode)?;
+        assert_eq!(posted["created"], true);
+        let original_id = posted["id"].to_string();
+        let undo = success(
+            &ledger
+                .command_with_resolved_actor()?
+                .env("BK_AGENT_TOKEN", owner_token)
+                .args(["txn", "reverse", &original_id, "--date", "2026-01-02"])
+                .output()?,
+        )?;
+        assert_eq!(undo["data"]["created"], true);
+        let audit = |actor, action| {
+            ledger.run(
+                &[
+                    "audit",
+                    "log",
+                    "--by-actor",
+                    actor,
+                    "--entity",
+                    "transaction",
+                    "--action",
+                    action,
+                ],
+                Some(owner_token),
+            )
+        };
+        let writes = audit(bookkeeper_uri, "create")?;
+        let reversals = audit(owner_uri, "reverse")?;
+        for (row, issued) in [
+            (&writes["data"][0], &bookkeeper),
+            (&reversals["data"][0], &owner),
+        ] {
+            assert_eq!(row["entity_id"], original_id);
+            assert_eq!(row["actor"], issued["agent_uri"]);
+            assert_eq!(row["agent_uri"], issued["agent_uri"]);
+            assert_eq!(row["token_jti"], issued["token_jti"]);
+        }
+    }
+    assert_eq!(ledger.count("transactions")?, 4);
+    assert_eq!(ledger.count("txn_proposals")?, 0);
+    ledger.run(&["verify"], Some(owner_token))?;
+    Ok(())
+}
+
+#[test]
+fn propose_only_grant_queues_posts_and_requires_separate_approval() -> TestResult {
+    use beankeeper_cli::identity::{Post, WriteMode};
+
+    let ledger = Ledger::new()?;
+    ledger.run(&["key", "init"], None)?;
+    let reviewer = issue_write_grant(
+        &ledger,
+        "owner",
+        "ledger/read,ledger/admin,ledger/approve",
+        &[],
+    )?;
+    let agent = issue_write_grant(
+        &ledger,
+        "bookkeeper",
+        BOOKKEEPER_GRANTS,
+        &["--write-mode", "propose-only"],
+    )?;
+    let token = text(&agent, "token")?;
+    assert_eq!(agent["write_mode"], "propose-only");
+    let verified = identity::verify(ledger.db.read(), token)?;
+    assert_eq!(verified.write_mode(), WriteMode::ProposeOnly);
+    let actor = Actor::new("bookkeeper".parse()?).with_identity(verified);
+    // Even with enforcement off, the storage boundary cannot mint a Post grant.
+    assert!(matches!(
+        Granted::<Post>::with_db(&ledger.db, &actor, |_| Ok(())),
+        Err(beankeeper_cli::error::CliError::Forbidden(_))
+    ));
+    let owner_token = text(&reviewer, "token")?;
+    for (index, enforcement) in ["off", "on"].into_iter().enumerate() {
+        ledger.run(
+            &["policy", "set", "--enforce", enforcement],
+            Some(owner_token),
+        )?;
+        let proposed = post_as_verified_actor(&ledger, token, enforcement)?;
+        assert_eq!(proposed["status"], "pending");
+        assert_eq!(proposed["proposer_uri"], agent["agent_uri"]);
+        assert_eq!(proposed["proposer_jti"], agent["token_jti"]);
+        assert!(proposed["transaction_id"].is_null());
+        assert_eq!(ledger.count("transactions")?, i64::try_from(index)?);
+        let id = text(&proposed, "id")?;
+        let args = ["txn", "approve", id];
+        let output = ledger
+            .command()?
+            .args(args)
+            .env("BK_AGENT_TOKEN", token)
+            .output()?;
+        assert_eq!(output.status.code(), Some(7));
+        let approved = ledger.run(&args, Some(owner_token))?;
+        assert_eq!(approved["data"]["status"], "approved");
+        assert_eq!(approved["data"]["resolved_by_uri"], reviewer["agent_uri"]);
+    }
+    assert_eq!(ledger.count("transactions")?, 2);
+    ledger.run(&["verify"], Some(owner_token))?;
+    Ok(())
 }
 
 #[test]

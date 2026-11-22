@@ -2141,6 +2141,102 @@ fn proposal_identity(
 }
 
 #[test]
+fn posting_tool_follows_signed_write_mode_and_owner_undoes_direct_posts() -> TestResult {
+    use beankeeper_cli::db::{self, Actor, Db};
+    let dir = tempdir()?;
+    let path = dir.path().join("write-mode.db");
+    let passphrase_file = dir.path().join("passphrase");
+    identity_ledger(&path, &passphrase_file)?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = Db::open_existing(&path, Some(&passphrase))?;
+    let bookkeeper_grants = ["ledger/read", "ledger/post", "ledger/propose"];
+    let direct = proposal_identity(&db, "bookkeeper", &bookkeeper_grants)?;
+    let proposal = bk(&path)?
+        .arg("--passphrase-file")
+        .arg(&passphrase_file)
+        .args([
+            "--json",
+            "agent",
+            "issue",
+            "--name",
+            "proposer",
+            "--generate-key",
+            "--caps",
+            &bookkeeper_grants.join(","),
+            "--write-mode",
+            "propose-only",
+        ])
+        .output()?;
+    assert!(
+        proposal.status.success(),
+        "{}",
+        String::from_utf8_lossy(&proposal.stderr)
+    );
+    let issued: Value = serde_json::from_slice(&proposal.stdout)?;
+    let proposer = &issued["data"];
+    let owner = proposal_identity(
+        &db,
+        "owner",
+        &["ledger/read", "ledger/approve", "ledger/reverse"],
+    )?;
+    for enforce in [false, true] {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
+            db::audit::set_policy(grant, enforce)
+        })?;
+        let mut bookkeeper =
+            identity_client(&path, &passphrase_file, direct["token"].as_str(), false)?;
+        let mut reviewer =
+            identity_client(&path, &passphrase_file, owner["token"].as_str(), false)?;
+        let mut agent =
+            identity_client(&path, &passphrase_file, proposer["token"].as_str(), false)?;
+        let tools = agent.request("tools/list", &json!({}))?;
+        let names = tool_names(&tools)?;
+        assert!(names.contains("txn_post"));
+        assert!(!names.contains("txn_approve"));
+        assert!(!names.contains("txn_reverse"));
+
+        let posted = bookkeeper.success("txn_post", &posting(&format!("direct-{enforce}")))?;
+        assert_eq!(posted["created"], true);
+        assert_eq!(
+            reviewer.success("txn_proposals", &json!({"company":"acme"}))?,
+            json!([])
+        );
+        let arguments = json!({"company":"acme", "id":posted["id"], "date":"2026-03-02",
+            "reference":format!("undo-{enforce}")});
+        let undone = reviewer.success("txn_reverse", &arguments)?;
+        assert_eq!(undone["created"], true);
+        let retry = reviewer.success("txn_reverse", &arguments)?;
+        assert_eq!(retry["existing_id"], undone["id"]);
+        for (credential, action) in [(&direct, "create"), (&owner, "reverse")] {
+            let rows = reviewer.success(
+                "audit_log",
+                &json!({"company":"acme", "entity":"transaction",
+                "action":action, "actor":credential["agent_uri"]}),
+            )?;
+            let row = &rows[0];
+            assert_eq!(row["entity_id"], posted["id"].to_string());
+            assert_eq!(row["actor"], credential["agent_uri"]);
+            assert_eq!(row["agent_uri"], credential["agent_uri"]);
+            assert_eq!(row["token_jti"], credential["token_jti"]);
+        }
+
+        let waiting = agent.success("txn_post", &posting(&format!("proposal-{enforce}")))?;
+        assert_eq!(waiting["status"], "pending");
+        assert_eq!(waiting["proposer_uri"], proposer["agent_uri"]);
+        assert_eq!(waiting["proposer_jti"], proposer["token_jti"]);
+        assert!(waiting["transaction_id"].is_null());
+        let approve = json!({"company":"acme", "id": waiting["id"]});
+        let denied = agent.call("txn_approve", &approve)?;
+        assert!(denied.get("error").is_some() || denied["result"]["isError"] == true);
+        let approved = reviewer.success("txn_approve", &approve)?;
+        assert_eq!(approved["status"], "approved");
+        assert_eq!(approved["resolved_by_uri"], owner["agent_uri"]);
+        reviewer.success("verify", &json!({}))?;
+    }
+    Ok(())
+}
+
+#[test]
 fn proposal_tools_filter_grants_and_post_approved_requests_with_reviewer_identity() -> TestResult {
     use beankeeper_cli::db::{self, Actor, Db};
     let dir = tempdir()?;
