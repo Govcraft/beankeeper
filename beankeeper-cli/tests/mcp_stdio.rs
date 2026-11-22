@@ -788,9 +788,14 @@ fn mcp_writes_have_chained_audit_records_and_pass_cli_verification() -> TestResu
         true
     );
     assert_eq!(client.success("audit_log", &json!({}))?, audit);
-    assert_eq!(client.success("verify", &json!({}))?["status"], "healthy");
+    let evidence = client.success("verify", &json!({}))?;
+    assert_eq!(evidence["status"], "healthy");
+    assert_eq!(evidence["audit_chain"]["head_hash"], audit[0]["row_hash"]);
+    assert_eq!(evidence["audit_chain"]["intact"], true);
     drop(client);
-    bk(&path)?.args(["--json", "verify"]).assert().success();
+    let cli = bk(&path)?.args(["--json", "verify"]).assert().success();
+    let envelope: Value = serde_json::from_slice(&cli.get_output().stdout)?;
+    assert_eq!(evidence, envelope["data"]);
     Ok(())
 }
 

@@ -739,7 +739,9 @@ impl LedgerServer {
         self.execute(Request::PeriodList(input), context).await
     }
 
-    #[tool(description = "Verify ledger integrity.")]
+    #[tool(
+        description = "Verify every company in the ledger and return balance, audit-chain, and check evidence."
+    )]
     async fn verify(
         &self,
         Parameters(input): Parameters<inputs::Empty>,

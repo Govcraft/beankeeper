@@ -8,7 +8,7 @@ use serde::Serialize;
 use tempfile::NamedTempFile;
 
 use crate::cli::Cli;
-use crate::db::Db;
+use crate::db::{Db, verification::VerifiedLedger};
 use crate::error::CliError;
 
 #[derive(Serialize)]
@@ -30,11 +30,17 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
     let staged = NamedTempFile::new_in(directory.path())?;
     db.snapshot_into(staged.path())?;
     let snapshot = Db::open_snapshot(staged.path(), cli.resolve_passphrase()?)?;
-    let version = super::verify::verify(&snapshot)?;
+    let verification = VerifiedLedger::read(&snapshot)?;
     let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
     publish(staged, &cli.db, output, force)?;
-    report(cli, Operation::Backup, output, version, encrypted)
+    report(
+        cli,
+        Operation::Backup,
+        output,
+        verification.schema_version(),
+        encrypted,
+    )
 }
 
 /// Restore a full snapshot with its original passphrase and verify it in-process.
@@ -59,7 +65,7 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
     std::io::copy(&mut File::open(input)?, staged.as_file_mut())?;
     let snapshot = Db::open_snapshot(staged.path(), cli.resolve_passphrase()?)?;
     cli.verify_agent(&snapshot)?;
-    let version = super::verify::verify(&snapshot)?;
+    let verification = VerifiedLedger::read(&snapshot)?;
     let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
     if destination.try_exists()? {
@@ -78,7 +84,13 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
         }
     }
     publish(staged, input, destination, force)?;
-    report(cli, Operation::Restore, destination, version, encrypted)
+    report(
+        cli,
+        Operation::Restore,
+        destination,
+        verification.schema_version(),
+        encrypted,
+    )
 }
 
 fn staging_directory(destination: &Path) -> Result<tempfile::TempDir, CliError> {

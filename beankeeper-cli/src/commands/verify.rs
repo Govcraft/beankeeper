@@ -1,101 +1,40 @@
 use crate::cli::Cli;
-use crate::db::connection::Db;
-use crate::db::schema;
+use crate::db::{Db, verification::VerifiedLedger};
 use crate::error::CliError;
 use crate::operation::Operation;
 
 /// Run the `bk verify` command.
 ///
-/// Checks schema version, foreign key integrity, and transaction balance invariants.
-///
 /// # Errors
-///
-/// Returns [`CliError`] if verification encounters a problem.
+/// Returns a database error for the first failed check, or an output error.
 pub fn run(cli: &Cli) -> Result<(), CliError> {
     let db = cli.open_db()?;
-
-    let version = verify(&db)?;
-    if cli.verbosity.verbose {
-        eprintln!("[ok] Schema version: {version}");
+    let report = VerifiedLedger::read(&db)?;
+    if cli.verbosity.verbose && (cli.is_json() || cli.verbosity.quiet) {
+        eprintln!("[ok] Schema version: {}", report.schema_version());
     }
 
     if cli.is_json() {
         let meta = cli.meta(Operation::Verify, None);
-        let rendered = crate::output::json::render_verify(version, meta)?;
+        let rendered = crate::output::json::render_verify(&report, meta)?;
         println!("{rendered}");
     }
 
     if !cli.verbosity.quiet {
         eprintln!("[ok] Ledger is healthy");
+        if !cli.is_json() {
+            report.write_summary(&mut std::io::stderr().lock())?;
+        }
     }
 
     Ok(())
 }
 
-pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
-    db.read_snapshot(|reader| {
-        let version = schema::get_schema_version(reader)?;
-        crate::db::audit::verify_hash_chain(reader)?;
-        crate::db::policy::get(reader)?;
-        crate::db::periods::verify(reader)?;
-        crate::db::proposals::verify_resolutions(reader)?;
-        crate::db::spend_limits::verify(reader)?;
-        crate::db::verification::verify_accounting(reader)?;
-        crate::db::audit::verify_creations(reader)?;
-        crate::db::verification::verify_links(reader)?;
-        if version >= schema::STATEMENT_BATCH_SCHEMA_VERSION {
-            crate::db::audit::setup::statement_batches::verify(reader)?;
-        }
-
-        // Foreign key integrity check
-        let fk_errors: Vec<String> = {
-            let mut stmt =
-                reader.prepare("SELECT \"table\", rowid FROM pragma_foreign_key_check")?;
-            let rows = stmt.query_map([], |row| {
-                let table: String = row.get(0)?;
-                let rowid: i64 = row.get(1)?;
-                Ok(format!("{table} row {rowid}"))
-            })?;
-            let mut errs = Vec::new();
-            for row in rows {
-                errs.push(row?);
-            }
-            errs
-        };
-
-        if !fk_errors.is_empty() {
-            return Err(CliError::Database(format!(
-                "foreign key violations: {}",
-                fk_errors.join(", ")
-            )));
-        }
-
-        // SQLite integrity check
-        let integrity: String = reader.query_row(
-            "SELECT integrity_check FROM pragma_integrity_check",
-            [],
-            |row| row.get(0),
-        )?;
-
-        if integrity != "ok" {
-            return Err(CliError::Database(format!(
-                "integrity check failed: {integrity}"
-            )));
-        }
-
-        Ok(version)
-    })
-}
-
-/// Verify an open ledger without writing to stdout.
+/// Verify an open ledger and serialize its evidence at the MCP output boundary.
 ///
 /// # Errors
-///
-/// Returns database errors for invalid ledgers.
+/// Returns a database error for the first failed check, or a serialization error.
 pub fn execute_json(db: &Db) -> Result<serde_json::Value, CliError> {
-    let version = verify(db)?;
-    super::company::json_data(&crate::output::json::render_verify(
-        version,
-        crate::output::json::meta(Operation::Verify, None),
-    )?)
+    serde_json::to_value(VerifiedLedger::read(db)?)
+        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }

@@ -486,7 +486,7 @@ EXAMPLES:\n  \
     #[command(subcommand)]
     Policy(PolicyCommand),
 
-    /// Check ledger integrity.
+    /// Check ledger integrity and show the evidence.
     #[command(after_help = "\
 EXAMPLES:\n  \
     Verify the default database:\n    \
