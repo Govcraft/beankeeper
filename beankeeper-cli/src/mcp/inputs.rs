@@ -645,14 +645,27 @@ pub(super) struct TrendInput {
     pub explain_change: Option<Account>,
 }
 
+// Schemars does not include Serde aliases in the generated properties.
+fn report_end_date_alias(schema: &mut Schema) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
+        && let Some(to) = properties.get("to").cloned()
+    {
+        properties.insert("as_of".into(), to);
+        schema.insert(
+            "not".into(),
+            serde_json::json!({"required": ["to", "as_of"]}),
+        );
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct TrialBalanceInput {
     pub from: Option<Date>,
     /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    /// Alias for `to`. Supply only one of the two date fields.
-    pub as_of: Option<Date>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
     pub currency: Option<CurrencyCode>,
@@ -663,13 +676,13 @@ pub(super) struct TrialBalanceInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct BalanceInput {
     pub account: Account,
     pub from: Option<Date>,
     /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    /// Alias for `to`. Supply only one of the two date fields.
-    pub as_of: Option<Date>,
     pub currency: Option<CurrencyCode>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
@@ -688,11 +701,11 @@ pub(super) struct IncomeStatementInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct BalanceSheetInput {
     /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    /// Alias for `to`. Supply only one of the two date fields.
-    pub as_of: Option<Date>,
     pub currency: Option<CurrencyCode>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
@@ -764,6 +777,7 @@ pub(super) struct AgingInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct ReconciliationInput {
     /// Bank balances (default) or statement-scoped AR/AP settlements.
     pub mode: Option<ReconciliationModeArg>,
@@ -771,9 +785,8 @@ pub(super) struct ReconciliationInput {
     pub link_key: Option<String>,
     pub account: Account,
     /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    /// Alias for `to`. Supply only one of the two date fields.
-    pub as_of: Option<Date>,
     pub statement_balance: Option<Amount>,
     pub statement: Option<String>,
     #[serde(default)]

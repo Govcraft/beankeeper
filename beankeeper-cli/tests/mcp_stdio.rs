@@ -4317,7 +4317,10 @@ fn report_discovery_and_as_of_match_the_cli() -> TestResult {
     for kind in cli_report_kinds()? {
         assert!(description.contains(&kind), "description omits {kind}");
     }
-    assert!(report["inputSchema"].to_string().contains(r#""as_of""#));
+    let schema = &report["inputSchema"];
+    let variants = schema["oneOf"]
+        .as_array()
+        .ok_or("missing report variants")?;
 
     for kind in [
         "trial-balance",
@@ -4325,6 +4328,15 @@ fn report_discovery_and_as_of_match_the_cli() -> TestResult {
         "balance-sheet",
         "reconciliation",
     ] {
+        let variant = variants
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == kind)
+            .ok_or_else(|| format!("missing schema for {kind}: {schema}"))?;
+        let properties = &variant["properties"];
+        assert!(properties.get("as_of").is_some(), "{kind}");
+        assert_eq!(properties["as_of"], properties["to"], "{kind}");
+        assert_eq!(variant["not"]["required"], json!(["to", "as_of"]), "{kind}");
+
         let mut args = json!({"company":"acme","kind":kind,"as_of":"2026-03-01"});
         let mut command = bk(&path)?;
         command.args([
@@ -4343,6 +4355,19 @@ fn report_discovery_and_as_of_match_the_cli() -> TestResult {
         let output = command.assert().success();
         let cli: Value = serde_json::from_slice(&output.get_output().stdout)?;
         assert_eq!(client.success("report", &args)?, cli["data"], "{kind}");
+
+        args["to"] = json!("2026-03-01");
+        let both = client.call("report", &args)?;
+        assert_parameter_rejection(&both, "duplicate field `to`");
+        let both_flags = command.args(["--to", "2026-03-01"]).output()?;
+        assert_eq!(both_flags.status.code(), Some(2), "{kind}");
+        let error = String::from_utf8(both_flags.stderr)?;
+        assert!(error.contains("cannot be used multiple times"), "{error}");
+
+        args.as_object_mut()
+            .ok_or("missing report arguments")?
+            .remove("as_of");
+        assert_eq!(client.success("report", &args)?, cli["data"], "{kind}");
     }
 
     let unsupported = client.call(
@@ -4353,13 +4378,6 @@ fn report_discovery_and_as_of_match_the_cli() -> TestResult {
     )?;
     assert_parameter_rejection(&unsupported, "unknown field `as_of`");
     assert_parameter_rejection(&unsupported, "`to`");
-    let both = client.call(
-        "report",
-        &json!({
-            "company":"acme","kind":"balance-sheet","as_of":"2026-03-01","to":"2026-03-01"
-        }),
-    )?;
-    assert_eq!(payload(&both)?["message"], "specify either as_of or to");
     Ok(())
 }
 
