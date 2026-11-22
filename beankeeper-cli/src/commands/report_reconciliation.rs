@@ -610,10 +610,7 @@ fn build_resolved_report(
         filters,
         group_by_metadata,
     } = request;
-    let account_type = account
-        .account_type
-        .parse::<AccountType>()
-        .map_err(|e| CliError::Database(e.to_string()))?;
+    let account_type = account.account_type;
     let normal_balance = account_type.normal_balance();
 
     let rows = load_entries(

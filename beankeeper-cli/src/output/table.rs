@@ -81,15 +81,6 @@ fn format_with_commas(n: u128) -> String {
 // Styling helpers
 // ---------------------------------------------------------------------------
 
-/// Derive the normal-balance label from a lowercase account-type string.
-fn normal_balance_label(account_type: &str) -> &'static str {
-    match account_type {
-        "asset" | "expense" => "Debit",
-        "liability" | "equity" | "revenue" => "Credit",
-        _ => "Unknown",
-    }
-}
-
 /// Wrap `text` in ANSI escape codes if colours are enabled.
 pub(super) fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     if use_color {
@@ -171,8 +162,8 @@ pub fn render_accounts(accounts: &[AccountRow], use_color: bool) -> String {
         table.add_row(vec![
             Cell::new(styled(&a.code, cyan_style(), use_color)),
             Cell::new(&a.name),
-            Cell::new(capitalize_first(&a.account_type)),
-            Cell::new(normal_balance_label(&a.account_type)),
+            Cell::new(a.account_type.to_string()),
+            Cell::new(a.account_type.normal_balance().to_string()),
         ]);
     }
 
@@ -538,7 +529,7 @@ pub struct AccountBalanceParams<'a> {
     /// Account name.
     pub name: &'a str,
     /// Account type (lowercase, e.g. "asset").
-    pub account_type: &'a str,
+    pub account_type: beankeeper::types::AccountType,
     /// Total debits in minor units.
     pub debit_total: i64,
     /// Total credits in minor units.
@@ -570,8 +561,8 @@ pub fn render_account_balance(p: &AccountBalanceParams<'_>) -> String {
         styled(code, cyan_style(), use_color)
     ));
     lines.push(format!("  Name:    {name}"));
-    lines.push(format!("  Type:    {}", capitalize_first(account_type)));
-    lines.push(format!("  Normal:  {}", normal_balance_label(account_type)));
+    lines.push(format!("  Type:    {account_type}"));
+    lines.push(format!("  Normal:  {}", account_type.normal_balance()));
     lines.push(String::new());
 
     let debit_str = format_amount(debit_total, currency_minor_units);
@@ -582,9 +573,10 @@ pub fn render_account_balance(p: &AccountBalanceParams<'_>) -> String {
 
     // Net balance: debit-normal accounts use (debits - credits),
     // credit-normal accounts use (credits - debits).
-    let net = match account_type {
-        "asset" | "expense" => i128::from(debit_total) - i128::from(credit_total),
-        _ => i128::from(credit_total) - i128::from(debit_total),
+    let net = if account_type.is_debit_normal() {
+        i128::from(debit_total) - i128::from(credit_total)
+    } else {
+        i128::from(credit_total) - i128::from(debit_total)
     };
     let net_str = format_wide_amount(net, currency_minor_units);
     lines.push(format!("  Balance: {net_str} {currency_code}"));
@@ -941,21 +933,6 @@ mod tests {
         assert_eq!(format_with_commas(1_000_000), "1,000,000");
     }
 
-    // -- normal_balance_label --
-
-    #[test]
-    fn normal_balance_debit_types() {
-        assert_eq!(normal_balance_label("asset"), "Debit");
-        assert_eq!(normal_balance_label("expense"), "Debit");
-    }
-
-    #[test]
-    fn normal_balance_credit_types() {
-        assert_eq!(normal_balance_label("liability"), "Credit");
-        assert_eq!(normal_balance_label("equity"), "Credit");
-        assert_eq!(normal_balance_label("revenue"), "Credit");
-    }
-
     // -- capitalize_first --
 
     #[test]
@@ -1019,7 +996,7 @@ mod tests {
             company_slug: "acme".into(),
             code: "1000".into(),
             name: "Cash".into(),
-            account_type: "asset".into(),
+            account_type: beankeeper::types::AccountType::Asset,
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];
@@ -1238,7 +1215,7 @@ mod tests {
         let p = AccountBalanceParams {
             code: "1000",
             name: "Cash",
-            account_type: "asset",
+            account_type: beankeeper::types::AccountType::Asset,
             debit_total: 15000,
             credit_total: 5000,
             currency_code: "USD",
@@ -1260,7 +1237,7 @@ mod tests {
         let p = AccountBalanceParams {
             code: "2000",
             name: "Loans",
-            account_type: "liability",
+            account_type: beankeeper::types::AccountType::Liability,
             debit_total: 0,
             credit_total: 50000,
             currency_code: "USD",

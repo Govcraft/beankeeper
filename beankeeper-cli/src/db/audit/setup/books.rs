@@ -248,21 +248,13 @@ pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>
             },
         )?
         .into_iter()
-        .map(|row| {
-            let account_type = row.account_type.parse::<AccountType>().map_err(|error| {
-                CliError::Database(format!(
-                    "invalid stored account type for '{}': {error}",
-                    row.code
-                ))
-            })?;
-            Ok(BookAccount {
-                code: BookAccountCode::from_stored(row.code),
-                name: row.name,
-                account_type,
-                default_tax_category: row.default_tax_category,
-            })
+        .map(|row| BookAccount {
+            code: BookAccountCode::from_stored(row.code),
+            name: row.name,
+            account_type: row.account_type,
+            default_tax_category: row.default_tax_category,
         })
-        .collect::<Result<_, CliError>>()?;
+        .collect();
         Ok(BookFacts {
             company,
             name: named.name,
@@ -603,6 +595,6 @@ fn account_json(account: &AccountRow) -> Value {
         "company": account.company_slug,
         "code": account.code,
         "name": account.name,
-        "type": account.account_type,
+        "type": account.account_type.code(),
     })
 }

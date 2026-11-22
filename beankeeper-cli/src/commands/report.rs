@@ -294,11 +294,11 @@ fn run_trial_balance(
         account_type,
     } = *opts;
     let currency = resolve_report_currency(db.conn(), company, currency)?;
-    let type_filter = account_type.map(|t| format!("{t:?}").to_lowercase());
+    let type_filter = account_type.map(|t| t.to_library_type().code());
     let balances = db::compute_trial_balance(
         db.conn(),
         company,
-        type_filter.as_deref(),
+        type_filter,
         from,
         to,
         Some(currency.code()),
@@ -365,7 +365,7 @@ fn run_balance(
     let balance_row = db::BalanceRow {
         code: account_row.code.clone(),
         name: account_row.name.clone(),
-        account_type: account_row.account_type.clone(),
+        account_type: account_row.account_type.code().to_owned(),
         debit_total,
         credit_total,
     };
@@ -375,7 +375,7 @@ fn run_balance(
             let params = output::table::AccountBalanceParams {
                 code: &account_row.code,
                 name: &account_row.name,
-                account_type: &account_row.account_type,
+                account_type: account_row.account_type,
                 debit_total,
                 credit_total,
                 currency_code: currency.code(),

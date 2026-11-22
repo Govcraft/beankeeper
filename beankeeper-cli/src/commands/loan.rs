@@ -153,15 +153,19 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
     let db = cli.open_db()?;
     crate::db::get_company(db.conn(), company)?;
     for (code, expected) in [
-        (&args.liability, "liability"),
-        (&args.interest_account, "expense"),
-        (&args.paying_account, "asset"),
+        (&args.liability, beankeeper::types::AccountType::Liability),
+        (
+            &args.interest_account,
+            beankeeper::types::AccountType::Expense,
+        ),
+        (&args.paying_account, beankeeper::types::AccountType::Asset),
     ] {
         let account = crate::db::accounts::get_account(db.conn(), company, code)?;
         if account.account_type != expected {
             return Err(CliError::Validation(format!(
-                "loan account '{code}' must have type {expected}, found {}",
-                account.account_type
+                "loan account '{code}' must have type {}, found {}",
+                expected.code(),
+                account.account_type.code()
             )));
         }
     }

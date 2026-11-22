@@ -25,7 +25,7 @@
 use crate::operation::Operation;
 use std::collections::BTreeSet;
 
-use beankeeper::types::{AccountType, Currency, DebitOrCredit};
+use beankeeper::types::{Currency, DebitOrCredit};
 use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
@@ -294,10 +294,7 @@ fn account_statement(
             date.map(str::to_string),
         ]
     };
-    let debit_normal = acct
-        .account_type
-        .parse::<AccountType>()
-        .map_or(true, AccountType::is_debit_normal);
+    let debit_normal = acct.account_type.is_debit_normal();
 
     let opening_balance = match from {
         Some(f) => {
@@ -369,7 +366,7 @@ fn account_statement(
     Ok(LedgerAccount {
         code: acct.code.clone(),
         name: acct.name.clone(),
-        account_type: acct.account_type.clone(),
+        account_type: acct.account_type.code().to_owned(),
         normal_balance: if debit_normal { "debit" } else { "credit" },
         opening_balance,
         entries,
