@@ -7,6 +7,7 @@ use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db, PostEntryParams, PostResult, PostTransactionParams};
+use beankeeper_cli::identity::{Granted, Reconcile};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
@@ -374,14 +375,15 @@ fn verify_detects_balanced_rewrites_via_creation_snapshot() -> TestResult {
 fn allowed_clearing_and_metadata_mutations_keep_verification_healthy() -> TestResult {
     let ledger = Ledger::new()?;
     ledger.post("first")?;
-    db::set_entry_status(
-        ledger.db.conn(),
-        &Actor::new("clearer"),
-        "acme",
-        1.try_into()?,
-        1.try_into()?,
-        db::EntryStatus::Cleared,
-    )?;
+    Granted::<Reconcile>::with_db(&ledger.db, &Actor::new("clearer"), |grant| {
+        db::set_entry_status(
+            grant,
+            "acme",
+            1.try_into()?,
+            1.try_into()?,
+            db::EntryStatus::Cleared,
+        )
+    })?;
     ledger.db.conn().execute(
         "UPDATE transactions SET metadata = ?1 WHERE id = 1",
         params![r#"{"note":"allowed"}"#],

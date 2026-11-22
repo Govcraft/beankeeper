@@ -411,10 +411,9 @@ pub(super) fn approve(
     company: &str,
     id: &str,
 ) -> Result<Proposal, CliError> {
-    audit::atomically(conn, || {
-        let grant = Granted::<Approve>::check(conn, actor)?;
-        let (before, after) =
-            PendingProposal::load(grant.connection(), company, id)?.approve(&grant)?;
+    audit::savepoint::with_audited_tx(conn, "sp_atomic_batch", |tx| {
+        let grant = Granted::<Approve>::check(tx, actor)?;
+        let (before, after) = PendingProposal::load(conn, company, id)?.approve(&grant)?;
         audit::record_proposal_resolution(ProposalTransition {
             conn,
             actor,
@@ -787,9 +786,12 @@ pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
         } = &proposal.state
         {
             let (uri, jti) = resolution.by.columns();
-            let (transaction, _) =
-                super::transactions::get_transaction(conn, &company, *transaction_id)
-                    .map_err(|_| invalid())?;
+            let (transaction, _) = super::transactions::get_transaction(
+                super::connection::ReadConn::new(conn),
+                &company,
+                *transaction_id,
+            )
+            .map_err(|_| invalid())?;
             let link = transaction
                 .metadata
                 .as_deref()

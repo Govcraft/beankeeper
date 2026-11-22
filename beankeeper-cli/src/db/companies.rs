@@ -64,6 +64,12 @@ impl<'conn> Company<'conn> {
         &self.slug
     }
 
+    /// Borrow the reader associated with this company scope.
+    #[must_use]
+    pub fn read(&self) -> ReadConn<'conn> {
+        ReadConn::new(self.conn)
+    }
+
     pub(super) fn conn(&self) -> &'conn Connection {
         self.conn
     }

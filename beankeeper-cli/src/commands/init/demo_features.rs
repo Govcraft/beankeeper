@@ -8,10 +8,12 @@ use chrono::NaiveDate;
 use rusqlite::Connection;
 
 use super::{cr, cr_tax, dr, dr_tax, post, post_with_metadata, seed_company_accounts};
-use crate::db::{self, Actor, audit, investments, rules, schedules};
+use crate::db::{self, Actor, Db, audit, investments, rules, schedules};
 use crate::error::CliError;
+use crate::identity::{Budget, Granted, Post, Reconcile};
 
-pub(super) fn seed(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
+pub(super) fn seed(db: &Db, actor: &Actor) -> Result<(), CliError> {
+    let conn = db.conn();
     seed_company_accounts(
         conn,
         actor,
@@ -54,11 +56,11 @@ pub(super) fn seed(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
             None,
         )],
     )?;
-    seed_automation(conn, actor)?;
+    seed_automation(db, actor)?;
     seed_tax_payments(conn, actor)?;
-    seed_investments(conn, actor)?;
+    seed_investments(db, actor)?;
     seed_loan(conn, actor)?;
-    seed_settlement(conn, actor)
+    seed_settlement(db, actor)
 }
 
 fn date(value: &str) -> Result<NaiveDate, CliError> {
@@ -67,42 +69,45 @@ fn date(value: &str) -> Result<NaiveDate, CliError> {
         .map_err(|error| CliError::Validation(format!("invalid demo date {value}: {error}")))
 }
 
-fn seed_automation(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
-    audit::set_annual_budget(
-        conn,
-        actor,
-        &db::SetAnnualBudgetParams {
-            company_slug: "acme-consulting",
-            account_code: "5000",
-            currency: Currency::USD,
-            year: 2025,
-            annual_amount: 3_000_000,
-            notes: Some("Office rent: $2,500 per month"),
-        },
-    )?;
-    rules::create_rule(
-        conn,
-        actor,
-        "acme-consulting",
-        "office supplies".parse()?,
-        "5200",
-        10,
-    )?;
+fn seed_automation(db: &Db, actor: &Actor) -> Result<(), CliError> {
+    Granted::<Budget>::with_db(db, actor, |grant| {
+        audit::set_annual_budget(
+            grant,
+            &db::SetAnnualBudgetParams {
+                company_slug: "acme-consulting",
+                account_code: "5000",
+                currency: Currency::USD,
+                year: 2025,
+                annual_amount: 3_000_000,
+                notes: Some("Office rent: $2,500 per month"),
+            },
+        )
+    })?;
+    Granted::<Post>::with_db(db, actor, |grant| {
+        rules::create_rule(
+            grant,
+            "acme-consulting",
+            "office supplies".parse()?,
+            "5200",
+            10,
+        )
+    })?;
     // Pending templates are separate from postings. Preview March explicitly.
-    schedules::create_schedule(
-        conn,
-        actor,
-        "acme-consulting",
-        &schedules::CreateScheduleParams {
-            description: "Monthly office rent".into(),
-            currency: Currency::USD,
-            start_date: date("2025-03-05")?,
-            frequency: Frequency::Monthly,
-            end_date: Some(date("2025-12-05")?),
-            entries: vec![dr_tax("5000", 250_000, "sched-c:20b"), cr("1000", 250_000)],
-            metadata: None,
-        },
-    )?;
+    Granted::<Post>::with_db(db, actor, |grant| {
+        schedules::create_schedule(
+            grant,
+            "acme-consulting",
+            &schedules::CreateScheduleParams {
+                description: "Monthly office rent".into(),
+                currency: Currency::USD,
+                start_date: date("2025-03-05")?,
+                frequency: Frequency::Monthly,
+                end_date: Some(date("2025-12-05")?),
+                entries: vec![dr_tax("5000", 250_000, "sched-c:20b"), cr("1000", 250_000)],
+                metadata: None,
+            },
+        )
+    })?;
     Ok(())
 }
 
@@ -134,69 +139,73 @@ fn seed_tax_payments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
     Ok(())
 }
 
-fn seed_investments(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
-    investments::create_security(
-        conn,
-        actor,
-        "personal",
-        &investments::SecurityParams {
-            symbol: "DEMO".into(),
-            name: "Fictional Demo Fund".into(),
-            currency: Currency::USD,
-        },
-    )?;
+fn seed_investments(db: &Db, actor: &Actor) -> Result<(), CliError> {
+    Granted::<Post>::with_db(db, actor, |grant| {
+        investments::create_security(
+            grant,
+            "personal",
+            &investments::SecurityParams {
+                symbol: "DEMO".into(),
+                name: "Fictional Demo Fund".into(),
+                currency: Currency::USD,
+            },
+        )
+    })?;
     for (reference, acquired, quantity, cost) in [
         ("PR-BUY-001", "2025-01-10", "10", 100_000),
         ("PR-BUY-002", "2025-02-10", "5", 60_000),
     ] {
-        investments::buy(
-            conn,
-            actor,
+        Granted::<Post>::with_db(db, actor, |grant| {
+            investments::buy(
+                grant,
+                "personal",
+                &investments::BuyParams {
+                    symbol: "DEMO".into(),
+                    quantity: quantity
+                        .parse::<PositiveQuantity>()
+                        .map_err(|error| CliError::Bean(error.into()))?,
+                    cost: PositiveMoney::new(Money::usd(cost))
+                        .map_err(|error| CliError::Bean(error.into()))?,
+                    date: date(acquired)?,
+                    asset: "1200".into(),
+                    cash: "1100".into(),
+                    reference: Some(reference.into()),
+                },
+            )
+        })?;
+    }
+    Granted::<Post>::with_db(db, actor, |grant| {
+        investments::sell(
+            grant,
             "personal",
-            &investments::BuyParams {
+            &investments::SellParams {
                 symbol: "DEMO".into(),
-                quantity: quantity
+                quantity: "4"
                     .parse::<PositiveQuantity>()
                     .map_err(|error| CliError::Bean(error.into()))?,
-                cost: PositiveMoney::new(Money::usd(cost))
+                proceeds: NonNegativeMoney::new(Money::usd(52_000))
                     .map_err(|error| CliError::Bean(error.into()))?,
-                date: date(acquired)?,
+                date: date("2025-03-10")?,
                 asset: "1200".into(),
                 cash: "1100".into(),
-                reference: Some(reference.into()),
+                gain: "4100".into(),
+                selection: investments::LotSelection::Fifo,
+                reference: Some("PR-SELL-001".into()),
             },
-        )?;
-    }
-    investments::sell(
-        conn,
-        actor,
-        "personal",
-        &investments::SellParams {
-            symbol: "DEMO".into(),
-            quantity: "4"
-                .parse::<PositiveQuantity>()
-                .map_err(|error| CliError::Bean(error.into()))?,
-            proceeds: NonNegativeMoney::new(Money::usd(52_000))
-                .map_err(|error| CliError::Bean(error.into()))?,
-            date: date("2025-03-10")?,
-            asset: "1200".into(),
-            cash: "1100".into(),
-            gain: "4100".into(),
-            selection: investments::LotSelection::Fifo,
-            reference: Some("PR-SELL-001".into()),
-        },
-    )?;
-    investments::record_price(
-        conn,
-        actor,
-        "personal",
-        &investments::PriceParams {
-            symbol: "DEMO".into(),
-            date: date("2025-03-31")?,
-            price: NonNegativeMoney::new(Money::usd(13_000))
-                .map_err(|error| CliError::Bean(error.into()))?,
-        },
-    )?;
+        )
+    })?;
+    Granted::<Post>::with_db(db, actor, |grant| {
+        investments::record_price(
+            grant,
+            "personal",
+            &investments::PriceParams {
+                symbol: "DEMO".into(),
+                date: date("2025-03-31")?,
+                price: NonNegativeMoney::new(Money::usd(13_000))
+                    .map_err(|error| CliError::Bean(error.into()))?,
+            },
+        )
+    })?;
     Ok(())
 }
 
@@ -244,7 +253,8 @@ fn seed_loan(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
     Ok(())
 }
 
-fn seed_settlement(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
+fn seed_settlement(db: &Db, actor: &Actor) -> Result<(), CliError> {
+    let conn = db.conn();
     let charge = post(
         (conn, actor),
         "acme-consulting",
@@ -262,21 +272,22 @@ fn seed_settlement(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         Some(r#"{"applies_to":"AC-SETTLE-INVOICE"}"#),
     )?;
     for id in [charge, payment] {
-        let (_, entries) = db::get_transaction(conn, "acme-consulting", id)?;
+        let (_, entries) = db::get_transaction(db.read(), "acme-consulting", id)?;
         for entry in entries.iter().filter(|entry| entry.account_code == "1150") {
-            audit::clear_entry(
-                conn,
-                actor,
-                &audit::ClearRequest {
-                    company_slug: "acme-consulting",
-                    transaction_id: id.try_into()?,
-                    entry_id: entry.id.try_into()?,
-                    amount: Some(162_000_i64.try_into()?),
-                    date: date("2025-03-31")?,
-                    statement: Some("DEMO-2025-03"),
-                    status: db::clearings::ClearingStatus::Cleared,
-                },
-            )?;
+            Granted::<Reconcile>::with_db(db, actor, |grant| {
+                audit::clear_entry(
+                    grant,
+                    &audit::ClearRequest {
+                        company_slug: "acme-consulting",
+                        transaction_id: id.try_into()?,
+                        entry_id: entry.id.try_into()?,
+                        amount: Some(162_000_i64.try_into()?),
+                        date: date("2025-03-31")?,
+                        statement: Some("DEMO-2025-03"),
+                        status: db::clearings::ClearingStatus::Cleared,
+                    },
+                )
+            })?;
         }
     }
     Ok(())

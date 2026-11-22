@@ -3813,7 +3813,7 @@ fn assert_owner_approves_opening(
     let id = approved["data"]["transaction_id"]
         .as_i64()
         .ok_or("missing posted transaction ID")?;
-    let (txn, entries) = beankeeper_cli::db::get_transaction(db.conn(), "home", id)?;
+    let (txn, entries) = beankeeper_cli::db::get_transaction(db.read(), "home", id)?;
     assert_eq!(txn.currency.code(), "BHD");
     assert_eq!(txn.date, "2026-01-02");
     assert_eq!(txn.reference.as_deref(), Some("opening-home-2026"));

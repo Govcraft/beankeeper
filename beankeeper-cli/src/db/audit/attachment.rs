@@ -1,20 +1,20 @@
 //! Attachment insertion and its audit event share one savepoint.
 
 use beankeeper::types::Sha256Hex;
-use rusqlite::{Connection, params};
+use rusqlite::params;
 
-use super::savepoint::{AuditedTx, with_audited_tx};
+use super::savepoint::AuditedTx;
 use super::{Actor, Creation};
 use crate::db::attachments::StoreAttachmentParams;
 use crate::db::ids::AttachmentId;
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 
 pub(in crate::db) fn store_attachment(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     params: &StoreAttachmentParams<'_>,
 ) -> Result<AttachmentId, CliError> {
-    with_audited_tx(conn, "sp_attachment_create", |tx| {
+    grant.mutate("sp_attachment_create", |tx, actor| {
         insert_attachment(tx, actor, params)
     })
 }

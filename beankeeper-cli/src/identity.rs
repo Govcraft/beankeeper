@@ -1,6 +1,5 @@
 //! Local bearer attestations and optional per-ledger capability enforcement.
 
-use std::marker::PhantomData;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -16,6 +15,8 @@ use serde_json::{Value, json};
 
 use crate::capability::Capability;
 use crate::db::Actor;
+pub use crate::db::audit::grant::{Admin, Budget, Granted, Post, Reconcile};
+pub(crate) use crate::db::audit::grant::{Approve, SetupOwner, StatementApprover};
 use crate::error::CliError;
 use crate::operation::{Operation, Permission};
 
@@ -88,99 +89,6 @@ impl VerifiedAgent {
     /// This method retains its fallible signature for existing callers.
     pub fn allows(&self, capability: Capability) -> Result<bool, CliError> {
         Ok(self.grants.contains(&capability))
-    }
-}
-
-mod sealed {
-    pub trait GrantKind {
-        const REQUIRED: crate::capability::Capability;
-        const EXPLICIT: bool = false;
-    }
-}
-
-pub(crate) enum Approve {}
-
-impl sealed::GrantKind for Approve {
-    const REQUIRED: Capability = Capability::Approve;
-}
-
-/// Authority to change ledger policy and administer the ledger.
-pub enum Admin {}
-
-impl sealed::GrantKind for Admin {
-    const REQUIRED: Capability = Capability::Admin;
-}
-
-pub(crate) enum StatementApprover {}
-
-impl sealed::GrantKind for StatementApprover {
-    const REQUIRED: Capability = Capability::Approve;
-    const EXPLICIT: bool = true;
-}
-
-pub(crate) enum SetupOwner {}
-
-impl sealed::GrantKind for SetupOwner {
-    const REQUIRED: Capability = Capability::Admin;
-    const EXPLICIT: bool = true;
-}
-
-/// Authorization for a single capability, bound to this ledger and principal.
-pub struct Granted<'a, C> {
-    conn: &'a Connection,
-    actor: &'a Actor,
-    capability: PhantomData<C>,
-}
-
-impl<'a, C: sealed::GrantKind> Granted<'a, C> {
-    /// Run one authorized mutation inside its ledger's savepoint.
-    ///
-    /// The grant is bound to the current actor and connection. The callback's
-    /// result cannot retain the grant.
-    ///
-    /// # Errors
-    /// Returns authorization or storage errors and rolls back callback failures.
-    pub fn with<T>(
-        conn: &Connection,
-        actor: &Actor,
-        run: impl for<'grant> FnOnce(Granted<'grant, C>) -> Result<T, CliError>,
-    ) -> Result<T, CliError> {
-        crate::db::audit::atomically(conn, || run(Granted::check(conn, actor)?))
-    }
-
-    pub(crate) const fn into_parts(self) -> (&'a Connection, &'a Actor) {
-        (self.conn, self.actor)
-    }
-
-    // Call inside the same audited savepoint as the operation.
-    pub(crate) fn check(conn: &'a Connection, actor: &'a Actor) -> Result<Self, CliError> {
-        let enforce = crate::db::policy::get(conn)?.enforce || C::EXPLICIT;
-        if let Some(agent) = actor.identity() {
-            agent.check_live(conn)?;
-            if agent.enforces_permissions(enforce) && !agent.allows(C::REQUIRED)? {
-                return Err(CliError::Forbidden(format!(
-                    "operation requires capability {}",
-                    C::REQUIRED.path()
-                )));
-            }
-        } else if enforce {
-            return Err(CliError::Unauthorized(
-                "ledger enforcement requires an agent token".into(),
-            ));
-        }
-        Ok(Self {
-            conn,
-            actor,
-            capability: PhantomData,
-        })
-    }
-
-    pub(crate) const fn connection(&self) -> &'a Connection {
-        self.conn
-    }
-
-    pub(crate) const fn actor(&self) -> &'a Actor {
-        self.actor
     }
 }
 
@@ -588,7 +496,7 @@ pub(crate) fn issue_setup_credential(
     ttl: Duration,
 ) -> Result<IssuedCredential, CliError> {
     issue_checked_credential(
-        owner.connection(),
+        owner.setup_connection(),
         owner.actor(),
         &IssueRequest {
             name,
@@ -867,15 +775,15 @@ mod capability_witness_tests {
         let identity = verify(ledger.conn(), token)?;
         let actor = Actor::new("reviewer").with_identity(identity.clone());
 
-        assert!(Granted::<Approve>::check(ledger.conn(), &actor).is_ok());
+        assert!(Granted::<Approve>::with_db(&ledger, &actor, |_| Ok(())).is_ok());
         let foreign = Db::open_in_memory()?;
         assert!(matches!(
-            Granted::<Approve>::check(foreign.conn(), &actor),
+            Granted::<Approve>::with_db(&foreign, &actor, |_| Ok(())),
             Err(CliError::Unauthorized(_))
         ));
         revoke(ledger.conn(), &owner, identity.jti())?;
         assert!(matches!(
-            Granted::<Approve>::check(ledger.conn(), &actor),
+            Granted::<Approve>::with_db(&ledger, &actor, |_| Ok(())),
             Err(CliError::Unauthorized(_))
         ));
         Ok(())

@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::cli::{Cli, InvestmentCommand, OutputFormat, SecurityCommand, resolve_format};
 use crate::db::{Actor, Db, investments};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 use crate::output::json;
 
 mod wire;
@@ -48,16 +49,20 @@ pub fn execute_security(
             symbol,
             name,
             currency,
-        } => serde_json::to_value(investments::create_security(
-            db.conn(),
-            actor,
-            company,
-            &investments::SecurityParams {
-                symbol: symbol.clone(),
-                name: name.clone(),
-                currency: *currency,
-            },
-        )?),
+        } => {
+            let security = Granted::<Post>::with_db(db, actor, |grant| {
+                investments::create_security(
+                    grant,
+                    company,
+                    &investments::SecurityParams {
+                        symbol: symbol.clone(),
+                        name: name.clone(),
+                        currency: *currency,
+                    },
+                )
+            })?;
+            serde_json::to_value(security)
+        }
         SecurityCommand::List => {
             serde_json::to_value(investments::list_securities(db.read(), company)?)
         }
@@ -68,16 +73,18 @@ pub fn execute_security(
         } => {
             let price = NonNegativeMoney::new(amount(db, company, symbol, price)?)
                 .map_err(|_| CliError::Validation("price must not be negative".into()))?;
-            serde_json::to_value(Wire(investments::record_price(
-                db.conn(),
-                actor,
-                company,
-                &investments::PriceParams {
-                    symbol: symbol.clone(),
-                    date: *date,
-                    price,
-                },
-            )?))
+            let recorded = Granted::<Post>::with_db(db, actor, |grant| {
+                investments::record_price(
+                    grant,
+                    company,
+                    &investments::PriceParams {
+                        symbol: symbol.clone(),
+                        date: *date,
+                        price,
+                    },
+                )
+            })?;
+            serde_json::to_value(Wire(recorded))
         }
     };
     data.map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
@@ -100,20 +107,22 @@ pub fn execute_investment(
                 PositiveMoney::new(amount(db, company, &trade.symbol, cost)?).map_err(|_| {
                     CliError::Validation("buy quantity and cost must be positive".into())
                 })?;
-            serde_json::to_value(Wire(investments::buy(
-                db.conn(),
-                actor,
-                company,
-                &investments::BuyParams {
-                    symbol: trade.symbol.clone(),
-                    quantity: trade.quantity,
-                    cost,
-                    date: trade.date,
-                    asset: trade.asset.clone(),
-                    cash: trade.cash.clone(),
-                    reference: normalized_reference(trade.reference.as_deref())?,
-                },
-            )?))
+            let posted = Granted::<Post>::with_db(db, actor, |grant| {
+                investments::buy(
+                    grant,
+                    company,
+                    &investments::BuyParams {
+                        symbol: trade.symbol.clone(),
+                        quantity: trade.quantity,
+                        cost,
+                        date: trade.date,
+                        asset: trade.asset.clone(),
+                        cash: trade.cash.clone(),
+                        reference: normalized_reference(trade.reference.as_deref())?,
+                    },
+                )
+            })?;
+            serde_json::to_value(Wire(posted))
         }
         InvestmentCommand::Sell {
             trade,
@@ -124,22 +133,24 @@ pub fn execute_investment(
         } => {
             let proceeds = NonNegativeMoney::new(amount(db, company, &trade.symbol, proceeds)?)
                 .map_err(|_| CliError::Validation("sell proceeds must be nonnegative".into()))?;
-            serde_json::to_value(Wire(investments::sell(
-                db.conn(),
-                actor,
-                company,
-                &investments::SellParams {
-                    symbol: trade.symbol.clone(),
-                    quantity: trade.quantity,
-                    proceeds,
-                    date: trade.date,
-                    asset: trade.asset.clone(),
-                    cash: trade.cash.clone(),
-                    gain: gain.clone(),
-                    selection: investments::LotSelection::from_flags(*method, lot.clone())?,
-                    reference: normalized_reference(trade.reference.as_deref())?,
-                },
-            )?))
+            let posted = Granted::<Post>::with_db(db, actor, |grant| {
+                investments::sell(
+                    grant,
+                    company,
+                    &investments::SellParams {
+                        symbol: trade.symbol.clone(),
+                        quantity: trade.quantity,
+                        proceeds,
+                        date: trade.date,
+                        asset: trade.asset.clone(),
+                        cash: trade.cash.clone(),
+                        gain: gain.clone(),
+                        selection: investments::LotSelection::from_flags(*method, lot.clone())?,
+                        reference: normalized_reference(trade.reference.as_deref())?,
+                    },
+                )
+            })?;
+            serde_json::to_value(Wire(posted))
         }
         InvestmentCommand::Lots { symbol } => {
             let rows = investments::list_lots(db.read(), company, symbol)?;

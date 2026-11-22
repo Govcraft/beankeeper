@@ -7,6 +7,7 @@ use std::process::Command;
 
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{Actor, accounts, companies, connection::Db};
+use beankeeper_cli::identity::{Admin, Granted};
 use serde_json::Value;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -131,12 +132,13 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
             },
         )?;
     }
-    beankeeper_cli::db::audit::change_period(
-        db.conn(),
-        &beankeeper_cli::db::Actor::new("owner"),
-        "acme",
-        beankeeper_cli::db::periods::PeriodChange::Close("2026-01-31".parse()?),
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+        beankeeper_cli::db::audit::change_period(
+            grant,
+            "acme",
+            beankeeper_cli::db::periods::PeriodChange::Close("2026-01-31".parse()?),
+        )
+    })?;
     let before: i64 = db
         .conn()
         .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;

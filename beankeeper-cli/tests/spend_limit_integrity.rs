@@ -6,6 +6,7 @@ use beankeeper_cli::commands::verify;
 use beankeeper_cli::db::spend_limits::{Caps, SpendLimit};
 use beankeeper_cli::db::{self, Actor, Db, audit, spend_limits};
 use beankeeper_cli::error::CliError;
+use beankeeper_cli::identity::{Admin, Granted};
 
 #[test]
 fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), CliError> {
@@ -25,11 +26,13 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
             Currency::USD,
             Caps::from_minor_units(Some(1000), Some(2000))?,
         );
-        audit::set_spend_limit(db.conn(), &Actor::new("owner"), &limit)?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+            audit::set_spend_limit(grant, &limit)
+        })?;
         verify::execute_json(&db)?;
         db.conn().execute_batch(tamper)?;
         assert!(matches!(
-            spend_limits::list(db.conn(), limit.agent_uri(), Some("acme")),
+            spend_limits::list(db.read(), limit.agent_uri(), Some("acme")),
             Err(CliError::Database(_))
         ));
         assert!(matches!(

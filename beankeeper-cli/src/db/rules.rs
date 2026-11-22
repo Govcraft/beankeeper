@@ -3,9 +3,9 @@
 use std::{fmt, str::FromStr};
 
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
-use rusqlite::{Connection, params};
 use serde::Serialize;
 
+pub use super::audit::create_rule;
 use super::connection::ReadConn;
 use crate::error::CliError;
 
@@ -142,48 +142,4 @@ pub fn contra_account<'a>(
         )));
     }
     Ok(&rule.account_code)
-}
-
-/// Create a rule and its audit snapshot in the same savepoint.
-///
-/// # Errors
-/// Returns an error if the destination account is missing or persistence fails.
-pub fn create_rule(
-    conn: &Connection,
-    actor: &super::Actor,
-    company: &str,
-    contains: DescriptionPattern,
-    account: &str,
-    priority: i32,
-) -> Result<Rule, CliError> {
-    super::audit::atomically(conn, || {
-        super::accounts::get_account(ReadConn::new(conn), company, account)?;
-        let rule = Rule {
-            id: RuleId::generate(),
-            company_slug: company.to_string(),
-            contains,
-            account_code: account.to_string(),
-            priority,
-        };
-        conn.execute(
-            "INSERT INTO categorization_rules (id, company_slug, contains, account_code, priority)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                rule.id.to_string(),
-                company,
-                rule.contains.to_string(),
-                account,
-                priority
-            ],
-        )?;
-        super::audit::record_insert(
-            conn,
-            actor,
-            company,
-            super::audit::Creation::Rule,
-            &rule.id.to_string(),
-            &serde_json::json!(&rule),
-        )?;
-        Ok(rule)
-    })
 }

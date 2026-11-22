@@ -368,7 +368,8 @@ mod tests {
     use crate::db::CreateAccountParams;
 
     use super::*;
-    use crate::db::{Actor, PostEntryParams, PostTransactionParams, connection::Db};
+    use crate::db::{Actor, PostEntryParams, PostTransactionParams, connection::Db, schedules};
+    use crate::identity::{Granted, Post, Reconcile};
     use beankeeper::core::Frequency;
     use serde_json::Value;
 
@@ -468,6 +469,16 @@ mod tests {
         serde_json::to_value(facts).map_err(|error| CliError::General(error.to_string()))
     }
 
+    fn create_schedule(
+        db: &Db,
+        actor: &Actor,
+        params: &schedules::CreateScheduleParams,
+    ) -> Result<schedules::Schedule, CliError> {
+        Granted::<Post>::with_db(db, actor, |grant| {
+            schedules::create_schedule(grant, "co", params)
+        })
+    }
+
     #[test]
     fn attention_reports_missing_due_dates_and_matches_specific_partial_payments() -> TestResult {
         let db = setup()?;
@@ -529,10 +540,14 @@ mod tests {
             statement: Some("statement"),
             status: db::clearings::ClearingStatus::Cleared,
         };
-        db::audit::clear_entry(db.conn(), &Actor::new("test"), &request)?;
+        Granted::<Reconcile>::with_db(&db, &Actor::new("test"), |grant| {
+            db::audit::clear_entry(grant, &request)
+        })?;
         request.date = "2024-02-02".parse()?;
         request.status = db::clearings::ClearingStatus::Reconciled;
-        db::audit::clear_entry(db.conn(), &Actor::new("test"), &request)?;
+        Granted::<Reconcile>::with_db(&db, &Actor::new("test"), |grant| {
+            db::audit::clear_entry(grant, &request)
+        })?;
         let prior = attention(&db, "2024-02-01")?;
         assert_eq!(prior["unreconciled_accounts"]["count"], 1);
         assert_eq!(prior["unreconciled_accounts"]["total"], 10000);
@@ -557,7 +572,7 @@ mod tests {
             ],
             metadata: None,
         };
-        db::schedules::create_schedule(db.conn(), &Actor::new("test"), "co", &params)?;
+        create_schedule(&db, &Actor::new("test"), &params)?;
         let before = db.conn().total_changes();
         let facts = attention(&db, "2024-02-01")?;
         assert_eq!(facts["recurring_due"]["from"], "2024-02-02");
@@ -587,17 +602,22 @@ mod tests {
             ],
             metadata: None,
         };
-        db::schedules::create_schedule(db.conn(), &actor, "co", &params)?;
-        db::schedules::run_due(db.conn(), &actor, "co", "2024-02-03".parse()?, false)?;
+        create_schedule(&db, &actor, &params)?;
+        let through = "2024-02-03".parse()?;
+        Granted::<Post>::with_db(&db, &actor, |grant| {
+            schedules::run_due(grant, "co", through, false)
+        })?;
         params.start_date = "2024-02-04".parse()?;
-        let cancelled = db::schedules::create_schedule(db.conn(), &actor, "co", &params)?;
-        db::schedules::cancel_schedule(db.conn(), &actor, "co", &cancelled.id)?;
+        let cancelled = create_schedule(&db, &actor, &params)?;
+        Granted::<Post>::with_db(&db, &actor, |grant| {
+            schedules::cancel_schedule(grant, "co", &cancelled.id)
+        })?;
         params.start_date = "2024-02-15".parse()?;
-        db::schedules::create_schedule(db.conn(), &actor, "co", &params)?;
+        create_schedule(&db, &actor, &params)?;
         params.start_date = "2024-02-16".parse()?;
-        db::schedules::create_schedule(db.conn(), &actor, "co", &params)?;
+        create_schedule(&db, &actor, &params)?;
         params.start_date = "2024-02-01".parse()?;
-        db::schedules::create_schedule(db.conn(), &actor, "co", &params)?;
+        create_schedule(&db, &actor, &params)?;
         let facts = attention(&db, "2024-02-01")?;
         assert_eq!(facts["recurring_due"]["count"], 1);
         assert_eq!(facts["recurring_due"]["total"], 100);
@@ -619,7 +639,7 @@ mod tests {
             ],
             metadata: None,
         };
-        db::schedules::create_schedule(db.conn(), &Actor::new("test"), "co", &params)?;
+        create_schedule(&db, &Actor::new("test"), &params)?;
         assert_eq!(attention(&db, "2024-02-28")?["recurring_due"]["count"], 1);
         assert_eq!(attention(&db, "2024-02-29")?["recurring_due"]["count"], 0);
         assert_eq!(attention(&db, "2024-03-14")?["recurring_due"]["count"], 0);

@@ -5,14 +5,15 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
 use beankeeper::types::{DocumentType, Sha256Hex};
+use rusqlite::params;
 use rusqlite::types::Type;
-use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
-use super::audit::{self, Actor};
+use super::audit;
 use super::connection::ReadConn;
 use super::ids::{AttachmentId, EntryId, TransactionId};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 
 /// A row from the `attachments` table.
 #[derive(Debug, Clone)]
@@ -43,13 +44,12 @@ pub struct StoreAttachmentParams<'a> {
 ///
 /// # Errors
 ///
-/// Returns `CliError::Sqlite` on database errors.
+/// Returns authorization or database errors.
 pub fn store_attachment(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     params: &StoreAttachmentParams<'_>,
 ) -> Result<AttachmentId, CliError> {
-    audit::store_attachment(conn, actor, params)
+    audit::store_attachment(grant, params)
 }
 
 /// Lists all attachments for a transaction within a company.
@@ -284,7 +284,9 @@ mod tests {
             hash: Some(&hash),
             original_filename: Some("receipt.pdf"),
         };
-        let att_id = store_attachment(db.conn(), &Actor::new("fixture"), &params)?;
+        let att_id = Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            store_attachment(grant, &params)
+        })?;
         assert!(att_id.get() > 0);
 
         let attachments = list_attachments(db.read(), "acme", txn_id)?;
@@ -336,14 +338,46 @@ mod tests {
             hash: None,
             original_filename: None,
         };
-        let att_id = store_attachment(db.conn(), &crate::db::Actor::new("fixture"), &params)
-            .unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id = Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            store_attachment(grant, &params)
+        })
+        .unwrap_or_else(|e| panic!("store failed: {e}"));
 
         let att =
             get_attachment(db.read(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.id, att_id);
         assert_eq!(att.document_type, DocumentType::Invoice);
         assert!(att.hash.is_none());
+    }
+
+    #[test]
+    fn attachment_grant_rechecks_current_policy() -> Result<(), CliError> {
+        use crate::identity::Admin;
+
+        let db = setup();
+        let transaction_id = post_sample(&db);
+        let actor = crate::db::Actor::new("fixture");
+        let params = StoreAttachmentParams {
+            transaction_id,
+            entry_id: None,
+            company_slug: "acme",
+            uri: "attachments/test",
+            document_type: DocumentType::Receipt,
+            hash: None,
+            original_filename: None,
+        };
+        Granted::<Post>::with_db(&db, &actor, |grant| {
+            Granted::<Admin>::with_db(&db, &actor, |admin| audit::set_policy(admin, true))?;
+            assert!(matches!(
+                store_attachment(grant, &params),
+                Err(CliError::Unauthorized(_))
+            ));
+            Ok(())
+        })?;
+        assert!(crate::db::policy::get(db.conn())?.enforce);
+        assert!(list_attachments(db.read(), "acme", transaction_id)?.is_empty());
+        assert!(db.conn().is_autocommit());
+        Ok(())
     }
 
     #[test]
@@ -440,8 +474,10 @@ mod tests {
             hash: None,
             original_filename: Some("statement.pdf"),
         };
-        let att_id = store_attachment(db.conn(), &crate::db::Actor::new("fixture"), &params)
-            .unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id = Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            store_attachment(grant, &params)
+        })
+        .unwrap_or_else(|e| panic!("store failed: {e}"));
 
         let att =
             get_attachment(db.read(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));

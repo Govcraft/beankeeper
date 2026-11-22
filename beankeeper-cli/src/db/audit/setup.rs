@@ -148,9 +148,9 @@ pub fn begin(
     ttl: Duration,
 ) -> Result<Started, CliError> {
     let conn = db.conn();
-    atomically(conn, || {
+    db.with_audited_tx("sp_atomic_batch", |tx| {
         require_encryption(conn)?;
-        let owner = Granted::<SetupOwner>::check(conn, owner)?;
+        let owner = Granted::<SetupOwner>::check(tx, owner)?;
         if ttl.is_zero() || ttl > MAX_TTL {
             return Err(CliError::Validation(
                 "setup token lifetime must be positive and at most one hour".into(),
@@ -194,9 +194,9 @@ pub fn begin(
 /// conflicting terminal action or database failure.
 pub fn end(db: &Db, owner: &Actor, generation: Generation, end: End) -> Result<Session, CliError> {
     let conn = db.conn();
-    atomically(conn, || {
+    db.with_audited_tx("sp_atomic_batch", |tx| {
         require_encryption(conn)?;
-        let owner = Granted::<SetupOwner>::check(conn, owner)?;
+        let owner = Granted::<SetupOwner>::check(tx, owner)?;
         let mut session = find_session(conn, generation)?.ok_or_else(|| {
             CliError::NotFound(format!("setup generation {} not found", generation.get()))
         })?;

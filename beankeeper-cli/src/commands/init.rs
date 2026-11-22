@@ -224,7 +224,7 @@ fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError>
     seed_products_transactions(conn, actor)?;
     seed_personal_transactions(conn, actor)?;
     seed_intercompany_transactions(conn, actor)?;
-    demo_features::seed(conn, actor)?;
+    demo_features::seed(db, actor)?;
 
     Ok(())
 }

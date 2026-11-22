@@ -40,9 +40,9 @@ pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
         crate::db::policy::get(db.conn())?;
         crate::db::periods::verify(reader)?;
         crate::db::proposals::verify_resolutions(db.conn())?;
-        crate::db::spend_limits::verify(db.conn())?;
+        crate::db::spend_limits::verify(reader)?;
         crate::db::verification::verify_accounting(reader)?;
-        crate::db::audit::verify_creations(db.conn())?;
+        crate::db::audit::verify_creations(reader)?;
         crate::db::verification::verify_links(reader)?;
         if version >= schema::STATEMENT_BATCH_SCHEMA_VERSION {
             crate::db::audit::setup::statement_batches::verify(reader)?;

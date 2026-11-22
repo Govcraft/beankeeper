@@ -11,9 +11,11 @@ use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+use super::audit::savepoint::AuditedTx;
 use super::connection::ReadConn;
-use super::{Actor, PostEntryParams, PostResult, PostTransactionParams, audit, transactions};
+use super::{Actor, PostEntryParams, PostResult, PostTransactionParams, audit};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 
 /// A globally unique scheduled-template identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,21 +173,17 @@ pub struct RunOptions {
 /// # Errors
 /// Rejects invalid descriptions, dates, currency, accounts or unbalanced entries.
 pub fn create_schedule(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     company: &str,
     params: &CreateScheduleParams,
 ) -> Result<Schedule, CliError> {
-    audit::atomically(conn, || {
-        super::companies::get_company(super::connection::ReadConn::new(conn), company)?;
+    grant.mutate("sp_schedule_create", |tx, actor| {
+        let reader = tx.read();
+        super::companies::get_company(reader, company)?;
         validate_template(params)?;
         let mut entries = params.entries.clone();
         for entry in &mut entries {
-            let account = super::accounts::get_account(
-                super::connection::ReadConn::new(conn),
-                company,
-                &entry.account_code,
-            )?;
+            let account = super::accounts::get_account(reader, company, &entry.account_code)?;
             super::accounts::row_to_account(&account)?;
             if entry.tax_category.is_none() {
                 entry.tax_category = account.default_tax_category;
@@ -207,48 +205,7 @@ pub fn create_schedule(
                 .map(super::metadata::UserAnnotations::into_string),
             occurrence_index: 0,
         };
-        conn.execute(
-            "INSERT INTO schedules (id, company_slug, description, currency, start_date, frequency,
-             end_date, metadata, next_due, status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![
-                schedule.id.to_string(),
-                company,
-                schedule.description,
-                schedule.currency.code(),
-                schedule.start_date.to_string(),
-                schedule.frequency.to_string(),
-                schedule.end_date.map(|d| d.to_string()),
-                schedule.metadata,
-                schedule.state.next_due().map(|date| date.to_string()),
-                schedule.state.code()
-            ],
-        )?;
-        for (position, entry) in schedule.entries.iter().enumerate() {
-            let position = i64::try_from(position)
-                .map_err(|_| CliError::Validation("too many schedule entries".into()))?;
-            conn.execute(
-                "INSERT INTO schedule_entries (schedule_id, company_slug, position, account_code,
-                 direction, amount, memo, tax_category) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![
-                    schedule.id.to_string(),
-                    company,
-                    position,
-                    entry.account_code,
-                    entry.direction,
-                    entry.amount,
-                    entry.memo,
-                    entry.tax_category
-                ],
-            )?;
-        }
-        audit::record_insert(
-            conn,
-            actor,
-            company,
-            audit::Creation::Schedule,
-            &schedule.id.to_string(),
-            &serde_json::json!(&schedule),
-        )?;
+        audit::persist_schedule(tx, actor, &schedule)?;
         Ok(schedule)
     })
 }
@@ -384,20 +341,18 @@ pub(crate) fn get_schedule(
 /// # Errors
 /// Returns not-found for another company's schedule, or storage/audit errors.
 pub fn cancel_schedule(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     company: &str,
     id: &ScheduleId,
 ) -> Result<Schedule, CliError> {
-    audit::atomically(conn, || {
-        audit::lock_schedule_writer(conn)?;
-        let before = get_schedule(ReadConn::new(conn), company, id)?;
+    grant.mutate("sp_schedule_cancel", |tx, actor| {
+        let before = get_schedule(tx.read(), company, id)?;
         if before.state.next_due().is_none() {
             return Ok(before);
         }
         let mut after = before.clone();
         after.state = ScheduleState::Cancelled;
-        audit::change_schedule(conn, actor, &before, &after, audit::ScheduleChange::Cancel)?;
+        audit::change_schedule(tx, actor, &before, &after, audit::ScheduleChange::Cancel)?;
         Ok(after)
     })
 }
@@ -412,15 +367,13 @@ pub fn cancel_schedule(
 /// Returns validation, posting, recurrence-overflow or auditing errors; rolls back
 /// all postings and template progress on failure.
 pub fn run_due(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     company: &str,
     through: NaiveDate,
     dry_run: bool,
 ) -> Result<Vec<Occurrence>, CliError> {
     run_due_with_options(
-        conn,
-        actor,
+        grant,
         company,
         through,
         RunOptions {
@@ -440,41 +393,66 @@ pub fn run_due(
 /// Returns validation, posting, recurrence-overflow or auditing errors; rolls back
 /// all postings and template progress on failure.
 pub fn run_due_with_options(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     company: &str,
     through: NaiveDate,
     options: RunOptions,
 ) -> Result<Vec<Occurrence>, CliError> {
-    audit::atomically(conn, || {
-        if !options.dry_run {
-            audit::lock_schedule_writer(conn)?;
+    grant.mutate("sp_schedule_run", |tx, actor| {
+        if options.dry_run {
+            return preview_due(tx.read(), company, through);
         }
-        let schedules: Vec<_> = list_schedules(ReadConn::new(conn), company)?
-            .into_iter()
-            .filter(|schedule| schedule.state.next_due().is_some())
-            .collect();
-        if !options.dry_run && !options.allow_large_run {
+        let schedules = pending_schedules(tx.read(), company)?;
+        if !options.allow_large_run {
             enforce_run_limit(&schedules, through)?;
         }
         let mut occurrences = Vec::new();
-        for schedule in &schedules {
-            execute_schedule(
-                conn,
-                actor,
-                schedule,
+        for before in &schedules {
+            let after = execute_schedule(
+                tx.read(),
+                before,
                 through,
-                options.dry_run,
+                |schedule, date| post_occurrence(tx, actor, schedule, date).map(Some),
                 &mut occurrences,
             )?;
+            if before.occurrence_index != after.occurrence_index {
+                audit::change_schedule(tx, actor, before, &after, audit::ScheduleChange::Run)?;
+            }
         }
-        occurrences.sort_by(|a, b| {
-            a.date
-                .cmp(&b.date)
-                .then_with(|| a.schedule_id.to_string().cmp(&b.schedule_id.to_string()))
-        });
+        sort_occurrences(&mut occurrences);
         Ok(occurrences)
     })
+}
+
+/// Preview the due occurrences in a read-only snapshot.
+/// # Errors
+/// Returns invalid template, recurrence, or database errors.
+pub fn preview_due(
+    reader: ReadConn<'_>,
+    company: &str,
+    through: NaiveDate,
+) -> Result<Vec<Occurrence>, CliError> {
+    let mut occurrences = Vec::new();
+    for schedule in &pending_schedules(reader, company)? {
+        execute_schedule(reader, schedule, through, |_, _| Ok(None), &mut occurrences)?;
+    }
+    sort_occurrences(&mut occurrences);
+    Ok(occurrences)
+}
+
+fn pending_schedules(reader: ReadConn<'_>, company: &str) -> Result<Vec<Schedule>, CliError> {
+    Ok(list_schedules(reader, company)?
+        .into_iter()
+        .filter(|schedule| schedule.state.next_due().is_some())
+        .collect())
+}
+
+fn sort_occurrences(occurrences: &mut [Occurrence]) {
+    occurrences.sort_by(|a, b| {
+        a.date
+            .cmp(&b.date)
+            .then_with(|| a.schedule_id.to_string().cmp(&b.schedule_id.to_string()))
+    });
 }
 
 fn enforce_run_limit(schedules: &[Schedule], through: NaiveDate) -> Result<(), CliError> {
@@ -519,58 +497,54 @@ fn advance_schedule(schedule: &mut Schedule) -> Result<(), CliError> {
 }
 
 fn execute_schedule(
-    conn: &Connection,
-    actor: &Actor,
+    reader: ReadConn<'_>,
     before: &Schedule,
     through: NaiveDate,
-    dry_run: bool,
+    mut post: impl FnMut(&Schedule, NaiveDate) -> Result<Option<i64>, CliError>,
     output: &mut Vec<Occurrence>,
-) -> Result<(), CliError> {
+) -> Result<Schedule, CliError> {
     validate_entries(&before.entries)?;
     for entry in &before.entries {
-        let account = super::accounts::get_account(
-            super::connection::ReadConn::new(conn),
-            &before.company_slug,
-            &entry.account_code,
-        )?;
+        let account =
+            super::accounts::get_account(reader, &before.company_slug, &entry.account_code)?;
         super::accounts::row_to_account(&account)?;
     }
     let mut after = before.clone();
-
     while let Some(date) = after.state.next_due().filter(|date| *date <= through) {
-        let transaction_id = if dry_run {
-            None
-        } else {
-            let reference = format!("schedule:{}:{date}", after.id);
-            let date_text = date.to_string();
-            let result = transactions::post_transaction(
-                conn,
-                &PostTransactionParams {
-                    company_slug: &after.company_slug,
-                    description: &after.description,
-                    metadata: after.metadata.as_deref(),
-                    currency: after.currency,
-                    date: &date_text,
-                    entries: &after.entries,
-                    correlate: None,
-                    reference: Some(&reference),
-                    on_conflict: super::ConflictStrategy::Error,
-                    actor,
-                },
-            )?;
-            Some(match result {
-                PostResult::Created(id) | PostResult::Skipped(id) => id,
-            })
-        };
         output.push(Occurrence {
             schedule_id: after.id.clone(),
             date,
-            transaction_id,
+            transaction_id: post(&after, date)?,
         });
         advance_schedule(&mut after)?;
     }
-    if !dry_run && before.occurrence_index != after.occurrence_index {
-        audit::change_schedule(conn, actor, before, &after, audit::ScheduleChange::Run)?;
-    }
-    Ok(())
+    Ok(after)
+}
+
+fn post_occurrence(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    schedule: &Schedule,
+    date: NaiveDate,
+) -> Result<i64, CliError> {
+    let reference = format!("schedule:{}:{date}", schedule.id);
+    let date_text = date.to_string();
+    let result = audit::post_in_audited_scope(
+        tx,
+        &PostTransactionParams {
+            company_slug: &schedule.company_slug,
+            description: &schedule.description,
+            metadata: schedule.metadata.as_deref(),
+            currency: schedule.currency,
+            date: &date_text,
+            entries: &schedule.entries,
+            correlate: None,
+            reference: Some(&reference),
+            on_conflict: super::ConflictStrategy::Error,
+            actor,
+        },
+    )?;
+    Ok(match result {
+        PostResult::Created(id) | PostResult::Skipped(id) => id,
+    })
 }

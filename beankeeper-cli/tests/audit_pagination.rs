@@ -7,6 +7,7 @@ use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt as _;
 use beankeeper_cli::db::{self, Actor, Db, PostEntryParams, PostTransactionParams};
+use beankeeper_cli::identity::{Granted, Reconcile};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -260,19 +261,21 @@ fn audit_snapshot_companions_preserve_original_strings_and_hashes() -> TestResul
 fn clearing_audit_resolves_immutable_entry_currency() -> TestResult {
     let ledger = Ledger::new()?;
     for (transaction_id, entry_id) in [(1, 1), (2, 3), (3, 5)] {
-        db::clear_entry(
-            ledger.db.conn(),
-            &Actor::new("test"),
-            &db::ClearRequest {
-                company_slug: "acme",
-                transaction_id: transaction_id.try_into()?,
-                entry_id: entry_id.try_into()?,
-                amount: Some(100_i64.try_into()?),
-                date: "2026-01-31".parse()?,
-                statement: Some("S1"),
-                status: db::ClearingStatus::Cleared,
-            },
-        )?;
+        let date = "2026-01-31".parse()?;
+        Granted::<Reconcile>::with_db(&ledger.db, &Actor::new("test"), |grant| {
+            db::clear_entry(
+                grant,
+                &db::ClearRequest {
+                    company_slug: "acme",
+                    transaction_id: transaction_id.try_into()?,
+                    entry_id: entry_id.try_into()?,
+                    amount: Some(100_i64.try_into()?),
+                    date,
+                    statement: Some("S1"),
+                    status: db::ClearingStatus::Cleared,
+                },
+            )
+        })?;
     }
     let output = ledger.run(&[
         "--json",

@@ -34,7 +34,9 @@ use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 
 mod attachment;
-mod savepoint;
+pub(crate) mod grant;
+pub(super) mod investment;
+pub(super) mod savepoint;
 pub mod setup;
 
 pub(super) use attachment::store_attachment;
@@ -550,10 +552,8 @@ pub fn set_policy(
     grant: crate::identity::Granted<'_, crate::identity::Admin>,
     enforce: bool,
 ) -> Result<super::policy::LedgerPolicy, CliError> {
-    let (conn, actor) = grant.into_parts();
-    atomically(conn, || {
-        let current = crate::identity::Granted::<crate::identity::Admin>::check(conn, actor)?;
-        record_policy_change(current.connection(), current.actor(), enforce)
+    grant.mutate("sp_policy_change", |tx, actor| {
+        record_policy_change(tx.connection(), actor, enforce)
     })
 }
 
@@ -604,18 +604,18 @@ pub(super) fn change_legacy_policy_fixture(
 /// # Errors
 /// Returns authorization, validation, integrity or storage errors.
 pub fn set_spend_limit(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Admin>,
     limit: &super::spend_limits::SpendLimit,
 ) -> Result<super::spend_limits::SpendLimit, CliError> {
-    atomically(conn, || {
-        require_capability(conn, actor, crate::capability::Capability::Admin)?;
+    grant.mutate("sp_spend_limit_set", |tx, actor| {
+        let conn = tx.connection();
+        let reader = tx.read();
         let uri = limit.agent_uri();
         let company = limit.company().as_str();
         let currency = limit.currency();
         let caps = limit.caps();
-        super::companies::get_company(ReadConn::new(conn), company)?;
-        let before = super::spend_limits::list(conn, uri, Some(company))?
+        super::companies::get_company(reader, company)?;
+        let before = super::spend_limits::list(reader, uri, Some(company))?
             .into_iter()
             .find(|row| row.currency() == currency);
         conn.execute(
@@ -653,14 +653,13 @@ pub fn set_spend_limit(
 /// # Errors
 /// Returns authorization, integrity or storage errors.
 pub fn clear_spend_limits(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Admin>,
     uri: &str,
     company: Option<&str>,
 ) -> Result<usize, CliError> {
-    atomically(conn, || {
-        require_capability(conn, actor, crate::capability::Capability::Admin)?;
-        let before = super::spend_limits::list(conn, uri, company)?;
+    grant.mutate("sp_spend_limit_clear", |tx, actor| {
+        let conn = tx.connection();
+        let before = super::spend_limits::list(tx.read(), uri, company)?;
         for limit in &before {
             conn.execute("DELETE FROM agent_spend_limits WHERE agent_uri = ?1 AND company_slug = ?2 AND currency = ?3",
                 params![uri, limit.company().as_str(), limit.currency().code()])?;
@@ -707,21 +706,21 @@ pub(super) fn require_capability(
 /// Rejects insufficient admin grants, non-advancing closes, reopening an
 /// open company, and inconsistent persisted state.
 pub fn change_period(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Admin>,
     company: &str,
     change: super::periods::PeriodChange,
 ) -> Result<super::periods::PeriodLock, CliError> {
     use super::periods::PeriodLock;
 
-    in_savepoint(conn, "sp_period_change", || {
-        require_capability(conn, actor, crate::capability::Capability::Admin)?;
-        super::companies::get_company(ReadConn::new(conn), company)?;
-        let before = super::periods::get(ReadConn::new(conn), company)?;
+    grant.mutate("sp_period_change", |tx, actor| {
+        let conn = tx.connection();
+        let reader = tx.read();
+        super::companies::get_company(reader, company)?;
+        let before = super::periods::get(reader, company)?;
         let previous = before.as_ref().and_then(PeriodLock::closed_through);
         let (state, action) = resolve_period_change(change, previous)?;
         let changed_at =
-            conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+            reader.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
                 row.get(0)
             })?;
         let after = PeriodLock {
@@ -951,7 +950,7 @@ fn snapshot<T: Serialize>(value: &T) -> String {
 
 /// Captures immutable posting data, excluding mutable metadata and clearings.
 fn posting_snapshot(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     id: i64,
     hash_version: i64,
@@ -981,7 +980,7 @@ pub(super) fn record_creation(
     company: &str,
     id: i64,
 ) -> Result<(), CliError> {
-    let posting = posting_snapshot(conn, company, id, 2)?;
+    let posting = posting_snapshot(ReadConn::new(conn), company, id, 2)?;
     record(
         conn,
         actor,
@@ -1000,7 +999,7 @@ pub(super) fn record_creation(
 ///
 /// # Errors
 /// Returns a database error if an audited posting is changed or unrecorded.
-pub fn verify_creations(conn: &Connection) -> Result<(), CliError> {
+pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
     let mut stmt = conn.prepare(
         "SELECT id, company_slug FROM transactions WHERE posted_by IS NOT NULL OR agent_uri IS NOT NULL OR token_jti IS NOT NULL
          UNION SELECT CAST(entity_id AS INTEGER), company_slug FROM audit_log
@@ -1069,8 +1068,7 @@ pub fn verify_creations(conn: &Connection) -> Result<(), CliError> {
 /// Returns `CliError::NotFound` if the entry does not belong to the given
 /// transaction/company, or `CliError::Sqlite` on database errors.
 pub fn set_entry_status(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Reconcile>,
     company_slug: &str,
     transaction_id: TransactionId,
     entry_id: EntryId,
@@ -1078,7 +1076,7 @@ pub fn set_entry_status(
 ) -> Result<EntryStatus, CliError> {
     let status = match to {
         EntryStatus::Uncleared => {
-            return unclear_entry(conn, actor, company_slug, transaction_id, entry_id, None)
+            return unclear_entry(grant, company_slug, transaction_id, entry_id, None)
                 .map(|o| o.previous_status);
         }
         EntryStatus::Cleared => ClearingStatus::Cleared,
@@ -1086,8 +1084,7 @@ pub fn set_entry_status(
     };
     let today = chrono::Local::now().date_naive();
     clear_entry(
-        conn,
-        actor,
+        grant,
         &ClearRequest {
             company_slug,
             transaction_id,
@@ -1257,13 +1254,13 @@ fn record_clearing_change(
 }
 
 fn insert_clearing(
-    conn: &Connection,
+    tx: &savepoint::AuditedTx<'_>,
     req: &ClearRequest<'_>,
     amount: PositiveMinorUnits,
 ) -> Result<i64, CliError> {
     let state = req.status.on(req.date);
     let date = req.date.to_string();
-    conn.execute(
+    tx.insert(
         "INSERT INTO entry_clearings \
          (entry_id, company_slug, amount, cleared_date, statement_ref, status, reconciled_date) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1276,8 +1273,7 @@ fn insert_clearing(
             state.status().as_str(),
             state.reconciled_on().map(|_| date.as_str()),
         ],
-    )?;
-    Ok(conn.last_insert_rowid())
+    )
 }
 
 /// Clears (part of) an entry, keeping `entries.status` in sync and recording
@@ -1292,11 +1288,73 @@ fn insert_clearing(
 /// request on reconciled (locked) clearings, or `CliError::Sqlite` on
 /// database errors.
 pub fn clear_entry(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Reconcile>,
     req: &ClearRequest<'_>,
 ) -> Result<ClearOutcome, CliError> {
-    in_savepoint(conn, "sp_entry_clear", || {
+    with_reconciliation(grant, |writer| writer.clear_entry(req))
+}
+
+/// Removes an entry's clearings (all, or only `statement`'s), keeping
+/// `entries.status` in sync and recording the removed rows.
+///
+/// # Errors
+///
+/// Returns `CliError::NotFound` for an unknown entry or `CliError::Sqlite`
+/// on database errors.
+pub fn unclear_entry(
+    grant: grant::Granted<'_, grant::Reconcile>,
+    company_slug: &str,
+    transaction_id: TransactionId,
+    entry_id: EntryId,
+    statement: Option<&str>,
+) -> Result<ClearOutcome, CliError> {
+    with_reconciliation(grant, |writer| {
+        writer.unclear_entry(company_slug, transaction_id, entry_id, statement)
+    })
+}
+
+/// One verified ledger writer shared by a clearance request or batch.
+pub(crate) struct Reconciliation<'a> {
+    tx: &'a savepoint::AuditedTx<'a>,
+    actor: &'a Actor,
+}
+
+pub(crate) fn with_reconciliation<T>(
+    grant: grant::Granted<'_, grant::Reconcile>,
+    run: impl FnOnce(&Reconciliation<'_>) -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    grant.mutate("sp_reconcile_entries", |tx, actor| {
+        run(&Reconciliation { tx, actor })
+    })
+}
+
+impl Reconciliation<'_> {
+    pub(crate) fn read(&self) -> ReadConn<'_> {
+        self.tx.read()
+    }
+
+    pub(crate) fn entry(
+        &self,
+        company: &str,
+        transaction_id: TransactionId,
+        entry_id: EntryId,
+    ) -> Result<super::EntryTarget, CliError> {
+        let company = Company::resolve(self.tx.connection(), company)?;
+        get_entry_target(&company, transaction_id, entry_id)
+    }
+
+    pub(crate) fn entry_by_reference(
+        &self,
+        company: &str,
+        reference: &str,
+        account: &str,
+    ) -> Result<super::EntryTarget, CliError> {
+        let company = Company::resolve(self.tx.connection(), company)?;
+        super::find_entry_by_reference(&company, reference, account)
+    }
+
+    pub(crate) fn clear_entry(&self, req: &ClearRequest<'_>) -> Result<ClearOutcome, CliError> {
+        let conn = self.tx.connection();
         let company = Company::resolve(conn, req.company_slug)?;
         let target = get_entry_target(&company, req.transaction_id, req.entry_id)?;
         let existing = list_clearings(&company, req.entry_id)?;
@@ -1331,7 +1389,7 @@ pub fn clear_entry(
                 });
             }
             ClearPlan::Insert { amount, promote } => {
-                let id = insert_clearing(conn, req, amount)?;
+                let id = insert_clearing(self.tx, req, amount)?;
                 let action = if promote.is_empty() {
                     ClearAction::Cleared
                 } else {
@@ -1364,7 +1422,7 @@ pub fn clear_entry(
         };
         record_clearing_change(
             conn,
-            actor,
+            self.actor,
             &ClearingChange {
                 company_slug: req.company_slug,
                 entry_id: req.entry_id,
@@ -1388,25 +1446,16 @@ pub fn clear_entry(
             entry_status: status,
             skip_reason: None,
         })
-    })
-}
+    }
 
-/// Removes an entry's clearings (all, or only `statement`'s), keeping
-/// `entries.status` in sync and recording the removed rows.
-///
-/// # Errors
-///
-/// Returns `CliError::NotFound` for an unknown entry or `CliError::Sqlite`
-/// on database errors.
-pub fn unclear_entry(
-    conn: &Connection,
-    actor: &Actor,
-    company_slug: &str,
-    transaction_id: TransactionId,
-    entry_id: EntryId,
-    statement: Option<&str>,
-) -> Result<ClearOutcome, CliError> {
-    in_savepoint(conn, "sp_entry_unclear", || {
+    pub(crate) fn unclear_entry(
+        &self,
+        company_slug: &str,
+        transaction_id: TransactionId,
+        entry_id: EntryId,
+        statement: Option<&str>,
+    ) -> Result<ClearOutcome, CliError> {
+        let conn = self.tx.connection();
         let company = Company::resolve(conn, company_slug)?;
         let target = get_entry_target(&company, transaction_id, entry_id)?;
         let existing = list_clearings(&company, entry_id)?;
@@ -1441,7 +1490,7 @@ pub fn unclear_entry(
         let after_sum = cleared_sum(&after)?;
         record_clearing_change(
             conn,
-            actor,
+            self.actor,
             &ClearingChange {
                 company_slug,
                 entry_id,
@@ -1465,7 +1514,7 @@ pub fn unclear_entry(
             entry_status: status,
             skip_reason: None,
         })
-    })
+    }
 }
 
 /// Correlates a newly posted transaction with an existing partner transaction
@@ -1589,7 +1638,7 @@ pub fn reverse_transaction(
     use super::transactions::{PostResult, PostTransactionParams, get_transaction};
 
     in_savepoint(conn, "sp_reverse", || {
-        let (original, entries) = get_transaction(conn, p.company_slug, p.id)?;
+        let (original, entries) = get_transaction(ReadConn::new(conn), p.company_slug, p.id)?;
         reject_investment_reversal(conn, p.id)?;
         let mut original_metadata: serde_json::Value = original
             .metadata
@@ -1672,7 +1721,7 @@ fn existing_reversal(
         .filter(|v| !v.is_null())
     {
         if let (Some(id), Some(reference)) = (reversal_id.as_i64(), p.reference) {
-            let (reversal, _) = get_transaction(conn, p.company_slug, id)?;
+            let (reversal, _) = get_transaction(ReadConn::new(conn), p.company_slug, id)?;
             let reverse_meta: Option<serde_json::Value> = reversal
                 .metadata
                 .as_deref()
@@ -1743,86 +1792,91 @@ fn reversal_entries(entries: &[super::EntryRow]) -> Vec<super::transactions::Pos
 ///
 /// # Errors
 ///
-/// Returns `CliError::Sqlite` on database errors.
+/// Returns authorization or database errors.
 pub fn set_budget(
-    conn: &Connection,
+    grant: grant::Granted<'_, grant::Budget>,
+    p: &SetBudgetParams<'_>,
+) -> Result<BudgetRow, CliError> {
+    grant.mutate("sp_budget_set", |tx, actor| set_budget_month(tx, actor, p))
+}
+
+fn set_budget_month(
+    tx: &savepoint::AuditedTx<'_>,
     actor: &Actor,
     p: &SetBudgetParams<'_>,
 ) -> Result<BudgetRow, CliError> {
-    in_savepoint(conn, "sp_budget_set", || {
-        let prior_amount: Option<i64> = conn
-            .query_row(
-                "SELECT amount FROM budgets \
-                 WHERE company_slug = ?1 AND account_code = ?2 AND currency = ?3 \
-                 AND year = ?4 AND month = ?5",
-                params![
-                    p.company_slug,
-                    p.account_code,
-                    p.currency.code(),
-                    p.year,
-                    p.month
-                ],
-                |row| row.get(0),
-            )
-            .ok();
-
-        conn.execute(
-            "INSERT OR REPLACE INTO budgets \
-             (company_slug, account_code, currency, year, month, amount, notes) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    let reader = tx.read();
+    let prior_amount: Option<i64> = reader
+        .query_row(
+            "SELECT amount FROM budgets \
+             WHERE company_slug = ?1 AND account_code = ?2 AND currency = ?3 \
+             AND year = ?4 AND month = ?5",
             params![
                 p.company_slug,
                 p.account_code,
                 p.currency.code(),
                 p.year,
-                p.month,
-                p.amount,
-                p.notes
+                p.month
             ],
-        )?;
+            |row| row.get(0),
+        )
+        .ok();
 
-        let id = conn.last_insert_rowid();
-        let (created_at, currency) = conn.query_row(
-            "SELECT created_at, currency FROM budgets WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+    let id = tx.insert(
+        "INSERT OR REPLACE INTO budgets \
+         (company_slug, account_code, currency, year, month, amount, notes) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            p.company_slug,
+            p.account_code,
+            p.currency.code(),
+            p.year,
+            p.month,
+            p.amount,
+            p.notes
+        ],
+    )?;
 
-        let before = prior_amount.map(|amount| {
-            snapshot(&serde_json::json!({ "amount": amount, "currency": p.currency.code() }))
-        });
-        record(
-            conn,
-            actor,
-            AuditChange {
-                company_slug: Some(p.company_slug),
-                entity: AuditEntity::Budget,
-                entity_id: &id.to_string(),
-                action: AuditAction::BudgetSet,
-                snapshots: (
-                    before.as_deref(),
-                    Some(&snapshot(&serde_json::json!({
-                        "amount": p.amount,
-                        "currency": p.currency.code(),
-                        "notes": p.notes,
-                        "year": p.year,
-                        "month": p.month,
-                    }))),
-                ),
-            },
-        )?;
+    let (created_at, currency) = reader.query_row(
+        "SELECT created_at, currency FROM budgets WHERE id = ?1",
+        params![id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
 
-        Ok(BudgetRow {
-            id,
-            company_slug: p.company_slug.to_string(),
-            account_code: p.account_code.to_string(),
-            currency,
-            year: p.year,
-            month: p.month,
-            amount: p.amount,
-            notes: p.notes.map(String::from),
-            created_at,
-        })
+    let before = prior_amount.map(|amount| {
+        snapshot(&serde_json::json!({ "amount": amount, "currency": p.currency.code() }))
+    });
+    record(
+        tx.connection(),
+        actor,
+        AuditChange {
+            company_slug: Some(p.company_slug),
+            entity: AuditEntity::Budget,
+            entity_id: &id.to_string(),
+            action: AuditAction::BudgetSet,
+            snapshots: (
+                before.as_deref(),
+                Some(&snapshot(&serde_json::json!({
+                    "amount": p.amount,
+                    "currency": p.currency.code(),
+                    "notes": p.notes,
+                    "year": p.year,
+                    "month": p.month,
+                }))),
+            ),
+        },
+    )?;
+
+    Ok(BudgetRow {
+        id,
+        company_slug: p.company_slug.to_string(),
+        account_code: p.account_code.to_string(),
+        currency,
+        year: p.year,
+        month: p.month,
+        amount: p.amount,
+        notes: p.notes.map(String::from),
+        created_at,
     })
 }
 
@@ -1834,21 +1888,20 @@ pub fn set_budget(
 ///
 /// # Errors
 ///
-/// Returns `CliError::Sqlite` on database errors.
+/// Returns authorization or database errors.
 pub fn set_annual_budget(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Budget>,
     params: &SetAnnualBudgetParams<'_>,
 ) -> Result<Vec<BudgetRow>, CliError> {
-    in_savepoint(conn, "sp_annual_budget", || {
+    grant.mutate("sp_annual_budget", |tx, actor| {
         let base = params.annual_amount / 12;
         let remainder = params.annual_amount % 12;
         let mut rows = Vec::with_capacity(12);
 
         for m in 1..=12 {
             let extra = i64::from(i64::from(m) <= remainder);
-            let row = set_budget(
-                conn,
+            let row = set_budget_month(
+                tx,
                 actor,
                 &SetBudgetParams {
                     company_slug: params.company_slug,
@@ -1874,10 +1927,9 @@ pub fn set_annual_budget(
 ///
 /// # Errors
 ///
-/// Returns `CliError::Sqlite` on database errors.
+/// Returns authorization or database errors.
 pub fn delete_budget(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Budget>,
     params: &super::budgets::DeleteBudgetParams<'_>,
     _confirmed: Confirmed,
 ) -> Result<usize, CliError> {
@@ -1889,10 +1941,10 @@ pub fn delete_budget(
         month,
     } = *params;
     let currency = currency.code();
-    in_savepoint(conn, "sp_budget_delete", || {
-        // Snapshot the rows about to be removed.
+    grant.mutate("sp_budget_delete", |tx, actor| {
+        let conn = tx.connection();
         let victims =
-            collect_budget_victims(conn, company_slug, account_code, currency, year, month)?;
+            collect_budget_victims(tx.read(), company_slug, account_code, currency, year, month)?;
 
         let count = if let Some(m) = month {
             conn.execute(
@@ -1944,7 +1996,7 @@ struct BudgetVictim {
 }
 
 fn collect_budget_victims(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company_slug: &str,
     account_code: &str,
     currency: &str,
@@ -2176,18 +2228,62 @@ pub fn delete_company(
     })
 }
 
+/// Create a rule and its audit snapshot in the same savepoint.
+///
+/// # Errors
+/// Returns an error if the destination account is missing or persistence fails.
+pub fn create_rule(
+    grant: grant::Granted<'_, grant::Post>,
+    company: &str,
+    contains: super::rules::DescriptionPattern,
+    account: &str,
+    priority: i32,
+) -> Result<super::rules::Rule, CliError> {
+    grant.mutate("sp_rule_create", |tx, actor| {
+        let conn = tx.connection();
+        super::accounts::get_account(ReadConn::new(conn), company, account)?;
+        let rule = super::rules::Rule {
+            id: super::rules::RuleId::generate(),
+            company_slug: company.to_string(),
+            contains,
+            account_code: account.to_string(),
+            priority,
+        };
+        conn.execute(
+            "INSERT INTO categorization_rules (id, company_slug, contains, account_code, priority)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                rule.id.to_string(),
+                company,
+                rule.contains.to_string(),
+                account,
+                priority
+            ],
+        )?;
+        record_insert(
+            conn,
+            actor,
+            company,
+            Creation::Rule,
+            &rule.id.to_string(),
+            &serde_json::json!(&rule),
+        )?;
+        Ok(rule)
+    })
+}
+
 /// Delete one company's rule, recording its complete before snapshot.
 ///
 /// # Errors
-/// Returns not-found for a rule outside this company, or a database error.
+/// Returns authorization errors, not-found for a rule outside this company, or a database error.
 pub fn delete_rule(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Post>,
     company: &str,
     id: &super::rules::RuleId,
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
-    atomically(conn, || {
+    grant.mutate("sp_rule_delete", |tx, actor| {
+        let conn = tx.connection();
         let rule = super::rules::list_rules(ReadConn::new(conn), company)?
             .into_iter()
             .find(|rule| &rule.id == id)
@@ -2212,25 +2308,81 @@ pub fn delete_rule(
     })
 }
 
-/// Obtain SQLite's writer reservation before reading schedule progress.
-/// This statement changes no rows and is not itself a ledger mutation.
-pub(crate) fn lock_schedule_writer(conn: &Connection) -> Result<(), CliError> {
-    conn.execute(
-        "UPDATE schedules SET occurrence_index = occurrence_index WHERE 0",
-        [],
-    )?;
+/// Reserve the writer before a grant reads policy and identity.
+fn reserve_ledger_writer(tx: &savepoint::AuditedTx<'_>) -> Result<(), CliError> {
+    tx.connection()
+        .execute("UPDATE ledger_policy SET enforce = enforce WHERE 0", [])?;
     Ok(())
+}
+
+pub(super) fn persist_schedule(
+    tx: &savepoint::AuditedTx<'_>,
+    actor: &Actor,
+    schedule: &super::schedules::Schedule,
+) -> Result<(), CliError> {
+    let conn = tx.connection();
+    let company = schedule.company_slug.as_str();
+    conn.execute(
+        "INSERT INTO schedules (id, company_slug, description, currency, start_date, frequency,
+         end_date, metadata, next_due, status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            schedule.id.to_string(),
+            company,
+            schedule.description,
+            schedule.currency.code(),
+            schedule.start_date.to_string(),
+            schedule.frequency.to_string(),
+            schedule.end_date.map(|d| d.to_string()),
+            schedule.metadata,
+            schedule.state.next_due().map(|date| date.to_string()),
+            schedule.state.code()
+        ],
+    )?;
+    for (position, entry) in schedule.entries.iter().enumerate() {
+        let position = i64::try_from(position)
+            .map_err(|_| CliError::Validation("too many schedule entries".into()))?;
+        conn.execute(
+            "INSERT INTO schedule_entries (schedule_id, company_slug, position, account_code,
+             direction, amount, memo, tax_category) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                schedule.id.to_string(),
+                company,
+                position,
+                entry.account_code,
+                entry.direction,
+                entry.amount,
+                entry.memo,
+                entry.tax_category
+            ],
+        )?;
+    }
+    record_insert(
+        conn,
+        actor,
+        company,
+        Creation::Schedule,
+        &schedule.id.to_string(),
+        &serde_json::json!(schedule),
+    )
+}
+
+pub(super) fn post_in_audited_scope(
+    tx: &savepoint::AuditedTx<'_>,
+    params: &super::transactions::PostTransactionParams<'_>,
+) -> Result<super::transactions::PostResult, CliError> {
+    super::transactions::post_transaction(tx.connection(), params)
 }
 
 /// Change execution progress and append the complete before/after snapshot.
 /// Callers hold an atomic savepoint and acquire the writer before reading.
-pub(crate) fn change_schedule(
-    conn: &Connection,
+pub(super) fn change_schedule(
+    tx: &savepoint::AuditedTx<'_>,
     actor: &Actor,
     before: &super::schedules::Schedule,
     after: &super::schedules::Schedule,
     change: ScheduleChange,
 ) -> Result<(), CliError> {
+    let conn = tx.connection();
     let action = match change {
         ScheduleChange::Run => AuditAction::ScheduleRun,
         ScheduleChange::Cancel => AuditAction::ScheduleCancel,
@@ -2350,27 +2502,28 @@ pub struct MetadataResult {
 ///
 /// # Errors
 /// Returns validation errors for invalid edits, not-found for an unknown target
-/// in this company, or a database error. The write and audit append are atomic.
+/// in this company, authorization errors, or database errors.
 pub fn edit_metadata(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Post>,
     company: &str,
     target: MetadataTarget<'_>,
     edit: &metadata::MetadataEdit,
 ) -> Result<MetadataResult, CliError> {
     edit.validate()?;
-    in_savepoint(conn, "sp_metadata", || {
+    grant.mutate("sp_metadata", |tx, actor| {
+        let reader = tx.read();
         let (predicate, value): (&str, &dyn rusqlite::ToSql) = match &target {
             MetadataTarget::Id(id) => ("id", id),
             MetadataTarget::Reference(reference) => ("reference", reference),
         };
-        let (id, before): (i64, Option<String>) = conn.query_row(
+        let (id, before): (i64, Option<String>) = reader.query_row(
             &format!("SELECT id, metadata FROM transactions WHERE company_slug = ?1 AND {predicate} = ?2"),
             params![company, value],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()?.ok_or_else(|| CliError::NotFound(format!("transaction {target:?} not found in company '{company}'")))?;
-        let (after, changed) = edited_metadata(conn, before.as_deref(), edit)?;
+        let (after, changed) = edited_metadata(reader, before.as_deref(), edit)?;
         if changed {
+            let conn = tx.connection();
             conn.execute(
                 "UPDATE transactions SET metadata = ?1 WHERE company_slug = ?2 AND id = ?3",
                 params![after, company, id],
@@ -2401,7 +2554,7 @@ pub fn edit_metadata(
 // SQLite's JSON editor preserves untouched number lexemes, unlike a round trip
 // through serde_json::Value. All paths and values are bound, never interpolated.
 fn edited_metadata(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     before: Option<&str>,
     edit: &metadata::MetadataEdit,
 ) -> Result<(String, bool), CliError> {
@@ -2448,12 +2601,6 @@ fn edited_metadata(
     Ok((after, changed))
 }
 
-/// Reserve the writer before reading available lots, preventing concurrent relief.
-pub(crate) fn lock_investment_writer(conn: &Connection) -> Result<(), CliError> {
-    conn.execute("UPDATE securities SET name = name WHERE 0", [])?;
-    Ok(())
-}
-
 fn reject_investment_reversal(conn: &Connection, id: i64) -> Result<(), CliError> {
     let investment: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM investment_lots WHERE transaction_id = ?1)
@@ -2475,6 +2622,15 @@ mod tests {
 
     use super::*;
     use crate::db::Db;
+    use crate::identity::{Granted, Reconcile};
+
+    fn clear_entry_fixture(
+        db: &crate::db::Db,
+        actor: &Actor,
+        request: &ClearRequest<'_>,
+    ) -> Result<ClearOutcome, CliError> {
+        Granted::<Reconcile>::with_db(db, actor, |grant| clear_entry(grant, request))
+    }
 
     #[test]
     fn typed_audit_labels_round_trip_through_storage_and_filters() -> Result<(), CliError> {
@@ -2604,10 +2760,13 @@ mod tests {
             hash: None,
             original_filename: None,
         };
-        rejected(
-            crate::db::store_attachment(connection, &actor, &attachment)
-                .expect_err("attachment creation must fail on audit error"),
-        );
+        crate::identity::Granted::<crate::identity::Post>::with_db(&db, &actor, |grant| {
+            rejected(
+                crate::db::store_attachment(grant, &attachment)
+                    .expect_err("attachment creation must fail on audit error"),
+            );
+            Ok(())
+        })?;
         assert!(!crate::db::company_exists(
             ReadConn::new(connection),
             "new"
@@ -2655,14 +2814,15 @@ mod tests {
     fn set_entry_status_records_transition() {
         let db = seed();
         let actor = Actor::new("tester");
-        let prev = set_entry_status(
-            db.conn(),
-            &actor,
-            "acme",
-            fixture_txn(1),
-            fixture_entry(1),
-            EntryStatus::Cleared,
-        )
+        let prev = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
+            set_entry_status(
+                grant,
+                "acme",
+                fixture_txn(1),
+                fixture_entry(1),
+                EntryStatus::Cleared,
+            )
+        })
         .expect("clear entry");
         assert_eq!(prev, EntryStatus::Uncleared);
 
@@ -2691,14 +2851,15 @@ mod tests {
     fn set_entry_status_unknown_entry_errors_and_records_nothing() {
         let db = seed();
         let actor = Actor::new("tester");
-        let result = set_entry_status(
-            db.conn(),
-            &actor,
-            "acme",
-            fixture_txn(1),
-            fixture_entry(999),
-            EntryStatus::Cleared,
-        );
+        let result = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
+            set_entry_status(
+                grant,
+                "acme",
+                fixture_txn(1),
+                fixture_entry(999),
+                EntryStatus::Cleared,
+            )
+        });
         assert!(result.is_err());
 
         let count: i64 = db
@@ -2783,7 +2944,7 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
 
-        let o = clear_entry(db.conn(), &actor, &req(Some(30), "2026-01-31", Some("S1")))
+        let o = clear_entry_fixture(&db, &actor, &req(Some(30), "2026-01-31", Some("S1")))
             .expect("partial clear");
         assert_eq!(o.action, ClearAction::Cleared);
         assert_eq!(
@@ -2793,7 +2954,7 @@ mod tests {
         assert_eq!(o.entry_status, EntryStatus::Uncleared);
         assert_eq!(entry_status(&db), "uncleared");
 
-        let o = clear_entry(db.conn(), &actor, &req(None, "2026-02-28", Some("S2")))
+        let o = clear_entry_fixture(&db, &actor, &req(None, "2026-02-28", Some("S2")))
             .expect("clear remainder");
         assert_eq!(
             (o.amount, o.cleared_amount, o.remaining_amount),
@@ -2802,7 +2963,7 @@ mod tests {
         assert_eq!(entry_status(&db), "cleared");
 
         // Re-running S1 is a skip and leaves no audit row.
-        let o = clear_entry(db.conn(), &actor, &req(Some(30), "2026-01-31", Some("S1")))
+        let o = clear_entry_fixture(&db, &actor, &req(Some(30), "2026-01-31", Some("S1")))
             .expect("rerun");
         assert_eq!(o.action, ClearAction::Skipped);
         assert_eq!(audit_count(&db), 2);
@@ -2825,19 +2986,14 @@ mod tests {
         // Reconcile in full promotes both clearings.
         let mut r = req(None, "2026-03-01", None);
         r.status = ClearingStatus::Reconciled;
-        let o = clear_entry(db.conn(), &actor, &r).expect("reconcile");
+        let o = clear_entry_fixture(&db, &actor, &r).expect("reconcile");
         assert_eq!(o.action, ClearAction::Reconciled);
         assert_eq!(entry_status(&db), "reconciled");
 
         // Unclear one statement drops back to uncleared.
-        let o = unclear_entry(
-            db.conn(),
-            &actor,
-            "acme",
-            fixture_txn(1),
-            fixture_entry(1),
-            Some("S2"),
-        )
+        let o = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
+            unclear_entry(grant, "acme", fixture_txn(1), fixture_entry(1), Some("S2"))
+        })
         .expect("unclear");
         assert_eq!((o.amount, o.cleared_amount), (70, 30));
         assert_eq!(entry_status(&db), "uncleared");
@@ -2847,8 +3003,8 @@ mod tests {
     fn over_clear_fails_without_side_effects() {
         let db = seed();
         let actor = Actor::new("tester");
-        clear_entry(db.conn(), &actor, &req(Some(60), "2026-01-31", None)).expect("clear 60");
-        let err = clear_entry(db.conn(), &actor, &req(Some(41), "2026-01-31", None));
+        clear_entry_fixture(&db, &actor, &req(Some(60), "2026-01-31", None)).expect("clear 60");
+        let err = clear_entry_fixture(&db, &actor, &req(Some(41), "2026-01-31", None));
         assert!(matches!(err, Err(CliError::Validation(_))));
         assert_eq!(audit_count(&db), 1);
     }
@@ -2857,11 +3013,15 @@ mod tests {
     fn atomically_rolls_back_the_whole_batch() {
         let db = seed();
         let actor = Actor::new("tester");
-        let result = atomically(db.conn(), || {
-            clear_entry(db.conn(), &actor, &req(Some(50), "2026-01-31", Some("S1")))?;
-            clear_entry(db.conn(), &actor, &req(Some(51), "2026-01-31", Some("S2")))
-        });
-        assert!(result.is_err());
+        Granted::<Reconcile>::with_db(&db, &actor, |grant| {
+            let result = with_reconciliation(grant, |writer| {
+                writer.clear_entry(&req(Some(50), "2026-01-31", Some("S1")))?;
+                writer.clear_entry(&req(Some(51), "2026-01-31", Some("S2")))
+            });
+            assert!(result.is_err());
+            Ok(())
+        })
+        .expect("commit after the failed clearance batch was rolled back");
         let n: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM entry_clearings", [], |r| r.get(0))
@@ -2874,12 +3034,13 @@ mod tests {
     fn reconciled_dates_are_stored_and_audited() {
         let db = seed();
         let actor = Actor::new("tester");
-        clear_entry(db.conn(), &actor, &req(Some(40), "2026-01-31", Some("S1"))).expect("clear S1");
+        clear_entry_fixture(&db, &actor, &req(Some(40), "2026-01-31", Some("S1")))
+            .expect("clear S1");
 
         // Promote S1 in February: cleared_date stays, reconciled_date is set.
         let mut r = req(None, "2026-02-10", Some("S1"));
         r.status = ClearingStatus::Reconciled;
-        let o = clear_entry(db.conn(), &actor, &r).expect("promote S1");
+        let o = clear_entry_fixture(&db, &actor, &r).expect("promote S1");
         assert_eq!(o.action, ClearAction::Reconciled);
         let company = Company::resolve(db.conn(), "acme").expect("bind clearing company");
         let rows = list_clearings(&company, fixture_entry(1)).expect("list");
@@ -2908,7 +3069,7 @@ mod tests {
         // A clearing created directly as reconciled gets both dates.
         let mut r = req(Some(60), "2026-03-01", Some("S2"));
         r.status = ClearingStatus::Reconciled;
-        clear_entry(db.conn(), &actor, &r).expect("reconcile S2");
+        clear_entry_fixture(&db, &actor, &r).expect("reconcile S2");
         let rows = list_clearings(&company, fixture_entry(1)).expect("list");
         assert_eq!(rows[1].cleared_on().to_string(), "2026-03-01");
         assert_eq!(
@@ -2923,7 +3084,7 @@ mod tests {
 
         // Locked: a cleared request on the reconciled entry fails, no audit.
         let n = audit_count(&db);
-        let err = clear_entry(db.conn(), &actor, &req(None, "2026-03-02", None));
+        let err = clear_entry_fixture(&db, &actor, &req(None, "2026-03-02", None));
         assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
         assert_eq!(audit_count(&db), n);
     }
@@ -2932,7 +3093,7 @@ mod tests {
     fn clearings_are_visible_only_in_the_entry_company() {
         let db = seed();
         let actor = Actor::new("tester");
-        clear_entry(db.conn(), &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
+        clear_entry_fixture(&db, &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
         crate::db::create_company(db.conn(), &actor, "other", "Other", None)
             .expect("create company");
 
@@ -2956,13 +3117,13 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
         // Transaction is dated 2026-01-01.
-        let err = clear_entry(db.conn(), &actor, &req(None, "2025-12-31", None));
+        let err = clear_entry_fixture(&db, &actor, &req(None, "2025-12-31", None));
         assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
 
-        clear_entry(db.conn(), &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
+        clear_entry_fixture(&db, &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
         let mut r = req(None, "2026-01-30", Some("S1"));
         r.status = ClearingStatus::Reconciled;
-        let err = clear_entry(db.conn(), &actor, &r);
+        let err = clear_entry_fixture(&db, &actor, &r);
         assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
         assert_eq!(audit_count(&db), 1);
         assert_eq!(entry_status(&db), "cleared");

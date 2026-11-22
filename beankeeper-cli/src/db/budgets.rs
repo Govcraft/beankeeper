@@ -431,11 +431,11 @@ fn build_variance_query_with_unbudgeted(account_type: Option<AccountType>) -> St
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
-    use rusqlite::Connection;
 
     use super::*;
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
     use crate::db::{Actor, Db, audit, create_account, create_company, post_transaction};
+    use crate::identity::{Budget, Granted};
 
     fn test_actor() -> Actor {
         Actor::new("test")
@@ -443,37 +443,40 @@ mod tests {
 
     // Test-local shims onto the audited mutation API, so the audited path is
     // exercised here without restating the actor at every call site.
-    fn set_budget(conn: &Connection, p: &SetBudgetParams<'_>) -> Result<BudgetRow, CliError> {
-        audit::set_budget(conn, &test_actor(), p)
+    fn set_budget(db: &Db, p: &SetBudgetParams<'_>) -> Result<BudgetRow, CliError> {
+        Granted::<Budget>::with_db(db, &test_actor(), |grant| audit::set_budget(grant, p))
     }
 
     fn set_annual_budget(
-        conn: &Connection,
+        db: &Db,
         p: &SetAnnualBudgetParams<'_>,
     ) -> Result<Vec<BudgetRow>, CliError> {
-        audit::set_annual_budget(conn, &test_actor(), p)
+        Granted::<Budget>::with_db(db, &test_actor(), |grant| {
+            audit::set_annual_budget(grant, p)
+        })
     }
 
     fn delete_budget(
-        conn: &Connection,
+        db: &Db,
         company_slug: &str,
         account_code: &str,
         currency: Currency,
         year: i32,
         month: Option<i32>,
     ) -> Result<usize, CliError> {
-        audit::delete_budget(
-            conn,
-            &test_actor(),
-            &DeleteBudgetParams {
-                company_slug,
-                account_code,
-                currency,
-                year,
-                month,
-            },
-            crate::confirmation::Confirmed::forced(true)?,
-        )
+        Granted::<Budget>::with_db(db, &test_actor(), |grant| {
+            audit::delete_budget(
+                grant,
+                &DeleteBudgetParams {
+                    company_slug,
+                    account_code,
+                    currency,
+                    year,
+                    month,
+                },
+                crate::confirmation::Confirmed::forced(true)?,
+            )
+        })
     }
 
     fn setup() -> Db {
@@ -666,10 +669,7 @@ mod tests {
     #[test]
     fn set_budget_creates_row() -> Result<(), CliError> {
         let db = setup();
-        let row = set_budget(
-            db.conn(),
-            &budget("5000", 2026, 3, 250_000, Some("March rent")),
-        )?;
+        let row = set_budget(&db, &budget("5000", 2026, 3, 250_000, Some("March rent")))?;
         assert_eq!(row.account_code, "5000");
         assert_eq!(row.year, 2026);
         assert_eq!(row.month, 3);
@@ -681,11 +681,8 @@ mod tests {
     #[test]
     fn set_budget_upserts() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("5000", 2026, 3, 100_000, None))?;
-        let row = set_budget(
-            db.conn(),
-            &budget("5000", 2026, 3, 200_000, Some("updated")),
-        )?;
+        set_budget(&db, &budget("5000", 2026, 3, 100_000, None))?;
+        let row = set_budget(&db, &budget("5000", 2026, 3, 200_000, Some("updated")))?;
         assert_eq!(row.amount, 200_000);
 
         let rows = list_budgets(
@@ -703,9 +700,33 @@ mod tests {
     }
 
     #[test]
+    fn annual_budget_rolls_back_each_month_on_audit_failure() -> Result<(), CliError> {
+        let db = setup();
+        db.conn().execute_batch(
+            "CREATE TRIGGER fail_budget_audit BEFORE INSERT ON audit_log
+             WHEN NEW.entity = 'budget' AND json_extract(NEW.after, '$.month') = 6
+             BEGIN SELECT RAISE(ABORT, 'budget audit refused'); END;",
+        )?;
+        Granted::<Budget>::with_db(&db, &test_actor(), |grant| {
+            let error = audit::set_annual_budget(grant, &annual("5000", 2026, 120_000, None))
+                .expect_err("audit failure must reject the annual update");
+            assert!(error.to_string().contains("budget audit refused"));
+            Ok(())
+        })?;
+        let (budgets, audit_rows): (i64, i64) = db.read().query_row(
+            "SELECT (SELECT COUNT(*) FROM budgets),
+                    (SELECT COUNT(*) FROM audit_log WHERE entity = 'budget')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!((budgets, audit_rows), (0, 0));
+        audit::verify_hash_chain(db.read())
+    }
+
+    #[test]
     fn set_annual_budget_distributes_evenly() -> Result<(), CliError> {
         let db = setup();
-        let rows = set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
+        let rows = set_annual_budget(&db, &annual("5000", 2026, 120_000, None))?;
         assert_eq!(rows.len(), 12);
         for row in &rows {
             assert_eq!(row.amount, 10_000);
@@ -718,7 +739,7 @@ mod tests {
     #[test]
     fn set_annual_budget_distributes_remainder() -> Result<(), CliError> {
         let db = setup();
-        let rows = set_annual_budget(db.conn(), &annual("5000", 2026, 100_000, None))?;
+        let rows = set_annual_budget(&db, &annual("5000", 2026, 100_000, None))?;
         assert_eq!(rows.len(), 12);
         let total: i64 = rows.iter().map(|r| r.amount).sum();
         assert_eq!(total, 100_000);
@@ -734,8 +755,8 @@ mod tests {
     #[test]
     fn list_budgets_filters() -> Result<(), CliError> {
         let db = setup();
-        set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
-        set_budget(db.conn(), &budget("5100", 2026, 1, 5000, None))?;
+        set_annual_budget(&db, &annual("5000", 2026, 120_000, None))?;
+        set_budget(&db, &budget("5100", 2026, 1, 5000, None))?;
 
         let all = list_budgets(
             db.read(),
@@ -775,8 +796,8 @@ mod tests {
     #[test]
     fn delete_budget_single_month() -> Result<(), CliError> {
         let db = setup();
-        set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
-        let deleted = delete_budget(db.conn(), "acme", "5000", Currency::USD, 2026, Some(3))?;
+        set_annual_budget(&db, &annual("5000", 2026, 120_000, None))?;
+        let deleted = delete_budget(&db, "acme", "5000", Currency::USD, 2026, Some(3))?;
         assert_eq!(deleted, 1);
         let remaining = list_budgets(
             db.read(),
@@ -794,8 +815,8 @@ mod tests {
     #[test]
     fn delete_budget_all_months() -> Result<(), CliError> {
         let db = setup();
-        set_annual_budget(db.conn(), &annual("5000", 2026, 120_000, None))?;
-        let deleted = delete_budget(db.conn(), "acme", "5000", Currency::USD, 2026, None)?;
+        set_annual_budget(&db, &annual("5000", 2026, 120_000, None))?;
+        let deleted = delete_budget(&db, "acme", "5000", Currency::USD, 2026, None)?;
         assert_eq!(deleted, 12);
         let remaining = list_budgets(
             db.read(),
@@ -813,7 +834,7 @@ mod tests {
     #[test]
     fn variance_expense_under_budget() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("5000", 2026, 1, 100_000, None))?;
+        set_budget(&db, &budget("5000", 2026, 1, 100_000, None))?;
         post_expense(&db, "2026-01-15", "5000", 80_000);
 
         let report = compute_budget_variance(
@@ -834,7 +855,7 @@ mod tests {
     #[test]
     fn variance_retains_exact_ratio_until_rendering() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("5000", 2026, 1, 16, None))?;
+        set_budget(&db, &budget("5000", 2026, 1, 16, None))?;
         post_expense(&db, "2026-01-15", "5000", 15);
 
         for include_unbudgeted in [false, true] {
@@ -868,7 +889,7 @@ mod tests {
     #[test]
     fn variance_expense_over_budget() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("5000", 2026, 1, 50_000, None))?;
+        set_budget(&db, &budget("5000", 2026, 1, 50_000, None))?;
         post_expense(&db, "2026-01-15", "5000", 80_000);
 
         let report = compute_budget_variance(
@@ -885,7 +906,7 @@ mod tests {
     #[test]
     fn variance_revenue_exceeds_target() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("4000", 2026, 1, 100_000, None))?;
+        set_budget(&db, &budget("4000", 2026, 1, 100_000, None))?;
         post_revenue(&db, "2026-01-15", 150_000);
 
         let report = compute_budget_variance(
@@ -907,7 +928,7 @@ mod tests {
     #[test]
     fn variance_revenue_misses_target() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("4000", 2026, 1, 200_000, None))?;
+        set_budget(&db, &budget("4000", 2026, 1, 200_000, None))?;
         post_revenue(&db, "2026-01-15", 100_000);
 
         let report = compute_budget_variance(
@@ -928,7 +949,7 @@ mod tests {
     fn variance_multi_month_aggregation() -> Result<(), CliError> {
         let db = setup();
         for m in 1..=3 {
-            set_budget(db.conn(), &budget("5000", 2026, m, 50_000, None))?;
+            set_budget(&db, &budget("5000", 2026, m, 50_000, None))?;
         }
         post_expense(&db, "2026-01-15", "5000", 40_000);
         post_expense(&db, "2026-02-15", "5000", 60_000);
@@ -953,7 +974,7 @@ mod tests {
     #[test]
     fn variance_include_unbudgeted() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("5000", 2026, 1, 100_000, None))?;
+        set_budget(&db, &budget("5000", 2026, 1, 100_000, None))?;
         post_expense(&db, "2026-01-15", "5000", 80_000);
         post_expense(&db, "2026-01-20", "5100", 30_000);
 
@@ -983,8 +1004,8 @@ mod tests {
     #[test]
     fn variance_type_filter() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("5000", 2026, 1, 100_000, None))?;
-        set_budget(db.conn(), &budget("4000", 2026, 1, 200_000, None))?;
+        set_budget(&db, &budget("5000", 2026, 1, 100_000, None))?;
+        set_budget(&db, &budget("4000", 2026, 1, 200_000, None))?;
 
         let report = compute_budget_variance(
             &db,
@@ -1016,8 +1037,8 @@ mod tests {
     #[test]
     fn budget_variance_rejects_total_overflow() -> Result<(), CliError> {
         let db = setup();
-        set_budget(db.conn(), &budget("5000", 2026, 1, i64::MAX, None))?;
-        set_budget(db.conn(), &budget("5100", 2026, 1, 1, None))?;
+        set_budget(&db, &budget("5000", 2026, 1, i64::MAX, None))?;
+        set_budget(&db, &budget("5100", 2026, 1, 1, None))?;
         let params = variance(2026, Month::January, Month::January, None, false);
         assert!(matches!(
             compute_budget_variance(&db, &params),

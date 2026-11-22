@@ -4,6 +4,7 @@ use crate::cli::{Cli, OutputFormat, RuleCommand, resolve_format};
 use crate::confirmation::confirm_deletion;
 use crate::db::{audit, companies, rules};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 use crate::operation::Operation;
 use crate::output::json;
 
@@ -22,14 +23,9 @@ pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliErr
             priority,
         } => (
             Operation::RuleCreate,
-            vec![rules::create_rule(
-                db.conn(),
-                &actor,
-                company,
-                contains.clone(),
-                account,
-                *priority,
-            )?],
+            vec![Granted::<Post>::with_db(&db, &actor, |grant| {
+                rules::create_rule(grant, company, contains.clone(), account, *priority)
+            })?],
         ),
         RuleCommand::List => (Operation::RuleList, rules::list_rules(db.read(), company)?),
         RuleCommand::Delete { id, force } => {
@@ -37,7 +33,9 @@ pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliErr
                 eprintln!("aborted");
                 return Ok(());
             };
-            audit::delete_rule(db.conn(), &actor, company, id, confirmed)?;
+            Granted::<Post>::with_db(&db, &actor, |grant| {
+                audit::delete_rule(grant, company, id, confirmed)
+            })?;
             return render_deleted(cli, company, id);
         }
     };

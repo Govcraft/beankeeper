@@ -193,7 +193,7 @@ fn assert_approved_details(
     let transaction_id = resolved["transaction_id"]
         .as_i64()
         .ok_or("missing transaction ID")?;
-    let (txn, entries) = transactions::get_transaction(ledger.db.conn(), "acme", transaction_id)?;
+    let (txn, entries) = transactions::get_transaction(ledger.db.read(), "acme", transaction_id)?;
     assert_eq!(txn.agent_uri.as_deref(), Some(approver.uri.as_str()));
     assert_eq!(
         txn.token_jti.as_deref(),
