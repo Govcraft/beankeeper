@@ -24,7 +24,7 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),

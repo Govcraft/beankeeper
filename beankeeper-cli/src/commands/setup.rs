@@ -14,7 +14,7 @@ use crate::db::{
         openings::{self, OpeningLine, OpeningRequest},
         statement_batches,
     },
-    companies::CompanySlug,
+    companies::{CompanyName, CompanySlug},
     ids::StatementBatchId,
 };
 use crate::error::CliError;
@@ -214,7 +214,8 @@ pub struct BookCreateArgs {
     #[command(flatten)]
     target: BookTarget,
     /// Name of the personal or business book.
-    name: String,
+    #[arg(value_parser = clap::value_parser!(CompanyName))]
+    name: CompanyName,
     #[command(flatten)]
     settings: BookSettingsArgs,
 }

@@ -26,6 +26,7 @@ use crate::db::audit::setup::{
 };
 use crate::db::{
     ActorLabel,
+    companies::CompanyName,
     ids::{EntryId, PartnerTransactionId, StatementBatchId, TransactionId},
     investments::LotId,
     proposals::ProposalId,
@@ -91,6 +92,32 @@ pub(super) enum PeriodArg {
 #[serde(deny_unknown_fields)]
 pub(super) struct CompanyShow {
     pub slug: Company,
+}
+
+impl JsonSchema for CompanyName {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "CompanyName".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "description": "Display name. Surrounding whitespace is removed. Supply at least one non-whitespace character."
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CompanyCreate {
+    pub slug: Company,
+    pub name: CompanyName,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -373,7 +400,7 @@ impl From<SetupSettings> for BookSettings {
 #[serde(deny_unknown_fields)]
 pub(super) struct LedgerSetupBookCreate {
     pub target: SetupTarget,
-    pub name: String,
+    pub name: CompanyName,
     pub settings: SetupSettings,
 }
 
@@ -1017,6 +1044,26 @@ mod tests {
             serde_json::to_value(schemars::schema_for!(TxnMetaUnset))?["type"],
             "object"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn both_company_creation_tools_describe_names_as_required_strings()
+    -> Result<(), serde_json::Error> {
+        for schema in [
+            schemars::schema_for!(CompanyCreate),
+            schemars::schema_for!(LedgerSetupBookCreate),
+        ] {
+            let schema = serde_json::to_value(schema)?;
+            let name = &schema["properties"]["name"];
+            assert_eq!(name["type"], "string");
+            assert_eq!(name["minLength"], 1);
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .is_some_and(|keys| keys.contains(&json!("name")))
+            );
+        }
         Ok(())
     }
 

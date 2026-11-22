@@ -60,7 +60,7 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
@@ -119,7 +119,7 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),

@@ -32,7 +32,7 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            db::create_company(grant, &"acme".parse()?, "Acme", None)
+            db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
@@ -604,7 +604,7 @@ fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestR
     let actor = Actor::new("fixture".parse()?);
     for (company, name) in [(&other, "Other"), (&empty, "Empty")] {
         Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
-            db::create_company(grant, company, name, None)
+            db::create_company(grant, company, &name.parse()?, None)
         })?;
     }
     for (code, name, account_type) in [

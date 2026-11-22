@@ -8,12 +8,19 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use serde_json::{Value, json};
 
-use super::super::{Actor, AuditAction, AuditChange, AuditEntity, record};
+use super::super::{
+    Actor, AuditAction, AuditChange, AuditEntity,
+    catalog::{CompanyCreation, store_company},
+    record,
+};
 use super::{ActiveSession, Generation, requests::apply_once, with_active_setup_write};
 use crate::db::{
-    AccountRow, Db, ListAccountParams, accounts::CreateAccountParams, companies::CompanySlug,
-    connection::ReadConn, get_company, list_accounts, schema::BOOK_PROFILE_SCHEMA_VERSION,
-    schema::get_schema_version,
+    AccountRow, Db, ListAccountParams,
+    accounts::CreateAccountParams,
+    companies::{CompanyName, CompanySlug},
+    connection::ReadConn,
+    get_company, list_accounts,
+    schema::{BOOK_PROFILE_SCHEMA_VERSION, get_schema_version},
 };
 use crate::error::CliError;
 
@@ -317,7 +324,7 @@ impl ChartTemplate {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BookChange<'a> {
     Create {
-        name: &'a str,
+        name: &'a CompanyName,
         settings: BookSettings,
     },
     Initialize(BookSettings),
@@ -341,52 +348,27 @@ pub(crate) fn apply(
     company: &CompanySlug,
     change: BookChange<'_>,
 ) -> Result<Value, CliError> {
-    with_active_setup_write(db, actor, generation, |session| {
-        let input = match change {
-            BookChange::Create { name, settings } => {
-                json!([
-                    "book-create-v1",
-                    company.as_str(),
-                    name.trim(),
-                    settings.request_fields()
-                ])
-            }
-            BookChange::Initialize(settings) => {
-                json!([
-                    "book-initialize-v1",
-                    company.as_str(),
-                    settings.request_fields()
-                ])
-            }
-            BookChange::Supersede { revision, settings } => {
-                json!([
-                    "book-update-v1",
-                    company.as_str(),
-                    revision,
-                    settings.request_fields()
-                ])
-            }
-            BookChange::ApplyChart(template) => {
-                json!(["chart-apply-v1", company.as_str(), template])
-            }
-            BookChange::AddAccount {
-                code,
-                name,
-                account_type,
-            } => {
-                json!([
-                    "account-add-v1",
-                    company.as_str(),
-                    code.as_str(),
-                    name.trim(),
-                    account_type.code()
-                ])
-            }
-        };
-        apply_once(session, reference, company, &input, || match change {
-            BookChange::Create { name, settings } => create_book(session, company, name, settings),
-            BookChange::Initialize(settings) => initialize_book(session, company, settings),
-            BookChange::Supersede { revision, settings } => {
+    with_active_setup_write(db, actor, generation, |session| match change {
+        BookChange::Create { name, settings } => {
+            let input = json!(["book-create-v1", company, name, settings.request_fields()]);
+            apply_once(session, reference, company, &input, || {
+                create_book(session, company, name, settings)
+            })
+        }
+        BookChange::Initialize(settings) => {
+            let input = json!(["book-initialize-v1", company, settings.request_fields()]);
+            apply_once(session, reference, company, &input, || {
+                initialize_book(session, company, settings)
+            })
+        }
+        BookChange::Supersede { revision, settings } => {
+            let input = json!([
+                "book-update-v1",
+                company,
+                revision,
+                settings.request_fields()
+            ]);
+            apply_once(session, reference, company, &input, || {
                 let previous = current_profile(session, company)?;
                 if previous.revision != revision {
                     return Err(CliError::Validation(format!(
@@ -396,34 +378,46 @@ pub(crate) fn apply(
                 }
                 let profile = record_profile(session, company, Some(previous), settings)?;
                 Ok(json!(profile))
-            }
-            BookChange::ApplyChart(template) => apply_chart(session, company, template),
-            BookChange::AddAccount {
-                code,
-                name,
-                account_type,
-            } => {
+            })
+        }
+        BookChange::ApplyChart(template) => {
+            let input = json!(["chart-apply-v1", company, template]);
+            apply_once(session, reference, company, &input, || {
+                apply_chart(session, company, template)
+            })
+        }
+        BookChange::AddAccount {
+            code,
+            name,
+            account_type,
+        } => {
+            let input = json!([
+                "account-add-v1",
+                company,
+                code.as_str(),
+                name.trim(),
+                account_type.code()
+            ]);
+            apply_once(session, reference, company, &input, || {
                 current_profile(session, company)?;
                 let account =
                     create_setup_account(session, company, code.as_str(), name, account_type)?;
                 Ok(account_json(&account))
-            }
-        })
+            })
+        }
     })
 }
 
 fn create_book(
     session: &ActiveSession<'_>,
     company: &CompanySlug,
-    name: &str,
+    name: &CompanyName,
     settings: BookSettings,
 ) -> Result<Value, CliError> {
-    let row = super::super::catalog::store_company(
+    let row = store_company(
         session.audited_tx(),
         session.actor(),
-        company,
-        checked_name(name)?,
-        None,
+        CompanyCreation::new(company, name, None),
     )?;
     let profile = record_profile(session, company, None, settings)?;
     Ok(json!({"name": row.name, "profile": profile}))

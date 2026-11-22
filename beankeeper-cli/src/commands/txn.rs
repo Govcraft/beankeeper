@@ -1110,7 +1110,7 @@ mod tests {
     fn fixture() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            db::create_company(grant, &"acme".parse()?, "Acme", None)
+            db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             db::create_account(

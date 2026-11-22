@@ -93,7 +93,7 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
     )
 }
 
-fn staging_directory(destination: &Path) -> Result<tempfile::TempDir, CliError> {
+pub(super) fn staging_directory(destination: &Path) -> Result<tempfile::TempDir, CliError> {
     Ok(tempfile::Builder::new()
         .prefix(".bk-snapshot-")
         .tempdir_in(parent(destination))?)
@@ -105,13 +105,13 @@ fn parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-fn reject_sidecars(path: &Path) -> Result<(), CliError> {
+pub(super) fn reject_sidecars(path: &Path) -> Result<(), CliError> {
     for suffix in ["-wal", "-shm", "-journal"] {
         let mut name = path.as_os_str().to_os_string();
         name.push(suffix);
         if PathBuf::from(name).try_exists()? {
             return Err(CliError::Validation(format!(
-                "'{}' has SQLite sidecar files; close all connections and checkpoint it before replacement or restore",
+                "'{}' has SQLite sidecar files; close all connections and checkpoint it first",
                 path.display()
             )));
         }

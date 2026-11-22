@@ -40,7 +40,7 @@ impl Ledger {
         let secret = dir.path().join("passphrase");
         let db = Db::open(&path, Some(&PASSPHRASE.into()))?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            db::create_company(grant, &"acme".parse()?, "Acme", None)
+            db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
@@ -1042,7 +1042,7 @@ fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        db::create_company(grant, &"acme".parse()?, "Acme", None)
+        db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
     cli.db = path;

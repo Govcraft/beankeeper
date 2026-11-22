@@ -179,14 +179,6 @@ pub(crate) fn envelope_ok<T: Serialize>(meta: Meta, data: T) -> Result<String, C
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-pub struct CompanyJson {
-    slug: crate::db::companies::CompanySlug,
-    name: String,
-    description: Option<String>,
-    created_at: String,
-}
-
-#[derive(Serialize)]
 pub struct AccountJson {
     code: String,
     name: String,
@@ -364,17 +356,7 @@ pub struct BalanceJson {
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
 pub fn render_companies(companies: &[CompanyRow], meta: Meta) -> Result<String, CliError> {
-    let rows: Vec<CompanyJson> = companies
-        .iter()
-        .map(|c| CompanyJson {
-            slug: c.slug.clone(),
-            name: c.name.clone(),
-            description: c.description.clone(),
-            created_at: c.created_at.clone(),
-        })
-        .collect();
-
-    envelope_ok(meta, rows)
+    envelope_ok(meta, companies)
 }
 
 /// Render a list of accounts as an enveloped JSON response.
@@ -724,12 +706,16 @@ pub fn render_count(count: i64, meta: Meta) -> Result<String, CliError> {
 /// # Errors
 ///
 /// Returns [`CliError`] on serialisation failure.
-pub fn render_deleted(slug: &str, meta: Meta) -> Result<String, CliError> {
+pub fn render_deleted(id: &str, meta: Meta) -> Result<String, CliError> {
+    envelope_ok(meta, deleted_data(id))
+}
+
+pub(crate) fn deleted_data(id: &str) -> impl Serialize + '_ {
     #[derive(Serialize)]
     struct DeletedJson<'a> {
         deleted: &'a str,
     }
-    envelope_ok(meta, DeletedJson { deleted: slug })
+    DeletedJson { deleted: id }
 }
 
 /// Render a transaction post result as an enveloped JSON response.

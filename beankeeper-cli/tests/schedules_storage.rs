@@ -82,7 +82,7 @@ fn fixture_with_raw() -> Result<(tempfile::TempDir, Db, rusqlite::Connection), C
 
 fn seed(db: Db) -> Result<Db, CliError> {
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
@@ -293,7 +293,7 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("schedule-test".parse()?);
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        companies::create_company(grant, &"other".parse()?, "Other", None)
+        companies::create_company(grant, &"other".parse()?, &"Other".parse()?, None)
     })?;
     let schedule = create_schedule(&db, &actor, "acme", &template()?)?;
     assert!(
@@ -368,7 +368,7 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     let path = directory.path().join("concurrent.db");
     let db = Db::open(&path, None)?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
@@ -546,7 +546,7 @@ fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> Te
     let db = fixture()?;
     let actor = Actor::new("schedule-limit-test".parse()?);
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        companies::create_company(grant, &"other".parse()?, "Other", None)
+        companies::create_company(grant, &"other".parse()?, &"Other".parse()?, None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),

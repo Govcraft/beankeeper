@@ -2166,75 +2166,96 @@ pub fn delete_account(
 pub fn delete_company(
     grant: grant::Granted<'_, grant::Admin>,
     slug: &super::companies::CompanySlug,
-    _confirmed: Confirmed,
+    confirmed: Confirmed,
 ) -> Result<(), CliError> {
     grant.mutate("sp_company_delete", |tx, actor| {
-        let conn = tx.connection();
-        let reader = tx.read();
-        let row: CompanyRow = super::companies::get_company(reader, slug)?;
-        let securities: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM securities WHERE company_slug = ?1)",
-            [slug],
-            |row| row.get(0),
-        )?;
-        if securities {
-            return Err(CliError::Validation(format!(
-                "company '{slug}' cannot be deleted: retained securities reference it"
-            )));
-        }
+        EmptyCompany::check(tx, slug)?.delete(actor, confirmed)
+    })
+}
 
-        let schedules: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM schedules WHERE company_slug = ?1",
-            [slug],
-            |row| row.get(0),
-        )?;
-        if schedules > 0 {
-            return Err(CliError::Validation(format!(
-                "company '{slug}' cannot be deleted: retained schedule templates reference it"
-            )));
-        }
+/// A company checked for retained data under the same reserved SQLite writer
+/// that can remove it.
+struct EmptyCompany<'tx> {
+    tx: &'tx savepoint::AuditedTx<'tx>,
+    row: CompanyRow,
+}
 
-        let retained: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM txn_proposals WHERE company_slug = ?1)
-             OR EXISTS(SELECT 1 FROM agent_spend_limits WHERE company_slug = ?1)",
-            [slug],
-            |row| row.get(0),
-        )?;
-        if retained {
-            return Err(CliError::Validation(format!(
-                "company '{slug}' cannot be deleted: retained proposals or spend limits reference it"
-            )));
-        }
-
-        let dependencies: (i64, i64, i64, i64, i64) = conn.query_row(
-            "SELECT \
-                (SELECT COUNT(*) FROM accounts WHERE company_slug = ?1), \
-                (SELECT COUNT(*) FROM transactions WHERE company_slug = ?1), \
-                (SELECT COUNT(*) FROM entries WHERE company_slug = ?1), \
-                (SELECT COUNT(*) FROM budgets WHERE company_slug = ?1), \
+impl<'tx> EmptyCompany<'tx> {
+    fn check(
+        tx: &'tx savepoint::AuditedTx<'tx>,
+        slug: &super::companies::CompanySlug,
+    ) -> Result<Self, CliError> {
+        let row = super::companies::get_company(tx.read(), slug)?;
+        let (accounts, transactions, entries, budgets, attachments) = tx.read().query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM accounts WHERE company_slug = ?1),
+                (SELECT COUNT(*) FROM transactions WHERE company_slug = ?1),
+                (SELECT COUNT(*) FROM entries WHERE company_slug = ?1),
+                (SELECT COUNT(*) FROM budgets WHERE company_slug = ?1),
                 (SELECT COUNT(*) FROM attachments WHERE company_slug = ?1)",
-            params![slug],
+            [slug],
             |row| {
                 Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )?;
-        let (accounts, transactions, entries, budgets, attachments) = dependencies;
-        if accounts > 0 || transactions > 0 || entries > 0 || budgets > 0 || attachments > 0 {
-            return Err(CliError::Validation(format!(
-                "company '{slug}' cannot be deleted: accounts={accounts}, \
-                 transactions={transactions}, posted entries={entries}, \
-                 budget entries={budgets}, attachments={attachments} (ledger is append-only)"
-            )));
+        if [accounts, transactions, entries, budgets, attachments] != [0; 5] {
+            return Err(Self::retained(
+                slug,
+                &format!(
+                    "accounts={accounts}, transactions={transactions}, posted entries={entries}, \
+                 budget entries={budgets}, attachments={attachments}"
+                ),
+            ));
+        }
+        let other_dependencies = tx.read().query_row(
+            "SELECT
+                EXISTS(SELECT 1 FROM securities WHERE company_slug = ?1),
+                EXISTS(SELECT 1 FROM schedules WHERE company_slug = ?1),
+                EXISTS(SELECT 1 FROM txn_proposals WHERE company_slug = ?1)
+                    OR EXISTS(SELECT 1 FROM agent_spend_limits WHERE company_slug = ?1),
+                EXISTS(SELECT 1 FROM period_locks WHERE company_slug = ?1),
+                EXISTS(SELECT 1 FROM categorization_rules WHERE company_slug = ?1),
+                EXISTS(SELECT 1 FROM setup_book_profiles WHERE company_slug = ?1)
+                    OR EXISTS(SELECT 1 FROM setup_statement_batches WHERE company_slug = ?1)",
+            [slug],
+            |row| {
+                Ok([
+                    (row.get::<_, bool>(0)?, "securities"),
+                    (row.get(1)?, "schedule templates"),
+                    (row.get(2)?, "proposals or spend limits"),
+                    (row.get(3)?, "period locks"),
+                    (row.get(4)?, "categorization rules"),
+                    (row.get(5)?, "setup records"),
+                ])
+            },
+        )?;
+        if let Some((_, retained)) = other_dependencies.into_iter().find(|(present, _)| *present) {
+            return Err(Self::retained(
+                slug,
+                &format!("retained {retained} reference it"),
+            ));
         }
 
-        conn.execute("DELETE FROM companies WHERE slug = ?1", params![slug])?;
+        Ok(Self { tx, row })
+    }
 
+    fn retained(slug: &super::companies::CompanySlug, reason: &str) -> CliError {
+        CliError::Validation(format!(
+            "company '{slug}' cannot be deleted: {reason} (ledger is append-only). \
+             Keep the company for its history. To correct posted transactions, reverse them."
+        ))
+    }
+
+    fn delete(self, actor: &Actor, _confirmed: Confirmed) -> Result<(), CliError> {
+        let conn = self.tx.connection();
+        let slug = &self.row.slug;
+        conn.execute("DELETE FROM companies WHERE slug = ?1", [slug])?;
         record(
             conn,
             actor,
@@ -2243,20 +2264,11 @@ pub fn delete_company(
                 entity: AuditEntity::Company,
                 entity_id: slug.as_str(),
                 action: AuditAction::CompanyDelete,
-                snapshots: (
-                    Some(&snapshot(&serde_json::json!({
-                        "slug": row.slug,
-                        "name": row.name,
-                        "description": row.description,
-                        "created_at": row.created_at,
-                    }))),
-                    None,
-                ),
+                snapshots: (Some(&snapshot(&serde_json::json!(self.row))), None),
             },
         )?;
-
         Ok(())
-    })
+    }
 }
 
 /// Create a rule and its audit snapshot in the same savepoint.
@@ -2781,7 +2793,7 @@ mod tests {
         };
         rejected(
             Granted::<Admin>::with_db(&db, &actor, |grant| {
-                crate::db::create_company(grant, &"new".parse()?, "New", None)
+                crate::db::create_company(grant, &"new".parse()?, &"New".parse()?, None)
             })
             .expect_err("company creation must fail on audit error"),
         );
@@ -3161,7 +3173,7 @@ mod tests {
             crate::db::create_company(
                 grant,
                 &"other".parse().expect("valid company"),
-                "Other",
+                &"Other".parse()?,
                 None,
             )
         })

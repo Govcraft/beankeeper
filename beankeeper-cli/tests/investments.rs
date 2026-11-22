@@ -101,7 +101,7 @@ fn fixture_with_raw() -> Result<(tempfile::TempDir, Db, rusqlite::Connection), C
 fn seed(db: Db) -> Result<Db, CliError> {
     for company in ["acme", "other"] {
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            companies::create_company(grant, &company.parse()?, company, None)
+            companies::create_company(grant, &company.parse()?, &company.parse()?, None)
         })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),

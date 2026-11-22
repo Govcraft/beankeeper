@@ -177,6 +177,17 @@ are inclusive. MCP returns this same data payload.
 }
 ```
 
+### `company delete`
+
+```json
+{
+  "data": { "deleted": "old-company" }
+}
+```
+
+The MCP `company_delete` tool returns this same `data` object. Companies with
+retained ledger or setup data return `VALIDATION` and keep their history.
+
 ### `account list`
 
 ```json

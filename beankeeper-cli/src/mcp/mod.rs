@@ -490,6 +490,28 @@ impl LedgerServer {
         self.execute(Request::CompanyList(input), context).await
     }
 
+    #[tool(
+        description = "Create a company by slug, name and optional description. Requires ledger/admin when enforcement applies. Records an audit row."
+    )]
+    async fn company_create(
+        &self,
+        Parameters(input): Parameters<inputs::CompanyCreate>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::CompanyCreate(input), context).await
+    }
+
+    #[tool(
+        description = "Delete a company with no retained data and record an audit row. This call confirms deletion. Requires ledger/admin when enforcement applies."
+    )]
+    async fn company_delete(
+        &self,
+        Parameters(input): Parameters<inputs::CompanyShow>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::CompanyDelete(input), context).await
+    }
+
     #[tool(description = "Show one company by slug.")]
     async fn company_show(
         &self,
@@ -926,7 +948,7 @@ mod tests {
     fn investment_tools_share_trade_valuation_and_actor_behavior() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            crate::db::companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
@@ -1022,7 +1044,7 @@ mod tests {
     fn report_inputs_cover_all_kinds_and_keep_cli_defaults() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            crate::db::companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             crate::db::accounts::create_account(

@@ -299,6 +299,8 @@ See [the host API contract and example](../mcp-host-tools.md).
 
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
+- Use `company_create` with `slug`, `name`, and optional `description` to add a company. Use `ledger_setup_book_create` in an active setup session when the company also needs a setup profile. Both use the same audited company insert.
+- Call `company_delete` with `slug` when the owner asks to delete that company. The call confirms deletion, records the eligible company's prior state in the audit log, and returns `{"deleted":"slug"}`. On `VALIDATION` for retained data, explain that the company keeps its history and use `txn_reverse` for posting corrections. Both company tools require `ledger/admin` under enforcement and are hidden in read-only mode.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; only `error` and `skip` are accepted conflict strategies. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
 - Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: ["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset` takes the same selector and `keys: ["status", "dispute_id"]`. Values are strings; relationship keys are reserved. These writes preserve financial fields and use one audited batch per change. Both tools are absent in read-only mode.
 - Call `txn_reverse` with `company` and the original `id` to create a linked mirror posting; optional fields are `date`, `description`, and `reference`. Supply the same explicit `reference` on retries to get `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed. Existing clearings stay on the original; reversal entries start uncleared. This write tool is absent in read-only mode.
@@ -317,9 +319,17 @@ for `txn_list` and `audit_log`; both accept `limit` and `offset`. Errors set `is
 and return `{code, message}` with the CLI's existing error codes. Audited mutations
 record `mcp:<sanitized client name>`; current creation-auditing behavior is unchanged.
 
-Initialization, backup, restore, company creation/deletion, account deletion, import, export, and
-attachments use the CLI. See the [MCP reference](references/commands.md#mcp) and
-[client configuration examples](../../README.md#connect-an-ai-assistant-through-mcp).
+The [MCP reference](references/commands.md#intentional-cli-only-mutations) lists
+mutations that require the CLI, including the final confirmation for company
+deletion. See the [client configuration examples](../../README.md#connect-an-ai-assistant-through-mcp).
+
+### Try it with demo books
+
+For a CLI walkthrough, use `bk init --demo --path demo.db` at a fresh path and
+target that file with `--db demo.db`. Add `--encrypt` to set a passphrase.
+Desktop hosts can provision a separate demo ledger with
+`beankeeper_cli::commands::init::create_demo_ledger`, then configure its
+access and policy before serving it.
 
 ## Period close and locking
 

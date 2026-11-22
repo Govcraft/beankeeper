@@ -13,6 +13,7 @@ use crate::cli::{
 };
 use crate::commands;
 use crate::commands::txn::{PostingMode, PostingRequest};
+use crate::confirmation::Confirmed;
 use crate::db::audit::setup::{
     books::{self, BookChange},
     openings::{self, OpeningLine, OpeningRequest},
@@ -21,6 +22,7 @@ use crate::db::audit::setup::{
 use crate::db::{Actor, Db, audit::MetadataTarget, metadata};
 use crate::error::CliError;
 use crate::operation::{Operation, Permission};
+use crate::output::json::deleted_data;
 
 type Response = Result<(Value, Option<Value>), CliError>;
 
@@ -66,6 +68,8 @@ requests! {
     InvestmentHoldings(InvestmentHoldings),
     CompanyList(Empty),
     CompanyShow(CompanyShow),
+    CompanyCreate(CompanyCreate),
+    CompanyDelete(CompanyShow),
     AccountList(AccountList),
     AccountShow(AccountShow),
     AccountCreate(AccountCreate),
@@ -127,15 +131,7 @@ impl Request {
                 input.generation,
                 crate::db::audit::setup::End::Revoke,
             )),
-            Self::LedgerSetupBookCreate(input) => setup_book_change(
-                db,
-                actor,
-                input.target,
-                BookChange::Create {
-                    name: &input.name,
-                    settings: input.settings.into(),
-                },
-            ),
+            Self::LedgerSetupBookCreate(input) => setup_book_create(db, actor, input),
             Self::LedgerSetupBookInitialize(input) => setup_book_change(
                 db,
                 actor,
@@ -179,6 +175,8 @@ impl Request {
             Self::InvestmentHoldings(input) => call_investment_holdings(db, actor, input),
             Self::CompanyList(_) => call_company_list(db),
             Self::CompanyShow(input) => call_company_show(db, input),
+            Self::CompanyCreate(input) => call_company_create(db, actor, input),
+            Self::CompanyDelete(input) => call_company_delete(db, actor, input),
             Self::AccountList(input) => call_account_list(db, actor, input),
             Self::AccountShow(input) => call_account_show(db, actor, input),
             Self::AccountCreate(input) => call_account_create(db, actor, input),
@@ -204,6 +202,18 @@ impl Request {
             Self::AuditLog(input) => audit_log(db, input),
         }
     }
+}
+
+fn setup_book_create(db: &Db, actor: &Actor, input: inputs::LedgerSetupBookCreate) -> Response {
+    setup_book_change(
+        db,
+        actor,
+        input.target,
+        BookChange::Create {
+            name: &input.name,
+            settings: input.settings.into(),
+        },
+    )
 }
 
 fn setup_status(db: &Db) -> Response {
@@ -437,6 +447,23 @@ fn call_company_show(db: &Db, input: inputs::CompanyShow) -> Response {
             slug: input.slug.into_inner(),
         },
     ))
+}
+
+fn call_company_create(db: &Db, actor: &Actor, input: inputs::CompanyCreate) -> Response {
+    let row = commands::company::create(
+        db,
+        actor,
+        &input.slug.into_inner(),
+        &input.name,
+        input.description.as_deref(),
+    )?;
+    unpaged(encode([row]))
+}
+
+fn call_company_delete(db: &Db, actor: &Actor, input: inputs::CompanyShow) -> Response {
+    let slug = input.slug.into_inner();
+    commands::company::delete(db, actor, &slug, Confirmed::explicit())?;
+    unpaged(encode(deleted_data(slug.as_str())))
 }
 
 fn call_account_list(db: &Db, actor: &Actor, input: inputs::AccountList) -> Response {

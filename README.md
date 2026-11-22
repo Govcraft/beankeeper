@@ -489,6 +489,8 @@ mutation tools are absent and cannot be called.
 | `ledger_setup_statement_receipt` | Read statement provenance and the transaction IDs the batch created |
 | `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `company_list`, `company_show` | Inspect companies |
+| `company_create` | Create and audit a company by slug and name, with an optional description |
+| `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |
 | `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Post, reverse and annotate transactions |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
@@ -530,6 +532,24 @@ payload's shape, `structuredContent`. Tool failures set `isError: true` with
 `{code, message}`. `financial_summary` returns the full CLI envelope on both
 success and failure.
 
+`company_create` takes `slug`, `name`, and optional `description`. It creates a
+company without a setup profile and returns the same row array as the CLI.
+Use `ledger_setup_book_create` during authorized setup to create it together
+with its profile. Both use the same audited company insert. Under enforcement,
+`company_create` and `company_delete` require `ledger/admin`. Read-only mode
+omits both.
+
+Call `company_delete` with a `slug` to confirm deletion. The tool deletes an
+eligible company, records its prior state in the audit log, and returns
+`{"deleted":"slug"}`, matching the CLI's JSON data. Companies with retained
+data return `VALIDATION`. Keep them for their history and use `txn_reverse`
+when a posting needs correction.
+
+For a separate set of sample books, run `bk init --demo --path demo.db`.
+Desktop hosts can call `beankeeper_cli::commands::init::create_demo_ledger`
+with a fresh path and a passphrase resolved by the host. It publishes a
+verified demo ledger without overwriting an existing destination.
+
 Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and a
 `values` array such as `["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset`
 takes the same selector and a `keys` array. They share the CLI validation and
@@ -541,8 +561,9 @@ Supply the same explicit `reference` on retries to return the existing reversal
 with `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed;
 existing clearings stay on the original and reversal entries start uncleared.
 
-Ledger initialization, company creation/deletion, account deletion, import,
-export, and attachments remain CLI operations. See the [MCP command reference](docs/beankeeper/references/commands.md#mcp).
+See the [MCP command reference](docs/beankeeper/references/commands.md#mcp) for
+tool arguments and the [intentional CLI-only mutations](docs/beankeeper/references/commands.md#intentional-cli-only-mutations)
+for actions that still need a local command.
 
 ### Streamable HTTP
 

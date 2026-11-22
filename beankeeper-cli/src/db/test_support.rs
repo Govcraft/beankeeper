@@ -13,7 +13,7 @@ pub(crate) fn fixture_actor(label: &str) -> Actor {
 
 pub(crate) fn create_company(db: &Db, slug: &str, name: &str) -> Result<(), CliError> {
     Granted::<Admin>::with_db(db, &Actor::new("fixture".parse()?), |grant| {
-        super::create_company(grant, &slug.parse()?, name, None)
+        super::create_company(grant, &slug.parse()?, &name.parse()?, None)
     })?;
     Ok(())
 }
