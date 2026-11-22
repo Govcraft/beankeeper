@@ -408,6 +408,9 @@ const LEDGER_TOOLS: &[&str] = &[
     "ledger_setup_account_add",
     "ledger_setup_opening_preview",
     "ledger_setup_opening_reserve",
+    "ledger_setup_statement_preview",
+    "ledger_setup_statement_commit",
+    "ledger_setup_statement_receipt",
     "budget_list",
     "budget_set",
     "budget_delete",
@@ -903,8 +906,9 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 18);
+    assert_eq!(names.len(), 19);
     assert!(names.contains("ledger_setup_status"));
+    assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
@@ -937,6 +941,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "ledger_setup_account_add",
         "ledger_setup_opening_preview",
         "ledger_setup_opening_reserve",
+        "ledger_setup_statement_preview",
+        "ledger_setup_statement_commit",
     ] {
         assert!(!names.contains(name));
     }
@@ -1962,8 +1968,9 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 18);
+    assert_eq!(names.len(), 19);
     assert!(names.contains("ledger_setup_status"));
+    assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
@@ -2122,8 +2129,9 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 18);
+    assert_eq!(names.len(), 19);
     assert!(names.contains("ledger_setup_status"));
+    assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
     assert!(!names.contains("txn_post"));
     writer.success("verify", &json!({}))?;
@@ -2611,7 +2619,8 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
     connection.execute_batch(
         "DROP TABLE setup_requests;
          DROP TABLE setup_book_profiles;
-         DELETE FROM schema_version WHERE version = 22;
+         DROP TABLE setup_statement_batches;
+         DELETE FROM schema_version WHERE version >= 22;
          INSERT INTO accounts(company_slug, code, name, type)
            VALUES ('acme', 'CASH', 'Legacy Cash', 'asset');",
     )?;
@@ -2703,21 +2712,7 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         .ok_or("missing setup generation")?;
 
     let mut setup_client = identity_client(&path, &passphrase_path, Some(setup_token), false)?;
-    let listed = setup_client.request("tools/list", &json!({}))?;
-    assert_eq!(
-        tool_names(&listed)?,
-        BTreeSet::from([
-            "ledger_setup_status",
-            "ledger_setup_book_show",
-            "ledger_setup_book_create",
-            "ledger_setup_book_initialize",
-            "ledger_setup_book_update",
-            "ledger_setup_chart_apply",
-            "ledger_setup_account_add",
-            "ledger_setup_opening_preview",
-            "ledger_setup_opening_reserve",
-        ])
-    );
+    assert_setup_tools(&mut setup_client)?;
     let status = setup_client.success("ledger_setup_status", &json!({}))?;
     assert_eq!(status["transactions"], 0);
 
@@ -2747,6 +2742,14 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         generation,
     )?;
 
+    let (mut approver, request, receipt) = assert_statement_import(
+        &mut setup_client,
+        &db,
+        &path,
+        &passphrase_path,
+        setup_token,
+        generation,
+    )?;
     let (late_proposal, reviewer_token) = assert_opening_reservation(
         &mut setup_client,
         &db,
@@ -2764,6 +2767,11 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         owner_token,
         generation,
     )?;
+    assert_eq!(
+        approver.success("ledger_setup_statement_commit", &request)?,
+        receipt
+    );
+    assert_typed_statement_receipt(&path, &passphrase_path, &receipt)?;
     assert_opening_requires_review_after_finish(
         &db,
         &path,
@@ -2771,6 +2779,43 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         &late_proposal,
         &reviewer_token,
     )
+}
+
+fn assert_setup_tools(client: &mut Client) -> TestResult {
+    let listed = client.request("tools/list", &json!({}))?;
+    assert_eq!(
+        tool_names(&listed)?,
+        BTreeSet::from([
+            "ledger_setup_status",
+            "ledger_setup_book_show",
+            "ledger_setup_book_create",
+            "ledger_setup_book_initialize",
+            "ledger_setup_book_update",
+            "ledger_setup_chart_apply",
+            "ledger_setup_account_add",
+            "ledger_setup_opening_preview",
+            "ledger_setup_opening_reserve",
+            "ledger_setup_statement_preview",
+        ])
+    );
+    Ok(())
+}
+
+fn assert_typed_statement_receipt(path: &Path, passphrase: &Path, wire: &Value) -> TestResult {
+    use beankeeper_cli::commands::setup::{StatementFormat, statement_receipt};
+    use beankeeper_cli::db::Db;
+
+    let passphrase = secrecy::SecretString::from(std::fs::read_to_string(passphrase)?);
+    let snapshot = Db::open_snapshot(path, Some(&passphrase))?;
+    let receipt = statement_receipt(
+        &snapshot,
+        &"home".parse()?,
+        serde_json::from_value(wire["batch_id"].clone())?,
+    )?;
+    assert_eq!(receipt.format, StatementFormat::Csv);
+    assert_eq!(receipt.source_sha256.as_str(), wire["source_sha256"]);
+    assert_eq!(serde_json::to_value(receipt)?, *wire);
+    Ok(())
 }
 
 fn finish_setup_and_check_revocation(
@@ -2805,6 +2850,234 @@ fn finish_setup_and_check_revocation(
         &opening_preview_input(generation),
     )?;
     assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
+    Ok(())
+}
+
+fn assert_statement_import(
+    setup: &mut Client,
+    db: &beankeeper_cli::db::Db,
+    path: &Path,
+    passphrase: &Path,
+    setup_token: &str,
+    generation: i64,
+) -> Result<(Client, Value, Value), Box<dyn Error>> {
+    let owner = proposal_identity(
+        db,
+        "statement_approver",
+        &["ledger/approve", "ledger/read", "ledger/reverse"],
+    )?;
+    let token = owner["token"]
+        .as_str()
+        .ok_or("missing statement approver token")?;
+    let mut approver = identity_client(path, passphrase, Some(token), false)?;
+    let mut local = identity_client(path, passphrase, None, false)?;
+    let existing = local.success(
+        "txn_post",
+        &json!({
+            "company":"home", "date":"2026-05-02", "description":"Existing",
+            "currency":"CAD", "reference":"already-imported",
+            "debits":[{"account":"1010", "amount":"1.25"}],
+            "credits":[{"account":"3000", "amount":"1.25"}]
+        }),
+    )?;
+    let source = json!({
+        "company":"home", "generation":generation, "reference":"may-statement",
+        "bank":"1010", "suspense":"3000", "currency":"CAD", "format":"csv",
+        "content":"date,description,amount,reference
+2026-05-01,Import,12.34,may-bank-1
+2026-05-02,Existing,1.25,already-imported
+"
+    });
+    let audit = setup_audit_count(db)?;
+    let preview = setup.success("ledger_setup_statement_preview", &source)?;
+    assert_eq!(setup_audit_count(db)?, audit + 1);
+    assert_eq!(
+        setup.success("ledger_setup_statement_preview", &source)?,
+        preview
+    );
+    assert_eq!(setup_audit_count(db)?, audit + 1);
+    assert_cli_replays_statement_preview(path, passphrase, setup_token, &source, &preview)?;
+    assert_eq!(setup_audit_count(db)?, audit + 1);
+    assert_eq!(preview["rows"][0]["entries"][0]["amount_minor"], "1234");
+    assert_eq!(preview["rows"][1]["existing_transaction"], existing["id"]);
+    let mut changed = source.clone();
+    changed["content"] = json!(
+        "date,description,amount
+2026-05-01,Different,12.34
+"
+    );
+    assert_eq!(
+        payload(&setup.call("ledger_setup_statement_preview", &changed)?)?["code"],
+        "VALIDATION"
+    );
+
+    let approval = json!({"company":"home", "batch_id": preview["batch_id"],
+        "preview_sha256": preview["preview_sha256"]});
+    assert_statement_requires_approval(setup, &mut approver, &mut local, &approval)?;
+    let receipt = approver.success("ledger_setup_statement_commit", &approval)?;
+    assert_eq!(
+        receipt["preexisting"],
+        json!([{"reference":"already-imported", "transaction_id":existing["id"]}])
+    );
+    assert_eq!(receipt["created"].as_array().map(Vec::len), Some(1));
+    assert_eq!(receipt["created"][0]["reference"], "may-bank-1");
+    assert_eq!(receipt["reference"], "may-statement");
+    assert_eq!(receipt["format"], "csv");
+    assert_eq!(receipt["preview_sha256"], preview["preview_sha256"]);
+    assert_eq!(receipt["source_sha256"], preview["source_sha256"]);
+    assert_eq!(receipt["approved_by_jti"], owner["token_jti"]);
+    let lookup = json!({"company":"home", "batch_id":preview["batch_id"]});
+    assert_eq!(
+        approver.success("ledger_setup_statement_receipt", &lookup)?,
+        receipt
+    );
+    let audit = setup_audit_count(db)?;
+    assert_eq!(
+        approver.success("ledger_setup_statement_commit", &approval)?,
+        receipt
+    );
+    assert_eq!(setup_audit_count(db)?, audit);
+    approver.success("txn_reverse", &json!({
+        "company":"home", "id":receipt["created"][0]["transaction_id"],
+        "date":"2026-05-03", "description":"Correct imported transaction", "reference":"may-bank-1-reversal"
+    }))?;
+    assert_eq!(
+        approver.success("ledger_setup_statement_receipt", &lookup)?,
+        receipt
+    );
+    assert_statement_collision_rolls_back(setup, &mut approver, &mut local, db, source)?;
+    approver.success("verify", &json!({}))?;
+    Ok((approver, approval, receipt))
+}
+
+fn assert_cli_replays_statement_preview(
+    path: &Path,
+    passphrase: &Path,
+    token: &str,
+    source: &Value,
+    preview: &Value,
+) -> TestResult {
+    let mut content = tempfile::NamedTempFile::new()?;
+    let statement = source["content"]
+        .as_str()
+        .ok_or("missing statement content")?;
+    content.write_all(statement.as_bytes())?;
+    content.flush()?;
+    let generation = source["generation"].to_string();
+    let replay = bk(path)?
+        .arg("--passphrase-file")
+        .arg(passphrase)
+        .args([
+            "--agent-token",
+            token,
+            "--json",
+            "setup",
+            "statement-preview",
+            "home",
+        ])
+        .arg(content.path())
+        .args([
+            "--generation",
+            &generation,
+            "--reference",
+            "may-statement",
+            "--bank",
+            "1010",
+            "--suspense",
+            "3000",
+            "--currency",
+            "CAD",
+            "--statement-format",
+            "csv",
+        ])
+        .output()?;
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay: Value = serde_json::from_slice(&replay.stdout)?;
+    assert_eq!(&replay["data"], preview);
+    Ok(())
+}
+
+fn assert_statement_requires_approval(
+    setup: &mut Client,
+    approver: &mut Client,
+    local: &mut Client,
+    approval: &Value,
+) -> TestResult {
+    let denied = setup.call("ledger_setup_statement_commit", approval)?;
+    assert!(denied.get("error").is_some() || denied["result"]["isError"] == true);
+    assert_eq!(
+        payload(&local.call("ledger_setup_statement_commit", approval)?)?["code"],
+        "UNAUTHORIZED"
+    );
+    let mut wrong_hash = approval.clone();
+    wrong_hash["preview_sha256"] = json!("0".repeat(64));
+    assert_eq!(
+        payload(&approver.call("ledger_setup_statement_commit", &wrong_hash)?)?["code"],
+        "VALIDATION"
+    );
+    let mut wrong_book = approval.clone();
+    wrong_book["company"] = json!("studio");
+    assert_eq!(
+        payload(&approver.call("ledger_setup_statement_commit", &wrong_book)?)?["code"],
+        "NOT_FOUND"
+    );
+    assert_eq!(
+        local
+            .success("txn_list", &json!({"company":"home"}))?
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    Ok(())
+}
+
+fn assert_statement_collision_rolls_back(
+    setup: &mut Client,
+    approver: &mut Client,
+    local: &mut Client,
+    db: &beankeeper_cli::db::Db,
+    mut source: Value,
+) -> TestResult {
+    source["reference"] = json!("june-statement");
+    source["content"] = json!(
+        "date,description,amount,reference
+2026-06-01,First,2,june-first
+2026-06-02,Second,3,june-race
+"
+    );
+    let preview = setup.success("ledger_setup_statement_preview", &source)?;
+    local.success(
+        "txn_post",
+        &json!({
+            "company":"home", "date":"2026-06-02", "description":"Another writer arrived",
+            "currency":"CAD", "reference":"june-race",
+            "debits":[{"account":"1010", "amount":"3"}],
+            "credits":[{"account":"3000", "amount":"3"}]
+        }),
+    )?;
+    let audit = setup_audit_count(db)?;
+    let failed = approver.call("ledger_setup_statement_commit", &json!({
+        "company":"home", "batch_id":preview["batch_id"], "preview_sha256": preview["preview_sha256"]
+    }))?;
+    assert_eq!(payload(&failed)?["code"], "VALIDATION");
+    assert_eq!(setup_audit_count(db)?, audit);
+    let posted: bool = db.conn().query_row(
+        "SELECT EXISTS(SELECT 1 FROM transactions WHERE reference = 'june-first')",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(!posted);
+    let receipt = approver.call(
+        "ledger_setup_statement_receipt",
+        &json!({
+            "company":"home", "batch_id":preview["batch_id"]
+        }),
+    )?;
+    assert_eq!(payload(&receipt)?["code"], "NOT_FOUND");
     Ok(())
 }
 

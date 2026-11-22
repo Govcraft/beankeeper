@@ -5,8 +5,9 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = BOOK_PROFILE_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = STATEMENT_BATCH_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
+pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -138,6 +139,9 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < BOOK_PROFILE_SCHEMA_VERSION {
         apply_v22(conn)?;
+    }
+    if version < STATEMENT_BATCH_SCHEMA_VERSION {
+        apply_v23(conn)?;
     }
 
     debug_assert_eq!(
@@ -1353,6 +1357,32 @@ fn apply_v22(conn: &Connection) -> Result<(), CliError> {
                 outcome TEXT NOT NULL CHECK (json_valid(outcome))
              );
              INSERT INTO schema_version(version) VALUES (22);",
+        )?;
+        Ok(())
+    })
+}
+
+fn apply_v23(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.execute_batch(
+            "CREATE TABLE setup_statement_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_slug TEXT NOT NULL,
+                generation INTEGER NOT NULL REFERENCES setup_sessions(generation),
+                reference TEXT NOT NULL,
+                setup_jti TEXT NOT NULL REFERENCES agent_tokens(jti),
+                request_hash TEXT NOT NULL CHECK(length(request_hash) = 64),
+                preview_hash TEXT NOT NULL CHECK(length(preview_hash) = 64),
+                payload TEXT NOT NULL CHECK(json_valid(payload)),
+                UNIQUE (company_slug, generation, reference)
+             );
+             CREATE TRIGGER protect_setup_statement_batch_update
+               BEFORE UPDATE ON setup_statement_batches
+               BEGIN SELECT RAISE(ABORT, 'statement preview is immutable'); END;
+             CREATE TRIGGER protect_setup_statement_batch_delete
+               BEFORE DELETE ON setup_statement_batches
+               BEGIN SELECT RAISE(ABORT, 'statement preview cannot be deleted'); END;
+             INSERT INTO schema_version(version) VALUES (23);",
         )?;
         Ok(())
     })

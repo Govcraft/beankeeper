@@ -12,9 +12,11 @@ use crate::cli::{
 };
 use crate::commands;
 use crate::commands::txn::{PostingMode, PostingRequest};
-use crate::db::audit::setup::books::{self, BookChange};
-use crate::db::audit::setup::openings::{self, OpeningLine, OpeningRequest};
-
+use crate::db::audit::setup::{
+    books::{self, BookChange},
+    openings::{self, OpeningLine, OpeningRequest},
+    statement_batches,
+};
 use crate::db::{Actor, Db, audit::MetadataTarget, metadata};
 use crate::error::CliError;
 use crate::operation::Operation;
@@ -41,6 +43,9 @@ requests! {
     Summary(FinancialSummary),
     LedgerSetupStatus(Empty),
     LedgerSetupBookShow(CompanyScope),
+    LedgerSetupStatementPreview(LedgerSetupStatementPreview),
+    LedgerSetupStatementCommit(LedgerSetupStatementCommit),
+    LedgerSetupStatementReceipt(LedgerSetupStatementReceipt),
     LedgerSetupBegin(LedgerSetupBegin),
     LedgerSetupFinish(LedgerSetupEnd),
     LedgerSetupRevoke(LedgerSetupEnd),
@@ -92,13 +97,10 @@ impl Request {
             Self::Summary(input) => summary(db, input, actor),
             Self::LedgerSetupStatus(_) => setup_status(db),
             Self::LedgerSetupBookShow(input) => setup_book_show(db, input),
-            Self::LedgerSetupBegin(input) => unpaged(commands::setup::begin_json(
-                db,
-                actor,
-                &input.name,
-                &input.public_key,
-                input.ttl.as_deref().unwrap_or(commands::setup::DEFAULT_TTL),
-            )),
+            Self::LedgerSetupStatementPreview(input) => setup_statement_preview(db, actor, input),
+            Self::LedgerSetupStatementCommit(input) => setup_statement_commit(db, actor, input),
+            Self::LedgerSetupStatementReceipt(input) => setup_statement_receipt(db, input),
+            Self::LedgerSetupBegin(input) => setup_begin(db, actor, &input),
             Self::LedgerSetupFinish(input) => unpaged(commands::setup::end_json(
                 db,
                 actor,
@@ -199,6 +201,47 @@ fn setup_book_show(db: &Db, input: inputs::CompanyScope) -> Response {
     let company = input.company.into_inner();
     let facts = commands::setup::book_facts(db, &company)?;
     unpaged(serde_json::to_value(facts).map_err(|error| CliError::General(error.to_string())))
+}
+
+fn setup_begin(db: &Db, actor: &Actor, input: &inputs::LedgerSetupBegin) -> Response {
+    unpaged(commands::setup::begin_json(
+        db,
+        actor,
+        &input.name,
+        &input.public_key,
+        input.ttl.as_deref().unwrap_or(commands::setup::DEFAULT_TTL),
+    ))
+}
+
+fn setup_statement_preview(
+    db: &Db,
+    actor: &Actor,
+    input: inputs::LedgerSetupStatementPreview,
+) -> Response {
+    let (reference, request) = input.into_request()?;
+    let preview = statement_batches::preview(db, actor, &reference, &request)?;
+    unpaged(serde_json::to_value(preview).map_err(|error| CliError::General(error.to_string())))
+}
+
+fn setup_statement_commit(
+    db: &Db,
+    actor: &Actor,
+    input: inputs::LedgerSetupStatementCommit,
+) -> Response {
+    let receipt = statement_batches::commit(
+        db,
+        actor,
+        &input.company.into_inner(),
+        input.batch_id,
+        &input.preview_sha256.into_inner(),
+    )?;
+    unpaged(serde_json::to_value(receipt).map_err(|error| CliError::General(error.to_string())))
+}
+
+fn setup_statement_receipt(db: &Db, input: inputs::LedgerSetupStatementReceipt) -> Response {
+    let receipt =
+        statement_batches::get_receipt(db.read(), &input.company.into_inner(), input.batch_id)?;
+    unpaged(serde_json::to_value(receipt).map_err(|error| CliError::General(error.to_string())))
 }
 
 fn setup_book_change(

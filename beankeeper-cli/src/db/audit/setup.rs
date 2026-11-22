@@ -3,6 +3,8 @@
 pub(crate) mod books;
 pub(crate) mod openings;
 mod requests;
+pub(crate) mod statement_batches;
+pub(crate) mod statements;
 
 use std::num::NonZeroI64;
 use std::str::FromStr;

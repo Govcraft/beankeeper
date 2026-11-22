@@ -13,20 +13,25 @@ use super::input_values::{
     CalendarDate, CompanySlug, DecimalAmount, Month, NonEmpty, PageLimit, PageOffset,
     SecuritySymbol, Text,
 };
-use crate::commands::{reference::TransactionReference, report_periods::CompareArg};
+use crate::commands::{
+    reference::TransactionReference, report_periods::CompareArg, txn_import::CsvMapping,
+};
 use crate::db::audit::setup::{
     Generation,
     books::{
         BookPurpose, BookSettings, ChartTemplate, FiscalYearStart, ProfileRevision, SetupReference,
     },
+    statements::{StatementContent, StatementFormat, StatementRequest, StatementSource},
 };
 use crate::db::{
-    ids::{EntryId, TransactionId},
+    ids::{EntryId, StatementBatchId, TransactionId},
     investments::LotId,
     proposals::ProposalId,
 };
 
 pub(super) use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as AuditEntityArg};
+
+use crate::error::CliError;
 
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
@@ -256,6 +261,71 @@ pub(super) struct AuditLog {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Empty {}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupStatementPreview {
+    /// Stable reference for retries within this setup generation.
+    reference: Text<SetupReference>,
+    /// Company slug of the book being set up.
+    company: Company,
+    /// Active setup generation.
+    generation: Generation,
+    /// The account represented by this statement.
+    bank: Account,
+    /// Contra account used when no categorization rule matches.
+    suspense: Account,
+    /// Currency of the statement. For OFX it must match the embedded currency.
+    currency: CurrencyCode,
+    /// CSV or OFX. QFX is accepted as OFX.
+    format: StatementFormat,
+    /// The statement contents.
+    content: StatementContent,
+    /// Optional CSV headers, date format, and amount direction.
+    csv: Option<CsvMapping>,
+}
+
+impl LedgerSetupStatementPreview {
+    pub(super) fn into_request(self) -> Result<(SetupReference, StatementRequest), CliError> {
+        let input = self;
+        let source = match input.format {
+            StatementFormat::Csv => StatementSource::Csv {
+                content: input.content,
+                mapping: input.csv.unwrap_or_default(),
+            },
+            StatementFormat::Ofx if input.csv.is_none() => StatementSource::Ofx(input.content),
+            StatementFormat::Ofx => {
+                return Err(CliError::Validation(
+                    "CSV field mapping is only valid for CSV statements".into(),
+                ));
+            }
+        };
+        let request = StatementRequest {
+            company: input.company.into_inner(),
+            generation: input.generation,
+            bank: input.bank.into_inner(),
+            suspense: input.suspense.into_inner(),
+            currency: input.currency.into_inner(),
+            source,
+        };
+        Ok((input.reference.into_inner(), request))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupStatementCommit {
+    pub company: Company,
+    pub batch_id: StatementBatchId,
+    pub preview_sha256: Text<Sha256Hex>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupStatementReceipt {
+    pub company: Company,
+    pub batch_id: StatementBatchId,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

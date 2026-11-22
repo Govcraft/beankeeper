@@ -81,7 +81,7 @@ impl TextValue for AccountCode {
 }
 
 impl TextValue for Sha256Hex {
-    const NAME: &'static str = "opening preview fingerprint";
+    const NAME: &'static str = "SHA-256 digest";
 
     fn schema() -> Schema {
         json_schema!({"type": "string", "pattern": "^[a-f0-9]{64}$"})

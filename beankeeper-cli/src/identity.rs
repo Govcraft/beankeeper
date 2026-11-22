@@ -111,6 +111,13 @@ impl sealed::GrantKind for Admin {
     const REQUIRED: Capability = Capability::Admin;
 }
 
+pub(crate) enum StatementApprover {}
+
+impl sealed::GrantKind for StatementApprover {
+    const REQUIRED: Capability = Capability::Approve;
+    const EXPLICIT: bool = true;
+}
+
 pub(crate) enum SetupOwner {}
 
 impl sealed::GrantKind for SetupOwner {

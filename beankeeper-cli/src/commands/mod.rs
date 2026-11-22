@@ -27,6 +27,8 @@ pub mod report_trend;
 pub mod rule;
 pub mod schedule;
 pub mod setup;
+mod setup_statement;
+pub(crate) mod statement_source;
 pub mod summary;
 pub mod txn;
 pub mod txn_clear;

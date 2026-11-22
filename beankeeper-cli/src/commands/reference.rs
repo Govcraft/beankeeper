@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 use crate::error::CliError;
 
 /// The original nonempty reference, trimmed once for storage and lookup.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct TransactionReference(Box<str>);
 
 impl TransactionReference {
