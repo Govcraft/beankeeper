@@ -181,19 +181,6 @@ impl Clearing {
     }
 }
 
-fn database_day(raw: &str) -> Result<NaiveDate, chrono::ParseError> {
-    // Older transactions and their migrated clearings can carry a time suffix.
-    raw.split_once([' ', 'T'])
-        .map_or(raw, |(day, _)| day)
-        .parse()
-}
-
-fn read_day(raw: &str, column: usize) -> rusqlite::Result<NaiveDate> {
-    database_day(raw).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
-    })
-}
-
 /// Total cleared amount of a set of clearings.
 ///
 /// # Errors
@@ -488,17 +475,14 @@ pub fn list_clearings(company: &Company<'_>, entry_id: EntryId) -> Result<Vec<Cl
 }
 
 fn clearing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clearing> {
-    let cleared_date = read_day(&row.get::<_, String>(3)?, 3)?;
+    let cleared_date = super::calendar_date::read(row, 3)?;
     let status = row
         .get::<_, String>(5)?
         .parse::<ClearingStatus>()
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
         })?;
-    let reconciled = row
-        .get::<_, Option<String>>(6)?
-        .map(|date| read_day(&date, 6))
-        .transpose()?;
+    let reconciled = super::calendar_date::read_optional(row, 6)?;
     let state = match (status, reconciled) {
         (ClearingStatus::Cleared, None) => ClearingState::Cleared,
         (ClearingStatus::Reconciled, Some(on)) if on >= cleared_date => {
@@ -548,7 +532,7 @@ fn map_target(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryTarget> {
         amount: row.get(3)?,
         currency: row.get(4)?,
         reference: row.get(5)?,
-        date: read_day(&row.get::<_, String>(6)?, 6)?,
+        date: super::calendar_date::read(row, 6)?,
     })
 }
 
@@ -629,7 +613,8 @@ mod tests {
     use super::*;
 
     fn date(value: &str) -> NaiveDate {
-        database_day(value).unwrap_or_else(|error| panic!("test date: {error}"))
+        super::super::calendar_date::parse_day(value)
+            .unwrap_or_else(|error| panic!("test date: {error}"))
     }
 
     fn units(amount: i64) -> PositiveMinorUnits {

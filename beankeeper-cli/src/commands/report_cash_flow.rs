@@ -48,11 +48,11 @@ pub const DEFAULT_CASH_NAME_KEYWORDS: &[&str] = &["cash", "bank", "checking", "s
 pub struct CashFlowArgs {
     /// Start date (inclusive, YYYY-MM-DD). Defaults to January 1 of the end year.
     #[arg(long)]
-    pub from: Option<String>,
+    pub from: Option<crate::cli::CalendarDateArg>,
 
     /// End date (inclusive, YYYY-MM-DD). Defaults to today.
     #[arg(long)]
-    pub to: Option<String>,
+    pub to: Option<crate::cli::CalendarDateArg>,
 
     /// Account code to treat as cash (repeatable). Defaults to asset accounts
     /// whose name contains "cash", "bank", "checking" or "savings".
@@ -416,7 +416,7 @@ impl CashFlowArgs {
         company: &str,
         today: chrono::NaiveDate,
     ) -> Result<CashFlowRequest<'_>, CliError> {
-        let dates = DateRange::resolve(self.from.as_deref(), self.to.as_deref(), today)?;
+        let dates = DateRange::resolve(self.from.as_ref(), self.to.as_ref(), today)?;
         let currency = super::report_currency::resolve_report_currency(
             db.conn(),
             company,
@@ -555,8 +555,6 @@ fn compute_for_accounts(
     currency: Currency,
     cash_accounts: Vec<CashAccount>,
 ) -> Result<CashFlowStatement, CliError> {
-    let from_sql = dates.from().to_string();
-    let to_sql = dates.to().to_string();
     let cash_codes: BTreeSet<&str> = cash_accounts.iter().map(|a| a.code.as_str()).collect();
 
     let mut stmt = conn.prepare(
@@ -569,15 +567,18 @@ fn compute_for_accounts(
          ORDER BY t.id, e.id",
     )?;
     let facts = stmt
-        .query_map(params![company, currency.code(), from_sql, to_sql], |row| {
-            Ok(EntryFact {
-                txn_id: row.get(0)?,
-                code: row.get(1)?,
-                name: row.get(2)?,
-                account_type: read_account_type(row, 3)?,
-                signed: row.get(4)?,
-            })
-        })?
+        .query_map(
+            params![company, currency.code(), dates.from(), dates.to()],
+            |row| {
+                Ok(EntryFact {
+                    txn_id: row.get(0)?,
+                    code: row.get(1)?,
+                    name: row.get(2)?,
+                    account_type: read_account_type(row, 3)?,
+                    signed: row.get(4)?,
+                })
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
 
     let lines = attribute_cash(&facts, &cash_codes)?;
@@ -599,8 +600,8 @@ fn compute_for_accounts(
         .checked_add(investing.total)
         .and_then(|amount| amount.checked_add(financing.total))
         .ok_or_else(amount_overflow)?;
-    let opening_cash = cash_balance(conn, company, currency, &cash_codes, false, &from_sql)?;
-    let closing_cash = cash_balance(conn, company, currency, &cash_codes, true, &to_sql)?;
+    let opening_cash = cash_balance(conn, company, currency, &cash_codes, false, dates.from())?;
+    let closing_cash = cash_balance(conn, company, currency, &cash_codes, true, dates.to())?;
     let expected = opening_cash
         .checked_add(net_change)
         .ok_or_else(amount_overflow)?;
@@ -720,7 +721,7 @@ fn cash_balance(
     currency: Currency,
     cash_codes: &BTreeSet<&str>,
     inclusive: bool,
-    date: &str,
+    date: chrono::NaiveDate,
 ) -> Result<i64, CliError> {
     let op = if inclusive { "<=" } else { "<" };
     let sql = format!(

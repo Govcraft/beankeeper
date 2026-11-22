@@ -173,7 +173,7 @@ pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool)
     for (txn, link) in transactions.iter().zip(links) {
         let mut row = vec![
             Cell::new(txn.id).set_alignment(CellAlignment::Right),
-            Cell::new(&txn.date),
+            Cell::new(txn.date),
             Cell::new(&txn.description),
             Cell::new(txn.currency.code()),
         ];
@@ -582,7 +582,7 @@ pub fn render_orphaned_correlations(
         table.add_row(vec![
             o.transaction_id.to_string(),
             o.company_slug.clone(),
-            o.date.clone(),
+            o.date.to_string(),
             o.description.clone(),
             o.partner_id.to_string(),
         ]);
@@ -649,10 +649,6 @@ pub fn render_tax_summary(
 // Budget tables
 // ---------------------------------------------------------------------------
 
-static MONTH_NAMES: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
 /// Render budget rows as a table.
 #[must_use]
 pub fn render_budgets(rows: &[BudgetRow], use_color: bool) -> String {
@@ -675,12 +671,12 @@ pub fn render_budgets(rows: &[BudgetRow], use_color: bool) -> String {
     ]);
 
     for row in rows {
-        let month_idx = usize::try_from(row.month - 1).unwrap_or(0);
-        let month_name = MONTH_NAMES.get(month_idx).unwrap_or(&"?");
+        let month_number = row.month.number_from_month();
+        let month_name = &row.month.name()[..3];
         table.add_row(vec![
             Cell::new(styled(&row.account_code, cyan_style(), use_color)),
             Cell::new(row.year.to_string()),
-            Cell::new(format!("{} ({})", month_name, row.month)),
+            Cell::new(format!("{month_name} ({month_number})")),
             Cell::new(format_money_grouped(row.money())).set_alignment(CellAlignment::Right),
             Cell::new(row.currency.code()),
             Cell::new(row.notes.as_deref().unwrap_or("")),
@@ -787,7 +783,7 @@ mod tests {
             account_code: "5000".into(),
             currency,
             year: 2026,
-            month: 1,
+            month: chrono::Month::January,
             amount: 1234,
             notes: None,
             created_at: String::new(),
@@ -922,7 +918,9 @@ mod tests {
             description: "Test sale".into(),
             metadata: None,
             currency: Currency::USD,
-            date: "2025-03-15".into(),
+            date: "2025-03-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
             agent_uri: None,
@@ -946,7 +944,9 @@ mod tests {
             description: "Cash sale".into(),
             metadata: Some("INV-001".into()),
             currency: Currency::USD,
-            date: "2025-03-15".into(),
+            date: "2025-03-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
             agent_uri: None,
@@ -999,7 +999,9 @@ mod tests {
             description: "Bad".into(),
             metadata: None,
             currency: Currency::USD,
-            date: "2025-03-15".into(),
+            date: "2025-03-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
             agent_uri: None,

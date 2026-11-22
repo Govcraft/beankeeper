@@ -5,6 +5,7 @@ pub mod amounts;
 pub mod attachments;
 pub mod audit;
 pub mod budgets;
+pub(crate) mod calendar_date;
 pub mod clearings;
 pub mod companies;
 pub mod connection;
@@ -55,7 +56,7 @@ use std::fmt::Write;
 
 use beankeeper::types::{Currency, Money};
 use chrono::NaiveDate;
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, ToSql, params, params_from_iter};
 
 use crate::error::CliError;
 
@@ -91,7 +92,7 @@ pub struct TransactionRow {
     pub description: String,
     pub metadata: Option<String>,
     pub currency: Currency,
-    pub date: String,
+    pub date: chrono::NaiveDate,
     pub posted_at: String,
     pub reference: Option<String>,
     /// Unknown for transactions predating creation auditing.
@@ -122,7 +123,7 @@ pub struct BudgetRow {
     pub account_code: String,
     pub currency: Currency,
     pub year: i32,
-    pub month: i32,
+    pub month: chrono::Month,
     pub amount: i64,
     pub notes: Option<String>,
     pub created_at: String,
@@ -236,8 +237,8 @@ pub fn list_accounts_with_balances(
         params![
             filter.company_slug,
             currency.code(),
-            window.from.map(|date| date.to_string()),
-            window.to.map(|date| date.to_string()),
+            window.from,
+            window.to,
             filter.type_filter.map(beankeeper::types::AccountType::code),
             filter.name_filter,
         ],
@@ -267,8 +268,8 @@ pub fn compute_trial_balance(
     conn: &Connection,
     company_slug: &str,
     type_filter: Option<beankeeper::types::AccountType>,
-    from_date: Option<&str>,
-    to_date: Option<&str>,
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
     currency: Currency,
 ) -> Result<Vec<BalanceRow>, CliError> {
     let mut sql = String::from(
@@ -279,14 +280,21 @@ pub fn compute_trial_balance(
          LEFT JOIN (entries e JOIN transactions t ON t.id = e.transaction_id \
            AND t.company_slug = e.company_slug AND t.currency = ?2",
     );
-    let mut bindings = vec![company_slug, currency.code()];
-    push_transaction_dates(&mut sql, &mut bindings, from_date, to_date);
+    let currency_code = currency.code();
+    let mut bindings: Vec<&dyn ToSql> = vec![&company_slug, &currency_code];
+    push_transaction_dates(
+        &mut sql,
+        &mut bindings,
+        from_date.as_ref(),
+        to_date.as_ref(),
+    );
     sql.push_str(
         ") ON e.company_slug = a.company_slug AND e.account_code = a.code \
          WHERE a.company_slug = ?1",
     );
-    if let Some(filter) = type_filter {
-        bindings.push(filter.code());
+    let type_code = type_filter.map(beankeeper::types::AccountType::code);
+    if let Some(ref code) = type_code {
+        bindings.push(code);
         let _ = write!(sql, " AND a.type = ?{}", bindings.len());
     }
     sql.push_str(" GROUP BY a.code, a.name, a.type ORDER BY a.code");
@@ -320,8 +328,8 @@ pub fn compute_account_balance(
     conn: &Connection,
     company_slug: &str,
     code: &str,
-    from_date: Option<&str>,
-    to_date: Option<&str>,
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
     currency: Currency,
 ) -> Result<(i64, i64), CliError> {
     let mut sql = String::from(
@@ -332,8 +340,14 @@ pub fn compute_account_balance(
          JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3",
     );
-    let mut bindings = vec![company_slug, code, currency.code()];
-    push_transaction_dates(&mut sql, &mut bindings, from_date, to_date);
+    let currency_code = currency.code();
+    let mut bindings: Vec<&dyn ToSql> = vec![&company_slug, &code, &currency_code];
+    push_transaction_dates(
+        &mut sql,
+        &mut bindings,
+        from_date.as_ref(),
+        to_date.as_ref(),
+    );
 
     Ok(conn.query_row(&sql, params_from_iter(bindings), |row| {
         Ok((row.get(0)?, row.get(1)?))
@@ -350,8 +364,8 @@ pub fn compute_account_balance(
 pub fn compute_tax_summary(
     conn: &Connection,
     company_slug: &str,
-    from_date: Option<&str>,
-    to_date: Option<&str>,
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
     currency: Currency,
 ) -> Result<Vec<TaxSummaryRow>, CliError> {
     let mut sql = String::from(
@@ -362,8 +376,14 @@ pub fn compute_tax_summary(
          JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
          WHERE e.company_slug = ?1 AND e.tax_category IS NOT NULL AND t.currency = ?2",
     );
-    let mut bindings = vec![company_slug, currency.code()];
-    push_transaction_dates(&mut sql, &mut bindings, from_date, to_date);
+    let currency_code = currency.code();
+    let mut bindings: Vec<&dyn ToSql> = vec![&company_slug, &currency_code];
+    push_transaction_dates(
+        &mut sql,
+        &mut bindings,
+        from_date.as_ref(),
+        to_date.as_ref(),
+    );
     sql.push_str(" GROUP BY e.tax_category ORDER BY e.tax_category");
 
     let mut stmt = conn.prepare(&sql)?;
@@ -384,9 +404,9 @@ pub fn compute_tax_summary(
 
 fn push_transaction_dates<'a>(
     sql: &mut String,
-    bindings: &mut Vec<&'a str>,
-    from: Option<&'a str>,
-    to: Option<&'a str>,
+    bindings: &mut Vec<&'a dyn ToSql>,
+    from: Option<&'a NaiveDate>,
+    to: Option<&'a NaiveDate>,
 ) {
     if let Some(from) = from {
         bindings.push(from);
@@ -483,7 +503,9 @@ mod tests {
             description: "Sale",
             metadata: None,
             currency,
-            date,
+            date: date
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             entries: &entries,
             correlate: None,
             reference: None,
@@ -557,7 +579,11 @@ mod tests {
             "acme",
             None,
             None,
-            Some("2024-01-31"),
+            Some(
+                "2024-01-31"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
             Currency::USD,
         )
         .unwrap_or_default();
@@ -602,7 +628,11 @@ mod tests {
             "acme",
             "1000",
             None,
-            Some("2024-01-31"),
+            Some(
+                "2024-01-31"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
             Currency::USD,
         )
         .unwrap_or((0, 0));
@@ -621,8 +651,16 @@ mod tests {
             db.conn(),
             "acme",
             "1000",
-            Some("2024-02-01"),
-            Some("2024-02-29"),
+            Some(
+                "2024-02-01"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
+            Some(
+                "2024-02-29"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
             Currency::USD,
         )
         .unwrap_or((0, 0));
@@ -641,8 +679,16 @@ mod tests {
             db.conn(),
             "acme",
             None,
-            Some("2024-02-01"),
-            Some("2024-02-29"),
+            Some(
+                "2024-02-01"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
+            Some(
+                "2024-02-29"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
             Currency::USD,
         )
         .unwrap_or_default();
@@ -674,7 +720,11 @@ mod tests {
             "acme",
             None,
             None,
-            Some("2024-12-31"),
+            Some(
+                "2024-12-31"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
             Currency::MXN,
         )?;
         assert_eq!(mxn.len(), 3);
@@ -708,8 +758,16 @@ mod tests {
             db.conn(),
             "acme",
             None,
-            Some("2024-06-01"),
-            Some("2024-06-30"),
+            Some(
+                "2024-06-01"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
+            Some(
+                "2024-06-30"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
             Currency::USD,
         )?;
         assert_eq!(rows.len(), 3);
@@ -724,7 +782,11 @@ mod tests {
             "acme",
             None,
             None,
-            Some("2023-12-31"),
+            Some(
+                "2023-12-31"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            ),
             Currency::USD,
         )?;
         assert_eq!(rows.len(), 3);

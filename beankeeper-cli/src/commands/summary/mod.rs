@@ -3,7 +3,7 @@
 mod attention;
 mod model;
 
-use super::report_dates::{DateRange, DateWindow, parse_date};
+use super::report_dates::{DateRange, DateWindow, resolve_date};
 use crate::operation::Operation;
 use std::io::Write;
 
@@ -26,16 +26,16 @@ use crate::output::json::Envelope;
 pub struct SummaryArgs {
     /// First date, inclusive (YYYY-MM-DD). Defaults to the end date's month start.
     #[arg(long)]
-    pub from: Option<String>,
+    pub from: Option<crate::cli::CalendarDateArg>,
     /// Last date, inclusive (YYYY-MM-DD). Defaults to today.
     #[arg(long)]
-    pub to: Option<String>,
+    pub to: Option<crate::cli::CalendarDateArg>,
     /// First comparison date. Requires --compare-to.
     #[arg(long, requires = "compare_to")]
-    pub compare_from: Option<String>,
+    pub compare_from: Option<crate::cli::CalendarDateArg>,
     /// Last comparison date. Requires --compare-from.
     #[arg(long, requires = "compare_from")]
-    pub compare_to: Option<String>,
+    pub compare_to: Option<crate::cli::CalendarDateArg>,
     /// Currency code; required when the company's currencies are ambiguous.
     #[arg(long)]
     #[schemars(with = "Option<String>")]
@@ -88,12 +88,12 @@ pub(crate) use model::Comparison;
 
 impl SummaryArgs {
     fn periods(&self, today: NaiveDate) -> Result<Periods, CliError> {
-        let end = DateWindow::resolve(None, self.to.as_deref(), today)?.to;
+        let end = DateWindow::resolve(None, self.to.as_ref(), today)?.to;
         let month_start = end.with_day(1).ok_or_else(date_error)?;
         let start = self
             .from
-            .as_deref()
-            .map_or(Ok(month_start), |from| parse_date("--from", from))?;
+            .as_ref()
+            .map_or(Ok(month_start), |from| resolve_date("--from", from))?;
         let current = Period::from(DateRange::new(start, end)?);
         let prior = match (&self.compare_from, &self.compare_to) {
             (Some(from), Some(to)) => DateRange::resolve(Some(from), Some(to), today)?.into(),
@@ -350,7 +350,7 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
         company,
         None,
         None,
-        Some(&periods.current.to.to_string()),
+        Some(periods.current.to),
         currency,
     )?;
     let cash = select_accounts(
@@ -376,8 +376,8 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
             db.conn(),
             company,
             None,
-            Some(&period.from.to_string()),
-            Some(&period.to.to_string()),
+            Some(period.from),
+            Some(period.to),
             currency,
         )
     };
@@ -467,15 +467,15 @@ mod tests {
         assert_eq!(p.prior.from.to_string(), "2024-02-01");
         assert_eq!(p.prior.to.to_string(), "2024-02-29");
         let args = SummaryArgs {
-            from: Some("2024-03-10".into()),
-            to: Some("2024-03-15".into()),
+            from: Some(crate::cli::CalendarDateArg::decode("2024-03-10")),
+            to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
             ..SummaryArgs::default()
         };
         let p = args.periods(today)?;
         assert_eq!(p.prior.from.to_string(), "2024-03-04");
         assert_eq!(p.prior.to.to_string(), "2024-03-09");
         let p = SummaryArgs {
-            to: Some("2025-01-01".into()),
+            to: Some(crate::cli::CalendarDateArg::decode("2025-01-01")),
             ..SummaryArgs::default()
         }
         .periods(today)?;
@@ -496,7 +496,7 @@ mod tests {
             None,
         )?;
         let args = SummaryArgs {
-            to: Some("2024-03-15".into()),
+            to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
             currency: Some(Currency::BHD.into()),
             ..SummaryArgs::default()
         };

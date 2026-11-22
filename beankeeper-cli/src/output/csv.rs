@@ -137,7 +137,7 @@ pub fn render_transactions(transactions: &[TransactionRow]) -> Result<String, Cl
         let reference = txn.reference.as_deref().unwrap_or("");
         wtr.write_record([
             id_str.as_str(),
-            &txn.date,
+            &txn.date.to_string(),
             &txn.description,
             meta,
             txn.currency.code(),
@@ -250,7 +250,7 @@ pub fn render_orphaned_correlations(
             &o.transaction_id.to_string(),
             &o.company_slug,
             &o.description,
-            &o.date,
+            &o.date.to_string(),
             &o.partner_id.to_string(),
         ])
         .map_err(|e| CliError::General(format!("CSV write error: {e}")))?;
@@ -317,7 +317,7 @@ pub fn render_budgets(rows: &[crate::db::BudgetRow]) -> Result<String, CliError>
 
     for r in rows {
         let year = r.year.to_string();
-        let month = r.month.to_string();
+        let month = r.month.number_from_month().to_string();
         let amount = r.amount.to_string();
         let notes = r.notes.as_deref().unwrap_or("");
         wtr.write_record([
@@ -486,7 +486,9 @@ mod tests {
             description: "Sale".into(),
             metadata: Some("INV-001".into()),
             currency: beankeeper::types::Currency::USD,
-            date: "2025-03-15".into(),
+            date: "2025-03-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,
@@ -505,7 +507,9 @@ mod tests {
             description: "Sale".into(),
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date: "2025-03-15".into(),
+            date: "2025-03-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,

@@ -63,7 +63,9 @@ impl Ledger {
                 description: "Sale",
                 metadata: None,
                 currency: beankeeper::types::Currency::USD,
-                date: "2026-01-01",
+                date: "2026-01-01"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
                 entries: &entries,
                 correlate: None,
                 reference: Some(reference),
@@ -372,6 +374,21 @@ fn verify_detects_balanced_rewrites_via_creation_snapshot() -> TestResult {
 }
 
 #[test]
+fn creation_verification_detects_rewritten_date_text() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.post("date-spelling")?;
+    success(&ledger.verify()?)?;
+    ledger.db.conn().execute_batch(
+        "DROP TRIGGER protect_transactions_update;
+        UPDATE transactions SET date = '2026-1-1' WHERE id = 1;",
+    )?;
+    failure(
+        &ledger.verify()?,
+        "does not match its creation audit record",
+    )
+}
+
+#[test]
 fn allowed_clearing_and_metadata_mutations_keep_verification_healthy() -> TestResult {
     let ledger = Ledger::new()?;
     ledger.post("first")?;
@@ -525,7 +542,9 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
             description: "Large balance",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date: "2026-01-01",
+            date: "2026-01-01"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             entries: &entries,
             correlate: None,
             reference: None,

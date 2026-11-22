@@ -45,10 +45,10 @@ pub struct TrendArgs {
     pub metric: TrendMetric,
     /// First date (inclusive). Defaults to January 1 of the end date's year.
     #[arg(long)]
-    pub from: Option<String>,
+    pub from: Option<crate::cli::CalendarDateArg>,
     /// Last date (inclusive). Defaults to today.
     #[arg(long)]
-    pub to: Option<String>,
+    pub to: Option<crate::cli::CalendarDateArg>,
     /// Calendar granularity; first and last periods are clipped to the range.
     #[arg(long, value_enum, default_value = "month")]
     pub period: PeriodArg,
@@ -251,7 +251,7 @@ impl TrendArgs {
         company: &str,
         today: NaiveDate,
     ) -> Result<TrendRequest, CliError> {
-        let dates = DateRange::resolve(self.from.as_deref(), self.to.as_deref(), today)?;
+        let dates = DateRange::resolve(self.from.as_ref(), self.to.as_ref(), today)?;
         let currency = super::report_currency::resolve_report_currency(
             db.conn(),
             company,
@@ -320,13 +320,11 @@ fn column_rows(
     currency: Currency,
     column: &Column,
 ) -> Result<Vec<BalanceRow>, CliError> {
-    let from = column.from.to_string();
-    let to = column.to.to_string();
     let (filter, from) = match metric {
-        TrendMetric::Spending => (Some(AccountType::Expense), Some(from.as_str())),
+        TrendMetric::Spending => (Some(AccountType::Expense), Some(column.from)),
         TrendMetric::NetWorth => (None, None),
     };
-    db::compute_trial_balance(db.conn(), company, filter, from, Some(&to), currency)
+    db::compute_trial_balance(db.conn(), company, filter, from, Some(column.to), currency)
 }
 
 fn overflow() -> CliError {

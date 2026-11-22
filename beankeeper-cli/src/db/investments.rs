@@ -554,7 +554,7 @@ fn post(tx: &AuditedTx<'_>, p: &TradePosting<'_>) -> Result<i64, CliError> {
             description: p.description,
             metadata: Some(p.metadata),
             currency: p.currency,
-            date: &p.date.to_string(),
+            date: p.date,
             entries: &entries,
             correlate: None,
             reference: p.reference,

@@ -3,6 +3,7 @@
 use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
 
+use crate::cli::CalendarDateArg;
 use crate::error::CliError;
 
 /// Effective dates, resolved once at the report boundary.
@@ -14,15 +15,15 @@ pub(super) struct DateWindow {
 impl DateWindow {
     /// Resolve an optional start and required end against an explicit local today.
     pub fn resolve(
-        from: Option<&str>,
-        to: Option<&str>,
+        from: Option<&CalendarDateArg>,
+        to: Option<&CalendarDateArg>,
         today: NaiveDate,
     ) -> Result<Self, CliError> {
         let to = to
-            .map(|date| parse_date("--to", date))
+            .map(|date| resolve_date("--to", date))
             .transpose()?
             .unwrap_or(today);
-        let from = from.map(|date| parse_date("--from", date)).transpose()?;
+        let from = from.map(|date| resolve_date("--from", date)).transpose()?;
         if let Some(from) = from
             && from > to
         {
@@ -56,8 +57,8 @@ impl DateRange {
     }
 
     pub(super) fn resolve(
-        from: Option<&str>,
-        to: Option<&str>,
+        from: Option<&CalendarDateArg>,
+        to: Option<&CalendarDateArg>,
         today: NaiveDate,
     ) -> Result<Self, CliError> {
         let window = DateWindow::resolve(from, to, today)?;
@@ -86,18 +87,24 @@ impl DateRange {
     }
 }
 
-pub(super) fn parse_date(flag: &str, value: &str) -> Result<NaiveDate, CliError> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
-        CliError::Validation(format!(
-            "invalid {flag} date {value:?}: expected YYYY-MM-DD"
-        ))
-    })
+pub(super) fn resolve_date(flag: &str, date: &CalendarDateArg) -> Result<NaiveDate, CliError> {
+    date.resolve(|value, _| invalid_date(flag, value))
+}
+
+fn invalid_date(flag: &str, value: &str) -> CliError {
+    CliError::Validation(format!(
+        "invalid {flag} date {value:?}: expected YYYY-MM-DD"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DateRange, DateWindow};
+    use super::{CalendarDateArg, DateRange, DateWindow};
     use chrono::NaiveDate;
+
+    fn arg(date: &str) -> CalendarDateArg {
+        CalendarDateArg::decode(date)
+    }
 
     #[test]
     fn defaults_use_effective_end_year_and_preserve_point_in_time_history() {
@@ -105,8 +112,8 @@ mod tests {
         let point = DateWindow::resolve(None, None, today).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(point.from, None);
         assert_eq!(point.to, today);
-        let period =
-            DateRange::resolve(None, Some("2024-02-29"), today).unwrap_or_else(|e| panic!("{e}"));
+        let period = DateRange::resolve(None, Some(&arg("2024-02-29")), today)
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(period.from().to_string(), "2024-01-01");
         assert_eq!(period.to().to_string(), "2024-02-29");
     }
@@ -114,13 +121,13 @@ mod tests {
     #[test]
     fn explicit_future_end_is_allowed_but_bad_and_reversed_dates_fail() {
         let today = NaiveDate::default();
-        assert!(DateWindow::resolve(None, Some("2030-01-01"), today).is_ok());
+        assert!(DateWindow::resolve(None, Some(&arg("2030-01-01")), today).is_ok());
         for (from, to) in [
-            (Some("bad"), None),
-            (None, Some("2026-02-30")),
-            (Some("2030-01-02"), Some("2030-01-01")),
+            (Some(arg("bad")), None),
+            (None, Some(arg("2026-02-30"))),
+            (Some(arg("2030-01-02")), Some(arg("2030-01-01"))),
         ] {
-            assert!(DateWindow::resolve(from, to, today).is_err());
+            assert!(DateWindow::resolve(from.as_ref(), to.as_ref(), today).is_err());
         }
     }
 }

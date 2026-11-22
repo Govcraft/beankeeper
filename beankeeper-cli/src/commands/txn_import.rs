@@ -457,7 +457,7 @@ fn post_import(
             .as_ref()
             .map(db::metadata::UserAnnotations::as_str),
         currency: prepared.currency,
-        date: &prepared.date.to_string(),
+        date: prepared.date,
         entries: &entries,
         correlate: None,
         reference: Some(&reference),

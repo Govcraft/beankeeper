@@ -479,8 +479,8 @@ impl<'a> Kind<'a> {
 
 struct Request<'a> {
     kind: Kind<'a>,
-    from: Option<&'a str>,
-    to: Option<&'a str>,
+    from: Option<&'a crate::cli::CalendarDateArg>,
+    to: Option<&'a crate::cli::CalendarDateArg>,
     currency: Option<&'a crate::cli::CurrencyArg>,
     compare: CompareArg,
     explain: Option<&'a str>,
@@ -498,7 +498,7 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
             ..
         } => (
             Kind::IncomeStatement,
-            from.as_deref(),
+            from.as_ref(),
             to,
             currency,
             compare,
@@ -515,7 +515,7 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
             ..
         } => (
             Kind::TrialBalance(*account_type),
-            from.as_deref(),
+            from.as_ref(),
             to,
             currency,
             compare,
@@ -531,7 +531,7 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
             explain_change,
         } => (
             Kind::Balance(account),
-            from.as_deref(),
+            from.as_ref(),
             to,
             currency,
             compare,
@@ -554,7 +554,7 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
         ),
         ReportCommand::Trend(args) => (
             Kind::Trend(args),
-            args.from.as_deref(),
+            args.from.as_ref(),
             &args.to,
             &args.currency,
             &args.compare,
@@ -563,7 +563,7 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
         ),
         ReportCommand::CashFlow(args) => (
             Kind::CashFlow(args),
-            args.from.as_deref(),
+            args.from.as_ref(),
             &args.to,
             &args.currency,
             &args.compare,
@@ -575,7 +575,7 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
     Some(Request {
         kind,
         from,
-        to: to.as_deref(),
+        to: to.as_ref(),
         currency: currency.as_ref(),
         compare: (*compare)?,
         explain: explain.as_deref(),
@@ -630,9 +630,9 @@ impl Windows {
         }
     }
 
-    fn bounds(&self, prior: bool) -> (Option<String>, String) {
+    fn bounds(&self, prior: bool) -> (Option<NaiveDate>, NaiveDate) {
         let (from, to) = self.dates(prior);
-        ((!self.cumulative).then(|| from.to_string()), to.to_string())
+        ((!self.cumulative).then_some(from), to)
     }
 
     fn contribution(&self, date: NaiveDate, amount: ReportMoney) -> Result<ReportMoney, CliError> {
@@ -828,14 +828,7 @@ fn snapshot(
         _ => {}
     }
     let (from, to) = windows.bounds(prior);
-    let rows = db::compute_trial_balance(
-        db.conn(),
-        company,
-        None,
-        from.as_deref(),
-        Some(&to),
-        currency,
-    )?;
+    let rows = db::compute_trial_balance(db.conn(), company, None, from, Some(to), currency)?;
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
     let zero = ReportMoney::from_minor(0, currency);
@@ -1153,7 +1146,7 @@ struct PayeeMetadata {
 
 struct StoredContribution {
     id: i64,
-    date: String,
+    date: NaiveDate,
     description: String,
     metadata: Option<String>,
     reference: Option<String>,
@@ -1179,13 +1172,13 @@ fn explain(
         WHERE t.company_slug=?1 AND t.currency=?2 AND e.account_code=?3 AND e.company_slug=?1
         AND t.date<=?4 GROUP BY t.id ORDER BY t.id",
     )?;
-    let end = windows.to.max(windows.prior_to).to_string();
+    let end = windows.to.max(windows.prior_to);
     let rows = stmt.query_map(
         params![company, currency.code(), account.code.as_str(), end],
         |row| {
             Ok(StoredContribution {
                 id: row.get(0)?,
-                date: row.get(1)?,
+                date: db::calendar_date::read(row, 1)?,
                 description: row.get(2)?,
                 metadata: row.get(3)?,
                 reference: row.get(4)?,
@@ -1222,8 +1215,7 @@ fn explain(
         } else if !account.kind.is_debit_normal() {
             amount = zero.subtract(amount)?;
         }
-        let date = NaiveDate::parse_from_str(&row.date, "%Y-%m-%d")
-            .map_err(|e| CliError::Validation(e.to_string()))?;
+        let date = row.date;
         let change = windows.contribution(date, amount)?;
         if change.minor() == 0 {
             continue;
@@ -1629,10 +1621,10 @@ fn desktop_view(
         let mut state = BTreeMap::from([
             ("company", company.to_string()),
             ("currency", currency.code().to_string()),
-            ("to", to),
+            ("to", to.to_string()),
         ]);
         if let Some(from) = from {
-            state.insert("from", from);
+            state.insert("from", from.to_string());
         }
         if let Some(account) = account {
             state.insert("account", account.into());

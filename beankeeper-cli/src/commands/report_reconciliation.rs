@@ -51,7 +51,7 @@ pub struct ReconciliationArgs<'a> {
     /// Account code to reconcile.
     pub account: &'a str,
     /// Inclusive as-of date (`YYYY-MM-DD`); `None` means all dates.
-    pub to: Option<&'a str>,
+    pub to: Option<NaiveDate>,
     /// Statement balance in major units (e.g. `1234.56`).
     pub statement_balance: Option<&'a str>,
     /// Only count this statement's clearings in the cleared balance.
@@ -349,8 +349,7 @@ impl<'a> ResolvedReconciliation<'a> {
         command: &'a crate::cli::ReconciliationCommandArgs,
         today: NaiveDate,
     ) -> Result<Self, CliError> {
-        let as_of =
-            super::report_dates::DateWindow::resolve(None, command.to.as_deref(), today)?.to;
+        let as_of = super::report_dates::DateWindow::resolve(None, command.to.as_ref(), today)?.to;
         let args = ReconciliationArgs {
             account: &command.account,
             to: None,
@@ -602,11 +601,7 @@ fn build_cli_report(
     company: &Company<'_>,
     args: &ReconciliationArgs<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    let as_of = args
-        .to
-        .map(|date| super::report_dates::parse_date("--to", date))
-        .transpose()?;
-    let (account, request) = resolve_cli_request(conn, company.slug().as_str(), args, as_of)?;
+    let (account, request) = resolve_cli_request(conn, company.slug().as_str(), args, args.to)?;
     build_resolved_report(conn, company, account, request)
 }
 
@@ -836,21 +831,20 @@ fn load_entries(
          ORDER BY t.date, t.id, e.id",
         filter.sql
     ))?;
-    let mut values: Vec<Option<String>> = vec![
-        Some(company.to_string()),
-        Some(code.to_string()),
-        Some(currency.code().to_string()),
-        to.map(|date| date.to_string()),
-        statement.map(str::to_string),
-    ];
-    values.extend(filter.params.into_iter().map(Some));
+    let currency_code = currency.code();
+    let mut values: Vec<&dyn rusqlite::ToSql> =
+        vec![&company, &code, &currency_code, &to, &statement];
+    values.extend(
+        filter
+            .params
+            .iter()
+            .map(|param| param as &dyn rusqlite::ToSql),
+    );
     let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
         Ok(EntryRow {
             entry_id: row.get(0)?,
             transaction_id: row.get(1)?,
-            date: NaiveDate::parse_from_str(row.get_ref(2)?.as_str()?, "%Y-%m-%d").map_err(
-                |error| rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error)),
-            )?,
+            date: db::calendar_date::read(row, 2)?,
             description: row.get(3)?,
             reference: row.get(4)?,
             metadata: row.get(5)?,

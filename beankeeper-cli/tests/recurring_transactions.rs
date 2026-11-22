@@ -199,7 +199,7 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
             .ok_or("missing transaction ID")?;
         let (txn, entries) =
             transactions::get_transaction(ledger.db()?.read(), "acme", transaction_id)?;
-        assert_eq!(txn.date, date);
+        assert_eq!(txn.date.to_string(), date);
         assert_eq!(txn.description, "Rent");
         assert_eq!(txn.posted_by.as_deref(), Some("schedule-test"));
         let metadata: Value =

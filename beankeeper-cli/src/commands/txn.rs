@@ -144,9 +144,7 @@ fn execute_reverse(
         description,
         reference,
     } = args;
-    let date = date
-        .clone()
-        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    let date = resolve_posting_date(date.as_ref())?;
     let reference = reference
         .as_deref()
         .map(str::parse::<super::reference::TransactionReference>)
@@ -156,7 +154,7 @@ fn execute_reverse(
         &db::audit::ReverseTransactionParams {
             company_slug: company,
             id: *id,
-            date: &date,
+            date,
             description: description.as_deref(),
             reference: reference
                 .as_ref()
@@ -656,7 +654,7 @@ impl TryFrom<&PostingArgs> for PostingRequest {
         Ok(Self {
             description: args.description.clone(),
             currency,
-            date: posting_date(args.date.as_deref())?,
+            date: resolve_posting_date(args.date.as_ref())?,
             debit: parse_entries(&args.debit, currency)?,
             credit: parse_entries(&args.credit, currency)?,
             metadata: args.metadata.clone(),
@@ -674,13 +672,12 @@ impl TryFrom<&PostingArgs> for PostingRequest {
     }
 }
 
-pub(crate) fn posting_date(input: Option<&str>) -> Result<chrono::NaiveDate, CliError> {
-    input.map_or_else(
+fn resolve_posting_date(
+    date: Option<&crate::cli::CalendarDateArg>,
+) -> Result<chrono::NaiveDate, CliError> {
+    date.map_or_else(
         || Ok(chrono::Local::now().date_naive()),
-        |date| {
-            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .map_err(|error| CliError::Validation(format!("invalid date '{date}': {error}")))
-        },
+        crate::cli::CalendarDateArg::posting_date,
     )
 }
 
@@ -723,7 +720,6 @@ fn with_post_params<T>(
     let currency = *currency;
     let metadata = db::metadata::build_post_metadata(metadata.as_deref(), annotations)?;
     let metadata = metadata.as_deref();
-    let effective_date = date.format("%Y-%m-%d").to_string();
 
     let mut db_entries = Vec::with_capacity(parsed_debits.len() + parsed_credits.len());
     for (lines, direction) in [
@@ -748,7 +744,7 @@ fn with_post_params<T>(
         description,
         metadata,
         currency,
-        date: &effective_date,
+        date: *date,
         entries: &db_entries,
         correlate: *correlate,
         reference: reference

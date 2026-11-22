@@ -188,12 +188,8 @@ impl<'a> ResolvedReport<'a> {
         let currency_for = |currency| {
             resolve_report_currency(db.conn(), company, CurrencyArg::resolve_optional(currency)?)
         };
-        let window = |from: Option<&String>, to: Option<&String>| {
-            DateWindow::resolve(from.map(String::as_str), to.map(String::as_str), today)
-        };
-        let range = |from: Option<&String>, to: Option<&String>| {
-            DateRange::resolve(from.map(String::as_str), to.map(String::as_str), today)
-        };
+        let window = |from, to| DateWindow::resolve(from, to, today);
+        let range = |from, to| DateRange::resolve(from, to, today);
         Ok(match sub {
             ReportCommand::ScheduleC(args) => {
                 Self::Tax(TaxInvocation::ScheduleC(args).resolve(db, company, today)?)
@@ -256,16 +252,19 @@ impl<'a> ResolvedReport<'a> {
                 to,
                 currency,
                 filter_metadata,
-            } => Self::Ledger(
-                super::report_ledger::LedgerOptions {
-                    accounts: account,
-                    from: from.as_deref(),
-                    to: to.as_deref(),
-                    currency: CurrencyArg::resolve_optional(currency.as_ref())?,
-                    filter_metadata,
-                }
-                .resolve_cli(db, company, today)?,
-            ),
+            } => {
+                let dates = window(from.as_ref(), to.as_ref())?;
+                Self::Ledger(
+                    super::report_ledger::LedgerOptions {
+                        accounts: account,
+                        from: dates.from,
+                        to: Some(dates.to),
+                        currency: CurrencyArg::resolve_optional(currency.as_ref())?,
+                        filter_metadata,
+                    }
+                    .resolve(db.conn(), company)?,
+                )
+            }
             ReportCommand::Aging(args) => Self::Aging(
                 super::report_aging::ResolvedAging::from_command(db, company, args, today)?,
             ),
@@ -334,9 +333,7 @@ fn run_trial_balance(
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let currency = window.currency;
-    let from = window.dates.from.map(|date| date.to_string());
-    let to = window.dates.to.to_string();
-    let (from, to) = (from.as_deref(), Some(to.as_str()));
+    let (from, to) = (window.dates.from, Some(window.dates.to));
     let balances = db::compute_trial_balance(db.conn(), company, account_type, from, to, currency)?;
 
     match output.format {
@@ -383,9 +380,7 @@ fn run_balance(
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let currency = window.currency;
-    let from = window.dates.from.map(|date| date.to_string());
-    let to = window.dates.to.to_string();
-    let (from, to) = (from.as_deref(), Some(to.as_str()));
+    let (from, to) = (window.dates.from, Some(window.dates.to));
     let (debit_total, credit_total) =
         db::compute_account_balance(db.conn(), company, &account_row.code, from, to, currency)?;
 
@@ -457,8 +452,8 @@ fn run_income_statement(
             let title = build_period_title(
                 "Income Statement",
                 stmt.currency().code(),
-                Some(&stmt.dates().from().to_string()),
-                Some(&stmt.dates().to().to_string()),
+                Some(stmt.dates().from()),
+                Some(stmt.dates().to()),
             );
             let rendered =
                 output::statements::render_income_statement_table(&stmt, &title, output.use_color);
@@ -497,10 +492,15 @@ pub fn compute_income_statement(
     let conn = db.conn();
     db::audit::atomically(conn, || {
         db::companies::get_company_on_connection(conn, company)?;
-        let from = dates.from().to_string();
-        let to = dates.to().to_string();
         let load = |kind: AccountType| {
-            db::compute_trial_balance(conn, company, Some(kind), Some(&from), Some(&to), currency)
+            db::compute_trial_balance(
+                conn,
+                company,
+                Some(kind),
+                Some(dates.from()),
+                Some(dates.to()),
+                currency,
+            )
         };
         output::statements::build_income_statement(
             dates,
@@ -533,7 +533,7 @@ fn run_balance_sheet(
                 "Balance Sheet",
                 sheet.currency().code(),
                 None,
-                Some(&sheet.as_of().to_string()),
+                Some(sheet.as_of()),
             );
             let rendered =
                 output::statements::render_balance_sheet_table(&sheet, &title, output.use_color);
@@ -569,9 +569,8 @@ pub fn compute_balance_sheet(
     let conn = db.conn();
     db::audit::atomically(conn, || {
         db::companies::get_company_on_connection(conn, company)?;
-        let to = as_of.to_string();
         let load = |kind: AccountType| {
-            db::compute_trial_balance(conn, company, Some(kind), None, Some(&to), currency)
+            db::compute_trial_balance(conn, company, Some(kind), None, Some(as_of), currency)
         };
         output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
             as_of,
@@ -596,8 +595,8 @@ fn print_period_table(rendered: &str, title: &str, writer: &mut dyn Write) -> Re
 fn build_period_title(
     base: &str,
     currency_code: &str,
-    from: Option<&str>,
-    to: Option<&str>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 ) -> String {
     match (from, to) {
         (Some(f), Some(t)) => format!("{base} ({f} to {t}) ({currency_code})"),
@@ -616,8 +615,7 @@ fn run_tax_summary(
     currency: Currency,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let (from, to) = (dates.from().to_string(), dates.to().to_string());
-    let (from, to) = (Some(from.as_str()), Some(to.as_str()));
+    let (from, to) = (Some(dates.from()), Some(dates.to()));
     let rows = db::compute_tax_summary(db.conn(), company, from, to, currency)?;
 
     match output.format {

@@ -15,7 +15,7 @@ pub struct SetBudgetParams<'a> {
     pub account_code: &'a str,
     pub currency: Currency,
     pub year: i32,
-    pub month: i32,
+    pub month: Month,
     pub amount: i64,
     pub notes: Option<&'a str>,
 }
@@ -36,7 +36,7 @@ pub struct DeleteBudgetParams<'a> {
     pub account_code: &'a str,
     pub currency: Currency,
     pub year: i32,
-    pub month: Option<i32>,
+    pub month: Option<Month>,
 }
 
 /// Parameters for listing budgets.
@@ -44,7 +44,7 @@ pub struct ListBudgetParams<'a> {
     pub company_slug: &'a str,
     pub year: i32,
     pub account_code: Option<&'a str>,
-    pub month: Option<i32>,
+    pub month: Option<Month>,
 }
 
 /// Lists budget rows with optional filters.
@@ -73,7 +73,7 @@ pub fn list_budgets(
 
     if let Some(m) = params.month {
         let _ = write!(sql, " AND month = ?{param_idx}");
-        param_values.push(Box::new(m));
+        param_values.push(Box::new(m.number_from_month()));
         let _ = param_idx;
     }
 
@@ -90,7 +90,7 @@ pub fn list_budgets(
             account_code: row.get(2)?,
             currency: row.get(3)?,
             year: row.get(4)?,
-            month: row.get(5)?,
+            month: read_month(row, 5)?,
             amount: row.get(6)?,
             notes: row.get(7)?,
             created_at: row.get(8)?,
@@ -102,6 +102,17 @@ pub fn list_budgets(
         results.push(row?);
     }
     Ok(results)
+}
+
+pub(super) fn read_month(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<Month> {
+    let number: u8 = row.get(column)?;
+    Month::try_from(number).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
 }
 
 /// Inclusive month bounds in a single budget year.
@@ -286,8 +297,8 @@ fn load_variance_rows(
         Box::new(p.months.year()),
         Box::new(p.months.from().number_from_month()),
         Box::new(p.months.to().number_from_month()),
-        Box::new(from_date.to_string()),
-        Box::new(to_date.to_string()),
+        Box::new(from_date),
+        Box::new(to_date),
     ];
 
     if let Some(at) = p.account_type {
@@ -462,7 +473,7 @@ mod tests {
         account_code: &str,
         currency: Currency,
         year: i32,
-        month: Option<i32>,
+        month: Option<u8>,
     ) -> Result<usize, CliError> {
         Granted::<Budget>::with_db(db, &test_actor(), |grant| {
             audit::delete_budget(
@@ -472,7 +483,7 @@ mod tests {
                     account_code,
                     currency,
                     year,
-                    month,
+                    month: month.map(fixture_month),
                 },
                 crate::confirmation::Confirmed::forced(true)?,
             )
@@ -566,7 +577,9 @@ mod tests {
             description: "Test expense",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date,
+            date: date
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             entries: &entries,
             correlate: None,
             reference: None,
@@ -602,7 +615,9 @@ mod tests {
             description: "Test revenue",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date,
+            date: date
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             entries: &entries,
             correlate: None,
             reference: None,
@@ -612,10 +627,14 @@ mod tests {
         post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
     }
 
+    fn fixture_month(month: u8) -> Month {
+        Month::try_from(month).unwrap_or_else(|error| panic!("fixture month: {error}"))
+    }
+
     fn budget<'a>(
         account: &'a str,
         year: i32,
-        month: i32,
+        month: u8,
         amount: i64,
         notes: Option<&'a str>,
     ) -> SetBudgetParams<'a> {
@@ -624,7 +643,7 @@ mod tests {
             account_code: account,
             currency: Currency::USD,
             year,
-            month,
+            month: fixture_month(month),
             amount,
             notes,
         }
@@ -672,7 +691,7 @@ mod tests {
         let row = set_budget(&db, &budget("5000", 2026, 3, 250_000, Some("March rent")))?;
         assert_eq!(row.account_code, "5000");
         assert_eq!(row.year, 2026);
-        assert_eq!(row.month, 3);
+        assert_eq!(row.month, Month::March);
         assert_eq!(row.amount, 250_000);
         assert_eq!(row.notes.as_deref(), Some("March rent"));
         Ok(())
@@ -691,7 +710,7 @@ mod tests {
                 company_slug: "acme",
                 year: 2026,
                 account_code: Some("5000"),
-                month: Some(3),
+                month: Some(Month::March),
             },
         )?;
         assert_eq!(rows.len(), 1);
@@ -786,7 +805,7 @@ mod tests {
                 company_slug: "acme",
                 year: 2026,
                 account_code: None,
-                month: Some(1),
+                month: Some(Month::January),
             },
         )?;
         assert_eq!(jan.len(), 2);

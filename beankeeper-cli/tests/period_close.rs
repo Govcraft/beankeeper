@@ -270,7 +270,9 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
                 company_slug: "acme",
                 description: "Bypass",
                 currency: beankeeper::types::Currency::USD,
-                date: "2026-1-31",
+                date: "2026-1-31"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
                 entries: &entries,
                 metadata: None,
                 correlate: None,

@@ -636,7 +636,9 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
             &audit::ReverseTransactionParams {
                 company_slug: "acme",
                 id,
-                date: "2026-01-03",
+                date: "2026-01-03"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
                 description: None,
                 reference: None,
                 actor: &actor,

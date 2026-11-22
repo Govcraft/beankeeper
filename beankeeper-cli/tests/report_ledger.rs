@@ -203,21 +203,21 @@ fn embedded_bounds_use_canonical_sql_dates_and_keep_open_ends() -> TestResult {
     let db = Db::open_existing(Path::new(&path), None)?;
     let opts = LedgerOptions {
         accounts: &["1000".to_string()],
-        from: Some("2025-1-10"),
-        to: Some("2025-1-10"),
+        from: Some("2025-1-10".parse()?),
+        to: Some("2025-1-10".parse()?),
         currency: None,
         filter_metadata: &[],
     };
 
     let bounded = build_report(db.conn(), CO, &opts)?;
     let cash = bounded.accounts.first().ok_or("missing cash account")?;
-    assert_eq!(bounded.from.as_deref(), Some("2025-01-10"));
-    assert_eq!(bounded.to.as_deref(), Some("2025-01-10"));
+    assert_eq!(bounded.from, Some("2025-01-10".parse()?));
+    assert_eq!(bounded.to, Some("2025-01-10".parse()?));
     assert_eq!(cash.opening_balance, -3_000);
     assert_eq!(cash.entries.len(), 1);
     assert_eq!(
         cash.entries.first().ok_or("missing invoice")?.date,
-        "2025-01-10"
+        "2025-01-10".parse()?
     );
     assert_eq!(cash.closing_balance, 7_000);
 

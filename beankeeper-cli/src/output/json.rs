@@ -205,7 +205,7 @@ pub struct TransactionJson {
     token_jti: Option<String>,
     #[serde(serialize_with = "serialize_display")]
     currency: Currency,
-    date: String,
+    date: chrono::NaiveDate,
     entries: Vec<EntryJson>,
 }
 
@@ -311,7 +311,7 @@ struct TransactionWithAttachmentsJson<'a> {
     token_jti: Option<String>,
     #[serde(serialize_with = "serialize_display")]
     currency: Currency,
-    date: String,
+    date: chrono::NaiveDate,
     entries: Vec<EntryJson>,
     attachments: Vec<AttachmentJson<'a>>,
 }
@@ -428,7 +428,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                 agent_uri: txn.agent_uri.clone(),
                 token_jti: txn.token_jti.clone(),
                 currency: txn.currency,
-                date: txn.date.clone(),
+                date: txn.date,
                 entries,
             }
         })
@@ -498,7 +498,7 @@ pub fn render_transactions_with_attachments<
                 agent_uri: txn.agent_uri.clone(),
                 token_jti: txn.token_jti.clone(),
                 currency: txn.currency,
-                date: txn.date.clone(),
+                date: txn.date,
                 entries,
                 attachments: att,
             })
@@ -584,7 +584,7 @@ struct OrphanedCorrelationJson {
     transaction_id: i64,
     company: String,
     description: String,
-    date: String,
+    date: chrono::NaiveDate,
     partner_id: i64,
 }
 
@@ -603,7 +603,7 @@ pub fn render_orphaned_correlations(
             transaction_id: o.transaction_id,
             company: o.company_slug.clone(),
             description: o.description.clone(),
-            date: o.date.clone(),
+            date: o.date,
             partner_id: o.partner_id,
         })
         .collect();
@@ -920,7 +920,7 @@ struct BudgetJson {
     #[serde(serialize_with = "serialize_display")]
     currency: Currency,
     year: i32,
-    month: i32,
+    month: u32,
     #[serde(flatten)]
     amount: super::amounts::MoneyField,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -941,7 +941,7 @@ pub fn render_budgets(rows: &[crate::db::BudgetRow], meta: Meta) -> Result<Strin
             account_code: row.account_code.clone(),
             currency: row.currency,
             year: row.year,
-            month: row.month,
+            month: row.month.number_from_month(),
             amount: super::amounts::MoneyField::new("amount", row.money()),
             notes: row.notes.clone(),
             created_at: row.created_at.clone(),
@@ -1125,7 +1125,9 @@ mod tests {
             description: "Sale".into(),
             metadata: None,
             currency: Currency::USD,
-            date: "2025-03-15".into(),
+            date: "2025-03-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,
@@ -1181,7 +1183,9 @@ mod tests {
             description: "Orphan".into(),
             metadata: None,
             currency: Currency::USD,
-            date: "2025-03-15".into(),
+            date: "2025-03-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,

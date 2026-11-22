@@ -515,7 +515,7 @@ fn call_txn_reverse(db: &Db, actor: &Actor, input: inputs::TxnReverse) -> Respon
         input.company.into_inner().as_str(),
         TxnCommand::Reverse(cli::TxnReverseArgs {
             id: input.id.get(),
-            date: optional_text(input.date),
+            date: calendar_arg(input.date),
             description: input.description,
             reference: optional_text(input.reference),
         }),
@@ -706,10 +706,10 @@ fn call_verify(db: &Db) -> Response {
 
 fn summary(db: &Db, input: inputs::FinancialSummary, actor: &Actor) -> Response {
     let options = commands::summary::SummaryArgs {
-        from: optional_text(input.options.from),
-        to: optional_text(input.options.to),
-        compare_from: optional_text(input.options.compare_from),
-        compare_to: optional_text(input.options.compare_to),
+        from: calendar_arg(input.options.from),
+        to: calendar_arg(input.options.to),
+        compare_from: calendar_arg(input.options.compare_from),
+        compare_to: calendar_arg(input.options.compare_to),
         currency: input
             .options
             .currency
@@ -872,6 +872,12 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             clear_options(date, statement.as_deref(), status),
         ),
     })
+}
+
+pub(super) fn calendar_arg(
+    value: Option<Text<super::input_values::CalendarDate>>,
+) -> Option<cli::CalendarDateArg> {
+    value.map(|date| date.into_inner().date().into())
 }
 
 fn clear_options(

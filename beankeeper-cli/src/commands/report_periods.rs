@@ -19,7 +19,7 @@ use chrono::{Datelike, Months, NaiveDate};
 use clap::ValueEnum;
 use serde::Serialize;
 
-use super::report_dates::{DateRange, parse_date};
+use super::report_dates::{DateRange, resolve_date};
 
 use crate::cli::{Cli, Command, OutputFormat, ReportCommand};
 use crate::db;
@@ -127,8 +127,11 @@ impl std::str::FromStr for CompareArg {
                     )
                 })?;
                 Ok(Self::Custom(ComparisonRange::new(
-                    parse_date("--compare start", from)?,
-                    parse_date("--compare end", to)?,
+                    resolve_date(
+                        "--compare start",
+                        &crate::cli::CalendarDateArg::decode(from),
+                    )?,
+                    resolve_date("--compare end", &crate::cli::CalendarDateArg::decode(to))?,
                 )?))
             }
         }
@@ -304,8 +307,8 @@ pub(crate) fn try_run_to(
         } => Request {
             kind: MultiReportKind::IncomeStatement,
             period: *period,
-            from: from.as_deref(),
-            to: to.as_deref(),
+            from: from.as_ref(),
+            to: to.as_ref(),
             account_type: None,
             currency: currency.as_ref(),
         },
@@ -319,8 +322,8 @@ pub(crate) fn try_run_to(
         } => Request {
             kind: MultiReportKind::TrialBalance,
             period: *period,
-            from: from.as_deref(),
-            to: to.as_deref(),
+            from: from.as_ref(),
+            to: to.as_ref(),
             account_type: *account_type,
             currency: currency.as_ref(),
         },
@@ -341,8 +344,8 @@ pub(crate) fn try_run_to(
 struct Request<'a> {
     kind: MultiReportKind,
     period: PeriodArg,
-    from: Option<&'a str>,
-    to: Option<&'a str>,
+    from: Option<&'a crate::cli::CalendarDateArg>,
+    to: Option<&'a crate::cli::CalendarDateArg>,
     account_type: Option<AccountType>,
     currency: Option<&'a crate::cli::CurrencyArg>,
 }
@@ -563,9 +566,6 @@ pub(super) fn fetch_window_rows(
     currency: Currency,
     (from, to): (NaiveDate, NaiveDate),
 ) -> Result<Vec<db::BalanceRow>, CliError> {
-    let from = from.format("%Y-%m-%d").to_string();
-    let to = to.format("%Y-%m-%d").to_string();
-    let (from, to) = (from.as_str(), to.as_str());
     let rows = match kind {
         MultiReportKind::IncomeStatement => {
             let mut rows = db::compute_trial_balance(

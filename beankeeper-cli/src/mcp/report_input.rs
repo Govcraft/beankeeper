@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use super::dispatch::{optional_text, text_list, unpaged};
+use super::dispatch::{calendar_arg, optional_text, text_list, unpaged};
 use super::input_values::Text;
 use super::inputs::{
     AgingInput, BalanceInput, BalanceSheetInput, BudgetVarianceInput, CashFlowInput,
@@ -66,8 +66,8 @@ impl TryFrom<ReportOptions> for ReportCommand {
             ReportOptions::ScheduleC(input) => Ok(Self::ScheduleC(input.into())),
             ReportOptions::Vendor1099(input) => Ok(Self::Vendor1099(input.into())),
             ReportOptions::TaxSummary(input) => Ok(Self::TaxSummary {
-                from: optional_text(input.from),
-                to: optional_text(input.to),
+                from: calendar_arg(input.from),
+                to: calendar_arg(input.to),
                 currency: input.currency.map(|currency| currency.into_inner().into()),
             }),
             ReportOptions::Ledger(input) => Ok(ledger(input)),
@@ -82,8 +82,8 @@ impl TryFrom<ReportOptions> for ReportCommand {
 fn trend(input: TrendInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::Trend(TrendArgs {
         metric: input.metric.into(),
-        from: optional_text(input.from),
-        to: optional_text(input.to),
+        from: calendar_arg(input.from),
+        to: calendar_arg(input.to),
         period: input.period.map_or(PeriodArg::Month, Into::into),
         currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
@@ -98,8 +98,8 @@ fn trial_balance(input: TrialBalanceInput) -> Result<ReportCommand, CliError> {
         input.explain_change.is_some(),
     )?;
     Ok(ReportCommand::TrialBalance {
-        from: optional_text(input.from),
-        to: optional_text(input.to),
+        from: calendar_arg(input.from),
+        to: calendar_arg(input.to),
         account_type: input.account_type,
         currency: input.currency.map(|currency| currency.into_inner().into()),
         period: input.period.map(Into::into),
@@ -111,8 +111,8 @@ fn trial_balance(input: TrialBalanceInput) -> Result<ReportCommand, CliError> {
 fn balance(input: BalanceInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::Balance {
         account: input.account.to_string(),
-        from: optional_text(input.from),
-        to: optional_text(input.to),
+        from: calendar_arg(input.from),
+        to: calendar_arg(input.to),
         currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
@@ -126,8 +126,8 @@ fn income_statement(input: IncomeStatementInput) -> Result<ReportCommand, CliErr
         input.explain_change.is_some(),
     )?;
     Ok(ReportCommand::IncomeStatement {
-        from: optional_text(input.from),
-        to: optional_text(input.to),
+        from: calendar_arg(input.from),
+        to: calendar_arg(input.to),
         currency: input.currency.map(|currency| currency.into_inner().into()),
         period: input.period.map(Into::into),
         compare,
@@ -137,7 +137,7 @@ fn income_statement(input: IncomeStatementInput) -> Result<ReportCommand, CliErr
 
 fn balance_sheet(input: BalanceSheetInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::BalanceSheet {
-        to: optional_text(input.to),
+        to: calendar_arg(input.to),
         currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
@@ -147,8 +147,8 @@ fn balance_sheet(input: BalanceSheetInput) -> Result<ReportCommand, CliError> {
 impl From<TaxPeriodInput> for TaxArgs {
     fn from(input: TaxPeriodInput) -> Self {
         Self {
-            from: optional_text(input.from),
-            to: optional_text(input.to),
+            from: calendar_arg(input.from),
+            to: calendar_arg(input.to),
             currency: input.currency.map(|currency| currency.into_inner().into()),
             output_format: None,
         }
@@ -159,8 +159,8 @@ impl From<Vendor1099Input> for VendorArgs {
     fn from(input: Vendor1099Input) -> Self {
         Self {
             period: TaxArgs {
-                from: optional_text(input.from),
-                to: optional_text(input.to),
+                from: calendar_arg(input.from),
+                to: calendar_arg(input.to),
                 currency: input.currency.map(|currency| currency.into_inner().into()),
                 output_format: None,
             },
@@ -172,8 +172,8 @@ impl From<Vendor1099Input> for VendorArgs {
 fn ledger(input: LedgerInput) -> ReportCommand {
     ReportCommand::Ledger {
         account: text_list(input.account),
-        from: optional_text(input.from),
-        to: optional_text(input.to),
+        from: calendar_arg(input.from),
+        to: calendar_arg(input.to),
         currency: input.currency.map(|currency| currency.into_inner().into()),
         filter_metadata: input.filter_metadata,
     }
@@ -210,7 +210,7 @@ fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::Aging(crate::cli::AgingCommandArgs {
         account: text_list(input.account),
         include_children: input.include_children,
-        as_of: optional_text(input.as_of),
+        as_of: calendar_arg(input.as_of),
         buckets: input.buckets.unwrap_or_else(|| "30,60,90".into()),
         group_by_metadata: input.group_by_metadata,
         currency: input.currency.map(|currency| currency.into_inner().into()),
@@ -227,7 +227,7 @@ fn reconciliation(input: ReconciliationInput) -> ReportCommand {
         mode: input.mode.map(Into::into).unwrap_or_default(),
         link_key: input.link_key,
         account: input.account.to_string(),
-        to: optional_text(input.to),
+        to: calendar_arg(input.to),
         statement_balance: optional_text(input.statement_balance),
         statement: input.statement,
         filter_metadata: input.filter_metadata,
@@ -238,8 +238,8 @@ fn reconciliation(input: ReconciliationInput) -> ReportCommand {
 
 fn cash_flow(input: CashFlowInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::CashFlow(CashFlowArgs {
-        from: optional_text(input.from),
-        to: optional_text(input.to),
+        from: calendar_arg(input.from),
+        to: calendar_arg(input.to),
         cash_account: text_list(input.cash_account),
         currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,

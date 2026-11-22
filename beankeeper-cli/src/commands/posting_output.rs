@@ -43,7 +43,7 @@ struct PostingPayloadJson<'a> {
     description: &'a str,
     metadata: Option<&'a str>,
     currency: Currency,
-    date: &'a str,
+    date: chrono::NaiveDate,
     entries: Vec<PostingLineJson<'a>>,
     correlate: Option<i64>,
     reference: Option<&'a str>,
@@ -56,7 +56,7 @@ impl<'a> From<&'a PostingPayload> for PostingPayloadJson<'a> {
             description: &payload.description,
             metadata: payload.metadata.as_deref(),
             currency: payload.currency,
-            date: &payload.date,
+            date: payload.date,
             entries: PostingLineJson::for_entries(&payload.entries, Some(payload.currency)),
             correlate: payload.correlate,
             reference: payload.reference.as_deref(),
@@ -154,7 +154,9 @@ mod tests {
                 description: "Expense".into(),
                 metadata: Some(r#"{"amount":1}"#.into()),
                 currency: Currency::BHD,
-                date: "2026-02-01".into(),
+                date: "2026-02-01"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
                 entries: vec![PostEntryParams {
                     account_code: "5000".into(),
                     direction: beankeeper::types::DebitOrCredit::Debit,

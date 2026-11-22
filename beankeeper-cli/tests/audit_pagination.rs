@@ -93,7 +93,9 @@ impl Ledger {
                 description: "Sale",
                 metadata: None,
                 currency: currency.parse()?,
-                date: "2026-01-01",
+                date: "2026-01-01"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
                 entries: &entries,
                 correlate: None,
                 reference: None,
