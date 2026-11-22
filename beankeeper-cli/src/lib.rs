@@ -12,6 +12,7 @@ pub mod confirmation;
 pub mod db;
 pub mod error;
 pub mod identity;
+pub mod ledger_target;
 pub mod mcp;
 pub mod operation;
 pub mod output;

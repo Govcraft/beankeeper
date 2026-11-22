@@ -24,7 +24,8 @@ struct SnapshotInfo<'a> {
 /// # Errors
 /// Returns an error for an unsafe destination, failed snapshot or invalid ledger.
 pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
-    validate_destination(&cli.db, output, force)?;
+    let source = cli.db_path()?;
+    validate_destination(source, output, force)?;
     let db = cli.open_db()?;
     let directory = staging_directory(output)?;
     let staged = NamedTempFile::new_in(directory.path())?;
@@ -33,7 +34,7 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
     let verification = VerifiedLedger::read(&snapshot)?;
     let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
-    publish(staged, &cli.db, output, force)?;
+    publish(staged, source, output, force)?;
     report(
         cli,
         Operation::Backup,
@@ -48,9 +49,11 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
 /// # Errors
 /// Returns an error without replacing the destination if validation fails.
 pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
-    let destination = cli
-        .explicit_db()
-        .ok_or_else(|| CliError::Usage("restore requires an explicit --db destination".into()))?;
+    let destination = cli.explicit_db()?.ok_or_else(|| {
+        CliError::Usage(
+            "restore requires an explicit --db destination or named ledger target".into(),
+        )
+    })?;
     validate_destination(input, destination, force)?;
     if !input.try_exists()? {
         return Err(CliError::NotFound(format!(

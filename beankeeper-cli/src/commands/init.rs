@@ -32,7 +32,7 @@ pub fn run(
     force: bool,
     demo: bool,
 ) -> Result<(), CliError> {
-    let db_path = path.unwrap_or(&cli.db);
+    let db_path = path.map_or_else(|| cli.db_path(), Ok)?;
 
     if db_path.exists() && !force {
         return Err(CliError::Validation(format!(

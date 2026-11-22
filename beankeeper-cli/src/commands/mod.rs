@@ -175,7 +175,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     ) {
         // Preserve standalone loan calculation without an existing ledger.
         let standalone = matches!(&cli.command, Command::Loan(args) if matches!(args.command, crate::cli::LoanCommand::Schedule(_)))
-            && !cli.db.try_exists()?
+            && !cli.db_path()?.try_exists()?
             && cli.agent_token.is_none();
         if !standalone {
             cli.open_db()?;

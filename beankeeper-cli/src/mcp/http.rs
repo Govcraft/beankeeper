@@ -1,35 +1,72 @@
 //! Authenticated HTTP boundary for the shared ledger tool router.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
+use rmcp::{RoleServer, service::RequestContext};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
 
-use super::LedgerServer;
 use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
+use super::targets::OpenedLedger;
+use super::{LedgerServer, LedgerTarget, LedgerTargets};
 use crate::cli::Cli;
 use crate::db::ActorLabel;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::identity::VerifiedAgent;
 
-/// Verified identity for one HTTP request.
+/// Header selecting a registered ledger for one HTTP MCP request.
+pub const LEDGER_TARGET_HEADER: &str = "beankeeper-ledger-target";
+
+/// An opened ledger paired with a bearer identity verified by that ledger.
 #[derive(Clone)]
-pub(super) struct RequestAgent(pub Arc<VerifiedAgent>);
+pub(super) struct AuthenticatedLedger {
+    ledger: OpenedLedger,
+    identity: Arc<VerifiedAgent>,
+}
+
+impl AuthenticatedLedger {
+    fn verify(ledger: OpenedLedger, token: &SecretString) -> Result<Self, CliError> {
+        let identity = crate::identity::verify(ledger.lock()?.read(), token.expose_secret())?;
+        Ok(Self {
+            ledger,
+            identity: Arc::new(identity),
+        })
+    }
+
+    pub(super) fn ledger(&self) -> &OpenedLedger {
+        &self.ledger
+    }
+
+    pub(super) fn identity(&self) -> &VerifiedAgent {
+        &self.identity
+    }
+}
+
+pub(super) fn authenticated_ledger(
+    context: &RequestContext<RoleServer>,
+) -> Result<&AuthenticatedLedger, CliError> {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<AuthenticatedLedger>())
+        .ok_or_else(|| CliError::Unauthorized("HTTP requires an agent token".into()))
+}
 
 #[derive(Clone)]
 struct Authentication {
-    db: Arc<Mutex<Db>>,
+    targets: LedgerTargets,
     fallback: Option<SecretString>,
+    allow_event_replay: bool,
 }
 
 fn credential(
@@ -70,6 +107,8 @@ fn rejection(error: &CliError) -> Response {
     let status = match error {
         CliError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         CliError::Forbidden(_) => StatusCode::FORBIDDEN,
+        CliError::Validation(_) => StatusCode::BAD_REQUEST,
+        CliError::NotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let body = json!({"code": error.code(), "message": error.to_string()}).to_string();
@@ -95,23 +134,38 @@ async fn authenticate(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let token = match credential(&mut request, state.fallback.as_ref()) {
+    let target = match request.extensions().get::<LedgerTarget>().map_or_else(
+        || LedgerTarget::try_from(request.headers().get_all(LEDGER_TARGET_HEADER)),
+        |target| Ok(target.clone()),
+    ) {
+        Ok(target) => target,
+        Err(error) => return rejection(&error),
+    };
+    let fallback = state
+        .fallback
+        .as_ref()
+        .filter(|_| target == LedgerTarget::default());
+    let token = match credential(&mut request, fallback) {
         Ok(token) => token,
         Err(error) => return rejection(&error),
     };
-    let result = tokio::task::spawn_blocking(move || {
-        let db = state
-            .db
-            .lock()
-            .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
-        crate::identity::verify(db.read(), token.expose_secret())
-    })
-    .await;
+    let ledger = match state.targets.resolve(&target) {
+        Ok(ledger) => ledger,
+        Err(error) => return rejection(&error),
+    };
+    let result =
+        tokio::task::spawn_blocking(move || AuthenticatedLedger::verify(ledger, &token)).await;
     match result {
-        Ok(Ok(identity)) => {
-            request
-                .extensions_mut()
-                .insert(RequestAgent(Arc::new(identity)));
+        Ok(Ok(call)) => {
+            // rmcp's legacy SSE cache is scoped to the session, not the ledger
+            // or bearer that authorized the original POST.
+            if !state.allow_event_replay
+                && request.method() == Method::GET
+                && request.headers().contains_key("last-event-id")
+            {
+                return StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            request.extensions_mut().insert(call);
             next.run(request).await
         }
         Ok(Err(error)) => rejection(&error),
@@ -130,9 +184,10 @@ async fn authenticate(
 /// The ledger must already exist. The passphrase is resolved once from `cli`,
 /// without prompting. Every MCP request verifies a bearer credential, even when
 /// ledger capability enforcement is off. `cli.agent_token` is a fallback only
-/// when the Authorization header is absent. Tool calls recheck identity state
-/// and current policy atomically with execution. `read_only` always
-/// removes mutation tools.
+/// for startup requests when the Authorization header is absent. Additional
+/// CLI `--ledger` bindings are opened with the same passphrase. Tool calls
+/// recheck identity state and current policy atomically with execution.
+/// `read_only` always removes mutation tools.
 ///
 /// The host supplies the transport configuration, including Host/Origin rules.
 /// Clone `config.cancellation_token` before passing it in, then cancel it during
@@ -267,33 +322,86 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
     config: StreamableHttpServerConfig,
     host: H,
 ) -> Result<Router, CliError> {
-    let tools = catalog(host.tools(), read_only)?;
-    let host = Arc::new(host);
-    let db = Db::open_existing(&cli.db, passphrase)?;
-    let server = LedgerServer::with_credentials(
-        db,
-        read_only.into(),
-        super::Credentials::Http,
-        ActorLabel::configured(cli.actor.as_deref()),
-    );
+    let server = host_server(cli, read_only, host)?;
+    let paths = cli.ledger_paths()?;
+    let targets = LedgerTargets::new(Db::open_existing(&cli.db, passphrase)?);
+    for (target, path) in paths {
+        targets.register(target.clone(), Db::open_existing(path, passphrase)?)?;
+    }
+    Ok(build_router(cli, targets, config, server, paths.is_empty()))
+}
+
+/// Serve already-opened ledgers and application tools on one authenticated HTTP MCP endpoint.
+///
+/// Keep a clone of `targets` to register ledgers after the router is running.
+/// Clients select a ledger with [`LEDGER_TARGET_HEADER`] on each request, including
+/// discovery. A host can insert a typed [`LedgerTarget`] in axum request
+/// extensions to override header selection. With neither selector, the router
+/// uses the startup ledger. Supply a bearer issued by the selected ledger.
+/// The CLI token fallback and application host tools are available on the
+/// startup ledger. A single MCP session can send calls to
+/// different registered ledgers with their respective credentials.
+/// SSE replay via `Last-Event-ID` is disabled because the transport cache is
+/// scoped to the session and could replay a response from a different ledger.
+///
+/// This factory reads the actor and fallback token from `cli`. It uses the
+/// connections supplied in `targets` and starts no listener or runtime.
+///
+/// # Errors
+/// Returns a CLI error for an invalid host tool catalog.
+pub fn http_router_with_ledger_targets<H: HostToolHandler>(
+    cli: &Cli,
+    targets: LedgerTargets,
+    read_only: bool,
+    config: StreamableHttpServerConfig,
+    host: H,
+) -> Result<Router, CliError> {
+    let server = host_server(cli, read_only, host)?;
+    Ok(build_router(cli, targets, config, server, false))
+}
+
+fn host_server<H: HostToolHandler>(
+    cli: &Cli,
+    read_only: bool,
+    host: H,
+) -> Result<HostServer<H>, CliError> {
+    Ok(HostServer {
+        tools: catalog(host.tools(), read_only)?,
+        ledger: LedgerServer::with_backend(
+            read_only.into(),
+            super::Backend::Http,
+            ActorLabel::configured(cli.actor.as_deref()),
+        ),
+        host: Arc::new(host),
+    })
+}
+
+fn build_router<H: HostToolHandler>(
+    cli: &Cli,
+    targets: LedgerTargets,
+    config: StreamableHttpServerConfig,
+    server: HostServer<H>,
+    allow_event_replay: bool,
+) -> Router {
     let authentication = Authentication {
-        db: server.db.clone(),
+        targets,
         fallback: cli.agent_token.clone(),
+        allow_event_replay,
     };
     let service = StreamableHttpService::new(
         move || {
             Ok(HostServer {
-                ledger: server.clone(),
-                host: host.clone(),
-                tools: tools.clone(),
+                ledger: server.ledger.clone(),
+                host: server.host.clone(),
+                tools: server.tools.clone(),
             })
         },
         Arc::new(LocalSessionManager::default()),
         config,
     );
-    Ok(Router::new()
+    Router::new()
         .nest_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(authentication, authenticate)))
+        .layer(middleware::from_fn_with_state(authentication, authenticate))
 }
 
 /// Serve the ledger at `/mcp` using authenticated Streamable HTTP.
