@@ -11,7 +11,10 @@ fn main() -> ExitCode {
 
     let meta = if json_mode {
         let cmd_name = commands::command_name(&cli.command);
-        let company = cli.company.as_deref();
+        let company = cli
+            .company
+            .as_ref()
+            .map(beankeeper_cli::db::companies::CompanySlug::as_str);
         Some(beankeeper_cli::output::json::meta(cmd_name, company))
     } else {
         None
