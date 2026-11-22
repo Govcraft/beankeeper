@@ -14,6 +14,13 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   targets. Missing invoice due dates are explicit; age-based open items are
   reported separately. ([#116](https://github.com/Govcraft/beankeeper/issues/116))
 
+### Changed
+
+- CLI and MCP `verify` return local verification evidence, including per-company
+  currency totals, audit-chain head and row counts. Integrity errors name the
+  first failing check and identify the affected record where available.
+  ([#235](https://github.com/Govcraft/beankeeper/issues/235))
+
 ### Fixed
 
 - Transaction list and count interpret amount filters in one currency. They

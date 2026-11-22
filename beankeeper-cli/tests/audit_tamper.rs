@@ -9,7 +9,7 @@ use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db, PostEntryParams, PostResult, PostTransactionParams};
 use beankeeper_cli::identity::{Admin, Granted, Reconcile};
 use rusqlite::{Connection, params};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -62,16 +62,29 @@ impl Ledger {
     }
 
     fn post(&self, reference: &str) -> Result<PostResult, beankeeper_cli::error::CliError> {
+        self.post_in(
+            &"acme".parse()?,
+            beankeeper::types::Currency::USD,
+            reference,
+        )
+    }
+
+    fn post_in(
+        &self,
+        company: &db::companies::CompanySlug,
+        currency: beankeeper::types::Currency,
+        reference: &str,
+    ) -> Result<PostResult, beankeeper_cli::error::CliError> {
         let entries = [
             entry("1000", beankeeper::types::DebitOrCredit::Debit),
             entry("4000", beankeeper::types::DebitOrCredit::Credit),
         ];
         {
             let params = PostTransactionParams {
-                company_slug: &"acme".parse()?,
+                company_slug: company,
                 description: "Sale",
                 metadata: None,
-                currency: beankeeper::types::Currency::USD,
+                currency,
                 date: "2026-01-01"
                     .parse()
                     .unwrap_or_else(|error| panic!("fixture date: {error}")),
@@ -298,7 +311,10 @@ fn verify_reports_first_modified_hash_link_for_each_canonical_field() -> TestRes
             &format!("UPDATE audit_log SET {assignment} WHERE id = 1"),
             [],
         )?;
-        failure(&ledger.verify()?, "audit hash chain broken at row #")?;
+        failure(
+            &ledger.verify()?,
+            "audit_hash_chain failed: audit hash chain broken at row #",
+        )?;
     }
     Ok(())
 }
@@ -338,20 +354,23 @@ fn verify_rechecks_balance_positive_amounts_currency_and_entry_ownership() -> Te
         ),
         (
             "UPDATE entries SET amount = 0 WHERE id = 1",
-            "entry amount must be positive",
+            "entry #1: entry amount must be positive",
         ),
         (
             "UPDATE entries SET direction = 'invalid' WHERE id = 1",
-            "invalid entry direction",
+            "entry #1: invalid entry direction",
         ),
-        ("DELETE FROM entries WHERE id = 1", "at least two entries"),
+        (
+            "DELETE FROM entries WHERE id = 1",
+            "must have at least two entries",
+        ),
         (
             "UPDATE transactions SET currency = 'ZZZ' WHERE id = 1",
             "invalid transaction currency",
         ),
         (
             "UPDATE entries SET company_slug = 'other' WHERE id = 1",
-            "entry belongs to another company",
+            "entry #1: entry belongs to another company",
         ),
     ] {
         let ledger = Ledger::new()?;
@@ -362,7 +381,10 @@ fn verify_rechecks_balance_positive_amounts_currency_and_entry_ownership() -> Te
             DROP TRIGGER protect_transactions_update; PRAGMA ignore_check_constraints = ON; PRAGMA foreign_keys = OFF;",
         )?;
         conn.execute(sql, [])?;
-        failure(&ledger.verify()?, expected)?;
+        failure(
+            &ledger.verify()?,
+            &format!("accounting failed: transaction #1 in company 'acme': {expected}"),
+        )?;
     }
     Ok(())
 }
@@ -564,6 +586,138 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
             |grant| db::post_transaction(grant, &params),
         )
     }?;
-    success(&ledger.verify()?)?;
+    let data = success(&ledger.verify()?)?;
+    let total = (i128::from(i64::MAX) * 2).to_string();
+    let usd = &data["data"]["companies"][0]["currencies"][0];
+    assert_eq!(usd["debit_minor"], total);
+    assert_eq!(usd["credit_minor"], total);
+    Ok(())
+}
+
+#[test]
+fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestResult {
+    use beankeeper::types::{AccountType, Currency};
+
+    let ledger = Ledger::new()?;
+    let other = "other".parse()?;
+    let empty = "empty".parse()?;
+    let actor = Actor::new("fixture");
+    for (company, name) in [(&other, "Other"), (&empty, "Empty")] {
+        Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
+            db::create_company(grant, company, name, None)
+        })?;
+    }
+    for (code, name, account_type) in [
+        ("1000", "Cash", AccountType::Asset),
+        ("4000", "Revenue", AccountType::Revenue),
+    ] {
+        Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &other,
+                    code,
+                    name,
+                    account_type,
+                    default_tax_category: None,
+                },
+            )
+        })?;
+    }
+
+    ledger.post("sale-1")?;
+    ledger.post("sale-2")?;
+    ledger.post_in(&"acme".parse()?, Currency::JPY, "sale-jpy")?;
+    ledger.post_in(&other, Currency::USD, "other-sale")?;
+
+    let model = success(&ledger.verify()?)?;
+    let data = &model["data"];
+    let counts = &data["row_counts"];
+    let audit_count = ledger.count("audit_log")?;
+    assert_eq!(
+        counts,
+        &json!({
+            "companies": 3, "accounts": 4, "transactions": 4, "entries": 8, "audit_rows": audit_count,
+        })
+    );
+    let total = |currency: &str, digits: u8, amount: &str| {
+        json!({
+            "currency": currency, "minor_unit_digits": digits,
+            "debit_minor": amount, "credit_minor": amount, "balanced": true,
+        })
+    };
+    assert_eq!(
+        data["companies"],
+        json!([
+            {"company": "acme", "currencies": [total("JPY", 0, "100"), total("USD", 2, "200")]},
+            {"company": "empty", "currencies": []},
+            {"company": "other", "currencies": [total("USD", 2, "100")]},
+        ])
+    );
+    let audit_end: (i64, String) = ledger.raw()?.query_row(
+        "SELECT id, row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(
+        data["audit_chain"],
+        json!({
+            "first_id": 1, "last_id": audit_end.0, "head_hash": audit_end.1,
+            "length": audit_count, "intact": true,
+        })
+    );
+    let checks = data["checks"].as_array().ok_or("verification checks")?;
+    let expected = [
+        "schema_version",
+        "audit_hash_chain",
+        "ledger_policy",
+        "period_locks",
+        "proposal_resolutions",
+        "spend_limits",
+        "accounting",
+        "creation_snapshots",
+        "transaction_links",
+        "statement_batches",
+        "foreign_keys",
+        "sqlite_integrity",
+        "row_counts",
+    ];
+    assert_eq!(
+        checks,
+        &expected.map(|name| json!({"name": name, "outcome": "passed"}))
+    );
+    assert_eq!(data["desktop_view"]["link"], json!({"view_id": "review"}));
+
+    let text = Command::cargo_bin("bk")?
+        .arg("--db")
+        .arg(&ledger.path)
+        .env_remove("BEANKEEPER_PASSPHRASE_CMD")
+        .arg("verify")
+        .output()?;
+    assert!(text.status.success());
+    let report = std::str::from_utf8(&text.stderr)?;
+    assert!(report.contains("acme (USD): debits and credits each total 2.00"));
+    assert!(report.contains("empty: no posted transactions"));
+    assert!(report.contains(&audit_end.1));
+    Ok(())
+}
+
+#[test]
+fn empty_ledger_has_an_intact_chain_without_a_head() -> TestResult {
+    let db = Db::open_in_memory()?;
+    let data = beankeeper_cli::commands::verify::execute_json(&db)?;
+    assert_eq!(data["companies"], json!([]));
+    assert_eq!(
+        data["row_counts"],
+        json!({
+            "companies": 0, "accounts": 0, "transactions": 0, "entries": 0, "audit_rows": 0,
+        })
+    );
+    assert_eq!(
+        data["audit_chain"],
+        json!({
+            "length": 0, "first_id": null, "last_id": null, "head_hash": null, "intact": true,
+        })
+    );
     Ok(())
 }

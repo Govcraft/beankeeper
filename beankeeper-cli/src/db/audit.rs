@@ -14,10 +14,10 @@
 //! `INSERT OR REPLACE` statements in the crate live in this file; a regression
 //! test enforces that they appear nowhere else.
 
-use std::str::FromStr;
+use std::{num::NonZeroU64, str::FromStr};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 use sha2::{Digest, Sha256};
 
 use super::amounts::PositiveMinorUnits;
@@ -30,7 +30,9 @@ use super::connection::ReadConn;
 use super::metadata;
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
 use crate::confirmation::Confirmed;
-use crate::db::ids::{BudgetId, ClearingId, EntryId, PartnerTransactionId, TransactionId};
+use crate::db::ids::{
+    AuditRowId, BudgetId, ClearingId, EntryId, PartnerTransactionId, TransactionId,
+};
 use crate::error::CliError;
 
 mod attachment;
@@ -371,9 +373,9 @@ fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn read_v1_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
+fn read_v1_audit_row(row: &rusqlite::Row<'_>, id: i64) -> rusqlite::Result<AuditLogRow> {
     Ok(AuditLogRow {
-        id: row.get(0)?,
+        id,
         changed_at: row.get(1)?,
         actor: row.get(2)?,
         company_slug: row.get(3)?,
@@ -391,7 +393,11 @@ fn read_v1_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
 }
 
 fn read_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRow> {
-    let mut result = read_v1_audit_row(row)?;
+    read_audit_row_with_id(row, row.get(0)?)
+}
+
+fn read_audit_row_with_id(row: &rusqlite::Row<'_>, id: i64) -> rusqlite::Result<AuditLogRow> {
+    let mut result = read_v1_audit_row(row, id)?;
     result.agent_uri = row.get(11)?;
     result.token_jti = row.get(12)?;
     result.hash_version = row.get(13)?;
@@ -407,7 +413,7 @@ pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {AUDIT_V1_COLUMNS} FROM audit_log ORDER BY id"
     ))?;
-    let rows = stmt.query_map([], read_v1_audit_row)?;
+    let rows = stmt.query_map([], |row| read_v1_audit_row(row, row.get(0)?))?;
     let mut previous = GENESIS_HASH.to_string();
     for row in rows {
         let mut row = row?;
@@ -422,43 +428,107 @@ pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Evidence that every audit row matched its recomputed hash and that the tail
+/// matched SQLite's high-water mark.
+#[derive(Debug)]
+pub struct VerifiedAuditChain(Option<AuditHead>);
+
+#[derive(Debug)]
+struct AuditHead {
+    length: NonZeroU64,
+    first_id: AuditRowId,
+    last_id: AuditRowId,
+    hash: String,
+}
+
+impl VerifiedAuditChain {
+    pub(super) fn length(&self) -> u64 {
+        self.0.as_ref().map_or(0, |head| head.length.get())
+    }
+
+    pub(super) fn write_summary(&self, output: &mut impl std::io::Write) -> std::io::Result<()> {
+        match &self.0 {
+            Some(head) => writeln!(
+                output,
+                "Audit trail: {} rows verified, first #{}, last #{}, head {}",
+                head.length, head.first_id, head.last_id, head.hash,
+            ),
+            None => writeln!(output, "Audit trail: empty"),
+        }
+    }
+}
+
+impl Serialize for VerifiedAuditChain {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("VerifiedAuditChain", 5)?;
+        let head = self.0.as_ref();
+        state.serialize_field("length", &self.length())?;
+        state.serialize_field("first_id", &head.map(|head| head.first_id))?;
+        state.serialize_field("last_id", &head.map(|head| head.last_id))?;
+        state.serialize_field("head_hash", &head.map(|head| &head.hash))?;
+        state.serialize_field("intact", &true)?;
+        state.end()
+    }
+}
+
 /// Recomputes the chain in ID order within the caller's read snapshot.
 /// The AUTOINCREMENT high-water mark also detects removal of the tail.
-///
 /// # Errors
 /// Returns a database error for altered, missing, or unlinked audit records.
-pub fn verify_hash_chain(reader: ReadConn<'_>) -> Result<(), CliError> {
-    let columns = if super::schema::get_schema_version(reader)? < 13 {
+pub fn verify_hash_chain(reader: ReadConn<'_>) -> Result<VerifiedAuditChain, CliError> {
+    verify_hash_chain_at(reader, super::schema::get_schema_version(reader)?)
+}
+
+pub(super) fn verify_hash_chain_at(
+    reader: ReadConn<'_>,
+    version: i64,
+) -> Result<VerifiedAuditChain, CliError> {
+    let columns = if version < 13 {
         format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1")
     } else {
         AUDIT_COLUMNS.to_string()
     };
     let mut stmt = reader.prepare(&format!("SELECT {columns} FROM audit_log ORDER BY id"))?;
-    let rows = stmt.query_map([], read_audit_row)?;
-    let mut previous = GENESIS_HASH.to_string();
-    let mut last_id = 0;
-    for row in rows {
-        let row = row?;
-        if row.prev_hash != previous || row.row_hash != row_hash(&row)? {
+    let mut rows = stmt.query([])?;
+    let mut head: Option<AuditHead> = None;
+    while let Some(row) = rows.next()? {
+        let raw_id: i64 = row.get(0)?;
+        let id = AuditRowId::try_from(raw_id)
+            .map_err(|error| CliError::Database(format!("audit row #{raw_id}: {error}")))?;
+        let row = read_audit_row_with_id(row, id.get()).map_err(|error| {
+            CliError::Database(format!("cannot decode audit row #{id}: {error}"))
+        })?;
+        let previous = head
+            .as_ref()
+            .map_or(GENESIS_HASH, |head| head.hash.as_str());
+        let computed = row_hash(&row)?;
+        if row.prev_hash != previous || row.row_hash != computed {
             return Err(CliError::Database(format!(
-                "audit hash chain broken at row #{}",
-                row.id
+                "audit hash chain broken at row #{id}"
             )));
         }
-        last_id = row.id;
-        previous = row.row_hash;
+        let (first_id, length) = head.map_or((id, NonZeroU64::MIN), |head| {
+            (head.first_id, head.length.saturating_add(1))
+        });
+        head = Some(AuditHead {
+            length,
+            first_id,
+            last_id: id,
+            hash: computed,
+        });
     }
     let sequence: i64 = reader.query_row(
         "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)",
         [],
         |r| r.get(0),
     )?;
+    let last_id = head.as_ref().map_or(0, |head| head.last_id.get());
     if sequence != last_id {
         return Err(CliError::Database(format!(
             "audit hash chain tail missing after row #{last_id} (expected row #{sequence})"
         )));
     }
-    Ok(())
+    Ok(VerifiedAuditChain(head))
 }
 
 // ---------------------------------------------------------------------------
@@ -2717,7 +2787,7 @@ mod tests {
         assert_eq!(records[0].entity, AuditEntity::Transaction);
         assert_eq!(records[0].action, AuditAction::Attach);
         assert_eq!(serde_json::json!(records[0].action), "attach");
-        verify_hash_chain(db.read())
+        verify_hash_chain(db.read()).map(|_| ())
     }
 
     #[test]

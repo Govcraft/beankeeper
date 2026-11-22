@@ -104,6 +104,8 @@ row_ids! {
     BudgetId => "budget ID",
     /// An attachment record identifier.
     AttachmentId => "attachment ID",
+    /// An audit log row identifier.
+    AuditRowId => "audit row ID",
     /// A frozen statement batch awaiting or bearing owner approval.
     StatementBatchId => "statement batch ID",
 }

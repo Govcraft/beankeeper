@@ -762,7 +762,7 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         assert_eq!((budgets, audit_rows), (0, 0));
-        audit::verify_hash_chain(db.read())
+        audit::verify_hash_chain(db.read()).map(|_| ())
     }
 
     #[test]

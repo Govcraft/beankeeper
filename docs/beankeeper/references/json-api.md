@@ -1048,14 +1048,61 @@ above (except the batch-level `status`, `cleared_date`, `reconciled_date`, `stat
 
 ### `verify`
 
+The CLI JSON `data` field and MCP `verify` structured result use the same
+object. Example excerpt from a ledger with one company and one posting:
+
 ```json
 {
-  "data": {
-    "schema_version": 8,
-    "status": "healthy"
-  }
+  "schema_version": 23,
+  "status": "healthy",
+  "companies": [{
+    "company": "acme",
+    "currencies": [{
+      "currency": "USD",
+      "minor_unit_digits": 2,
+      "debit_minor": "1250",
+      "credit_minor": "1250",
+      "balanced": true
+    }]
+  }],
+  "audit_chain": {
+    "head_hash": "<64 lowercase hexadecimal digits>",
+    "length": 4,
+    "first_id": 1,
+    "last_id": 4,
+    "intact": true
+  },
+  "row_counts": {
+    "companies": 1,
+    "accounts": 2,
+    "transactions": 1,
+    "entries": 2,
+    "audit_rows": 4
+  },
+  "checks": [
+    { "name": "schema_version", "outcome": "passed" },
+    { "name": "audit_hash_chain", "outcome": "passed" },
+    { "name": "accounting", "outcome": "passed" }
+  ],
+  "desktop_view": { "link": { "view_id": "review" } }
 }
 ```
+
+Totals are exact base-10 strings in minor units. In this example `"1250"`
+represents USD 12.50. Companies without postings have an empty `currencies`
+array. Audit length counts rows, including when IDs have historical gaps.
+An empty audit chain has length zero and null `first_id`, `last_id`, and
+`head_hash`. `intact` certifies that the recomputed hashes, predecessor links
+and SQLite high-water mark passed for the local snapshot.
+
+The full `checks` array includes schema version, audit chain, policy, period
+locks, proposal resolutions, spend limits, accounting, creation snapshots,
+relationship links, statement batches, foreign keys, SQLite integrity and row
+counts in execution order. Checks have outcome `passed` or `skipped` when the
+snapshot schema predates that check. A failure returns a `DATABASE` error
+instead of a success report. Its message begins with the failed check name.
+Desktop hosts can resolve `desktop_view.link` via `ui_get_link` on their own
+listener to offer optional verification status and recheck.
 
 ### `report cash-flow`
 

@@ -807,24 +807,14 @@ pub fn render_init(path: &str, meta: Meta) -> Result<String, CliError> {
     envelope_ok(meta, InitJson { path })
 }
 
-/// Render a `verify` confirmation as an enveloped JSON response.
-///
+/// Render ledger verification evidence as an enveloped JSON response.
 /// # Errors
-///
 /// Returns [`CliError`] on serialisation failure.
-pub fn render_verify(schema_version: i64, meta: Meta) -> Result<String, CliError> {
-    #[derive(Serialize)]
-    struct VerifyJson {
-        schema_version: i64,
-        status: &'static str,
-    }
-    envelope_ok(
-        meta,
-        VerifyJson {
-            schema_version,
-            status: "healthy",
-        },
-    )
+pub fn render_verify(
+    report: &crate::db::verification::VerifiedLedger,
+    meta: Meta,
+) -> Result<String, CliError> {
+    envelope_ok(meta, report)
 }
 
 /// Render an import result as an enveloped JSON response.

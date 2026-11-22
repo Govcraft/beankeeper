@@ -66,10 +66,21 @@ establish whether data was altered before the upgrade.
   Totals use 128-bit integers. Currency is stored once on the parent transaction,
   so all its entries share that currency.
 - Newly audited postings match their creation snapshots and poster.
+- The current policy, period locks, proposal resolutions, spend limits and
+  statement batches match their audit records. Transaction relationship links
+  resolve to the expected records.
 - SQLite foreign keys and database integrity.
 
-Failures use the existing `DATABASE` error envelope and exit code 4. A healthy
-ledger retains the existing verify success output.
+`bk verify` prints the evidence in text. `bk --json verify` and the MCP
+`verify` tool share the same [structured payload](beankeeper/references/json-api.md#verify).
+It includes the schema version, row counts, each check's name and outcome,
+and debit and credit totals for every company, grouped by transaction currency.
+The audit report contains the head hash, length, and first and last IDs.
+The head and IDs are null when the chain is empty.
+
+Verification stops at the first failing check and names the relevant row,
+transaction or company when available. Failures use the `DATABASE` error
+envelope and CLI exit code 4.
 
 This is local tamper evidence, without a signing key or external checkpoint.
 An administrator who can remove triggers can also recompute a replacement chain,

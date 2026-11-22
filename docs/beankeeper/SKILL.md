@@ -60,6 +60,24 @@ The MCP tool returns the full `{ok, meta, data}` or `{ok, meta, error}` CLI
 envelope and is available in read-only mode with `ledger/read`.
 See [financial summary details](../financial-summary.md).
 
+## Answering "Do my books check out?"
+
+Call MCP `verify` with `{}` or run `bk --json verify`. Verification covers the
+whole ledger. On success, say which checks passed in plain language. For
+example, "I checked 42 transactions across two companies. Debits and credits
+matched in each currency, and all 56 audit records matched their hashes."
+Use `row_counts`, `companies[].currencies`, and `audit_chain` for the numbers.
+Keep currencies separate. The debit and credit amounts are exact strings in
+minor units. Use `minor_unit_digits` to convert them for display or charting.
+Mention any check marked `skipped` separately.
+
+Describe the result as local consistency and tamper evidence. A complete
+rewrite or rollback can still produce a consistent ledger. If verification
+fails, report the named check and record or company from the `DATABASE` error
+instead of giving a clean bill of health. If Desktop is available, pass
+`desktop_view.link` to `ui_get_link` and offer its URL for optional verification
+status and recheck. See the [verify payload](references/json-api.md#verify).
+
 ## Core Concepts
 
 - **Double-entry**: Postings are validated at runtime before saving. Unbalanced or mixed-currency entries are rejected; the library's `Transaction` type can only be constructed through `JournalEntry::post()` after validation.
@@ -68,7 +86,7 @@ See [financial summary details](../financial-summary.md).
 - **Amounts**: Always specified in **major units** (dollars, not cents) on the CLI. Stored internally as minor units (cents). Example: `2500` means $2,500.00.
 - **Append-only ledger**: Database triggers reject edits, deletion, and replacement of posted financial fields and entry details. Transaction metadata and entry clearance status remain mutable. Corrections use reversing entries.
 - **Audit trail**: Posts, imports, and reversals store a poster (`posted_by`) and a `create` record. Supported mutations record an actor, timestamp, and before/after snapshots atomically. Set the principal with `--actor NAME` or `BK_ACTOR`, including OFX imports. `bk audit log --action create` lists creations; JSON audit rows include `prev_hash` and `row_hash`.
-- **Verification**: `bk verify` validates the SHA-256 audit chain and its tail, compares newly audited posting snapshots, and checks entry count, positive amounts, valid directions/currency, company ownership, debit/credit balance, SQLite integrity, and foreign keys. Failures use `DATABASE` (exit 4). Legacy audit rows are chained on migration without changing IDs or timestamps; legacy posters stay unknown. Tamper evidence has no external trust anchor and cannot prove history against a complete database/hash rewrite or rollback.
+- **Verification**: `bk verify` and MCP `verify` return the checks and evidence from one ledger snapshot. Legacy audit rows retain their IDs and timestamps after migration, and legacy posters stay unknown. See [audit integrity](../audit-integrity.md).
 - **Idempotency**: `--reference KEY` is trimmed, stored verbatim, and unique per company. Empty references are rejected. Use `--on-conflict skip` for safe retry of duplicate posts; Only `error` and `skip` are accepted; use `txn meta set/unset` to annotate existing postings.
 
 For detailed accounting concepts and account types, see [`references/accounting.md`](references/accounting.md).
