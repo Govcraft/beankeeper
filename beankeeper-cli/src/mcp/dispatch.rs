@@ -13,6 +13,7 @@ use crate::cli::{
 };
 use crate::commands;
 use crate::commands::txn::{PostingMode, PostingRequest};
+use crate::confirmation::Confirmed;
 use crate::db::audit::setup::{
     books::{self, BookChange},
     openings::{self, OpeningLine, OpeningRequest},
@@ -20,8 +21,8 @@ use crate::db::audit::setup::{
 };
 use crate::db::{Actor, Db, audit::MetadataTarget, metadata};
 use crate::error::CliError;
-use crate::identity::{Admin, Granted};
 use crate::operation::{Operation, Permission};
+use crate::output::json::deleted_data;
 
 type Response = Result<(Value, Option<Value>), CliError>;
 
@@ -460,10 +461,9 @@ fn call_company_create(db: &Db, actor: &Actor, input: inputs::CompanyCreate) -> 
 }
 
 fn call_company_delete(db: &Db, actor: &Actor, input: inputs::CompanyShow) -> Response {
-    Granted::<Admin>::with_db(db, actor, |grant| {
-        crate::db::audit::request_company_deletion(grant, &input.slug.into_inner())
-    })
-    .map(|impossible| match impossible {})
+    let slug = input.slug.into_inner();
+    commands::company::delete(db, actor, &slug, Confirmed::explicit())?;
+    unpaged(encode(deleted_data(slug.as_str())))
 }
 
 fn call_account_list(db: &Db, actor: &Actor, input: inputs::AccountList) -> Response {

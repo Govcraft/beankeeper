@@ -490,7 +490,7 @@ mutation tools are absent and cannot be called.
 | `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `company_list`, `company_show` | Inspect companies |
 | `company_create` | Create and audit a company by slug and name, with an optional description |
-| `company_delete` | Check whether a company can be deleted and direct the owner to local confirmation |
+| `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |
 | `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Post, reverse and annotate transactions |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
@@ -539,10 +539,11 @@ with its profile. Both use the same audited company insert. Under enforcement,
 `company_create` and `company_delete` require `ledger/admin`. Read-only mode
 omits both.
 
-Call `company_delete` with a `slug`. For an eligible company, the tool returns
-`CONFIRMATION_REQUIRED` and the local command the owner can use to confirm.
-Companies with retained data return `VALIDATION`. Keep them for their history
-and use `txn_reverse` when a posting needs correction.
+Call `company_delete` with a `slug` to confirm deletion. The tool deletes an
+eligible company, records its prior state in the audit log, and returns
+`{"deleted":"slug"}`, matching the CLI's JSON data. Companies with retained
+data return `VALIDATION`. Keep them for their history and use `txn_reverse`
+when a posting needs correction.
 
 For a separate set of sample books, run `bk init --demo --path demo.db`.
 Desktop hosts can call `beankeeper_cli::commands::init::create_demo_ledger`

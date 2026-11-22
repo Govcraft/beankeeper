@@ -706,12 +706,16 @@ pub fn render_count(count: i64, meta: Meta) -> Result<String, CliError> {
 /// # Errors
 ///
 /// Returns [`CliError`] on serialisation failure.
-pub fn render_deleted(slug: &str, meta: Meta) -> Result<String, CliError> {
+pub fn render_deleted(id: &str, meta: Meta) -> Result<String, CliError> {
+    envelope_ok(meta, deleted_data(id))
+}
+
+pub(crate) fn deleted_data(id: &str) -> impl Serialize + '_ {
     #[derive(Serialize)]
     struct DeletedJson<'a> {
         deleted: &'a str,
     }
-    envelope_ok(meta, DeletedJson { deleted: slug })
+    DeletedJson { deleted: id }
 }
 
 /// Render a transaction post result as an enveloped JSON response.

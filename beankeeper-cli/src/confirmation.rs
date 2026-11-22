@@ -8,13 +8,18 @@ use crate::error::CliError;
 pub struct Confirmed(());
 
 impl Confirmed {
+    /// Record explicit confirmation from CLI `--force` or an MCP delete call.
+    pub(crate) const fn explicit() -> Self {
+        Self(())
+    }
+
     /// Check that a noninteractive caller supplied explicit confirmation.
     ///
     /// # Errors
     /// Returns a usage error if confirmation was not supplied.
     pub fn forced(force: bool) -> Result<Self, CliError> {
         if force {
-            Ok(Self(()))
+            Ok(Self::explicit())
         } else {
             Err(CliError::Usage(
                 "use --force to confirm deletion when stdin is not a terminal".into(),

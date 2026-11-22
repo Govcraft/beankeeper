@@ -1,5 +1,5 @@
 use crate::cli::{Cli, CompanyCommand, OutputFormat, resolve_format};
-use crate::confirmation::confirm_deletion;
+use crate::confirmation::{Confirmed, confirm_deletion};
 use crate::db::connection::Db;
 use crate::db::{
     Actor, CompanyRow,
@@ -52,10 +52,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
                 eprintln!("Aborted.");
                 return Ok(());
             };
-            let actor = cli.principal();
-            Granted::<Admin>::with_db(&db, &actor, |grant| {
-                crate::db::delete_company(grant, slug, confirmed)
-            })?;
+            delete(&db, &cli.principal(), slug, confirmed)?;
             if format == OutputFormat::Json {
                 let meta = cli.meta(Operation::CompanyDelete, None);
                 let rendered = output::json::render_deleted(slug.as_str(), meta)?;
@@ -79,6 +76,17 @@ pub(crate) fn create(
 ) -> Result<CompanyRow, CliError> {
     Granted::<Admin>::with_db(db, actor, |grant| {
         companies::create_company(grant, slug, name, description)
+    })
+}
+
+pub(crate) fn delete(
+    db: &Db,
+    actor: &Actor,
+    slug: &CompanySlug,
+    confirmed: Confirmed,
+) -> Result<(), CliError> {
+    Granted::<Admin>::with_db(db, actor, |grant| {
+        crate::db::delete_company(grant, slug, confirmed)
     })
 }
 

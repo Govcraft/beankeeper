@@ -2173,20 +2173,6 @@ pub fn delete_company(
     })
 }
 
-/// Apply the same deletion checks as the owner command, then direct the owner
-/// to the local confirmation path. Holding a ledger grant alone cannot confirm.
-///
-/// # Errors
-/// Returns the ledger's refusal or an owner-confirmation error.
-pub(crate) fn request_company_deletion(
-    grant: grant::Granted<'_, grant::Admin>,
-    slug: &super::companies::CompanySlug,
-) -> Result<std::convert::Infallible, CliError> {
-    grant.mutate("sp_company_delete_check", |tx, _| {
-        Err(EmptyCompany::check(tx, slug)?.confirmation_required())
-    })
-}
-
 /// A company checked for retained data under the same reserved SQLite writer
 /// that can remove it.
 struct EmptyCompany<'tx> {
@@ -2263,14 +2249,6 @@ impl<'tx> EmptyCompany<'tx> {
         CliError::Validation(format!(
             "company '{slug}' cannot be deleted: {reason} (ledger is append-only). \
              Keep the company for its history. To correct posted transactions, reverse them."
-        ))
-    }
-
-    fn confirmation_required(self) -> CliError {
-        CliError::ConfirmationRequired(format!(
-            "Ask the owner to confirm deletion in a local terminal with `bk company delete {}` \
-             on this ledger.",
-            self.row.slug
         ))
     }
 

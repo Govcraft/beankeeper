@@ -253,7 +253,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
-| `company_delete` | `slug`. Returns `CONFIRMATION_REQUIRED` for an empty company so the owner can confirm with `bk company delete SLUG`. Refuses companies with retained data |
+| `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
@@ -461,7 +461,6 @@ verified agent URI. Supply both to match both fields.
 | `bk backup`, `bk restore` | Deal with local full-ledger snapshot paths. The owner chooses the files and confirms replacement. |
 | `bk key init`, `bk agent issue`, `bk agent revoke` | Owner-managed trust root and credential lifecycle. Setup sessions have their own scoped owner tools. |
 | `bk agent limit set`, `bk agent limit clear`, `bk policy set` | Owner-managed authorization policy and limits. |
-| `bk company delete` | MCP checks eligibility through `company_delete`. The owner completes the irreversible operation locally. |
 | `bk account delete` | Permanent catalog deletion uses local confirmation. |
 | `bk txn import`, `bk txn attach` | The CLI works with local files. The bounded, reviewed statement import path has separate setup MCP tools. |
 | `bk rule create`, `bk rule delete` | Rule management is deferred until the MCP rule contract is available. |
@@ -530,8 +529,13 @@ Slug: lowercase alphanumeric and hyphens, 1-64 characters.
 
 ```bash
 bk company delete old-company          # Prompts for confirmation
-bk company delete old-company --force  # Skip confirmation
+bk company delete old-company --force  # Confirms without prompting
 ```
+
+The MCP `company_delete` call confirms deletion the same way `--force` does.
+Both require `ledger/admin` under enforcement and record the previous company
+in the audit log. A `VALIDATION` error for retained data explains how to keep
+the company for its history and reverse an incorrect posting.
 
 ## Accounts
 

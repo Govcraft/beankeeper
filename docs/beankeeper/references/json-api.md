@@ -60,7 +60,6 @@ The `companies` array contains the exported companies with their accounts and tr
 | `NOT_FOUND` | Entity does not exist |
 | `UNAUTHORIZED` | Missing required, invalid, expired, revoked or untrusted agent token (exit 6) |
 | `FORBIDDEN` | Verified token lacks the required capability (exit 7) |
-| `CONFIRMATION_REQUIRED` | The owner must confirm permanent company deletion locally |
 | `GENERAL` | Other error |
 | `IO` | File I/O error |
 
@@ -177,6 +176,17 @@ are inclusive. MCP returns this same data payload.
   ]
 }
 ```
+
+### `company delete`
+
+```json
+{
+  "data": { "deleted": "old-company" }
+}
+```
+
+The MCP `company_delete` tool returns this same `data` object. Companies with
+retained ledger or setup data return `VALIDATION` and keep their history.
 
 ### `account list`
 

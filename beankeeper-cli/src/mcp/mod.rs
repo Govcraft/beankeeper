@@ -502,7 +502,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Check whether a company can be deleted. Requires ledger/admin when enforcement applies. If eligible, returns CONFIRMATION_REQUIRED so the owner can confirm in a local terminal."
+        description = "Delete a company with no retained data and record an audit row. This call confirms deletion. Requires ledger/admin when enforcement applies."
     )]
     async fn company_delete(
         &self,

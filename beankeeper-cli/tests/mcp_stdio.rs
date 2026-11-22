@@ -467,7 +467,7 @@ fn cli_mutations_have_mcp_tools_or_documented_exclusions() -> TestResult {
         {
             continue;
         }
-        if !tool_operations.contains(&operation) || operation == Operation::CompanyDelete {
+        if !tool_operations.contains(&operation) {
             excluded.insert(path);
         }
     }
@@ -930,14 +930,6 @@ fn company_tools_share_cli_results_checks_and_audit() -> TestResult {
     assert_eq!(audit[0]["actor"], "mcp:codex-test-client");
 
     let empty = json!({"slug":"new-company"});
-    let confirmation = payload(&client.call("company_delete", &empty)?)?;
-    assert_eq!(confirmation["code"], "CONFIRMATION_REQUIRED");
-    assert!(
-        confirmation["message"]
-            .as_str()
-            .ok_or("owner instructions")?
-            .contains("bk company delete new-company")
-    );
     assert_parameter_rejection(
         &client.call(
             "company_delete",
@@ -959,17 +951,12 @@ fn company_tools_share_cli_results_checks_and_audit() -> TestResult {
     assert!(message.contains("ledger is append-only"));
     assert!(message.contains("reverse them"));
 
-    bk(&path)?
-        .args([
-            "--actor",
-            "owner",
-            "company",
-            "delete",
-            "new-company",
-            "--force",
-        ])
-        .assert()
-        .success();
+    let deleted = client.success("company_delete", &empty)?;
+    assert_eq!(deleted, json!({"deleted":"new-company"}));
+    assert_eq!(
+        payload(&client.call("company_show", &empty)?)?["code"],
+        "NOT_FOUND"
+    );
     assert_eq!(
         payload(&client.call("company_delete", &empty)?)?["code"],
         "NOT_FOUND"
@@ -979,7 +966,17 @@ fn company_tools_share_cli_results_checks_and_audit() -> TestResult {
         &json!({"company":"new-company", "entity":"company", "action":"company_delete"}),
     )?;
     assert_eq!(audit.as_array().map(Vec::len), Some(1));
-    assert_eq!(audit[0]["actor"], "owner");
+    assert_eq!(audit[0]["actor"], "mcp:codex-test-client");
+    assert_eq!(audit[0]["before_display"], created[0]);
+    assert!(audit[0]["after"].is_null());
+
+    client.success("company_create", &company)?;
+    let cli_deleted = bk(&path)?
+        .args(["--json", "company", "delete", "new-company", "--force"])
+        .output()?;
+    assert!(cli_deleted.status.success());
+    let cli: Value = serde_json::from_slice(&cli_deleted.stdout)?;
+    assert_eq!(deleted, cli["data"]);
     client.success("verify", &json!({}))?;
     Ok(())
 }
