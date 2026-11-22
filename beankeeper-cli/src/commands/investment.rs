@@ -147,7 +147,7 @@ pub fn execute_investment(
         }
         InvestmentCommand::Holdings { as_of } => {
             let rows = investments::holdings(
-                db.conn(),
+                db,
                 company,
                 as_of.unwrap_or_else(|| chrono::Local::now().date_naive()),
             )?;

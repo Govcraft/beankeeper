@@ -688,7 +688,7 @@ fn run_budget_variance(
         coverage,
     } = opts;
     let report = db::compute_budget_variance(
-        db.conn(),
+        db,
         &db::BudgetVarianceParams {
             company_slug: company,
             currency,

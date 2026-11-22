@@ -107,7 +107,7 @@ fn typed_budget_variance_retains_currency_and_matches_cli() -> Result<(), Box<dy
     let db = Db::open_snapshot(&path, None)?;
     let currency = Currency::BHD;
     let report = compute_budget_variance(
-        db.conn(),
+        &db,
         &BudgetVarianceParams {
             company_slug: "co",
             currency,

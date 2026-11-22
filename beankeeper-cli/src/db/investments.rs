@@ -18,7 +18,7 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Type, V
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 use serde::{Serialize, Serializer};
 
-use super::connection::ReadConn;
+use super::connection::{Db, ReadConn};
 use super::{Actor, PostEntryParams, PostResult, PostTransactionParams, audit};
 use crate::error::CliError;
 
@@ -926,14 +926,8 @@ pub fn sell(
 /// Compute positions and latest price on or before `as_of`. No ledger writes.
 /// # Errors
 /// Returns storage, invalid persisted data, or valuation/aggregation overflow errors.
-pub fn holdings(
-    conn: &Connection,
-    company: &str,
-    as_of: NaiveDate,
-) -> Result<Vec<Holding>, CliError> {
-    audit::atomically(conn, || {
-        holdings_snapshot(ReadConn::new(conn), company, as_of)
-    })
+pub fn holdings(db: &Db, company: &str, as_of: NaiveDate) -> Result<Vec<Holding>, CliError> {
+    db.read_snapshot(|reader| holdings_snapshot(reader, company, as_of))
 }
 
 struct DatedPrice {

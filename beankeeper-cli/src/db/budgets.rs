@@ -4,9 +4,9 @@ use std::fmt::Write;
 
 use beankeeper::types::{AccountType, Amount, Currency, Money};
 use chrono::{Month, NaiveDate};
-use rusqlite::{Connection, types::Type};
+use rusqlite::types::Type;
 
-use super::connection::ReadConn;
+use super::connection::{Db, ReadConn};
 use crate::db::{BudgetRow, BudgetVarianceRow};
 use crate::error::CliError;
 
@@ -246,12 +246,12 @@ fn report_overflow() -> CliError {
 /// Returns [`CliError`] for an unknown company, invalid stored data, arithmetic
 /// overflow, or database errors.
 pub fn compute_budget_variance(
-    conn: &Connection,
+    db: &Db,
     params: &BudgetVarianceParams<'_>,
 ) -> Result<BudgetVarianceReport, CliError> {
-    let rows = super::audit::atomically(conn, || {
-        super::companies::get_company(ReadConn::new(conn), params.company_slug)?;
-        load_variance_rows(conn, params)
+    let rows = db.read_snapshot(|reader| {
+        super::companies::get_company(reader, params.company_slug)?;
+        load_variance_rows(reader, params)
     })?;
     let total = |select: fn(&BudgetVarianceRow) -> Money| {
         let amount = rows.iter().try_fold(Amount::new(0), |total, row| {
@@ -272,7 +272,7 @@ pub fn compute_budget_variance(
 }
 
 fn load_variance_rows(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     p: &BudgetVarianceParams<'_>,
 ) -> Result<Vec<BudgetVarianceRow>, CliError> {
     let (from_date, to_date) = p.months.dates();
@@ -436,6 +436,7 @@ fn build_variance_query_with_unbudgeted(account_type: Option<AccountType>) -> St
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use rusqlite::Connection;
 
     use super::*;
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
@@ -815,7 +816,7 @@ mod tests {
         post_expense(&db, "2026-01-15", "5000", 80_000);
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(2026, Month::January, Month::January, None, false),
         )?;
         let rows = report.rows();
@@ -837,7 +838,7 @@ mod tests {
 
         for include_unbudgeted in [false, true] {
             let report = compute_budget_variance(
-                db.conn(),
+                &db,
                 &variance(
                     2026,
                     Month::January,
@@ -870,7 +871,7 @@ mod tests {
         post_expense(&db, "2026-01-15", "5000", 80_000);
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(2026, Month::January, Month::January, None, false),
         )?;
         let rows = report.rows();
@@ -887,7 +888,7 @@ mod tests {
         post_revenue(&db, "2026-01-15", 150_000);
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(2026, Month::January, Month::January, None, false),
         )?;
         let rows = report.rows();
@@ -909,7 +910,7 @@ mod tests {
         post_revenue(&db, "2026-01-15", 100_000);
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(2026, Month::January, Month::January, None, false),
         )?;
         let rows = report.rows();
@@ -933,7 +934,7 @@ mod tests {
         post_expense(&db, "2026-03-15", "5000", 50_000);
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(2026, Month::January, Month::March, None, false),
         )?;
         let rows = report.rows();
@@ -956,14 +957,14 @@ mod tests {
         post_expense(&db, "2026-01-20", "5100", 30_000);
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(2026, Month::January, Month::January, None, false),
         )?;
         let rows = report.rows();
         assert_eq!(rows.len(), 1);
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(2026, Month::January, Month::January, None, true),
         )?;
         let rows = report.rows();
@@ -985,7 +986,7 @@ mod tests {
         set_budget(db.conn(), &budget("4000", 2026, 1, 200_000, None))?;
 
         let report = compute_budget_variance(
-            db.conn(),
+            &db,
             &variance(
                 2026,
                 Month::January,
@@ -1018,7 +1019,7 @@ mod tests {
         set_budget(db.conn(), &budget("5100", 2026, 1, 1, None))?;
         let params = variance(2026, Month::January, Month::January, None, false);
         assert!(matches!(
-            compute_budget_variance(db.conn(), &params),
+            compute_budget_variance(&db, &params),
             Err(CliError::Validation(_))
         ));
         Ok(())
