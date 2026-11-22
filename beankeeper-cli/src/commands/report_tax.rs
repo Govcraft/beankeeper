@@ -137,12 +137,13 @@ pub fn build_vendors(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum TaxInvocation<'a> {
+pub(super) enum TaxInvocation<'a> {
     ScheduleC(&'a TaxArgs),
     Vendor1099(&'a VendorArgs),
 }
 
-enum ResolvedTaxReport {
+#[derive(Clone, Copy)]
+pub(super) enum ResolvedTaxReport {
     ScheduleC {
         period: Period,
         currency: Currency,
@@ -154,7 +155,12 @@ enum ResolvedTaxReport {
 }
 
 impl TaxInvocation<'_> {
-    fn resolve(self, db: &Db, company: &str) -> Result<ResolvedTaxReport, CliError> {
+    pub(super) fn resolve(
+        self,
+        db: &Db,
+        company: &str,
+        today: chrono::NaiveDate,
+    ) -> Result<ResolvedTaxReport, CliError> {
         let args = match self {
             Self::ScheduleC(args) => args,
             Self::Vendor1099(args) => &args.period,
@@ -164,11 +170,7 @@ impl TaxInvocation<'_> {
             company,
             crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
         )?;
-        let period = Period::resolve(
-            args.from.as_deref(),
-            args.to.as_deref(),
-            chrono::Local::now().date_naive(),
-        )?;
+        let period = Period::resolve(args.from.as_deref(), args.to.as_deref(), today)?;
         match self {
             Self::ScheduleC(_) => Ok(ResolvedTaxReport::ScheduleC { period, currency }),
             Self::Vendor1099(args) => {
@@ -181,14 +183,14 @@ impl TaxInvocation<'_> {
     }
 }
 
-pub(crate) fn run_to(
+pub(super) fn run_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    invocation: TaxInvocation<'_>,
+    request: ResolvedTaxReport,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    match invocation.resolve(db, company)? {
+    match request {
         ResolvedTaxReport::ScheduleC { period, currency } => {
             let report = build_schedule_c(db, company, period, currency)?;
             match output.format {

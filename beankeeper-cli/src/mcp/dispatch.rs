@@ -4,11 +4,11 @@ use beankeeper::core::LotMethod;
 use beankeeper::types::Currency;
 use serde_json::Value;
 
-use super::input_values::{Month, PageLimit, PageOffset, Text};
+use super::input_values::{DecimalAmount, Month, PageLimit, PageOffset, Text};
 use super::inputs;
 use crate::cli::{
-    self, AccountCommand, AuditCommand, BudgetCommand, Command, CompanyCommand, InvestmentCommand,
-    PeriodCommand, SecurityCommand, TradeArgs, TxnCommand, TxnProposalCommand,
+    self, AccountCommand, BudgetCommand, Command, CompanyCommand, InvestmentCommand, PeriodCommand,
+    SecurityCommand, TradeArgs, TxnCommand, TxnProposalCommand,
 };
 use crate::commands;
 use crate::commands::txn::{PostingMode, PostingRequest};
@@ -620,26 +620,34 @@ fn call_budget_list(db: &Db, actor: &Actor, input: inputs::BudgetList) -> Respon
         &BudgetCommand::List {
             year: input.year,
             account: optional_text(input.account),
-            month: budget_month(input.month)?,
+            month: budget_month(input.month),
         },
     )
 }
 
 fn call_budget_set(db: &Db, actor: &Actor, input: inputs::BudgetSet) -> Response {
-    execute_budget(
+    use commands::budget::{BudgetScope, BudgetSetRequest};
+
+    let currency = budget_currency(input.currency.map(Text::into_inner))?;
+    let amount = input.amount.map(Text::into_inner);
+    let annual = input.annual.map(Text::into_inner);
+    let scope = BudgetScope::from_flags(
+        budget_month(input.month),
+        amount.as_ref().map(DecimalAmount::as_str),
+        annual.as_ref().map(DecimalAmount::as_str),
+    )?;
+    unpaged(commands::budget::execute_set_json(
         db,
-        actor,
         input.company.into_inner().as_str(),
-        &BudgetCommand::Set(cli::BudgetSetArgs {
-            account: input.account.to_string(),
+        &BudgetSetRequest {
+            account: input.account.into_inner().as_str(),
             year: input.year,
-            month: budget_month(input.month)?,
-            amount: optional_text(input.amount),
-            annual: optional_text(input.annual),
-            currency: budget_currency(input.currency.map(Text::into_inner))?.into(),
-            notes: input.notes,
-        }),
-    )
+            scope,
+            currency,
+            notes: input.notes.as_deref(),
+        },
+        actor,
+    ))
 }
 
 fn call_budget_delete(db: &Db, actor: &Actor, input: inputs::BudgetDelete) -> Response {
@@ -650,7 +658,7 @@ fn call_budget_delete(db: &Db, actor: &Actor, input: inputs::BudgetDelete) -> Re
         &BudgetCommand::Delete {
             account: input.account.to_string(),
             year: input.year,
-            month: budget_month(input.month)?,
+            month: budget_month(input.month),
             currency: budget_currency(input.currency.map(Text::into_inner))?.into(),
             force: true,
         },
@@ -772,24 +780,27 @@ fn execute_period(db: &Db, actor: &Actor, company: &str, command: &PeriodCommand
 }
 
 fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
-    let command = AuditCommand::Log {
-        agent: optional_text(input.agent),
-        company: optional_text(input.company),
+    let agent = optional_text(input.agent);
+    let company = optional_text(input.company);
+    let params = crate::db::ListAuditParams {
+        agent_uri: agent.as_deref(),
+        company_slug: company.as_deref(),
         entity: input.entity,
         action: input.action,
         limit: input.limit.as_ref().map_or(50, PageLimit::get),
         offset: input.offset.as_ref().map_or(0, PageOffset::get),
     };
-    let data = commands::audit::execute_json(db, &command)?;
-    let pagination =
-        commands::audit::pagination(db, &command, data.as_array().map_or(0, Vec::len))?;
+    let data = commands::audit::execute_json(db, &params)?;
+    let pagination = commands::audit::pagination(db, &params, data.as_array().map_or(0, Vec::len))?;
     Ok((data, Some(encode(pagination)?)))
 }
 
 fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
+    use commands::txn_clear::{BatchLine, ClearRequestTarget, EntrySelector, execute_json};
     use inputs::TxnClear::{Batch, Entry, Reference};
+    use std::borrow::Cow;
 
-    let (company, args, batch) = match input.0 {
+    unpaged(match input.0 {
         Entry {
             company,
             transaction_id,
@@ -798,20 +809,18 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             date,
             statement,
             status,
-        } => (
-            company,
-            cli::TxnClearArgs {
-                transaction_id: Some(transaction_id),
-                entry: Some(entry),
-                reference: None,
-                account: None,
-                from_file: None,
-                amount: optional_text(amount),
-                date: optional_text(date),
-                statement,
-                status: status.map_or(cli::ClearanceArg::Cleared, Into::into),
+        } => execute_json(
+            db,
+            company.into_inner().as_str(),
+            actor,
+            ClearRequestTarget::Entry {
+                selector: EntrySelector::Id {
+                    transaction_id,
+                    entry_id: entry,
+                },
+                amount: optional_text(amount).as_deref(),
             },
-            None,
+            clear_options(date, statement.as_deref(), status),
         ),
         Reference {
             company,
@@ -821,20 +830,18 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             date,
             statement,
             status,
-        } => (
-            company,
-            cli::TxnClearArgs {
-                transaction_id: None,
-                entry: None,
-                reference: Some(reference.to_string()),
-                account: Some(account.to_string()),
-                from_file: None,
-                amount: optional_text(amount),
-                date: optional_text(date),
-                statement,
-                status: status.map_or(cli::ClearanceArg::Cleared, Into::into),
+        } => execute_json(
+            db,
+            company.into_inner().as_str(),
+            actor,
+            ClearRequestTarget::Entry {
+                selector: EntrySelector::Reference {
+                    reference: reference.into_inner().as_str(),
+                    account: account.into_inner().as_str(),
+                },
+                amount: optional_text(amount).as_deref(),
             },
-            None,
+            clear_options(date, statement.as_deref(), status),
         ),
         Batch {
             company,
@@ -843,40 +850,40 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             date,
             statement,
             status,
-        } => (
-            company,
-            cli::TxnClearArgs {
-                transaction_id: None,
-                entry: None,
-                reference: None,
-                account: Some(account.to_string()),
-                from_file: None,
-                amount: None,
-                date: optional_text(date),
-                statement,
-                status: status.map_or(cli::ClearanceArg::Cleared, Into::into),
+        } => execute_json(
+            db,
+            company.into_inner().as_str(),
+            actor,
+            ClearRequestTarget::Batch {
+                account: account.into_inner().as_str(),
+                lines: Cow::Owned(
+                    batch
+                        .into_vec()
+                        .into_iter()
+                        .zip(1_u64..)
+                        .map(|(item, line)| BatchLine {
+                            line,
+                            reference: item.reference.to_string(),
+                            amount: optional_text(item.amount),
+                        })
+                        .collect(),
+                ),
             },
-            Some(
-                batch
-                    .into_vec()
-                    .into_iter()
-                    .zip(1_u64..)
-                    .map(|(item, line)| commands::txn_clear::BatchLine {
-                        line,
-                        reference: item.reference.to_string(),
-                        amount: optional_text(item.amount),
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            clear_options(date, statement.as_deref(), status),
         ),
-    };
-    unpaged(commands::txn_clear::execute_json(
-        db,
-        company.into_inner().as_str(),
-        &args,
-        actor,
-        batch.as_deref(),
-    ))
+    })
+}
+
+fn clear_options(
+    date: Option<Text<super::input_values::CalendarDate>>,
+    statement: Option<&str>,
+    status: Option<inputs::ClearanceArg>,
+) -> commands::txn_clear::ClearOptions<'_> {
+    commands::txn_clear::ClearOptions {
+        date: date.map(|date| date.into_inner().date()),
+        statement,
+        status: status.map_or(cli::ClearanceArg::Cleared, Into::into),
+    }
 }
 
 fn posting(db: &Db, input: inputs::TxnPost, actor: &Actor, mode: PostingMode) -> Response {
@@ -932,10 +939,8 @@ fn list_limit(limit: Option<&PageLimit>) -> Result<cli::TxnPageLimit, CliError> 
     }
 }
 
-fn budget_month(month: Option<Month>) -> Result<Option<cli::BudgetMonth>, CliError> {
-    month
-        .map(|month| month.get().to_string().parse())
-        .transpose()
+fn budget_month(month: Option<Month>) -> Option<cli::BudgetMonth> {
+    month.map(|month| month.into_inner().into())
 }
 
 fn budget_currency(currency: Option<Currency>) -> Result<Currency, CliError> {

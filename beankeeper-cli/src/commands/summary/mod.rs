@@ -3,6 +3,7 @@
 mod attention;
 mod model;
 
+use super::report_dates::{DateRange, DateWindow, parse_date};
 use crate::operation::Operation;
 use std::io::Write;
 
@@ -59,6 +60,15 @@ struct Period {
     to: NaiveDate,
 }
 
+impl From<DateRange> for Period {
+    fn from(range: DateRange) -> Self {
+        Self {
+            from: range.from(),
+            to: range.to(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct Periods {
     current: Period,
@@ -78,29 +88,15 @@ pub(crate) use model::Comparison;
 
 impl SummaryArgs {
     fn periods(&self, today: NaiveDate) -> Result<Periods, CliError> {
-        let end =
-            super::report_dates::DateWindow::resolve(None, self.to.as_deref(), false, today)?.to;
+        let end = DateWindow::resolve(None, self.to.as_deref(), today)?.to;
         let month_start = end.with_day(1).ok_or_else(date_error)?;
-        let start = self.from.clone().unwrap_or_else(|| month_start.to_string());
-        let window = super::report_dates::DateWindow::resolve(
-            Some(&start),
-            Some(&end.to_string()),
-            false,
-            today,
-        )?;
-        let current = Period {
-            from: window.from.ok_or_else(date_error)?,
-            to: window.to,
-        };
+        let start = self
+            .from
+            .as_deref()
+            .map_or(Ok(month_start), |from| parse_date("--from", from))?;
+        let current = Period::from(DateRange::new(start, end)?);
         let prior = match (&self.compare_from, &self.compare_to) {
-            (Some(from), Some(to)) => {
-                let window =
-                    super::report_dates::DateWindow::resolve(Some(from), Some(to), false, today)?;
-                Period {
-                    from: window.from.ok_or_else(date_error)?,
-                    to: window.to,
-                }
-            }
+            (Some(from), Some(to)) => DateRange::resolve(Some(from), Some(to), today)?.into(),
             (None, None) if self.from.is_none() => {
                 let to = month_start.pred_opt().ok_or_else(date_error)?;
                 Period {

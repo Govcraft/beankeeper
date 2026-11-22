@@ -237,7 +237,7 @@ pub fn execute_json_with_pagination(
             return execute_reconcile_json(db_handle).map(|data| (data, None));
         }
         TxnCommand::Clear(args) => {
-            return super::txn_clear::execute_json(db_handle, company, args, actor, None)
+            return super::txn_clear::execute_cli_json(db_handle, company, args, actor)
                 .map(|data| (data, None));
         }
         TxnCommand::Reverse(args) => {
@@ -1256,6 +1256,10 @@ mod tests {
 
     #[test]
     fn shared_clear_batch_is_atomic_and_accepts_memory_input() -> Result<(), CliError> {
+        use super::super::txn_clear::{
+            ClearOptions, ClearRequestTarget, execute_json, parse_batch,
+        };
+
         let db = fixture()?;
         for reference in ["batch-a", "batch-b"] {
             execute_args(
@@ -1276,30 +1280,29 @@ mod tests {
                 ],
             )?;
         }
-        let sub = crate::cli::TxnClearArgs {
-            transaction_id: None,
-            entry: None,
-            reference: None,
-            account: Some("1000".into()),
-            from_file: Some(crate::cli::InputSource::Stdin),
-            amount: None,
-            date: Some("2026-03-02".into()),
-            statement: Some("batch-statement".into()),
-            status: crate::cli::ClearanceArg::Cleared,
-        };
         let actor = db::Actor::new("mcp:batch-test");
-        let invalid = super::super::txn_clear::parse_batch("batch-a,5\nbatch-b,11")?;
-        assert!(
-            super::super::txn_clear::execute_json(&db, "acme", &sub, &actor, Some(&invalid),)
-                .is_err()
-        );
+        let run_batch = |input| {
+            execute_json(
+                &db,
+                "acme",
+                &actor,
+                ClearRequestTarget::Batch {
+                    account: "1000",
+                    lines: std::borrow::Cow::Owned(parse_batch(input)?),
+                },
+                ClearOptions {
+                    date: chrono::NaiveDate::from_ymd_opt(2026, 3, 2),
+                    statement: Some("batch-statement"),
+                    status: crate::cli::ClearanceArg::Cleared,
+                },
+            )
+        };
+        assert!(run_batch("batch-a,5\nbatch-b,11").is_err());
         let cleared: i64 =
             db.conn()
                 .query_row("SELECT count(*) FROM entry_clearings", [], |row| row.get(0))?;
         assert_eq!(cleared, 0);
-        let valid = super::super::txn_clear::parse_batch("batch-a,5\nbatch-b,6")?;
-        let result =
-            super::super::txn_clear::execute_json(&db, "acme", &sub, &actor, Some(&valid))?;
+        let result = run_batch("batch-a,5\nbatch-b,6")?;
         assert_eq!(result["cleared_count"], 2);
         assert_eq!(result["cleared_total"], 1100);
         let actors: i64 = db.conn().query_row(

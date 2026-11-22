@@ -71,7 +71,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::cli::{AgingMethodArg, Cli, OutputFormat, ReportCommand};
+use crate::cli::{AgingMethodArg, Cli, OutputFormat};
 use crate::db;
 use crate::db::connection::Db;
 use crate::db::metadata_filter::{self, MetadataFilter};
@@ -1475,36 +1475,6 @@ fn parse_date(s: &str, what: &str) -> Result<NaiveDate, CliError> {
 // Command
 // ---------------------------------------------------------------------------
 
-/// Dispatch hook for `ReportCommand::Aging`.
-///
-/// # Errors
-///
-/// See [`run`]. Returns [`CliError::General`] if `sub` is not the aging
-/// subcommand.
-pub fn run_command(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    sub: &ReportCommand,
-    format: OutputFormat,
-    use_color: bool,
-) -> Result<(), CliError> {
-    let ReportCommand::Aging(args) = sub else {
-        return Err(CliError::General(
-            "internal error: not an aging subcommand".into(),
-        ));
-    };
-    let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    run_to(
-        cli,
-        db,
-        company,
-        &AgingOptions::try_from(args)?,
-        &mut output,
-    )
-}
-
 impl<'a> TryFrom<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
     type Error = CliError;
 
@@ -1641,13 +1611,88 @@ pub(crate) fn run_to(
         Some(d) => parse_date(d, "--as-of date")?,
         None => chrono::Local::now().date_naive(),
     };
-    let buckets = opts.buckets.parse()?;
-    let link_key = resolve_link_key(opts.method, opts.link_key)?;
-    let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
+    let resolved = ResolvedAging::resolve(db, company, opts, as_of)?;
+    run_resolved_to(cli, db, company, resolved, output)
+}
 
-    let accounts = resolve_accounts(db.conn(), company, opts.accounts, opts.include_children)?;
-    let kind = common_kind(&accounts)?;
-    let currency = resolve_currency(db.conn(), company, opts.currency)?;
+pub(super) struct ResolvedAging<'a> {
+    accounts: Vec<db::AccountRow>,
+    kind: AgingKind,
+    as_of: NaiveDate,
+    currency: Currency,
+    buckets: Buckets,
+    method: MatchMethod,
+    group_by: Option<&'a str>,
+    link_key: Option<&'a str>,
+    filters: Vec<MetadataFilter>,
+    detail: bool,
+    across: bool,
+    include_children: bool,
+}
+
+impl<'a> ResolvedAging<'a> {
+    pub(super) fn from_command(
+        db: &Db,
+        company: &str,
+        args: &'a crate::cli::AgingCommandArgs,
+        today: NaiveDate,
+    ) -> Result<Self, CliError> {
+        let as_of = args.as_of.as_deref().map_or(Ok(today), |date| {
+            super::report_dates::parse_date("--as-of", date)
+        })?;
+        Self::resolve(db, company, &AgingOptions::try_from(args)?, as_of)
+    }
+
+    fn resolve(
+        db: &Db,
+        company: &str,
+        opts: &AgingOptions<'a>,
+        as_of: NaiveDate,
+    ) -> Result<Self, CliError> {
+        let buckets = opts.buckets.parse()?;
+        let link_key = resolve_link_key(opts.method, opts.link_key)?;
+        let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
+        let accounts = resolve_accounts(db.conn(), company, opts.accounts, opts.include_children)?;
+        let kind = common_kind(&accounts)?;
+        let currency = resolve_currency(db.conn(), company, opts.currency)?;
+        Ok(Self {
+            accounts,
+            kind,
+            as_of,
+            currency,
+            buckets,
+            method: opts.method,
+            group_by: opts.group_by_metadata,
+            link_key,
+            filters,
+            detail: opts.detail,
+            across: opts.group_across_accounts,
+            include_children: opts.include_children,
+        })
+    }
+}
+
+pub(super) fn run_resolved_to(
+    cli: &Cli,
+    db: &Db,
+    company: &str,
+    resolved: ResolvedAging<'_>,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
+    let ResolvedAging {
+        accounts,
+        kind,
+        as_of,
+        currency,
+        buckets,
+        method,
+        group_by,
+        link_key,
+        filters,
+        detail,
+        across,
+        include_children,
+    } = resolved;
     let selected: Vec<String> = accounts.iter().map(|a| a.code.clone()).collect();
 
     let scope = AgingScope {
@@ -1656,8 +1701,8 @@ pub(crate) fn run_to(
         as_of_str: as_of.format("%Y-%m-%d").to_string(),
         currency,
         buckets,
-        method: opts.method,
-        group_by: opts.group_by_metadata,
+        method,
+        group_by,
         link_key,
         filters: &filters,
         selected: &selected,
@@ -1666,17 +1711,17 @@ pub(crate) fn run_to(
         .into_iter()
         .map(|a| age_account(db.conn(), company, a, &scope))
         .collect::<Result<Vec<_>, _>>()?;
-    let report = combine(kind, opts.method, scope.buckets.clone(), per_account)?;
+    let report = combine(kind, method, scope.buckets.clone(), per_account)?;
 
     let ctx = RenderContext {
         kind,
         as_of: &scope.as_of_str,
         currency,
-        group_by: opts.group_by_metadata,
+        group_by,
         link_key,
-        detail: opts.detail,
-        across: opts.group_across_accounts,
-        include_children: opts.include_children,
+        detail,
+        across,
+        include_children,
         filters: &filters,
     };
 

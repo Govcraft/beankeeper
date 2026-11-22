@@ -241,6 +241,10 @@ impl TextValue for LotId {
 pub(super) struct Month(chrono::Month);
 
 impl Month {
+    pub(super) fn into_inner(self) -> chrono::Month {
+        self.0
+    }
+
     pub(super) fn get(&self) -> u32 {
         self.0.number_from_month()
     }

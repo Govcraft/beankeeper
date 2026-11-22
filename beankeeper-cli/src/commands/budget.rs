@@ -1,5 +1,7 @@
 //! `bk budget` command handlers.
 
+use beankeeper::types::Currency;
+
 use crate::cli::{BudgetCommand, BudgetMonth, BudgetSetArgs, Cli, OutputFormat, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
 use crate::confirmation::confirm_deletion;
@@ -16,61 +18,47 @@ use crate::output;
 /// Returns [`CliError`] if the subcommand fails.
 pub fn run(cli: &Cli, company: &str, sub: &BudgetCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    db::companies::get_company(db.conn(), company)?;
     let actor = cli.principal();
     let Some(result) = compute(&db, company, sub, &actor)? else {
         eprintln!("aborted");
         return Ok(());
     };
-    render(cli, company, sub, &result)?;
+    render(cli, company, command(sub), &result)?;
     if !cli.verbosity.quiet {
-        match sub {
-            BudgetCommand::Set(BudgetSetArgs {
-                account,
-                year,
-                annual: Some(_),
-                ..
-            }) => {
-                eprintln!("[ok] annual budget set for {account} in {year} (12 months)");
+        match result {
+            BudgetData::Set { request, .. } => request.print_notice(),
+            BudgetData::Rows(rows) => eprintln!("[ok] {} budget entries", rows.len()),
+            BudgetData::Deleted(count) if !cli.is_json() => {
+                eprintln!("[ok] deleted {count} budget entries");
             }
-            BudgetCommand::Set(BudgetSetArgs {
-                account,
-                year,
-                month: Some(month),
-                ..
-            }) => {
-                eprintln!("[ok] budget set for {account} in {year}-{:02}", month.get());
-            }
-            BudgetCommand::List { .. } => {
-                if let BudgetData::Rows(rows) = &result {
-                    eprintln!("[ok] {} budget entries", rows.len());
-                }
-            }
-            BudgetCommand::Delete { .. } if !cli.is_json() => {
-                if let BudgetData::Deleted(count) = result {
-                    eprintln!("[ok] deleted {count} budget entries");
-                }
-            }
-            _ => {}
+            BudgetData::Deleted(_) => {}
         }
     }
     Ok(())
 }
 
-enum BudgetData {
+enum BudgetData<'a> {
+    Set {
+        rows: Vec<db::BudgetRow>,
+        request: BudgetSetRequest<'a>,
+    },
     Rows(Vec<db::BudgetRow>),
     Deleted(usize),
 }
 
-fn compute(
+fn compute<'a>(
     db: &Db,
     company: &str,
-    sub: &BudgetCommand,
+    sub: &'a BudgetCommand,
     actor: &db::Actor,
-) -> Result<Option<BudgetData>, CliError> {
+) -> Result<Option<BudgetData<'a>>, CliError> {
     db::companies::get_company(db.conn(), company)?;
     match sub {
-        BudgetCommand::Set(args) => set(db, company, args, actor).map(BudgetData::Rows),
+        BudgetCommand::Set(args) => {
+            let request = BudgetSetRequest::from_cli(args)?;
+            let rows = set(db, company, &request, actor)?;
+            Ok(BudgetData::Set { rows, request })
+        }
         BudgetCommand::List {
             year,
             account,
@@ -117,39 +105,87 @@ fn compute(
     .map(Some)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum BudgetScope<'a> {
+    Monthly { month: BudgetMonth, amount: &'a str },
+    Annual(&'a str),
+}
+
+impl<'a> BudgetScope<'a> {
+    pub(crate) fn from_flags(
+        month: Option<BudgetMonth>,
+        amount: Option<&'a str>,
+        annual: Option<&'a str>,
+    ) -> Result<Self, CliError> {
+        match (month, amount, annual) {
+            (Some(month), Some(amount), None) => Ok(Self::Monthly { month, amount }),
+            (None, None, Some(amount)) => Ok(Self::Annual(amount)),
+            _ => Err(CliError::Usage(
+                "provide --month and --amount together, or --annual".into(),
+            )),
+        }
+    }
+}
+
+pub(crate) struct BudgetSetRequest<'a> {
+    pub(crate) account: &'a str,
+    pub(crate) year: i32,
+    pub(crate) scope: BudgetScope<'a>,
+    pub(crate) currency: Currency,
+    pub(crate) notes: Option<&'a str>,
+}
+
+impl<'a> BudgetSetRequest<'a> {
+    fn from_cli(args: &'a BudgetSetArgs) -> Result<Self, CliError> {
+        Ok(Self {
+            account: &args.account,
+            year: args.year,
+            currency: args.currency.resolve()?,
+            scope: BudgetScope::from_flags(
+                args.month,
+                args.amount.as_deref(),
+                args.annual.as_deref(),
+            )?,
+            notes: args.notes.as_deref(),
+        })
+    }
+
+    fn print_notice(&self) {
+        let Self {
+            account,
+            year,
+            scope,
+            ..
+        } = self;
+        match scope {
+            BudgetScope::Annual(_) => {
+                eprintln!("[ok] annual budget set for {account} in {year} (12 months)");
+            }
+            BudgetScope::Monthly { month, .. } => {
+                eprintln!("[ok] budget set for {account} in {year}-{:02}", month.get());
+            }
+        }
+    }
+}
+
 fn set(
     db: &Db,
     company: &str,
-    args: &BudgetSetArgs,
+    request: &BudgetSetRequest<'_>,
     actor: &db::Actor,
 ) -> Result<Vec<db::BudgetRow>, CliError> {
-    let BudgetSetArgs {
+    let BudgetSetRequest {
         account,
         year,
-        month,
-        amount,
-        annual,
+        scope,
         currency,
         notes,
-    } = args;
+    } = *request;
     if !db::account_exists(db.conn(), company, account)? {
         return Err(CliError::NotFound(format!(
             "account '{account}' not found in company '{company}'"
         )));
     }
-    let currency = currency.resolve()?;
-    let scope = match (month, amount.as_deref(), annual.as_deref()) {
-        (Some(month), Some(amount), None) => BudgetScope::Monthly {
-            month: *month,
-            amount,
-        },
-        (None, None, Some(amount)) => BudgetScope::Annual(amount),
-        _ => {
-            return Err(CliError::Usage(
-                "provide --month and --amount together, or --annual".into(),
-            ));
-        }
-    };
     match scope {
         BudgetScope::Annual(annual) => db::set_annual_budget(
             db.conn(),
@@ -158,9 +194,9 @@ fn set(
                 company_slug: company,
                 account_code: account,
                 currency,
-                year: *year,
+                year,
                 annual_amount: parse_amount_to_minor(annual, currency)?,
-                notes: notes.as_deref(),
+                notes,
             },
         ),
         BudgetScope::Monthly { month, amount } => db::set_budget(
@@ -170,19 +206,14 @@ fn set(
                 company_slug: company,
                 account_code: account,
                 currency,
-                year: *year,
+                year,
                 month: month.get(),
                 amount: parse_amount_to_minor(amount, currency)?,
-                notes: notes.as_deref(),
+                notes,
             },
         )
         .map(|row| vec![row]),
     }
-}
-
-enum BudgetScope<'a> {
-    Monthly { month: BudgetMonth, amount: &'a str },
-    Annual(&'a str),
 }
 
 fn command(sub: &BudgetCommand) -> Operation {
@@ -193,9 +224,11 @@ fn command(sub: &BudgetCommand) -> Operation {
     }
 }
 
-fn json(data: &BudgetData, meta: output::json::Meta) -> Result<String, CliError> {
+fn json(data: &BudgetData<'_>, meta: output::json::Meta) -> Result<String, CliError> {
     match data {
-        BudgetData::Rows(rows) => output::json::render_budgets(rows, meta),
+        BudgetData::Set { rows, .. } | BudgetData::Rows(rows) => {
+            output::json::render_budgets(rows, meta)
+        }
         BudgetData::Deleted(count) => output::json::render_budget_deleted(*count, meta),
     }
 }
@@ -203,13 +236,13 @@ fn json(data: &BudgetData, meta: output::json::Meta) -> Result<String, CliError>
 fn render(
     cli: &Cli,
     company: &str,
-    sub: &BudgetCommand,
-    data: &BudgetData,
+    operation: Operation,
+    data: &BudgetData<'_>,
 ) -> Result<(), CliError> {
     let format = resolve_format(None, cli);
     if format == OutputFormat::Json {
-        println!("{}", json(data, cli.meta(command(sub), Some(company)))?);
-    } else if let BudgetData::Rows(rows) = data {
+        println!("{}", json(data, cli.meta(operation, Some(company)))?);
+    } else if let BudgetData::Set { rows, .. } | BudgetData::Rows(rows) = data {
         match format {
             OutputFormat::Table => println!(
                 "{}",
@@ -247,10 +280,24 @@ pub fn execute_json(
     )?)
 }
 
+pub(crate) fn execute_set_json(
+    db: &Db,
+    company: &str,
+    request: &BudgetSetRequest<'_>,
+    actor: &db::Actor,
+) -> Result<serde_json::Value, CliError> {
+    db::companies::get_company(db.conn(), company)?;
+    let rows = set(db, company, request, actor)?;
+    super::company::json_data(&output::json::render_budgets(
+        &rows,
+        output::json::meta(Operation::BudgetSet, Some(company)),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{AccountCommand, AuditCommand, CompanyCommand};
+    use crate::cli::{AccountCommand, CompanyCommand};
 
     fn ledger() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
@@ -307,9 +354,9 @@ mod tests {
         assert_eq!(set, listed);
         let audit = super::super::audit::execute_json(
             &db,
-            &AuditCommand::Log {
-                agent: None,
-                company: Some("acme".into()),
+            &db::ListAuditParams {
+                agent_uri: None,
+                company_slug: Some("acme"),
                 entity: None,
                 action: None,
                 limit: 50,
@@ -339,9 +386,9 @@ mod tests {
     fn invalid_budget_does_not_write() -> Result<(), CliError> {
         let db = ledger()?;
         let actor = db::Actor::new("mcp:test-client");
-        let log = AuditCommand::Log {
-            agent: None,
-            company: None,
+        let log = db::ListAuditParams {
+            agent_uri: None,
+            company_slug: None,
             entity: None,
             action: None,
             limit: 50,

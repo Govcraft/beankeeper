@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::posting_output::PostingLineJson;
 
-use crate::cli::{Cli, OutputFormat, ScheduleCommand, resolve_format};
+use crate::cli::{Cli, OutputFormat, ScheduleCommand, ScheduleCreateArgs, resolve_format};
 use crate::db::{self, PostEntryParams, schedules};
 use crate::error::CliError;
 use crate::output::json;
@@ -20,8 +20,8 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
     db::companies::get_company(db.conn(), company)?;
     let actor = cli.principal();
     let data = match command {
-        ScheduleCommand::Create { .. } => {
-            let params = create_params(command)?;
+        ScheduleCommand::Create(args) => {
+            let params = create_params(args)?;
             let schedule = schedules::create_schedule(db.conn(), &actor, company, &params)?;
             serde_json::to_value(ScheduleJson::from(&schedule))
         }
@@ -98,8 +98,8 @@ impl<'a> From<&'a schedules::Schedule> for ScheduleJson<'a> {
     }
 }
 
-fn create_params(command: &ScheduleCommand) -> Result<schedules::CreateScheduleParams, CliError> {
-    let ScheduleCommand::Create {
+fn create_params(args: &ScheduleCreateArgs) -> Result<schedules::CreateScheduleParams, CliError> {
+    let ScheduleCreateArgs {
         description,
         start,
         frequency,
@@ -110,10 +110,7 @@ fn create_params(command: &ScheduleCommand) -> Result<schedules::CreateScheduleP
         metadata,
         meta,
         tax,
-    } = command
-    else {
-        return Err(CliError::Usage("expected schedule create".into()));
-    };
+    } = args;
     let currency = currency.resolve()?;
     let tax = super::txn::parse_tax_args(tax)?;
     let mut entries = Vec::new();

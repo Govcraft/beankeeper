@@ -742,42 +742,46 @@ pub struct ScheduleArgs {
     pub company: Option<CompanySlug>,
 }
 
+/// Arguments to create a scheduled obligation.
+#[derive(Args, Debug)]
+pub struct ScheduleCreateArgs {
+    /// Description copied to each posting.
+    #[arg(short = 'd', long)]
+    pub description: String,
+    /// First due date (YYYY-MM-DD).
+    #[arg(long)]
+    pub start: chrono::NaiveDate,
+    /// once, daily, weekly, monthly, or yearly.
+    #[arg(long, default_value = "once")]
+    pub frequency: beankeeper::core::Frequency,
+    /// Last due date, inclusive (YYYY-MM-DD).
+    #[arg(long)]
+    pub end: Option<chrono::NaiveDate>,
+    /// Debit entry in major units: account:amount[:memo]. Repeat for splits.
+    #[arg(long, required = true)]
+    pub debit: Vec<String>,
+    /// Credit entry in major units: account:amount[:memo]. Repeat for splits.
+    #[arg(long, required = true)]
+    pub credit: Vec<String>,
+    /// Currency code for all entries.
+    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+    pub currency: CurrencyArg,
+    /// Metadata copied to each posting.
+    #[arg(short = 'm', long)]
+    pub metadata: Option<String>,
+    /// Metadata key=value copied to each posting. Repeat as needed.
+    #[arg(long = "meta")]
+    pub meta: Vec<String>,
+    /// Override an account's default tax category: account=category.
+    #[arg(long)]
+    pub tax: Vec<String>,
+}
+
 /// Create, inspect, post, and cancel scheduled obligations.
 #[derive(Subcommand, Debug)]
 pub enum ScheduleCommand {
     /// Create a balanced pending template without posting it.
-    Create {
-        /// Description copied to each posting.
-        #[arg(short = 'd', long)]
-        description: String,
-        /// First due date (YYYY-MM-DD).
-        #[arg(long)]
-        start: chrono::NaiveDate,
-        /// once, daily, weekly, monthly, or yearly.
-        #[arg(long, default_value = "once")]
-        frequency: beankeeper::core::Frequency,
-        /// Last due date, inclusive (YYYY-MM-DD).
-        #[arg(long)]
-        end: Option<chrono::NaiveDate>,
-        /// Debit entry in major units: account:amount[:memo]. Repeat for splits.
-        #[arg(long, required = true)]
-        debit: Vec<String>,
-        /// Credit entry in major units: account:amount[:memo]. Repeat for splits.
-        #[arg(long, required = true)]
-        credit: Vec<String>,
-        /// Currency code for all entries.
-        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-        currency: CurrencyArg,
-        /// Metadata copied to each posting.
-        #[arg(short = 'm', long)]
-        metadata: Option<String>,
-        /// Metadata key=value copied to each posting. Repeat as needed.
-        #[arg(long = "meta")]
-        meta: Vec<String>,
-        /// Override an account's default tax category: account=category.
-        #[arg(long)]
-        tax: Vec<String>,
-    },
+    Create(ScheduleCreateArgs),
     /// List templates and their next pending date.
     List {
         /// Include completed and cancelled templates.
@@ -815,7 +819,7 @@ impl ScheduleCommand {
 
     pub(crate) const fn operation(&self) -> Operation {
         match self {
-            Self::Create { .. } => Operation::ScheduleCreate,
+            Self::Create(_) => Operation::ScheduleCreate,
             Self::List { .. } => Operation::ScheduleList,
             Self::Run { .. } => Operation::ScheduleRun,
             Self::Cancel { .. } => Operation::ScheduleCancel,
@@ -955,31 +959,35 @@ pub struct AuditArgs {
 #[derive(Subcommand, Debug)]
 pub enum AuditCommand {
     /// List recorded changes, most recent first.
-    Log {
-        /// Restrict to one company slug.
-        #[arg(long)]
-        company: Option<String>,
+    Log(AuditLogArgs),
+}
 
-        /// Restrict to one verified agent URI.
-        #[arg(long)]
-        agent: Option<String>,
+/// Filters and pagination for one audit history page.
+#[derive(Args, Debug)]
+pub struct AuditLogArgs {
+    /// Restrict to one company slug.
+    #[arg(long)]
+    pub company: Option<String>,
 
-        /// Restrict to one entity kind.
-        #[arg(long, value_enum)]
-        entity: Option<AuditEntityArg>,
+    /// Restrict to one verified agent URI.
+    #[arg(long)]
+    pub agent: Option<String>,
 
-        /// Restrict to one action kind.
-        #[arg(long, value_enum)]
-        action: Option<AuditActionArg>,
+    /// Restrict to one entity kind.
+    #[arg(long, value_enum)]
+    pub entity: Option<AuditEntityArg>,
 
-        /// Maximum number of rows to show.
-        #[arg(long, default_value_t = 50)]
-        limit: i64,
+    /// Restrict to one action kind.
+    #[arg(long, value_enum)]
+    pub action: Option<AuditActionArg>,
 
-        /// Number of matching rows to skip.
-        #[arg(long, default_value_t = 0)]
-        offset: i64,
-    },
+    /// Maximum number of rows to show.
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
+
+    /// Number of matching rows to skip.
+    #[arg(long, default_value_t = 0)]
+    pub offset: i64,
 }
 
 /// Shared typed classifications for audit-log filters.
@@ -1197,16 +1205,61 @@ pub struct BudgetSetArgs {
     pub notes: Option<String>,
 }
 
+/// Date, currency, and filtering arguments for `bk report budget-variance`.
+#[derive(Args, Debug, Clone)]
+pub struct BudgetVarianceArgs {
+    /// Budget year.
+    #[arg(long)]
+    pub year: i32,
+
+    /// Single month (1-12). Mutually exclusive with --from/--to.
+    #[arg(long, conflicts_with_all = ["from", "to"])]
+    pub month: Option<ReportMonth>,
+
+    /// Start month (1-12, inclusive). Defaults to 1.
+    #[arg(long)]
+    pub from: Option<ReportMonth>,
+
+    /// End month (1-12, inclusive). Defaults to 12.
+    #[arg(long)]
+    pub to: Option<ReportMonth>,
+
+    /// Filter by account type.
+    #[arg(long = "type", value_parser = account_type_parser())]
+    pub account_type: Option<AccountType>,
+
+    /// Currency code. When omitted, inferred from the company's
+    /// transactions (required if they use more than one currency).
+    #[arg(long, env = "BEANKEEPER_CURRENCY")]
+    pub currency: Option<CurrencyArg>,
+
+    /// Include accounts with actuals but no budget.
+    #[arg(long)]
+    pub include_unbudgeted: bool,
+}
+
 /// A validated month number from January (1) through December (12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BudgetMonth(i32);
+pub struct BudgetMonth(chrono::Month);
 
 impl BudgetMonth {
     /// Month number for the ledger's budget records.
     #[must_use]
     pub const fn get(self) -> i32 {
-        self.0
+        self.0.number_from_month().cast_signed()
     }
+}
+
+impl From<chrono::Month> for BudgetMonth {
+    fn from(month: chrono::Month) -> Self {
+        Self(month)
+    }
+}
+
+fn calendar_month(number: i32) -> Option<chrono::Month> {
+    u8::try_from(number)
+        .ok()
+        .and_then(|month| chrono::Month::try_from(month).ok())
 }
 
 impl std::str::FromStr for BudgetMonth {
@@ -1215,9 +1268,34 @@ impl std::str::FromStr for BudgetMonth {
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         raw.parse::<i32>()
             .ok()
-            .filter(|month| (1..=12).contains(month))
+            .and_then(calendar_month)
             .map(Self)
             .ok_or_else(|| CliError::Validation(format!("month must be 1-12, got {raw}")))
+    }
+}
+
+/// A report month argument, retaining an out-of-range integer for the report's validation error.
+#[derive(Clone, Copy, Debug)]
+pub struct ReportMonth(Result<chrono::Month, i32>);
+
+impl ReportMonth {
+    pub(crate) const fn resolve(self) -> Result<chrono::Month, i32> {
+        self.0
+    }
+}
+
+impl std::str::FromStr for ReportMonth {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let number = raw.parse()?;
+        Ok(Self(calendar_month(number).ok_or(number)))
+    }
+}
+
+impl From<chrono::Month> for ReportMonth {
+    fn from(month: chrono::Month) -> Self {
+        Self(Ok(month))
     }
 }
 
@@ -2140,36 +2218,7 @@ EXAMPLES:\n  \
     Include accounts that have no budget set:\n    \
     $ bk --company acme report budget-variance --year 2026 --include-unbudgeted\
 ")]
-    BudgetVariance {
-        /// Budget year.
-        #[arg(long)]
-        year: i32,
-
-        /// Single month (1-12). Mutually exclusive with --from/--to.
-        #[arg(long, conflicts_with_all = ["from", "to"])]
-        month: Option<i32>,
-
-        /// Start month (1-12, inclusive). Defaults to 1.
-        #[arg(long)]
-        from: Option<i32>,
-
-        /// End month (1-12, inclusive). Defaults to 12.
-        #[arg(long)]
-        to: Option<i32>,
-
-        /// Filter by account type.
-        #[arg(long = "type", value_parser = account_type_parser())]
-        account_type: Option<AccountType>,
-
-        /// Currency code. When omitted, inferred from the company's
-        /// transactions (required if they use more than one currency).
-        #[arg(long, env = "BEANKEEPER_CURRENCY")]
-        currency: Option<CurrencyArg>,
-
-        /// Include accounts with actuals but no budget.
-        #[arg(long)]
-        include_unbudgeted: bool,
-    },
+    BudgetVariance(BudgetVarianceArgs),
 
     /// Receivables / payables aging for asset or liability accounts.
     ///
