@@ -2,6 +2,7 @@ use rusqlite::{Connection, params};
 
 use super::CompanyRow;
 use super::audit::{self, Actor, Creation};
+use super::connection::ReadConn;
 use crate::error::CliError;
 
 /// A company slug validated before use in a company-scoped operation.
@@ -183,6 +184,10 @@ pub fn list_companies(conn: &Connection) -> Result<Vec<CompanyRow>, CliError> {
 /// Returns `CliError::NotFound` if the company does not exist.
 /// Returns `CliError::Sqlite` on database errors.
 pub fn get_company(conn: &Connection, slug: &str) -> Result<CompanyRow, CliError> {
+    read_company(ReadConn::new(conn), slug)
+}
+
+pub(crate) fn read_company(conn: ReadConn<'_>, slug: &str) -> Result<CompanyRow, CliError> {
     let mut stmt =
         conn.prepare("SELECT slug, name, description, created_at FROM companies WHERE slug = ?1")?;
 

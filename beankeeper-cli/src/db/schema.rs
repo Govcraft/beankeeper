@@ -1557,7 +1557,7 @@ mod tests {
         audit::verify_hash_chain(ReadConn::new(&conn))?;
         audit::verify_creations(&conn)?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
-        periods::verify(&conn)?;
+        periods::verify(ReadConn::new(&conn))?;
         assert_eq!(history(&conn)?.last().map(|row| row.0), Some(4));
         ensure_schema(&conn)?;
         Ok(())

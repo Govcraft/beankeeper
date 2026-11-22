@@ -776,7 +776,7 @@ pub fn change_period(
     in_savepoint(conn, "sp_period_change", || {
         require_capability(conn, actor, crate::capability::Capability::Admin)?;
         super::companies::get_company(conn, company)?;
-        let before = super::periods::get(conn, company)?;
+        let before = super::periods::get(ReadConn::new(conn), company)?;
         let previous = before.as_ref().and_then(PeriodLock::closed_through);
         let (state, action) = resolve_period_change(change, previous)?;
         let changed_at =

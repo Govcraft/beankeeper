@@ -19,7 +19,9 @@ use crate::commands::{
     statement_source::{self, SourceRow},
     txn_import::{CsvMapping, read_csv_statement},
 };
-use crate::db::{accounts, companies::CompanySlug, ids::TransactionId, periods, rules};
+use crate::db::{
+    accounts, companies::CompanySlug, connection::ReadConn, ids::TransactionId, periods, rules,
+};
 use crate::error::CliError;
 use crate::output::{amounts::format_money, json::serialize_display};
 
@@ -331,7 +333,7 @@ pub(crate) fn prepare_in_session(
         .map(|row| row.journal.date())
         .min()
     {
-        let _period = periods::check_posting(conn, company, first_new_date)?;
+        periods::ensure_open(ReadConn::new(conn), company, first_new_date)?;
     }
 
     Ok(StatementPreview {

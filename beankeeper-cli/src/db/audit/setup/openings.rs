@@ -13,7 +13,9 @@ use super::{
     requests::{SetupReference, apply_once, digest},
     with_active_session,
 };
-use crate::db::{Actor, Db, accounts, companies::CompanySlug, periods, proposals};
+use crate::db::{
+    Actor, Db, accounts, companies::CompanySlug, connection::ReadConn, periods, proposals,
+};
 use crate::error::CliError;
 use crate::output::{amounts::format_money, json::serialize_display};
 
@@ -208,8 +210,11 @@ fn prepare<'a>(
         }
     }
     let journal = journal.post()?;
-    let _period =
-        periods::check_posting(session.connection, request.company.as_str(), journal.date())?;
+    periods::ensure_open(
+        ReadConn::new(session.connection),
+        request.company.as_str(),
+        journal.date(),
+    )?;
     let details = PreviewDetails {
         company: &request.company,
         profile_revision: profile.revision,
