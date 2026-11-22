@@ -528,7 +528,6 @@ fn post_occurrence(
     date: NaiveDate,
 ) -> Result<i64, CliError> {
     let reference = format!("schedule:{}:{date}", schedule.id);
-    let date_text = date.to_string();
     let result = audit::post_in_audited_scope(
         tx,
         &PostTransactionParams {
@@ -536,7 +535,7 @@ fn post_occurrence(
             description: &schedule.description,
             metadata: schedule.metadata.as_deref(),
             currency: schedule.currency,
-            date: &date_text,
+            date,
             entries: &schedule.entries,
             correlate: None,
             reference: Some(&reference),

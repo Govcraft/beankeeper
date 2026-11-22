@@ -24,10 +24,10 @@ pub use vendors::{VendorRow, VendorSummary, VendorThreshold, render_csv as rende
 pub struct TaxArgs {
     /// First date (inclusive). Defaults to January 1 of the end date's year.
     #[arg(long)]
-    pub from: Option<String>,
+    pub from: Option<crate::cli::CalendarDateArg>,
     /// Last date (inclusive). Defaults to today.
     #[arg(long)]
-    pub to: Option<String>,
+    pub to: Option<crate::cli::CalendarDateArg>,
     /// Currency; required for companies with transactions in multiple currencies.
     #[arg(long)]
     pub currency: Option<crate::cli::CurrencyArg>,
@@ -170,7 +170,7 @@ impl TaxInvocation<'_> {
             company,
             crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
         )?;
-        let period = Period::resolve(args.from.as_deref(), args.to.as_deref(), today)?;
+        let period = Period::resolve(args.from.as_ref(), args.to.as_ref(), today)?;
         match self {
             Self::ScheduleC(_) => Ok(ResolvedTaxReport::ScheduleC { period, currency }),
             Self::Vendor1099(args) => {

@@ -955,7 +955,8 @@ fn posting_snapshot(
     id: i64,
     hash_version: i64,
 ) -> Result<serde_json::Value, CliError> {
-    let (txn, entries) = super::transactions::get_transaction(conn, company, id)?;
+    let (txn, entries, date_text) =
+        super::transactions::get_transaction_for_audit(conn, company, id)?;
     let entries: Vec<_> = entries.iter().map(|entry| serde_json::json!({
         "id": entry.id, "account_code": entry.account_code, "company_slug": entry.company_slug,
         "direction": entry.direction.code(), "amount": entry.amount,
@@ -963,7 +964,7 @@ fn posting_snapshot(
     })).collect();
     let mut result = serde_json::json!({
         "id": txn.id, "company_slug": txn.company_slug, "description": txn.description,
-        "currency": txn.currency.code(), "date": txn.date, "posted_at": txn.posted_at,
+        "currency": txn.currency.code(), "date": date_text, "posted_at": txn.posted_at,
         "reference": txn.reference, "posted_by": txn.posted_by, "entries": entries,
     });
     if hash_version >= 2 {
@@ -1259,7 +1260,6 @@ fn insert_clearing(
     amount: PositiveMinorUnits,
 ) -> Result<i64, CliError> {
     let state = req.status.on(req.date);
-    let date = req.date.to_string();
     tx.insert(
         "INSERT INTO entry_clearings \
          (entry_id, company_slug, amount, cleared_date, statement_ref, status, reconciled_date) \
@@ -1268,10 +1268,10 @@ fn insert_clearing(
             req.entry_id,
             req.company_slug,
             amount,
-            date,
+            req.date,
             req.statement,
             state.status().as_str(),
-            state.reconciled_on().map(|_| date.as_str()),
+            state.reconciled_on(),
         ],
     )
 }
@@ -1400,12 +1400,11 @@ impl Reconciliation<'_> {
             ClearPlan::Promote { ids } => (ClearAction::Reconciled, None, 0, ids),
         };
 
-        let date = req.date.to_string();
         for id in &promote {
             conn.execute(
                 "UPDATE entry_clearings SET status = 'reconciled', reconciled_date = ?2 \
                  WHERE id = ?1",
-                params![id, date],
+                params![id, req.date],
             )?;
         }
 
@@ -1593,7 +1592,7 @@ pub fn correlate_partner(
 pub struct ReverseTransactionParams<'a> {
     pub company_slug: &'a str,
     pub id: i64,
-    pub date: &'a str,
+    pub date: chrono::NaiveDate,
     pub description: Option<&'a str>,
     /// An explicit reference also permits retrying the same reversal.
     pub reference: Option<&'a str>,
@@ -1651,7 +1650,7 @@ pub fn reverse_transaction(
         if let Some(result) = existing_reversal(conn, p, &original_metadata)? {
             return Ok(result);
         }
-        let date = validate_reversal(conn, p, &original.date)?;
+        validate_reversal(conn, p, original.date)?;
         let description = p.description.map_or_else(
             || format!("Reversal of #{}: {}", p.id, original.description),
             str::to_string,
@@ -1668,7 +1667,7 @@ pub fn reverse_transaction(
                 description: &description,
                 metadata: None,
                 currency: original.currency,
-                date: &date.to_string(),
+                date: p.date,
                 entries: &entries,
                 correlate: None,
                 reference: Some(&reference),
@@ -1748,13 +1747,9 @@ fn existing_reversal(
 fn validate_reversal(
     conn: &Connection,
     p: &ReverseTransactionParams<'_>,
-    original_date: &str,
-) -> Result<chrono::NaiveDate, CliError> {
-    let date = chrono::NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
-        .map_err(|e| CliError::Validation(format!("invalid date '{}': {e}", p.date)))?;
-    let original_date = chrono::NaiveDate::parse_from_str(original_date, "%Y-%m-%d")
-        .map_err(|e| CliError::Validation(format!("invalid original date: {e}")))?;
-    if date < original_date {
+    original_date: chrono::NaiveDate,
+) -> Result<(), CliError> {
+    if p.date < original_date {
         return Err(CliError::Validation(
             "reversal date must be on or after the original transaction date".into(),
         ));
@@ -1771,7 +1766,7 @@ fn validate_reversal(
             p.id
         )));
     }
-    Ok(date)
+    Ok(())
 }
 
 /// Mirror the original entries. The sealed writer validates the resulting journal.
@@ -1805,6 +1800,7 @@ fn set_budget_month(
     actor: &Actor,
     p: &SetBudgetParams<'_>,
 ) -> Result<BudgetRow, CliError> {
+    let month = p.month.number_from_month();
     let reader = tx.read();
     let prior_amount: Option<i64> = reader
         .query_row(
@@ -1816,7 +1812,7 @@ fn set_budget_month(
                 p.account_code,
                 p.currency.code(),
                 p.year,
-                p.month
+                month
             ],
             |row| row.get(0),
         )
@@ -1831,7 +1827,7 @@ fn set_budget_month(
             p.account_code,
             p.currency.code(),
             p.year,
-            p.month,
+            month,
             p.amount,
             p.notes
         ],
@@ -1861,7 +1857,7 @@ fn set_budget_month(
                     "currency": p.currency.code(),
                     "notes": p.notes,
                     "year": p.year,
-                    "month": p.month,
+                    "month": month,
                 }))),
             ),
         },
@@ -1898,8 +1894,9 @@ pub fn set_annual_budget(
         let remainder = params.annual_amount % 12;
         let mut rows = Vec::with_capacity(12);
 
-        for m in 1..=12 {
-            let extra = i64::from(i64::from(m) <= remainder);
+        let mut month = chrono::Month::January;
+        for _ in 0..12 {
+            let extra = i64::from(i64::from(month.number_from_month()) <= remainder);
             let row = set_budget_month(
                 tx,
                 actor,
@@ -1908,12 +1905,13 @@ pub fn set_annual_budget(
                     account_code: params.account_code,
                     currency: params.currency,
                     year: params.year,
-                    month: m,
+                    month,
                     amount: base + extra,
                     notes: params.notes,
                 },
             )?;
             rows.push(row);
+            month = month.succ();
         }
 
         Ok(rows)
@@ -1950,7 +1948,13 @@ pub fn delete_budget(
             conn.execute(
                 "DELETE FROM budgets WHERE company_slug = ?1 AND account_code = ?2 \
                  AND currency = ?3 AND year = ?4 AND month = ?5",
-                params![company_slug, account_code, currency, year, m],
+                params![
+                    company_slug,
+                    account_code,
+                    currency,
+                    year,
+                    m.number_from_month()
+                ],
             )?
         } else {
             conn.execute(
@@ -1972,7 +1976,7 @@ pub fn delete_budget(
                     snapshots: (
                         Some(&snapshot(&serde_json::json!({
                             "year": year,
-                            "month": v.month,
+                            "month": v.month.number_from_month(),
                             "amount": v.amount,
                             "currency": currency,
                             "notes": v.notes,
@@ -1990,7 +1994,7 @@ pub fn delete_budget(
 /// A budget row captured before deletion.
 struct BudgetVictim {
     id: i64,
-    month: i32,
+    month: chrono::Month,
     amount: i64,
     notes: Option<String>,
 }
@@ -2001,12 +2005,12 @@ fn collect_budget_victims(
     account_code: &str,
     currency: &str,
     year: i32,
-    month: Option<i32>,
+    month: Option<chrono::Month>,
 ) -> Result<Vec<BudgetVictim>, CliError> {
     let map_row = |row: &rusqlite::Row<'_>| {
         Ok(BudgetVictim {
             id: row.get(0)?,
-            month: row.get(1)?,
+            month: super::budgets::read_month(row, 1)?,
             amount: row.get(2)?,
             notes: row.get(3)?,
         })
@@ -2019,7 +2023,13 @@ fn collect_budget_victims(
              AND year = ?4 AND month = ?5",
         )?;
         let mapped = stmt.query_map(
-            params![company_slug, account_code, currency, year, m],
+            params![
+                company_slug,
+                account_code,
+                currency,
+                year,
+                m.number_from_month()
+            ],
             map_row,
         )?;
         mapped.collect::<Result<_, _>>()?
@@ -2330,11 +2340,11 @@ pub(super) fn persist_schedule(
             company,
             schedule.description,
             schedule.currency.code(),
-            schedule.start_date.to_string(),
+            schedule.start_date,
             schedule.frequency.to_string(),
-            schedule.end_date.map(|d| d.to_string()),
+            schedule.end_date,
             schedule.metadata,
-            schedule.state.next_due().map(|date| date.to_string()),
+            schedule.state.next_due(),
             schedule.state.code()
         ],
     )?;
@@ -2392,7 +2402,7 @@ pub(super) fn change_schedule(
          WHERE id = ?4 AND company_slug = ?5",
         params![
             after.occurrence_index,
-            after.state.next_due().map(|date| date.to_string()),
+            after.state.next_due(),
             after.state.code(),
             after.id.to_string(),
             after.company_slug

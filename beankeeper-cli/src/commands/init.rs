@@ -128,7 +128,7 @@ fn post_with_metadata(
             description: desc,
             metadata,
             currency: beankeeper::types::Currency::USD,
-            date,
+            date: crate::cli::CalendarDateArg::decode(date).posting_date()?,
             entries,
             correlate,
             reference: Some(reference),

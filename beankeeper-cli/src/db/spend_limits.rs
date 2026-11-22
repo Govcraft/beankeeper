@@ -354,9 +354,7 @@ pub(crate) fn check(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<
     if let Some(cap) = limit.caps.daily_limit() {
         // An approved posting belongs to the proposer bucket, while its posted
         // identity stays the approver. Metadata edits cannot change this join.
-        let date = NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
-            .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?;
-        let used = daily_used(conn, p.company_slug, p.currency, uri, date)?;
+        let used = daily_used(conn, p.company_slug, p.currency, uri, p.date)?;
         if used + i128::from(amount) > i128::from(cap.minor_units()) {
             return Err(forbidden(
                 "posting exceeds the agent's daily-limit for this transaction date",
@@ -382,13 +380,11 @@ fn daily_used(
     )?;
     let mut used = 0_i128;
     for row in stmt.query_map(params![company, currency, uri], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        Ok((super::calendar_date::read(row, 0), row.get::<_, i64>(1)?))
     })? {
-        let (raw_date, amount) = row?;
-        let stored_date = NaiveDate::parse_from_str(&raw_date, "%Y-%m-%d").map_err(|error| {
-            CliError::Database(format!(
-                "invalid stored transaction date '{raw_date}': {error}"
-            ))
+        let (stored_date, amount) = row?;
+        let stored_date = stored_date.map_err(|error| {
+            CliError::Database(format!("invalid stored transaction date: {error}"))
         })?;
         if stored_date == date {
             used += i128::from(amount);

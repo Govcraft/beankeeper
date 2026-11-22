@@ -198,7 +198,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
                     .write_record([
                         company.slug.as_str(),
                         txn_id_str.as_str(),
-                        txn.date.as_str(),
+                        &txn.date.to_string(),
                         txn.description.as_str(),
                         meta,
                         txn.currency.code(),

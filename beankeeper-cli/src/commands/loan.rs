@@ -169,7 +169,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
             )));
         }
     }
-    let date = super::txn::posting_date(Some(&args.date))?;
+    let date = args.date.posting_date()?;
     let line = |code: &str, amount: MoneyField| {
         Ok::<_, CliError>(super::txn::PostingLine {
             account_code: code.to_owned(),

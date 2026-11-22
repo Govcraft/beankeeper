@@ -1,6 +1,7 @@
 //! Pending, immutable posting requests. Only audited resolution mutates them.
 
 use beankeeper::types::Currency;
+use chrono::NaiveDate;
 use mti::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -63,7 +64,7 @@ pub struct PostingPayload {
     pub description: String,
     pub metadata: Option<String>,
     pub currency: Currency,
-    pub date: String,
+    pub date: NaiveDate,
     pub entries: Vec<PostEntryParams>,
     pub correlate: Option<i64>,
     pub reference: Option<String>,
@@ -79,7 +80,7 @@ impl PostingPayload {
             description: &self.description,
             metadata: self.metadata.as_deref(),
             currency: self.currency,
-            date: &self.date,
+            date: self.date,
             entries: &self.entries,
             correlate: self.correlate,
             reference: self.reference.as_deref(),
@@ -625,7 +626,7 @@ fn reserve(
             description: p.description.into(),
             metadata: p.metadata.map(str::to_owned),
             currency: p.currency,
-            date: p.date.into(),
+            date: p.date,
             entries: p
                 .entries
                 .iter()
@@ -684,7 +685,7 @@ pub(in crate::db) fn reserve_setup_opening(
         description: journal.description().to_owned(),
         metadata: None,
         currency: journal.currency(),
-        date: journal.date().to_string(),
+        date: journal.date(),
         entries,
         correlate: None,
         reference: Some(reference.to_owned()),

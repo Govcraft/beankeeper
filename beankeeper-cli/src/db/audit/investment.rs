@@ -42,13 +42,7 @@ pub(in crate::db) fn store_price(
     let conn = tx.connection();
     conn.execute(
         "INSERT INTO security_prices(id,company_slug,symbol,date,price) VALUES (?1,?2,?3,?4,?5)",
-        params![
-            price.id,
-            company,
-            price.symbol,
-            price.date.to_string(),
-            minor_units
-        ],
+        params![price.id, company, price.symbol, price.date, minor_units],
     )?;
     record_insert(
         conn,
@@ -72,7 +66,7 @@ pub(in crate::db) fn store_lot(
         "INSERT INTO investment_lots(id,company_slug,symbol,asset,quantity,cost_basis,acquired_date,transaction_id)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         params![lot.id, company, lot.symbol, lot.asset, StoredAtoms(lot.quantity), minor_units,
-            lot.acquired_date.to_string(), lot.transaction_id],
+            lot.acquired_date, lot.transaction_id],
     )?;
     record_insert(
         conn,
@@ -99,7 +93,7 @@ pub(in crate::db) fn store_reliefs(
             "INSERT INTO lot_reliefs(id,company_slug,lot_id,quantity,cost_basis,date,transaction_id)
              VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![id, company, allocation.lot_id, StoredAtoms(allocation.quantity),
-                minor(allocation.cost_basis)?, date.to_string(), transaction_id],
+                minor(allocation.cost_basis)?, date, transaction_id],
         )?;
         record_insert(
             conn,

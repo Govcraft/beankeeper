@@ -1,7 +1,7 @@
 //! Frozen statement previews and receipts for owner-approved imports.
 
 use beankeeper::types::{DebitOrCredit, Sha256Hex};
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -43,7 +43,7 @@ struct FrozenBatch {
 #[derive(Serialize, Deserialize)]
 struct FrozenRow {
     reference: String,
-    date: String,
+    date: NaiveDate,
     description: String,
     metadata: Option<String>,
     entries: Vec<FrozenEntry>,
@@ -483,7 +483,7 @@ fn freeze(
             .collect::<Result<_, _>>()?;
         let row = FrozenRow {
             reference: row.reference.into_string(),
-            date: row.journal.date().to_string(),
+            date: row.journal.date(),
             description: row.journal.description().to_owned(),
             metadata: row.journal.metadata().map(str::to_owned),
             entries,
@@ -794,7 +794,7 @@ impl<'a> ApprovedStatementPosting<'a> {
             description: &self.row.description,
             metadata: self.row.metadata.as_deref(),
             currency: self.batch.currency,
-            date: &self.row.date,
+            date: self.row.date,
             entries: self.entries,
             correlate: None,
             reference: Some(&self.row.reference),

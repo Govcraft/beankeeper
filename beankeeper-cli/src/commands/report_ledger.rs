@@ -47,9 +47,9 @@ pub struct LedgerOptions<'a> {
     /// Account codes to include; empty means every account with activity.
     pub accounts: &'a [String],
     /// Start date (inclusive), `YYYY-MM-DD`.
-    pub from: Option<&'a str>,
+    pub from: Option<NaiveDate>,
     /// End date (inclusive), `YYYY-MM-DD`.
-    pub to: Option<&'a str>,
+    pub to: Option<NaiveDate>,
     /// Currency to report in; resolved from the company's data when `None`.
     pub currency: Option<Currency>,
     /// `KEY=VALUE` metadata filters (AND-ed); see [`metadata_filter`].
@@ -65,27 +65,15 @@ pub(super) struct LedgerRequest<'a> {
 }
 
 impl<'a> LedgerOptions<'a> {
-    pub(super) fn resolve_cli(
-        &self,
-        db: &Db,
-        company: &str,
-        today: NaiveDate,
-    ) -> Result<LedgerRequest<'a>, CliError> {
-        let dates = super::report_dates::DateWindow::resolve(self.from, self.to, today)?;
-        self.resolve(db.conn(), company, dates.from, Some(dates.to))
-    }
-
-    fn resolve(
+    pub(super) fn resolve(
         &self,
         conn: &Connection,
         company: &str,
-        from: Option<NaiveDate>,
-        to: Option<NaiveDate>,
     ) -> Result<LedgerRequest<'a>, CliError> {
         Ok(LedgerRequest {
             accounts: self.accounts,
-            from,
-            to,
+            from: self.from,
+            to: self.to,
             currency: resolve_ledger_currency(conn, company, self.currency)?,
             filters: metadata_filter::parse_filters(self.filter_metadata)?,
         })
@@ -95,7 +83,7 @@ impl<'a> LedgerOptions<'a> {
 /// One entry line of an account statement.
 #[derive(Debug, Clone, Serialize)]
 pub struct LedgerLine {
-    pub date: String,
+    pub date: NaiveDate,
     pub transaction_id: i64,
     pub entry_id: i64,
     pub description: String,
@@ -129,8 +117,8 @@ pub struct LedgerAccount {
 #[derive(Debug, Clone)]
 pub struct LedgerReport {
     pub currency: Currency,
-    pub from: Option<String>,
-    pub to: Option<String>,
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
     /// Active metadata filters; when non-empty, opening and running balances
     /// count matching entries only.
     pub metadata_filters: Vec<MetadataFilter>,
@@ -141,8 +129,8 @@ pub struct LedgerReport {
 struct LedgerJson<'a> {
     #[serde(serialize_with = "serialize_display")]
     currency: Currency,
-    from: Option<&'a str>,
-    to: Option<&'a str>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
     metadata_filters: &'a [MetadataFilter],
     accounts: Vec<LedgerAccountJson<'a>>,
 }
@@ -166,7 +154,7 @@ struct LedgerAccountJson<'a> {
 
 #[derive(Serialize)]
 struct LedgerLineJson<'a> {
-    date: &'a str,
+    date: NaiveDate,
     transaction_id: i64,
     entry_id: i64,
     description: &'a str,
@@ -185,8 +173,8 @@ impl Serialize for LedgerReport {
         let money = |key, minor| MoneyField::from_minor(key, minor, self.currency);
         LedgerJson {
             currency: self.currency,
-            from: self.from.as_deref(),
-            to: self.to.as_deref(),
+            from: self.from,
+            to: self.to,
             metadata_filters: &self.metadata_filters,
             accounts: self
                 .accounts
@@ -201,7 +189,7 @@ impl Serialize for LedgerReport {
                         .entries
                         .iter()
                         .map(|line| LedgerLineJson {
-                            date: &line.date,
+                            date: line.date,
                             transaction_id: line.transaction_id,
                             entry_id: line.entry_id,
                             description: &line.description,
@@ -298,9 +286,7 @@ pub fn build_report(
         return Err(CliError::NotFound(format!("company '{company}' not found")));
     }
 
-    let from = opts.from.map(|d| validate_date("--from", d)).transpose()?;
-    let to = opts.to.map(|d| validate_date("--to", d)).transpose()?;
-    if let (Some(f), Some(t)) = (from, to)
+    if let (Some(f), Some(t)) = (opts.from, opts.to)
         && f > t
     {
         return Err(CliError::Validation(format!(
@@ -308,7 +294,7 @@ pub fn build_report(
         )));
     }
 
-    let request = opts.resolve(conn, company, from, to)?;
+    let request = opts.resolve(conn, company)?;
     build_report_for_request(conn, company, request)
 }
 
@@ -355,19 +341,10 @@ fn build_report_for_request(
 
     Ok(LedgerReport {
         currency,
-        from: request.from.map(|date| date.to_string()),
-        to: request.to.map(|date| date.to_string()),
+        from: request.from,
+        to: request.to,
         metadata_filters: request.filters,
         accounts: out,
-    })
-}
-
-/// Validate a `YYYY-MM-DD` date argument.
-fn validate_date(flag: &str, value: &str) -> Result<NaiveDate, CliError> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
-        CliError::Validation(format!(
-            "{flag} must be a date in YYYY-MM-DD format, got '{value}'"
-        ))
     })
 }
 
@@ -402,11 +379,16 @@ fn signed(debit_normal: bool, debit: i64, credit: i64) -> Result<Amount, CliErro
 }
 
 /// Bind `base` as `?1..?n` followed by the filter's parameters (`?n+1..`).
-fn with_filter_params(
-    mut base: Vec<Option<String>>,
-    filter: &metadata_filter::SqlPredicate,
-) -> Vec<Option<String>> {
-    base.extend(filter.params.iter().cloned().map(Some));
+fn with_filter_params<'a>(
+    mut base: Vec<&'a dyn rusqlite::ToSql>,
+    filter: &'a metadata_filter::SqlPredicate,
+) -> Vec<&'a dyn rusqlite::ToSql> {
+    base.extend(
+        filter
+            .params
+            .iter()
+            .map(|param| param as &dyn rusqlite::ToSql),
+    );
     base
 }
 
@@ -432,19 +414,15 @@ fn account_statement(
         filters,
     } = *scope;
     // `?1..?4`: company, account, currency, and a date.
-    let base = |date: Option<NaiveDate>| {
-        vec![
-            Some(company.to_string()),
-            Some(acct.code.clone()),
-            Some(currency.code().to_string()),
-            date.map(|date| date.to_string()),
-        ]
-    };
+    let currency_code = currency.code();
+    let base: [&dyn rusqlite::ToSql; 3] = [&company, &acct.code, &currency_code];
     let debit_normal = acct.account_type.is_debit_normal();
 
     let opening_balance = match from {
         Some(f) => {
             let filter = metadata_filter::sql_predicate("t.metadata", filters, 5);
+            let mut values = base.to_vec();
+            values.push(&f);
             let (dr, cr): (i64, i64) = conn.query_row(
                 &format!(
                     "SELECT \
@@ -455,7 +433,7 @@ fn account_statement(
                        AND t.currency = ?3 AND t.date < ?4 AND {}",
                     filter.sql
                 ),
-                params_from_iter(with_filter_params(base(Some(f)), &filter)),
+                params_from_iter(with_filter_params(values, &filter)),
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             signed(debit_normal, dr, cr)?
@@ -473,8 +451,8 @@ fn account_statement(
         filter.sql
     ))?;
     // `?5` (`--to`) is always bound, even when `None`.
-    let mut values = base(from);
-    values.push(to.map(|date| date.to_string()));
+    let mut values = base.to_vec();
+    values.extend([&from as &dyn rusqlite::ToSql, &to]);
     let values = with_filter_params(values, &filter);
     let raw = stmt.query_map(params_from_iter(values), |row| {
         let direction = row.get(6)?;
@@ -484,7 +462,7 @@ fn account_statement(
             DebitOrCredit::Credit => (0, amount),
         };
         Ok(LedgerLine {
-            date: row.get(0)?,
+            date: db::calendar_date::read(row, 0)?,
             transaction_id: row.get(1)?,
             entry_id: row.get(2)?,
             description: row.get(3)?,
@@ -590,8 +568,10 @@ pub fn render_csv(report: &LedgerReport) -> Result<String, CliError> {
     ])
     .map_err(csv_err)?;
 
-    let from = report.from.as_deref().unwrap_or("");
-    let to = report.to.as_deref().unwrap_or("");
+    let from = report
+        .from
+        .map_or_else(String::new, |date| date.to_string());
+    let to = report.to.map_or_else(String::new, |date| date.to_string());
     for a in &report.accounts {
         let prefix = [
             a.code.as_str(),
@@ -602,7 +582,7 @@ pub fn render_csv(report: &LedgerReport) -> Result<String, CliError> {
         let opening = a.opening_balance.to_string();
         wtr.write_record(prefix.iter().copied().chain([
             "opening",
-            from,
+            from.as_str(),
             "",
             "",
             "Opening balance",
@@ -623,7 +603,7 @@ pub fn render_csv(report: &LedgerReport) -> Result<String, CliError> {
             );
             wtr.write_record(prefix.iter().copied().chain([
                 "entry",
-                e.date.as_str(),
+                &e.date.to_string(),
                 &tid,
                 &eid,
                 e.description.as_str(),
@@ -643,7 +623,7 @@ pub fn render_csv(report: &LedgerReport) -> Result<String, CliError> {
         );
         wtr.write_record(prefix.iter().copied().chain([
             "closing",
-            to,
+            to.as_str(),
             "",
             "",
             "Closing balance",
@@ -693,7 +673,7 @@ pub fn render_table(report: &LedgerReport, use_color: bool) -> String {
     let cyan = anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
     let dim = anstyle::Style::new().dimmed();
 
-    let period = match (report.from.as_deref(), report.to.as_deref()) {
+    let period = match (report.from, report.to) {
         (Some(f), Some(t)) => format!(" ({f} to {t})"),
         (Some(f), None) => format!(" (from {f})"),
         (None, Some(t)) => format!(" (through {t})"),
@@ -747,7 +727,11 @@ pub fn render_table(report: &LedgerReport, use_color: bool) -> String {
 
         let right = |s: String| Cell::new(s).set_alignment(CellAlignment::Right);
         table.add_row(vec![
-            Cell::new(report.from.as_deref().unwrap_or("")),
+            Cell::new(
+                report
+                    .from
+                    .map_or_else(String::new, |date| date.to_string()),
+            ),
             Cell::new(""),
             Cell::new(styled("Opening balance", dim, use_color)),
             Cell::new(""),
@@ -757,7 +741,7 @@ pub fn render_table(report: &LedgerReport, use_color: bool) -> String {
         ]);
         for e in &a.entries {
             table.add_row(vec![
-                Cell::new(&e.date),
+                Cell::new(e.date),
                 right(e.transaction_id.to_string()),
                 Cell::new(&e.description),
                 Cell::new(e.reference.as_deref().unwrap_or("")),
@@ -767,7 +751,7 @@ pub fn render_table(report: &LedgerReport, use_color: bool) -> String {
             ]);
         }
         table.add_row(vec![
-            Cell::new(report.to.as_deref().unwrap_or("")),
+            Cell::new(report.to.map_or_else(String::new, |date| date.to_string())),
             Cell::new(""),
             Cell::new(styled("Closing balance", bold, use_color)),
             Cell::new(""),

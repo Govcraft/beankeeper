@@ -22,7 +22,9 @@ fn pending_with_entries(entries: serde_json::Value) -> Result<(Db, String), Box<
         description: "Review".into(),
         metadata: None,
         currency: beankeeper::types::Currency::USD,
-        date: "2026-11-20".into(),
+        date: "2026-11-20"
+            .parse()
+            .unwrap_or_else(|error| panic!("fixture date: {error}")),
         entries: Vec::new(),
         correlate: None,
         reference: None,

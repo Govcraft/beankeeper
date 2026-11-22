@@ -64,7 +64,7 @@ pub struct PostTransactionParams<'a> {
     pub description: &'a str,
     pub metadata: Option<&'a str>,
     pub currency: Currency,
-    pub date: &'a str,
+    pub date: NaiveDate,
     pub entries: &'a [PostEntryParams],
     /// If set, correlate with this existing transaction ID (intercompany linking).
     pub correlate: Option<i64>,
@@ -86,7 +86,7 @@ pub struct OrphanedCorrelation {
     /// Transaction description.
     pub description: String,
     /// Transaction date.
-    pub date: String,
+    pub date: NaiveDate,
     /// The partner transaction ID referenced in metadata.
     pub partner_id: i64,
 }
@@ -301,15 +301,8 @@ pub(crate) fn build_journal(
     request: &PostTransactionParams<'_>,
     source: PostingSource,
 ) -> Result<Transaction, CliError> {
-    let date = NaiveDate::parse_from_str(request.date, "%Y-%m-%d").map_err(|error| {
-        if source == PostingSource::Storage {
-            CliError::Validation(format!("invalid transaction date: {error}"))
-        } else {
-            invalid(error)
-        }
-    })?;
     let currency = request.currency;
-    let mut journal = JournalEntry::new(date, request.description, currency);
+    let mut journal = JournalEntry::new(request.date, request.description, currency);
     for entry in request.entries {
         let account = super::accounts::get_account(
             ReadConn::new(conn),
@@ -415,7 +408,7 @@ fn persist_posting(
             journal.description(),
             effective_metadata,
             journal.currency().code(),
-            date.to_string(),
+            date,
             p.reference,
             p.actor.name(),
             p.actor.agent_uri(),
@@ -636,13 +629,13 @@ fn build_list_query(
     // Transaction-level filters
     if let Some(from) = params.from_date {
         let _ = write!(sql, " AND t.date >= ?{param_idx}");
-        param_values.push(Box::new(from.to_string()));
+        param_values.push(Box::new(from));
         param_idx += 1;
     }
 
     if let Some(to) = params.to_date {
         let _ = write!(sql, " AND t.date <= ?{param_idx}");
-        param_values.push(Box::new(to.to_string()));
+        param_values.push(Box::new(to));
         param_idx += 1;
     }
 
@@ -708,21 +701,7 @@ pub fn list_transactions(
         param_values.iter().map(AsRef::as_ref).collect();
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_refs.as_slice(), |row| {
-        Ok(TransactionRow {
-            id: row.get(0)?,
-            company_slug: row.get(1)?,
-            description: row.get(2)?,
-            metadata: row.get(3)?,
-            currency: row.get(4)?,
-            date: row.get(5)?,
-            posted_at: row.get(6)?,
-            reference: row.get(7)?,
-            posted_by: row.get(8)?,
-            agent_uri: row.get(9)?,
-            token_jti: row.get(10)?,
-        })
-    })?;
+    let rows = stmt.query_map(params_refs.as_slice(), decode_transaction)?;
 
     let mut transactions = Vec::new();
     for row in rows {
@@ -760,25 +739,60 @@ pub fn get_transaction(
     company_slug: &str,
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
-    let slug: CompanySlug = company_slug.parse()?;
-    if !company_exists(conn, slug.as_str())? {
-        return Err(CliError::NotFound(format!("company '{slug}' not found")));
-    }
-    read_transaction(conn, &slug, id)
+    let slug = resolve_read_slug(conn, company_slug)?;
+    read_transaction_by(conn, &slug, id, decode_transaction)
 }
 
 pub(crate) fn get_scoped_transaction(
     company: &Company<'_>,
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
-    read_transaction(company.read(), company.slug(), id)
+    read_transaction_by(company.read(), company.slug(), id, decode_transaction)
 }
 
-fn read_transaction(
+/// Read the exact stored date alongside the typed row when checking audit bytes.
+pub(super) fn get_transaction_for_audit(
+    conn: ReadConn<'_>,
+    company_slug: &str,
+    id: i64,
+) -> Result<(TransactionRow, Vec<EntryRow>, String), CliError> {
+    let slug = resolve_read_slug(conn, company_slug)?;
+    let ((txn, date_text), entries) = read_transaction_by(conn, &slug, id, |row| {
+        Ok((decode_transaction(row)?, row.get(5)?))
+    })?;
+    Ok((txn, entries, date_text))
+}
+
+fn resolve_read_slug(conn: ReadConn<'_>, company_slug: &str) -> Result<CompanySlug, CliError> {
+    let slug: CompanySlug = company_slug.parse()?;
+    if !company_exists(conn, slug.as_str())? {
+        return Err(CliError::NotFound(format!("company '{slug}' not found")));
+    }
+    Ok(slug)
+}
+
+fn decode_transaction(row: &rusqlite::Row<'_>) -> rusqlite::Result<TransactionRow> {
+    Ok(TransactionRow {
+        id: row.get(0)?,
+        company_slug: row.get(1)?,
+        description: row.get(2)?,
+        metadata: row.get(3)?,
+        currency: row.get(4)?,
+        date: super::calendar_date::read(row, 5)?,
+        posted_at: row.get(6)?,
+        reference: row.get(7)?,
+        posted_by: row.get(8)?,
+        agent_uri: row.get(9)?,
+        token_jti: row.get(10)?,
+    })
+}
+
+fn read_transaction_by<T>(
     conn: ReadConn<'_>,
     company: &CompanySlug,
     id: i64,
-) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
+    decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<(T, Vec<EntryRow>), CliError> {
     let company_slug = company.as_str();
     let mut stmt = conn.prepare(
         "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti \
@@ -786,21 +800,7 @@ fn read_transaction(
          WHERE company_slug = ?1 AND id = ?2",
     )?;
 
-    let mut rows = stmt.query_map(params![company_slug, id], |row| {
-        Ok(TransactionRow {
-            id: row.get(0)?,
-            company_slug: row.get(1)?,
-            description: row.get(2)?,
-            metadata: row.get(3)?,
-            currency: row.get(4)?,
-            date: row.get(5)?,
-            posted_at: row.get(6)?,
-            reference: row.get(7)?,
-            posted_by: row.get(8)?,
-            agent_uri: row.get(9)?,
-            token_jti: row.get(10)?,
-        })
-    })?;
+    let mut rows = stmt.query_map(params![company_slug, id], decode)?;
 
     let txn = match rows.next() {
         Some(row) => row?,
@@ -898,7 +898,7 @@ pub fn find_orphaned_correlations(
             transaction_id: row.get(0)?,
             company_slug: row.get(1)?,
             description: row.get(2)?,
-            date: row.get(3)?,
+            date: super::calendar_date::read(row, 3)?,
             partner_id: row.get(4)?,
         })
     })?;
@@ -996,7 +996,9 @@ mod tests {
             description,
             metadata,
             currency: Currency::USD,
-            date,
+            date: date
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             entries,
             correlate: None,
             reference: None,
@@ -1021,6 +1023,22 @@ mod tests {
         let (txn, entry_rows) = result.unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(txn.description, "Test sale");
         assert_eq!(entry_rows.len(), 2);
+    }
+
+    #[test]
+    fn calendar_date_codec_preserves_ledger_text_and_reads_historical_dates() -> Result<(), CliError>
+    {
+        let db = setup();
+        let date =
+            NaiveDate::from_ymd_opt(2026, 1, 5).unwrap_or_else(|| panic!("invalid fixture date"));
+        let (encoded, historical): (String, NaiveDate) =
+            db.conn()
+                .query_row("SELECT ?1, '2026-1-5'", [date], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?;
+        assert_eq!(encoded, "2026-01-05");
+        assert_eq!(historical, date);
+        Ok(())
     }
 
     #[test]

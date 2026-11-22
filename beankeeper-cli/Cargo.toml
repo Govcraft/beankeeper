@@ -31,7 +31,7 @@ mti = "1.1.2"
 ofx-rs = "0.2.0"
 rmcp = { version = "3.11.0", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 rpassword = "7.4.0"
-rusqlite = { version = "0.39.0", features = ["bundled-sqlcipher-vendored-openssl"] }
+rusqlite = { version = "0.39.0", features = ["bundled-sqlcipher-vendored-openssl", "chrono"] }
 rust_decimal = "1.40.0"
 schemars = "1.2.3"
 secrecy = { version = "0.10.3", features = ["serde"] }

@@ -252,7 +252,9 @@ mod tests {
             description: "Sale",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date: "2024-01-15",
+            date: "2024-01-15"
+                .parse()
+                .unwrap_or_else(|error| panic!("fixture date: {error}")),
             entries: &entries,
             correlate: None,
             reference: None,

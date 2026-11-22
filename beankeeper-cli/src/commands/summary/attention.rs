@@ -119,11 +119,7 @@ fn uncategorized(context: &AttentionContext<'_>) -> Result<AttentionItem, CliErr
          GROUP BY t.id, e.account_code ORDER BY t.id, e.account_code",
     )?;
     let rows = statement.query_map(
-        params![
-            context.company,
-            context.currency.code(),
-            context.as_of.to_string()
-        ],
+        params![context.company, context.currency.code(), context.as_of],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(2)?)),
     )?;
     let mut transactions = BTreeSet::new();
@@ -168,7 +164,7 @@ fn unreconciled(context: &AttentionContext<'_>) -> Result<AttentionItem, CliErro
                 context.company,
                 context.currency.code(),
                 account,
-                context.as_of.to_string()
+                context.as_of
             ],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )?;
@@ -327,12 +323,12 @@ fn load_movements(
             context.company,
             context.currency.code(),
             account,
-            context.as_of.to_string()
+            context.as_of
         ],
         |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
+                db::calendar_date::read(row, 1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
@@ -343,9 +339,6 @@ fn load_movements(
     )?;
     rows.map(|row| {
         let (transaction_id, date, description, reference, metadata, debit, credit) = row?;
-        let date = date.parse::<NaiveDate>().map_err(|error| {
-            CliError::Database(format!("invalid stored transaction date: {error}"))
-        })?;
         Movement::new(
             transaction_id,
             date,
@@ -438,7 +431,9 @@ mod tests {
                 description: "Attention fixture",
                 metadata,
                 currency: beankeeper::types::Currency::USD,
-                date,
+                date: date
+                    .parse()
+                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
                 entries: &[
                     entry(accounts.0, beankeeper::types::DebitOrCredit::Debit, amount),
                     entry(accounts.1, beankeeper::types::DebitOrCredit::Credit, amount),

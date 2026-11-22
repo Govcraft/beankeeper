@@ -201,7 +201,7 @@ fn assert_approved_details(
     );
     assert_eq!(txn.posted_by.as_deref(), Some("reviewer"));
     assert_eq!(txn.description, "Office supplies");
-    assert_eq!(txn.date, "2026-01-01");
+    assert_eq!(txn.date.to_string(), "2026-01-01");
     assert_eq!(txn.reference.as_deref(), Some("receipt-1"));
     let metadata: Value = serde_json::from_str(txn.metadata.as_deref().ok_or("missing metadata")?)?;
     assert_eq!(metadata["proposal_id"], id(proposal)?);

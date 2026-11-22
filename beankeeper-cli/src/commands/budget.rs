@@ -70,7 +70,7 @@ fn compute<'a>(
                 company_slug: company,
                 year: *year,
                 account_code: account.as_deref(),
-                month: month.map(BudgetMonth::get),
+                month: month.map(BudgetMonth::calendar_month),
             },
         )
         .map(BudgetData::Rows),
@@ -96,7 +96,7 @@ fn compute<'a>(
                         account_code: account,
                         currency: currency.resolve()?,
                         year: *year,
-                        month: month.map(BudgetMonth::get),
+                        month: month.map(BudgetMonth::calendar_month),
                     },
                     confirmed,
                 )
@@ -207,7 +207,7 @@ fn set(
                 account_code: account,
                 currency,
                 year,
-                month: month.get(),
+                month: month.calendar_month(),
                 amount: parse_amount_to_minor(amount, currency)?,
                 notes,
             },

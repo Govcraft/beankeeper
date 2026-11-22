@@ -882,7 +882,7 @@ pub struct LoanPayArgs {
     pub paying_account: String,
     /// Payment transaction date (YYYY-MM-DD).
     #[arg(long)]
-    pub date: String,
+    pub date: CalendarDateArg,
     /// Unique reference for this loan and payment; reuse it safely on retries.
     #[arg(long)]
     pub reference: String,
@@ -1243,6 +1243,10 @@ pub struct BudgetVarianceArgs {
 pub struct BudgetMonth(chrono::Month);
 
 impl BudgetMonth {
+    pub(crate) const fn calendar_month(self) -> chrono::Month {
+        self.0
+    }
+
     /// Month number for the ledger's budget records.
     #[must_use]
     pub const fn get(self) -> i32 {
@@ -1671,6 +1675,78 @@ EXAMPLES:\n  \
     Clear(TxnClearArgs),
 }
 
+/// Parsed calendar date that retains the CLI validation error envelope.
+#[derive(Clone, Debug, schemars::JsonSchema)]
+#[schemars(transparent)]
+pub struct CalendarDateArg(
+    #[schemars(with = "String")] Result<chrono::NaiveDate, Box<InvalidCalendarDate>>,
+);
+
+#[derive(Clone, Debug)]
+struct InvalidCalendarDate {
+    value: String,
+    error: chrono::ParseError,
+}
+
+impl std::str::FromStr for CalendarDateArg {
+    type Err = std::convert::Infallible;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Ok(Self::decode(raw))
+    }
+}
+
+impl serde::Serialize for CalendarDateArg {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.0 {
+            Ok(date) => serde::Serialize::serialize(date, serializer),
+            Err(invalid) => serializer.serialize_str(&invalid.value),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CalendarDateArg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw: String = serde::Deserialize::deserialize(deserializer)?;
+        Ok(Self::decode(&raw))
+    }
+}
+
+impl From<chrono::NaiveDate> for CalendarDateArg {
+    fn from(date: chrono::NaiveDate) -> Self {
+        Self(Ok(date))
+    }
+}
+
+impl CalendarDateArg {
+    pub(crate) fn decode(value: &str) -> Self {
+        Self(
+            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|error| {
+                Box::new(InvalidCalendarDate {
+                    value: value.to_owned(),
+                    error,
+                })
+            }),
+        )
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        describe: impl FnOnce(&str, chrono::ParseError) -> CliError,
+    ) -> Result<chrono::NaiveDate, CliError> {
+        self.0
+            .as_ref()
+            .copied()
+            .map_err(|invalid| describe(&invalid.value, invalid.error))
+    }
+
+    pub(crate) fn posting_date(&self) -> Result<chrono::NaiveDate, CliError> {
+        self.resolve(|value, error| {
+            CliError::Validation(format!("invalid date '{value}': {error}"))
+        })
+    }
+}
+
 /// Arguments accepted by `bk txn post`.
 #[derive(Args, Debug)]
 pub struct PostingArgs {
@@ -1703,7 +1779,7 @@ pub struct PostingArgs {
 
     /// Transaction date (YYYY-MM-DD). Defaults to today.
     #[arg(long)]
-    pub date: Option<String>,
+    pub date: Option<CalendarDateArg>,
 
     /// Correlate with an existing transaction in another company (intercompany linking).
     #[arg(long)]
@@ -1838,7 +1914,7 @@ pub struct TxnReverseArgs {
     pub id: i64,
     /// Reversal date (YYYY-MM-DD), on or after the original. Defaults to today.
     #[arg(long)]
-    pub date: Option<String>,
+    pub date: Option<CalendarDateArg>,
     /// Description. Defaults to "Reversal of #ID: ORIGINAL DESCRIPTION".
     #[arg(short, long)]
     pub description: Option<String>,
@@ -1939,7 +2015,7 @@ pub struct TxnClearArgs {
     /// Cleared date, or reconciled date with --status reconciled
     /// (YYYY-MM-DD). Defaults to today; not before the transaction date.
     #[arg(long)]
-    pub date: Option<String>,
+    pub date: Option<CalendarDateArg>,
 
     /// Statement id stored on the clearing (idempotency key with the entry).
     #[arg(long)]
@@ -2007,11 +2083,11 @@ EXAMPLES:\n  \
     TrialBalance {
         /// Start date (inclusive).
         #[arg(long)]
-        from: Option<String>,
+        from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
         #[arg(long)]
-        to: Option<String>,
+        to: Option<CalendarDateArg>,
 
         /// Filter by account type.
         #[arg(long = "type", value_parser = account_type_parser())]
@@ -2054,11 +2130,11 @@ EXAMPLES:\n  \
 
         /// Start date (inclusive).
         #[arg(long)]
-        from: Option<String>,
+        from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
         #[arg(long)]
-        to: Option<String>,
+        to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
         /// are included. Required when the company has transactions in more
@@ -2085,11 +2161,11 @@ EXAMPLES:\n  \
     IncomeStatement {
         /// Start date (inclusive).
         #[arg(long)]
-        from: Option<String>,
+        from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
         #[arg(long)]
-        to: Option<String>,
+        to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
         /// are included. Required when the company has transactions in more
@@ -2121,7 +2197,7 @@ EXAMPLES:\n  \
     BalanceSheet {
         /// End date (inclusive). Defaults to today.
         #[arg(long)]
-        to: Option<String>,
+        to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
         /// are included. Required when the company has transactions in more
@@ -2148,10 +2224,10 @@ EXAMPLES:\n  \
     TaxSummary {
         /// Start date (inclusive).
         #[arg(long)]
-        from: Option<String>,
+        from: Option<CalendarDateArg>,
         /// End date (inclusive). Defaults to today.
         #[arg(long)]
-        to: Option<String>,
+        to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
         /// are included. Required when the company has transactions in more
@@ -2186,11 +2262,11 @@ EXAMPLES:\n  \
 
         /// Start date (inclusive). The opening balance is as of the day before.
         #[arg(long)]
-        from: Option<String>,
+        from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
         #[arg(long)]
-        to: Option<String>,
+        to: Option<CalendarDateArg>,
 
         /// Currency code. Defaults to the company's only transaction currency.
         #[arg(long)]
@@ -2351,7 +2427,7 @@ pub struct AgingCommandArgs {
     /// As-of date (YYYY-MM-DD, inclusive). Defaults to today. Charges and
     /// settlements dated after it are ignored.
     #[arg(long)]
-    pub as_of: Option<String>,
+    pub as_of: Option<CalendarDateArg>,
 
     /// Ascending, comma-separated bucket upper bounds in days.
     #[arg(long, default_value = "30,60,90")]
@@ -2412,7 +2488,7 @@ pub struct ReconciliationCommandArgs {
     /// clearings cleared on or before it, and as reconciled only those
     /// reconciled on or before it.
     #[arg(long)]
-    pub to: Option<String>,
+    pub to: Option<CalendarDateArg>,
 
     /// Statement amount in major units (e.g. 1234.56): bank ending balance
     /// or, in settlement mode, net payments against expected charges.

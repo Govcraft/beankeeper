@@ -97,7 +97,7 @@ pub struct AgingOptions<'a> {
     /// Also age every child of each account (see [`child_prefix`]).
     pub include_children: bool,
     /// As-of date (`YYYY-MM-DD`); defaults to today.
-    pub as_of: Option<&'a str>,
+    pub as_of: Option<NaiveDate>,
     /// Comma-separated ascending bucket bounds in days.
     pub buckets: &'a str,
     /// Optional metadata key to group by.
@@ -1312,7 +1312,7 @@ pub fn combine(
 /// A transaction's net debits/credits on the account.
 struct TxnTotals {
     id: i64,
-    date: String,
+    date: NaiveDate,
     description: String,
     reference: Option<String>,
     metadata: Option<String>,
@@ -1343,17 +1343,19 @@ fn load_account_transactions(
          ORDER BY t.date, t.id",
         filter.sql
     ))?;
-    let mut values = vec![
-        company.to_string(),
-        account.to_string(),
-        scope.currency.code().to_string(),
-        scope.as_of_str.clone(),
-    ];
-    values.extend(filter.params);
+    let currency_code = scope.currency.code();
+    let mut values: Vec<&dyn rusqlite::ToSql> =
+        vec![&company, &account, &currency_code, &scope.as_of];
+    values.extend(
+        filter
+            .params
+            .iter()
+            .map(|param| param as &dyn rusqlite::ToSql),
+    );
     let rows = stmt.query_map(params_from_iter(values), |row| {
         Ok(TxnTotals {
             id: row.get(0)?,
-            date: row.get(1)?,
+            date: db::calendar_date::read(row, 1)?,
             description: row.get(2)?,
             reference: row.get(3)?,
             metadata: row.get(4)?,
@@ -1474,11 +1476,6 @@ fn resolve_currency(
     super::report_currency::resolve_report_currency(conn, company, explicit)
 }
 
-fn parse_date(s: &str, what: &str) -> Result<NaiveDate, CliError> {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|e| CliError::Validation(format!("invalid {what} '{s}': {e}")))
-}
-
 // ---------------------------------------------------------------------------
 // Command
 // ---------------------------------------------------------------------------
@@ -1503,7 +1500,10 @@ impl<'a> TryFrom<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
         Ok(Self {
             accounts: account,
             include_children: *include_children,
-            as_of: as_of.as_deref(),
+            as_of: as_of
+                .as_ref()
+                .map(|date| super::report_dates::resolve_date("--as-of", date))
+                .transpose()?,
             buckets,
             group_by_metadata: group_by_metadata.as_deref(),
             currency: crate::cli::CurrencyArg::resolve_optional(currency.as_ref())?,
@@ -1520,7 +1520,6 @@ impl<'a> TryFrom<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
 struct AgingScope<'a> {
     kind: AgingKind,
     as_of: NaiveDate,
-    as_of_str: String,
     currency: Currency,
     buckets: Buckets,
     method: MatchMethod,
@@ -1542,12 +1541,7 @@ fn age_account(
     let mut keep = HashSet::new();
     let mut grouped = Vec::with_capacity(rows.len());
     for r in rows {
-        let date = NaiveDate::parse_from_str(&r.date, "%Y-%m-%d").map_err(|e| {
-            CliError::Database(format!(
-                "transaction {} has an invalid date '{}': {e}",
-                r.id, r.date
-            ))
-        })?;
+        let date = r.date;
         if r.matches_filter {
             keep.insert(r.id);
         }
@@ -1617,10 +1611,9 @@ pub(crate) fn run_to(
     opts: &AgingOptions<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let as_of = match opts.as_of {
-        Some(d) => parse_date(d, "--as-of date")?,
-        None => chrono::Local::now().date_naive(),
-    };
+    let as_of = opts
+        .as_of
+        .unwrap_or_else(|| chrono::Local::now().date_naive());
     let resolved = ResolvedAging::resolve(db, company, opts, as_of)?;
     run_resolved_to(cli, db, company, resolved, output)
 }
@@ -1647,10 +1640,8 @@ impl<'a> ResolvedAging<'a> {
         args: &'a crate::cli::AgingCommandArgs,
         today: NaiveDate,
     ) -> Result<Self, CliError> {
-        let as_of = args.as_of.as_deref().map_or(Ok(today), |date| {
-            super::report_dates::parse_date("--as-of", date)
-        })?;
-        Self::resolve(db, company, &AgingOptions::try_from(args)?, as_of)
+        let options = AgingOptions::try_from(args)?;
+        Self::resolve(db, company, &options, options.as_of.unwrap_or(today))
     }
 
     fn resolve(
@@ -1708,7 +1699,6 @@ pub(super) fn run_resolved_to(
     let scope = AgingScope {
         kind,
         as_of,
-        as_of_str: as_of.format("%Y-%m-%d").to_string(),
         currency,
         buckets,
         method,
@@ -1723,9 +1713,10 @@ pub(super) fn run_resolved_to(
         .collect::<Result<Vec<_>, _>>()?;
     let report = combine(kind, method, scope.buckets.clone(), per_account)?;
 
+    let as_of_text = as_of.to_string();
     let ctx = RenderContext {
         kind,
-        as_of: &scope.as_of_str,
+        as_of: &as_of_text,
         currency,
         group_by,
         link_key,

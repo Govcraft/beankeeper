@@ -84,7 +84,7 @@ pub(super) fn execute_cli_json(
 
 fn cli_options(args: &TxnClearArgs) -> Result<ClearOptions<'_>, CliError> {
     Ok(ClearOptions {
-        date: args.date.as_deref().map(parse_date).transpose()?,
+        date: args.date.as_ref().map(parse_date).transpose()?,
         statement: args.statement.as_deref(),
         status: args.status,
     })
@@ -294,9 +294,10 @@ impl ClearanceSettings<'_> {
     }
 }
 
-fn parse_date(date: &str) -> Result<NaiveDate, CliError> {
-    NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map_err(|_| CliError::Validation(format!("invalid --date '{date}': expected YYYY-MM-DD")))
+fn parse_date(date: &crate::cli::CalendarDateArg) -> Result<NaiveDate, CliError> {
+    date.resolve(|value, _| {
+        CliError::Validation(format!("invalid --date '{value}': expected YYYY-MM-DD"))
+    })
 }
 
 fn parse_amount(s: &str, target: &EntryTarget) -> Result<PositiveMinorUnits, CliError> {
@@ -788,9 +789,9 @@ mod tests {
     #[test]
     fn date_validation() {
         assert_eq!(
-            parse_date("2026-03-31").ok(),
+            parse_date(&crate::cli::CalendarDateArg::decode("2026-03-31")).ok(),
             NaiveDate::from_ymd_opt(2026, 3, 31)
         );
-        assert!(parse_date("31/03/2026").is_err());
+        assert!(parse_date(&crate::cli::CalendarDateArg::decode("31/03/2026")).is_err());
     }
 }

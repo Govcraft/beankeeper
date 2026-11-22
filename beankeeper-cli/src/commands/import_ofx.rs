@@ -419,7 +419,7 @@ fn insert_transaction(
         description: &prepared.description,
         metadata: Some(&prepared.metadata),
         currency: prepared.currency,
-        date: &prepared.date.to_string(),
+        date: prepared.date,
         entries,
         correlate: None,
         reference: Some(&prepared.reference),
