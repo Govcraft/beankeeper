@@ -21,7 +21,7 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("limits.db");
         let db = Db::open(&path, None)?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
         let id = agent_uri::AgentId::try_new("spender")
@@ -33,7 +33,7 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
             Currency::USD,
             Caps::from_minor_units(Some(1000), Some(2000))?,
         );
-        Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
             audit::set_spend_limit(grant, &limit)
         })?;
         verify::execute_json(&db)?;

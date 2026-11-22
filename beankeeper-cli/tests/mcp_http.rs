@@ -39,10 +39,10 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let secret = dir.path().join("passphrase");
         let db = Db::open(&path, Some(&PASSPHRASE.into()))?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -54,7 +54,7 @@ impl Ledger {
                 },
             )
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -66,9 +66,9 @@ impl Ledger {
                 },
             )
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), identity::init_root)?;
         let issue = |name: &str, capabilities: &[String]| {
-            Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
                 identity::issue(
                     grant,
                     &IssueRequest {
@@ -84,7 +84,8 @@ impl Ledger {
         let reader = issue("http_reader", &["ledger/read".into()])?;
         let writer = issue("http_writer", &["ledger/read".into(), "ledger/post".into()])?;
         let admin = issue("http_owner", &["ledger/admin".into()])?;
-        let owner = Actor::new("owner").with_identity(identity::verify(db.read(), token(&admin)?)?);
+        let owner = Actor::new("owner".parse()?)
+            .with_identity(identity::verify(db.read(), token(&admin)?)?);
         Ok(Self {
             dir,
             path,
@@ -103,6 +104,7 @@ impl Ledger {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("bk"));
         command
             .env_remove("BK_AGENT_TOKEN")
+            .env_remove("BK_ACTOR")
             .env_remove("BEANKEEPER_PASSPHRASE_CMD")
             .env_remove("BEANKEEPER_COMPANY")
             .arg("--db")
@@ -159,6 +161,10 @@ impl Server {
         if read_only {
             command.arg("--read-only");
         }
+        Self::spawn(command)
+    }
+
+    fn spawn(mut command: Command) -> TestResult<Self> {
         let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -378,7 +384,7 @@ fn http_authenticates_every_request_and_preserves_ledger_behavior() -> TestResul
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    assert_eq!(actor, "mcp:http-client-one");
+    assert_eq!(actor, ledger.reader["agent_uri"]);
     assert_eq!(agent, ledger.reader["agent_uri"]);
     db::audit::verify_hash_chain(db.read())?;
     db::audit::verify_creations(db.read())?;
@@ -403,6 +409,56 @@ fn http_authenticates_every_request_and_preserves_ledger_behavior() -> TestResul
         401
     );
     server.finish(&[reader, "invalid-secret-token"])
+}
+
+#[test]
+fn stateless_http_preserves_the_configured_label_and_request_agent_without_client_info()
+-> TestResult {
+    let ledger = Ledger::new()?;
+    let writer = token(&ledger.writer)?;
+    let mut command = ledger.command();
+    command.args([
+        "mcp",
+        "serve",
+        "--http",
+        "--bind",
+        "127.0.0.1:0",
+        "--actor",
+        "shared-books",
+    ]);
+    let server = Server::spawn(command)?;
+    let call = |name, arguments| {
+        // Stateless MCP sends tool calls without a clientInfo handshake.
+        server
+            .client
+            .post(&server.endpoint)
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", name)
+            .bearer_auth(writer)
+            .json(&json!({"jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":name, "arguments":arguments, "_meta":{
+                "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities":{}
+            }}}))
+            .send()
+    };
+    let result = rpc(call("txn_post", posting("stateless-sale"))?)?;
+    assert_eq!(payload(&result)?["created"], true);
+    let agent = &ledger.writer["agent_uri"];
+    for filter in [json!({"actor":"shared-books"}), json!({"agent":agent})] {
+        let result = rpc(call("audit_log", filter)?)?;
+        let rows = payload(&result)?;
+        assert_eq!(rows.as_array().map(Vec::len), Some(1));
+        assert_eq!(rows[0]["actor"], "shared-books");
+        assert_eq!(rows[0]["agent_uri"], *agent);
+        assert_eq!(rows[0]["token_jti"], ledger.writer["token_jti"]);
+    }
+    let db = ledger.db()?;
+    db::audit::verify_hash_chain(db.read())?;
+    db::audit::verify_creations(db.read())?;
+    server.finish(&[writer])
 }
 
 #[test]
@@ -439,7 +495,7 @@ fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult 
     let ledger = Ledger::new()?;
     let db = ledger.db()?;
     let issue = |name: &str, capability: &str| {
-        Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
             identity::issue(
                 grant,
                 &IssueRequest {
@@ -985,7 +1041,7 @@ fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
     let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
@@ -1251,18 +1307,19 @@ fn exercise_host_tools(read_only: bool) -> TestResult {
     use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router_with_host_tools};
 
     let ledger = Ledger::new()?;
-    let navigation = Granted::<Admin>::with_db(&ledger.db()?, &Actor::new("owner"), |grant| {
-        identity::issue(
-            grant,
-            &IssueRequest {
-                name: "navigator",
-                capabilities: &["ui/navigate".into()],
-                ttl: Duration::from_secs(3600),
-                public_key: None,
-                generate_key: true,
-            },
-        )
-    })?;
+    let navigation =
+        Granted::<Admin>::with_db(&ledger.db()?, &Actor::new("owner".parse()?), |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name: "navigator",
+                    capabilities: &["ui/navigate".into()],
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let host = TestHost {
         calls: calls.clone(),

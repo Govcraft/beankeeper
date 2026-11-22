@@ -35,7 +35,9 @@ use crate::db::ids::{
 };
 use crate::error::CliError;
 
+mod actor;
 mod attachment;
+pub use actor::{Actor, ActorLabel, BlankActorLabel};
 mod posting;
 pub(super) use posting::persist_posting;
 pub(super) mod catalog;
@@ -48,87 +50,6 @@ pub mod setup;
 pub(super) use attachment::store_attachment;
 
 pub use beankeeper::types::ClearanceStatus as EntryStatus;
-
-// ---------------------------------------------------------------------------
-// Actor -- the principal recorded against every change
-// ---------------------------------------------------------------------------
-
-/// The principal responsible for a mutation, recorded in every audit row.
-///
-/// Resolved from, in order: an explicit `--actor` flag, the `BK_ACTOR`
-/// environment variable (set by the Emergent exec-handler), the operating
-/// system user (`USER` / `USERNAME`), or the fallback `"cli"`.
-#[derive(Debug, Clone)]
-pub struct Actor {
-    name: String,
-    identity: Option<crate::identity::VerifiedAgent>,
-}
-
-impl Actor {
-    /// Constructs an actor with an explicit name.
-    #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            identity: None,
-        }
-    }
-
-    /// Resolves the effective actor from an optional explicit name, then the
-    /// environment, falling back to `"cli"`.
-    #[must_use]
-    pub fn resolve(explicit: Option<&str>) -> Self {
-        if let Some(name) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
-            return Self::new(name);
-        }
-
-        for var in ["BK_ACTOR", "USER", "USERNAME"] {
-            if let Ok(val) = std::env::var(var) {
-                let trimmed = val.trim();
-                if !trimmed.is_empty() {
-                    return Self::new(trimmed);
-                }
-            }
-        }
-
-        Self::new("cli")
-    }
-
-    /// Attaches an identity verified against this ledger's trust root.
-    #[must_use]
-    pub fn with_identity(mut self, identity: crate::identity::VerifiedAgent) -> Self {
-        self.identity = Some(identity);
-        self
-    }
-
-    /// Verified agent URI, if supplied.
-    #[must_use]
-    pub fn agent_uri(&self) -> Option<&str> {
-        self.identity
-            .as_ref()
-            .map(crate::identity::VerifiedAgent::uri)
-    }
-
-    /// Verified token identifier, if supplied.
-    #[must_use]
-    pub fn token_jti(&self) -> Option<&str> {
-        self.identity
-            .as_ref()
-            .map(crate::identity::VerifiedAgent::jti)
-    }
-
-    /// Verified signed identity attached to this operation.
-    #[must_use]
-    pub fn identity(&self) -> Option<&crate::identity::VerifiedAgent> {
-        self.identity.as_ref()
-    }
-
-    /// Returns the actor's name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Audit row classification
@@ -580,7 +501,7 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
     let row = AuditLogRow {
         id,
         changed_at,
-        actor: actor.name().to_string(),
+        actor: actor.label().as_str().to_owned(),
         company_slug: company_slug.cloned(),
         entity,
         entity_id: entity_id.to_string(),
@@ -604,7 +525,7 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             row.id, row.changed_at,
-            actor.name(),
+            row.actor,
             company_slug,
             entity.as_str(),
             entity_id,
@@ -2531,6 +2452,7 @@ pub(super) fn change_schedule(
 
 /// Filters and pagination for [`list_audit`].
 pub struct ListAuditParams<'a> {
+    pub actor: Option<&'a ActorLabel>,
     pub agent_uri: Option<&'a str>,
     pub company_slug: Option<&'a crate::db::companies::CompanySlug>,
     pub entity: Option<AuditEntity>,
@@ -2545,6 +2467,7 @@ fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::V
     let mut sql = String::from(" FROM audit_log WHERE 1 = 1");
     let mut values = Vec::new();
     for (column, value) in [
+        ("actor", params.actor.map(ActorLabel::as_str)),
         ("agent_uri", params.agent_uri),
         (
             "company_slug",
@@ -2738,6 +2661,7 @@ fn reject_investment_reversal(conn: &Connection, id: TransactionId) -> Result<()
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::db::test_support::fixture_actor;
 
     use super::*;
     static TEST_COMPANY: std::sync::LazyLock<crate::db::companies::CompanySlug> =
@@ -2757,7 +2681,7 @@ mod tests {
     #[test]
     fn typed_audit_labels_round_trip_through_storage_and_filters() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        let actor = Actor::new("test");
+        let actor = Actor::new("test".parse()?);
         record_insert(
             db.conn(),
             &actor,
@@ -2774,6 +2698,7 @@ mod tests {
             &serde_json::json!({"token_jti":"token"}),
         )?;
         let filters = ListAuditParams {
+            actor: Some(actor.label()),
             agent_uri: None,
             company_slug: Some(&"acme".parse()?),
             entity: Some(AuditEntity::Transaction),
@@ -2845,7 +2770,7 @@ mod tests {
             "CREATE TRIGGER reject_creation_audit BEFORE INSERT ON audit_log
              BEGIN SELECT RAISE(ABORT, 'audit append rejected by fixture'); END;",
         )?;
-        let actor = Actor::new("test");
+        let actor = Actor::new("test".parse()?);
         let rejected = |error: CliError| {
             assert!(matches!(error, CliError::Sqlite(_)));
             assert!(
@@ -2940,7 +2865,7 @@ mod tests {
     #[test]
     fn set_entry_status_records_transition() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         let prev = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             set_entry_status(
                 grant,
@@ -2977,7 +2902,7 @@ mod tests {
     #[test]
     fn set_entry_status_unknown_entry_errors_and_records_nothing() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         let result = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             set_entry_status(
                 grant,
@@ -2999,9 +2924,9 @@ mod tests {
     #[test]
     fn delete_account_snapshots_before_removal() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         // Delete an unused account without touching posted entries.
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             super::super::create_account(
                 grant,
                 &CreateAccountParams {
@@ -3073,7 +2998,7 @@ mod tests {
     #[test]
     fn partial_clears_keep_status_in_sync_and_audit() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
 
         let o = clear_entry_fixture(&db, &actor, &req(Some(30), "2026-01-31", Some("S1")))
             .expect("partial clear");
@@ -3139,7 +3064,7 @@ mod tests {
     #[test]
     fn over_clear_fails_without_side_effects() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         clear_entry_fixture(&db, &actor, &req(Some(60), "2026-01-31", None)).expect("clear 60");
         let err = clear_entry_fixture(&db, &actor, &req(Some(41), "2026-01-31", None));
         assert!(matches!(err, Err(CliError::Validation(_))));
@@ -3149,7 +3074,7 @@ mod tests {
     #[test]
     fn atomically_rolls_back_the_whole_batch() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             let result = with_reconciliation(grant, |writer| {
                 writer.clear_entry(&req(Some(50), "2026-01-31", Some("S1")))?;
@@ -3170,7 +3095,7 @@ mod tests {
     #[test]
     fn reconciled_dates_are_stored_and_audited() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         clear_entry_fixture(&db, &actor, &req(Some(40), "2026-01-31", Some("S1")))
             .expect("clear S1");
 
@@ -3230,7 +3155,7 @@ mod tests {
     #[test]
     fn clearings_are_visible_only_in_the_entry_company() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         clear_entry_fixture(&db, &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
         Granted::<Admin>::with_db(&db, &actor, |grant| {
             crate::db::create_company(
@@ -3262,7 +3187,7 @@ mod tests {
     #[test]
     fn invalid_dates_fail_without_side_effects() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         // Transaction is dated 2026-01-01.
         let err = clear_entry_fixture(&db, &actor, &req(None, "2025-12-31", None));
         assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
@@ -3312,7 +3237,7 @@ mod tests {
         .expect("insert partner");
         let partner_id = conn.last_insert_rowid();
 
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         savepoint::with_audited_tx(conn, "sp_correlate_fixture", |tx| {
             correlate_partner(
                 tx,
@@ -3354,7 +3279,7 @@ mod tests {
     #[test]
     fn delete_account_missing_errors() {
         let db = seed();
-        let actor = Actor::new("tester");
+        let actor = fixture_actor("tester");
         assert!(
             Granted::<Admin>::with_db(&db, &actor, |grant| {
                 delete_account(

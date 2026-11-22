@@ -1455,7 +1455,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("legacy.db");
         let db = Db::open(&path, None)?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
         db.conn()
@@ -1485,7 +1485,7 @@ mod tests {
         let conn = v17_connection()?;
         apply_v18(&conn)?;
         apply_v19(&conn)?;
-        let owner = Actor::new("owner");
+        let owner = Actor::new("owner".parse()?);
         let id = "proposal".create_type_id::<V7>().to_string();
         let payload = proposals::PostingPayload {
             description: "Review".into(),
@@ -1619,9 +1619,11 @@ mod tests {
             )?;
             assert_eq!(count, 2);
             if corruption == "collision" {
-                with_admin_fixture(&conn, &super::super::Actor::new("owner"), |grant| {
-                    super::super::audit::set_policy(grant, true)
-                })?;
+                with_admin_fixture(
+                    &conn,
+                    &super::super::Actor::new("owner".parse()?),
+                    |grant| super::super::audit::set_policy(grant, true),
+                )?;
                 super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
         }
@@ -1632,7 +1634,7 @@ mod tests {
     fn v19_preserves_v18_policy_history_and_posted_hashes() -> Result<(), CliError> {
         let conn = v17_connection()?;
         apply_v18(&conn)?;
-        let owner = super::super::Actor::new("owner");
+        let owner = super::super::Actor::new("owner".parse()?);
         with_admin_fixture(&conn, &owner, |grant| {
             super::super::audit::set_policy(grant, true)
         })?;
@@ -1673,9 +1675,11 @@ mod tests {
             assert!(conn.prepare("SELECT * FROM txn_proposals").is_err());
             assert!(conn.prepare("SELECT * FROM audit_log_v19").is_err());
             if corruption == "collision" {
-                with_admin_fixture(&conn, &super::super::Actor::new("owner"), |grant| {
-                    super::super::audit::set_policy(grant, true)
-                })?;
+                with_admin_fixture(
+                    &conn,
+                    &super::super::Actor::new("owner".parse()?),
+                    |grant| super::super::audit::set_policy(grant, true),
+                )?;
                 assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
                 super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
@@ -1691,7 +1695,7 @@ mod tests {
         }
         super::super::audit::record_identity(
             &conn,
-            &super::super::Actor::new("v17"),
+            &super::super::Actor::new("v17".parse()?),
             crate::db::audit::IdentityEvent::TokenRevoked,
             "legacy",
             &serde_json::json!({}),
@@ -1719,9 +1723,11 @@ mod tests {
         let result = conn.execute("INSERT INTO audit_log (id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
             SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 2 FROM audit_log ORDER BY id DESC LIMIT 1", []);
         assert!(result.is_err());
-        with_admin_fixture(&conn, &super::super::Actor::new("owner"), |grant| {
-            super::super::audit::set_policy(grant, true)
-        })?;
+        with_admin_fixture(
+            &conn,
+            &super::super::Actor::new("owner".parse()?),
+            |grant| super::super::audit::set_policy(grant, true),
+        )?;
         assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(4));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(ReadConn::new(&conn))?;
@@ -1760,7 +1766,7 @@ mod tests {
                 // Rebuild had already run before the collision; its trigger change rolls back.
                 super::super::audit::record_identity(
                     &conn,
-                    &super::super::Actor::new("v17"),
+                    &super::super::Actor::new("v17".parse()?),
                     crate::db::audit::IdentityEvent::TokenRevoked,
                     "still-v17",
                     &serde_json::json!({}),
@@ -1898,7 +1904,7 @@ mod tests {
             MetadataEdit::Unset(vec!["status".into()]),
         ] {
             let changed = audit::savepoint::with_audited_tx(&conn, "sp_metadata_fixture", |tx| {
-                let actor = Actor::new("v15");
+                let actor = Actor::new("v15".parse()?);
                 let grant = Granted::<Post>::check(tx, &actor)?;
                 audit::edit_metadata(
                     grant,
@@ -1949,7 +1955,7 @@ mod tests {
         apply_v13(&conn)?;
         audit::record_identity(
             &conn,
-            &Actor::new("v13"),
+            &Actor::new("v13".parse()?),
             crate::db::audit::IdentityEvent::TokenRevoked,
             "test",
             &serde_json::json!({}),
@@ -1964,7 +1970,7 @@ mod tests {
         ensure_schema(&conn)?;
         assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
-        let actor = Actor::new("v14");
+        let actor = Actor::new("v14".parse()?);
         let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
             let grant = Granted::<Post>::check(tx, &actor)?;
             rules::create_rule(grant, &"legacy".parse()?, "sale".parse()?, "4000", 0)
@@ -2075,7 +2081,7 @@ mod tests {
         assert_eq!(preserved, (old_hash.clone(), None, None, 1));
         super::super::audit::record_identity(
             &conn,
-            &super::super::Actor::new("new"),
+            &super::super::Actor::new("new".parse()?),
             crate::db::audit::IdentityEvent::TokenRevoked,
             "test",
             &serde_json::json!({}),

@@ -81,14 +81,14 @@ fn fixture_with_raw() -> Result<(tempfile::TempDir, Db, rusqlite::Connection), C
 }
 
 fn seed(db: Db) -> Result<Db, CliError> {
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         companies::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
     ] {
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             accounts::create_account(
                 grant,
                 &CreateAccountParams {
@@ -134,7 +134,7 @@ fn template() -> Result<CreateScheduleParams, CliError> {
 fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     let db = fixture()?;
     let before_audit = audit_count(&db)?;
-    let actor = Actor::new("schedule-test");
+    let actor = Actor::new("schedule-test".parse()?);
     let mut cases = Vec::new();
     let mut invalid = template()?;
     invalid.entries[0].amount = 1_i64.try_into()?;
@@ -173,7 +173,7 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
 fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResult {
     let db = fixture()?;
     let before_audit = audit_count(&db)?;
-    let actor = Actor::new("schedule-test");
+    let actor = Actor::new("schedule-test".parse()?);
     let schedule = create_schedule(&db, &actor, "acme", &template()?)?;
     assert_eq!(
         schedule.entries[0].tax_category.as_deref(),
@@ -236,7 +236,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
 fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
     let (_directory, db, raw) = fixture_with_raw()?;
     let before_audit = audit_count(&db)?;
-    let actor = Actor::new("schedule-test");
+    let actor = Actor::new("schedule-test".parse()?);
     create_schedule(&db, &actor, "acme", &template()?)?;
     raw.execute_batch(
         "CREATE TRIGGER fail_schedule_audit BEFORE INSERT ON audit_log
@@ -264,7 +264,7 @@ fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
 #[test]
 fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
     let (_directory, db, raw) = fixture_with_raw()?;
-    let actor = Actor::new("schedule-test");
+    let actor = Actor::new("schedule-test".parse()?);
     create_schedule(&db, &actor, "acme", &template()?)?;
     raw.execute_batch(
         "CREATE TRIGGER fail_second_post BEFORE INSERT ON transactions
@@ -291,8 +291,8 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
 #[test]
 fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("schedule-test");
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    let actor = Actor::new("schedule-test".parse()?);
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         companies::create_company(grant, &"other".parse()?, "Other", None)
     })?;
     let schedule = create_schedule(&db, &actor, "acme", &template()?)?;
@@ -338,7 +338,7 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
 #[test]
 fn invalid_persisted_template_is_rejected_before_posting() -> TestResult {
     let (_directory, db, raw) = fixture_with_raw()?;
-    let actor = Actor::new("schedule-test");
+    let actor = Actor::new("schedule-test".parse()?);
     create_schedule(&db, &actor, "acme", &template()?)?;
     raw.execute(
         "UPDATE schedule_entries SET amount = 1 WHERE direction = 'debit'",
@@ -367,14 +367,14 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("concurrent.db");
     let db = Db::open(&path, None)?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         companies::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
     ] {
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             accounts::create_account(
                 grant,
                 &CreateAccountParams {
@@ -387,7 +387,7 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
             )
         })?;
     }
-    create_schedule(&db, &Actor::new("creator"), "acme", &template()?)?;
+    create_schedule(&db, &Actor::new("creator".parse()?), "acme", &template()?)?;
     drop(db);
 
     let snapshot = Db::open_snapshot(&path, None)?;
@@ -412,7 +412,7 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
                 barrier.wait();
                 Ok(run_due(
                     &db,
-                    &Actor::new(format!("runner-{index}")),
+                    &Actor::new(format!("runner-{index}").parse()?),
                     "acme",
                     date("2026-03-31")?,
                     false,
@@ -446,7 +446,7 @@ fn finite_schedules_complete_at_the_supported_date_boundary() -> TestResult {
         (Frequency::Daily, NaiveDate::MAX),
     ] {
         let db = fixture()?;
-        let actor = Actor::new("schedule-boundary-test");
+        let actor = Actor::new("schedule-boundary-test".parse()?);
         let mut params = template()?;
         params.start_date = start_date;
         params.end_date = Some(NaiveDate::MAX);
@@ -481,7 +481,7 @@ fn daily_template(occurrences: u64) -> Result<CreateScheduleParams, CliError> {
 #[test]
 fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("schedule-limit-test");
+    let actor = Actor::new("schedule-limit-test".parse()?);
     create_schedule(&db, &actor, "acme", &daily_template(1_000)?)?;
     let posted = run_due(&db, &actor, "acme", date("2026-01-01")?, false)?;
     assert_eq!(posted.len(), DEFAULT_RUN_LIMIT);
@@ -505,7 +505,7 @@ fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
 fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     let (_directory, db, raw) = fixture_with_raw()?;
     let before_audit = audit_count(&db)?;
-    let actor = Actor::new("schedule-limit-test");
+    let actor = Actor::new("schedule-limit-test".parse()?);
     for count in [500, 501] {
         create_schedule(&db, &actor, "acme", &daily_template(count)?)?;
     }
@@ -544,15 +544,15 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
 #[test]
 fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("schedule-limit-test");
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    let actor = Actor::new("schedule-limit-test".parse()?);
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         companies::create_company(grant, &"other".parse()?, "Other", None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
     ] {
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             accounts::create_account(
                 grant,
                 &CreateAccountParams {

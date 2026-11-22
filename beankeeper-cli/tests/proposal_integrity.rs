@@ -23,7 +23,7 @@ fn pending_with_entries(
     let db = Db::open(&path, None)?;
     let raw = rusqlite::Connection::open(&path)?;
     raw.pragma_update(None, "foreign_keys", true)?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
     let id = "proposal".create_type_id::<V7>().to_string();
@@ -65,7 +65,7 @@ fn proposals_require_immutable_payloads_and_audited_terminal_transitions() -> Te
     let outcome =
         beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
             &db,
-            &Actor::new("reviewer"),
+            &Actor::new("reviewer".parse()?),
             |grant| audit::reject_proposal(grant, &"acme".parse()?, &id.parse()?, Some("No")),
         )?;
     assert_eq!(outcome.state.code(), "rejected");
@@ -85,7 +85,7 @@ fn verify_detects_changed_resolution_even_if_protection_triggers_are_removed() -
     let (_directory, db, raw, id) = pending()?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
         &db,
-        &Actor::new("reviewer"),
+        &Actor::new("reviewer".parse()?),
         |grant| audit::reject_proposal(grant, &"acme".parse()?, &id.parse()?, Some("No")),
     )?;
     raw.execute_batch(
@@ -113,7 +113,7 @@ fn resolution_preserves_the_direction_spelling_of_a_legacy_proposal() -> TestRes
     let proposal =
         beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
             &db,
-            &Actor::new("reviewer"),
+            &Actor::new("reviewer".parse()?),
             |grant| audit::reject_proposal(grant, &"acme".parse()?, &id.parse()?, None),
         )?;
     assert_eq!(proposal.payload.entries[0].direction, DebitOrCredit::Debit);

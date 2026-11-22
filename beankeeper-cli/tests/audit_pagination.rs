@@ -25,10 +25,10 @@ impl Ledger {
         let path = dir.path().join("audit.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 db::create_company(grant, &company.parse()?, company, None)
             })?;
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 db::create_account(
                     grant,
                     &CreateAccountParams {
@@ -40,7 +40,7 @@ impl Ledger {
                     },
                 )
             })?;
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 db::create_account(
                     grant,
                     &CreateAccountParams {
@@ -103,7 +103,7 @@ impl Ledger {
                 correlate: None,
                 reference: None,
                 on_conflict: db::ConflictStrategy::Error,
-                actor: &Actor::new("test"),
+                actor: &Actor::new("test".parse()?),
             };
             beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Post>::with_db(
                 &self.db,
@@ -272,7 +272,7 @@ fn clearing_audit_resolves_immutable_entry_currency() -> TestResult {
     let ledger = Ledger::new()?;
     for (transaction_id, entry_id) in [(1, 1), (2, 3), (3, 5)] {
         let date = "2026-01-31".parse()?;
-        Granted::<Reconcile>::with_db(&ledger.db, &Actor::new("test"), |grant| {
+        Granted::<Reconcile>::with_db(&ledger.db, &Actor::new("test".parse()?), |grant| {
             db::clear_entry(
                 grant,
                 &db::ClearRequest {

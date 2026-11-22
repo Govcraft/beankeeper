@@ -227,6 +227,7 @@ mod tests {
     use super::*;
     use crate::db::Actor;
     use crate::db::connection::Db;
+    use crate::db::test_support::fixture_actor;
 
     fn setup() -> Db {
         Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"))
@@ -256,14 +257,14 @@ mod tests {
         let first = setup();
         let second = setup();
         let slug: CompanySlug = "acme".parse()?;
-        Granted::<Admin>::with_db(&first, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&first, &Actor::new("fixture".parse()?), |grant| {
             create_company(grant, &slug, "First", None)
         })?;
         assert!(matches!(
             Company::bind(second.read(), slug.clone()),
             Err(CliError::NotFound(_))
         ));
-        Granted::<Admin>::with_db(&second, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&second, &Actor::new("fixture".parse()?), |grant| {
             create_company(grant, &slug, "Second", None)
         })?;
         for (db, name) in [(&first, "First"), (&second, "Second")] {
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn create_and_get_company() {
         let db = setup();
-        let row = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        let row = Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_company(
                 grant,
                 &"acme"
@@ -308,7 +309,7 @@ mod tests {
     fn duplicate_slug_is_validation_error() {
         let db = setup();
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_company(
                     grant,
                     &"acme"
@@ -320,7 +321,7 @@ mod tests {
             })
             .is_ok()
         );
-        let result = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        let result = Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_company(
                 grant,
                 &"acme"
@@ -360,7 +361,7 @@ mod tests {
     fn list_companies_ordered() {
         let db = setup();
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_company(
                     grant,
                     &"beta"
@@ -373,7 +374,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_company(
                     grant,
                     &"alpha"
@@ -394,9 +395,9 @@ mod tests {
     #[test]
     fn delete_company_removes_row() {
         let db = setup();
-        let actor = crate::db::Actor::new("test");
+        let actor = fixture_actor("test");
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_company(
                     grant,
                     &"acme"
@@ -434,7 +435,7 @@ mod tests {
     #[test]
     fn delete_missing_company_is_not_found() {
         let db = setup();
-        let actor = crate::db::Actor::new("test");
+        let actor = fixture_actor("test");
         let result = Granted::<Admin>::with_db(&db, &actor, |grant| {
             crate::db::delete_company(
                 grant,

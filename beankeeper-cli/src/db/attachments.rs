@@ -182,6 +182,7 @@ fn attachment_store_dir(db_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::db::test_support::fixture_actor;
     use crate::identity::{Admin, Granted};
 
     use super::*;
@@ -192,7 +193,7 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             companies::create_company(
                 grant,
                 &"acme"
@@ -203,7 +204,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             crate::db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -218,7 +219,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             crate::db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -257,7 +258,7 @@ mod tests {
                 tax_category: None,
             },
         ];
-        let actor = crate::db::Actor::new("test");
+        let actor = fixture_actor("test");
         let params = transactions::PostTransactionParams {
             company_slug: &"acme".parse().expect("fixture company"),
             description: "Sale",
@@ -295,9 +296,10 @@ mod tests {
             hash: Some(&hash),
             original_filename: Some("receipt.pdf"),
         };
-        let att_id = Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
-            store_attachment(grant, &params)
-        })?;
+        let att_id =
+            Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
+                store_attachment(grant, &params)
+            })?;
         assert!(att_id.get() > 0);
 
         let attachments = list_attachments(
@@ -352,7 +354,7 @@ mod tests {
             hash: None,
             original_filename: None,
         };
-        let att_id = Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        let att_id = Granted::<Post>::with_db(&db, &fixture_actor("fixture"), |grant| {
             store_attachment(grant, &params)
         })
         .unwrap_or_else(|e| panic!("store failed: {e}"));
@@ -377,7 +379,7 @@ mod tests {
 
         let db = setup();
         let transaction_id = post_sample(&db);
-        let actor = crate::db::Actor::new("fixture");
+        let actor = crate::db::Actor::new("fixture".parse()?);
         let params = StoreAttachmentParams {
             transaction_id,
             entry_id: None,
@@ -510,10 +512,11 @@ mod tests {
             hash: None,
             original_filename: Some("statement.pdf"),
         };
-        let att_id = Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
-            store_attachment(grant, &params)
-        })
-        .unwrap_or_else(|e| panic!("store failed: {e}"));
+        let att_id =
+            Granted::<Post>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
+                store_attachment(grant, &params)
+            })
+            .unwrap_or_else(|e| panic!("store failed: {e}"));
 
         let att = get_attachment(
             &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,

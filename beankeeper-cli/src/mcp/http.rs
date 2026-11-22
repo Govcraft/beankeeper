@@ -17,6 +17,7 @@ use serde_json::json;
 use super::LedgerServer;
 use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
 use crate::cli::Cli;
+use crate::db::ActorLabel;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::identity::VerifiedAgent;
@@ -269,7 +270,12 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
     let tools = catalog(host.tools(), read_only)?;
     let host = Arc::new(host);
     let db = Db::open_existing(&cli.db, passphrase)?;
-    let server = LedgerServer::with_credentials(db, read_only.into(), super::Credentials::Http);
+    let server = LedgerServer::with_credentials(
+        db,
+        read_only.into(),
+        super::Credentials::Http,
+        ActorLabel::configured(cli.actor.as_deref()),
+    );
     let authentication = Authentication {
         db: server.db.clone(),
         fallback: cli.agent_token.clone(),

@@ -126,11 +126,15 @@ impl Client {
     }
 
     fn initialize(&mut self) -> TestResult {
+        self.initialize_as("Codex Test/Client")
+    }
+
+    fn initialize_as(&mut self, name: &str) -> TestResult {
         let response = self.request(
             "initialize",
             &json!({
                 "protocolVersion":"2025-11-25", "capabilities":{},
-                "clientInfo":{"name":"Codex Test/Client", "version":"1.0"}
+                "clientInfo":{"name":name, "version":"1.0"}
             }),
         )?;
         assert_eq!(response["result"]["serverInfo"]["name"], "beankeeper");
@@ -185,6 +189,85 @@ fn posting(reference: &str) -> Value {
         "currency":"USD", "reference":reference, "on_conflict":"skip",
         "debits":[{"account":"1000", "amount":"12.50", "memo":"bank receipt"}],
         "credits":[{"account":"4000", "amount":"12.50"}], "meta":{"invoice":"one"}})
+}
+
+#[test]
+fn stdio_and_cli_share_configured_actor_attribution() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    for (label, explicit, client_name, account) in [
+        ("operator-label", Some("  operator-label  "), "", "1010"),
+        ("env-label", None, "Other Client", "1020"),
+    ] {
+        let configured_command = || {
+            let mut command = bk(&path)?;
+            command.env("BK_ACTOR", "env-label");
+            if let Some(actor) = explicit {
+                command.args(["--actor", actor]);
+            }
+            Ok::<_, Box<dyn Error>>(command)
+        };
+        configured_command()?
+            .args([
+                "--company",
+                "acme",
+                "account",
+                "create",
+                account,
+                "Register",
+                "--type",
+                "asset",
+            ])
+            .assert()
+            .success();
+        let mut command = configured_command()?;
+        command.args(["mcp", "serve"]);
+        let mut client = Client::spawn(command)?;
+        // The stdio handshake requires a name field, which can be empty.
+        client.initialize_as(client_name)?;
+        client.success("txn_post", &posting(label))?;
+        let response = client.call("audit_log", &json!({"actor":label, "limit":1}))?;
+        assert_eq!(response["result"]["_meta"]["pagination"]["total"], 2);
+        assert_eq!(payload(&response)?[0]["actor"], label);
+        let filtered = client.success("audit_log", &json!({"actor":label}))?;
+        assert_eq!(filtered.as_array().map(Vec::len), Some(2));
+        assert_eq!(filtered[0]["entity"], "transaction");
+        assert_eq!(filtered[1]["entity"], "account");
+        assert_eq!(filtered[1]["actor"], label);
+        let cli_audit = bk(&path)?
+            .args(["--json", "audit", "log", "--by-actor", label])
+            .assert()
+            .success();
+        let cli_audit: Value = serde_json::from_slice(&cli_audit.get_output().stdout)?;
+        assert_eq!(cli_audit["data"], filtered);
+    }
+    Ok(())
+}
+
+#[test]
+fn cli_and_mcp_return_the_same_validation_error_for_blank_actor_filters() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    for blank in ["", "  \t", "\u{2003}"] {
+        let cli = bk(&path)?
+            .args(["--json", "audit", "log", "--by-actor", blank])
+            .assert()
+            .code(3);
+        let cli: Value = serde_json::from_slice(&cli.get_output().stderr)?;
+        let mcp = client.call("audit_log", &json!({"actor": blank}))?;
+        assert_eq!(mcp["result"]["isError"], true);
+        let mcp_error = payload(&mcp)?;
+        assert_eq!(mcp_error["code"], "VALIDATION");
+        assert_eq!(mcp_error, cli["error"]);
+    }
+    Ok(())
 }
 
 fn tool_names(response: &Value) -> Result<BTreeSet<&str>, Box<dyn Error>> {
@@ -1219,10 +1302,10 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
     std::fs::write(passphrase_file, "mcp-test-passphrase")?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open(path, Some(&passphrase))?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_account(
             grant,
             &CreateAccountParams {
@@ -1234,7 +1317,7 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
             },
         )
     })?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_account(
             grant,
             &CreateAccountParams {
@@ -1246,10 +1329,10 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
             },
         )
     })?;
-    Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+    Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), identity::init_root)?;
     Ok(Granted::<Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| {
             identity::issue(
                 grant,
@@ -1286,8 +1369,8 @@ fn session_identity_is_recorded_and_live_revocation_blocks_the_next_tool_call() 
     let shown = client.success("txn_show", &json!({"company":"acme", "id":posted["id"]}))?;
     assert_eq!(shown[0]["agent_uri"], agent);
     assert_eq!(shown[0]["token_jti"], issued["token_jti"]);
-    assert_eq!(shown[0]["posted_by"], "mcp:codex-test-client");
-    let audit = client.success("audit_log", &json!({"agent":agent}))?;
+    assert_eq!(shown[0]["posted_by"], agent);
+    let audit = client.success("audit_log", &json!({"actor":agent, "agent":agent}))?;
     assert_eq!(audit.as_array().map(Vec::len), Some(1));
     assert_eq!(audit[0]["agent_uri"], agent);
     assert_eq!(audit[0]["token_jti"], issued["token_jti"]);
@@ -1814,7 +1897,7 @@ fn proposal_identity(
     use beankeeper_cli::identity::{self, IssueRequest};
     Ok(Granted::<Admin>::with_db(
         db,
-        &beankeeper_cli::db::Actor::new("owner"),
+        &beankeeper_cli::db::Actor::new("owner".parse()?),
         |grant| {
             identity::issue(
                 grant,
@@ -1846,7 +1929,7 @@ fn proposal_tools_filter_grants_and_post_approved_requests_with_reviewer_identit
     let reviewer = proposal_identity(&db, "reviewer", &["ledger/read", "ledger/approve"])?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     let mut agent = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
@@ -1942,7 +2025,7 @@ fn mcp_posting_checks_spend_limits_while_proposals_use_the_approval_gate() -> Te
         .success();
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     let mut writer = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
@@ -1983,7 +2066,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let db = Db::open_existing(&path, Some(&passphrase))?;
     let admin = proposal_identity(&db, "owner", &["ledger/admin"])?;
     let verified = identity::verify(db.read(), admin["token"].as_str().ok_or("admin token")?)?;
-    let owner = Actor::new("owner").with_identity(verified);
+    let owner = Actor::new("owner".parse()?).with_identity(verified);
     Granted::<Admin>::with_db(&db, &owner, |grant| db::audit::set_policy(grant, true))?;
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
@@ -2043,7 +2126,7 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
     let db = Db::open_existing(&path, Some(&passphrase))?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     for (name, input, capability) in [
@@ -2110,7 +2193,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     identity_ledger(&path, &passphrase_file)?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
-    let issued = Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+    let issued = Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
         identity::issue(
             grant,
             &IssueRequest {
@@ -2125,7 +2208,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let token = issued["token"].as_str().ok_or("token")?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     let mut writer = identity_client(&path, &passphrase_file, Some(token), false)?;
@@ -2714,7 +2797,7 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     let db = Db::open(&path, Some(&passphrase))?;
     Granted::<Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         beankeeper_cli::identity::init_root,
     )?;
     let owner = proposal_identity(&db, "owner", &["ledger/admin"])?;

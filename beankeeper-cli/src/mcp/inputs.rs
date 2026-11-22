@@ -13,6 +13,7 @@ use super::input_values::{
     CalendarDate, CompanySlug, DecimalAmount, Month, NonEmpty, PageLimit, PageOffset,
     SecuritySymbol, Text,
 };
+use crate::cli::ActorFilterArg;
 use crate::commands::{
     reference::TransactionReference, report_periods::CompareArg, txn_import::CsvMapping,
 };
@@ -24,6 +25,7 @@ use crate::db::audit::setup::{
     statements::{StatementContent, StatementFormat, StatementRequest, StatementSource},
 };
 use crate::db::{
+    ActorLabel,
     ids::{EntryId, PartnerTransactionId, StatementBatchId, TransactionId},
     investments::LotId,
     proposals::ProposalId,
@@ -243,6 +245,10 @@ pub(super) struct BudgetDelete {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AuditLog {
+    /// Exact recorded actor label.
+    #[schemars(with = "Option<Text<ActorLabel>>")]
+    pub actor: Option<ActorFilterArg>,
+    /// Verified agent URI.
     pub agent: Option<Text<AgentUri>>,
     pub company: Option<Company>,
     pub entity: Option<AuditEntityArg>,

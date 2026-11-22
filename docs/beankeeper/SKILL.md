@@ -85,7 +85,7 @@ status and recheck. See the [verify payload](references/json-api.md#verify).
 - **Accounts**: Five types: `asset`, `liability`, `equity`, `revenue`, `expense`. Each has a code (e.g. `1000`) and a normal balance direction (debit or credit).
 - **Amounts**: Always specified in **major units** (dollars, not cents) on the CLI. Stored internally as minor units (cents). Example: `2500` means $2,500.00.
 - **Append-only ledger**: Database triggers reject edits, deletion, and replacement of posted financial fields and entry details. Transaction metadata and entry clearance status remain mutable. Corrections use reversing entries.
-- **Audit trail**: Posts, imports, and reversals store a poster (`posted_by`) and a `create` record. Supported mutations record an actor, timestamp, and before/after snapshots atomically. Set the principal with `--actor NAME` or `BK_ACTOR`, including OFX imports. `bk audit log --action create` lists creations; JSON audit rows include `prev_hash` and `row_hash`.
+- **Audit trail**: Posts, imports, and reversals store a poster (`posted_by`) and a `create` record. Supported mutations record an actor, timestamp, and before/after snapshots atomically. The CLI and MCP use `--actor`, then `BK_ACTOR`, then the verified agent URI for the label. `bk audit log --by-actor NAME` filters by exact label and `--agent URI` filters by verified identity. `bk audit log --action create` lists creations. JSON audit rows include `prev_hash` and `row_hash`.
 - **Verification**: `bk verify` and MCP `verify` return the checks and evidence from one ledger snapshot. Legacy audit rows retain their IDs and timestamps after migration, and legacy posters stay unknown. See [audit integrity](../audit-integrity.md).
 - **Idempotency**: `--reference KEY` is trimmed, stored verbatim, and unique per company. Empty references are rejected. Use `--on-conflict skip` for safe retry of duplicate posts; Only `error` and `skip` are accepted; use `txn meta set/unset` to annotate existing postings.
 
@@ -306,7 +306,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 - For `report` with `kind: "reconciliation"`, `mode` accepts `bank` (default) or `settlement`. Settlement mode requires `statement` and accepts `link_key` (default `applies_to`) for payment-to-charge metadata links.
 - Use `security_create`, `security_list`, and `security_price` to register symbols, inspect them and record price observations. Trade with `investment_buy` / `investment_sell`, inspect basis with `investment_lots`, and value positions with `investment_holdings`. Quantities and input money are decimal strings; `company` is required. Read-only mode retains the three inspection tools and hides the four writes. See [securities and investment lots](#securities-and-investment-lots) for account setup and trade rules.
 - Use `budget_list`, `budget_set`, `budget_delete`, and `txn_clear` for their CLI equivalents. Budget deletion is confirmed by calling the tool. `txn_clear.batch` accepts an in-memory array of `{reference, amount?}` rows with an `account`; it never reads a file or stdin.
-- `txn_reconcile` checks for orphaned intercompany links without changing data. `verify` checks accounting and audit integrity; `audit_log` includes `prev_hash` and `row_hash`, and accepts `action: "create"` for posting attribution. Audited MCP writes use the hash-chained actor `mcp:<client>`.
+- `txn_reconcile` checks for orphaned intercompany links without changing data. `verify` checks accounting and audit integrity. `audit_log` accepts `actor` for the exact recorded label, `agent` for the verified URI, and `action: "create"` for postings. MCP uses a sanitized `mcp:<client>` label when neither a configured label nor a verified agent is available, with `mcp:unknown` as the final fallback. The verified URI and token ID are recorded even when a configured label supplies the actor.
 
 Successful results contain the CLI JSON **data payload**, without its envelope.
 Read JSON text content, or `structuredContent` when present. The SDK uses JSON text
@@ -936,7 +936,7 @@ For additional workflow patterns including bank reconciliation and tax reporting
 | `BEANKEEPER_CURRENCY` | Default currency code (for `report budget-variance`, inferred from transactions when unset) | `USD` |
 | `BEANKEEPER_PASSPHRASE_CMD` | Command to obtain encryption passphrase | (none) |
 | `BK_AGENT_TOKEN` | Optional agent attestation, overridden by `--agent-token` | (none) |
-| `BK_ACTOR` | Poster and audit principal, overridden by `--actor` | OS user, else `cli` |
+| `BK_ACTOR` | Poster and audit actor label, overridden by `--actor` | Verified agent URI, else the CLI or MCP fallback |
 | `NO_COLOR` | Disable colored output | (unset) |
 
 ## Error Handling

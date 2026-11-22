@@ -78,11 +78,12 @@ fn company_currencies(conn: ReadConn<'_>, company: &str) -> Result<Vec<String>, 
 mod tests {
     use super::*;
     use crate::db::connection::Db;
+    use crate::db::test_support::fixture_actor;
     use crate::identity::{Admin, Granted};
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             crate::db::create_company(
                 grant,
                 &"acme"

@@ -864,6 +864,7 @@ pub fn find_orphaned_correlations(
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::db::test_support::fixture_actor;
     use crate::identity::{Admin, Granted};
 
     use super::*;
@@ -873,7 +874,7 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_company(
                 grant,
                 &"acme"
@@ -884,7 +885,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -899,7 +900,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -943,7 +944,7 @@ mod tests {
     fn test_actor() -> &'static Actor {
         use std::sync::OnceLock;
         static A: OnceLock<Actor> = OnceLock::new();
-        A.get_or_init(|| Actor::new("test"))
+        A.get_or_init(|| fixture_actor("test"))
     }
 
     fn make_params<'a>(
@@ -1146,7 +1147,7 @@ mod tests {
     #[test]
     fn list_transactions_with_account_filter() {
         let db = setup();
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -1241,7 +1242,7 @@ mod tests {
             panic!("expected Created");
         };
 
-        let actor = crate::db::Actor::new("fixture");
+        let actor = fixture_actor("fixture");
         Granted::<Admin>::with_db(&db, &actor, |grant| {
             create_company(
                 grant,
@@ -1573,7 +1574,7 @@ mod tests {
     #[test]
     fn list_transactions_with_direction_filter() {
         let db = setup();
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {

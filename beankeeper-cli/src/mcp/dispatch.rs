@@ -8,8 +8,8 @@ use super::input_values::{DecimalAmount, Month, PageLimit, PageOffset, Text};
 use super::inputs;
 use crate::capability::Capability;
 use crate::cli::{
-    self, AccountCommand, BudgetCommand, Command, CompanyCommand, InvestmentCommand, PeriodCommand,
-    SecurityCommand, TradeArgs, TxnCommand, TxnProposalCommand,
+    self, AccountCommand, ActorFilterArg, BudgetCommand, Command, CompanyCommand,
+    InvestmentCommand, PeriodCommand, SecurityCommand, TradeArgs, TxnCommand, TxnProposalCommand,
 };
 use crate::commands;
 use crate::commands::txn::{PostingMode, PostingRequest};
@@ -799,10 +799,11 @@ fn execute_period(db: &Db, actor: &Actor, company: &str, command: &PeriodCommand
 }
 
 fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
-    let agent = optional_text(input.agent);
+    let agent = input.agent.map(Text::into_inner);
     let company = input.company.map(Text::into_inner);
     let params = crate::db::ListAuditParams {
-        agent_uri: agent.as_deref(),
+        actor: ActorFilterArg::resolve_optional(input.actor.as_ref())?,
+        agent_uri: agent.as_ref().map(agent_uri::AgentUri::as_str),
         company_slug: company.as_ref(),
         entity: input.entity,
         action: input.action,

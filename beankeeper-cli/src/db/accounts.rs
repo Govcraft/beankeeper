@@ -180,10 +180,11 @@ mod tests {
     use super::*;
     use crate::db::companies::create_company;
     use crate::db::connection::Db;
+    use crate::db::test_support::fixture_actor;
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_company(
                 grant,
                 &"acme"
@@ -200,7 +201,7 @@ mod tests {
     #[test]
     fn create_and_get_account() {
         let db = setup();
-        let row = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        let row = Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -235,7 +236,7 @@ mod tests {
     #[test]
     fn create_account_rejects_missing_company() {
         let db = setup();
-        let result = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        let result = Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -256,7 +257,7 @@ mod tests {
     fn duplicate_account_is_validation_error() {
         let db = setup();
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -272,7 +273,7 @@ mod tests {
             })
             .is_ok()
         );
-        let result = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        let result = Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -293,7 +294,7 @@ mod tests {
     fn list_accounts_returns_all() {
         let db = setup();
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -310,7 +311,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -343,7 +344,7 @@ mod tests {
     fn list_accounts_with_type_filter() {
         let db = setup();
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -360,7 +361,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -409,9 +410,9 @@ mod tests {
     #[test]
     fn delete_account_removes_row() {
         let db = setup();
-        let actor = crate::db::Actor::new("test");
+        let actor = fixture_actor("test");
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -456,7 +457,7 @@ mod tests {
     #[test]
     fn delete_missing_account_is_not_found() {
         let db = setup();
-        let actor = crate::db::Actor::new("test");
+        let actor = fixture_actor("test");
         let result = Granted::<Admin>::with_db(&db, &actor, |grant| {
             crate::db::delete_account(
                 grant,
@@ -472,7 +473,7 @@ mod tests {
     fn list_account_codes_returns_codes() {
         let db = setup();
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -489,7 +490,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -543,7 +544,7 @@ mod tests {
     fn list_accounts_with_name_filter() {
         let db = setup();
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -560,7 +561,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {
@@ -577,7 +578,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
                 create_account(
                     grant,
                     &CreateAccountParams {

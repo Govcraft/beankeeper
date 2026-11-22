@@ -8,6 +8,7 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::db::companies::CompanySlug;
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
+use crate::db::{ActorLabel, BlankActorLabel};
 use crate::error::CliError;
 use crate::operation::Operation;
 
@@ -45,8 +46,8 @@ pub struct Cli {
 
     /// Principal recorded in the audit trail for mutating operations.
     ///
-    /// Falls back to the `BK_ACTOR` environment variable, then the OS user,
-    /// then `"cli"`.
+    /// Falls back to `BK_ACTOR` and then the verified agent URI. Without those,
+    /// MCP uses the client name and other CLI commands use the OS user or `cli`.
     #[arg(long, global = true, env = "BK_ACTOR")]
     pub actor: Option<String>,
 
@@ -234,11 +235,7 @@ impl Cli {
     /// Principal for this command, retaining the named actor for compatibility.
     #[must_use]
     pub fn principal(&self) -> crate::db::Actor {
-        let actor = crate::db::Actor::resolve(self.actor.as_deref());
-        match self.verified_agent.get() {
-            Some(identity) => actor.with_identity(identity.clone()),
-            None => actor,
-        }
+        crate::db::Actor::for_cli(self.actor.as_deref(), self.verified_agent.get().cloned())
     }
 
     /// JSON metadata with the verified URI, if a token was supplied.
@@ -968,6 +965,10 @@ pub struct AuditLogArgs {
     /// Restrict to one company slug.
     #[arg(long)]
     pub company: Option<CompanySlug>,
+
+    /// Restrict to an exact recorded actor label.
+    #[arg(long)]
+    pub by_actor: Option<ActorFilterArg>,
 
     /// Restrict to one verified agent URI.
     #[arg(long)]
@@ -2698,6 +2699,42 @@ pub enum OnConflictArg {
     Error,
     /// Skip the transaction silently on duplicate reference.
     Skip,
+}
+
+/// An actor filter decoded at the transport boundary.
+#[derive(Debug, Clone)]
+pub struct ActorFilterArg(Result<ActorLabel, BlankActorLabel>);
+
+impl ActorFilterArg {
+    pub(crate) fn resolve_optional(value: Option<&Self>) -> Result<Option<&ActorLabel>, CliError> {
+        value
+            .map(|arg| arg.0.as_ref().map_err(|error| CliError::from(*error)))
+            .transpose()
+    }
+}
+
+impl std::str::FromStr for ActorFilterArg {
+    type Err = std::convert::Infallible;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Ok(Self(raw.parse()))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ActorFilterArg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self(text.parse()))
+    }
+}
+
+impl serde::Serialize for ActorFilterArg {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.0 {
+            Ok(label) => serializer.collect_str(label),
+            Err(error) => Err(serde::ser::Error::custom(error)),
+        }
+    }
 }
 
 /// A decoded currency flag with any validation error retained for the command envelope.

@@ -6,7 +6,7 @@ use rusqlite::OptionalExtension as _;
 use serde_json::Value;
 
 use super::audit_snapshot::{embedded_currency, project_snapshot};
-use crate::cli::{AuditLogArgs, Cli, OutputFormat, resolve_format};
+use crate::cli::{ActorFilterArg, AuditLogArgs, Cli, OutputFormat, resolve_format};
 use crate::db::audit::AuditEntity;
 use crate::db::{Db, ListAuditParams, count_audit, list_audit};
 use crate::error::CliError;
@@ -18,22 +18,26 @@ use crate::output;
 ///
 /// Returns [`CliError`] on database or rendering failure.
 pub fn run(cli: &Cli, args: &AuditLogArgs) -> Result<(), CliError> {
+    let params = ListAuditParams::try_from(args)?;
     let db = cli.open_db()?;
     let format = resolve_format(None, cli);
 
-    run_log(cli, &db, &args.into(), format)
+    run_log(cli, &db, &params, format)
 }
 
-impl<'a> From<&'a AuditLogArgs> for ListAuditParams<'a> {
-    fn from(args: &'a AuditLogArgs) -> Self {
-        Self {
+impl<'a> TryFrom<&'a AuditLogArgs> for ListAuditParams<'a> {
+    type Error = CliError;
+
+    fn try_from(args: &'a AuditLogArgs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            actor: ActorFilterArg::resolve_optional(args.by_actor.as_ref())?,
             agent_uri: args.agent.as_deref(),
             company_slug: args.company.as_ref(),
             entity: args.entity,
             action: args.action,
             limit: args.limit.max(0),
             offset: args.offset.max(0),
-        }
+        })
     }
 }
 

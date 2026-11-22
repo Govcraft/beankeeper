@@ -1109,10 +1109,10 @@ mod tests {
 
     fn fixture() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -1124,7 +1124,7 @@ mod tests {
                 },
             )
         })?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -1155,7 +1155,7 @@ mod tests {
             db,
             "acme",
             txn.command.as_ref(),
-            &db::Actor::new("mcp:test"),
+            &db::Actor::new("mcp:test".parse()?),
         )
     }
 
@@ -1306,7 +1306,7 @@ mod tests {
                 ],
             )?;
         }
-        let actor = db::Actor::new("mcp:batch-test");
+        let actor = db::Actor::new("mcp:batch-test".parse()?);
         let run_batch = |input| {
             execute_json(
                 &db,

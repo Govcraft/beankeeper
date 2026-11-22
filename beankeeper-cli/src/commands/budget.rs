@@ -304,7 +304,7 @@ mod tests {
 
     fn ledger() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
         super::super::account::execute_json(
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn json_operations_share_rows_and_attribute_mutations() -> Result<(), CliError> {
         let db = ledger()?;
-        let actor = db::Actor::new("mcp:test-client");
+        let actor = db::Actor::new("mcp:test-client".parse()?);
         let companies = super::super::company::execute_json(&db, &CompanyCommand::List)?;
         assert_eq!(companies[0]["slug"], "acme");
         let set = execute_json(&db, "acme", &monthly("12.34"), &actor)?;
@@ -354,6 +354,7 @@ mod tests {
         let audit = super::super::audit::execute_json(
             &db,
             &db::ListAuditParams {
+                actor: None,
                 agent_uri: None,
                 company_slug: Some(&"acme".parse()?),
                 entity: None,
@@ -384,8 +385,9 @@ mod tests {
     #[test]
     fn invalid_budget_does_not_write() -> Result<(), CliError> {
         let db = ledger()?;
-        let actor = db::Actor::new("mcp:test-client");
+        let actor = db::Actor::new("mcp:test-client".parse()?);
         let log = db::ListAuditParams {
+            actor: None,
             agent_uri: None,
             company_slug: None,
             entity: None,

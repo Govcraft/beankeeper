@@ -25,7 +25,7 @@ impl Ledger {
         let path = dir.path().join("schedules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 companies::create_company(grant, &company.parse()?, company, None)
             })?;
             for (code, kind, tax) in [
@@ -41,7 +41,7 @@ impl Ledger {
                     Some("split-expense"),
                 ),
             ] {
-                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                     accounts::create_account(
                         grant,
                         &CreateAccountParams {

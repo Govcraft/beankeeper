@@ -31,10 +31,10 @@ impl Ledger {
         let dir = tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -46,7 +46,7 @@ impl Ledger {
                 },
             )
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -92,7 +92,7 @@ impl Ledger {
                 correlate: None,
                 reference: Some(reference),
                 on_conflict: db::ConflictStrategy::Skip,
-                actor: &Actor::new("posting-agent"),
+                actor: &Actor::new("posting-agent".parse()?),
             };
             beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Post>::with_db(
                 &self.db,
@@ -422,7 +422,7 @@ fn creation_verification_detects_rewritten_date_text() -> TestResult {
 fn allowed_clearing_and_metadata_mutations_keep_verification_healthy() -> TestResult {
     let ledger = Ledger::new()?;
     ledger.post("first")?;
-    Granted::<Reconcile>::with_db(&ledger.db, &Actor::new("clearer"), |grant| {
+    Granted::<Reconcile>::with_db(&ledger.db, &Actor::new("clearer".parse()?), |grant| {
         db::set_entry_status(
             grant,
             &"acme".parse()?,
@@ -578,7 +578,7 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
             correlate: None,
             reference: None,
             on_conflict: db::ConflictStrategy::Error,
-            actor: &Actor::new("large-poster"),
+            actor: &Actor::new("large-poster".parse()?),
         };
         beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Post>::with_db(
             &ledger.db,
@@ -601,7 +601,7 @@ fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestR
     let ledger = Ledger::new()?;
     let other = "other".parse()?;
     let empty = "empty".parse()?;
-    let actor = Actor::new("fixture");
+    let actor = Actor::new("fixture".parse()?);
     for (company, name) in [(&other, "Other"), (&empty, "Empty")] {
         Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
             db::create_company(grant, company, name, None)

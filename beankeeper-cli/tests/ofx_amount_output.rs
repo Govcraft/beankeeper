@@ -59,14 +59,14 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         companies::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("4000", beankeeper::types::AccountType::Revenue),
     ] {
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             accounts::create_account(
                 grant,
                 &CreateAccountParams {
@@ -118,14 +118,14 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         companies::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("4000", beankeeper::types::AccountType::Revenue),
     ] {
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             accounts::create_account(
                 grant,
                 &CreateAccountParams {
@@ -138,7 +138,7 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
             )
         })?;
     }
-    Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
         beankeeper_cli::db::audit::change_period(
             grant,
             &"acme".parse()?,

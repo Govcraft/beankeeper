@@ -35,7 +35,7 @@ impl Ledger {
         std::fs::write(&passphrase_file, "capability-test-passphrase")?;
         let passphrase: SecretString = "capability-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
         for (code, kind) in [
@@ -43,7 +43,7 @@ impl Ledger {
             ("4000", beankeeper::types::AccountType::Revenue),
             ("5000", beankeeper::types::AccountType::Expense),
         ] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 db::create_account(
                     grant,
                     &CreateAccountParams {
@@ -56,7 +56,7 @@ impl Ledger {
                 )
             })?;
         }
-        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), identity::init_root)?;
         Ok(Self {
             dir,
             path,
@@ -112,7 +112,7 @@ impl Ledger {
     }
 
     fn issue(&self, grants: &[&str]) -> Result<String, Box<dyn Error>> {
-        let issued = Granted::<Admin>::with_db(&self.db, &Actor::new("owner"), |grant| {
+        let issued = Granted::<Admin>::with_db(&self.db, &Actor::new("owner".parse()?), |grant| {
             identity::issue(
                 grant,
                 &IssueRequest {
@@ -360,7 +360,8 @@ fn enforcement_rejects_missing_invalid_revoked_and_foreign_tokens() -> TestResul
     let other = Ledger::new()?;
     let foreign = other.issue(&["ledger/read"])?;
     let admin = ledger.issue(&["ledger/admin"])?;
-    let owner = Actor::new("owner").with_identity(identity::verify(ledger.db.read(), &admin)?);
+    let owner =
+        Actor::new("owner".parse()?).with_identity(identity::verify(ledger.db.read(), &admin)?);
     ledger.enable()?;
     for args in [
         vec!["company", "list"],
@@ -379,7 +380,7 @@ fn enforcement_rejects_missing_invalid_revoked_and_foreign_tokens() -> TestResul
     }
     let identity = identity::verify(ledger.db.read(), &token)?;
     assert!(matches!(
-        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner".parse()?), |grant| {
             identity::revoke(grant, identity.jti())
         }),
         Err(beankeeper_cli::error::CliError::Unauthorized(_))
@@ -429,7 +430,7 @@ fn reject_bare_namespace(namespace: &str) -> TestResult {
         before,
         (ledger.count("agent_tokens")?, ledger.count("audit_log")?)
     );
-    let issued = Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+    let issued = Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner".parse()?), |grant| {
         identity::issue(
             grant,
             &IssueRequest {
@@ -530,7 +531,7 @@ fn policy_changes_are_atomic_and_raw_mutation_or_missing_state_fails_closed() ->
     }
     ledger.raw()?.execute_batch("CREATE TRIGGER fail_policy_update BEFORE UPDATE ON ledger_policy BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;")?;
     assert!(
-        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner".parse()?), |grant| {
             db::audit::set_policy(grant, true)
         })
         .is_err()
@@ -544,7 +545,7 @@ fn policy_changes_are_atomic_and_raw_mutation_or_missing_state_fails_closed() ->
     ledger.enable()?;
     let before = ledger.count("audit_log")?;
     assert!(matches!(
-        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner".parse()?), |grant| {
             db::audit::set_policy(grant, false)
         }),
         Err(beankeeper_cli::error::CliError::Unauthorized(_))

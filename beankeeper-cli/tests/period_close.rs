@@ -33,14 +33,14 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 db::create_company(grant, &company.parse()?, company, None)
             })?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("4000", beankeeper::types::AccountType::Revenue),
             ] {
-                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                     db::create_account(
                         grant,
                         &CreateAccountParams {
@@ -271,7 +271,7 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
             tax_category: None,
         },
     ];
-    let actor = Actor::new("direct");
+    let actor = Actor::new("direct".parse()?);
     let before = ledger.state()?;
     assert!(matches!(
         {
