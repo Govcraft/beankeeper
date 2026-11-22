@@ -77,10 +77,16 @@ enum CallCredential {
 impl LedgerServer {
     /// Construct a router over an already opened database.
     ///
-    /// Read-only routers do not register mutation tools at all.
+    /// Uses `BK_ACTOR` for the configured audit label. Read-only routers do not
+    /// register mutation tools.
     #[must_use]
     pub fn new(db: Db, access: impl Into<LedgerAccess>) -> Self {
-        Self::with_credentials(db, access.into(), Credentials::Stdio(None), None)
+        Self::with_credentials(
+            db,
+            access.into(),
+            Credentials::Stdio(None),
+            ConfiguredActor::resolve(None),
+        )
     }
 
     fn with_credentials(
