@@ -17,17 +17,42 @@ pub(super) fn seed(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
         actor,
         "acme-consulting",
         &[
-            ("1150", "Settlement Receivables", "asset", None),
-            ("2100", "Business Loan", "liability", None),
-            ("5400", "Loan Interest", "expense", Some("sched-c:16c")),
-            ("5500", "Contract Labor", "expense", Some("sched-c:11")),
+            (
+                "1150",
+                "Settlement Receivables",
+                beankeeper::types::AccountType::Asset,
+                None,
+            ),
+            (
+                "2100",
+                "Business Loan",
+                beankeeper::types::AccountType::Liability,
+                None,
+            ),
+            (
+                "5400",
+                "Loan Interest",
+                beankeeper::types::AccountType::Expense,
+                Some("sched-c:16c"),
+            ),
+            (
+                "5500",
+                "Contract Labor",
+                beankeeper::types::AccountType::Expense,
+                Some("sched-c:11"),
+            ),
         ],
     )?;
     seed_company_accounts(
         conn,
         actor,
         "personal",
-        &[("1200", "Brokerage Investments", "asset", None)],
+        &[(
+            "1200",
+            "Brokerage Investments",
+            beankeeper::types::AccountType::Asset,
+            None,
+        )],
     )?;
     seed_automation(conn, actor)?;
     seed_tax_payments(conn, actor)?;

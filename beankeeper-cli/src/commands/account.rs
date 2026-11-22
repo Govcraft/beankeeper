@@ -77,7 +77,6 @@ fn compute(
             account_type,
             default_tax_category,
         } => {
-            let account_type = account_type.to_library_type();
             let row = accounts::create_account(
                 db.conn(),
                 actor,
@@ -85,7 +84,7 @@ fn compute(
                     company_slug: company,
                     code,
                     name,
-                    account_type: account_type.code(),
+                    account_type: *account_type,
                     default_tax_category: default_tax_category.as_deref(),
                 },
             )?;
@@ -99,7 +98,7 @@ fn compute(
             to,
             currency,
         } => {
-            let type_filter = account_type.map(crate::cli::AccountTypeArg::to_library_type);
+            let type_filter = *account_type;
             let filter = accounts::ListAccountParams {
                 company_slug: company,
                 type_filter,

@@ -49,8 +49,18 @@ pub struct Meta {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pagination: Option<Pagination>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub currency: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_currency"
+    )]
+    pub currency: Option<Currency>,
+}
+
+pub(crate) fn serialize_optional_currency<'a, S: Serializer>(
+    currency: impl Into<Option<&'a Currency>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    currency.into().map(Currency::code).serialize(serializer)
 }
 
 /// A filtered result page. Negative limits mean unlimited, as in SQLite.
@@ -86,10 +96,10 @@ impl Meta {
         self
     }
 
-    /// Supply the currency for payloads that do not carry their own currency.
+    /// Include the report or operation currency in envelope metadata.
     #[must_use]
     pub fn with_currency(mut self, currency: Currency) -> Self {
-        self.currency = Some(currency.code().to_owned());
+        self.currency = Some(currency);
         self
     }
 }
@@ -109,7 +119,7 @@ impl<T: Serialize> Serialize for Envelope<T> {
         envelope.serialize_field("ok", &self.ok)?;
         envelope.serialize_field("meta", &self.meta)?;
         if let Some(data) = &self.data {
-            let payload = serialize_payload(data, &self.meta).map_err(serde::ser::Error::custom)?;
+            let payload = serde_json::to_value(data).map_err(serde::ser::Error::custom)?;
             envelope.serialize_field("data", &payload)?;
         }
         if let Some(error) = &self.error {
@@ -118,20 +128,6 @@ impl<T: Serialize> Serialize for Envelope<T> {
         envelope.end()
     }
 }
-
-pub(crate) fn serialize_payload(
-    data: &impl Serialize,
-    meta: &Meta,
-) -> Result<serde_json::Value, serde_json::Error> {
-    let value = serde_json::to_value(data)?;
-    let currency = meta
-        .currency
-        .as_deref()
-        .and_then(|code| Currency::from_code(code).ok());
-    Ok(with_amount_displays(value, currency))
-}
-
-pub use super::amounts::with_amount_displays;
 
 /// Error payload within the envelope.
 #[derive(Serialize)]
@@ -219,17 +215,18 @@ pub struct EntryJson {
     id: i64,
     account_code: String,
     direction: &'static str,
-    amount: i64,
+    #[serde(flatten)]
+    amount: MoneyField,
     memo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tax_category: Option<String>,
     status: EntryStatus,
     /// Total cleared amount (`txn show` only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cleared_amount: Option<i64>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    cleared_amount: Option<MoneyField>,
     /// `amount - cleared_amount` (`txn show` only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    remaining_amount: Option<i64>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    remaining_amount: Option<MoneyField>,
     /// The entry's individual clearings, oldest first (`txn show` only).
     #[serde(skip_serializing_if = "Option::is_none")]
     clearings: Option<Vec<ClearingJson>>,
@@ -239,7 +236,8 @@ pub struct EntryJson {
 #[derive(Serialize)]
 pub struct ClearingJson {
     id: i64,
-    amount: i64,
+    #[serde(flatten)]
+    amount: MoneyField,
     cleared_date: NaiveDate,
     #[serde(rename = "statement")]
     statement_ref: Option<String>,
@@ -248,23 +246,29 @@ pub struct ClearingJson {
 }
 
 /// Builds an entry's JSON; `clearings` adds the clearing breakdown.
-fn entry_json(e: &EntryRow, clearings: Option<&[Clearing]>) -> EntryJson {
+fn entry_json(e: &EntryRow, currency: Currency, clearings: Option<&[Clearing]>) -> EntryJson {
     let cleared = clearings.map(crate::db::clearings::cleared_sum);
     EntryJson {
         id: e.id,
         account_code: e.account_code.clone(),
         direction: e.direction.code(),
-        amount: e.amount,
+        amount: MoneyField::from_minor("amount", e.amount, currency),
         memo: e.memo.clone(),
         tax_category: e.tax_category.clone(),
         status: e.status,
-        cleared_amount: cleared,
-        remaining_amount: cleared.map(|c| e.amount - c),
+        cleared_amount: cleared.map(|c| MoneyField::from_minor("cleared_amount", c, currency)),
+        remaining_amount: cleared.map(|c| {
+            MoneyField::from_minor(
+                "remaining_amount",
+                i128::from(e.amount) - i128::from(c),
+                currency,
+            )
+        }),
         clearings: clearings.map(|cs| {
             cs.iter()
                 .map(|c| ClearingJson {
                     id: c.id,
-                    amount: c.amount,
+                    amount: MoneyField::from_minor("amount", c.amount, currency),
                     cleared_date: c.cleared_on(),
                     statement_ref: c.statement_ref.clone(),
                     state: c.state(),
@@ -303,8 +307,10 @@ struct TransactionWithAttachmentsJson<'a> {
 #[derive(Serialize)]
 pub struct TrialBalanceJson {
     accounts: Vec<TrialBalanceAccountJson>,
-    total_debits: i64,
-    total_credits: i64,
+    #[serde(flatten)]
+    total_debits: MoneyField,
+    #[serde(flatten)]
+    total_credits: MoneyField,
     balanced: bool,
 }
 
@@ -313,8 +319,10 @@ pub struct TrialBalanceAccountJson {
     code: String,
     name: String,
     r#type: String,
-    debit_total: i64,
-    credit_total: i64,
+    #[serde(flatten)]
+    debit_total: MoneyField,
+    #[serde(flatten)]
+    credit_total: MoneyField,
 }
 
 #[derive(Serialize)]
@@ -322,23 +330,17 @@ pub struct BalanceJson {
     code: String,
     name: String,
     r#type: String,
-    debit_total: i64,
-    credit_total: i64,
-    currency: String,
+    #[serde(flatten)]
+    debit_total: MoneyField,
+    #[serde(flatten)]
+    credit_total: MoneyField,
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Map a lowercase account-type string to its normal balance direction.
-fn normal_balance_for(account_type: &str) -> &'static str {
-    match account_type {
-        "asset" | "expense" => beankeeper::types::DebitOrCredit::Debit.code(),
-        "liability" | "equity" | "revenue" => beankeeper::types::DebitOrCredit::Credit.code(),
-        _ => "unknown",
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Render functions
@@ -402,7 +404,11 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
         .map(|txn| {
             let entries = entries_map
                 .get(&txn.id)
-                .map(|rows| rows.iter().map(|e| entry_json(e, None)).collect())
+                .map(|rows| {
+                    rows.iter()
+                        .map(|e| entry_json(e, txn.currency, None))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             TransactionJson {
@@ -452,7 +458,7 @@ pub fn render_transactions_with_attachments<
                     rows.iter()
                         .map(|e| {
                             let clearings = clearings_map.get(&e.id).map_or(&[][..], Vec::as_slice);
-                            entry_json(e, Some(clearings))
+                            entry_json(e, txn.currency, Some(clearings))
                         })
                         .collect()
                 })
@@ -500,7 +506,18 @@ pub fn render_transactions_with_attachments<
 ///
 /// Returns `CliError::General` if JSON serialisation fails, or a validation error
 /// when a total cannot be represented.
-pub fn render_trial_balance(balances: &[BalanceRow], meta: Meta) -> Result<String, CliError> {
+pub fn render_trial_balance(
+    balances: &[BalanceRow],
+    currency: Currency,
+    meta: Meta,
+) -> Result<String, CliError> {
+    envelope_ok(meta, trial_balance_data(balances, currency)?)
+}
+
+pub(crate) fn trial_balance_data(
+    balances: &[BalanceRow],
+    currency: Currency,
+) -> Result<TrialBalanceJson, CliError> {
     let super::TrialBalanceTotals {
         debits: total_debits,
         credits: total_credits,
@@ -511,20 +528,18 @@ pub fn render_trial_balance(balances: &[BalanceRow], meta: Meta) -> Result<Strin
         .map(|balance| TrialBalanceAccountJson {
             code: balance.code.clone(),
             name: balance.name.clone(),
-            r#type: balance.account_type.clone(),
-            debit_total: balance.debit_total,
-            credit_total: balance.credit_total,
+            r#type: balance.account_type.code().to_owned(),
+            debit_total: MoneyField::from_minor("debit_total", balance.debit_total, currency),
+            credit_total: MoneyField::from_minor("credit_total", balance.credit_total, currency),
         })
         .collect();
 
-    let result = TrialBalanceJson {
+    Ok(TrialBalanceJson {
         accounts,
-        total_debits,
-        total_credits,
+        total_debits: MoneyField::from_minor("total_debits", total_debits, currency),
+        total_credits: MoneyField::from_minor("total_credits", total_credits, currency),
         balanced: total_debits == total_credits,
-    };
-
-    envelope_ok(meta, result)
+    })
 }
 
 /// Render a single account balance as an enveloped JSON response.
@@ -534,19 +549,21 @@ pub fn render_trial_balance(balances: &[BalanceRow], meta: Meta) -> Result<Strin
 /// Returns `CliError::General` if JSON serialisation fails.
 pub fn render_account_balance(
     balance: &BalanceRow,
-    currency: &str,
+    currency: Currency,
     meta: Meta,
 ) -> Result<String, CliError> {
-    let json = BalanceJson {
+    envelope_ok(meta, account_balance_data(balance, currency))
+}
+
+pub(crate) fn account_balance_data(balance: &BalanceRow, currency: Currency) -> BalanceJson {
+    BalanceJson {
         code: balance.code.clone(),
         name: balance.name.clone(),
-        r#type: balance.account_type.clone(),
-        debit_total: balance.debit_total,
-        credit_total: balance.credit_total,
-        currency: currency.to_string(),
-    };
-
-    envelope_ok(meta, json)
+        r#type: balance.account_type.code().to_owned(),
+        debit_total: MoneyField::from_minor("debit_total", balance.debit_total, currency),
+        credit_total: MoneyField::from_minor("credit_total", balance.credit_total, currency),
+        currency,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -590,10 +607,12 @@ pub fn render_orphaned_correlations(
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct TaxSummaryEntryJson {
+pub(crate) struct TaxSummaryEntryJson {
     tax_category: String,
-    debit_total: i64,
-    credit_total: i64,
+    #[serde(flatten)]
+    debit_total: MoneyField,
+    #[serde(flatten)]
+    credit_total: MoneyField,
 }
 
 /// Render a tax summary as an enveloped JSON response.
@@ -603,18 +622,23 @@ struct TaxSummaryEntryJson {
 /// Returns `CliError::General` if JSON serialisation fails.
 pub fn render_tax_summary(
     rows: &[crate::db::TaxSummaryRow],
+    currency: Currency,
     meta: Meta,
 ) -> Result<String, CliError> {
-    let json_rows: Vec<TaxSummaryEntryJson> = rows
-        .iter()
+    envelope_ok(meta, tax_summary_data(rows, currency))
+}
+
+pub(crate) fn tax_summary_data(
+    rows: &[crate::db::TaxSummaryRow],
+    currency: Currency,
+) -> Vec<TaxSummaryEntryJson> {
+    rows.iter()
         .map(|r| TaxSummaryEntryJson {
             tax_category: r.tax_category.clone(),
-            debit_total: r.debit_total,
-            credit_total: r.credit_total,
+            debit_total: MoneyField::from_minor("debit_total", r.debit_total, currency),
+            credit_total: MoneyField::from_minor("credit_total", r.credit_total, currency),
         })
-        .collect();
-
-    envelope_ok(meta, json_rows)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -641,8 +665,8 @@ fn account_balance_rows(rows: &[AccountWithBalanceRow]) -> Vec<AccountWithBalanc
         .map(|row| AccountWithBalanceJson {
             code: &row.code,
             name: &row.name,
-            r#type: &row.account_type,
-            normal_balance: normal_balance_for(&row.account_type),
+            r#type: row.account_type.code(),
+            normal_balance: row.account_type.normal_balance().code(),
             default_tax_category: row.default_tax_category.as_deref(),
             currency: row.debit_total.currency(),
             debit_total: MoneyField::new("debit_total", row.debit_total),
@@ -819,8 +843,10 @@ pub fn render_import_result(
         id: Option<i64>,
         date: String,
         description: String,
-        amount: i64,
-        currency: String,
+        #[serde(flatten)]
+        amount: MoneyField,
+        #[serde(serialize_with = "serialize_display")]
+        currency: Currency,
         status: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
@@ -833,8 +859,8 @@ pub fn render_import_result(
             id: if dry_run { None } else { Some(t.id) },
             date: t.date.clone(),
             description: t.description.clone(),
-            amount: t.amount_minor,
-            currency: t.currency.clone(),
+            amount: MoneyField::new("amount", t.amount),
+            currency: t.amount.currency(),
             status: "imported".to_string(),
             reason: None,
         });
@@ -844,8 +870,8 @@ pub fn render_import_result(
             id: None,
             date: t.date.clone(),
             description: t.description.clone(),
-            amount: t.amount_minor,
-            currency: t.currency.clone(),
+            amount: MoneyField::new("amount", t.amount),
+            currency: t.amount.currency(),
             status: "skipped".to_string(),
             reason: Some("duplicate".to_string()),
         });
@@ -855,8 +881,8 @@ pub fn render_import_result(
             id: None,
             date: t.date.clone(),
             description: t.description.clone(),
-            amount: t.amount_minor,
-            currency: t.currency.clone(),
+            amount: MoneyField::new("amount", t.amount),
+            currency: t.amount.currency(),
             status: "error".to_string(),
             reason: Some(t.error.clone()),
         });
@@ -1011,6 +1037,20 @@ mod tests {
     }
 
     #[test]
+    fn envelope_preserves_nonmonetary_payloads_with_amount_like_keys() -> Result<(), CliError> {
+        let data = serde_json::json!({"amount": 123, "price": 4, "other": {"budget": 10}});
+        let output = envelope_ok(
+            test_meta(Operation::TxnList, Some("acme")).with_currency(Currency::BHD),
+            &data,
+        )?;
+        let decoded: serde_json::Value =
+            serde_json::from_str(&output).map_err(|error| CliError::General(error.to_string()))?;
+        assert_eq!(decoded["meta"]["currency"], "BHD");
+        assert_eq!(decoded["data"], data);
+        Ok(())
+    }
+
+    #[test]
     fn render_companies_empty() {
         let result = render_companies(&[], test_meta(Operation::CompanyList, None));
         assert!(result.is_ok());
@@ -1150,20 +1190,21 @@ mod tests {
             BalanceRow {
                 code: "1000".into(),
                 name: "Cash".into(),
-                account_type: "asset".into(),
+                account_type: beankeeper::types::AccountType::Asset,
                 debit_total: 10000,
                 credit_total: 0,
             },
             BalanceRow {
                 code: "4000".into(),
                 name: "Revenue".into(),
-                account_type: "revenue".into(),
+                account_type: beankeeper::types::AccountType::Revenue,
                 debit_total: 0,
                 credit_total: 10000,
             },
         ];
         let json = render_trial_balance(
             &rows,
+            Currency::USD,
             test_meta(Operation::ReportTrialBalance, Some("acme")),
         )
         .unwrap_or_default();
@@ -1178,12 +1219,13 @@ mod tests {
         let rows = vec![BalanceRow {
             code: "1000".into(),
             name: "Cash".into(),
-            account_type: "asset".into(),
+            account_type: beankeeper::types::AccountType::Asset,
             debit_total: 10000,
             credit_total: 5000,
         }];
         let json = render_trial_balance(
             &rows,
+            Currency::USD,
             test_meta(Operation::ReportTrialBalance, Some("acme")),
         )
         .unwrap_or_default();
@@ -1195,13 +1237,13 @@ mod tests {
         let row = BalanceRow {
             code: "1000".into(),
             name: "Cash".into(),
-            account_type: "asset".into(),
+            account_type: beankeeper::types::AccountType::Asset,
             debit_total: 15000,
             credit_total: 5000,
         };
         let json = render_account_balance(
             &row,
-            "USD",
+            Currency::USD,
             test_meta(Operation::ReportBalance, Some("acme")),
         )
         .unwrap_or_default();
@@ -1209,16 +1251,6 @@ mod tests {
         assert!(json.contains(r#""code": "1000""#));
         assert!(json.contains(r#""currency": "USD""#));
         assert!(json.contains(r#""debit_total": 15000"#));
-    }
-
-    #[test]
-    fn normal_balance_for_all_types() {
-        assert_eq!(normal_balance_for("asset"), "debit");
-        assert_eq!(normal_balance_for("expense"), "debit");
-        assert_eq!(normal_balance_for("liability"), "credit");
-        assert_eq!(normal_balance_for("equity"), "credit");
-        assert_eq!(normal_balance_for("revenue"), "credit");
-        assert_eq!(normal_balance_for("unknown_type"), "unknown");
     }
 
     #[test]

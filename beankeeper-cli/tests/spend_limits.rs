@@ -40,10 +40,10 @@ impl Ledger {
         for company in ["acme", "other"] {
             db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
             for (code, kind) in [
-                ("1000", "asset"),
-                ("2000", "liability"),
-                ("5000", "expense"),
-                ("5100", "expense"),
+                ("1000", beankeeper::types::AccountType::Asset),
+                ("2000", beankeeper::types::AccountType::Liability),
+                ("5000", beankeeper::types::AccountType::Expense),
+                ("5100", beankeeper::types::AccountType::Expense),
             ] {
                 db::create_account(
                     db.conn(),

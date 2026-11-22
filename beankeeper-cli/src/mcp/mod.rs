@@ -930,7 +930,11 @@ mod tests {
             "Acme",
             None,
         )?;
-        for (code, kind) in [("1000", "asset"), ("1200", "asset"), ("4000", "revenue")] {
+        for (code, kind) in [
+            ("1000", beankeeper::types::AccountType::Asset),
+            ("1200", beankeeper::types::AccountType::Asset),
+            ("4000", beankeeper::types::AccountType::Revenue),
+        ] {
             crate::db::accounts::create_account(
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
@@ -1031,7 +1035,7 @@ mod tests {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         )?;

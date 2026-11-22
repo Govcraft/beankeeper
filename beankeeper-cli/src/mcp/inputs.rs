@@ -43,16 +43,6 @@ type Comparison = Text<CompareArg>;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(super) enum AccountTypeArg {
-    Asset,
-    Liability,
-    Equity,
-    Revenue,
-    Expense,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
 pub(super) enum OnConflictArg {
     Error,
     Skip,
@@ -107,7 +97,8 @@ pub(super) struct AccountCreate {
     pub company: Company,
     pub code: Account,
     pub name: String,
-    pub account_type: AccountTypeArg,
+    #[schemars(with = "Text<AccountType>")]
+    pub account_type: AccountType,
     pub default_tax_category: Option<String>,
 }
 
@@ -115,7 +106,8 @@ pub(super) struct AccountCreate {
 #[serde(deny_unknown_fields)]
 pub(super) struct AccountList {
     pub company: Company,
-    pub account_type: Option<AccountTypeArg>,
+    #[schemars(with = "Option<Text<AccountType>>")]
+    pub account_type: Option<AccountType>,
     pub name: Option<String>,
     #[serde(default)]
     pub with_balances: bool,
@@ -619,7 +611,8 @@ pub(super) struct TrendInput {
 pub(super) struct TrialBalanceInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub account_type: Option<AccountTypeArg>,
+    #[schemars(with = "Option<Text<AccountType>>")]
+    pub account_type: Option<AccountType>,
     pub currency: Option<CurrencyCode>,
     pub period: Option<PeriodArg>,
     pub compare: Option<Comparison>,
@@ -694,7 +687,8 @@ pub(super) struct BudgetVarianceInput {
     pub month: Option<Month>,
     pub from: Option<Month>,
     pub to: Option<Month>,
-    pub account_type: Option<AccountTypeArg>,
+    #[schemars(with = "Option<Text<AccountType>>")]
+    pub account_type: Option<AccountType>,
     pub currency: Option<CurrencyCode>,
     #[serde(default)]
     pub include_unbudgeted: bool,

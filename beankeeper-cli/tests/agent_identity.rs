@@ -40,7 +40,7 @@ impl Ledger {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         )?;
@@ -51,7 +51,7 @@ impl Ledger {
                 company_slug: "acme",
                 code: "4000",
                 name: "Revenue",
-                account_type: "revenue",
+                account_type: beankeeper::types::AccountType::Revenue,
                 default_tax_category: None,
             },
         )?;
@@ -269,7 +269,7 @@ fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() ->
             company_slug: "acme",
             code: "2000",
             name: "Loan",
-            account_type: "liability",
+            account_type: beankeeper::types::AccountType::Liability,
             default_tax_category: None,
         },
     )?;
@@ -280,7 +280,7 @@ fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() ->
             company_slug: "acme",
             code: "5000",
             name: "Interest",
-            account_type: "expense",
+            account_type: beankeeper::types::AccountType::Expense,
             default_tax_category: None,
         },
     )?;

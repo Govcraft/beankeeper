@@ -100,7 +100,7 @@ fn trial_balance(input: TrialBalanceInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::TrialBalance {
         from: optional_text(input.from),
         to: optional_text(input.to),
-        account_type: input.account_type.map(Into::into),
+        account_type: input.account_type,
         currency: input.currency.map(|currency| currency.into_inner().into()),
         period: input.period.map(Into::into),
         compare,
@@ -195,7 +195,7 @@ fn budget_variance(input: BudgetVarianceInput) -> Result<ReportCommand, CliError
         month: report_month(input.month.as_ref())?,
         from: report_month(input.from.as_ref())?,
         to: report_month(input.to.as_ref())?,
-        account_type: input.account_type.map(Into::into),
+        account_type: input.account_type,
         currency: input
             .currency
             .map(|currency| currency.into_inner().into())

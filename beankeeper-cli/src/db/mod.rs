@@ -161,7 +161,7 @@ pub struct TaxSummaryRow {
 pub struct BalanceRow {
     pub code: String,
     pub name: String,
-    pub account_type: String,
+    pub account_type: beankeeper::types::AccountType,
     pub debit_total: i64,
     pub credit_total: i64,
 }
@@ -171,7 +171,7 @@ pub struct BalanceRow {
 pub struct AccountWithBalanceRow {
     pub code: String,
     pub name: String,
-    pub account_type: String,
+    pub account_type: beankeeper::types::AccountType,
     pub default_tax_category: Option<String>,
     pub debit_total: Money,
     pub credit_total: Money,
@@ -266,7 +266,7 @@ pub fn list_accounts_with_balances(
 pub fn compute_trial_balance(
     conn: &Connection,
     company_slug: &str,
-    type_filter: Option<&str>,
+    type_filter: Option<beankeeper::types::AccountType>,
     from_date: Option<&str>,
     to_date: Option<&str>,
     currency: Currency,
@@ -279,15 +279,14 @@ pub fn compute_trial_balance(
          LEFT JOIN (entries e JOIN transactions t ON t.id = e.transaction_id \
            AND t.company_slug = e.company_slug AND t.currency = ?2",
     );
-    let filter = type_filter.map(str::to_lowercase);
     let mut bindings = vec![company_slug, currency.code()];
     push_transaction_dates(&mut sql, &mut bindings, from_date, to_date);
     sql.push_str(
         ") ON e.company_slug = a.company_slug AND e.account_code = a.code \
          WHERE a.company_slug = ?1",
     );
-    if let Some(filter) = filter.as_deref() {
-        bindings.push(filter);
+    if let Some(filter) = type_filter {
+        bindings.push(filter.code());
         let _ = write!(sql, " AND a.type = ?{}", bindings.len());
     }
     sql.push_str(" GROUP BY a.code, a.name, a.type ORDER BY a.code");
@@ -422,7 +421,7 @@ mod tests {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         )
@@ -434,7 +433,7 @@ mod tests {
                 company_slug: "acme",
                 code: "4000",
                 name: "Revenue",
-                account_type: "revenue",
+                account_type: beankeeper::types::AccountType::Revenue,
                 default_tax_category: None,
             },
         )
@@ -446,7 +445,7 @@ mod tests {
                 company_slug: "acme",
                 code: "2000",
                 name: "Payables",
-                account_type: "liability",
+                account_type: beankeeper::types::AccountType::Liability,
                 default_tax_category: None,
             },
         )
@@ -531,9 +530,15 @@ mod tests {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
 
-        let balances =
-            compute_trial_balance(db.conn(), "acme", Some("asset"), None, None, Currency::USD)
-                .unwrap_or_default();
+        let balances = compute_trial_balance(
+            db.conn(),
+            "acme",
+            Some(beankeeper::types::AccountType::Asset),
+            None,
+            None,
+            Currency::USD,
+        )
+        .unwrap_or_default();
         assert_eq!(balances.len(), 1);
         assert_eq!(balances[0].code, "1000");
     }

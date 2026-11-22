@@ -265,7 +265,7 @@ fn seed_company_accounts(
     conn: &rusqlite::Connection,
     actor: &crate::db::Actor,
     company: &str,
-    accounts: &[(&str, &str, &str, Option<&str>)],
+    accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)],
 ) -> Result<(), CliError> {
     use crate::db::create_account;
 
@@ -291,31 +291,91 @@ fn seed_consulting_accounts(
     actor: &crate::db::Actor,
 ) -> Result<(), CliError> {
     // Chart of Accounts – acme-consulting. `(code, name, type, tax_category)`.
-    let accounts: &[(&str, &str, &str, Option<&str>)] = &[
-        ("1000", "Operating Cash", "asset", None),
-        ("1100", "Accounts Receivable", "asset", None),
-        ("1500", "Due from Acme Products", "asset", None),
-        ("2000", "Accounts Payable", "liability", None),
-        ("2500", "Due to Owner", "liability", None),
-        ("3000", "Owner Equity", "equity", None),
-        ("4000", "Consulting Revenue", "revenue", Some("income")),
-        ("5000", "Rent Expense", "expense", Some("rent")),
-        ("5100", "Software Licences", "expense", Some("software")),
-        ("5200", "Office Supplies", "expense", Some("supplies")),
-        ("5300", "Salary Expense", "expense", Some("payroll")),
+    let accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)] = &[
+        (
+            "1000",
+            "Operating Cash",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "1100",
+            "Accounts Receivable",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "1500",
+            "Due from Acme Products",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "2000",
+            "Accounts Payable",
+            beankeeper::types::AccountType::Liability,
+            None,
+        ),
+        (
+            "2500",
+            "Due to Owner",
+            beankeeper::types::AccountType::Liability,
+            None,
+        ),
+        (
+            "3000",
+            "Owner Equity",
+            beankeeper::types::AccountType::Equity,
+            None,
+        ),
+        (
+            "4000",
+            "Consulting Revenue",
+            beankeeper::types::AccountType::Revenue,
+            Some("income"),
+        ),
+        (
+            "5000",
+            "Rent Expense",
+            beankeeper::types::AccountType::Expense,
+            Some("rent"),
+        ),
+        (
+            "5100",
+            "Software Licences",
+            beankeeper::types::AccountType::Expense,
+            Some("software"),
+        ),
+        (
+            "5200",
+            "Office Supplies",
+            beankeeper::types::AccountType::Expense,
+            Some("supplies"),
+        ),
+        (
+            "5300",
+            "Salary Expense",
+            beankeeper::types::AccountType::Expense,
+            Some("payroll"),
+        ),
         (
             "2600",
             "Federal Tax Payable",
-            "liability",
+            beankeeper::types::AccountType::Liability,
             Some("payroll-tax"),
         ),
         (
             "2700",
             "State Tax Payable",
-            "liability",
+            beankeeper::types::AccountType::Liability,
             Some("payroll-tax"),
         ),
-        ("2800", "FICA Payable", "liability", Some("payroll-tax")),
+        (
+            "2800",
+            "FICA Payable",
+            beankeeper::types::AccountType::Liability,
+            Some("payroll-tax"),
+        ),
     ];
     seed_company_accounts(conn, actor, "acme-consulting", accounts)?;
 
@@ -328,17 +388,67 @@ fn seed_products_accounts(
     actor: &crate::db::Actor,
 ) -> Result<(), CliError> {
     // Chart of Accounts – acme-products. `(code, name, type, tax_category)`.
-    let accounts: &[(&str, &str, &str, Option<&str>)] = &[
-        ("1000", "Operating Cash", "asset", None),
-        ("1100", "Accounts Receivable", "asset", None),
-        ("1200", "Inventory", "asset", None),
-        ("1500", "Due from Acme Consulting", "asset", None),
-        ("2000", "Accounts Payable", "liability", None),
-        ("3000", "Owner Equity", "equity", None),
-        ("4000", "Product Sales", "revenue", Some("income")),
-        ("4100", "Licence Revenue", "revenue", Some("income")),
-        ("5000", "Cost of Goods Sold", "expense", Some("cogs")),
-        ("5100", "Shipping Expense", "expense", Some("shipping")),
+    let accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)] = &[
+        (
+            "1000",
+            "Operating Cash",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "1100",
+            "Accounts Receivable",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "1200",
+            "Inventory",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "1500",
+            "Due from Acme Consulting",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "2000",
+            "Accounts Payable",
+            beankeeper::types::AccountType::Liability,
+            None,
+        ),
+        (
+            "3000",
+            "Owner Equity",
+            beankeeper::types::AccountType::Equity,
+            None,
+        ),
+        (
+            "4000",
+            "Product Sales",
+            beankeeper::types::AccountType::Revenue,
+            Some("income"),
+        ),
+        (
+            "4100",
+            "Licence Revenue",
+            beankeeper::types::AccountType::Revenue,
+            Some("income"),
+        ),
+        (
+            "5000",
+            "Cost of Goods Sold",
+            beankeeper::types::AccountType::Expense,
+            Some("cogs"),
+        ),
+        (
+            "5100",
+            "Shipping Expense",
+            beankeeper::types::AccountType::Expense,
+            Some("shipping"),
+        ),
     ];
     seed_company_accounts(conn, actor, "acme-products", accounts)?;
 
@@ -351,20 +461,85 @@ fn seed_personal_accounts(
     actor: &crate::db::Actor,
 ) -> Result<(), CliError> {
     // Chart of Accounts – personal. `(code, name, type, tax_category)`.
-    let accounts: &[(&str, &str, &str, Option<&str>)] = &[
-        ("1000", "Checking Account", "asset", None),
-        ("1100", "Savings Account", "asset", None),
-        ("1500", "Due from Acme Consulting", "asset", None),
-        ("2000", "Credit Card", "liability", None),
-        ("3000", "Net Worth", "equity", None),
-        ("4000", "Salary Income", "revenue", Some("w2-income")),
-        ("4100", "Investment Income", "revenue", Some("investment")),
-        ("5000", "Rent", "expense", Some("housing")),
-        ("5100", "Groceries", "expense", Some("food")),
-        ("5200", "Utilities", "expense", Some("utilities")),
-        ("5300", "Federal Tax Withheld", "expense", Some("fed-tax")),
-        ("5400", "State Tax Withheld", "expense", Some("state-tax")),
-        ("5500", "FICA Withheld", "expense", Some("fica")),
+    let accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)] = &[
+        (
+            "1000",
+            "Checking Account",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "1100",
+            "Savings Account",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "1500",
+            "Due from Acme Consulting",
+            beankeeper::types::AccountType::Asset,
+            None,
+        ),
+        (
+            "2000",
+            "Credit Card",
+            beankeeper::types::AccountType::Liability,
+            None,
+        ),
+        (
+            "3000",
+            "Net Worth",
+            beankeeper::types::AccountType::Equity,
+            None,
+        ),
+        (
+            "4000",
+            "Salary Income",
+            beankeeper::types::AccountType::Revenue,
+            Some("w2-income"),
+        ),
+        (
+            "4100",
+            "Investment Income",
+            beankeeper::types::AccountType::Revenue,
+            Some("investment"),
+        ),
+        (
+            "5000",
+            "Rent",
+            beankeeper::types::AccountType::Expense,
+            Some("housing"),
+        ),
+        (
+            "5100",
+            "Groceries",
+            beankeeper::types::AccountType::Expense,
+            Some("food"),
+        ),
+        (
+            "5200",
+            "Utilities",
+            beankeeper::types::AccountType::Expense,
+            Some("utilities"),
+        ),
+        (
+            "5300",
+            "Federal Tax Withheld",
+            beankeeper::types::AccountType::Expense,
+            Some("fed-tax"),
+        ),
+        (
+            "5400",
+            "State Tax Withheld",
+            beankeeper::types::AccountType::Expense,
+            Some("state-tax"),
+        ),
+        (
+            "5500",
+            "FICA Withheld",
+            beankeeper::types::AccountType::Expense,
+            Some("fica"),
+        ),
     ];
     seed_company_accounts(conn, actor, "personal", accounts)?;
 

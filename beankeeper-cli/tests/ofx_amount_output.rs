@@ -25,17 +25,24 @@ fn statement(currency: &str, amount: &str) -> String {
     )
 }
 
-fn import(db: &Path, file: &Path, flags: &[&str]) -> Result<Value, Box<dyn Error>> {
-    let output = Command::cargo_bin("bk")?
+fn import_command(db: &Path, file: &Path) -> Result<Command, Box<dyn Error>> {
+    let mut command = Command::cargo_bin("bk")?;
+    command
         .arg("--db")
         .arg(db)
-        .args(["--json", "--company", "acme", "txn", "import", "--file"])
+        .args(["--company", "acme", "txn", "import", "--file"])
         .arg(file)
         .args(["--account", "1000", "--suspense", "4000"])
-        .args(flags)
         .env_remove("BEANKEEPER_PASSPHRASE_CMD")
         .env_remove("BEANKEEPER_COMPANY")
-        .env_remove("BEANKEEPER_CURRENCY")
+        .env_remove("BEANKEEPER_CURRENCY");
+    Ok(command)
+}
+
+fn import(db: &Path, file: &Path, flags: &[&str]) -> Result<Value, Box<dyn Error>> {
+    let output = import_command(db, file)?
+        .arg("--json")
+        .args(flags)
         .output()?;
     assert!(
         output.status.success(),
@@ -52,7 +59,10 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
     companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
-    for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
+    for (code, kind) in [
+        ("1000", beankeeper::types::AccountType::Asset),
+        ("4000", beankeeper::types::AccountType::Revenue),
+    ] {
         accounts::create_account(
             db.conn(),
             &Actor::new("fixture"),
@@ -72,6 +82,16 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     ] {
         let file = dir.path().join(format!("{currency}.ofx"));
         std::fs::write(&file, statement(currency, amount))?;
+        let verbose = import_command(&path, &file)?
+            .args(["--dry-run", "--verbose"])
+            .output()?;
+        assert!(verbose.status.success());
+        let text = String::from_utf8(verbose.stderr)?;
+        assert!(
+            text.lines()
+                .any(|line| line.ends_with(&format!("+{amount}"))),
+            "{text}"
+        );
         for (flags, status) in [
             (vec!["--dry-run"], "imported"),
             (vec![], "imported"),
@@ -95,7 +115,10 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
     companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
-    for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
+    for (code, kind) in [
+        ("1000", beankeeper::types::AccountType::Asset),
+        ("4000", beankeeper::types::AccountType::Revenue),
+    ] {
         accounts::create_account(
             db.conn(),
             &Actor::new("fixture"),

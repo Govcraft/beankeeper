@@ -31,7 +31,7 @@ impl Ledger {
                     company_slug: company,
                     code: "1000",
                     name: "Bank",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None,
                 },
             )?;
@@ -42,7 +42,7 @@ impl Ledger {
                     company_slug: company,
                     code: "9000",
                     name: "Suspense",
-                    account_type: "expense",
+                    account_type: beankeeper::types::AccountType::Expense,
                     default_tax_category: Some("default-tax"),
                 },
             )?;
@@ -53,7 +53,7 @@ impl Ledger {
                     company_slug: company,
                     code: "4000",
                     name: "Revenue",
-                    account_type: "revenue",
+                    account_type: beankeeper::types::AccountType::Revenue,
                     default_tax_category: None,
                 },
             )?;

@@ -511,3 +511,59 @@ fn period_and_compare_conflict() {
     assert_eq!(run.code, 2, "{}", run.stderr);
     assert!(run.stderr.contains("cannot be used with"), "{}", run.stderr);
 }
+
+#[test]
+fn period_output_rejects_out_of_range_totals_in_every_format() {
+    let (_dir, db) = setup();
+    for (date, amount) in [("2026-01-17", "9223372036854775807"), ("2026-02-17", "1")] {
+        bk_ok(
+            &db,
+            &[
+                "--company",
+                "co",
+                "txn",
+                "post",
+                "--description",
+                "Wide period total",
+                "--date",
+                date,
+                "--currency",
+                "JPY",
+                "--debit",
+                &format!("1000:{amount}"),
+                "--credit",
+                &format!("4000:{amount}"),
+            ],
+        );
+    }
+
+    for format in ["table", "json", "csv"] {
+        let run = bk(
+            &db,
+            &[
+                "--format",
+                format,
+                "--company",
+                "co",
+                "report",
+                "trial-balance",
+                "--from",
+                "2026-01-01",
+                "--to",
+                "2026-02-28",
+                "--period",
+                "month",
+                "--currency",
+                "JPY",
+            ],
+        );
+        assert_eq!(run.code, 3, "{format}: {}", run.stderr);
+        assert!(run.stdout.is_empty(), "{format}: {}", run.stdout);
+        assert!(
+            run.stderr
+                .contains("period total exceeds the supported minor-unit range"),
+            "{format}: {}",
+            run.stderr
+        );
+    }
+}

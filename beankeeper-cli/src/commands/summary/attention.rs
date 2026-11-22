@@ -383,12 +383,12 @@ mod tests {
             None,
         )?;
         for (code, name, kind) in [
-            ("1000", "Cash", "asset"),
-            ("1100", "Receivable", "asset"),
-            ("2000", "Payable", "liability"),
-            ("3000", "Suspense", "equity"),
-            ("4000", "Sales", "revenue"),
-            ("5000", "Rent", "expense"),
+            ("1000", "Cash", beankeeper::types::AccountType::Asset),
+            ("1100", "Receivable", beankeeper::types::AccountType::Asset),
+            ("2000", "Payable", beankeeper::types::AccountType::Liability),
+            ("3000", "Suspense", beankeeper::types::AccountType::Equity),
+            ("4000", "Sales", beankeeper::types::AccountType::Revenue),
+            ("5000", "Rent", beankeeper::types::AccountType::Expense),
         ] {
             db::accounts::create_account(
                 db.conn(),

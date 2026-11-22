@@ -37,7 +37,10 @@ impl Ledger {
         let db = Db::open(&path, Some(&passphrase))?;
         for company in ["acme", "other"] {
             db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
-            for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+            for (code, kind) in [
+                ("1000", beankeeper::types::AccountType::Asset),
+                ("5000", beankeeper::types::AccountType::Expense),
+            ] {
                 db::create_account(
                     db.conn(),
                     &Actor::new("fixture"),

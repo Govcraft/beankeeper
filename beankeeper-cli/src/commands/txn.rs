@@ -907,7 +907,6 @@ fn run_show(
     }
 
     // Determine currency minor units for formatting
-    let currency_minor_units = txn.currency.minor_units();
 
     match format {
         OutputFormat::Table => {
@@ -915,7 +914,6 @@ fn run_show(
                 &txn,
                 &entries,
                 Some(&clearings),
-                currency_minor_units,
                 use_color,
             )?;
             writeln!(out, "{rendered}")?;
@@ -1097,7 +1095,7 @@ mod tests {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         )?;
@@ -1108,7 +1106,7 @@ mod tests {
                 company_slug: "acme",
                 code: "4000",
                 name: "Revenue",
-                account_type: "revenue",
+                account_type: beankeeper::types::AccountType::Revenue,
                 default_tax_category: Some("income"),
             },
         )?;

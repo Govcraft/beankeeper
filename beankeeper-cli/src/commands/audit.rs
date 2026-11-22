@@ -3,7 +3,9 @@
 use crate::operation::Operation;
 use beankeeper::types::Currency;
 use rusqlite::OptionalExtension as _;
+use serde_json::Value;
 
+use super::audit_snapshot::{embedded_currency, project_snapshot};
 use crate::cli::{AuditCommand, Cli, OutputFormat, resolve_format};
 use crate::db::audit::AuditEntity;
 use crate::db::{Db, ListAuditParams, count_audit, list_audit};
@@ -187,7 +189,15 @@ fn audit_data(
 ) -> Result<Vec<serde_json::Value>, CliError> {
     rows.iter()
         .map(|r| {
-            let currency = snapshot_currency(db, r)?;
+            let [mut before, mut after] = [&r.before, &r.after].map(|snapshot| {
+                snapshot
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or(Value::Null)
+            });
+            let currency = snapshot_currency(db, r, [&after, &before])?;
+            project_snapshot(&mut before, r.entity, currency);
+            project_snapshot(&mut after, r.entity, currency);
             Ok(serde_json::json!({
                 "id": r.id,
                 "changed_at": r.changed_at,
@@ -201,8 +211,8 @@ fn audit_data(
                 "action": r.action,
                 "before": r.before,
                 "after": r.after,
-                "before_display": display_snapshot(r.before.as_deref(), currency),
-                "after_display": display_snapshot(r.after.as_deref(), currency),
+                "before_display": before,
+                "after_display": after,
                 "prev_hash": r.prev_hash,
                 "row_hash": r.row_hash,
             }))
@@ -210,21 +220,13 @@ fn audit_data(
         .collect()
 }
 
-fn display_snapshot(raw: Option<&str>, currency: Option<Currency>) -> serde_json::Value {
-    raw.and_then(|raw| serde_json::from_str(raw).ok())
-        .map_or(serde_json::Value::Null, |value| {
-            output::json::with_amount_displays(value, currency)
-        })
-}
-
-fn snapshot_currency(db: &Db, row: &crate::db::AuditLogRow) -> Result<Option<Currency>, CliError> {
-    for raw in [&row.after, &row.before].into_iter().flatten() {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw)
-            && let Some(code) = value.get("currency").and_then(serde_json::Value::as_str)
-            && let Ok(currency) = Currency::from_code(code)
-        {
-            return Ok(Some(currency));
-        }
+fn snapshot_currency(
+    db: &Db,
+    row: &crate::db::AuditLogRow,
+    snapshots: [&Value; 2],
+) -> Result<Option<Currency>, CliError> {
+    if let Some(currency) = snapshots.into_iter().find_map(embedded_currency) {
+        return Ok(Some(currency));
     }
     // Entry and transaction financial fields are immutable, so a lookup is
     // safe for snapshots recorded before currency was included. Mutable or
@@ -247,19 +249,4 @@ fn snapshot_currency(db: &Db, row: &crate::db::AuditLogRow) -> Result<Option<Cur
         )
         .optional()?;
     Ok(code.and_then(|code| Currency::from_code(&code).ok()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::display_snapshot;
-    use serde_json::{Value, json};
-
-    #[test]
-    fn legacy_snapshots_with_unknown_currency_keep_minor_units_without_guessing() {
-        assert_eq!(
-            display_snapshot(Some(r#"{"amount": 1234}"#), None),
-            json!({"amount":1234, "amount_display":null})
-        );
-        assert_eq!(display_snapshot(None, None), Value::Null);
-    }
 }

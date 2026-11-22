@@ -14,7 +14,7 @@ use serde::{Serialize, Serializer};
 
 use crate::commands::report_periods::{Column, MultiColumnReport};
 use crate::error::CliError;
-use crate::output::amounts::{MoneyField, MoneySequence};
+use crate::output::amounts::{MoneyField, MoneySequence, format_minor_grouped};
 use crate::output::json::{Meta, envelope_ok};
 
 // ---------------------------------------------------------------------------
@@ -24,47 +24,19 @@ use crate::output::json::{Meta, envelope_ok};
 pub use crate::percent::{Percent, change_percent};
 
 /// Sum a row of amounts (the Total column of the periods layout).
-fn row_total(amounts: &[i64]) -> i64 {
-    amounts.iter().fold(0i64, |acc, a| acc.saturating_add(*a))
+fn row_total(amounts: &[i64]) -> i128 {
+    amounts.iter().copied().map(i128::from).sum()
 }
 
-fn normal_balance_for(account_type: &str) -> &'static str {
-    match account_type {
-        "asset" | "expense" => beankeeper::types::DebitOrCredit::Debit.code(),
-        "liability" | "equity" | "revenue" => beankeeper::types::DebitOrCredit::Credit.code(),
-        _ => "unknown",
+pub(crate) fn validate_totals(report: &MultiColumnReport) -> Result<(), CliError> {
+    let account_amounts = report.accounts.iter().map(|line| &line.amounts);
+    let summary_amounts = report.summary.iter().map(|line| &line.amounts);
+    for amounts in account_amounts.chain(summary_amounts) {
+        i64::try_from(row_total(amounts)).map_err(|_| {
+            CliError::Validation("period total exceeds the supported minor-unit range".into())
+        })?;
     }
-}
-
-/// Format minor units with thousands separators and decimal places.
-pub(crate) fn format_amount(minor_units: impl Into<i128>, decimal_places: u8) -> String {
-    let minor_units = minor_units.into();
-    let abs_units = minor_units.unsigned_abs();
-    let divisor = 10u128.pow(u32::from(decimal_places));
-    let whole = (abs_units / divisor).to_string();
-    let frac = abs_units % divisor;
-
-    let mut grouped = String::with_capacity(whole.len() + whole.len() / 3);
-    for (i, ch) in whole.chars().enumerate() {
-        if i > 0 && (whole.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-
-    let body = if decimal_places == 0 {
-        grouped
-    } else {
-        format!(
-            "{grouped}.{frac:0>width$}",
-            width = usize::from(decimal_places)
-        )
-    };
-    if minor_units < 0 {
-        format!("-{body}")
-    } else {
-        body
-    }
+    Ok(())
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -85,9 +57,11 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
 
 /// The amount cells that follow the fixed columns for one row.
 fn value_cells(report: &MultiColumnReport, amounts: &[i64]) -> Vec<String> {
-    let mu = report.currency.minor_units();
-    let mut cells: Vec<String> = amounts.iter().map(|a| format_amount(*a, mu)).collect();
-    cells.push(format_amount(row_total(amounts), mu));
+    let mut cells: Vec<String> = amounts
+        .iter()
+        .map(|a| format_minor_grouped(*a, report.currency))
+        .collect();
+    cells.push(format_minor_grouped(row_total(amounts), report.currency));
     cells
 }
 
@@ -143,7 +117,7 @@ pub fn render_table(report: &MultiColumnReport, use_color: bool) -> String {
         let mut row = vec![
             Cell::new(styled(&line.code, cyan, use_color)),
             Cell::new(&line.name),
-            Cell::new(capitalize_first(&line.account_type)),
+            Cell::new(line.account_type.to_string()),
         ];
         row.extend(
             value_cells(report, &line.amounts)
@@ -210,7 +184,7 @@ impl Serialize for PeriodValuesJson<'_> {
         let amounts: Vec<_> = self.amounts.iter().copied().map(money).collect();
         Fields {
             amounts: MoneySequence::new("amounts", &amounts),
-            total: MoneyField::new("total", money(row_total(self.amounts))),
+            total: MoneyField::from_minor("total", row_total(self.amounts), self.currency),
         }
         .serialize(serializer)
     }
@@ -247,8 +221,10 @@ fn values_json(amounts: &[i64], currency: Currency) -> PeriodValuesJson<'_> {
 ///
 /// # Errors
 ///
-/// Returns `CliError::General` if serialisation fails.
+/// Returns a validation error if totals exceed the supported minor-unit range,
+/// or `CliError::General` if serialisation fails.
 pub fn render_json(report: &MultiColumnReport, meta: Meta) -> Result<String, CliError> {
+    validate_totals(report)?;
     envelope_ok(meta, report_json(report))
 }
 
@@ -259,8 +235,8 @@ pub(crate) fn report_json(report: &MultiColumnReport) -> impl Serialize + '_ {
         .map(|a| AccountJson {
             code: a.code.clone(),
             name: a.name.clone(),
-            r#type: a.account_type.clone(),
-            normal_balance: normal_balance_for(&a.account_type),
+            r#type: a.account_type.code().to_owned(),
+            normal_balance: a.account_type.normal_balance().code(),
             values: values_json(&a.amounts, report.currency),
         })
         .collect();
@@ -321,7 +297,7 @@ pub fn render_csv(report: &MultiColumnReport) -> Result<String, CliError> {
         let mut record = vec![
             line.code.clone(),
             line.name.clone(),
-            line.account_type.clone(),
+            line.account_type.code().to_owned(),
         ];
         record.extend(csv_values(&line.amounts));
         wtr.write_record(&record).map_err(|e| csv_err(&e))?;
@@ -391,12 +367,5 @@ mod tests {
             }),
         );
         Ok(())
-    }
-
-    #[test]
-    fn amounts_are_grouped() {
-        assert_eq!(format_amount(123_456_789, 2), "1,234,567.89");
-        assert_eq!(format_amount(-5, 2), "-0.05");
-        assert_eq!(format_amount(1000, 0), "1,000");
     }
 }

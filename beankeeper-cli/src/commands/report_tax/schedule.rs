@@ -102,7 +102,7 @@ struct ScheduleRowIdentity {
     title: String,
     tax_category: Option<String>,
     account_code: Option<String>,
-    account_type: Option<String>,
+    account_type: Option<beankeeper::types::AccountType>,
 }
 
 /// One row in a Schedule C book summary.
@@ -146,7 +146,9 @@ impl ScheduleRow {
     /// Account type code for an unmatched row.
     #[must_use]
     pub fn account_type(&self) -> Option<&str> {
-        self.identity.account_type.as_deref()
+        self.identity
+            .account_type
+            .map(beankeeper::types::AccountType::code)
     }
 
     /// Total debits in the report currency.
@@ -234,7 +236,10 @@ pub(super) fn build(entries: &[TaxEntry], currency: Currency) -> Result<Schedule
             });
             row.add(entry, sign)?;
         } else if entry.tax_category.is_some()
-            || matches!(entry.account_type.as_str(), "revenue" | "expense")
+            || matches!(
+                entry.account_type,
+                beankeeper::types::AccountType::Revenue | beankeeper::types::AccountType::Expense
+            )
         {
             let groups = if entry.tax_category.is_some() {
                 &mut unmapped
@@ -249,12 +254,13 @@ pub(super) fn build(entries: &[TaxEntry], currency: Currency) -> Result<Schedule
                         title: entry.account_name.clone(),
                         tax_category: entry.tax_category.clone(),
                         account_code: Some(entry.account_code.clone()),
-                        account_type: Some(entry.account_type.clone()),
+                        account_type: Some(entry.account_type),
                     })
                 });
-            let sign = match entry.account_type.as_str() {
-                "revenue" | "liability" | "equity" => CreditPositive,
-                _ => DebitPositive,
+            let sign = if entry.account_type.is_debit_normal() {
+                DebitPositive
+            } else {
+                CreditPositive
             };
             row.add(entry, sign)?;
         }

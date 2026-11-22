@@ -32,7 +32,7 @@ impl Ledger {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         )?;
@@ -43,7 +43,7 @@ impl Ledger {
                 company_slug: "acme",
                 code: "4000",
                 name: "Revenue",
-                account_type: "revenue",
+                account_type: beankeeper::types::AccountType::Revenue,
                 default_tax_category: None,
             },
         )?;

@@ -51,7 +51,7 @@ struct TaxEntry {
     metadata: Option<String>,
     account_code: String,
     account_name: String,
-    account_type: String,
+    account_type: beankeeper::types::AccountType,
     tax_category: Option<String>,
     direction: DebitOrCredit,
     amount: i64,

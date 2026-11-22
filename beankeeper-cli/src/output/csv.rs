@@ -13,14 +13,6 @@ fn csv_err(e: &csv::Error) -> CliError {
 }
 
 /// Derive the normal-balance direction from a lowercase account-type string.
-fn normal_balance_for(account_type: &str) -> &'static str {
-    match account_type {
-        "asset" | "expense" => beankeeper::types::DebitOrCredit::Debit.code(),
-        "liability" | "equity" | "revenue" => beankeeper::types::DebitOrCredit::Credit.code(),
-        _ => "unknown",
-    }
-}
-
 /// Render a list of companies as CSV.
 ///
 /// Columns: `slug`, `name`, `created_at`
@@ -105,8 +97,8 @@ pub fn render_accounts_with_balances(
         wtr.write_record([
             &a.code,
             &a.name,
-            &a.account_type,
-            normal_balance_for(&a.account_type),
+            a.account_type.code(),
+            a.account_type.normal_balance().code(),
             &a.debit_total.amount().minor_units().to_string(),
             &a.credit_total.amount().minor_units().to_string(),
         ])
@@ -179,7 +171,7 @@ pub fn render_trial_balance(balances: &[BalanceRow]) -> Result<String, CliError>
         wtr.write_record([
             b.code.as_str(),
             b.name.as_str(),
-            b.account_type.as_str(),
+            b.account_type.code(),
             debit.as_str(),
             credit.as_str(),
         ])
@@ -217,7 +209,7 @@ pub fn render_account_balance(balance: &BalanceRow, currency: &str) -> Result<St
     wtr.write_record([
         balance.code.as_str(),
         balance.name.as_str(),
-        balance.account_type.as_str(),
+        balance.account_type.code(),
         debit.as_str(),
         credit.as_str(),
         currency,
@@ -530,14 +522,14 @@ mod tests {
             BalanceRow {
                 code: "1000".into(),
                 name: "Cash".into(),
-                account_type: "asset".into(),
+                account_type: beankeeper::types::AccountType::Asset,
                 debit_total: 10000,
                 credit_total: 0,
             },
             BalanceRow {
                 code: "4000".into(),
                 name: "Revenue".into(),
-                account_type: "revenue".into(),
+                account_type: beankeeper::types::AccountType::Revenue,
                 debit_total: 0,
                 credit_total: 10000,
             },
@@ -559,7 +551,7 @@ mod tests {
         let row = BalanceRow {
             code: "1000".into(),
             name: "Cash".into(),
-            account_type: "asset".into(),
+            account_type: beankeeper::types::AccountType::Asset,
             debit_total: 15000,
             credit_total: 5000,
         };

@@ -26,7 +26,10 @@ fn audit_count(db: &Db) -> rusqlite::Result<i64> {
 fn fixture() -> Result<Db, CliError> {
     let db = Db::open_in_memory()?;
     companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
-    for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+    for (code, kind) in [
+        ("1000", beankeeper::types::AccountType::Asset),
+        ("5000", beankeeper::types::AccountType::Expense),
+    ] {
         accounts::create_account(
             db.conn(),
             &Actor::new("fixture"),
@@ -276,7 +279,10 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     let path = directory.path().join("concurrent.db");
     let db = Db::open(&path, None)?;
     companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
-    for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+    for (code, kind) in [
+        ("1000", beankeeper::types::AccountType::Asset),
+        ("5000", beankeeper::types::AccountType::Expense),
+    ] {
         accounts::create_account(
             db.conn(),
             &Actor::new("fixture"),
@@ -427,7 +433,10 @@ fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> Te
     let db = fixture()?;
     let actor = Actor::new("schedule-limit-test");
     companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
-    for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+    for (code, kind) in [
+        ("1000", beankeeper::types::AccountType::Asset),
+        ("5000", beankeeper::types::AccountType::Expense),
+    ] {
         accounts::create_account(
             db.conn(),
             &Actor::new("fixture"),

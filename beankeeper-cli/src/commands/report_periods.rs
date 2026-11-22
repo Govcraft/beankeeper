@@ -14,14 +14,14 @@
 
 use std::collections::BTreeMap;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{AccountType, Currency};
 use chrono::{Datelike, Months, NaiveDate};
 use clap::ValueEnum;
 use serde::Serialize;
 
 use super::report_dates::{DateRange, parse_date};
 
-use crate::cli::{AccountTypeArg, Cli, Command, OutputFormat, ReportCommand};
+use crate::cli::{Cli, Command, OutputFormat, ReportCommand};
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
@@ -195,7 +195,7 @@ pub struct Column {
 pub struct AccountLine {
     pub code: String,
     pub name: String,
-    pub account_type: String,
+    pub account_type: AccountType,
     pub amounts: Vec<i64>,
 }
 
@@ -333,7 +333,7 @@ struct Request<'a> {
     period: PeriodArg,
     from: Option<&'a str>,
     to: Option<&'a str>,
-    account_type: Option<&'a AccountTypeArg>,
+    account_type: Option<&'a AccountType>,
     currency: Option<&'a crate::cli::CurrencyArg>,
 }
 
@@ -353,12 +353,12 @@ fn run(
         company,
         crate::cli::CurrencyArg::resolve_optional(req.currency)?,
     )?;
-    let type_filter = req.account_type.map(|t| format!("{t:?}").to_lowercase());
+    let type_filter = req.account_type.copied();
     let (accounts, summary) = build_lines(
         db.conn(),
         company,
         req.kind,
-        type_filter.as_deref(),
+        type_filter,
         currency,
         &columns,
     )?;
@@ -373,6 +373,8 @@ fn run(
         accounts,
         summary,
     };
+
+    output::report_periods::validate_totals(&report)?;
 
     match output.format {
         OutputFormat::Table => {
@@ -546,9 +548,10 @@ pub fn range_label(from: NaiveDate, to: NaiveDate) -> String {
 /// Net amount of a balance row on its account's normal side.
 #[must_use]
 pub fn normal_side_net(row: &db::BalanceRow) -> i64 {
-    match row.account_type.as_str() {
-        "asset" | "expense" => row.debit_total.saturating_sub(row.credit_total),
-        _ => row.credit_total.saturating_sub(row.debit_total),
+    if row.account_type.is_debit_normal() {
+        row.debit_total.saturating_sub(row.credit_total)
+    } else {
+        row.credit_total.saturating_sub(row.debit_total)
     }
 }
 
@@ -557,7 +560,7 @@ pub(super) fn fetch_window_rows(
     conn: &rusqlite::Connection,
     company: &str,
     kind: MultiReportKind,
-    type_filter: Option<&str>,
+    type_filter: Option<AccountType>,
     currency: Currency,
     (from, to): (NaiveDate, NaiveDate),
 ) -> Result<Vec<db::BalanceRow>, CliError> {
@@ -569,7 +572,7 @@ pub(super) fn fetch_window_rows(
             let mut rows = db::compute_trial_balance(
                 conn,
                 company,
-                Some("revenue"),
+                Some(AccountType::Revenue),
                 Some(from),
                 Some(to),
                 currency,
@@ -577,7 +580,7 @@ pub(super) fn fetch_window_rows(
             rows.extend(db::compute_trial_balance(
                 conn,
                 company,
-                Some("expense"),
+                Some(AccountType::Expense),
                 Some(from),
                 Some(to),
                 currency,
@@ -613,21 +616,21 @@ impl ColumnTotals {
             .credit
             .checked_add(row.credit_total)
             .ok_or_else(report_overflow)?;
-        match row.account_type.as_str() {
-            "revenue" => {
+        match row.account_type {
+            AccountType::Revenue => {
                 self.revenue = self.revenue.checked_add(net).ok_or_else(report_overflow)?;
             }
-            "expense" => {
+            AccountType::Expense => {
                 self.expense = self.expense.checked_add(net).ok_or_else(report_overflow)?;
             }
-            _ => {}
+            AccountType::Asset | AccountType::Liability | AccountType::Equity => {}
         }
         Ok(())
     }
 }
 
 fn net_amount(row: &db::BalanceRow) -> Result<i64, CliError> {
-    let (positive, negative) = if matches!(row.account_type.as_str(), "asset" | "expense") {
+    let (positive, negative) = if row.account_type.is_debit_normal() {
         (row.debit_total, row.credit_total)
     } else {
         (row.credit_total, row.debit_total)
@@ -684,7 +687,7 @@ fn build_lines(
     conn: &rusqlite::Connection,
     company: &str,
     kind: MultiReportKind,
-    type_filter: Option<&str>,
+    type_filter: Option<AccountType>,
     currency: Currency,
     columns: &[Column],
 ) -> Result<(Vec<AccountLine>, Vec<SummaryLine>), CliError> {
@@ -733,7 +736,7 @@ fn build_lines(
         .collect();
     if kind == MultiReportKind::IncomeStatement {
         // Codes are already ordered; keep revenues before expenses.
-        accounts.sort_by_key(|line| line.account_type != "revenue");
+        accounts.sort_by_key(|line| line.account_type != AccountType::Revenue);
     }
     Ok((accounts, summary_lines(kind, &totals)?))
 }

@@ -38,7 +38,6 @@ impl std::error::Error for AccountTypeError {}
 ///  (Debit normal)       (Credit normal)
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum AccountType {
     /// Resources owned. Normal balance: Debit.
     Asset,

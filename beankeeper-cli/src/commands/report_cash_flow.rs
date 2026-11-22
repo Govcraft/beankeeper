@@ -86,12 +86,11 @@ pub enum Section {
 impl Section {
     const ALL: [Self; 3] = [Self::Operating, Self::Investing, Self::Financing];
 
-    fn for_account_type(account_type: AccountType) -> Option<Self> {
+    fn for_account_type(account_type: AccountType) -> Self {
         match account_type {
-            AccountType::Revenue | AccountType::Expense => Some(Self::Operating),
-            AccountType::Asset => Some(Self::Investing),
-            AccountType::Liability | AccountType::Equity => Some(Self::Financing),
-            _ => None,
+            AccountType::Revenue | AccountType::Expense => Self::Operating,
+            AccountType::Asset => Self::Investing,
+            AccountType::Liability | AccountType::Equity => Self::Financing,
         }
     }
 
@@ -675,12 +674,7 @@ fn attribute_cash(
             .iter()
             .filter(|e| !cash_codes.contains(e.code.as_str()))
         {
-            let section = Section::for_account_type(entry.account_type).ok_or_else(|| {
-                CliError::Validation(format!(
-                    "account '{}' has unknown type '{}'",
-                    entry.code, entry.account_type
-                ))
-            })?;
+            let section = Section::for_account_type(entry.account_type);
             let line = lines
                 .entry((section, entry.code.clone()))
                 .or_insert_with(|| AttributedLine {
@@ -948,23 +942,23 @@ mod tests {
     fn section_classification() {
         assert_eq!(
             Section::for_account_type(AccountType::Revenue),
-            Some(Section::Operating)
+            Section::Operating
         );
         assert_eq!(
             Section::for_account_type(AccountType::Expense),
-            Some(Section::Operating)
+            Section::Operating
         );
         assert_eq!(
             Section::for_account_type(AccountType::Asset),
-            Some(Section::Investing)
+            Section::Investing
         );
         assert_eq!(
             Section::for_account_type(AccountType::Liability),
-            Some(Section::Financing)
+            Section::Financing
         );
         assert_eq!(
             Section::for_account_type(AccountType::Equity),
-            Some(Section::Financing)
+            Section::Financing
         );
         assert!("other".parse::<AccountType>().is_err());
     }

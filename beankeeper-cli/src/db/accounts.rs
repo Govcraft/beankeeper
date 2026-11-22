@@ -1,7 +1,6 @@
 use std::fmt::Write;
 
 use beankeeper::types::{Account, AccountCode, AccountType};
-use rusqlite::types::Type;
 use rusqlite::{Connection, params};
 
 use super::AccountRow;
@@ -28,20 +27,19 @@ pub struct CreateAccountParams<'a> {
     pub code: &'a str,
     /// Account name.
     pub name: &'a str,
-    /// Account type as entered by the caller.
-    pub account_type: &'a str,
+    /// Validated account classification.
+    pub account_type: AccountType,
     /// Optional default tax category for entries.
     pub default_tax_category: Option<&'a str>,
 }
 
 /// Creates an account and records its attribution in the same savepoint.
 ///
-/// Validates that the account type is one of the five valid types and that
-/// the company exists.
+/// Verifies that the company exists.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Validation`] for an invalid code or type, or if the account
+/// Returns [`CliError::Validation`] for an invalid code or if the account
 /// already exists. Returns [`CliError::NotFound`] if the company does not exist.
 pub fn create_account(
     conn: &Connection,
@@ -57,10 +55,6 @@ pub fn create_account(
     } = *params;
     let code = AccountCode::new(code)
         .map_err(|error| CliError::Validation(format!("invalid account code '{code}': {error}")))?;
-    let account_type = account_type
-        .to_ascii_lowercase()
-        .parse::<AccountType>()
-        .map_err(|error| CliError::Validation(error.to_string()))?;
 
     audit::atomically(conn, || {
         let code = code.as_str();
@@ -192,14 +186,11 @@ pub fn get_account(
 }
 
 fn decode_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
-    let account_type = row.get_ref(3)?.as_str()?.parse().map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(error))
-    })?;
     Ok(AccountRow {
         company_slug: row.get(0)?,
         code: row.get(1)?,
         name: row.get(2)?,
-        account_type,
+        account_type: row.get(3)?,
         created_at: row.get(4)?,
         default_tax_category: row.get(5)?,
     })
@@ -266,7 +257,7 @@ mod tests {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         );
@@ -280,42 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn create_account_normalises_type_case() {
-        let db = setup();
-        let row = create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: "acme",
-                code: "1000",
-                name: "Cash",
-                account_type: "Asset",
-                default_tax_category: None,
-            },
-        );
-        assert!(row.is_ok());
-        let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
-        assert_eq!(row.account_type, AccountType::Asset);
-    }
-
-    #[test]
-    fn create_account_rejects_invalid_type() {
-        let db = setup();
-        let result = create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: "acme",
-                code: "1000",
-                name: "Cash",
-                account_type: "bank",
-                default_tax_category: None,
-            },
-        );
-        assert!(matches!(result, Err(CliError::Validation(_))));
-    }
-
-    #[test]
     fn create_account_rejects_missing_company() {
         let db = setup();
         let result = create_account(
@@ -325,7 +280,7 @@ mod tests {
                 company_slug: "nope",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         );
@@ -343,7 +298,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1000",
                     name: "Cash",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None
                 }
             )
@@ -356,7 +311,7 @@ mod tests {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash 2",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         );
@@ -374,7 +329,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1000",
                     name: "Cash",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None
                 }
             )
@@ -388,7 +343,7 @@ mod tests {
                     company_slug: "acme",
                     code: "2000",
                     name: "Payables",
-                    account_type: "liability",
+                    account_type: beankeeper::types::AccountType::Liability,
                     default_tax_category: None
                 }
             )
@@ -414,7 +369,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1000",
                     name: "Cash",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None
                 }
             )
@@ -428,7 +383,7 @@ mod tests {
                     company_slug: "acme",
                     code: "2000",
                     name: "Payables",
-                    account_type: "liability",
+                    account_type: beankeeper::types::AccountType::Liability,
                     default_tax_category: None
                 }
             )
@@ -463,7 +418,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1000",
                     name: "Cash",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None
                 }
             )
@@ -507,7 +462,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1000",
                     name: "Cash",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None
                 }
             )
@@ -521,7 +476,7 @@ mod tests {
                     company_slug: "acme",
                     code: "2000",
                     name: "Payables",
-                    account_type: "liability",
+                    account_type: beankeeper::types::AccountType::Liability,
                     default_tax_category: None
                 }
             )
@@ -563,7 +518,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1000",
                     name: "Cash on Hand",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None
                 }
             )
@@ -577,7 +532,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1100",
                     name: "Petty Cash",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None
                 }
             )
@@ -591,7 +546,7 @@ mod tests {
                     company_slug: "acme",
                     code: "2000",
                     name: "Payables",
-                    account_type: "liability",
+                    account_type: beankeeper::types::AccountType::Liability,
                     default_tax_category: None
                 }
             )

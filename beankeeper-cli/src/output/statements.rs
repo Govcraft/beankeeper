@@ -821,11 +821,16 @@ pub fn render_balance_sheet_csv(sheet: &BalanceSheet) -> Result<String, CliError
 mod tests {
     use super::*;
 
-    fn row(code: &str, account_type: &str, debit: i64, credit: i64) -> BalanceRow {
+    fn row(
+        code: &str,
+        account_type: beankeeper::types::AccountType,
+        debit: i64,
+        credit: i64,
+    ) -> BalanceRow {
         BalanceRow {
             code: code.to_string(),
             name: format!("Account {code}"),
-            account_type: account_type.to_string(),
+            account_type,
             debit_total: debit,
             credit_total: credit,
         }
@@ -840,8 +845,18 @@ mod tests {
         let stmt = build_income_statement(
             dates()?,
             Currency::USD,
-            vec![row("4000", "revenue", 0, 10_000)],
-            vec![row("5000", "expense", 2_500, 0)],
+            vec![row(
+                "4000",
+                beankeeper::types::AccountType::Revenue,
+                0,
+                10_000,
+            )],
+            vec![row(
+                "5000",
+                beankeeper::types::AccountType::Expense,
+                2_500,
+                0,
+            )],
         )?;
         assert_eq!(stmt.revenue().total(), Money::usd(10_000));
         assert_eq!(stmt.expenses().total(), Money::usd(2_500));
@@ -854,11 +869,26 @@ mod tests {
         let sheet = build_balance_sheet(BalanceSheetInputs {
             as_of: NaiveDate::default(),
             currency: Currency::USD,
-            assets: vec![row("1000", "asset", 10_000, 2_500)],
+            assets: vec![row(
+                "1000",
+                beankeeper::types::AccountType::Asset,
+                10_000,
+                2_500,
+            )],
             liabilities: Vec::new(),
             equity: Vec::new(),
-            revenue: vec![row("4000", "revenue", 0, 10_000)],
-            expenses: vec![row("5000", "expense", 2_500, 0)],
+            revenue: vec![row(
+                "4000",
+                beankeeper::types::AccountType::Revenue,
+                0,
+                10_000,
+            )],
+            expenses: vec![row(
+                "5000",
+                beankeeper::types::AccountType::Expense,
+                2_500,
+                0,
+            )],
         })?;
         assert_eq!(sheet.computed_earnings(), Money::usd(7_500));
         assert_eq!(sheet.equity().total(), Money::usd(7_500));
@@ -879,7 +909,7 @@ mod tests {
             dates()?,
             Currency::USD,
             Vec::new(),
-            vec![row("5000", "expense", 100, 0)],
+            vec![row("5000", beankeeper::types::AccountType::Expense, 100, 0)],
         )?;
         assert_eq!(stmt.net_income(), Money::usd(-100));
         let csv = render_income_statement_csv(&stmt)?;
@@ -893,8 +923,8 @@ mod tests {
             dates()?,
             Currency::USD,
             vec![
-                row("4000", "revenue", 0, i64::MAX),
-                row("4001", "revenue", 0, 1),
+                row("4000", beankeeper::types::AccountType::Revenue, 0, i64::MAX),
+                row("4001", beankeeper::types::AccountType::Revenue, 0, 1),
             ],
             Vec::new(),
         );
