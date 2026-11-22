@@ -59,28 +59,25 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"acme".parse()?,
-        "Acme",
-        None,
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+    })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("4000", beankeeper::types::AccountType::Revenue),
     ] {
-        accounts::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code,
-                name: code,
-                account_type: kind,
-                default_tax_category: None,
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            accounts::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )
+        })?;
     }
     for (currency, amount, minor) in [
         ("USD", "12.34", 1234),
@@ -121,28 +118,25 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"acme".parse()?,
-        "Acme",
-        None,
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+    })?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("4000", beankeeper::types::AccountType::Revenue),
     ] {
-        accounts::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code,
-                name: code,
-                account_type: kind,
-                default_tax_category: None,
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            accounts::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code,
+                    name: code,
+                    account_type: kind,
+                    default_tax_category: None,
+                },
+            )
+        })?;
     }
     Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
         beankeeper_cli::db::audit::change_period(
@@ -152,7 +146,7 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
         )
     })?;
     let before: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
     let file = dir.path().join("closed.ofx");
     std::fs::write(&file, statement("USD", "12.34"))?;
@@ -164,7 +158,7 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
             .is_some_and(|message| message.contains("closed period")),
         "{data}"
     );
-    let state: (i64, i64) = db.conn().query_row(
+    let state: (i64, i64) = db.read().query_row(
         "SELECT (SELECT COUNT(*) FROM transactions), (SELECT COUNT(*) FROM audit_log)",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),

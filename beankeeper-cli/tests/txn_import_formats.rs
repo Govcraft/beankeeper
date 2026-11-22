@@ -1,6 +1,7 @@
 //! End-to-end CSV and JSON import guarantees (issue #38).
 
 use beankeeper_cli::db::CreateAccountParams;
+use beankeeper_cli::identity::{Admin, Granted};
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -23,46 +24,45 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(
-                db.conn(),
-                &Actor::new("fixture"),
-                &company.parse()?,
-                company,
-                None,
-            )?;
-            accounts::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &company.parse()?,
-                    code: "1000",
-                    name: "Bank",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None,
-                },
-            )?;
-            accounts::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &company.parse()?,
-                    code: "9000",
-                    name: "Suspense",
-                    account_type: beankeeper::types::AccountType::Expense,
-                    default_tax_category: Some("default-tax"),
-                },
-            )?;
-            accounts::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &company.parse()?,
-                    code: "4000",
-                    name: "Revenue",
-                    account_type: beankeeper::types::AccountType::Revenue,
-                    default_tax_category: None,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                companies::create_company(grant, &company.parse()?, company, None)
+            })?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &company.parse()?,
+                        code: "1000",
+                        name: "Bank",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &company.parse()?,
+                        code: "9000",
+                        name: "Suspense",
+                        account_type: beankeeper::types::AccountType::Expense,
+                        default_tax_category: Some("default-tax"),
+                    },
+                )
+            })?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &company.parse()?,
+                        code: "4000",
+                        name: "Revenue",
+                        account_type: beankeeper::types::AccountType::Revenue,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
         }
         Ok(Self { dir, path })
     }
@@ -92,7 +92,7 @@ impl Ledger {
     fn count(&self, table: &str) -> Result<i64, Box<dyn Error>> {
         let db = Db::open_existing(&self.path, None)?;
         Ok(db
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
             })?)
@@ -155,14 +155,14 @@ fn csv_posts_inflows_outflows_quoted_descriptions_and_default_tax() -> TestResul
     );
     assert_eq!(ledger.count("entries")?, 4);
     let db = Db::open_existing(&ledger.path, None)?;
-    let description: String = db.conn().query_row(
+    let description: String = db.read().query_row(
         "SELECT description FROM transactions WHERE reference = 'bank-1'",
         [],
         |row| row.get(0),
     )?;
     assert_eq!(description, "Coffee, shop");
     let mut stmt = db
-        .conn()
+        .read()
         .prepare("SELECT account_code, direction, amount, tax_category FROM entries ORDER BY id")?;
     let rows: Vec<(String, String, i64, Option<String>)> = stmt
         .query_map([], |row| {
@@ -223,7 +223,7 @@ fn csv_maps_columns_dates_currency_and_signs() -> TestResult {
         2
     );
     let db = Db::open_existing(&ledger.path, None)?;
-    let mut stmt = db.conn().prepare("SELECT t.date, t.currency, e.amount, e.account_code FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE e.direction = 'debit' ORDER BY e.id")?;
+    let mut stmt = db.read().prepare("SELECT t.date, t.currency, e.amount, e.account_code FROM entries e JOIN transactions t ON t.id = e.transaction_id WHERE e.direction = 'debit' ORDER BY e.id")?;
     let rows: Vec<(String, String, i64, String)> = stmt
         .query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -251,19 +251,19 @@ fn json_posts_split_entries_metadata_memos_and_tax_categories() -> TestResult {
     assert_eq!(result["transactions"][0]["reference"], "json-1");
     let db = Db::open_existing(&ledger.path, None)?;
     let metadata: String = db
-        .conn()
+        .read()
         .query_row("SELECT metadata FROM transactions", [], |row| row.get(0))?;
     assert_eq!(
         serde_json::from_str::<Value>(&metadata)?,
         journal(None)["metadata"]
     );
-    let memo: String = db.conn().query_row(
+    let memo: String = db.read().query_row(
         "SELECT memo FROM entries WHERE account_code = '1000'",
         [],
         |row| row.get(0),
     )?;
     assert_eq!(memo, "bank memo");
-    let tax: String = db.conn().query_row(
+    let tax: String = db.read().query_row(
         "SELECT tax_category FROM entries WHERE account_code = '9000'",
         [],
         |row| row.get(0),
@@ -625,7 +625,7 @@ fn json_currency_defaults_and_integer_amounts_use_major_units() -> TestResult {
     }]);
     success(&ledger.import("currency.json", &input.to_string(), &["--currency", "BHD"])?)?;
     let db = Db::open_existing(&ledger.path, None)?;
-    let mut stmt = db.conn().prepare("SELECT t.currency, e.amount FROM transactions t JOIN entries e ON t.id = e.transaction_id WHERE e.direction = 'debit' ORDER BY t.id")?;
+    let mut stmt = db.read().prepare("SELECT t.currency, e.amount FROM transactions t JOIN entries e ON t.id = e.transaction_id WHERE e.direction = 'debit' ORDER BY t.id")?;
     let rows: Vec<(String, i64)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;

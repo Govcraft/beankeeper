@@ -103,7 +103,7 @@ async fn authenticate(
             .db
             .lock()
             .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
-        crate::identity::verify(db.conn(), token.expose_secret())
+        crate::identity::verify(db.read(), token.expose_secret())
     })
     .await;
     match result {

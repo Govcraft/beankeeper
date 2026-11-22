@@ -7,12 +7,11 @@ use std::fmt::Write as _;
 
 use beankeeper::types::{AccountType, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
-use rusqlite::Connection;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use super::{EntryQuery, EntryRow, ReconciliationReport, UnclearedEntry, minor, money, sum_money};
 use crate::commands::report_aging::{self, LinkSpec, Movement, TargetIndex, UnmatchedReason};
-use crate::db::companies::Company;
+use crate::db::{companies::Company, connection::ReadConn};
 use crate::error::CliError;
 use crate::output::amounts::{MoneyField, format_money_grouped};
 
@@ -257,7 +256,7 @@ pub(super) fn resolve_link_key<'a>(
 }
 
 pub(super) fn apply(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &Company<'_>,
     mut report: ReconciliationReport,
     link_key: &str,
@@ -271,8 +270,7 @@ pub(super) fn apply(
         ));
     }
     let currency = report.currency;
-    let slug = company.slug().as_str();
-    let (all, selected) = load_postings(conn, slug, &report, link_key)?;
+    let (all, selected) = load_postings(conn, company.slug().as_str(), &report, link_key)?;
     let index = TargetIndex::new(all.iter().map(|p| &p.movement));
     let mut charges: BTreeMap<TransactionId, Charge> = all
         .iter()
@@ -289,7 +287,7 @@ pub(super) fn apply(
     };
     let ctx = MatchContext {
         conn,
-        company: slug,
+        company: company.slug().as_str(),
         all: &all,
         index: &index,
         account: &report.code,
@@ -359,7 +357,7 @@ pub(super) fn apply(
 }
 
 fn load_postings(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     report: &ReconciliationReport,
     link_key: &str,
@@ -391,7 +389,7 @@ fn load_postings(
 }
 
 struct MatchContext<'a> {
-    conn: &'a Connection,
+    conn: ReadConn<'a>,
     company: &'a str,
     all: &'a [Posting],
     index: &'a TargetIndex<'a>,

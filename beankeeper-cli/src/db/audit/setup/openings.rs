@@ -11,11 +11,9 @@ use serde_json::{Value, json};
 use super::{
     ActiveSession, Generation, books,
     requests::{SetupReference, apply_once, digest},
-    with_active_session,
+    with_active_session, with_active_setup_write,
 };
-use crate::db::{
-    Actor, Db, accounts, companies::CompanySlug, connection::ReadConn, periods, proposals,
-};
+use crate::db::{Actor, Db, accounts, companies::CompanySlug, periods, proposals};
 use crate::error::CliError;
 use crate::output::{amounts::format_money, json::serialize_display};
 
@@ -137,7 +135,7 @@ pub(crate) fn reserve(
     reference: &SetupReference,
     expected: &Sha256Hex,
 ) -> Result<Value, CliError> {
-    with_active_session(db, actor, request.generation, |session| {
+    with_active_setup_write(db, actor, request.generation, |session| {
         let lines = |side: &[OpeningLine]| {
             side.iter()
                 .map(|line| {
@@ -210,11 +208,7 @@ fn prepare<'a>(
         }
     }
     let journal = journal.post()?;
-    periods::ensure_open(
-        ReadConn::new(session.connection),
-        &request.company.as_str().parse()?,
-        journal.date(),
-    )?;
+    periods::ensure_open(session.read(), &request.company, journal.date())?;
     let details = PreviewDetails {
         company: &request.company,
         profile_revision: profile.revision,
@@ -245,7 +239,7 @@ fn opening_entry(
     direction: DebitOrCredit,
 ) -> Result<Entry, CliError> {
     let row = accounts::get_account(
-        &crate::db::companies::Company::bind(ReadConn::new(session.connection), company.clone())?,
+        &crate::db::companies::Company::bind(session.read(), company.clone())?,
         line.account.as_str(),
     )
     .map_err(|error| match error {

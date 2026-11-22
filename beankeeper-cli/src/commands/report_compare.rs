@@ -14,7 +14,7 @@ use super::report::ReportOutput;
 use super::report_dates::DateRange;
 use super::report_periods::{CompareArg, MultiReportKind, prior_range, range_label};
 use crate::cli::{Cli, OutputFormat, ReportCommand};
-use crate::db::{self, connection::Db};
+use crate::db::{self, companies::Company, connection::ReadConn};
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::output::amounts::{MoneyField, format_money};
@@ -24,7 +24,8 @@ use crate::percent::Percent;
 
 struct Context<'a> {
     cli: &'a Cli,
-    db: &'a Db,
+    reader: ReadConn<'a>,
+    scope: &'a Company<'a>,
     company: &'a str,
     currency: Currency,
 }
@@ -585,13 +586,13 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
 
 pub(super) fn try_run_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     sub: &ReportCommand,
     output: &mut ReportOutput<'_>,
 ) -> Option<Result<(), CliError>> {
     let req = request(sub)?;
-    Some(run(cli, db, company, &req, output))
+    Some(run(cli, reader, company, &req, output))
 }
 
 struct Windows {
@@ -652,52 +653,47 @@ impl Windows {
 
 fn run(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     req: &Request<'_>,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    db::audit::atomically(db.conn(), || {
-        let windows = Windows::resolve(req)?;
-        let currency = super::report_currency::resolve_report_currency(
-            db.conn(),
-            company,
-            crate::cli::CurrencyArg::resolve_optional(req.currency)?,
-        )?;
-        if let Some(account) = req.kind.account() {
-            db::accounts::get_account(
-                &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
-                account,
-            )?;
-        }
-        let context = Context {
-            cli,
-            db,
-            company,
-            currency,
-        };
-        let mut data = comparison_data(&context, req, &windows)?;
-        data.movers = ranked_movers(&data.accounts);
-        data.summary = summary(&data);
-        let code = req
-            .explain
-            .or(req.kind.account())
-            .or_else(|| data.movers.first().map(|row| row.line.code.as_str()));
-        data.desktop_view = desktop_view(company, code, &windows, currency);
-        if let Some(code) = req.explain {
-            let account = data
-                .accounts
-                .iter()
-                .find(|row| row.code.as_str() == code)
-                .ok_or_else(|| {
-                    CliError::Validation(format!(
-                        "account '{code}' is not a line in this comparison"
-                    ))
-                })?;
-            data.explanation = Some(explain(&context, account, &data, &windows)?);
-        }
-        render(&context, req, &data, output)
-    })
+    let windows = Windows::resolve(req)?;
+    let currency = super::report_currency::resolve_report_currency(
+        reader,
+        company,
+        crate::cli::CurrencyArg::resolve_optional(req.currency)?,
+    )?;
+    let scope = Company::bind(reader, company.parse()?)?;
+    if let Some(account) = req.kind.account() {
+        db::accounts::get_account(&scope, account)?;
+    }
+    let context = Context {
+        cli,
+        reader,
+        scope: &scope,
+        company,
+        currency,
+    };
+    let mut data = comparison_data(&context, req, &windows)?;
+    data.movers = ranked_movers(&data.accounts);
+    data.summary = summary(&data);
+    let code = req
+        .explain
+        .or(req.kind.account())
+        .or_else(|| data.movers.first().map(|row| row.line.code.as_str()));
+    data.desktop_view = desktop_view(company, code, &windows, currency);
+    if let Some(code) = req.explain {
+        let account = data
+            .accounts
+            .iter()
+            .find(|row| row.code.as_str() == code)
+            .ok_or_else(|| {
+                CliError::Validation(format!("account '{code}' is not a line in this comparison"))
+            })?;
+        data.explanation = Some(explain(&context, account, &data, &windows)?);
+    }
+    render(&context, req, &data, output)
 }
 
 fn comparison_data(
@@ -802,12 +798,7 @@ fn snapshot(
     windows: &Windows,
     prior: bool,
 ) -> Result<Snapshot, CliError> {
-    let Context {
-        db,
-        company,
-        currency,
-        ..
-    } = *context;
+    let currency = context.currency;
     match req.kind {
         Kind::CashFlow(args) => return cash_snapshot(context, args, windows.dates(prior)),
         Kind::IncomeStatement => {
@@ -831,13 +822,7 @@ fn snapshot(
         _ => {}
     }
     let (from, to) = windows.bounds(prior);
-    let rows = db::compute_trial_balance(
-        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
-        None,
-        from,
-        Some(to),
-        currency,
-    )?;
+    let rows = db::compute_trial_balance(context.scope, None, from, Some(to), currency)?;
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
     let zero = ReportMoney::from_minor(0, currency);
@@ -944,8 +929,7 @@ fn period_snapshot(
 ) -> Result<Snapshot, CliError> {
     // Both period layouts share this ledger query and its window selection.
     let rows = super::report_periods::fetch_window_rows(
-        context.db.conn(),
-        context.company,
+        context.scope,
         kind,
         account_type,
         context.currency,
@@ -1008,14 +992,14 @@ fn cash_snapshot(
     (from, to): (NaiveDate, NaiveDate),
 ) -> Result<Snapshot, CliError> {
     let Context {
-        db,
+        reader,
         company,
         currency,
         ..
     } = *context;
     let dates = super::report_dates::DateRange::new(from, to)?;
     let data = super::report_cash_flow::compute_scoped(
-        db,
+        reader,
         company,
         dates,
         currency,
@@ -1169,12 +1153,12 @@ fn explain(
     windows: &Windows,
 ) -> Result<Explanation, CliError> {
     let Context {
-        db,
+        reader,
         company,
         currency,
         ..
     } = *context;
-    let mut stmt = db.conn().prepare(
+    let mut stmt = reader.prepare(
         "SELECT t.id, t.date, t.description, t.metadata, t.reference,
         SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE -e.amount END)
         FROM transactions t JOIN entries e ON e.transaction_id=t.id
@@ -1196,16 +1180,13 @@ fn explain(
         },
     )?;
     let cash_codes = report.cash_accounts.as_deref().unwrap_or_default();
-    let cash_scope = (!cash_codes.is_empty())
-        .then(|| db::companies::Company::resolve(db.conn(), &company.parse()?))
-        .transpose()?;
     let zero = ReportMoney::from_minor(0, currency);
     let mut transactions = Vec::new();
     for row in rows {
         let row = row?;
         let mut amount = ReportMoney::from_minor(row.amount, currency);
-        if let Some(scope) = &cash_scope {
-            let entries = db::transactions::get_entries_for_transaction(scope, row.id)?;
+        if !cash_codes.is_empty() {
+            let entries = db::get_entries_for_transaction(context.scope, row.id)?;
             let mut cash = zero;
             for entry in entries
                 .iter()

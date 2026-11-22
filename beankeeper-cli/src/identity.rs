@@ -19,6 +19,8 @@ pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, Post, Propose, Reconcile, ResolveProposal, Reverse,
 };
 pub(crate) use crate::db::audit::grant::{SetupOwner, StatementApprover};
+pub use crate::db::audit::identity_write::{init_root, issue, issue_credential, revoke};
+use crate::db::connection::ReadConn;
 use crate::error::CliError;
 use crate::operation::{Operation, Permission};
 
@@ -95,7 +97,7 @@ impl VerifiedAgent {
 }
 
 impl VerifiedAgent {
-    pub(crate) fn check_live(&self, conn: &Connection) -> Result<(), CliError> {
+    pub(crate) fn check_live(&self, conn: ReadConn<'_>) -> Result<(), CliError> {
         if self.expires_at <= Utc::now() {
             return Err(unauthorized());
         }
@@ -123,7 +125,7 @@ impl VerifiedAgent {
 }
 
 pub(crate) fn require_live_capability<'a>(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     actor: &'a Actor,
     required: Capability,
 ) -> Result<&'a VerifiedAgent, CliError> {
@@ -151,7 +153,7 @@ fn unauthorized() -> CliError {
 ///
 /// # Errors
 /// Returns `UNAUTHORIZED` for rejected tokens and database errors on storage failure.
-pub fn verify(conn: &Connection, token: &str) -> Result<VerifiedAgent, CliError> {
+pub fn verify(conn: ReadConn<'_>, token: &str) -> Result<VerifiedAgent, CliError> {
     verify_required(conn, token, None)
 }
 
@@ -162,7 +164,7 @@ pub fn verify(conn: &Connection, token: &str) -> Result<VerifiedAgent, CliError>
 /// Returns `UNAUTHORIZED` for missing or rejected credentials, `FORBIDDEN` for
 /// an insufficient grant, or database errors for invalid policy/storage state.
 pub fn authorize(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     token: Option<&str>,
     required: Capability,
 ) -> Result<Option<VerifiedAgent>, CliError> {
@@ -192,7 +194,7 @@ pub fn authorize(
 /// # Errors
 /// Returns unauthorized, forbidden, policy integrity or database errors.
 pub fn authorize_operation(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     token: Option<&str>,
     operation: &str,
 ) -> Result<Option<VerifiedAgent>, CliError> {
@@ -200,7 +202,7 @@ pub fn authorize_operation(
 }
 
 pub(crate) fn authorize_known_operation(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     token: Option<&str>,
     operation: Operation,
 ) -> Result<Option<VerifiedAgent>, CliError> {
@@ -232,7 +234,7 @@ pub(crate) fn authorize_known_operation(
 }
 
 pub(crate) fn authorize_verified_operation(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     identity: &VerifiedAgent,
     operation: Operation,
 ) -> Result<(), CliError> {
@@ -276,7 +278,7 @@ fn require_operation_grant(
 }
 
 fn verify_required(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     token: &str,
     required: Option<Capability>,
 ) -> Result<VerifiedAgent, CliError> {
@@ -349,51 +351,6 @@ pub(crate) fn ledger_encrypted(conn: &Connection) -> Result<bool, CliError> {
         .is_some())
 }
 
-/// Create one trust root, preserving any existing key. Private material stays in `SQLCipher`.
-///
-/// # Errors
-/// Rejects unencrypted databases and repeated initialization.
-pub fn init_root(conn: &Connection, actor: &Actor) -> Result<Value, CliError> {
-    if !ledger_encrypted(conn)? {
-        return Err(CliError::Validation(
-            "root keys require an encrypted ledger; initialize with `bk init --encrypt`".into(),
-        ));
-    }
-    crate::db::audit::atomically(conn, || {
-        let exists: bool =
-            conn.query_row("SELECT EXISTS(SELECT 1 FROM identity_root)", [], |r| {
-                r.get(0)
-            })?;
-        if exists {
-            return Err(CliError::Validation(
-                "ledger root key already initialized".into(),
-            ));
-        }
-        let kid = "key".create_type_id::<V7>();
-        let root = format!(
-            "{}.bk.local",
-            "ledger"
-                .create_type_id::<V7>()
-                .to_string()
-                .replace('_', "-")
-        );
-        let key = SigningKey::generate();
-        let seed = SecretBox::new(Box::new(key.to_bytes()));
-        let public = key.verifying_key().to_base64();
-        conn.execute("INSERT INTO identity_root (singleton, kid, trust_root, private_key, public_key) VALUES (1, ?1, ?2, ?3, ?4)",
-            params![kid.to_string(), root, seed.expose_secret().as_slice(), public])?;
-        let data = json!({"kid": kid.to_string(), "trust_root": root, "public_key": public});
-        crate::db::audit::record_identity(
-            conn,
-            actor,
-            crate::db::audit::IdentityEvent::KeyInitialized,
-            kid.as_str(),
-            &data,
-        )?;
-        Ok(data)
-    })
-}
-
 /// Token issuance inputs with explicit grants in one namespace: `ledger/*` or `ui/*`.
 pub struct IssueRequest<'a> {
     pub name: &'a str,
@@ -435,7 +392,7 @@ impl IssuedCredential {
         self.private_key.as_ref()
     }
 
-    fn public_data(&self) -> Value {
+    pub(crate) fn public_data(&self) -> Value {
         json!({
             "agent_uri": self.agent_uri.as_str(),
             "token_jti": self.token_jti.as_str(),
@@ -456,63 +413,8 @@ impl IssuedCredential {
     }
 }
 
-/// Issue a credential and return the existing JSON representation.
-///
-/// Rust callers can use [`issue_credential`] to keep secrets in redacted types.
-///
-/// # Errors
-/// Returns the same issuance errors as [`issue_credential`].
-pub fn issue(
-    conn: &Connection,
-    actor: &Actor,
-    request: &IssueRequest<'_>,
-) -> Result<Value, CliError> {
-    Ok(issue_credential(conn, actor, request)?.response_json())
-}
-
-/// Issue a token for a supplied public key or explicitly generate a local keypair.
-///
-/// # Errors
-/// Returns validation errors for invalid keys, capabilities, names or TTLs.
-pub fn issue_credential(
-    conn: &Connection,
-    actor: &Actor,
-    request: &IssueRequest<'_>,
-) -> Result<IssuedCredential, CliError> {
-    if request
-        .capabilities
-        .iter()
-        .any(|grant| grant == Capability::Setup.path())
-    {
-        return Err(CliError::Usage(
-            "issue setup credentials through `bk setup begin`".into(),
-        ));
-    }
-    issue_checked_credential(conn, actor, request)
-}
-
-pub(crate) fn issue_setup_credential(
-    owner: &Granted<'_, SetupOwner>,
-    name: &str,
-    public_key: &str,
-    ttl: Duration,
-) -> Result<IssuedCredential, CliError> {
-    issue_checked_credential(
-        owner.setup_connection(),
-        owner.actor(),
-        &IssueRequest {
-            name,
-            capabilities: &[Capability::Setup.path().to_owned()],
-            ttl,
-            public_key: Some(public_key),
-            generate_key: false,
-        },
-    )
-}
-
-fn issue_checked_credential(
-    conn: &Connection,
-    actor: &Actor,
+pub(crate) fn prepare_credential(
+    conn: ReadConn<'_>,
     request: &IssueRequest<'_>,
 ) -> Result<IssuedCredential, CliError> {
     let scope = issuance_scope(request.capabilities)?;
@@ -561,7 +463,7 @@ fn issue_checked_credential(
     let token = Issuer::new(root, key, request.ttl)
         .issue_claims(&claims)
         .map_err(|e| CliError::Validation(e.to_string()))?;
-    let credential = IssuedCredential {
+    Ok(IssuedCredential {
         agent_uri: uri,
         token_jti,
         agent_key: claims.agent_key,
@@ -570,31 +472,7 @@ fn issue_checked_credential(
         expires_at: claims.exp,
         token: token.into(),
         private_key: generated.as_ref().map(generated_key_hex),
-    };
-    crate::db::audit::atomically(conn, || {
-        let capabilities = serde_json::to_string(&credential.capabilities)
-            .map_err(|error| CliError::General(error.to_string()))?;
-        conn.execute(
-            "INSERT INTO agent_tokens (jti, agent_uri, agent_key, capabilities, issued_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                credential.token_jti.as_str(),
-                credential.agent_uri.as_str(),
-                credential.agent_key,
-                capabilities,
-                credential.issued_at.to_rfc3339(),
-                credential.expires_at.to_rfc3339(),
-            ],
-        )?;
-        crate::db::audit::record_identity(
-            conn,
-            actor,
-            crate::db::audit::IdentityEvent::TokenIssued,
-            credential.token_jti.as_str(),
-            &credential.public_data(),
-        )
-    })?;
-    Ok(credential)
+    })
 }
 
 fn generated_key_hex(key: &SigningKey) -> SecretString {
@@ -640,7 +518,7 @@ fn issuance_scope(capabilities: &[String]) -> Result<&'static str, CliError> {
 ///
 /// # Errors
 /// Returns database errors if the registry cannot be read.
-pub fn list(conn: &Connection) -> Result<Value, CliError> {
+pub fn list(conn: ReadConn<'_>) -> Result<Value, CliError> {
     let mut stmt = conn.prepare("SELECT t.jti, t.agent_uri, t.agent_key, t.capabilities, t.issued_at, t.expires_at, r.revoked_at FROM agent_tokens t LEFT JOIN agent_revocations r ON r.jti = t.jti ORDER BY t.issued_at, t.jti")?;
     let rows = stmt.query_map([], |r| Ok(json!({
         "token_jti": r.get::<_, String>(0)?, "agent_uri": r.get::<_, String>(1)?,
@@ -649,42 +527,6 @@ pub fn list(conn: &Connection) -> Result<Value, CliError> {
         "revoked_at": r.get::<_, Option<String>>(6)?,
     })))?;
     Ok(Value::Array(rows.collect::<Result<Vec<_>, _>>()?))
-}
-
-/// Revoke a token ID or all tokens currently issued for an agent URI. Repeating is a no-op.
-///
-/// # Errors
-/// Returns `NOT_FOUND` if no token matches.
-pub fn revoke(conn: &Connection, actor: &Actor, target: &str) -> Result<Value, CliError> {
-    crate::db::audit::atomically(conn, || {
-        let mut stmt = conn.prepare(
-            "SELECT jti FROM agent_tokens WHERE jti = ?1 OR agent_uri = ?1 ORDER BY jti",
-        )?;
-        let ids = stmt
-            .query_map([target], |r| r.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        if ids.is_empty() {
-            return Err(CliError::NotFound("agent URI or token ID not found".into()));
-        }
-        let mut changed = 0;
-        for id in &ids {
-            if conn.execute(
-                "INSERT INTO agent_revocations (jti) VALUES (?1) ON CONFLICT DO NOTHING",
-                [id],
-            )? > 0
-            {
-                crate::db::audit::record_identity(
-                    conn,
-                    actor,
-                    crate::db::audit::IdentityEvent::TokenRevoked,
-                    id,
-                    &json!({"token_jti": id}),
-                )?;
-                changed += 1;
-            }
-        }
-        Ok(json!({"target": target, "revoked": changed}))
-    })
 }
 
 /// Parse a positive TTL with an explicit `s`, `m`, `h` or `d` suffix.
@@ -727,24 +569,25 @@ mod capability_witness_tests {
         let passphrase: SecretString = "ephemeral test ledger".into();
         let ledger = Db::open(&directory.path().join("books.db"), Some(&passphrase))?;
         let owner = Actor::new("owner");
-        init_root(ledger.conn(), &owner)?;
+        Granted::<Admin>::with_db(&ledger, &owner, init_root)?;
         let capabilities = [
             "ledger/read".into(),
             "ledger/approve".into(),
             "ledger/post/scheduled".into(),
         ];
-        let issued = issue_credential(
-            ledger.conn(),
-            &owner,
-            &IssueRequest {
-                name: "reviewer",
-                capabilities: &capabilities,
-                ttl: Duration::from_mins(15),
-                public_key: None,
-                generate_key: true,
-            },
-        )?;
-        let identity = verify(ledger.conn(), issued.token().expose_secret())?;
+        let issued = Granted::<Admin>::with_db(&ledger, &owner, |grant| {
+            issue_credential(
+                grant,
+                &IssueRequest {
+                    name: "reviewer",
+                    capabilities: &capabilities,
+                    ttl: Duration::from_mins(15),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
+        let identity = verify(ledger.read(), issued.token().expose_secret())?;
         assert_eq!(identity.capabilities(), &capabilities);
         assert!(identity.allows(Capability::Read)?);
         assert!(identity.allows(Capability::Approve)?);
@@ -759,22 +602,23 @@ mod capability_witness_tests {
         let passphrase: secrecy::SecretString = "ephemeral test ledger".into();
         let ledger = Db::open(&directory.path().join("books.db"), Some(&passphrase))?;
         let owner = Actor::new("owner");
-        init_root(ledger.conn(), &owner)?;
-        let issued = issue(
-            ledger.conn(),
-            &owner,
-            &IssueRequest {
-                name: "reviewer",
-                capabilities: &["ledger/approve".into()],
-                ttl: Duration::from_mins(15),
-                public_key: None,
-                generate_key: true,
-            },
-        )?;
+        Granted::<Admin>::with_db(&ledger, &owner, init_root)?;
+        let issued = Granted::<Admin>::with_db(&ledger, &owner, |grant| {
+            issue(
+                grant,
+                &IssueRequest {
+                    name: "reviewer",
+                    capabilities: &["ledger/approve".into()],
+                    ttl: Duration::from_mins(15),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
         let token = issued["token"]
             .as_str()
             .ok_or_else(|| CliError::General("missing test token".into()))?;
-        let identity = verify(ledger.conn(), token)?;
+        let identity = verify(ledger.read(), token)?;
         let actor = Actor::new("reviewer").with_identity(identity.clone());
 
         assert!(Granted::<Approve>::with_db(&ledger, &actor, |_| Ok(())).is_ok());
@@ -783,7 +627,7 @@ mod capability_witness_tests {
             Granted::<Approve>::with_db(&foreign, &actor, |_| Ok(())),
             Err(CliError::Unauthorized(_))
         ));
-        revoke(ledger.conn(), &owner, identity.jti())?;
+        Granted::<Admin>::with_db(&ledger, &owner, |grant| revoke(grant, identity.jti()))?;
         assert!(matches!(
             Granted::<Approve>::with_db(&ledger, &actor, |_| Ok(())),
             Err(CliError::Unauthorized(_))

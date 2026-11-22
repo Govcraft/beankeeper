@@ -409,13 +409,9 @@ mod tests {
 
     fn ledger() -> Result<(Db, SpendLimit), CliError> {
         let db = Db::open_in_memory()?;
-        db::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            db::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;
         let limit = SpendLimit::new(
@@ -539,17 +535,18 @@ mod tests {
             ("1000", beankeeper::types::AccountType::Asset),
             ("5000", beankeeper::types::AccountType::Expense),
         ] {
-            db::create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme".parse()?,
-                    code,
-                    name: code,
-                    account_type: kind,
-                    default_tax_category: None,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                db::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme".parse()?,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
         }
         for date in ["2026-1-1", "2026-01-01", "2026-01-02"] {
             legacy_post(db.conn(), limit.agent_uri(), date)?;

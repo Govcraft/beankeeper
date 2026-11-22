@@ -1,5 +1,8 @@
 //! Capability policy behavior through the real CLI and persisted ledger.
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -32,37 +35,38 @@ impl Ledger {
         std::fs::write(&passphrase_file, "capability-test-passphrase")?;
         let passphrase: SecretString = "capability-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        db::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
             ("4000", beankeeper::types::AccountType::Revenue),
             ("5000", beankeeper::types::AccountType::Expense),
         ] {
-            db::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme".parse()?,
-                    code,
-                    name: code,
-                    account_type: kind,
-                    default_tax_category: None,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                db::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme".parse()?,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
         }
-        identity::init_root(db.conn(), &Actor::new("owner"))?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
         Ok(Self {
             dir,
             path,
             passphrase_file,
             db,
         })
+    }
+
+    fn raw(&self) -> rusqlite::Result<rusqlite::Connection> {
+        raw_ledger::open(&self.path, Some("capability-test-passphrase"))
     }
 
     fn command(&self) -> Result<Command, Box<dyn Error>> {
@@ -108,17 +112,18 @@ impl Ledger {
     }
 
     fn issue(&self, grants: &[&str]) -> Result<String, Box<dyn Error>> {
-        let issued = identity::issue(
-            self.db.conn(),
-            &Actor::new("owner"),
-            &IssueRequest {
-                name: "tester",
-                capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                ttl: Duration::from_secs(3600),
-                public_key: None,
-                generate_key: true,
-            },
-        )?;
+        let issued = Granted::<Admin>::with_db(&self.db, &Actor::new("owner"), |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name: "tester",
+                    capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
         Ok(issued["token"].as_str().ok_or("missing token")?.to_owned())
     }
 
@@ -132,7 +137,7 @@ impl Ledger {
 
     fn count(&self, table: &str) -> Result<i64, rusqlite::Error> {
         self.db
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
             })
@@ -354,6 +359,8 @@ fn enforcement_rejects_missing_invalid_revoked_and_foreign_tokens() -> TestResul
     let token = ledger.issue(&["ledger/read", "ledger/post"])?;
     let other = Ledger::new()?;
     let foreign = other.issue(&["ledger/read"])?;
+    let admin = ledger.issue(&["ledger/admin"])?;
+    let owner = Actor::new("owner").with_identity(identity::verify(ledger.db.read(), &admin)?);
     ledger.enable()?;
     for args in [
         vec!["company", "list"],
@@ -370,8 +377,16 @@ fn enforcement_rejects_missing_invalid_revoked_and_foreign_tokens() -> TestResul
             None,
         )?;
     }
-    let identity = identity::verify(ledger.db.conn(), &token)?;
-    identity::revoke(ledger.db.conn(), &Actor::new("owner"), identity.jti())?;
+    let identity = identity::verify(ledger.db.read(), &token)?;
+    assert!(matches!(
+        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+            identity::revoke(grant, identity.jti())
+        }),
+        Err(beankeeper_cli::error::CliError::Unauthorized(_))
+    ));
+    Granted::<Admin>::with_db(&ledger.db, &owner, |grant| {
+        identity::revoke(grant, identity.jti())
+    })?;
     denied(
         &ledger.call(&posting(), Some(&token))?,
         "UNAUTHORIZED",
@@ -414,18 +429,19 @@ fn reject_bare_namespace(namespace: &str) -> TestResult {
         before,
         (ledger.count("agent_tokens")?, ledger.count("audit_log")?)
     );
-    let issued = identity::issue(
-        ledger.db.conn(),
-        &Actor::new("owner"),
-        &IssueRequest {
-            name: "legacy",
-            capabilities: &[format!("{namespace}/read")],
-            ttl: Duration::from_secs(3600),
-            public_key: None,
-            generate_key: true,
-        },
-    )?;
-    let (root, raw): (String, Vec<u8>) = ledger.db.conn().query_row(
+    let issued = Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+        identity::issue(
+            grant,
+            &IssueRequest {
+                name: "legacy",
+                capabilities: &[format!("{namespace}/read")],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    })?;
+    let (root, raw): (String, Vec<u8>) = ledger.db.read().query_row(
         "SELECT trust_root, private_key FROM identity_root",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -440,7 +456,7 @@ fn reject_bare_namespace(namespace: &str) -> TestResult {
         .ttl(Duration::from_secs(3600))
         .build()?;
     // Make the registry agree with this legacy token so only the bare grant rejects it.
-    ledger.db.conn().execute(
+    ledger.raw()?.execute(
         "UPDATE agent_tokens SET agent_key = ?1 WHERE jti = ?2",
         params![claims.agent_key, claims.jti],
     )?;
@@ -497,7 +513,7 @@ fn forced_initialization_cannot_erase_an_enforced_ledger_at_either_destination_f
         None,
     )?;
     assert_eq!(ledger.count("audit_log")?, before);
-    assert!(db::policy::get(ledger.db.conn())?.enforce);
+    assert!(db::policy::get(ledger.db.read())?.enforce);
     Ok(())
 }
 
@@ -510,43 +526,41 @@ fn policy_changes_are_atomic_and_raw_mutation_or_missing_state_fails_closed() ->
         "UPDATE ledger_policy SET enforce = 1",
         "INSERT OR REPLACE INTO ledger_policy VALUES (1, 0, 'tampered')",
     ] {
-        assert!(ledger.db.conn().execute(sql, []).is_err());
+        assert!(ledger.raw()?.execute(sql, []).is_err());
     }
-    ledger.db.conn().execute_batch("CREATE TRIGGER fail_policy_update BEFORE UPDATE ON ledger_policy BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;")?;
+    ledger.raw()?.execute_batch("CREATE TRIGGER fail_policy_update BEFORE UPDATE ON ledger_policy BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;")?;
     assert!(
-        Granted::<Admin>::with(ledger.db.conn(), &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
             db::audit::set_policy(grant, true)
         })
         .is_err()
     );
-    assert!(!db::policy::get(ledger.db.conn())?.enforce);
+    assert!(!db::policy::get(ledger.db.read())?.enforce);
     assert_eq!(ledger.count("audit_log")?, count);
     ledger
-        .db
-        .conn()
+        .raw()?
         .execute_batch("DROP TRIGGER fail_policy_update;")?;
+    let admin = ledger.issue(&["ledger/admin"])?;
     ledger.enable()?;
     let before = ledger.count("audit_log")?;
     assert!(matches!(
-        Granted::<Admin>::with(ledger.db.conn(), &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
             db::audit::set_policy(grant, false)
         }),
         Err(beankeeper_cli::error::CliError::Unauthorized(_))
     ));
-    assert!(db::policy::get(ledger.db.conn())?.enforce);
+    assert!(db::policy::get(ledger.db.read())?.enforce);
     assert_eq!(ledger.count("audit_log")?, before);
-    let admin = ledger.issue(&["ledger/admin"])?;
     ledger.run(&["policy", "set", "--enforce", "on"], Some(&admin))?;
     assert_eq!(ledger.count("audit_log")?, count + 2); // one policy change and one token issuance
-    ledger.db.conn().execute_batch(
+    ledger.raw()?.execute_batch(
         "DROP TRIGGER protect_policy_update; UPDATE ledger_policy SET enforce = 0;",
     )?;
-    assert!(db::policy::get(ledger.db.conn()).is_err());
+    assert!(db::policy::get(ledger.db.read()).is_err());
     ledger
-        .db
-        .conn()
+        .raw()?
         .execute_batch("DROP TRIGGER protect_policy_delete; DELETE FROM ledger_policy;")?;
-    assert!(db::policy::get(ledger.db.conn()).is_err());
+    assert!(db::policy::get(ledger.db.read()).is_err());
     denied(
         &ledger.call(&["company", "list"], None)?,
         "DATABASE",
@@ -564,7 +578,7 @@ fn signed_grants_ignore_registry_edits_and_descendants_do_not_grant_parent_opera
     let narrow = ledger.issue(&["ledger/post/example"])?;
     ledger.enable()?;
     // The registry stores issuance metadata, but grants come only from signed claims.
-    ledger.db.conn().execute(
+    ledger.raw()?.execute(
         "UPDATE agent_tokens SET capabilities = '[\"ledger/post\",\"ledger/admin\"]'",
         [],
     )?;
@@ -634,10 +648,10 @@ fn snapshots_require_admin_and_preserve_enforcement_on_restore() -> TestResult {
     );
     let passphrase: SecretString = "capability-test-passphrase".into();
     let db = Db::open_existing(&destination, Some(&passphrase))?;
-    assert!(db::policy::get(db.conn())?.enforce);
+    assert!(db::policy::get(db.read())?.enforce);
     assert!(
         identity::authorize(
-            db.conn(),
+            db.read(),
             Some(&admin),
             beankeeper_cli::capability::Capability::Admin
         )

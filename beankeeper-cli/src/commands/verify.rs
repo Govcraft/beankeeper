@@ -33,13 +33,12 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
 }
 
 pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
-    crate::db::audit::atomically(db.conn(), || {
-        let reader = db.read();
-        let version = schema::read_schema_version(reader)?;
+    db.read_snapshot(|reader| {
+        let version = schema::get_schema_version(reader)?;
         crate::db::audit::verify_hash_chain(reader)?;
-        crate::db::policy::get(db.conn())?;
+        crate::db::policy::get(reader)?;
         crate::db::periods::verify(reader)?;
-        crate::db::proposals::verify_resolutions(db.read())?;
+        crate::db::proposals::verify_resolutions(reader)?;
         crate::db::spend_limits::verify(reader)?;
         crate::db::verification::verify_accounting(reader)?;
         crate::db::audit::verify_creations(reader)?;

@@ -73,7 +73,7 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
         )?;
         let existing = Db::open_snapshot(destination_copy.path(), cli.resolve_passphrase()?)
             .or_else(|error| Db::open_snapshot(destination_copy.path(), None).map_err(|_| error))?;
-        if crate::db::policy::get(existing.conn())?.enforce {
+        if crate::db::policy::get(existing.read())?.enforce {
             return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before restore".into()));
         }
     }

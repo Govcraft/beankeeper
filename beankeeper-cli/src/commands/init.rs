@@ -1,3 +1,4 @@
+use crate::identity::{Admin, Granted};
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -62,7 +63,7 @@ pub fn run(
         // An unreadable encrypted source must fail closed, never be erased.
         let existing = Db::open_existing(db_path, passphrase.as_ref())
             .or_else(|error| Db::open_existing(db_path, None).map_err(|_| error))?;
-        if crate::db::policy::get(existing.conn())?.enforce {
+        if crate::db::policy::get(existing.read())?.enforce {
             return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before initialization".into()));
         }
         drop(existing);
@@ -219,10 +220,8 @@ fn dr_memo(code: &str, amount: i64, memo: &str) -> PostEntryParams {
 /// - acme-consulting pays acme-products for software licences
 /// - acme-consulting pays the owner (salary draw to personal)
 fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
-    let conn = db.conn();
-
-    seed_companies(conn, actor)?;
-    seed_accounts(conn, actor)?;
+    seed_companies(db, actor)?;
+    seed_accounts(db, actor)?;
     seed_consulting_transactions(db, actor)?;
     seed_products_transactions(db, actor)?;
     seed_personal_transactions(db, actor)?;
@@ -233,45 +232,37 @@ fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError>
 }
 
 /// Create the three demo companies.
-fn seed_companies(conn: &rusqlite::Connection, actor: &crate::db::Actor) -> Result<(), CliError> {
+fn seed_companies(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     use crate::db::create_company;
 
-    create_company(
-        conn,
-        actor,
-        &"acme-consulting".parse()?,
-        "Acme Consulting LLC",
-        Some("Demo consulting firm"),
-    )?;
-    create_company(
-        conn,
-        actor,
-        &"acme-products".parse()?,
-        "Acme Products Inc",
-        Some("Demo product company"),
-    )?;
-    create_company(
-        conn,
-        actor,
-        &"personal".parse()?,
-        "Personal",
-        Some("Owner personal finances"),
-    )?;
-
+    for (slug, name, description) in [
+        (
+            "acme-consulting",
+            "Acme Consulting LLC",
+            "Demo consulting firm",
+        ),
+        ("acme-products", "Acme Products Inc", "Demo product company"),
+        ("personal", "Personal", "Owner personal finances"),
+    ] {
+        let slug = slug.parse()?;
+        Granted::<Admin>::with_db(db, actor, |grant| {
+            create_company(grant, &slug, name, Some(description))
+        })?;
+    }
     Ok(())
 }
 
 /// Create the chart of accounts for all three demo companies.
-fn seed_accounts(conn: &rusqlite::Connection, actor: &crate::db::Actor) -> Result<(), CliError> {
-    seed_consulting_accounts(conn, actor)?;
-    seed_products_accounts(conn, actor)?;
-    seed_personal_accounts(conn, actor)?;
+fn seed_accounts(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
+    seed_consulting_accounts(db, actor)?;
+    seed_products_accounts(db, actor)?;
+    seed_personal_accounts(db, actor)?;
     Ok(())
 }
 
 /// Create a company's chart of accounts from `(code, name, type, tax)` rows.
 fn seed_company_accounts(
-    conn: &rusqlite::Connection,
+    db: &Db,
     actor: &crate::db::Actor,
     company: &str,
     accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)],
@@ -279,26 +270,24 @@ fn seed_company_accounts(
     use crate::db::create_account;
 
     for &(code, name, account_type, tax) in accounts {
-        create_account(
-            conn,
-            actor,
-            &CreateAccountParams {
-                company_slug: &company.parse()?,
-                code,
-                name,
-                account_type,
-                default_tax_category: tax,
-            },
-        )?;
+        Granted::<Admin>::with_db(db, actor, |grant| {
+            create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &company.parse()?,
+                    code,
+                    name,
+                    account_type,
+                    default_tax_category: tax,
+                },
+            )
+        })?;
     }
     Ok(())
 }
 
 /// Create the acme-consulting chart of accounts.
-fn seed_consulting_accounts(
-    conn: &rusqlite::Connection,
-    actor: &crate::db::Actor,
-) -> Result<(), CliError> {
+fn seed_consulting_accounts(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     // Chart of Accounts – acme-consulting. `(code, name, type, tax_category)`.
     let accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)] = &[
         (
@@ -386,16 +375,13 @@ fn seed_consulting_accounts(
             Some("payroll-tax"),
         ),
     ];
-    seed_company_accounts(conn, actor, "acme-consulting", accounts)?;
+    seed_company_accounts(db, actor, "acme-consulting", accounts)?;
 
     Ok(())
 }
 
 /// Create the acme-products chart of accounts.
-fn seed_products_accounts(
-    conn: &rusqlite::Connection,
-    actor: &crate::db::Actor,
-) -> Result<(), CliError> {
+fn seed_products_accounts(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     // Chart of Accounts – acme-products. `(code, name, type, tax_category)`.
     let accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)] = &[
         (
@@ -459,16 +445,13 @@ fn seed_products_accounts(
             Some("shipping"),
         ),
     ];
-    seed_company_accounts(conn, actor, "acme-products", accounts)?;
+    seed_company_accounts(db, actor, "acme-products", accounts)?;
 
     Ok(())
 }
 
 /// Create the personal-books chart of accounts.
-fn seed_personal_accounts(
-    conn: &rusqlite::Connection,
-    actor: &crate::db::Actor,
-) -> Result<(), CliError> {
+fn seed_personal_accounts(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     // Chart of Accounts – personal. `(code, name, type, tax_category)`.
     let accounts: &[(&str, &str, beankeeper::types::AccountType, Option<&str>)] = &[
         (
@@ -550,7 +533,7 @@ fn seed_personal_accounts(
             Some("fica"),
         ),
     ];
-    seed_company_accounts(conn, actor, "personal", accounts)?;
+    seed_company_accounts(db, actor, "personal", accounts)?;
 
     Ok(())
 }
@@ -913,9 +896,9 @@ mod tests {
 
         for (slug, expected_count) in &expected_accounts {
             // Verify accounts exist
-            let scope = crate::db::companies::Company::resolve(
-                db.conn(),
-                &slug.parse().expect("fixture company"),
+            let scope = crate::db::companies::Company::bind(
+                db.read(),
+                slug.parse().expect("fixture company"),
             )
             .expect("bind demo company");
             let accounts = crate::db::list_accounts(
@@ -934,9 +917,9 @@ mod tests {
 
             // Verify trial balance is balanced
             let balances = crate::db::compute_trial_balance(
-                &crate::db::companies::Company::resolve(
-                    db.conn(),
-                    &slug.parse().expect("fixture company"),
+                &crate::db::companies::Company::bind(
+                    db.read(),
+                    slug.parse().expect("fixture company"),
                 )
                 .expect("resolve fixture company"),
                 None,

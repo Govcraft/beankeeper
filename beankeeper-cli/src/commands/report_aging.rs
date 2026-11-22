@@ -68,14 +68,14 @@ use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rusqlite::{OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::cli::{AgingMethodArg, Cli, OutputFormat};
 use crate::db;
 use crate::db::amounts::PositiveMinorUnits;
-use crate::db::connection::Db;
+use crate::db::connection::{Db, ReadConn};
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output::amounts::{MoneyField, format_minor_grouped};
@@ -1325,7 +1325,7 @@ struct TxnTotals {
 
 /// Load per-transaction totals for the account, dated on or before `as_of`.
 fn load_account_transactions(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     account: &str,
     scope: &AgingScope<'_>,
@@ -1370,7 +1370,7 @@ fn load_account_transactions(
 
 /// The id of the company transaction a link points at, if any.
 pub(super) fn find_link_target(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     target: &LinkTarget,
 ) -> Result<Option<TransactionId>, CliError> {
@@ -1403,7 +1403,7 @@ pub(super) fn find_link_target(
 /// this account and currency but dated after `as_of`, on another selected
 /// account, or not on any selected account at all.
 fn classify_with_db(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     account: &str,
     scope: &AgingScope<'_>,
@@ -1440,12 +1440,12 @@ fn classify_with_db(
 
 /// Resolve the requested codes (plus children) to account rows.
 fn resolve_accounts(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     requested: &[String],
     include_children: bool,
 ) -> Result<Vec<db::AccountRow>, CliError> {
-    let scope = db::companies::Company::resolve(conn, &company.parse()?)?;
+    let scope = db::companies::Company::bind(conn, company.parse()?)?;
     for code in requested {
         db::accounts::get_account(&scope, code)?;
     }
@@ -1470,7 +1470,7 @@ fn resolve_accounts(
 /// Resolve the report currency via the shared report resolver
 /// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_currency(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     explicit: Option<Currency>,
 ) -> Result<Currency, CliError> {
@@ -1533,7 +1533,7 @@ struct AgingScope<'a> {
 
 /// Age one account: load, match, filter, and classify unmatched links.
 fn age_account(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     account: db::AccountRow,
     scope: &AgingScope<'_>,
@@ -1602,12 +1602,12 @@ pub fn run(
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    run_to(cli, db, company, opts, &mut output)
+    db.read_snapshot(|reader| run_to(cli, reader, company, opts, &mut output))
 }
 
-pub(crate) fn run_to(
+fn run_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     opts: &AgingOptions<'_>,
     output: &mut super::report::ReportOutput<'_>,
@@ -1615,8 +1615,8 @@ pub(crate) fn run_to(
     let as_of = opts
         .as_of
         .unwrap_or_else(|| chrono::Local::now().date_naive());
-    let resolved = ResolvedAging::resolve(db, company, opts, as_of)?;
-    run_resolved_to(cli, db, company, resolved, output)
+    let resolved = ResolvedAging::resolve(reader, company, opts, as_of)?;
+    run_resolved_to(cli, reader, company, resolved, output)
 }
 
 pub(super) struct ResolvedAging<'a> {
@@ -1636,17 +1636,17 @@ pub(super) struct ResolvedAging<'a> {
 
 impl<'a> ResolvedAging<'a> {
     pub(super) fn from_command(
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         args: &'a crate::cli::AgingCommandArgs,
         today: NaiveDate,
     ) -> Result<Self, CliError> {
         let options = AgingOptions::try_from(args)?;
-        Self::resolve(db, company, &options, options.as_of.unwrap_or(today))
+        Self::resolve(reader, company, &options, options.as_of.unwrap_or(today))
     }
 
     fn resolve(
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         opts: &AgingOptions<'a>,
         as_of: NaiveDate,
@@ -1654,9 +1654,9 @@ impl<'a> ResolvedAging<'a> {
         let buckets = opts.buckets.parse()?;
         let link_key = resolve_link_key(opts.method, opts.link_key)?;
         let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
-        let accounts = resolve_accounts(db.conn(), company, opts.accounts, opts.include_children)?;
+        let accounts = resolve_accounts(reader, company, opts.accounts, opts.include_children)?;
         let kind = common_kind(&accounts)?;
-        let currency = resolve_currency(db.conn(), company, opts.currency)?;
+        let currency = resolve_currency(reader, company, opts.currency)?;
         Ok(Self {
             accounts,
             kind,
@@ -1676,7 +1676,7 @@ impl<'a> ResolvedAging<'a> {
 
 pub(super) fn run_resolved_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     resolved: ResolvedAging<'_>,
     output: &mut super::report::ReportOutput<'_>,
@@ -1710,7 +1710,7 @@ pub(super) fn run_resolved_to(
     };
     let per_account = accounts
         .into_iter()
-        .map(|a| age_account(db.conn(), company, a, &scope))
+        .map(|a| age_account(reader, company, a, &scope))
         .collect::<Result<Vec<_>, _>>()?;
     let report = combine(kind, method, scope.buckets.clone(), per_account)?;
 
@@ -3314,33 +3314,24 @@ mod tests {
     #[test]
     fn resolve_currency_rules() {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("open db: {e}"));
-        let conn = db.conn();
-        conn.execute("INSERT INTO companies (slug, name) VALUES ('c', 'C')", [])
+        db::test_support::create_company(&db, "c", "C")
             .unwrap_or_else(|e| panic!("insert company: {e}"));
-        let usd = resolve_currency(conn, "c", None).unwrap_or_else(|e| panic!("{e}"));
+        let usd = resolve_currency(db.read(), "c", None).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(usd.code(), "USD");
 
-        conn.execute(
-            "INSERT INTO transactions (company_slug, description, currency, date) \
-             VALUES ('c', 'x', 'EUR', '2026-01-01')",
-            [],
-        )
-        .unwrap_or_else(|e| panic!("insert txn: {e}"));
-        let eur = resolve_currency(conn, "c", None).unwrap_or_else(|e| panic!("{e}"));
+        db::test_support::insert_legacy_transaction(&db, "c", "EUR")
+            .unwrap_or_else(|e| panic!("insert txn: {e}"));
+        let eur = resolve_currency(db.read(), "c", None).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(eur.code(), "EUR");
 
-        conn.execute(
-            "INSERT INTO transactions (company_slug, description, currency, date) \
-             VALUES ('c', 'y', 'GBP', '2026-01-01')",
-            [],
-        )
-        .unwrap_or_else(|e| panic!("insert txn: {e}"));
+        db::test_support::insert_legacy_transaction(&db, "c", "GBP")
+            .unwrap_or_else(|e| panic!("insert txn: {e}"));
         assert!(matches!(
-            resolve_currency(conn, "c", None),
+            resolve_currency(db.read(), "c", None),
             Err(CliError::Validation(_))
         ));
         let gbp =
-            resolve_currency(conn, "c", Some(Currency::GBP)).unwrap_or_else(|e| panic!("{e}"));
+            resolve_currency(db.read(), "c", Some(Currency::GBP)).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(gbp.code(), "GBP");
     }
 

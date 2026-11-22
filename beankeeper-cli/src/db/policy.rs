@@ -1,8 +1,9 @@
 //! Per-ledger enforcement policy. Missing or unaudited state fails closed.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 
+use super::connection::ReadConn;
 use crate::error::CliError;
 
 /// The singleton ledger policy and its last change time.
@@ -16,7 +17,7 @@ pub struct LedgerPolicy {
 ///
 /// # Errors
 /// Returns a database error for absent, invalid, or unaudited policy state.
-pub fn get(conn: &Connection) -> Result<LedgerPolicy, CliError> {
+pub fn get(conn: ReadConn<'_>) -> Result<LedgerPolicy, CliError> {
     let policy = conn
         .query_row(
             "SELECT enforce, updated_at FROM ledger_policy WHERE singleton = 1",

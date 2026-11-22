@@ -8,12 +8,12 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use serde_json::{Value, json};
 
-use super::super::{Actor, AuditAction, AuditChange, AuditEntity, atomically, record};
-use super::{ActiveSession, Generation, requests::apply_once, with_active_session};
+use super::super::{Actor, AuditAction, AuditChange, AuditEntity, record};
+use super::{ActiveSession, Generation, requests::apply_once, with_active_setup_write};
 use crate::db::{
     AccountRow, Db, ListAccountParams, accounts::CreateAccountParams, companies::CompanySlug,
-    connection::ReadConn, create_account, create_company, get_company, get_schema_version,
-    list_accounts, schema::BOOK_PROFILE_SCHEMA_VERSION,
+    connection::ReadConn, get_company, list_accounts, schema::BOOK_PROFILE_SCHEMA_VERSION,
+    schema::get_schema_version,
 };
 use crate::error::CliError;
 
@@ -231,15 +231,14 @@ impl Serialize for BookAccount {
 /// # Errors
 /// Returns a not-found error for an unknown company or a database error for an unreadable ledger.
 pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>, CliError> {
-    let conn = db.conn();
-    atomically(conn, || {
-        let named = get_company(db.read(), company)?;
-        let profile = if get_schema_version(conn)? >= BOOK_PROFILE_SCHEMA_VERSION {
-            find_profile(db.read(), company)?
+    db.read_snapshot(|reader| {
+        let named = get_company(reader, company)?;
+        let profile = if get_schema_version(reader)? >= BOOK_PROFILE_SCHEMA_VERSION {
+            find_profile(reader, company)?
         } else {
             None
         };
-        let scope = crate::db::companies::Company::bind(db.read(), company.clone())?;
+        let scope = crate::db::companies::Company::bind(reader, company.clone())?;
         let accounts = list_accounts(
             &scope,
             &ListAccountParams {
@@ -342,7 +341,7 @@ pub(crate) fn apply(
     company: &CompanySlug,
     change: BookChange<'_>,
 ) -> Result<Value, CliError> {
-    with_active_session(db, actor, generation, |session| {
+    with_active_setup_write(db, actor, generation, |session| {
         let input = match change {
             BookChange::Create { name, settings } => {
                 json!([
@@ -419,8 +418,8 @@ fn create_book(
     name: &str,
     settings: BookSettings,
 ) -> Result<Value, CliError> {
-    let row = create_company(
-        session.connection,
+    let row = super::super::catalog::store_company(
+        session.audited_tx(),
         session.actor(),
         company,
         checked_name(name)?,
@@ -435,8 +434,8 @@ fn initialize_book(
     company: &CompanySlug,
     settings: BookSettings,
 ) -> Result<Value, CliError> {
-    let row = get_company(ReadConn::new(session.connection), company)?;
-    if find_profile(ReadConn::new(session.connection), company)?.is_some() {
+    let row = get_company(session.read(), company)?;
+    if find_profile(session.read(), company)?.is_some() {
         return Err(CliError::Validation(format!(
             "book '{company}' already has a setup profile"
         )));
@@ -449,7 +448,7 @@ pub(super) fn current_profile<'a>(
     session: &ActiveSession<'_>,
     company: &'a CompanySlug,
 ) -> Result<BookProfile<'a>, CliError> {
-    find_profile(ReadConn::new(session.connection), company)?
+    find_profile(session.read(), company)?
         .ok_or_else(|| CliError::NotFound(format!("setup book profile for '{company}' not found")))
 }
 
@@ -501,7 +500,8 @@ fn record_profile<'a>(
 ) -> Result<BookProfile<'a>, CliError> {
     let supersedes = previous.as_ref().map(|profile| profile.revision);
     let revision = session
-        .connection
+        .tx
+        .connection()
         .query_row(
             "INSERT INTO setup_book_profiles
              (company_slug, purpose, base_currency, fiscal_year_start, supersedes, generation)
@@ -526,7 +526,7 @@ fn record_profile<'a>(
     let before = previous.map(|profile| json!(profile).to_string());
     let after = json!(profile).to_string();
     record(
-        session.connection,
+        session.tx.connection(),
         session.actor(),
         AuditChange {
             company_slug: Some(company),
@@ -568,8 +568,8 @@ fn create_setup_account(
     name: &str,
     account_type: AccountType,
 ) -> Result<AccountRow, CliError> {
-    create_account(
-        session.connection,
+    super::super::catalog::store_account(
+        session.audited_tx(),
         session.actor(),
         &CreateAccountParams {
             company_slug: company,

@@ -3,8 +3,8 @@
 //! Reports sum minor units, so every report must be computed in exactly one
 //! currency. This module decides which one.
 
+use crate::db::connection::ReadConn;
 use beankeeper::types::Currency;
-use rusqlite::Connection;
 
 use crate::error::CliError;
 
@@ -26,7 +26,7 @@ const FALLBACK_CURRENCY: Currency = Currency::USD;
 /// Returns [`CliError::Validation`] when the company has multiple currencies
 /// and none was requested. Returns [`CliError::Sqlite`] on database errors.
 pub fn resolve_report_currency(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     requested: Option<Currency>,
 ) -> Result<Currency, CliError> {
@@ -41,7 +41,7 @@ pub fn resolve_report_currency(
 /// Use USD for an empty company. The caller supplies its error variant for
 /// ambiguous currencies, since reports and filters have different contracts.
 pub(super) fn infer_company_currency(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     ambiguous: fn(String) -> CliError,
 ) -> Result<Currency, CliError> {
@@ -62,7 +62,7 @@ pub(super) fn infer_company_currency(
 }
 
 /// Return the sorted, distinct currency codes used by a company's transactions.
-fn company_currencies(conn: &Connection, company: &str) -> Result<Vec<String>, CliError> {
+fn company_currencies(conn: ReadConn<'_>, company: &str) -> Result<Vec<String>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT currency FROM transactions WHERE company_slug = ?1 ORDER BY currency",
     )?;
@@ -78,36 +78,33 @@ fn company_currencies(conn: &Connection, company: &str) -> Result<Vec<String>, C
 mod tests {
     use super::*;
     use crate::db::connection::Db;
+    use crate::identity::{Admin, Granted};
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        crate::db::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Acme Corp",
-            None,
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            crate::db::create_company(
+                grant,
+                &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                "Acme Corp",
+                None,
+            )
+        })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
         db
     }
 
     fn insert_txn(db: &Db, currency: &str) {
-        db.conn()
-            .execute(
-                "INSERT INTO transactions (company_slug, description, currency, date) \
-                 VALUES ('acme', 'x', ?1, '2024-01-01')",
-                rusqlite::params![currency],
-            )
+        crate::db::test_support::insert_legacy_transaction(db, "acme", currency)
             .unwrap_or_else(|e| panic!("insert failed: {e}"));
     }
 
     #[test]
     fn no_transactions_falls_back_to_usd() {
         let db = setup();
-        let c = resolve_report_currency(db.conn(), "acme", None)
+        let c = resolve_report_currency(db.read(), "acme", None)
             .unwrap_or_else(|e| panic!("resolve failed: {e}"));
         assert_eq!(c.code(), "USD");
     }
@@ -117,7 +114,7 @@ mod tests {
         let db = setup();
         insert_txn(&db, "MXN");
         insert_txn(&db, "MXN");
-        let c = resolve_report_currency(db.conn(), "acme", None)
+        let c = resolve_report_currency(db.read(), "acme", None)
             .unwrap_or_else(|e| panic!("resolve failed: {e}"));
         assert_eq!(c.code(), "MXN");
     }
@@ -127,7 +124,7 @@ mod tests {
         let db = setup();
         insert_txn(&db, "USD");
         insert_txn(&db, "MXN");
-        let err = resolve_report_currency(db.conn(), "acme", None)
+        let err = resolve_report_currency(db.read(), "acme", None)
             .err()
             .unwrap_or_else(|| panic!("expected an error"));
         let msg = err.to_string();
@@ -135,7 +132,7 @@ mod tests {
         assert!(msg.contains("MXN, USD"), "message lists currencies: {msg}");
         assert!(msg.contains("--currency"), "message mentions flag: {msg}");
 
-        let c = resolve_report_currency(db.conn(), "acme", Some(Currency::MXN))
+        let c = resolve_report_currency(db.read(), "acme", Some(Currency::MXN))
             .unwrap_or_else(|e| panic!("resolve failed: {e}"));
         assert_eq!(c.code(), "MXN");
     }
@@ -144,7 +141,7 @@ mod tests {
     fn unsupported_stored_currency_is_a_database_error() {
         let db = setup();
         insert_txn(&db, "BAD");
-        let result = resolve_report_currency(db.conn(), "acme", None);
+        let result = resolve_report_currency(db.read(), "acme", None);
         assert!(matches!(result, Err(CliError::Database(_))));
     }
 }

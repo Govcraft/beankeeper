@@ -1,5 +1,8 @@
 //! Spend policy tampering must fail closed even with an intact posted audit chain.
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use agent_uri::AgentUri;
 use beankeeper::types::Currency;
 use beankeeper_cli::commands::verify;
@@ -15,14 +18,12 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
         "DELETE FROM agent_spend_limits",
         "INSERT INTO agent_spend_limits SELECT agent_uri, company_slug, 'EUR', max_post, daily_limit FROM agent_spend_limits",
     ] {
-        let db = Db::open_in_memory()?;
-        db::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("limits.db");
+        let db = Db::open(&path, None)?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;
         let limit = SpendLimit::new(
@@ -36,7 +37,7 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
             audit::set_spend_limit(grant, &limit)
         })?;
         verify::execute_json(&db)?;
-        db.conn().execute_batch(tamper)?;
+        raw_ledger::open(&path, None)?.execute_batch(tamper)?;
         assert!(matches!(
             spend_limits::list(db.read(), limit.agent_uri(), Some(&"acme".parse()?)),
             Err(CliError::Database(_))

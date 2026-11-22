@@ -1,6 +1,7 @@
 //! Inclusive company cutoffs, audited reopening, and atomic posting failures.
 
 use beankeeper_cli::db::CreateAccountParams;
+use beankeeper_cli::identity::{Admin, Granted};
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -21,33 +22,36 @@ struct Ledger {
 }
 
 impl Ledger {
+    fn raw(&self) -> rusqlite::Result<rusqlite::Connection> {
+        let connection = rusqlite::Connection::open(&self.path)?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        Ok(connection)
+    }
+
     fn new() -> Result<Self, Box<dyn Error>> {
         let dir = tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            db::create_company(
-                db.conn(),
-                &Actor::new("fixture"),
-                &company.parse()?,
-                company,
-                None,
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                db::create_company(grant, &company.parse()?, company, None)
+            })?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("4000", beankeeper::types::AccountType::Revenue),
             ] {
-                db::create_account(
-                    db.conn(),
-                    &Actor::new("fixture"),
-                    &CreateAccountParams {
-                        company_slug: &company.parse()?,
-                        code,
-                        name: code,
-                        account_type: kind,
-                        default_tax_category: None,
-                    },
-                )?;
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                    db::create_account(
+                        grant,
+                        &CreateAccountParams {
+                            company_slug: &company.parse()?,
+                            code,
+                            name: code,
+                            account_type: kind,
+                            default_tax_category: None,
+                        },
+                    )
+                })?;
             }
         }
         Ok(Self { dir, path, db })
@@ -83,7 +87,7 @@ impl Ledger {
     }
 
     fn state(&self) -> Result<(i64, i64, i64), CliError> {
-        Ok(self.db.conn().query_row(
+        Ok(self.db.read().query_row(
             "SELECT (SELECT COUNT(*) FROM transactions), (SELECT COUNT(*) FROM entries),
              (SELECT COUNT(*) FROM audit_log)",
             [],
@@ -293,7 +297,7 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
         },
         Err(CliError::Validation(_))
     ));
-    assert!(ledger.db.conn().execute("INSERT INTO transactions (company_slug, description, date) VALUES ('acme', 'bypass', '2026-01-31')", []).is_err());
+    assert!(ledger.raw()?.execute("INSERT INTO transactions (company_slug, description, date) VALUES ('acme', 'bypass', '2026-01-31')", []).is_err());
     assert_eq!(ledger.state()?, before);
     Ok(())
 }
@@ -308,7 +312,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
     ] {
         let ledger = Ledger::new()?;
         ledger.run("acme", &["period", "close", "--through", "2026-01-31"])?;
-        assert!(ledger.db.conn().execute(tamper, []).is_err(), "{tamper}");
+        assert!(ledger.raw()?.execute(tamper, []).is_err(), "{tamper}");
         verify::execute_json(&ledger.db)?;
     }
     for tamper in [
@@ -317,10 +321,10 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
     ] {
         let ledger = Ledger::new()?;
         ledger.run("acme", &["period", "close", "--through", "2026-01-31"])?;
-        ledger.db.conn().execute_batch(
+        ledger.raw()?.execute_batch(
             "DROP TRIGGER protect_period_update; DROP TRIGGER protect_period_delete;",
         )?;
-        ledger.db.conn().execute(tamper, [])?;
+        ledger.raw()?.execute(tamper, [])?;
         assert!(matches!(
             verify::execute_json(&ledger.db),
             Err(CliError::Database(_))
@@ -333,7 +337,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
     // An audit-row edit also remains detectable with periods present.
     let ledger = Ledger::new()?;
     ledger.run("acme", &["period", "close", "--through", "2026-01-31"])?;
-    ledger.db.conn().execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET actor = 'tampered' WHERE entity = 'period';")?;
+    ledger.raw()?.execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET actor = 'tampered' WHERE entity = 'period';")?;
     assert!(audit::verify_hash_chain(ledger.db.read()).is_err());
     Ok(())
 }

@@ -120,17 +120,14 @@ pub fn verify_links(conn: ReadConn<'_>) -> Result<(), CliError> {
 mod tests {
     use super::*;
     use crate::db::{companies::create_company, connection::Db};
+    use crate::identity::{Admin, Granted};
 
     #[test]
     fn missing_persisted_relationship_identifies_its_transaction() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         let row = db.conn().query_row(
             "INSERT INTO transactions (company_slug, description, metadata, date)
              VALUES (?1, ?2, ?3, ?4) RETURNING id",

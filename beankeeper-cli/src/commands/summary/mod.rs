@@ -14,7 +14,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::cli::{Cli, OutputFormat, resolve_format};
-use crate::db::{self, BalanceRow, connection::Db};
+use crate::db::{
+    self, BalanceRow,
+    companies::Company,
+    connection::{Db, ReadConn},
+};
 use crate::error::CliError;
 use crate::output::amounts::MoneyField;
 use crate::output::chart::{self, WithChart};
@@ -213,7 +217,7 @@ fn read_summary(
     args: &SummaryArgs,
 ) -> Result<SummaryReport, CliError> {
     chart::validate_request(cli)?;
-    db::audit::atomically(db.conn(), || compute(db, company, args))
+    db.read_snapshot(|reader| compute(reader, company, args))
 }
 
 fn envelope(cli: &Cli, company: &str, report: &SummaryReport) -> Result<Value, CliError> {
@@ -337,21 +341,19 @@ impl SummaryReport {
     }
 }
 
-fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, CliError> {
-    db::companies::get_company(db.read(), &company.parse()?)?;
+fn compute(
+    reader: ReadConn<'_>,
+    company: &str,
+    args: &SummaryArgs,
+) -> Result<SummaryReport, CliError> {
+    let scope = Company::bind(reader, company.parse()?)?;
     let periods = args.periods(chrono::Local::now().date_naive())?;
     let currency = super::report_currency::resolve_report_currency(
-        db.conn(),
+        reader,
         company,
         crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
     )?;
-    let rows = db::compute_trial_balance(
-        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
-        None,
-        None,
-        Some(periods.current.to),
-        currency,
-    )?;
+    let rows = db::compute_trial_balance(&scope, None, None, Some(periods.current.to), currency)?;
     let cash = select_accounts(
         &rows,
         &args.cash_account,
@@ -371,20 +373,14 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
         &["payable"],
     )?;
     let activity = |period: Period| {
-        db::compute_trial_balance(
-            &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
-            None,
-            Some(period.from),
-            Some(period.to),
-            currency,
-        )
+        db::compute_trial_balance(&scope, None, Some(period.from), Some(period.to), currency)
     };
     let current = activity(periods.current)?;
     let prior = activity(periods.prior)?;
     let comparison = model::comparison(&current, &prior, currency)?;
     let movers = model::movers(&current, &prior, currency)?;
     let attention = attention::compute(&attention::AttentionContext {
-        conn: db.conn(),
+        conn: reader,
         company,
         currency,
         as_of: periods.current.to,
@@ -456,6 +452,7 @@ pub fn run(cli: &Cli, company: &str, args: &SummaryArgs) -> Result<(), CliError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{Admin, Granted};
 
     #[test]
     fn periods_handle_month_edges_leap_years_and_explicit_intervals() -> Result<(), CliError> {
@@ -486,19 +483,15 @@ mod tests {
     fn summary_projects_known_and_unknown_money_without_the_envelope()
     -> Result<(), Box<dyn std::error::Error>> {
         let db = Db::open_in_memory()?;
-        db::create_company(
-            db.conn(),
-            &db::Actor::new("summary fixture"),
-            &"co".parse()?,
-            "Company",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &db::Actor::new("summary fixture"), |grant| {
+            db::create_company(grant, &"co".parse()?, "Company", None)
+        })?;
         let args = SummaryArgs {
             to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
             currency: Some(Currency::BHD.into()),
             ..SummaryArgs::default()
         };
-        let report = compute(&db, "co", &args)?;
+        let report = compute(db.read(), "co", &args)?;
         let json = serde_json::to_value(report.json())?;
         assert_eq!(json["standing"]["cash_on_hand"], 0);
         assert_eq!(json["standing"]["cash_on_hand_display"], "0.000");

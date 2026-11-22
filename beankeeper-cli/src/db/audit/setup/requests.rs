@@ -48,7 +48,7 @@ pub(super) fn apply_once(
     input: &Value,
     apply: impl FnOnce() -> Result<Value, CliError>,
 ) -> Result<Value, CliError> {
-    let conn = session.connection;
+    let conn = session.tx.connection();
     let fingerprint = digest(input.to_string());
     let receipt: Option<(String, String)> = conn
         .query_row(

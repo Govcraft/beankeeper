@@ -27,7 +27,10 @@ use serde_json::json;
 
 use crate::capability::Capability;
 use crate::cli::Cli;
-use crate::db::{Actor, connection::Db};
+use crate::db::{
+    Actor,
+    connection::{Db, ReadConn},
+};
 use crate::error::CliError;
 use dispatch::Request;
 
@@ -100,6 +103,7 @@ impl LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         let operation = request.operation();
+        let writes_ledger = request.writes_ledger();
         let actor = client_actor(
             context
                 .peer
@@ -116,20 +120,17 @@ impl LedgerServer {
             let db = db
                 .lock()
                 .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
-            // One snapshot covers authorization and execution, including policy
-            // changes made by another process while this session is running.
-            crate::db::audit::atomically(db.conn(), || {
+            // Authorize in the same snapshot that will execute the operation.
+            let execute = |reader: ReadConn<'_>| {
                 let identity = match credential {
                     CallCredential::Stdio(token) => crate::identity::authorize_known_operation(
-                        db.conn(),
+                        reader,
                         token.as_ref().map(ExposeSecret::expose_secret),
                         operation,
                     )?,
                     CallCredential::Http(identity) => {
                         crate::identity::authorize_verified_operation(
-                            db.conn(),
-                            &identity,
-                            operation,
+                            reader, &identity, operation,
                         )?;
                         Some(Arc::unwrap_or_clone(identity))
                     }
@@ -139,7 +140,12 @@ impl LedgerServer {
                     None => actor,
                 };
                 request.execute(&db, &actor)
-            })
+            };
+            if writes_ledger {
+                db.in_write_batch(|| execute(db.read()))
+            } else {
+                db.read_snapshot(execute)
+            }
         })
         .await;
         match result {
@@ -769,9 +775,9 @@ impl ServerHandler for LedgerServer {
                 let db = db
                     .lock()
                     .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
-                crate::db::audit::atomically(db.conn(), || {
-                    identity.check_live(db.conn())?;
-                    if identity.enforces_permissions(crate::db::policy::get(db.conn())?.enforce) {
+                db.read_snapshot(|reader| {
+                    identity.check_live(reader)?;
+                    if identity.enforces_permissions(crate::db::policy::get(reader)?.enforce) {
                         let mut allowed = Vec::new();
                         for tool in tools {
                             if identity.allows_known_operation(tool.name.parse()?)? {
@@ -823,11 +829,11 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
     let db = Db::open_existing(&cli.db, passphrase.as_ref())?;
     drop(passphrase);
     let identity = if let Some(token) = &cli.agent_token {
-        Some(crate::identity::verify(db.conn(), token.expose_secret())?)
+        Some(crate::identity::verify(db.read(), token.expose_secret())?)
     } else {
         None
     };
-    let enforce = crate::db::policy::get(db.conn())?.enforce;
+    let enforce = crate::db::policy::get(db.read())?.enforce;
     if enforce && identity.is_none() {
         return Err(CliError::Unauthorized(
             "ledger enforcement requires an agent token".into(),
@@ -867,6 +873,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::identity::{Admin, Granted};
 
     use super::*;
     use serde_json::Value;
@@ -923,29 +930,26 @@ mod tests {
     #[test]
     fn investment_tools_share_trade_valuation_and_actor_behavior() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        crate::db::companies::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
             ("1200", beankeeper::types::AccountType::Asset),
             ("4000", beankeeper::types::AccountType::Revenue),
         ] {
-            crate::db::accounts::create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme".parse()?,
-                    code,
-                    name: code,
-                    account_type: kind,
-                    default_tax_category: None,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                crate::db::accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme".parse()?,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: None,
+                    },
+                )
+            })?;
         }
         let actor = client_actor(Some("Investment Client"));
         let call = |tool, mut input: Value| {
@@ -996,7 +1000,7 @@ mod tests {
                 .map(Vec::len),
             Some(1)
         );
-        let posted_by: String = db.conn().query_row(
+        let posted_by: String = db.read().query_row(
             "SELECT posted_by FROM transactions WHERE reference = 'sell-test'",
             [],
             |row| row.get(0),
@@ -1021,24 +1025,21 @@ mod tests {
     #[test]
     fn report_inputs_cover_all_kinds_and_keep_cli_defaults() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        crate::db::companies::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
-        crate::db::accounts::create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            crate::db::accounts::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })?;
         for input in [
             json!({"kind":"trial-balance", "account_type":"asset"}),
             json!({"kind":"balance", "account":"1000"}),

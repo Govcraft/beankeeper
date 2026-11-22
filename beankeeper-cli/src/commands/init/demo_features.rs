@@ -12,9 +12,8 @@ use crate::error::CliError;
 use crate::identity::{Budget, Granted, Post, Reconcile};
 
 pub(super) fn seed(db: &Db, actor: &Actor) -> Result<(), CliError> {
-    let conn = db.conn();
     seed_company_accounts(
-        conn,
+        db,
         actor,
         "acme-consulting",
         &[
@@ -45,7 +44,7 @@ pub(super) fn seed(db: &Db, actor: &Actor) -> Result<(), CliError> {
         ],
     )?;
     seed_company_accounts(
-        conn,
+        db,
         actor,
         "personal",
         &[(

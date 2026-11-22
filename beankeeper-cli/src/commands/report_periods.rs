@@ -23,7 +23,10 @@ use super::report_dates::{DateRange, resolve_date};
 
 use crate::cli::{Cli, Command, OutputFormat, ReportCommand};
 use crate::db;
-use crate::db::connection::Db;
+use crate::db::{
+    companies::Company,
+    connection::{Db, ReadConn},
+};
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::output::{self, chart};
@@ -287,12 +290,13 @@ pub fn try_run(
 ) -> Option<Result<(), CliError>> {
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    try_run_to(cli, db, company, sub, &mut output)
+    db.read_snapshot(|reader| try_run_to(cli, reader, company, sub, &mut output).transpose())
+        .transpose()
 }
 
 pub(crate) fn try_run_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     sub: &ReportCommand,
     output: &mut super::report::ReportOutput<'_>,
@@ -333,11 +337,11 @@ pub(crate) fn try_run_to(
         | ReportCommand::TrialBalance {
             compare: Some(_), ..
         } => {
-            return super::report_compare::try_run_to(cli, db, company, sub, output);
+            return super::report_compare::try_run_to(cli, reader, company, sub, output);
         }
         _ => return None,
     };
-    Some(run(cli, db, company, &request, output))
+    Some(run(cli, reader, company, &request, output))
 }
 
 /// Parsed inputs for a multi-column report.
@@ -352,7 +356,7 @@ struct Request<'a> {
 
 fn run(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     req: &Request<'_>,
     output: &mut super::report::ReportOutput<'_>,
@@ -362,18 +366,12 @@ fn run(
     let columns = period_columns(from, to, req.period)?;
 
     let currency = super::report_currency::resolve_report_currency(
-        db.conn(),
+        reader,
         company,
         crate::cli::CurrencyArg::resolve_optional(req.currency)?,
     )?;
-    let (accounts, summary) = build_lines(
-        db.conn(),
-        company,
-        req.kind,
-        req.account_type,
-        currency,
-        &columns,
-    )?;
+    let scope = Company::bind(reader, company.parse()?)?;
+    let (accounts, summary) = build_lines(&scope, req.kind, req.account_type, currency, &columns)?;
 
     let report = MultiColumnReport {
         kind: req.kind,
@@ -559,8 +557,7 @@ pub fn range_label(from: NaiveDate, to: NaiveDate) -> String {
 
 /// Fetch the balance rows for one column window.
 pub(super) fn fetch_window_rows(
-    conn: &rusqlite::Connection,
-    company: &str,
+    company: &Company<'_>,
     kind: MultiReportKind,
     type_filter: Option<AccountType>,
     currency: Currency,
@@ -569,14 +566,14 @@ pub(super) fn fetch_window_rows(
     let rows = match kind {
         MultiReportKind::IncomeStatement => {
             let mut rows = db::compute_trial_balance(
-                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
+                company,
                 Some(AccountType::Revenue),
                 Some(from),
                 Some(to),
                 currency,
             )?;
             rows.extend(db::compute_trial_balance(
-                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
+                company,
                 Some(AccountType::Expense),
                 Some(from),
                 Some(to),
@@ -584,13 +581,9 @@ pub(super) fn fetch_window_rows(
             )?);
             rows
         }
-        MultiReportKind::TrialBalance => db::compute_trial_balance(
-            &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
-            type_filter,
-            Some(from),
-            Some(to),
-            currency,
-        )?,
+        MultiReportKind::TrialBalance => {
+            db::compute_trial_balance(company, type_filter, Some(from), Some(to), currency)?
+        }
     };
     Ok(rows)
 }
@@ -689,8 +682,7 @@ fn summary_lines(
 
 /// Fetch balances for every window and pivot them by account identity.
 fn build_lines(
-    conn: &rusqlite::Connection,
-    company: &str,
+    company: &Company<'_>,
     kind: MultiReportKind,
     type_filter: Option<AccountType>,
     currency: Currency,
@@ -699,14 +691,7 @@ fn build_lines(
     let mut accounts = BTreeMap::<String, AccountLine>::new();
     let mut totals = Vec::with_capacity(columns.len());
     for col in columns {
-        let rows = fetch_window_rows(
-            conn,
-            company,
-            kind,
-            type_filter,
-            currency,
-            (col.from, col.to),
-        )?;
+        let rows = fetch_window_rows(company, kind, type_filter, currency, (col.from, col.to))?;
         let mut subtotals = ColumnTotals::default();
         for row in rows {
             let net = normal_side_net(&row)?;

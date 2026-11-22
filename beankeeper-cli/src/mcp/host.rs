@@ -115,9 +115,9 @@ impl<H> HostServer<H> {
             let db = db
                 .lock()
                 .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
-            crate::db::audit::atomically(db.conn(), || {
-                crate::db::policy::get(db.conn())?;
-                identity.check_live(db.conn())?;
+            db.read_snapshot(|reader| {
+                crate::db::policy::get(reader)?;
+                identity.check_live(reader)?;
                 Ok(Arc::unwrap_or_clone(identity))
             })
         })

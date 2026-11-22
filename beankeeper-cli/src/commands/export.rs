@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::cli::{Cli, ExportFormat};
 use crate::db;
 use crate::db::companies::Company;
-use crate::db::connection::Db;
+use crate::db::connection::ReadConn;
 use crate::error::CliError;
 use crate::output;
 
@@ -25,10 +25,10 @@ pub fn run(
 
     let export_format = format.unwrap_or(ExportFormat::Json);
 
-    let rendered = match export_format {
-        ExportFormat::Json => export_json(&db)?,
-        ExportFormat::Csv => export_csv(&db)?,
-    };
+    let rendered = db.read_snapshot(|reader| match export_format {
+        ExportFormat::Json => export_json(reader),
+        ExportFormat::Csv => export_csv(reader),
+    })?;
 
     if let Some(path) = output_path {
         let mut file = std::fs::File::create(path)?;
@@ -47,13 +47,13 @@ pub fn run(
 }
 
 /// Export all data as JSON.
-fn export_json(db: &Db) -> Result<String, CliError> {
-    let companies = db::list_companies(db.read())?;
+fn export_json(reader: ReadConn<'_>) -> Result<String, CliError> {
+    let companies = db::list_companies(reader)?;
 
     let mut company_exports = Vec::new();
 
     for company in &companies {
-        let scope = Company::bind(db.read(), company.slug.clone())?;
+        let scope = Company::bind(reader, company.slug.clone())?;
         let accounts = db::list_accounts(
             &scope,
             &db::accounts::ListAccountParams {
@@ -129,8 +129,8 @@ fn export_json(db: &Db) -> Result<String, CliError> {
 /// 1. Companies
 /// 2. Accounts
 /// 3. Transactions with entries
-fn export_csv(db: &Db) -> Result<String, CliError> {
-    let companies = db::list_companies(db.read())?;
+fn export_csv(reader: ReadConn<'_>) -> Result<String, CliError> {
+    let companies = db::list_companies(reader)?;
 
     let mut sections = Vec::new();
 
@@ -141,7 +141,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
     // Section 2: Accounts (all companies)
     let mut all_accounts = Vec::new();
     for company in &companies {
-        let scope = Company::bind(db.read(), company.slug.clone())?;
+        let scope = Company::bind(reader, company.slug.clone())?;
         let accounts = db::list_accounts(
             &scope,
             &db::accounts::ListAccountParams {
@@ -190,7 +190,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
 
     for company in &companies {
-        let scope = Company::bind(db.read(), company.slug.clone())?;
+        let scope = Company::bind(reader, company.slug.clone())?;
         let txn_params = db::ListTransactionParams {
             limit: i64::MAX,
             ..Default::default()

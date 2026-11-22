@@ -1,13 +1,14 @@
 use std::fmt;
 
+use rusqlite::params;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
-use rusqlite::{Connection, params};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::CompanyRow;
-use super::audit::{self, Actor, Creation};
+use super::audit;
 use super::connection::ReadConn;
 use crate::error::CliError;
+use crate::identity::{Admin, Granted};
 
 /// A company slug validated before use in a company-scoped operation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -92,10 +93,6 @@ impl<'conn> Company<'conn> {
         }
     }
 
-    pub(crate) fn resolve(conn: &'conn Connection, slug: &CompanySlug) -> Result<Self, CliError> {
-        Self::bind(ReadConn::new(conn), slug.clone())
-    }
-
     /// Returns the validated slug for this company.
     #[must_use]
     pub fn slug(&self) -> &CompanySlug {
@@ -152,39 +149,13 @@ fn validate_slug(slug: &str) -> Result<(), CliError> {
 /// Returns `CliError::Validation` if the slug is invalid or already taken.
 /// Returns `CliError::Sqlite` on database errors.
 pub fn create_company(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Admin>,
     slug: &CompanySlug,
     name: &str,
     description: Option<&str>,
 ) -> Result<CompanyRow, CliError> {
-    audit::atomically(conn, || {
-        if company_exists(ReadConn::new(conn), slug)? {
-            return Err(CliError::Validation(format!(
-                "company '{slug}' already exists"
-            )));
-        }
-
-        conn.execute(
-            "INSERT INTO companies (slug, name, description) VALUES (?1, ?2, ?3)",
-            params![slug, name, description],
-        )?;
-
-        let row = get_company(ReadConn::new(conn), slug)?;
-        audit::record_insert(
-            conn,
-            actor,
-            slug,
-            Creation::Company,
-            slug.as_str(),
-            &serde_json::json!({
-                "slug": row.slug,
-                "name": row.name,
-                "description": row.description,
-                "created_at": row.created_at,
-            }),
-        )?;
-        Ok(row)
+    grant.mutate("sp_company_create", |tx, actor| {
+        audit::catalog::store_company(tx, actor, slug, name, description)
     })
 }
 
@@ -213,13 +184,6 @@ pub fn list_companies(conn: ReadConn<'_>) -> Result<Vec<CompanyRow>, CliError> {
     Ok(companies)
 }
 
-pub(crate) fn get_company_on_connection(
-    conn: &Connection,
-    slug: &crate::db::companies::CompanySlug,
-) -> Result<CompanyRow, CliError> {
-    get_company(ReadConn::new(conn), slug)
-}
-
 /// Fetches a single company by slug.
 ///
 /// # Errors
@@ -244,13 +208,6 @@ pub fn get_company(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<CompanyRow,
     }
 }
 
-pub(crate) fn company_exists_on_connection(
-    conn: &Connection,
-    slug: &crate::db::companies::CompanySlug,
-) -> Result<bool, CliError> {
-    company_exists(ReadConn::new(conn), slug)
-}
-
 /// Returns `true` if a company with the given slug exists.
 ///
 /// # Errors
@@ -268,6 +225,7 @@ pub fn company_exists(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<bool, Cl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Actor;
     use crate::db::connection::Db;
 
     fn setup() -> Db {
@@ -298,12 +256,16 @@ mod tests {
         let first = setup();
         let second = setup();
         let slug: CompanySlug = "acme".parse()?;
-        create_company(first.conn(), &Actor::new("fixture"), &slug, "First", None)?;
+        Granted::<Admin>::with_db(&first, &Actor::new("fixture"), |grant| {
+            create_company(grant, &slug, "First", None)
+        })?;
         assert!(matches!(
             Company::bind(second.read(), slug.clone()),
             Err(CliError::NotFound(_))
         ));
-        create_company(second.conn(), &Actor::new("fixture"), &slug, "Second", None)?;
+        Granted::<Admin>::with_db(&second, &Actor::new("fixture"), |grant| {
+            create_company(grant, &slug, "Second", None)
+        })?;
         for (db, name) in [(&first, "First"), (&second, "Second")] {
             db.read_snapshot(|reader| {
                 let company = Company::bind(reader, slug.clone())?;
@@ -318,15 +280,16 @@ mod tests {
     #[test]
     fn create_and_get_company() {
         let db = setup();
-        let row = create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Acme Corp",
-            None,
-        );
+        let row = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            create_company(
+                grant,
+                &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                "Acme Corp",
+                None,
+            )
+        });
         assert!(row.is_ok());
         let row = row.unwrap_or_else(|e| panic!("create failed: {e}"));
         assert_eq!(row.slug.as_str(), "acme");
@@ -345,26 +308,28 @@ mod tests {
     fn duplicate_slug_is_validation_error() {
         let db = setup();
         assert!(
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_company(
+                    grant,
+                    &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    "Acme Corp",
+                    None,
+                )
+            })
+            .is_ok()
+        );
+        let result = Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
             create_company(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
+                grant,
                 &"acme"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Acme Corp",
-                None
+                "Acme 2",
+                None,
             )
-            .is_ok()
-        );
-        let result = create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"acme"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            "Acme 2",
-            None,
-        );
+        });
         assert!(result.is_err());
         if let Err(CliError::Validation(msg)) = result {
             assert!(msg.contains("already exists"));
@@ -395,27 +360,29 @@ mod tests {
     fn list_companies_ordered() {
         let db = setup();
         assert!(
-            create_company(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &"beta"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Beta",
-                None
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_company(
+                    grant,
+                    &"beta"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    "Beta",
+                    None,
+                )
+            })
             .is_ok()
         );
         assert!(
-            create_company(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &"alpha"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Alpha",
-                None
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_company(
+                    grant,
+                    &"alpha"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    "Alpha",
+                    None,
+                )
+            })
             .is_ok()
         );
         let list = list_companies(db.read()).unwrap_or_default();
@@ -429,26 +396,28 @@ mod tests {
         let db = setup();
         let actor = crate::db::Actor::new("test");
         assert!(
-            create_company(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
-                &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Acme",
-                None
-            )
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+                create_company(
+                    grant,
+                    &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    "Acme",
+                    None,
+                )
+            })
             .is_ok()
         );
         assert!(
-            crate::db::delete_company(
-                db.conn(),
-                &actor,
-                &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
-            )
+            Granted::<Admin>::with_db(&db, &actor, |grant| {
+                crate::db::delete_company(
+                    grant,
+                    &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                )
+            })
             .is_ok()
         );
         assert!(
@@ -466,14 +435,15 @@ mod tests {
     fn delete_missing_company_is_not_found() {
         let db = setup();
         let actor = crate::db::Actor::new("test");
-        let result = crate::db::delete_company(
-            db.conn(),
-            &actor,
-            &"nope"
-                .parse()
-                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
-        );
+        let result = Granted::<Admin>::with_db(&db, &actor, |grant| {
+            crate::db::delete_company(
+                grant,
+                &"nope"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+            )
+        });
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 

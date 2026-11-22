@@ -35,7 +35,7 @@ impl Db {
         if let Some(pp) = passphrase {
             conn.pragma_update(None, "key", pp.expose_secret())?;
         }
-        let version = super::schema::get_schema_version(&conn)?;
+        let version = super::schema::get_schema_version(ReadConn::new(&conn))?;
         let current = super::schema::CURRENT_VERSION;
         if !(minimum..=current).contains(&version) {
             let expected = if minimum == current {
@@ -131,8 +131,9 @@ impl Db {
         Ok(Self { conn })
     }
 
-    /// Returns a reference to the underlying `rusqlite` connection.
-    pub fn conn(&self) -> &Connection {
+    /// Connection for internal storage and corruption fixtures.
+    #[cfg(test)]
+    pub(in crate::db) fn conn(&self) -> &Connection {
         &self.conn
     }
 
@@ -183,6 +184,13 @@ impl Db {
     }
 
     /// Borrows this ledger for query-only access without exposing its SQLite connection.
+    ///
+    /// ```compile_fail
+    /// use beankeeper_cli::db::Db;
+    /// fn raw_connection(db: &Db) {
+    ///     let _ = db.conn();
+    /// }
+    /// ```
     #[must_use]
     pub fn read(&self) -> ReadConn<'_> {
         ReadConn::new(&self.conn)
@@ -224,6 +232,7 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{Admin, Granted};
 
     #[test]
     fn read_snapshot_retains_one_view_and_releases_it_on_error() -> Result<(), CliError> {
@@ -237,13 +246,9 @@ mod tests {
 
         let result: Result<(), CliError> = db.read_snapshot(|reader| {
             assert_eq!(count(reader)?, 0);
-            super::super::create_company(
-                writer.conn(),
-                &super::super::Actor::new("fixture"),
-                &"acme".parse()?,
-                "Acme",
-                None,
-            )?;
+            Granted::<Admin>::with_db(&writer, &super::super::Actor::new("fixture"), |grant| {
+                super::super::create_company(grant, &"acme".parse()?, "Acme", None)
+            })?;
             assert_eq!(count(reader)?, 0);
             Err(CliError::Validation("stop snapshot".into()))
         });
@@ -278,7 +283,7 @@ mod tests {
         let Some(db) = db.ok() else {
             return;
         };
-        let version = super::super::schema::get_schema_version(db.conn());
+        let version = super::super::schema::get_schema_version(db.read());
         assert!(version.is_ok());
         assert_eq!(version.ok(), Some(super::super::schema::CURRENT_VERSION));
     }

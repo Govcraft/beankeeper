@@ -24,6 +24,7 @@ struct Ledger {
     secret: PathBuf,
     reader: Value,
     writer: Value,
+    owner: Actor,
 }
 
 impl Ledger {
@@ -38,57 +39,59 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let secret = dir.path().join("passphrase");
         let db = Db::open(&path, Some(&PASSPHRASE.into()))?;
-        db::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
-        db::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )?;
-        db::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "4000",
-                name: "Sales",
-                account_type: beankeeper::types::AccountType::Revenue,
-                default_tax_category: None,
-            },
-        )?;
-        identity::init_root(db.conn(), &Actor::new("owner"))?;
-        let issue = |name: &str, capabilities: &[String]| {
-            identity::issue(
-                db.conn(),
-                &Actor::new("owner"),
-                &IssueRequest {
-                    name,
-                    capabilities,
-                    ttl: Duration::from_secs(3600),
-                    public_key: None,
-                    generate_key: true,
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
                 },
             )
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "4000",
+                    name: "Sales",
+                    account_type: beankeeper::types::AccountType::Revenue,
+                    default_tax_category: None,
+                },
+            )
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+        let issue = |name: &str, capabilities: &[String]| {
+            Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+                identity::issue(
+                    grant,
+                    &IssueRequest {
+                        name,
+                        capabilities,
+                        ttl: Duration::from_secs(3600),
+                        public_key: None,
+                        generate_key: true,
+                    },
+                )
+            })
         };
         let reader = issue("http_reader", &["ledger/read".into()])?;
         let writer = issue("http_writer", &["ledger/read".into(), "ledger/post".into()])?;
+        let admin = issue("http_owner", &["ledger/admin".into()])?;
+        let owner = Actor::new("owner").with_identity(identity::verify(db.read(), token(&admin)?)?);
         Ok(Self {
             dir,
             path,
             secret,
             reader,
             writer,
+            owner,
         })
     }
 
@@ -110,8 +113,15 @@ impl Ledger {
     }
 
     fn enforce(&self) -> TestResult {
-        Granted::<Admin>::with(self.db()?.conn(), &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&self.db()?, &self.owner, |grant| {
             db::audit::set_policy(grant, true)
+        })?;
+        Ok(())
+    }
+
+    fn revoke(&self, target: &str) -> TestResult {
+        Granted::<Admin>::with_db(&self.db()?, &self.owner, |grant| {
+            identity::revoke(grant, target)
         })?;
         Ok(())
     }
@@ -363,7 +373,7 @@ fn http_authenticates_every_request_and_preserves_ledger_behavior() -> TestResul
     let retry = server.call("txn_post", posting("http-sale"), Some(reader))?;
     assert_eq!(payload(&retry)?["skipped"], true);
     let db = ledger.db()?;
-    let (actor, agent): (String, String) = db.conn().query_row(
+    let (actor, agent): (String, String) = db.read().query_row(
         "SELECT posted_by, agent_uri FROM transactions WHERE reference = 'http-sale'",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -385,11 +395,7 @@ fn http_authenticates_every_request_and_preserves_ledger_behavior() -> TestResul
             .send()?;
         assert_eq!(response.status(), 401);
     }
-    identity::revoke(
-        db.conn(),
-        &Actor::new("owner"),
-        ledger.reader["token_jti"].as_str().ok_or("jti")?,
-    )?;
+    ledger.revoke(ledger.reader["token_jti"].as_str().ok_or("jti")?)?;
     assert_eq!(
         server
             .request("tools/list", json!({}), Some(reader))?
@@ -415,14 +421,14 @@ fn http_enforces_current_request_capabilities_and_policy() -> TestResult {
     let allowed = server.call("txn_post", posting("allowed"), Some(writer))?;
     assert_eq!(payload(&allowed)?["created"], true);
     let db = ledger.db()?;
-    let agent: String = db.conn().query_row(
+    let agent: String = db.read().query_row(
         "SELECT agent_uri FROM transactions WHERE reference = 'allowed'",
         [],
         |row| row.get(0),
     )?;
     assert_eq!(agent, ledger.writer["agent_uri"]);
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT count(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 1);
     server.finish(&[reader, writer])
@@ -432,18 +438,19 @@ fn http_enforces_current_request_capabilities_and_policy() -> TestResult {
 fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult {
     let ledger = Ledger::new()?;
     let db = ledger.db()?;
-    let issue = |name: &str, grant: &str| {
-        identity::issue(
-            db.conn(),
-            &Actor::new("owner"),
-            &IssueRequest {
-                name,
-                capabilities: &[grant.into()],
-                ttl: Duration::from_secs(3600),
-                public_key: None,
-                generate_key: true,
-            },
-        )
+    let issue = |name: &str, capability: &str| {
+        Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name,
+                    capabilities: &[capability.into()],
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })
     };
     let proposer = issue("http_proposer", "ledger/propose")?;
     let approver = issue("http_approver", "ledger/approve")?;
@@ -500,7 +507,7 @@ fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult 
         Some(approver_token),
     )?)?;
     assert_eq!(rejected["status"], "rejected");
-    let posted_by: String = db.conn().query_row(
+    let posted_by: String = db.read().query_row(
         "SELECT agent_uri FROM transactions WHERE reference = 'http-proposal'",
         [],
         |row| row.get(0),
@@ -621,11 +628,7 @@ fn http_fallback_grants_do_not_override_explicit_request_grants() -> TestResult 
         payload(&server.call("txn_post", posting("fallback-writer"), None)?)?["created"],
         true
     );
-    identity::revoke(
-        ledger.db()?.conn(),
-        &Actor::new("owner"),
-        ledger.writer["token_jti"].as_str().ok_or("jti")?,
-    )?;
+    ledger.revoke(ledger.writer["token_jti"].as_str().ok_or("jti")?)?;
     assert_eq!(server.request("tools/list", json!({}), None)?.status(), 401);
     assert_eq!(
         payload(&server.call("company_list", json!({}), Some(reader))?)?[0]["slug"],
@@ -641,17 +644,18 @@ fn http_rechecks_token_expiry_and_rejects_other_ledger_tokens() -> TestResult {
     // Start without process credentials, even with enforcement already enabled.
     let mut server = Server::start(&ledger, false, None)?;
     server.initialize(Some(token(&ledger.reader)?), "Expiry Client")?;
-    let issued = identity::issue(
-        ledger.db()?.conn(),
-        &Actor::new("owner"),
-        &IssueRequest {
-            name: "short_lived_http",
-            capabilities: &["ledger/read".into()],
-            ttl: Duration::from_secs(3),
-            public_key: None,
-            generate_key: true,
-        },
-    )?;
+    let issued = Granted::<Admin>::with_db(&ledger.db()?, &ledger.owner, |grant| {
+        identity::issue(
+            grant,
+            &IssueRequest {
+                name: "short_lived_http",
+                capabilities: &["ledger/read".into()],
+                ttl: Duration::from_secs(3),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    })?;
     let short_lived = token(&issued)?;
     assert_eq!(
         payload(&server.call("company_list", json!({}), Some(short_lived))?)?[0]["slug"],
@@ -874,7 +878,7 @@ fn verify_embedded_router(
     }
     let db = ledger.db()?;
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT count(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, i64::from(!read_only));
     db::audit::verify_hash_chain(db.read())?;
@@ -883,11 +887,7 @@ fn verify_embedded_router(
         request(Some("invalid-token"), "tools/list", json!({}))?.status(),
         401
     );
-    identity::revoke(
-        db.conn(),
-        &Actor::new("owner"),
-        ledger.writer["token_jti"].as_str().ok_or("jti")?,
-    )?;
+    ledger.revoke(ledger.writer["token_jti"].as_str().ok_or("jti")?)?;
     // The process fallback is checked again even in an established session.
     assert_eq!(request(None, "tools/list", json!({}))?.status(), 401);
     let read = rpc(request(
@@ -944,18 +944,17 @@ fn exercise_resolved_router(passphrase: Option<SecretString>, read_only: bool) -
         let snapshot = Db::open_snapshot(&cli.db, passphrase.as_ref())?;
         drop(passphrase);
         let slug: String = snapshot
-            .conn()
+            .read()
             .query_row("SELECT slug FROM companies", [], |row| row.get(0))?;
         assert_eq!(slug, "acme");
-        let error = snapshot
-            .conn()
-            .execute("UPDATE companies SET name = 'Changed'", [])
-            .err()
-            .ok_or("snapshot accepted a write")?;
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(rusqlite::ErrorCode::ReadOnly)
-        );
+        let write = Granted::<Admin>::with_db(&snapshot, &ledger.owner, |grant| {
+            db::audit::set_policy(grant, false)
+        });
+        assert!(matches!(
+            write,
+            Err(beankeeper_cli::error::CliError::Sqlite(error))
+                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly)
+        ));
         Ok(app)
     })?;
     // Only the ledger and SQLite sidecars may have been created. In particular,
@@ -986,13 +985,9 @@ fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    db::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"acme".parse()?,
-        "Acme",
-        None,
-    )?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        db::create_company(grant, &"acme".parse()?, "Acme", None)
+    })?;
     let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
     cli.db = path;
     cli.passphrase.passphrase_fd = Some(-1);
@@ -1006,7 +1001,7 @@ fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources
         )?;
         let snapshot = Db::open_snapshot(&cli.db, None)?;
         let slug: String = snapshot
-            .conn()
+            .read()
             .query_row("SELECT slug FROM companies", [], |row| row.get(0))?;
         assert_eq!(slug, "acme");
     }
@@ -1256,17 +1251,18 @@ fn exercise_host_tools(read_only: bool) -> TestResult {
     use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router_with_host_tools};
 
     let ledger = Ledger::new()?;
-    let navigation = identity::issue(
-        ledger.db()?.conn(),
-        &Actor::new("owner"),
-        &IssueRequest {
-            name: "navigator",
-            capabilities: &["ui/navigate".into()],
-            ttl: Duration::from_secs(3600),
-            public_key: None,
-            generate_key: true,
-        },
-    )?;
+    let navigation = Granted::<Admin>::with_db(&ledger.db()?, &Actor::new("owner"), |grant| {
+        identity::issue(
+            grant,
+            &IssueRequest {
+                name: "navigator",
+                capabilities: &["ui/navigate".into()],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    })?;
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let host = TestHost {
         calls: calls.clone(),
@@ -1369,11 +1365,7 @@ fn verify_host_tools(
             .status(),
         401
     );
-    identity::revoke(
-        ledger.db()?.conn(),
-        &Actor::new("owner"),
-        navigation["token_jti"].as_str().ok_or("jti")?,
-    )?;
+    ledger.revoke(navigation["token_jti"].as_str().ok_or("jti")?)?;
     for (method, params) in [
         ("tools/list", json!({})),
         ("tools/call", json!({"name":"host_observe", "arguments":{}})),
@@ -1414,21 +1406,8 @@ fn verify_host_policy(
     let navigator = token(navigation)?;
     let reader = token(&ledger.reader)?;
     let db = ledger.db()?;
-    let owner = Actor::new("owner");
-    let issued = identity::issue(
-        db.conn(),
-        &owner,
-        &IssueRequest {
-            name: "policy_admin",
-            capabilities: &["ledger/admin".into()],
-            ttl: Duration::from_secs(600),
-            public_key: None,
-            generate_key: true,
-        },
-    )?;
-    let owner = owner.with_identity(identity::verify(db.conn(), token(&issued)?)?);
     for enforce in [true, false, true] {
-        Granted::<Admin>::with(db.conn(), &owner, |grant| {
+        Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
             db::audit::set_policy(grant, enforce)
         })?;
         for credential in [None, Some(reader), Some(navigator)] {

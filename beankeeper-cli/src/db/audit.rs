@@ -36,7 +36,9 @@ use crate::error::CliError;
 mod attachment;
 mod posting;
 pub(super) use posting::persist_posting;
+pub(super) mod catalog;
 pub(crate) mod grant;
+pub(crate) mod identity_write;
 pub(super) mod investment;
 pub(super) mod savepoint;
 pub mod setup;
@@ -426,7 +428,7 @@ pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
 /// # Errors
 /// Returns a database error for altered, missing, or unlinked audit records.
 pub fn verify_hash_chain(reader: ReadConn<'_>) -> Result<(), CliError> {
-    let columns = if super::schema::read_schema_version(reader)? < 13 {
+    let columns = if super::schema::get_schema_version(reader)? < 13 {
         format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1")
     } else {
         AUDIT_COLUMNS.to_string()
@@ -519,7 +521,7 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         row_hash: String::new(),
         agent_uri: actor.agent_uri().map(str::to_owned),
         token_jti: actor.token_jti().map(str::to_owned),
-        hash_version: match super::schema::get_schema_version(conn)? {
+        hash_version: match super::schema::get_schema_version(ReadConn::new(conn))? {
             20.. => 4,
             18.. => 3,
             _ => 2,
@@ -564,7 +566,7 @@ fn record_policy_change(
     actor: &Actor,
     enforce: bool,
 ) -> Result<super::policy::LedgerPolicy, CliError> {
-    let before = super::policy::get(conn)?;
+    let before = super::policy::get(ReadConn::new(conn))?;
     if before.enforce == enforce {
         return Ok(before);
     }
@@ -812,7 +814,7 @@ pub(super) fn require_setup_proposal_reviewer<'a>(
     actor: &'a Actor,
 ) -> Result<&'a crate::identity::VerifiedAgent, CliError> {
     crate::identity::require_live_capability(
-        tx.connection(),
+        tx.read(),
         actor,
         crate::capability::Capability::Approve,
     )
@@ -1190,7 +1192,7 @@ pub struct ClearOutcome {
 /// # Errors
 ///
 /// Propagates the first error from `f` after rolling everything back.
-pub fn atomically<T>(
+pub(in crate::db) fn atomically<T>(
     conn: &Connection,
     f: impl FnOnce() -> Result<T, CliError>,
 ) -> Result<T, CliError> {
@@ -2080,17 +2082,18 @@ fn collect_budget_victims(
 /// `CliError::Validation` if ledger data still references it, or
 /// `CliError::Sqlite` on database errors.
 pub fn delete_account(
-    conn: &Connection,
-    actor: &Actor,
-    company_slug: &crate::db::companies::CompanySlug,
+    grant: grant::Granted<'_, grant::Admin>,
+    company_slug: &super::companies::CompanySlug,
     code: &str,
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
-    in_savepoint(conn, "sp_account_delete", || {
+    grant.mutate("sp_account_delete", |tx, actor| {
+        let conn = tx.connection();
+        let reader = tx.read();
         // Reading the row first both yields the snapshot and produces the
         // `NotFound` error when the account is absent.
         let row: AccountRow = super::accounts::get_account(
-            &crate::db::companies::Company::bind(ReadConn::new(conn), company_slug.clone())?,
+            &crate::db::companies::Company::bind(reader, company_slug.clone())?,
             code,
         )?;
 
@@ -2170,13 +2173,14 @@ pub fn delete_account(
 /// `CliError::Validation` if ledger data still references it, or
 /// `CliError::Sqlite` on database errors.
 pub fn delete_company(
-    conn: &Connection,
-    actor: &Actor,
+    grant: grant::Granted<'_, grant::Admin>,
     slug: &super::companies::CompanySlug,
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
-    in_savepoint(conn, "sp_company_delete", || {
-        let row: CompanyRow = super::companies::get_company(ReadConn::new(conn), slug)?;
+    grant.mutate("sp_company_delete", |tx, actor| {
+        let conn = tx.connection();
+        let reader = tx.read();
+        let row: CompanyRow = super::companies::get_company(reader, slug)?;
         let securities: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM securities WHERE company_slug = ?1)",
             [slug],
@@ -2670,7 +2674,7 @@ mod tests {
         std::sync::LazyLock::new(|| "acme".parse().expect("fixture company"));
 
     use crate::db::Db;
-    use crate::identity::{Granted, Reconcile};
+    use crate::identity::{Admin, Granted, Reconcile};
 
     fn clear_entry_fixture(
         db: &crate::db::Db,
@@ -2781,21 +2785,24 @@ mod tests {
             );
         };
         rejected(
-            crate::db::create_company(connection, &actor, &"new".parse()?, "New", None)
-                .expect_err("company creation must fail on audit error"),
+            Granted::<Admin>::with_db(&db, &actor, |grant| {
+                crate::db::create_company(grant, &"new".parse()?, "New", None)
+            })
+            .expect_err("company creation must fail on audit error"),
         );
         rejected(
-            crate::db::create_account(
-                connection,
-                &actor,
-                &CreateAccountParams {
-                    company_slug: &"acme".parse()?,
-                    code: "1100",
-                    name: "New",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None,
-                },
-            )
+            Granted::<Admin>::with_db(&db, &actor, |grant| {
+                crate::db::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme".parse()?,
+                        code: "1100",
+                        name: "New",
+                        account_type: beankeeper::types::AccountType::Asset,
+                        default_tax_category: None,
+                    },
+                )
+            })
             .expect_err("account creation must fail on audit error"),
         );
         let transaction_id = crate::db::ids::TransactionId::try_from(1)?;
@@ -2924,27 +2931,29 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
         // Delete an unused account without touching posted entries.
-        super::super::create_account(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                code: "1100",
-                name: "Unused Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            super::super::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    code: "1100",
+                    name: "Unused Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })
         .expect("create unused account");
-        delete_account(
-            db.conn(),
-            &actor,
-            &"acme".parse().expect("fixture company"),
-            "1100",
-            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
-        )
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            delete_account(
+                grant,
+                &"acme".parse()?,
+                "1100",
+                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+            )
+        })
         .expect("delete account");
 
         let (action, before): (String, Option<String>) = db
@@ -3100,7 +3109,7 @@ mod tests {
         r.status = ClearingStatus::Reconciled;
         let o = clear_entry_fixture(&db, &actor, &r).expect("promote S1");
         assert_eq!(o.action, ClearAction::Reconciled);
-        let company = Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+        let company = Company::bind(db.read(), "acme".parse().expect("fixture company"))
             .expect("bind clearing company");
         let rows = list_clearings(&company, fixture_entry(1)).expect("list");
         assert_eq!(rows[0].cleared_on().to_string(), "2026-01-31");
@@ -3153,16 +3162,17 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
         clear_entry_fixture(&db, &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
-        crate::db::create_company(
-            db.conn(),
-            &actor,
-            &"other".parse().expect("valid company"),
-            "Other",
-            None,
-        )
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            crate::db::create_company(
+                grant,
+                &"other".parse().expect("valid company"),
+                "Other",
+                None,
+            )
+        })
         .expect("create company");
 
-        let company = Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+        let company = Company::bind(db.read(), "acme".parse().expect("fixture company"))
             .expect("bind clearing company");
         assert_eq!(
             list_clearings(&company, fixture_entry(1))
@@ -3171,7 +3181,7 @@ mod tests {
             1
         );
 
-        let other = Company::resolve(db.conn(), &"other".parse().expect("fixture company"))
+        let other = Company::bind(db.read(), "other".parse().expect("fixture company"))
             .expect("bind other company");
         assert_eq!(
             list_clearings(&other, fixture_entry(1)).expect("list foreign clearings"),
@@ -3276,13 +3286,14 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
         assert!(
-            delete_account(
-                db.conn(),
-                &actor,
-                &"acme".parse().expect("fixture company"),
-                "9999",
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
-            )
+            Granted::<Admin>::with_db(&db, &actor, |grant| {
+                delete_account(
+                    grant,
+                    &"acme".parse()?,
+                    "9999",
+                    crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                )
+            })
             .is_err()
         );
     }

@@ -1,6 +1,7 @@
 //! Stateless loan schedules and payments through the existing audited ledger.
 
 use beankeeper_cli::db::CreateAccountParams;
+use beankeeper_cli::identity::{Admin, Granted};
 use std::{
     error::Error,
     path::PathBuf,
@@ -47,20 +48,12 @@ impl Ledger {
         let dir = tempdir()?;
         let path = dir.path().join("loan.db");
         let db = Db::open(&path, None)?;
-        companies::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
-        companies::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"other".parse()?,
-            "Other",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            companies::create_company(grant, &"other".parse()?, "Other", None)
+        })?;
         for (code, kind, tax) in [
             ("1000", beankeeper::types::AccountType::Asset, None),
             ("2000", beankeeper::types::AccountType::Liability, None),
@@ -70,17 +63,18 @@ impl Ledger {
                 Some("interest"),
             ),
         ] {
-            accounts::create_account(
-                db.conn(),
-                &Actor::new("fixture"),
-                &CreateAccountParams {
-                    company_slug: &"acme".parse()?,
-                    code,
-                    name: code,
-                    account_type: kind,
-                    default_tax_category: tax,
-                },
-            )?;
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: &"acme".parse()?,
+                        code,
+                        name: code,
+                        account_type: kind,
+                        default_tax_category: tax,
+                    },
+                )
+            })?;
         }
         Ok(Self { _dir: dir, path })
     }
@@ -119,7 +113,7 @@ impl Ledger {
     fn transaction_count(&self) -> Result<i64, Box<dyn Error>> {
         let db = Db::open_existing(&self.path, None)?;
         Ok(db
-            .conn()
+            .read()
             .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?)
     }
 }
@@ -240,7 +234,7 @@ fn payment_posts_the_split_with_audit_actor_and_account_tax_default() -> TestRes
         }
     }
     let db = Db::open_existing(&ledger.path, None)?;
-    let snapshot: String = db.conn().query_row(
+    let snapshot: String = db.read().query_row(
         "SELECT after FROM audit_log WHERE entity = 'transaction' AND action = 'create'",
         [],
         |row| row.get(0),
@@ -262,7 +256,7 @@ fn payment_retries_reject_or_skip_the_same_reference() -> TestResult {
     assert_eq!(skipped["data"]["skipped"], true);
     assert_eq!(ledger.transaction_count()?, 1);
     let db = Db::open_existing(&ledger.path, None)?;
-    let count: i64 = db.conn().query_row(
+    let count: i64 = db.read().query_row(
         "SELECT COUNT(*) FROM audit_log WHERE entity = 'transaction' AND action = 'create'",
         [],
         |row| row.get(0),

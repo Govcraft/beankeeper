@@ -242,12 +242,15 @@ fn read_only_snapshot_matches_cli_and_summary_adds_no_audit_or_ledger_rows() -> 
     let ledger = Ledger::new()?;
     ledger.post("2024-03-01", "1000:12.34", "4000:12.34", "USD")?;
     let db = Db::open_snapshot(&ledger.dir.path().join("books.db"), None)?;
-    db.conn().pragma_update(None, "query_only", true)?;
     let cli = Cli::try_parse_from(["bk", "--company", "co", "summary", "--to", "2024-03-31"])?;
     let BkCommand::Summary(args) = &cli.command else {
         return Err("expected summary".into());
     };
-    let changes = db.conn().total_changes();
+    let total_changes = || {
+        db.read()
+            .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+    };
+    let changes = total_changes()?;
     let mut actual = summary::execute_json(&cli, &db, "co", args)?;
     let mut expected = ledger.summary(&["--to", "2024-03-31"])?;
     actual["meta"]
@@ -259,7 +262,7 @@ fn read_only_snapshot_matches_cli_and_summary_adds_no_audit_or_ledger_rows() -> 
         .ok_or("meta")?
         .remove("timestamp");
     assert_eq!(actual, expected);
-    assert_eq!(db.conn().total_changes(), changes);
+    assert_eq!(total_changes()?, changes);
     ledger.ok(&["verify"])?;
     Ok(())
 }

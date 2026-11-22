@@ -43,9 +43,7 @@ pub fn statement_receipt(
     company: &CompanySlug,
     batch_id: StatementBatchId,
 ) -> Result<StatementReceipt, CliError> {
-    crate::db::audit::atomically(db.conn(), || {
-        statement_batches::get_receipt(db.read(), company, batch_id)
-    })
+    db.read_snapshot(|reader| statement_batches::get_receipt(reader, company, batch_id))
 }
 
 /// Count committed statement imports and their outcomes for one book.
@@ -59,9 +57,9 @@ pub fn statement_import_summary(
     db: &Db,
     company: &CompanySlug,
 ) -> Result<StatementImportSummary, CliError> {
-    crate::db::audit::atomically(db.conn(), || {
-        crate::db::get_company(db.read(), company)?;
-        statement_batches::summary(db.read(), company)
+    db.read_snapshot(|reader| {
+        crate::db::get_company(reader, company)?;
+        statement_batches::summary(reader, company)
     })
 }
 
@@ -349,7 +347,7 @@ pub struct SetupStatus {
 /// # Errors
 /// Returns database errors if the selected ledger cannot be read.
 pub fn status(db: &Db) -> Result<SetupStatus, CliError> {
-    Ok(db.conn().query_row(
+    Ok(db.read().query_row(
         "SELECT (SELECT COUNT(*) FROM companies),
                 (SELECT COUNT(*) FROM accounts),
                 (SELECT COUNT(*) FROM transactions),
@@ -373,9 +371,10 @@ pub fn status(db: &Db) -> Result<SetupStatus, CliError> {
 
 fn run_status(cli: &Cli) -> Result<(), CliError> {
     let db = open_setup_snapshot(cli)?;
-    let _snapshot = db.conn().unchecked_transaction()?;
-    cli.verify_agent(&db)?;
-    let state = status(&db)?;
+    let state = db.read_snapshot(|_| {
+        cli.verify_agent(&db)?;
+        status(&db)
+    })?;
     match resolve_format(None, cli) {
         OutputFormat::Json => println!(
             "{}",
@@ -411,9 +410,10 @@ fn open_setup_snapshot(cli: &Cli) -> Result<Db, CliError> {
 
 fn run_book_show(cli: &Cli, company: &CompanySlug) -> Result<(), CliError> {
     let db = open_setup_snapshot(cli)?;
-    let _snapshot = db.conn().unchecked_transaction()?;
-    cli.verify_agent(&db)?;
-    let facts = book_facts(&db, company)?;
+    let facts = db.read_snapshot(|_| {
+        cli.verify_agent(&db)?;
+        book_facts(&db, company)
+    })?;
     print_setup_data(
         cli,
         Operation::LedgerSetupBookShow,
@@ -424,16 +424,17 @@ fn run_book_show(cli: &Cli, company: &CompanySlug) -> Result<(), CliError> {
 
 fn run_opening_preview(cli: &Cli, args: &OpeningPreviewArgs) -> Result<(), CliError> {
     let db = open_setup_snapshot(cli)?;
-    let _snapshot = db.conn().unchecked_transaction()?;
-    cli.verify_agent(&db)?;
-    let request = args.request()?;
-    let preview = openings::preview(&db, &cli.principal(), &request)?;
-    print_setup_data(
-        cli,
-        Operation::LedgerSetupOpeningPreview,
-        Some(args.company.as_str()),
-        preview,
-    )
+    db.read_snapshot(|_| {
+        cli.verify_agent(&db)?;
+        let request = args.request()?;
+        let preview = openings::preview(&db, &cli.principal(), &request)?;
+        print_setup_data(
+            cli,
+            Operation::LedgerSetupOpeningPreview,
+            Some(args.company.as_str()),
+            preview,
+        )
+    })
 }
 
 fn run_statement_preview(cli: &Cli, args: &StatementPreviewArgs) -> Result<(), CliError> {

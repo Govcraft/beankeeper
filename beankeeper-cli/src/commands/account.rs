@@ -4,6 +4,7 @@ use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::Db;
 use crate::db::{self, AccountBalanceWindow, CreateAccountParams, accounts};
 use crate::error::CliError;
+use crate::identity::{Admin, Granted};
 use crate::operation::Operation;
 use crate::output;
 
@@ -78,17 +79,18 @@ fn compute(
             account_type,
             default_tax_category,
         } => {
-            let row = accounts::create_account(
-                db.conn(),
-                actor,
-                &CreateAccountParams {
-                    company_slug: company,
-                    code,
-                    name,
-                    account_type: *account_type,
-                    default_tax_category: default_tax_category.as_deref(),
-                },
-            )?;
+            let row = Granted::<Admin>::with_db(db, actor, |grant| {
+                accounts::create_account(
+                    grant,
+                    &CreateAccountParams {
+                        company_slug: company,
+                        code,
+                        name,
+                        account_type: *account_type,
+                        default_tax_category: default_tax_category.as_deref(),
+                    },
+                )
+            })?;
             Ok(AccountData::Rows(vec![row]))
         }
         AccountCommand::List {
@@ -104,15 +106,14 @@ fn compute(
                 type_filter,
                 name_filter: name.as_deref(),
             };
-            let conn = db.conn();
             if *with_balances {
                 let window = AccountBalanceWindow::new(*from, *to)?;
                 let currency = currency.as_ref().map(CurrencyArg::resolve).transpose()?;
-                db::audit::atomically(conn, || {
+                db.read_snapshot(|reader| {
                     let currency = match currency {
                         Some(currency) => currency,
                         None => super::report_currency::infer_company_currency(
-                            conn,
+                            reader,
                             company.as_str(),
                             CliError::Validation,
                         )?,
@@ -178,13 +179,9 @@ fn run_delete(
         return Ok(());
     };
     let actor = cli.principal();
-    crate::db::delete_account(
-        db.conn(),
-        &actor,
-        &company.as_str().parse()?,
-        code,
-        confirmed,
-    )?;
+    Granted::<Admin>::with_db(db, &actor, |grant| {
+        crate::db::delete_account(grant, company, code, confirmed)
+    })?;
     if format == OutputFormat::Json {
         let meta = cli.meta(Operation::AccountDelete, Some(company.as_str()));
         let rendered = output::json::render_deleted(code, meta)?;

@@ -118,16 +118,17 @@ fn compare_ledgers(path: &Path, restored: &Path, key: Option<&Path>) -> TestResu
     let restored_db = Db::open_existing(restored, key.map(|_| &secret))?;
     // Compare every table, including internal sequences and private identity state.
     let mut tables = source_db
-        .conn()
+        .read()
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
     for table in tables.query_map([], |row| row.get::<_, String>(0))? {
         let table = table?;
         let sql = format!("SELECT * FROM \"{}\"", table.replace('"', "\"\""));
         let rows = |db: &Db| -> rusqlite::Result<Vec<Vec<rusqlite::types::Value>>> {
-            let mut stmt = db.conn().prepare(&sql)?;
-            let columns = stmt.column_count();
+            let mut stmt = db.read().prepare(&sql)?;
             stmt.query_map([], |row| {
-                (0..columns).map(|column| row.get(column)).collect()
+                (0..row.as_ref().column_count())
+                    .map(|column| row.get(column))
+                    .collect()
             })?
             .collect()
         };
@@ -618,8 +619,8 @@ fn restore_cannot_replace_an_enforced_destination_with_an_unenforced_snapshot() 
         .assert()
         .success();
     let db = Db::open(&destination, None)?;
-    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
-        db.conn(),
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
+        &db,
         &beankeeper_cli::db::Actor::new("owner"),
         |grant| beankeeper_cli::db::audit::set_policy(grant, true),
     )?;

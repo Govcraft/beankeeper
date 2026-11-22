@@ -1,5 +1,8 @@
 //! Phase 1 identity lifecycle and attribution through the real CLI.
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
@@ -9,7 +12,7 @@ use agent_uri::AgentUri;
 use agent_uri_attestation::{AttestationClaims, Denylist, Issuer, SigningKey, Verifier};
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db};
-use beankeeper_cli::identity;
+use beankeeper_cli::identity::{self, Admin, Granted};
 use chrono::Utc;
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -32,41 +35,43 @@ impl Ledger {
         std::fs::write(&passphrase_file, "test-only-passphrase")?;
         let passphrase: SecretString = "test-only-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        db::create_company(
-            db.conn(),
-            &Actor::new("fixture"),
-            &"acme".parse()?,
-            "Acme",
-            None,
-        )?;
-        db::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "1000",
-                name: "Cash",
-                account_type: beankeeper::types::AccountType::Asset,
-                default_tax_category: None,
-            },
-        )?;
-        db::create_account(
-            db.conn(),
-            &Actor::new("fixture"),
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "4000",
-                name: "Revenue",
-                account_type: beankeeper::types::AccountType::Revenue,
-                default_tax_category: None,
-            },
-        )?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_company(grant, &"acme".parse()?, "Acme", None)
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })?;
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            db::create_account(
+                grant,
+                &CreateAccountParams {
+                    company_slug: &"acme".parse()?,
+                    code: "4000",
+                    name: "Revenue",
+                    account_type: beankeeper::types::AccountType::Revenue,
+                    default_tax_category: None,
+                },
+            )
+        })?;
         Ok(Self {
             dir,
             path,
             passphrase_file,
             db,
         })
+    }
+
+    fn raw(&self) -> rusqlite::Result<rusqlite::Connection> {
+        raw_ledger::open(&self.path, Some("test-only-passphrase"))
     }
 
     fn command(&self) -> Result<Command, Box<dyn Error>> {
@@ -127,7 +132,7 @@ impl Ledger {
 
     fn count(&self, table: &str) -> Result<i64, rusqlite::Error> {
         self.db
-            .conn()
+            .read()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
     }
 }
@@ -172,17 +177,17 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
     let narrow = issue("ui/navigate/panel")?["data"].clone();
     let administrator = issue("ledger/admin")?;
     let owner = Actor::new("owner").with_identity(identity::verify(
-        ledger.db.conn(),
+        ledger.db.read(),
         text(&administrator["data"], "token")?,
     )?);
     let uri = AgentUri::parse(text(&navigation, "agent_uri")?)?;
     assert_eq!(uri.capability_path().as_str(), "ui");
     assert_eq!(navigation["capabilities"], json!(["ui/navigate"]));
-    let identity = identity::verify(ledger.db.conn(), text(&navigation, "token")?)?;
+    let identity = identity::verify(ledger.db.read(), text(&navigation, "token")?)?;
     assert!(identity.allows(Capability::Navigate)?);
     assert!(!identity.allows(Capability::Read)?);
     assert!(!identity.allows(Capability::Post)?);
-    let legacy_identity = identity::verify(ledger.db.conn(), text(&legacy, "token")?)?;
+    let legacy_identity = identity::verify(ledger.db.read(), text(&legacy, "token")?)?;
     assert_eq!(
         AgentUri::parse(legacy_identity.uri())?
             .capability_path()
@@ -191,9 +196,9 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
     );
     assert!(legacy_identity.allows(Capability::Post)?);
     assert!(!legacy_identity.allows(Capability::Navigate)?);
-    let authorize = |token, capability| identity::authorize(ledger.db.conn(), token, capability);
+    let authorize = |token, capability| identity::authorize(ledger.db.read(), token, capability);
     for enforce in [false, true] {
-        identity::Granted::<identity::Admin>::with(ledger.db.conn(), &owner, |grant| {
+        identity::Granted::<identity::Admin>::with_db(&ledger.db, &owner, |grant| {
             db::audit::set_policy(grant, enforce)
         })?;
         assert!(authorize(Some(text(&navigation, "token")?), Capability::Navigate)?.is_some());
@@ -212,7 +217,7 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
         authorize(Some(text(&navigation, "token")?), Capability::Read),
         Err(CliError::Forbidden(_))
     ));
-    identity::Granted::<identity::Admin>::with(ledger.db.conn(), &owner, |grant| {
+    identity::Granted::<identity::Admin>::with_db(&ledger.db, &owner, |grant| {
         db::audit::set_policy(grant, false)
     })?;
     let before = ledger.count("agent_tokens")?;
@@ -238,9 +243,11 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
         assert!(!output.status.success(), "accepted {caps}");
     }
     assert_eq!(ledger.count("agent_tokens")?, before);
-    identity::revoke(ledger.db.conn(), &Actor::new("owner"), identity.jti())?;
+    Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+        identity::revoke(grant, identity.jti())
+    })?;
     assert!(matches!(
-        identity::verify(ledger.db.conn(), text(&navigation, "token")?),
+        identity::verify(ledger.db.read(), text(&navigation, "token")?),
         Err(CliError::Unauthorized(_))
     ));
     ledger.run(&["verify"], None)?;
@@ -268,28 +275,30 @@ fn unauthorized(output: &Output) -> TestResult {
 #[test]
 fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() -> TestResult {
     let ledger = Ledger::new()?;
-    db::create_account(
-        ledger.db.conn(),
-        &Actor::new("fixture"),
-        &CreateAccountParams {
-            company_slug: &"acme".parse()?,
-            code: "2000",
-            name: "Loan",
-            account_type: beankeeper::types::AccountType::Liability,
-            default_tax_category: None,
-        },
-    )?;
-    db::create_account(
-        ledger.db.conn(),
-        &Actor::new("fixture"),
-        &CreateAccountParams {
-            company_slug: &"acme".parse()?,
-            code: "5000",
-            name: "Interest",
-            account_type: beankeeper::types::AccountType::Expense,
-            default_tax_category: None,
-        },
-    )?;
+    Granted::<Admin>::with_db(&ledger.db, &Actor::new("fixture"), |grant| {
+        db::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "2000",
+                name: "Loan",
+                account_type: beankeeper::types::AccountType::Liability,
+                default_tax_category: None,
+            },
+        )
+    })?;
+    Granted::<Admin>::with_db(&ledger.db, &Actor::new("fixture"), |grant| {
+        db::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "5000",
+                name: "Interest",
+                account_type: beankeeper::types::AccountType::Expense,
+                default_tax_category: None,
+            },
+        )
+    })?;
     let issued = ledger.issue()?;
     let token = text(&issued, "token")?;
     let args = [
@@ -329,7 +338,7 @@ fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() ->
     assert_eq!(shown["data"][0]["agent_uri"], issued["agent_uri"]);
     assert_eq!(shown["data"][0]["token_jti"], issued["token_jti"]);
     assert_eq!(shown["data"][0]["posted_by"], "host-process");
-    let (uri, jti): (String, String) = ledger.db.conn().query_row(
+    let (uri, jti): (String, String) = ledger.db.read().query_row(
         "SELECT agent_uri, token_jti FROM audit_log WHERE entity = 'transaction' AND action = 'create'",
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -372,7 +381,7 @@ fn key_and_token_lifecycle_binds_supplied_key_and_never_lists_secrets() -> TestR
     );
     let claims = verifier.verify_for_uri(token, &uri)?;
     assert_eq!(claims.agent_verifying_key()?, key.verifying_key());
-    assert_eq!(identity::verify(ledger.db.conn(), token)?.jti(), claims.jti);
+    assert_eq!(identity::verify(ledger.db.read(), token)?.jti(), claims.jti);
     let listed = ledger.run(&["agent", "list"], None)?;
     assert_eq!(listed["data"][0]["token_jti"], issued["token_jti"]);
     assert!(!listed.to_string().contains(token));
@@ -551,12 +560,12 @@ fn dated_token(ledger: &Ledger, issued: &Value, seconds: i64) -> Result<String, 
     let seed: [u8; 32] =
         ledger
             .db
-            .conn()
+            .read()
             .query_row("SELECT private_key FROM identity_root", [], |r| r.get(0))?;
     let root: String =
         ledger
             .db
-            .conn()
+            .read()
             .query_row("SELECT trust_root FROM identity_root", [], |r| r.get(0))?;
     let authority = Issuer::new(
         &root,
@@ -729,20 +738,18 @@ fn identity_is_immutable_and_hash_chain_detects_changes_after_trigger_bypass() -
     for field in ["agent_uri", "token_jti"] {
         assert!(
             ledger
-                .db
-                .conn()
+                .raw()?
                 .execute(&format!("UPDATE transactions SET {field} = 'forged'"), [])
                 .is_err()
         );
         assert!(
             ledger
-                .db
-                .conn()
+                .raw()?
                 .execute(&format!("UPDATE audit_log SET {field} = 'forged'"), [])
                 .is_err()
         );
     }
-    ledger.db.conn().execute_batch(
+    ledger.raw()?.execute_batch(
         "DROP TRIGGER protect_transaction_identity; UPDATE transactions SET token_jti = 'forged'",
     )?;
     let failed = ledger.command()?.arg("verify").output()?;
@@ -750,7 +757,7 @@ fn identity_is_immutable_and_hash_chain_detects_changes_after_trigger_bypass() -
     assert!(String::from_utf8_lossy(&failed.stderr).contains("creation audit record"));
     let other = Ledger::new()?;
     other.issue()?;
-    other.db.conn().execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET agent_uri = 'forged', token_jti = 'forged' WHERE id = 1")?;
+    other.raw()?.execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET agent_uri = 'forged', token_jti = 'forged' WHERE id = 1")?;
     let failed = other.command()?.arg("verify").output()?;
     assert_eq!(failed.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&failed.stderr).contains("hash chain broken at row #1"));
@@ -796,7 +803,7 @@ fn invalid_issuance_and_audit_failure_leave_no_partial_registry_records() -> Tes
             Some(3)
         );
     }
-    ledger.db.conn().execute_batch("CREATE TRIGGER reject_issue BEFORE INSERT ON audit_log WHEN NEW.action = 'token_issue' BEGIN SELECT RAISE(ABORT, 'test failure'); END")?;
+    ledger.raw()?.execute_batch("CREATE TRIGGER reject_issue BEFORE INSERT ON audit_log WHEN NEW.action = 'token_issue' BEGIN SELECT RAISE(ABORT, 'test failure'); END")?;
     assert_eq!(
         ledger
             .command()?
@@ -829,11 +836,11 @@ fn ttl_validation_has_exact_positive_bounds_and_encryption_is_required_for_keys(
     assert_eq!(identity::parse_ttl("30d")?.as_secs(), 30 * 86400);
     let db = Db::open_in_memory()?;
     assert!(matches!(
-        identity::init_root(db.conn(), &Actor::new("test")),
+        Granted::<Admin>::with_db(&db, &Actor::new("test"), identity::init_root),
         Err(beankeeper_cli::error::CliError::Validation(_))
     ));
     assert_eq!(
-        db.conn()
+        db.read()
             .query_row("SELECT COUNT(*) FROM identity_root", [], |r| r
                 .get::<_, i64>(0))?,
         0
@@ -895,13 +902,13 @@ fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestR
         String::from_utf8_lossy(&output.stderr)
     );
     let db = Db::open_existing(&path, None)?;
-    let wrong: i64 = db.conn().query_row(
+    let wrong: i64 = db.read().query_row(
         "SELECT COUNT(*) FROM transactions WHERE posted_by IS NOT 'demo-host'",
         [],
         |r| r.get(0),
     )?;
     assert_eq!(wrong, 0);
-    let (companies, accounts): (i64, i64) = db.conn().query_row(
+    let (companies, accounts): (i64, i64) = db.read().query_row(
         "SELECT
             (SELECT COUNT(*) FROM companies c WHERE (
                 SELECT COUNT(*) FROM audit_log a WHERE a.company_slug = c.slug
@@ -918,11 +925,11 @@ fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestR
     )?;
     assert_eq!(companies, 3);
     let account_count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
     assert!(account_count > 0);
     assert_eq!(accounts, account_count);
-    let creations: i64 = db.conn().query_row(
+    let creations: i64 = db.read().query_row(
         "SELECT COUNT(*) FROM audit_log WHERE entity IN ('company', 'account') AND action = 'create'",
         [],
         |row| row.get(0),
@@ -963,18 +970,19 @@ fn typed_issuance_keeps_bearer_and_private_key_out_of_debug_and_audit() -> TestR
     let ledger = Ledger::new()?;
     let db = &ledger.db;
     let actor = Actor::new("owner");
-    identity::init_root(db.conn(), &actor)?;
-    let issued = identity::issue_credential(
-        db.conn(),
-        &actor,
-        &identity::IssueRequest {
-            name: "typed_reader",
-            capabilities: &["ledger/read".into()],
-            ttl: std::time::Duration::from_mins(15),
-            public_key: None,
-            generate_key: true,
-        },
-    )?;
+    Granted::<Admin>::with_db(db, &actor, identity::init_root)?;
+    let issued = Granted::<Admin>::with_db(db, &actor, |grant| {
+        identity::issue_credential(
+            grant,
+            &identity::IssueRequest {
+                name: "typed_reader",
+                capabilities: &["ledger/read".into()],
+                ttl: std::time::Duration::from_mins(15),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    })?;
     let secret = issued.token().expose_secret();
     let private_key = issued
         .generated_private_key()
@@ -983,13 +991,13 @@ fn typed_issuance_keeps_bearer_and_private_key_out_of_debug_and_audit() -> TestR
     assert!(!preview.contains(secret));
     assert!(!preview.contains(private_key.expose_secret()));
 
-    let verified = identity::verify(db.conn(), secret)?;
+    let verified = identity::verify(db.read(), secret)?;
     assert_eq!(verified.uri(), issued.agent_uri.as_str());
     assert_eq!(verified.jti(), issued.token_jti.as_str());
     assert_eq!(verified.capabilities(), issued.capabilities);
     assert!(issued.expires_at > issued.issued_at);
 
-    let recorded: String = db.conn().query_row(
+    let recorded: String = db.read().query_row(
         "SELECT after FROM audit_log WHERE action = 'token_issue' AND entity_id = ?1",
         [issued.token_jti.as_str()],
         |row| row.get(0),

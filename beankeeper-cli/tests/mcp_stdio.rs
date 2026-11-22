@@ -1,6 +1,7 @@
 //! Exercise the real MCP server over its newline-delimited stdio transport.
 
 use beankeeper_cli::db::CreateAccountParams;
+use beankeeper_cli::identity::{Admin, Granted};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
@@ -1213,45 +1214,48 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
     std::fs::write(passphrase_file, "mcp-test-passphrase")?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open(path, Some(&passphrase))?;
-    db::create_company(
-        db.conn(),
-        &Actor::new("fixture"),
-        &"acme".parse()?,
-        "Acme",
-        None,
-    )?;
-    db::create_account(
-        db.conn(),
-        &Actor::new("fixture"),
-        &CreateAccountParams {
-            company_slug: &"acme".parse()?,
-            code: "1000",
-            name: "Cash",
-            account_type: beankeeper::types::AccountType::Asset,
-            default_tax_category: None,
-        },
-    )?;
-    db::create_account(
-        db.conn(),
-        &Actor::new("fixture"),
-        &CreateAccountParams {
-            company_slug: &"acme".parse()?,
-            code: "4000",
-            name: "Sales",
-            account_type: beankeeper::types::AccountType::Revenue,
-            default_tax_category: None,
-        },
-    )?;
-    identity::init_root(db.conn(), &Actor::new("owner"))?;
-    Ok(identity::issue(
-        db.conn(),
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        db::create_company(grant, &"acme".parse()?, "Acme", None)
+    })?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        db::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "1000",
+                name: "Cash",
+                account_type: beankeeper::types::AccountType::Asset,
+                default_tax_category: None,
+            },
+        )
+    })?;
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        db::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "4000",
+                name: "Sales",
+                account_type: beankeeper::types::AccountType::Revenue,
+                default_tax_category: None,
+            },
+        )
+    })?;
+    Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+    Ok(Granted::<Admin>::with_db(
+        &db,
         &Actor::new("owner"),
-        &IssueRequest {
-            name: "mcp_agent",
-            capabilities: &["ledger/read".into()],
-            ttl: Duration::from_secs(3600),
-            public_key: None,
-            generate_key: true,
+        |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name: "mcp_agent",
+                    capabilities: &["ledger/read".into()],
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
         },
     )?)
 }
@@ -1308,7 +1312,7 @@ fn session_identity_is_recorded_and_live_revocation_blocks_the_next_tool_call() 
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = beankeeper_cli::db::Db::open_existing(&path, Some(&passphrase))?;
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))?;
     assert_eq!(count, 1);
     Ok(())
@@ -1407,7 +1411,7 @@ fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
 
     let db = beankeeper_cli::db::Db::open_existing(&path, None)?;
     let count: i64 = db
-        .conn()
+        .read()
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     Ok(())
@@ -1803,18 +1807,23 @@ fn proposal_identity(
     capabilities: &[&str],
 ) -> Result<Value, Box<dyn Error>> {
     use beankeeper_cli::identity::{self, IssueRequest};
-    Ok(identity::issue(
-        db.conn(),
+    Ok(Granted::<Admin>::with_db(
+        db,
         &beankeeper_cli::db::Actor::new("owner"),
-        &IssueRequest {
-            name,
-            capabilities: &capabilities
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            ttl: Duration::from_secs(3600),
-            public_key: None,
-            generate_key: true,
+        |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name,
+                    capabilities: &capabilities
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
         },
     )?)
 }
@@ -1830,8 +1839,8 @@ fn proposal_tools_filter_grants_and_post_approved_requests_with_reviewer_identit
     let db = Db::open_existing(&path, Some(&passphrase))?;
     let requester = proposal_identity(&db, "requester", &["ledger/read", "ledger/propose"])?;
     let reviewer = proposal_identity(&db, "reviewer", &["ledger/read", "ledger/approve"])?;
-    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
-        db.conn(),
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
+        &db,
         &Actor::new("owner"),
         |grant| db::audit::set_policy(grant, true),
     )?;
@@ -1926,8 +1935,8 @@ fn mcp_posting_checks_spend_limits_while_proposals_use_the_approval_gate() -> Te
         ])
         .assert()
         .success();
-    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
-        db.conn(),
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
+        &db,
         &Actor::new("owner"),
         |grant| db::audit::set_policy(grant, true),
     )?;
@@ -1959,6 +1968,7 @@ fn mcp_posting_checks_spend_limits_while_proposals_use_the_approval_gate() -> Te
 #[test]
 fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     use beankeeper_cli::db::{self, Actor, Db};
+    use beankeeper_cli::identity;
     let dir = tempdir()?;
     let path = dir.path().join("identity.db");
     let passphrase_file = dir.path().join("passphrase");
@@ -1966,11 +1976,10 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let token = issued["token"].as_str().ok_or("token")?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
-    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
-        db.conn(),
-        &Actor::new("owner"),
-        |grant| db::audit::set_policy(grant, true),
-    )?;
+    let admin = proposal_identity(&db, "owner", &["ledger/admin"])?;
+    let verified = identity::verify(db.read(), admin["token"].as_str().ok_or("admin token")?)?;
+    let owner = Actor::new("owner").with_identity(verified);
+    Granted::<Admin>::with_db(&db, &owner, |grant| db::audit::set_policy(grant, true))?;
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
@@ -2005,11 +2014,8 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     assert_eq!(audit.as_array().map(Vec::len), Some(1));
     let response = client.call("txn_post", &posting("hidden"))?;
     assert!(response.get("error").is_some() || response["result"]["isError"] == true);
-    beankeeper_cli::identity::revoke(
-        db.conn(),
-        &Actor::new("owner"),
-        issued["token_jti"].as_str().ok_or("jti")?,
-    )?;
+    let revoked_jti = issued["token_jti"].as_str().ok_or("jti")?;
+    Granted::<Admin>::with_db(&db, &owner, |grant| identity::revoke(grant, revoked_jti))?;
     let response = client.call("company_list", &json!({}))?;
     assert_eq!(response["result"]["isError"], true);
     assert_eq!(payload(&response)?["code"], "UNAUTHORIZED");
@@ -2030,8 +2036,8 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
     assert!(tool_names(&listed)?.contains("txn_reconcile"));
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
-    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
-        db.conn(),
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
+        &db,
         &Actor::new("owner"),
         |grant| db::audit::set_policy(grant, true),
     )?;
@@ -2073,7 +2079,7 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
     let denied = named.call("company_list", &json!({}))?;
     assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
     assert_eq!(
-        db.conn()
+        db.read()
             .query_row("SELECT COUNT(*) FROM transactions", [], |row| row
                 .get::<_, i64>(0))?,
         0
@@ -2099,20 +2105,21 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     identity_ledger(&path, &passphrase_file)?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
-    let issued = identity::issue(
-        db.conn(),
-        &Actor::new("owner"),
-        &IssueRequest {
-            name: "poster",
-            capabilities: &["ledger/read".into(), "ledger/post".into()],
-            ttl: Duration::from_secs(3600),
-            public_key: None,
-            generate_key: true,
-        },
-    )?;
+    let issued = Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+        identity::issue(
+            grant,
+            &IssueRequest {
+                name: "poster",
+                capabilities: &["ledger/read".into(), "ledger/post".into()],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    })?;
     let token = issued["token"].as_str().ok_or("token")?;
-    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
-        db.conn(),
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
+        &db,
         &Actor::new("owner"),
         |grant| db::audit::set_policy(grant, true),
     )?;
@@ -2656,7 +2663,11 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
         "{}",
         String::from_utf8_lossy(&status.stderr)
     );
-    assert_eq!(beankeeper_cli::db::get_schema_version(&connection)?, 21);
+    let version: i64 =
+        connection.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })?;
+    assert_eq!(version, 21);
     drop(connection);
 
     let db = Db::open_existing(&path, None)?;
@@ -2696,7 +2707,11 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     let passphrase: secrecy::SecretString = "mcp-setup-test".into();
     std::fs::write(&passphrase_path, "mcp-setup-test")?;
     let db = Db::open(&path, Some(&passphrase))?;
-    beankeeper_cli::identity::init_root(db.conn(), &Actor::new("owner"))?;
+    Granted::<Admin>::with_db(
+        &db,
+        &Actor::new("owner"),
+        beankeeper_cli::identity::init_root,
+    )?;
     let owner = proposal_identity(&db, "owner", &["ledger/admin"])?;
     let owner_token = owner["token"].as_str().ok_or("missing owner token")?;
     let public_key = SigningKey::generate().verifying_key().to_base64();
@@ -3071,7 +3086,7 @@ fn assert_statement_collision_rolls_back(
     }))?;
     assert_eq!(payload(&failed)?["code"], "VALIDATION");
     assert_eq!(setup_audit_count(db)?, audit);
-    let posted: bool = db.conn().query_row(
+    let posted: bool = db.read().query_row(
         "SELECT EXISTS(SELECT 1 FROM transactions WHERE reference = 'june-first')",
         [],
         |row| row.get(0),
@@ -3211,7 +3226,7 @@ fn assert_existing_book_initializes_in_place(
     ])?;
 
     let snapshot = || {
-        db.conn().query_row(
+        db.read().query_row(
             "SELECT json_array(t.id, t.description, t.reference, t.currency,
                  (SELECT json_group_array(json_array(e.id, e.account_code, e.direction, e.amount))
                   FROM entries e WHERE e.transaction_id = t.id))
@@ -3381,7 +3396,7 @@ fn setup_book_target(company: &str, generation: i64, reference: &str) -> Value {
 }
 
 fn setup_audit_count(db: &beankeeper_cli::db::Db) -> rusqlite::Result<i64> {
-    db.conn()
+    db.read()
         .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
 }
 
@@ -3414,7 +3429,7 @@ fn assert_setup_chart_collision_rolls_back(
         }),
     )?;
     assert_eq!(payload(&failed)?["code"], "VALIDATION");
-    let count_accounts: i64 = db.conn().query_row(
+    let count_accounts: i64 = db.read().query_row(
         "SELECT COUNT(*) FROM accounts WHERE company_slug = 'studio'",
         [],
         |row| row.get(0),
@@ -3441,7 +3456,7 @@ fn assert_opening_preview(
     generation: i64,
 ) -> TestResult {
     let state = || {
-        db.conn().query_row(
+        db.read().query_row(
             "SELECT (SELECT COUNT(*) FROM audit_log), (SELECT COUNT(*) FROM transactions),
                 (SELECT COUNT(*) FROM txn_proposals), (SELECT COUNT(*) FROM setup_requests)",
             [],
@@ -3586,7 +3601,7 @@ fn assert_opening_reservation(
     token: &str,
     generation: i64,
 ) -> Result<(String, String), Box<dyn Error>> {
-    assert!(!beankeeper_cli::db::policy::get(db.conn())?.enforce);
+    assert!(!beankeeper_cli::db::policy::get(db.read())?.enforce);
 
     let owner_review = proposal_identity(db, "owner_review", &["ledger/approve"])?;
     let owner_token = owner_review["token"]
@@ -3628,7 +3643,7 @@ fn assert_opening_reservation(
     );
     assert_eq!(pending.debit_total, 12_345);
     assert_eq!(setup_audit_count(db)?, before + 1);
-    let kind: String = db.conn().query_row(
+    let kind: String = db.read().query_row(
         "SELECT entity_id FROM audit_log WHERE company_slug = 'home' ORDER BY id DESC LIMIT 1",
         [],
         |row| row.get(0),

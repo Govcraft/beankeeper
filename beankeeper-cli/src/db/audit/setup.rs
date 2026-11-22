@@ -15,9 +15,10 @@ use mti::prelude::MagicTypeId;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use super::{Actor, AuditAction, AuditChange, AuditEntity, atomically, record};
+use super::{Actor, AuditAction, AuditChange, AuditEntity, record, savepoint::AuditedTx};
 use crate::capability::Capability;
 use crate::db::Db;
+use crate::db::connection::ReadConn;
 use crate::error::CliError;
 use crate::identity::{self, Granted, IssuedCredential, SetupOwner};
 
@@ -140,16 +141,17 @@ fn require_encryption(conn: &Connection) -> Result<(), CliError> {
 ///
 /// Rejects a missing or insufficient owner grant, an unencrypted ledger, invalid
 /// issuance inputs, or an already-active setup generation.
-pub fn begin(
+pub(crate) fn begin(
     db: &Db,
     owner: &Actor,
     name: &str,
     public_key: &str,
     ttl: Duration,
 ) -> Result<Started, CliError> {
-    let conn = db.conn();
-    db.with_audited_tx("sp_atomic_batch", |tx| {
+    db.with_audited_tx("sp_setup_lifecycle", |tx| {
+        let conn = tx.connection();
         require_encryption(conn)?;
+        super::reserve_ledger_writer(tx)?;
         let owner = Granted::<SetupOwner>::check(tx, owner)?;
         if ttl.is_zero() || ttl > MAX_TTL {
             return Err(CliError::Validation(
@@ -167,7 +169,8 @@ pub fn begin(
             ));
         }
 
-        let credential = identity::issue_setup_credential(&owner, name, public_key, ttl)?;
+        let credential =
+            super::identity_write::issue_setup_credential(&owner, name, public_key, ttl)?;
         let generation = conn
             .query_row(
                 "INSERT INTO setup_sessions (token_jti, state) VALUES (?1, 'active')
@@ -176,7 +179,7 @@ pub fn begin(
                 |row| row.get::<_, i64>(0),
             )?
             .try_into()?;
-        let session = find_session(conn, generation)?
+        let session = find_session(tx.read(), generation)?
             .ok_or_else(|| CliError::Database("new setup session is missing".into()))?;
         record_session(conn, owner.actor(), None, &session)?;
         Ok(Started {
@@ -192,12 +195,18 @@ pub fn begin(
 ///
 /// Rejects a missing or insufficient owner grant, unknown generation,
 /// conflicting terminal action or database failure.
-pub fn end(db: &Db, owner: &Actor, generation: Generation, end: End) -> Result<Session, CliError> {
-    let conn = db.conn();
-    db.with_audited_tx("sp_atomic_batch", |tx| {
+pub(crate) fn end(
+    db: &Db,
+    owner: &Actor,
+    generation: Generation,
+    end: End,
+) -> Result<Session, CliError> {
+    db.with_audited_tx("sp_setup_lifecycle", |tx| {
+        let conn = tx.connection();
         require_encryption(conn)?;
+        super::reserve_ledger_writer(tx)?;
         let owner = Granted::<SetupOwner>::check(tx, owner)?;
-        let mut session = find_session(conn, generation)?.ok_or_else(|| {
+        let mut session = find_session(tx.read(), generation)?.ok_or_else(|| {
             CliError::NotFound(format!("setup generation {} not found", generation.get()))
         })?;
         if session.state == end.state() {
@@ -219,7 +228,7 @@ pub fn end(db: &Db, owner: &Actor, generation: Generation, end: End) -> Result<S
                 "setup session is no longer active".into(),
             ));
         }
-        identity::revoke(conn, owner.actor(), session.token_jti.as_str())?;
+        super::identity_write::revoke_setup(&owner, session.token_jti.as_str())?;
         session.state = end.state();
         session.ended_at = Some(ended_at);
         record_session(conn, owner.actor(), Some(&before), &session)?;
@@ -229,14 +238,18 @@ pub fn end(db: &Db, owner: &Actor, generation: Generation, end: End) -> Result<S
 
 /// Proof of a checked setup generation within its audited transaction.
 pub struct ActiveSession<'a> {
-    connection: &'a Connection,
+    tx: &'a AuditedTx<'a>,
     session: &'a Session,
     actor: &'a Actor,
 }
 
 impl ActiveSession<'_> {
-    pub(in crate::db) const fn connection(&self) -> &Connection {
-        self.connection
+    pub(in crate::db) const fn audited_tx(&self) -> &AuditedTx<'_> {
+        self.tx
+    }
+
+    fn read(&self) -> ReadConn<'_> {
+        self.tx.read()
     }
 
     /// Verified session metadata.
@@ -264,11 +277,10 @@ pub fn with_active_session<T>(
     generation: Generation,
     write: impl FnOnce(&ActiveSession<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    let conn = db.conn();
-    atomically(conn, || {
-        require_encryption(conn)?;
-        let credential = identity::require_live_capability(conn, actor, Capability::Setup)?;
-        let session = find_session(conn, generation)?
+    db.with_audited_tx("sp_active_setup", |tx| {
+        require_encryption(tx.connection())?;
+        let credential = identity::require_live_capability(tx.read(), actor, Capability::Setup)?;
+        let session = find_session(tx.read(), generation)?
             .filter(|session| {
                 credential.is_setup_credential()
                     && session.state == SessionState::Active
@@ -278,14 +290,23 @@ pub fn with_active_session<T>(
                 CliError::Forbidden("setup credential is not active for this generation".into())
             })?;
         write(&ActiveSession {
-            connection: conn,
+            tx,
             session: &session,
             actor,
         })
     })
 }
 
-fn find_session(conn: &Connection, generation: Generation) -> Result<Option<Session>, CliError> {
+fn with_active_setup_write<T>(
+    db: &Db,
+    actor: &Actor,
+    generation: Generation,
+    write: impl FnOnce(&ActiveSession<'_>) -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    db.in_write_batch(|| with_active_session(db, actor, generation, write))
+}
+
+fn find_session(conn: ReadConn<'_>, generation: Generation) -> Result<Option<Session>, CliError> {
     type SessionRow = (String, String, String, String, Option<String>);
     let row: Option<SessionRow> = conn
         .query_row(
@@ -360,19 +381,20 @@ mod tests {
 
     fn owner(db: &Db) -> Result<Actor, CliError> {
         let local = Actor::new("owner");
-        identity::init_root(db.conn(), &local)?;
-        let credential = identity::issue_credential(
-            db.conn(),
-            &local,
-            &identity::IssueRequest {
-                name: "owner",
-                capabilities: &[Capability::Admin.path().into()],
-                ttl: Duration::from_hours(1),
-                public_key: None,
-                generate_key: true,
-            },
-        )?;
-        let authenticated = identity::verify(db.conn(), credential.token().expose_secret())?;
+        identity::Granted::<identity::Admin>::with_db(db, &local, identity::init_root)?;
+        let credential = identity::Granted::<identity::Admin>::with_db(db, &local, |grant| {
+            identity::issue_credential(
+                grant,
+                &identity::IssueRequest {
+                    name: "owner",
+                    capabilities: &[Capability::Admin.path().into()],
+                    ttl: Duration::from_hours(1),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
+        let authenticated = identity::verify(db.read(), credential.token().expose_secret())?;
         Ok(local.with_identity(authenticated))
     }
 
@@ -403,7 +425,7 @@ mod tests {
         ));
 
         let token = setup.credential.token().expose_secret();
-        let authenticated = identity::verify(db.conn(), token)?;
+        let authenticated = identity::verify(db.read(), token)?;
         let agent = Actor::new("setup agent").with_identity(authenticated);
         let generation = setup.session.generation;
         let used = with_active_session(&db, &agent, generation, |proof| {
@@ -426,14 +448,14 @@ mod tests {
 
         for enforce in [false, true] {
             if enforce {
-                identity::Granted::<identity::Admin>::with(db.conn(), &owner, |grant| {
+                identity::Granted::<identity::Admin>::with_db(&db, &owner, |grant| {
                     super::super::set_policy(grant, true)
                 })?;
             }
-            assert!(identity::authorize_operation(db.conn(), Some(token), "setup.status").is_ok());
+            assert!(identity::authorize_operation(db.read(), Some(token), "setup.status").is_ok());
             for operation in ["txn.post", "account.create", "agent.issue", "setup.finish"] {
                 assert!(matches!(
-                    identity::authorize_operation(db.conn(), Some(token), operation),
+                    identity::authorize_operation(db.read(), Some(token), operation),
                     Err(CliError::Forbidden(_))
                 ));
             }

@@ -3,7 +3,7 @@
 use beankeeper::types::Currency;
 use chrono::NaiveDate;
 use mti::prelude::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::audit::savepoint::AuditedTx;
@@ -543,7 +543,7 @@ pub fn get(
 /// # Errors
 /// Returns policy integrity, capability or storage errors.
 pub fn list(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &crate::db::companies::CompanySlug,
     actor: &Actor,
     include_resolved: bool,
@@ -565,7 +565,7 @@ pub fn list(
 ///
 /// # Errors
 /// Returns policy integrity or capability errors.
-pub(crate) fn can_review_all(conn: &Connection, actor: &Actor) -> Result<bool, CliError> {
+pub(crate) fn can_review_all(conn: ReadConn<'_>, actor: &Actor) -> Result<bool, CliError> {
     if !super::policy::get(conn)?.enforce {
         return Ok(true);
     }
@@ -666,13 +666,14 @@ pub(in crate::db) fn reserve_setup_opening(
     journal: &beankeeper::core::Transaction,
     reference: &str,
 ) -> Result<Proposal, CliError> {
-    let conn = session.connection();
-    if let Some(id) = posted_reference(ReadConn::new(conn), company, reference)? {
+    let tx = session.audited_tx();
+    let reader = tx.read();
+    if let Some(id) = posted_reference(reader, company, reference)? {
         return Err(CliError::Validation(format!(
             "transaction with reference '{reference}' already exists (id: {id})"
         )));
     }
-    check_reference(ReadConn::new(conn), company, reference)?;
+    check_reference(reader, company, reference)?;
     let identity = session.actor().identity().ok_or_else(|| {
         CliError::Unauthorized("opening reservation requires an active setup credential".into())
     })?;
@@ -705,9 +706,7 @@ pub(in crate::db) fn reserve_setup_opening(
         reference: Some(reference.to_owned()),
         on_conflict: ConflictStrategy::Error,
     };
-    audit::savepoint::with_audited_tx(conn, "sp_setup_proposal", |tx| {
-        insert_pending(tx, company, &payload, total, identity)
-    })
+    insert_pending(tx, company, &payload, total, identity)
 }
 
 fn insert_pending(

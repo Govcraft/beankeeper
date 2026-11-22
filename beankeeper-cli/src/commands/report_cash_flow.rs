@@ -29,13 +29,13 @@ use crate::operation::Operation;
 use std::collections::{BTreeMap, BTreeSet};
 
 use beankeeper::types::{AccountCode, AccountType, Currency, Money};
-use rusqlite::{Connection, params, types::Type};
+use rusqlite::{params, types::Type};
 use serde::{Serialize, Serializer};
 
 use super::report_dates::DateRange;
 use crate::cli::{Cli, OutputFormat};
 use crate::db;
-use crate::db::connection::Db;
+use crate::db::connection::{Db, ReadConn};
 use crate::error::CliError;
 use crate::output::amounts::{MoneyField, format_money_grouped};
 use crate::output::chart;
@@ -351,21 +351,21 @@ pub fn run(
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    db::audit::atomically(db.conn(), || {
-        let request = args.resolve(db, company, chrono::Local::now().date_naive())?;
-        run_to(cli, db, company, request, &mut output)
+    db.read_snapshot(|reader| {
+        let request = args.resolve(reader, company, chrono::Local::now().date_naive())?;
+        run_to(cli, reader, company, request, &mut output)
     })
 }
 
 pub(super) fn run_to(
     cli: &Cli,
-    db: &Db,
+    reader: ReadConn<'_>,
     company: &str,
     request: CashFlowRequest<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let statement = compute_scoped(
-        db,
+        reader,
         company,
         request.dates,
         request.currency,
@@ -412,13 +412,13 @@ pub(super) struct CashFlowRequest<'a> {
 impl CashFlowArgs {
     pub(super) fn resolve(
         &self,
-        db: &Db,
+        reader: ReadConn<'_>,
         company: &str,
         today: chrono::NaiveDate,
     ) -> Result<CashFlowRequest<'_>, CliError> {
         let dates = DateRange::resolve(self.from.as_ref(), self.to.as_ref(), today)?;
         let currency = super::report_currency::resolve_report_currency(
-            db.conn(),
+            reader,
             company,
             crate::cli::CurrencyArg::resolve_optional(self.currency.as_ref())?,
         )?;
@@ -443,28 +443,27 @@ pub fn compute_cash_flow(
     currency: Currency,
     accounts: &[AccountCode],
 ) -> Result<CashFlowStatement, CliError> {
-    compute_scoped(
-        db,
-        company,
-        dates,
-        currency,
-        accounts.iter().map(AccountCode::as_str),
-    )
+    db.read_snapshot(|reader| {
+        compute_scoped(
+            reader,
+            company,
+            dates,
+            currency,
+            accounts.iter().map(AccountCode::as_str),
+        )
+    })
 }
 
 pub(super) fn compute_scoped<'a>(
-    db: &Db,
+    conn: ReadConn<'_>,
     company: &str,
     dates: DateRange,
     currency: Currency,
     accounts: impl IntoIterator<Item = &'a str>,
 ) -> Result<CashFlowStatement, CliError> {
-    let conn = db.conn();
-    db::audit::atomically(conn, || {
-        db::companies::get_company_on_connection(conn, &company.parse()?)?;
-        let cash_accounts = resolve_cash_accounts(conn, company, accounts)?;
-        compute_for_accounts(conn, company, dates, currency, cash_accounts)
-    })
+    db::companies::get_company(conn, &company.parse()?)?;
+    let cash_accounts = resolve_cash_accounts(conn, company, accounts)?;
+    compute_for_accounts(conn, company, dates, currency, cash_accounts)
 }
 
 fn is_default_cash_name(name: &str) -> bool {
@@ -483,7 +482,7 @@ fn read_account_type(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result
 
 /// Resolve the set of cash accounts (explicit or by the default rule).
 fn resolve_cash_accounts<'a>(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     explicit: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<CashAccount>, CliError> {
@@ -549,7 +548,7 @@ struct EntryFact {
 
 /// Compute the statement from the database.
 fn compute_for_accounts(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     dates: DateRange,
     currency: Currency,
@@ -716,7 +715,7 @@ fn amount_overflow() -> CliError {
 /// Sum of debits minus credits on the cash accounts for transactions whose
 /// date is before `date` (or on it, when `inclusive`).
 fn cash_balance(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     currency: Currency,
     cash_codes: &BTreeSet<&str>,

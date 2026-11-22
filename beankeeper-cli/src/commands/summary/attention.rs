@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use beankeeper::core::{RecurrenceError, occurrence_date};
 use beankeeper::types::{Currency, Money};
 use chrono::{Days, NaiveDate};
-use rusqlite::{Connection, params};
+use rusqlite::params;
 use serde::Serialize;
 
 use crate::commands::report_aging::{self, Movement};
-use crate::db;
+use crate::db::{self, companies::Company, connection::ReadConn};
 use crate::error::CliError;
 use crate::output::amounts::OptionalMoneyField;
 
@@ -17,7 +17,7 @@ use super::{add, sub};
 
 /// The already-resolved company, currency, as-of date and account selections.
 pub(super) struct AttentionContext<'a> {
-    pub conn: &'a Connection,
+    pub conn: ReadConn<'a>,
     pub company: &'a str,
     pub currency: Currency,
     pub as_of: NaiveDate,
@@ -198,7 +198,7 @@ fn recurring(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> 
         .checked_add_days(Days::new(14))
         .ok_or_else(date_overflow)?;
     let schedules =
-        db::schedules::list_schedules_on_connection(context.conn, &context.company.parse()?)?;
+        db::schedules::list_schedules(&Company::bind(context.conn, context.company.parse()?)?)?;
     let mut count = 0_usize;
     let mut schedule_count = 0_usize;
     let mut total = 0;
@@ -363,7 +363,7 @@ mod tests {
 
     use super::*;
     use crate::db::{Actor, PostEntryParams, PostTransactionParams, connection::Db, schedules};
-    use crate::identity::{Granted, Post, Reconcile};
+    use crate::identity::{Admin, Granted, Post, Reconcile};
     use beankeeper::core::Frequency;
     use serde_json::Value;
 
@@ -371,13 +371,9 @@ mod tests {
 
     fn setup() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        db::companies::create_company(
-            db.conn(),
-            &crate::db::Actor::new("fixture"),
-            &"co".parse()?,
-            "Company",
-            None,
-        )?;
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            db::companies::create_company(grant, &"co".parse()?, "Company", None)
+        })?;
         for (code, name, kind) in [
             ("1000", "Cash", beankeeper::types::AccountType::Asset),
             ("1100", "Receivable", beankeeper::types::AccountType::Asset),
@@ -386,9 +382,8 @@ mod tests {
             ("4000", "Sales", beankeeper::types::AccountType::Revenue),
             ("5000", "Rent", beankeeper::types::AccountType::Expense),
         ] {
-            db::accounts::create_account(
-                db.conn(),
-                &crate::db::Actor::new("fixture"),
+            db::test_support::create_account(
+                &db,
                 &CreateAccountParams {
                     company_slug: &"co".parse()?,
                     code,
@@ -452,7 +447,7 @@ mod tests {
 
     fn attention(db: &Db, as_of: &str) -> Result<Value, CliError> {
         let facts = compute(&AttentionContext {
-            conn: db.conn(),
+            conn: db.read(),
             company: "co",
             currency: Currency::USD,
             as_of: as_of
@@ -463,6 +458,11 @@ mod tests {
             payables: &["2000".into()],
         })?;
         serde_json::to_value(facts).map_err(|error| CliError::General(error.to_string()))
+    }
+
+    fn total_changes(db: &Db) -> rusqlite::Result<i64> {
+        db.read()
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
     }
 
     fn create_schedule(
@@ -505,7 +505,7 @@ mod tests {
         post(&db, "2024-01-01", ("5000", "2000"), 7000, None, None)?;
         post(&db, "2024-02-01", ("2000", "1000"), 2000, None, None)?;
         post(&db, "2024-03-01", ("1000", "1100"), 10000, None, None)?;
-        let before = db.conn().total_changes();
+        let before = total_changes(&db)?;
         let facts = attention(&db, "2024-02-01")?;
         assert_eq!(facts["aged_receivables"]["count"], 1);
         assert_eq!(facts["aged_receivables"]["total"], 10000);
@@ -513,7 +513,7 @@ mod tests {
         assert_eq!(facts["aged_payables"]["total"], 5000);
         assert_eq!(facts["overdue_receivables"]["available"], false);
         assert!(facts["overdue_payables"]["total"].is_null());
-        assert_eq!(db.conn().total_changes(), before);
+        assert_eq!(total_changes(&db)?, before);
         Ok(())
     }
 
@@ -521,8 +521,8 @@ mod tests {
     fn unreconciled_includes_cleared_items_until_reconciliation_date() -> TestResult {
         let db = setup()?;
         let id = post(&db, "2024-01-01", ("1000", "4000"), 10000, None, None)?;
-        let company = db::companies::Company::resolve(db.conn(), &"co".parse()?)?;
-        let entry_id = db::get_entries_for_transaction(&company, id)?
+        let (_, entries) = db::get_transaction(&Company::bind(db.read(), "co".parse()?)?, id)?;
+        let entry_id = entries
             .into_iter()
             .find(|entry| entry.account_code == "1000")
             .ok_or("missing cash entry")?
@@ -569,18 +569,15 @@ mod tests {
             metadata: None,
         };
         create_schedule(&db, &Actor::new("test"), &params)?;
-        let before = db.conn().total_changes();
+        let before = total_changes(&db)?;
         let facts = attention(&db, "2024-02-01")?;
         assert_eq!(facts["recurring_due"]["from"], "2024-02-02");
         assert_eq!(facts["recurring_due"]["to"], "2024-02-15");
         assert_eq!(facts["recurring_due"]["count"], 14);
         assert_eq!(facts["recurring_due"]["schedule_count"], 1);
         assert_eq!(facts["recurring_due"]["total"], 1400);
-        assert_eq!(db.conn().total_changes(), before);
-        let schedules = db::schedules::list_schedules(&crate::db::companies::Company::bind(
-            db.read(),
-            "co".parse()?,
-        )?)?;
+        assert_eq!(total_changes(&db)?, before);
+        let schedules = db::schedules::list_schedules(&Company::bind(db.read(), "co".parse()?)?)?;
         assert_eq!(schedules[0].state.next_due(), Some("2020-01-01".parse()?));
         Ok(())
     }
