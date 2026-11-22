@@ -897,7 +897,7 @@ fn run_show(
     let (format, use_color) = display;
     let company_scope = Company::resolve(db_handle.conn(), company)?;
     let (txn, entries) = transactions::get_scoped_transaction(&company_scope, id)?;
-    let att_rows = attachments::list_attachments(db_handle.conn(), company, id.try_into()?)?;
+    let att_rows = attachments::list_attachments(db_handle.read(), company, id.try_into()?)?;
     let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
     for e in &entries {
         clearings.insert(

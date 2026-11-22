@@ -43,12 +43,12 @@ fn run_log(
     params: &ListAuditParams<'_>,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    let rows = list_audit(db.conn(), params)?;
+    let rows = list_audit(db.read(), params)?;
     let pagination = output::json::Pagination::new(
         params.limit,
         params.offset,
         rows.len(),
-        count_audit(db.conn(), params)?,
+        count_audit(db.read(), params)?,
     );
 
     match format {
@@ -154,7 +154,7 @@ fn print_count(returned: usize, pagination: &output::json::Pagination) {
 ///
 /// Returns database errors if the audit trail cannot be read.
 pub fn execute_json(db: &Db, params: &ListAuditParams<'_>) -> Result<serde_json::Value, CliError> {
-    let rows = list_audit(db.conn(), params)?;
+    let rows = list_audit(db.read(), params)?;
     Ok(serde_json::Value::Array(audit_data(db, &rows)?))
 }
 
@@ -172,7 +172,7 @@ pub fn pagination(
         params.limit,
         params.offset,
         returned,
-        count_audit(db.conn(), params)?,
+        count_audit(db.read(), params)?,
     ))
 }
 
@@ -234,7 +234,7 @@ fn snapshot_currency(
         _ => return Ok(None),
     };
     let code: Option<String> = db
-        .conn()
+        .read()
         .query_row(
             sql,
             rusqlite::params![row.entity_id, row.company_slug],

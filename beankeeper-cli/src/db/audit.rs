@@ -2355,7 +2355,7 @@ fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::V
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn count_audit(conn: &Connection, params: &ListAuditParams<'_>) -> Result<i64, CliError> {
+pub fn count_audit(conn: ReadConn<'_>, params: &ListAuditParams<'_>) -> Result<i64, CliError> {
     let (filter, values) = audit_filter(params);
     Ok(conn.query_row(
         &format!("SELECT COUNT(*){filter}"),
@@ -2370,7 +2370,7 @@ pub fn count_audit(conn: &Connection, params: &ListAuditParams<'_>) -> Result<i6
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_audit(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     params: &ListAuditParams<'_>,
 ) -> Result<Vec<AuditLogRow>, CliError> {
     let (filter, mut values) = audit_filter(params);
@@ -2561,8 +2561,8 @@ mod tests {
             limit: 10,
             offset: 0,
         };
-        let records = list_audit(db.conn(), &filters)?;
-        assert_eq!(count_audit(db.conn(), &filters)?, 1);
+        let records = list_audit(db.read(), &filters)?;
+        assert_eq!(count_audit(db.read(), &filters)?, 1);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].entity, AuditEntity::Transaction);
         assert_eq!(records[0].action, AuditAction::Attach);
@@ -2668,7 +2668,10 @@ mod tests {
         );
         assert!(!crate::db::company_exists(connection, "new")?);
         assert!(!crate::db::account_exists(connection, "acme", "1100")?);
-        assert!(crate::db::list_attachments(connection, "acme", transaction_id)?.is_empty());
+        assert!(
+            crate::db::list_attachments(ReadConn::new(connection), "acme", transaction_id)?
+                .is_empty()
+        );
         assert!(connection.is_autocommit());
         Ok(())
     }
