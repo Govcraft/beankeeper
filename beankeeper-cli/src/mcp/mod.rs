@@ -64,6 +64,11 @@ enum Credentials {
     Http,
 }
 
+enum CallCredential {
+    Stdio(Option<SecretString>),
+    Http(Arc<crate::identity::VerifiedAgent>),
+}
+
 impl LedgerServer {
     /// Construct a router over an already opened database.
     ///
@@ -103,8 +108,8 @@ impl LedgerServer {
                 .as_deref(),
         );
         let db = self.db.clone();
-        let token = match self.request_token(&context) {
-            Ok(token) => token,
+        let credential = match self.call_credential(&context) {
+            Ok(credential) => credential,
             Err(error) => return tool_error(&error),
         };
         let result = tokio::task::spawn_blocking(move || {
@@ -114,11 +119,21 @@ impl LedgerServer {
             // One snapshot covers authorization and execution, including policy
             // changes made by another process while this session is running.
             crate::db::audit::atomically(db.conn(), || {
-                let identity = crate::identity::authorize_known_operation(
-                    db.conn(),
-                    token.as_ref().map(ExposeSecret::expose_secret),
-                    operation,
-                )?;
+                let identity = match credential {
+                    CallCredential::Stdio(token) => crate::identity::authorize_known_operation(
+                        db.conn(),
+                        token.as_ref().map(ExposeSecret::expose_secret),
+                        operation,
+                    )?,
+                    CallCredential::Http(identity) => {
+                        crate::identity::authorize_verified_operation(
+                            db.conn(),
+                            &identity,
+                            operation,
+                        )?;
+                        Some(Arc::unwrap_or_clone(identity))
+                    }
+                };
                 let actor = match identity {
                     Some(identity) => actor.with_identity(identity),
                     None => actor,
@@ -145,23 +160,25 @@ impl LedgerServer {
         }
     }
 
-    fn request_token(
+    fn call_credential(
         &self,
         context: &RequestContext<RoleServer>,
-    ) -> Result<Option<SecretString>, CliError> {
+    ) -> Result<CallCredential, CliError> {
         match &self.credentials {
-            Credentials::Stdio(token) => Ok(token.clone()),
-            Credentials::Http => Ok(Some(http_token(context)?.clone())),
+            Credentials::Stdio(token) => Ok(CallCredential::Stdio(token.clone())),
+            Credentials::Http => Ok(CallCredential::Http(http_identity(context)?.clone())),
         }
     }
 }
 
-fn http_token(context: &RequestContext<RoleServer>) -> Result<&SecretString, CliError> {
+fn http_identity(
+    context: &RequestContext<RoleServer>,
+) -> Result<&Arc<crate::identity::VerifiedAgent>, CliError> {
     context
         .extensions
         .get::<axum::http::request::Parts>()
-        .and_then(|parts| parts.extensions.get::<http::RequestToken>())
-        .map(|token| &token.0)
+        .and_then(|parts| parts.extensions.get::<http::RequestAgent>())
+        .map(|agent| &agent.0)
         .ok_or_else(|| CliError::Unauthorized("HTTP requires an agent token".into()))
 }
 
@@ -696,7 +713,7 @@ impl ServerHandler for LedgerServer {
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
         let mut tools = self.tool_router.list_all();
         if matches!(self.credentials, Credentials::Http) {
-            let token = http_token(&context)
+            let identity = http_identity(&context)
                 .map_err(|error| http::protocol_error(&error))?
                 .clone();
             let db = self.db.clone();
@@ -705,7 +722,7 @@ impl ServerHandler for LedgerServer {
                     .lock()
                     .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
                 crate::db::audit::atomically(db.conn(), || {
-                    let identity = crate::identity::verify(db.conn(), token.expose_secret())?;
+                    identity.check_live(db.conn())?;
                     if identity.enforces_permissions(crate::db::policy::get(db.conn())?.enforce) {
                         let mut allowed = Vec::new();
                         for tool in tools {

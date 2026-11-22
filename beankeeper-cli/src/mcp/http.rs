@@ -19,10 +19,11 @@ use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
 use crate::cli::Cli;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::identity::VerifiedAgent;
 
-/// Credential attached to this HTTP request, never to its MCP session.
+/// Verified identity for one HTTP request.
 #[derive(Clone)]
-pub(super) struct RequestToken(pub SecretString);
+pub(super) struct RequestAgent(pub Arc<VerifiedAgent>);
 
 #[derive(Clone)]
 struct Authentication {
@@ -33,7 +34,7 @@ struct Authentication {
 fn credential(
     request: &mut Request,
     fallback: Option<&SecretString>,
-) -> Result<RequestToken, CliError> {
+) -> Result<SecretString, CliError> {
     let headers = request.headers_mut();
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let token = match values.next() {
@@ -57,7 +58,7 @@ fn credential(
     };
     // Keep raw credentials out of rmcp's HTTP headers and diagnostic paths.
     headers.remove(header::AUTHORIZATION);
-    Ok(RequestToken(token))
+    Ok(token)
 }
 
 fn missing_credential() -> CliError {
@@ -97,18 +98,19 @@ async fn authenticate(
         Ok(token) => token,
         Err(error) => return rejection(&error),
     };
-    let verify_token = token.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db = state
             .db
             .lock()
             .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
-        crate::identity::verify(db.conn(), verify_token.0.expose_secret()).map(|_| ())
+        crate::identity::verify(db.conn(), token.expose_secret())
     })
     .await;
     match result {
-        Ok(Ok(())) => {
-            request.extensions_mut().insert(token);
+        Ok(Ok(identity)) => {
+            request
+                .extensions_mut()
+                .insert(RequestAgent(Arc::new(identity)));
             next.run(request).await
         }
         Ok(Err(error)) => rejection(&error),
@@ -127,8 +129,8 @@ async fn authenticate(
 /// The ledger must already exist. The passphrase is resolved once from `cli`,
 /// without prompting. Every MCP request verifies a bearer credential, even when
 /// ledger capability enforcement is off. `cli.agent_token` is a fallback only
-/// when the Authorization header is absent. Tool calls recheck the requesting
-/// credential and current policy atomically with execution. `read_only` always
+/// when the Authorization header is absent. Tool calls recheck identity state
+/// and current policy atomically with execution. `read_only` always
 /// removes mutation tools.
 ///
 /// The host supplies the transport configuration, including Host/Origin rules.

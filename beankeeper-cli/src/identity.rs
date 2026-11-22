@@ -27,6 +27,7 @@ pub struct VerifiedAgent {
     grants: Vec<Capability>,
     signed_capabilities: Vec<String>,
     agent_key: String,
+    issuer_key: String,
     expires_at: DateTime<Utc>,
 }
 
@@ -177,7 +178,7 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
 }
 
 impl VerifiedAgent {
-    fn check_live(&self, conn: &Connection) -> Result<(), CliError> {
+    pub(crate) fn check_live(&self, conn: &Connection) -> Result<(), CliError> {
         if self.expires_at <= Utc::now() {
             return Err(unauthorized());
         }
@@ -186,8 +187,18 @@ impl VerifiedAgent {
                 SELECT 1 FROM agent_tokens t
                 WHERE t.jti = ?1 AND t.agent_uri = ?2 AND t.agent_key = ?3
                 AND NOT EXISTS(SELECT 1 FROM agent_revocations r WHERE r.jti = t.jti)
+                AND EXISTS (
+                    SELECT 1 FROM identity_root WHERE singleton = 1
+                    AND public_key = ?4 AND LOWER(trust_root) = ?5
+                )
              )",
-            params![self.jti(), self.uri(), self.agent_key],
+            params![
+                self.jti(),
+                self.uri(),
+                self.agent_key,
+                self.issuer_key,
+                self.uri.trust_root().as_str(),
+            ],
             |row| row.get::<_, bool>(0),
         )?;
         if live { Ok(()) } else { Err(unauthorized()) }
@@ -277,10 +288,10 @@ pub(crate) fn authorize_known_operation(
     operation: Operation,
 ) -> Result<Option<VerifiedAgent>, CliError> {
     let permission = operation.permission();
-    let required = permission.primary()?;
-    if let Permission::Capability(_) = permission {
+    if let Permission::Capability(required) = permission {
         return authorize(conn, token, required);
     }
+    permission.primary()?;
     if permission == Permission::SetupOwner {
         let token = token.ok_or_else(|| {
             CliError::Unauthorized("setup lifecycle requires a ledger/admin token".into())
@@ -297,22 +308,54 @@ pub(crate) fn authorize_known_operation(
         }
         None => None,
     };
-    if let Some(identity) = &identity
-        && identity.enforces_permissions(enforce)
-        && !identity.allows_known_operation(operation)?
-    {
-        let alternative = if permission == Permission::SetupStatus {
-            Capability::Setup
-        } else {
-            Capability::Approve
-        };
-        return Err(CliError::Forbidden(format!(
-            "operation requires capability {} or {}",
-            required.path(),
-            alternative.path()
-        )));
+    if let Some(identity) = &identity {
+        require_operation_grant(identity, operation, enforce)?;
     }
     Ok(identity)
+}
+
+pub(crate) fn authorize_verified_operation(
+    conn: &Connection,
+    identity: &VerifiedAgent,
+    operation: Operation,
+) -> Result<(), CliError> {
+    let enforce = if operation.permission() == Permission::SetupOwner {
+        true
+    } else {
+        crate::db::policy::get(conn)?.enforce
+    };
+    identity.check_live(conn)?;
+    require_operation_grant(identity, operation, enforce)
+}
+
+fn require_operation_grant(
+    identity: &VerifiedAgent,
+    operation: Operation,
+    ledger_enforced: bool,
+) -> Result<(), CliError> {
+    let permission = operation.permission();
+    let required = permission.primary()?;
+    let enforce = ledger_enforced
+        || permission == Permission::SetupOwner
+        || matches!(
+            permission,
+            Permission::Capability(Capability::Navigate | Capability::Setup)
+        );
+    if !identity.enforces_permissions(enforce) || identity.allows_known_operation(operation)? {
+        return Ok(());
+    }
+    let alternative = match permission {
+        Permission::ProposalList | Permission::ProposalReject => Some(Capability::Approve),
+        Permission::SetupStatus => Some(Capability::Setup),
+        _ => None,
+    };
+    let requirement = match alternative {
+        Some(alternative) => format!("{} or {}", required.path(), alternative.path()),
+        None => required.path().to_owned(),
+    };
+    Err(CliError::Forbidden(format!(
+        "operation requires capability {requirement}"
+    )))
 }
 
 fn verify_required(
@@ -377,6 +420,7 @@ fn verify_required(
         grants,
         signed_capabilities: claims.capabilities,
         agent_key: claims.agent_key,
+        issuer_key: key,
         expires_at: claims.exp,
     })
 }
