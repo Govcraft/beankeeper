@@ -19,10 +19,15 @@ pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, Post, Propose, Reconcile, ResolveProposal, Reverse,
 };
 pub(crate) use crate::db::audit::grant::{SetupOwner, StatementApprover};
-pub use crate::db::audit::identity_write::{init_root, issue, issue_credential, revoke};
+pub use crate::db::audit::identity_write::{
+    init_root, issue, issue_credential, issue_credential_with_mode, revoke,
+};
 use crate::db::connection::ReadConn;
 use crate::error::CliError;
 use crate::operation::{Operation, Permission};
+
+mod write_mode;
+pub use write_mode::WriteMode;
 
 /// Identity claims accepted by the ledger's verifier.
 #[derive(Debug, Clone)]
@@ -30,6 +35,7 @@ pub struct VerifiedAgent {
     uri: AgentUri,
     jti: MagicTypeId,
     grants: Vec<Capability>,
+    write_mode: WriteMode,
     signed_capabilities: Vec<String>,
     agent_key: String,
     issuer_key: String,
@@ -59,6 +65,12 @@ impl VerifiedAgent {
         &self.signed_capabilities
     }
 
+    /// Signed policy for ordinary transaction posts.
+    #[must_use]
+    pub const fn write_mode(&self) -> WriteMode {
+        self.write_mode
+    }
+
     /// Whether these signed grants allow a CLI operation or MCP tool.
     ///
     /// # Errors
@@ -69,6 +81,7 @@ impl VerifiedAgent {
 
     pub(crate) fn allows_known_operation(&self, operation: Operation) -> Result<bool, CliError> {
         match operation.permission() {
+            Permission::Posting => self.allows(self.write_mode.posting_capability()),
             Permission::ProposalList => Ok(self.allows(Capability::Read)?
                 || self.allows(Capability::Propose)?
                 || self.allows(Capability::Approve)?
@@ -88,7 +101,7 @@ impl VerifiedAgent {
     }
 
     pub(crate) fn enforces_permissions(&self, ledger_enforced: bool) -> bool {
-        ledger_enforced || self.is_setup_credential()
+        ledger_enforced || self.is_setup_credential() || self.write_mode.restricts_capabilities()
     }
 
     /// Whether the verified identity holds the requested ledger or UI grant.
@@ -177,7 +190,7 @@ pub fn authorize(
     match token {
         Some(token) => {
             let identity = verify_required(conn, token, enforce.then_some(required))?;
-            if !enforce && identity.is_setup_credential() && !identity.allows(required)? {
+            if !enforce && identity.enforces_permissions(false) && !identity.allows(required)? {
                 return Err(CliError::Forbidden(format!(
                     "operation requires capability {}",
                     required.path()
@@ -258,7 +271,11 @@ fn require_operation_grant(
     ledger_enforced: bool,
 ) -> Result<(), CliError> {
     let permission = operation.permission();
-    let required = permission.primary()?;
+    let required = if permission == Permission::Posting {
+        identity.write_mode.posting_capability()
+    } else {
+        permission.primary()?
+    };
     let enforce = ledger_enforced
         || permission == Permission::SetupOwner
         || matches!(
@@ -324,10 +341,12 @@ fn verify_required(
     // The verifier has bound each signed grant to the URI's capability
     // path or a descendant. Ledger operations require explicit leaf grants,
     // and namespace-wide grants were rejected above.
+    let write_mode = WriteMode::from(claims.capabilities.as_slice());
     let grants: Vec<_> = claims
         .capabilities
         .iter()
         .filter_map(|path| Capability::from_path(path))
+        .filter(|capability| write_mode.permits(*capability))
         .collect();
     if let Some(required) = required
         && !grants.contains(&required)
@@ -342,6 +361,7 @@ fn verify_required(
         uri,
         jti: MagicTypeId::from_str(&claims.jti).map_err(|_| unauthorized())?,
         grants,
+        write_mode,
         signed_capabilities: claims.capabilities,
         agent_key: claims.agent_key,
         issuer_key: key,
@@ -380,11 +400,18 @@ pub struct IssuedCredential {
     pub issued_at: DateTime<Utc>,
     /// UTC expiration time.
     pub expires_at: DateTime<Utc>,
+    write_mode: WriteMode,
     token: SecretString,
     private_key: Option<SecretString>,
 }
 
 impl IssuedCredential {
+    /// Signed policy for ordinary transaction posts.
+    #[must_use]
+    pub const fn write_mode(&self) -> WriteMode {
+        self.write_mode
+    }
+
     /// Bearer token. Use `ExposeSecret` to transfer it into secure storage.
     #[must_use]
     pub fn token(&self) -> &SecretString {
@@ -403,6 +430,7 @@ impl IssuedCredential {
             "token_jti": self.token_jti.as_str(),
             "agent_key": self.agent_key,
             "capabilities": self.capabilities,
+            "write_mode": self.write_mode,
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
         })
@@ -421,8 +449,10 @@ impl IssuedCredential {
 pub(crate) fn prepare_credential(
     conn: ReadConn<'_>,
     request: &IssueRequest<'_>,
+    write_mode: WriteMode,
 ) -> Result<IssuedCredential, CliError> {
-    let scope = issuance_scope(request.capabilities)?;
+    let capabilities = write_mode.capabilities_for_issuance(request.capabilities)?;
+    let scope = issuance_scope(&capabilities)?;
     if request.public_key.is_some() == request.generate_key {
         return Err(CliError::Usage(
             "supply --public-key BASE64 or --generate-key".into(),
@@ -460,7 +490,7 @@ pub(crate) fn prepare_credential(
         .jti(token_jti.to_string())
         .agent_uri(uri.to_string())
         .agent_key(&agent_key)
-        .capabilities(request.capabilities.to_vec())
+        .capabilities(capabilities)
         .issuer(&root)
         .ttl(request.ttl)
         .build()
@@ -472,6 +502,7 @@ pub(crate) fn prepare_credential(
         agent_uri: uri,
         token_jti,
         agent_key: claims.agent_key,
+        write_mode: WriteMode::from(claims.capabilities.as_slice()),
         capabilities: claims.capabilities,
         issued_at: claims.iat,
         expires_at: claims.exp,
@@ -525,12 +556,17 @@ fn issuance_scope(capabilities: &[String]) -> Result<&'static str, CliError> {
 /// Returns database errors if the registry cannot be read.
 pub fn list(conn: ReadConn<'_>) -> Result<Value, CliError> {
     let mut stmt = conn.prepare("SELECT t.jti, t.agent_uri, t.agent_key, t.capabilities, t.issued_at, t.expires_at, r.revoked_at FROM agent_tokens t LEFT JOIN agent_revocations r ON r.jti = t.jti ORDER BY t.issued_at, t.jti")?;
-    let rows = stmt.query_map([], |r| Ok(json!({
-        "token_jti": r.get::<_, String>(0)?, "agent_uri": r.get::<_, String>(1)?,
-        "agent_key": r.get::<_, String>(2)?, "capabilities": serde_json::from_str::<Value>(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
-        "issued_at": r.get::<_, String>(4)?, "expires_at": r.get::<_, String>(5)?,
-        "revoked_at": r.get::<_, Option<String>>(6)?,
-    })))?;
+    let rows = stmt.query_map([], |r| {
+        let capabilities = serde_json::from_str::<Vec<String>>(&r.get::<_, String>(3)?).ok();
+        let write_mode = capabilities.as_deref().map(WriteMode::from);
+        Ok(json!({
+            "token_jti": r.get::<_, String>(0)?, "agent_uri": r.get::<_, String>(1)?,
+            "agent_key": r.get::<_, String>(2)?, "capabilities": capabilities,
+            "write_mode": write_mode,
+            "issued_at": r.get::<_, String>(4)?, "expires_at": r.get::<_, String>(5)?,
+            "revoked_at": r.get::<_, Option<String>>(6)?,
+        }))
+    })?;
     Ok(Value::Array(rows.collect::<Result<Vec<_>, _>>()?))
 }
 

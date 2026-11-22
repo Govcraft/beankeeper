@@ -1,13 +1,12 @@
 //! Presentation of posting lines in template and proposal responses.
 
-use crate::identity::{Granted, Propose};
 use beankeeper::types::{Currency, Money};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::db::{
-    ConflictStrategy, PostEntryParams, PostTransactionParams,
-    proposals::{self, PostingPayload, Proposal, ProposalCreation, ProposalId, ProposalState},
+    ConflictStrategy, PostEntryParams,
+    proposals::{PostingPayload, Proposal, ProposalCreation, ProposalId, ProposalState},
 };
 use crate::error::CliError;
 use crate::output::amounts::format_money;
@@ -115,11 +114,8 @@ impl<'a> From<&'a Proposal> for ProposalJson<'a> {
     }
 }
 
-pub(super) fn create_proposal_json(
-    grant: Granted<'_, Propose>,
-    request: &PostTransactionParams<'_>,
-) -> Result<Value, CliError> {
-    match proposals::create_from_command(grant, request)? {
+pub(super) fn proposal_creation_data(result: ProposalCreation) -> Result<Value, CliError> {
+    match result {
         ProposalCreation::Created(row) => serde_json::to_value(ProposalJson::from(row.as_ref()))
             .map_err(|error| CliError::General(error.to_string())),
         ProposalCreation::Skipped(transaction_id) => {

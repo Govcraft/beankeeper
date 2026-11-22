@@ -6,6 +6,7 @@ use super::savepoint::{AuditedTx, with_audited_tx};
 use crate::capability::Capability;
 use crate::db::{Actor, Db};
 use crate::error::CliError;
+use crate::identity::{VerifiedAgent, WriteMode};
 
 mod sealed {
     pub trait GrantKind {
@@ -49,6 +50,32 @@ pub enum Post {}
 
 impl sealed::GrantKind for Post {
     const REQUIRED: Capability = Capability::Post;
+}
+
+/// The authorization resolved for a normal posting request inside its write scope.
+pub(crate) enum PostingGrant<'a> {
+    Direct(Granted<'a, Post>),
+    Proposal(Granted<'a, Propose>),
+}
+
+impl PostingGrant<'_> {
+    pub(crate) fn with_db<T>(
+        db: &Db,
+        actor: &Actor,
+        run: impl for<'grant> FnOnce(PostingGrant<'grant>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        db.with_audited_tx("sp_authorized_posting", |tx| {
+            super::reserve_ledger_writer(tx)?;
+            let mode = actor
+                .identity()
+                .map_or_else(WriteMode::default, VerifiedAgent::write_mode);
+            let grant = match mode {
+                WriteMode::Direct => PostingGrant::Direct(Granted::check(tx, actor)?),
+                WriteMode::ProposeOnly => PostingGrant::Proposal(Granted::check(tx, actor)?),
+            };
+            run(grant)
+        })
+    }
 }
 
 /// Authority to reverse an existing posting.

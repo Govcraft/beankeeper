@@ -11,6 +11,7 @@ use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::{ActorLabel, BlankActorLabel};
 use crate::error::CliError;
+use crate::identity::WriteMode;
 use crate::operation::Operation;
 
 /// Double-entry accounting on the command line.
@@ -306,6 +307,9 @@ pub enum AgentCommand {
         /// Explicit ledger/* grants, or separate ui/* grants (ui/navigate is always checked).
         #[arg(long, value_delimiter = ',', default_value = "ledger/read,ledger/post")]
         caps: Vec<String>,
+        /// Post directly, or reserve transactions for approval with propose-only.
+        #[arg(long, default_value_t)]
+        write_mode: WriteMode,
         /// Token lifetime, positive and at most 30d.
         #[arg(long, default_value = "8h")]
         ttl: String,
@@ -1501,7 +1505,7 @@ pub enum TxnCommand {
     /// Annotate a posted transaction without changing financial fields.
     #[command(subcommand)]
     Meta(TxnMetaCommand),
-    /// Record a new balanced journal entry.
+    /// Post a balanced transaction, or reserve a proposal with a propose-only grant.
     #[command(after_help = "\
 EXAMPLES:\n  \
     Simple expense (pay rent from cash):\n    \
@@ -1585,7 +1589,7 @@ EXAMPLES:\n  \
         id: TransactionId,
     },
 
-    /// Reverse a transaction with a linked mirror posting (alias: void).
+    /// Undo a posted transaction immediately with a linked reversal (alias: void).
     #[command(
         visible_alias = "void",
         after_help = "EXAMPLES:\n  bk --company acme txn reverse 42\n  bk --company acme txn reverse 42 --date 2026-11-19 --reference VOID-42\n\nReconciled originals cannot be reversed. Existing clearings stay on the original;\nnew entries start uncleared. Retry with the same explicit --reference to skip."
