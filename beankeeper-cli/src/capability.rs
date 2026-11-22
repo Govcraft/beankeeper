@@ -20,6 +20,22 @@ pub enum Capability {
 }
 
 impl Capability {
+    pub(crate) fn from_path(path: &str) -> Option<Self> {
+        [
+            Self::Read,
+            Self::Post,
+            Self::Propose,
+            Self::Approve,
+            Self::Reverse,
+            Self::Reconcile,
+            Self::Budget,
+            Self::Admin,
+            Self::Setup,
+            Self::Navigate,
+        ]
+        .into_iter()
+        .find(|capability| capability.path() == path)
+    }
     /// The leaf path required by an operation.
     #[must_use]
     pub fn path(self) -> &'static str {
