@@ -471,6 +471,9 @@ mutation tools are absent and cannot be called.
 | `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure personal and business books, charts, and accounts with an active setup grant |
 | `ledger_setup_opening_preview` | Validate a balanced opening journal within an active setup generation |
 | `ledger_setup_opening_reserve` | Hold the exact previewed opening journal for the existing approval workflow |
+| `ledger_setup_statement_preview` | Freeze the entries parsed from bounded CSV, OFX, or QFX content for review |
+| `ledger_setup_statement_commit` | Post the reviewed batch with a separate live approval credential |
+| `ledger_setup_statement_receipt` | Read statement provenance and the transaction IDs the batch created |
 | `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `company_list`, `company_show` | Inspect companies |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |

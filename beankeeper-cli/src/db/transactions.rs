@@ -122,6 +122,16 @@ pub(super) fn post_approved_transaction(
     )
 }
 
+pub(in crate::db) fn post_approved_statement(
+    approval: audit::setup::statement_batches::ApprovedStatementPosting<'_>,
+) -> Result<PostResult, CliError> {
+    post_with_source(
+        approval.connection(),
+        &Posting::ApprovedStatement(approval),
+        PostingSource::Proposal,
+    )
+}
+
 /// The origin of the request determines its validation order and diagnostics.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostingSource {
@@ -146,6 +156,7 @@ pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<Post
 enum Posting<'a> {
     Direct(&'a PostTransactionParams<'a>),
     Approved(super::proposals::ApprovedPosting<'a>),
+    ApprovedStatement(audit::setup::statement_batches::ApprovedStatementPosting<'a>),
     Reversal(audit::ReversalPosting<'a>),
 }
 
@@ -185,6 +196,10 @@ fn post_transaction_inner(
             approved = approval.params();
             &approved
         }
+        Posting::ApprovedStatement(approval) => {
+            approved = approval.params();
+            &approved
+        }
     };
     // Command and import diagnostics precede idempotency. Raw API retries
     // look up the existing reference before validating entries.
@@ -215,10 +230,15 @@ fn post_transaction_inner(
         }
     }
 
-    if !matches!(posting, Posting::Approved(_)) {
-        if let Some(reference) = p.reference {
-            super::proposals::check_reference(conn, p.company_slug, reference)?;
-        }
+    if !matches!(posting, Posting::Approved(_))
+        && let Some(reference) = p.reference
+    {
+        super::proposals::check_reference(conn, p.company_slug, reference)?;
+    }
+    if !matches!(
+        posting,
+        Posting::Approved(_) | Posting::ApprovedStatement(_)
+    ) {
         super::spend_limits::check(conn, p)?;
     }
 
@@ -236,8 +256,10 @@ fn post_transaction_inner(
         request: p,
     };
     let metadata = match posting {
-        Posting::Direct(_) => metadata::UserAnnotations::parse(p.metadata)?
-            .map(metadata::UserAnnotations::into_normalized),
+        Posting::Direct(_) | Posting::ApprovedStatement(_) => {
+            metadata::UserAnnotations::parse(p.metadata)?
+                .map(metadata::UserAnnotations::into_normalized)
+        }
         Posting::Approved(_) => p.metadata.and_then(metadata::normalize),
         Posting::Reversal(reversal) => Some(metadata::reversal_link(reversal.original_id())?),
     };

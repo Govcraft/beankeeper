@@ -12,18 +12,41 @@ use crate::db::{
         self, End, Generation,
         books::{self, BookChange, ChartTemplate, SetupReference},
         openings::{self, OpeningLine, OpeningRequest},
+        statement_batches,
     },
     companies::CompanySlug,
+    ids::StatementBatchId,
 };
 use crate::error::CliError;
 use crate::identity;
 use crate::operation::Operation;
 use crate::output::json;
 
+pub use super::setup_statement::StatementPreviewArgs;
 pub use crate::db::audit::setup::books::{
     BookAccount, BookAccountCode, BookFacts, BookProfile, BookPurpose, BookSettings,
     FiscalYearStart, ProfileRevision, book_facts,
 };
+
+pub use crate::db::audit::setup::{
+    statement_batches::{StatementReceipt, StatementTransaction},
+    statements::StatementFormat,
+};
+
+/// Read a committed statement's receipt and transaction IDs in one snapshot.
+///
+/// # Errors
+/// Returns a not-found error for an unknown or pending batch, or a database
+/// error if the preview or receipt does not match the ledger.
+pub fn statement_receipt(
+    db: &Db,
+    company: &CompanySlug,
+    batch_id: StatementBatchId,
+) -> Result<StatementReceipt, CliError> {
+    crate::db::audit::atomically(db.conn(), || {
+        statement_batches::get_receipt(db.read(), company, batch_id)
+    })
+}
 
 const OLDEST_SETUP_READ_SCHEMA: i64 = 20;
 
@@ -38,6 +61,25 @@ pub enum SetupCommand {
     BookShow {
         /// Company slug of the book.
         company: CompanySlug,
+    },
+    /// Freeze balanced statement entries for the owner's review.
+    StatementPreview(StatementPreviewArgs),
+    /// Approve and commit one exact reviewed batch with a live approval credential.
+    StatementCommit {
+        /// Company slug of the selected book.
+        company: CompanySlug,
+        /// Identifier returned by statement-preview.
+        batch_id: StatementBatchId,
+        /// Full SHA-256 digest returned by statement-preview.
+        #[arg(long)]
+        preview_sha256: Sha256Hex,
+    },
+    /// Read a batch's created and preexisting transaction IDs.
+    StatementReceipt {
+        /// Company slug of the selected book.
+        company: CompanySlug,
+        /// Identifier returned by statement-preview.
+        batch_id: StatementBatchId,
     },
     /// Issue the agent credential for one new setup generation.
     Begin {
@@ -81,6 +123,9 @@ impl SetupCommand {
         match self {
             Self::Status => Operation::LedgerSetupStatus,
             Self::BookShow { .. } => Operation::LedgerSetupBookShow,
+            Self::StatementPreview(_) => Operation::LedgerSetupStatementPreview,
+            Self::StatementCommit { .. } => Operation::LedgerSetupStatementCommit,
+            Self::StatementReceipt { .. } => Operation::LedgerSetupStatementReceipt,
             Self::Begin { .. } => Operation::LedgerSetupBegin,
             Self::Finish { .. } => Operation::LedgerSetupFinish,
             Self::Revoke { .. } => Operation::LedgerSetupRevoke,
@@ -370,6 +415,18 @@ fn run_opening_preview(cli: &Cli, args: &OpeningPreviewArgs) -> Result<(), CliEr
     )
 }
 
+fn run_statement_preview(cli: &Cli, args: &StatementPreviewArgs) -> Result<(), CliError> {
+    let db = cli.open_db()?;
+    let request = args.request()?;
+    let preview = statement_batches::preview(&db, &cli.principal(), &args.reference, &request)?;
+    print_setup_data(
+        cli,
+        Operation::LedgerSetupStatementPreview,
+        Some(request.company.as_str()),
+        preview,
+    )
+}
+
 pub(crate) fn begin_json(
     db: &Db,
     actor: &Actor,
@@ -399,6 +456,7 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
         SetupCommand::Status => return run_status(cli),
         SetupCommand::BookShow { company } => return run_book_show(cli, company),
         SetupCommand::OpeningPreview(args) => return run_opening_preview(cli, args),
+        SetupCommand::StatementPreview(args) => return run_statement_preview(cli, args),
         _ => cli.open_db()?,
     };
     let actor = cli.principal();
@@ -453,6 +511,20 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
         SetupCommand::Status => return run_status(cli),
         SetupCommand::BookShow { company } => return run_book_show(cli, company),
         SetupCommand::OpeningPreview(args) => return run_opening_preview(cli, args),
+        SetupCommand::StatementPreview(args) => return run_statement_preview(cli, args),
+        SetupCommand::StatementCommit {
+            company,
+            batch_id,
+            preview_sha256,
+        } => {
+            let receipt =
+                statement_batches::commit(&db, &actor, company, *batch_id, preview_sha256)?;
+            return print_setup_data(cli, command.operation(), Some(company.as_str()), receipt);
+        }
+        SetupCommand::StatementReceipt { company, batch_id } => {
+            let receipt = statement_receipt(&db, company, *batch_id)?;
+            return print_setup_data(cli, command.operation(), Some(company.as_str()), receipt);
+        }
     };
     print_setup_data(cli, command.operation(), None, data)
 }

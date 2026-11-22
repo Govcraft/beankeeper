@@ -7,13 +7,15 @@
 use crate::operation::Operation;
 use std::collections::HashMap;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, DebitOrCredit, Money, PositiveMoney};
 use chrono::NaiveDate;
 use clap::{Args, ValueEnum};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::reference::TransactionReference;
+use super::statement_source::SourceRow;
 use crate::cli::{Cli, ImportFormat, OnConflictArg, OutputFormat, TxnImportArgs};
 use crate::db::connection::Db;
 use crate::db::{self, accounts, transactions};
@@ -23,6 +25,16 @@ use crate::output::json;
 /// Options for CSV mapping and the default CSV/JSON transaction currency.
 #[derive(Args, Debug)]
 pub struct ImportOptions {
+    #[command(flatten)]
+    mapping: CsvMapping,
+    /// Default currency for CSV/JSON (JSON objects may override it).
+    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
+    currency: crate::cli::CurrencyArg,
+}
+
+#[derive(Args, Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CsvMapping {
     /// CSV header containing the transaction date.
     #[arg(long, default_value = "date")]
     date_col: String,
@@ -41,13 +53,24 @@ pub struct ImportOptions {
     /// Meaning of positive CSV amounts. Negative amounts mean the opposite.
     #[arg(long, value_enum, default_value = "inflow")]
     positive_amount: PositiveAmount,
-    /// Default currency for CSV/JSON (JSON objects may override it).
-    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    currency: crate::cli::CurrencyArg,
+}
+
+impl Default for CsvMapping {
+    fn default() -> Self {
+        Self {
+            date_col: "date".into(),
+            description_col: "description".into(),
+            amount_col: "amount".into(),
+            reference_col: None,
+            date_format: "%Y-%m-%d".into(),
+            positive_amount: PositiveAmount::Inflow,
+        }
+    }
 }
 
 /// The direction of positive bank statement amounts.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 enum PositiveAmount {
     Inflow,
     Outflow,
@@ -184,7 +207,7 @@ struct CsvColumns {
 }
 
 impl CsvColumns {
-    fn new(headers: &csv::StringRecord, options: &ImportOptions) -> Result<Self, CliError> {
+    fn new(headers: &csv::StringRecord, options: &CsvMapping) -> Result<Self, CliError> {
         let required = |name: &str| {
             headers
                 .iter()
@@ -218,7 +241,7 @@ fn prepare_csv(
 ) -> Result<PreparedTransaction, CliError> {
     let currency = options.currency.resolve()?;
     let signed = super::txn::parse_amount_to_minor(record[columns.amount].trim(), currency)?;
-    let inflow = (signed > 0) == (options.positive_amount == PositiveAmount::Inflow);
+    let inflow = (signed > 0) == (options.mapping.positive_amount == PositiveAmount::Inflow);
     let (debit, credit) = if inflow {
         (bank, suspense)
     } else {
@@ -241,7 +264,7 @@ fn prepare_csv(
     })
     .collect();
     Ok(PreparedTransaction {
-        date: parse_date(&record[columns.date], &options.date_format)?,
+        date: parse_date(&record[columns.date], &options.mapping.date_format)?,
         description: record[columns.description].to_string(),
         currency,
         entries,
@@ -282,27 +305,81 @@ fn read_transactions(
             if bank == suspense {
                 return Err(invalid("CSV --account and --suspense must be different"));
             }
-            let mut reader = csv::ReaderBuilder::new()
-                .trim(csv::Trim::Headers)
-                .from_reader(content.as_bytes());
-            let headers = reader
-                .headers()
-                .map_err(|error| invalid(format!("CSV headers: {error}")))?;
-            let columns = CsvColumns::new(headers, options)?;
-            reader
-                .records()
-                .enumerate()
-                .map(|(index, record)| {
-                    let row = index + 2;
-                    let record =
-                        record.map_err(|error| invalid(format!("CSV row {row}: {error}")))?;
-                    prepare_csv(&record, &columns, options, bank, suspense)
-                        .map_err(|error| invalid(format!("CSV row {row}: {error}")))
-                })
-                .collect()
+            read_csv(content, options, bank, suspense, usize::MAX)
         }
         ImportFormat::Ofx => Err(CliError::Usage("expected CSV or JSON import".into())),
     }
+}
+
+fn read_csv(
+    content: &str,
+    options: &ImportOptions,
+    bank: &str,
+    suspense: &str,
+    max_rows: usize,
+) -> Result<Vec<PreparedTransaction>, CliError> {
+    let mut reader = csv::ReaderBuilder::new()
+        .trim(csv::Trim::Headers)
+        .from_reader(content.as_bytes());
+    let headers = reader
+        .headers()
+        .map_err(|error| invalid(format!("CSV headers: {error}")))?;
+    let columns = CsvColumns::new(headers, &options.mapping)?;
+    reader
+        .records()
+        .enumerate()
+        .map(|(index, record)| {
+            if index >= max_rows {
+                return Err(invalid(format!("statement exceeds {max_rows} rows")));
+            }
+            let row = index + 2;
+            let record = record.map_err(|error| invalid(format!("CSV row {row}: {error}")))?;
+            prepare_csv(&record, &columns, options, bank, suspense)
+                .map_err(|error| invalid(format!("CSV row {row}: {error}")))
+        })
+        .collect()
+}
+
+/// Normalize source identity before the configured categorization rules are applied.
+pub(crate) fn read_csv_statement(
+    content: &str,
+    mapping: &CsvMapping,
+    currency: Currency,
+    bank: &str,
+    suspense: &str,
+    max_rows: usize,
+) -> Result<Vec<SourceRow>, CliError> {
+    let options = ImportOptions {
+        mapping: mapping.clone(),
+        currency: currency.into(),
+    };
+    let mut occurrences = HashMap::new();
+    read_csv(content, &options, bank, suspense, max_rows)?
+        .into_iter()
+        .map(|mut row| {
+            let reference = row_reference(&mut row, ImportFormat::Csv, &mut occurrences)?
+                .parse::<TransactionReference>()?;
+            let bank_entry = row
+                .entries
+                .iter()
+                .find(|entry| entry.account_code == bank)
+                .ok_or_else(|| invalid("CSV row has no bank entry"))?;
+            let amount =
+                PositiveMoney::new(Money::from_minor(i128::from(bank_entry.amount), currency))
+                    .map_err(|error| invalid(error.to_string()))?;
+            Ok(SourceRow {
+                reference,
+                date: row.date,
+                description: row.description,
+                amount,
+                bank_direction: match bank_entry.direction {
+                    EntryDirection::Debit => DebitOrCredit::Debit,
+                    EntryDirection::Credit => DebitOrCredit::Credit,
+                },
+                metadata: None,
+            })
+        })
+        .collect()
 }
 
 fn row_reference(

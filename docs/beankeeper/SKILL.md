@@ -368,6 +368,9 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk setup book-show` | Read a book's saved profile, currency, fiscal year, and accounts |
 | `bk setup opening-preview` | Check the proposed opening journal and its totals in an active setup generation |
 | `bk setup opening-reserve` | Hold the exact reviewed preview for owner approval and return its proposal ID |
+| `bk setup statement-preview` | Freeze a bounded CSV, OFX, or QFX statement for owner review |
+| `bk setup statement-commit` | Post the exact reviewed batch with the owner's approval credential |
+| `bk setup statement-receipt` | Read provenance, created transaction IDs, and preexisting matches |
 | `bk report trial-balance` | All accounts with debit/credit totals |
 | `bk report balance` | Single account balance |
 | `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |

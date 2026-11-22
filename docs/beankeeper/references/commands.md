@@ -82,7 +82,7 @@ Check ledger integrity: validates the schema version and database structure. Ret
 
 ```bash
 bk verify
-bk --json verify   # Returns { "data": { "schema_version": 22, "status": "healthy" } }
+bk --json verify   # Returns { "data": { "schema_version": 23, "status": "healthy" } }
 ```
 
 ### `bk export`
@@ -238,6 +238,9 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Apply book, profile, chart, and account setup requests using a live generation and request reference |
 | `ledger_setup_opening_preview` | Preview checked opening entries and totals with an active setup credential |
 | `ledger_setup_opening_reserve` | Hold a previewed opening journal and return its approval proposal ID |
+| `ledger_setup_statement_preview` | Freeze bounded statement content with a setup generation and request reference |
+| `ledger_setup_statement_commit` | Approve the exact batch with `company`, `batch_id`, and `preview_sha256` |
+| `ledger_setup_statement_receipt` | Read audited import provenance with `company` and `batch_id` |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
@@ -379,6 +382,40 @@ or `txn_approve` with a live `ledger/approve` credential for a different
 identity. This approval requirement applies under either ledger policy and
 after the setup session ends.
 
+### Statements during setup
+
+The setup agent calls `ledger_setup_statement_preview` with `company`,
+`generation`, a stable `reference`, `bank`, `suspense`, `currency`,
+`format`, and UTF-8 `content`. Use `format: "csv"` for CSV and
+`format: "ofx"` for OFX or QFX. CSV accepts an optional `csv` mapping.
+The content limit is 1 MiB and the row limit is 5,000. The ledger stores the
+normalized preview and SHA-256 of the source without storing the source file.
+Repeating the same request within the generation returns the frozen preview.
+Changing the request under the same reference returns `VALIDATION`.
+
+Review the entries, then pass the returned `batch_id` and `preview_sha256`
+with `company` to `ledger_setup_statement_commit`. The first commit requires
+the active setup generation and a different identity with a live
+`ledger/approve` grant. It posts all rows in one transaction. An approver
+repeating the exact commit can read the original receipt after setup ends.
+
+Call `ledger_setup_statement_receipt` with `company` and `batch_id` to recover
+the reference, format, source and preview digests, approver attribution, and
+two arrays of `{reference, transaction_id}` records. `created` identifies the
+transactions posted by this batch. `preexisting` identifies previously
+posted matches. Use the normal audited reversal command for any created
+transaction the owner chooses to correct.
+
+```bash
+bk --json setup statement-preview COMPANY statement.csv --generation GENERATION \
+  --reference STATEMENT-REF --bank BANK --suspense SUSPENSE --currency USD --statement-format csv
+bk --json setup statement-commit COMPANY BATCH-ID --preview-sha256 REVIEWED-DIGEST
+bk --json setup statement-receipt COMPANY BATCH-ID
+```
+
+Issue the second command with the owner's approval credential. Use a local
+file or `-` for stdin in the CLI. Supply bounded content directly to MCP.
+
 ### Report kinds
 
 `report.kind` accepts `trial-balance`, `balance`,
@@ -395,7 +432,8 @@ Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
-`ledger_setup_account_add`, `ledger_setup_opening_preview`, and `ledger_setup_opening_reserve` from the router.
+`ledger_setup_account_add`, `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
+`ledger_setup_statement_preview`, and `ledger_setup_statement_commit` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement

@@ -336,6 +336,42 @@ impl LedgerServer {
     }
 
     #[tool(
+        description = "Freeze bounded CSV or OFX statement contents for owner review in an active setup generation."
+    )]
+    async fn ledger_setup_statement_preview(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupStatementPreview>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupStatementPreview(input), context)
+            .await
+    }
+
+    #[tool(
+        description = "Commit the exact reviewed statement batch with a live ledger/approve credential."
+    )]
+    async fn ledger_setup_statement_commit(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupStatementCommit>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupStatementCommit(input), context)
+            .await
+    }
+
+    #[tool(
+        description = "Read the imported and preexisting transaction IDs for a committed statement batch."
+    )]
+    async fn ledger_setup_statement_receipt(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupStatementReceipt>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupStatementReceipt(input), context)
+            .await
+    }
+
+    #[tool(
         description = "Issue a short-lived setup-only credential for the encrypted ledger. Requires a live owner Admin credential."
     )]
     async fn ledger_setup_begin(

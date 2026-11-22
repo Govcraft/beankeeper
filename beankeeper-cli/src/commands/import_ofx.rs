@@ -8,6 +8,12 @@ use std::fmt;
 use std::path::Path;
 
 use beankeeper::types::Currency;
+use chrono::NaiveDate;
+use ofx_rs::{
+    OfxDocument,
+    aggregates::TransactionList,
+    document::{BankingMessageSet, CreditCardMessageSet, InvestmentMessageSet},
+};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
@@ -158,7 +164,11 @@ fn ofx_amount_to_minor(
 ) -> Result<i64, OfxImportError> {
     let abs = decimal.abs();
     let multiplier = Decimal::from(10i64.pow(u32::from(minor_unit_exponent)));
-    let scaled = abs * multiplier;
+    let overflow = || OfxImportError::AmountConversion {
+        fit_id: fit_id.to_string(),
+        detail: format!("amount {decimal} exceeds i64 range"),
+    };
+    let scaled = abs.checked_mul(multiplier).ok_or_else(overflow)?;
 
     if scaled != scaled.trunc() {
         return Err(OfxImportError::AmountConversion {
@@ -169,13 +179,7 @@ fn ofx_amount_to_minor(
         });
     }
 
-    scaled
-        .trunc()
-        .to_i64()
-        .ok_or_else(|| OfxImportError::AmountConversion {
-            fit_id: fit_id.to_string(),
-            detail: format!("amount {decimal} exceeds i64 range"),
-        })
+    scaled.trunc().to_i64().ok_or_else(overflow)
 }
 
 /// Format an `OfxDateTime` as a `YYYY-MM-DD` string.
@@ -233,18 +237,18 @@ fn build_metadata_json(ofx_type: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Intermediate representation for one OFX transaction ready to post.
-struct PreparedTransaction {
-    date: String,
-    description: String,
-    amount_minor: i64,
-    is_inflow: bool,
-    reference: String,
-    metadata: String,
+pub(crate) struct PreparedTransaction {
+    pub(crate) date: NaiveDate,
+    pub(crate) description: String,
+    pub(crate) amount_minor: i64,
+    pub(crate) is_inflow: bool,
+    pub(crate) reference: String,
+    pub(crate) metadata: String,
     currency: Currency,
 }
 
 /// Prepare a single OFX transaction for posting.
-fn prepare_transaction(
+pub(crate) fn prepare_transaction(
     txn: &ofx_rs::aggregates::StatementTransaction,
     account_id: &str,
     currency: Currency,
@@ -259,7 +263,15 @@ fn prepare_transaction(
 
     let amount_minor = ofx_amount_to_minor(amount, currency.minor_units(), fit_id)?;
     let is_inflow = !amount.is_sign_negative();
-    let date = format_ofx_date(txn.date_posted());
+    let posted = txn.date_posted().as_offset_date_time();
+    let date = NaiveDate::from_ymd_opt(
+        posted.year(),
+        u32::from(u8::from(posted.month())),
+        u32::from(posted.day()),
+    )
+    .ok_or_else(|| OfxImportError::ParseFailed {
+        message: format!("invalid posting date for transaction '{fit_id}'"),
+    })?;
     let description = build_description(txn.name(), txn.memo(), fit_id);
     let reference = build_ofx_reference(currency.code(), account_id, fit_id);
     let metadata = build_metadata_json(&txn.transaction_type().to_string());
@@ -286,7 +298,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
         Ok(entries) => entries,
         Err(error) => {
             return TransactionOutcome::Failed(FailedTransaction {
-                date: prepared.date.clone(),
+                date: prepared.date.to_string(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
                 currency: prepared.currency.code().into(),
@@ -298,7 +310,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
     if ctx.dry_run {
         return TransactionOutcome::Imported(ImportedTransaction {
             id: 0,
-            date: prepared.date.clone(),
+            date: prepared.date.to_string(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
             currency: prepared.currency.code().into(),
@@ -324,7 +336,7 @@ fn check_conflict(
         Ok(true) => Some(match conflict_strategy {
             transactions::ConflictStrategy::Error => {
                 TransactionOutcome::Failed(FailedTransaction {
-                    date: prepared.date.clone(),
+                    date: prepared.date.to_string(),
                     description: prepared.description.clone(),
                     amount_minor: prepared.amount_minor,
                     currency: prepared.currency.code().into(),
@@ -333,7 +345,7 @@ fn check_conflict(
             }
             transactions::ConflictStrategy::Skip => {
                 TransactionOutcome::Skipped(SkippedTransaction {
-                    date: prepared.date.clone(),
+                    date: prepared.date.to_string(),
                     description: prepared.description.clone(),
                     amount_minor: prepared.amount_minor,
                     currency: prepared.currency.code().into(),
@@ -343,7 +355,7 @@ fn check_conflict(
         }),
         Ok(false) => None,
         Err(e) => Some(TransactionOutcome::Failed(FailedTransaction {
-            date: prepared.date.clone(),
+            date: prepared.date.to_string(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
             currency: prepared.currency.code().into(),
@@ -401,7 +413,7 @@ fn insert_transaction(
         description: &prepared.description,
         metadata: Some(&prepared.metadata),
         currency: prepared.currency.code(),
-        date: &prepared.date,
+        date: &prepared.date.to_string(),
         entries,
         correlate: None,
         reference: Some(&prepared.reference),
@@ -413,7 +425,7 @@ fn insert_transaction(
         Ok(transactions::PostResult::Created(id)) => {
             TransactionOutcome::Imported(ImportedTransaction {
                 id,
-                date: prepared.date.clone(),
+                date: prepared.date.to_string(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
                 currency: prepared.currency.code().into(),
@@ -423,7 +435,7 @@ fn insert_transaction(
         Ok(transactions::PostResult::Skipped(_)) => {
             // This should already be caught by our pre-check above, but for completeness:
             TransactionOutcome::Skipped(SkippedTransaction {
-                date: prepared.date.clone(),
+                date: prepared.date.to_string(),
                 description: prepared.description.clone(),
                 amount_minor: prepared.amount_minor,
                 currency: prepared.currency.code().into(),
@@ -434,7 +446,7 @@ fn insert_transaction(
             TransactionOutcome::Denied(error)
         }
         Err(e) => TransactionOutcome::Failed(FailedTransaction {
-            date: prepared.date.clone(),
+            date: prepared.date.to_string(),
             description: prepared.description.clone(),
             amount_minor: prepared.amount_minor,
             currency: prepared.currency.code().into(),
@@ -511,10 +523,56 @@ fn process_transactions(
 }
 
 /// Validate a currency code from OFX against beankeeper's currency table.
-fn validate_currency(code: &str) -> Result<Currency, OfxImportError> {
+pub(crate) fn validate_currency(code: &str) -> Result<Currency, OfxImportError> {
     Currency::from_code(code).map_err(|_| OfxImportError::UnsupportedCurrency {
         code: code.to_string(),
     })
+}
+
+pub(crate) fn parse_document(content: &str) -> Result<OfxDocument, OfxImportError> {
+    ofx_rs::parse(content).map_err(|error| OfxImportError::ParseFailed {
+        message: error.to_string(),
+    })
+}
+
+pub(crate) struct OfxStatement<'a> {
+    pub(crate) account_id: &'a str,
+    pub(crate) currency: &'a str,
+    pub(crate) transactions: Option<&'a TransactionList>,
+}
+
+pub(crate) fn statements(doc: &OfxDocument) -> impl Iterator<Item = OfxStatement<'_>> {
+    let bank = doc
+        .banking()
+        .into_iter()
+        .flat_map(BankingMessageSet::statement_responses)
+        .filter_map(|wrapper| wrapper.response())
+        .map(|stmt| OfxStatement {
+            account_id: stmt.bank_account().account_id().as_str(),
+            currency: stmt.currency_default().as_str(),
+            transactions: stmt.transaction_list(),
+        });
+    let cards = doc
+        .credit_card()
+        .into_iter()
+        .flat_map(CreditCardMessageSet::statement_responses)
+        .filter_map(|wrapper| wrapper.response())
+        .map(|stmt| OfxStatement {
+            account_id: stmt.credit_card_account().account_id().as_str(),
+            currency: stmt.currency_default().as_str(),
+            transactions: stmt.transaction_list(),
+        });
+    let investments = doc
+        .investment()
+        .into_iter()
+        .flat_map(InvestmentMessageSet::statement_responses)
+        .filter_map(|wrapper| wrapper.response())
+        .map(|stmt| OfxStatement {
+            account_id: stmt.investment_account().account_id().as_str(),
+            currency: stmt.currency_default().as_str(),
+            transactions: stmt.transaction_list(),
+        });
+    bank.chain(cards).chain(investments)
 }
 
 // ---------------------------------------------------------------------------
@@ -552,9 +610,7 @@ pub fn run_import_ofx(
 
     // Read and parse OFX.
     let content = file.read_text()?;
-    let doc = ofx_rs::parse(&content).map_err(|e| OfxImportError::ParseFailed {
-        message: e.to_string(),
-    })?;
+    let doc = parse_document(&content)?;
 
     let mut result = ImportResult {
         imported: Vec::new(),
@@ -562,78 +618,23 @@ pub fn run_import_ofx(
         errors: Vec::new(),
     };
 
-    // Process banking statement responses.
-    if let Some(banking) = doc.banking() {
-        for wrapper in banking.statement_responses() {
-            if let Some(stmt) = wrapper.response() {
-                let currency = validate_currency(stmt.currency_default().as_str())?;
-                let ctx = StatementContext {
-                    rules: &rules,
-                    actor: &actor,
-                    conn,
-                    company,
-                    account_code,
-                    suspense_code,
-                    ofx_account_id: stmt.bank_account().account_id().as_str(),
-                    currency,
-                    dry_run,
-                    conflict_strategy,
-                    verbose,
-                };
-                if let Some(txn_list) = stmt.transaction_list() {
-                    process_transactions(&ctx, txn_list, &mut result)?;
-                }
-            }
-        }
-    }
-
-    // Process credit card statement responses.
-    if let Some(cc) = doc.credit_card() {
-        for wrapper in cc.statement_responses() {
-            if let Some(stmt) = wrapper.response() {
-                let currency = validate_currency(stmt.currency_default().as_str())?;
-                let ctx = StatementContext {
-                    rules: &rules,
-                    actor: &actor,
-                    conn,
-                    company,
-                    account_code,
-                    suspense_code,
-                    ofx_account_id: stmt.credit_card_account().account_id().as_str(),
-                    currency,
-                    dry_run,
-                    conflict_strategy,
-                    verbose,
-                };
-                if let Some(txn_list) = stmt.transaction_list() {
-                    process_transactions(&ctx, txn_list, &mut result)?;
-                }
-            }
-        }
-    }
-
-    // Process investment statement responses (INVBANKTRAN/STMTTRN inside INVSTMTRS).
-    if let Some(inv) = doc.investment() {
-        for wrapper in inv.statement_responses() {
-            if let Some(stmt) = wrapper.response() {
-                let currency = validate_currency(stmt.currency_default().as_str())?;
-                let ctx = StatementContext {
-                    rules: &rules,
-                    actor: &actor,
-                    conn,
-                    company,
-                    account_code,
-                    suspense_code,
-                    ofx_account_id: stmt.investment_account().account_id().as_str(),
-                    currency,
-                    dry_run,
-                    conflict_strategy,
-                    verbose,
-                };
-                if let Some(txn_list) = stmt.transaction_list() {
-                    process_transactions(&ctx, txn_list, &mut result)?;
-                }
-            }
+    for stmt in statements(&doc) {
+        let currency = validate_currency(stmt.currency)?;
+        let ctx = StatementContext {
+            rules: &rules,
+            actor: &actor,
+            conn,
+            company,
+            account_code,
+            suspense_code,
+            ofx_account_id: stmt.account_id,
+            currency,
+            dry_run,
+            conflict_strategy,
+            verbose,
+        };
+        if let Some(list) = stmt.transactions {
+            process_transactions(&ctx, list, &mut result)?;
         }
     }
 

@@ -44,6 +44,9 @@ pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
         crate::db::verification::verify_accounting(reader)?;
         crate::db::audit::verify_creations(db.conn())?;
         crate::db::verification::verify_links(reader)?;
+        if version >= schema::STATEMENT_BATCH_SCHEMA_VERSION {
+            crate::db::audit::setup::statement_batches::verify(reader)?;
+        }
 
         // Foreign key integrity check
         let fk_errors: Vec<String> = {
