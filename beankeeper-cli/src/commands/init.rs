@@ -1,10 +1,13 @@
 use crate::identity::{Admin, Granted};
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use secrecy::{ExposeSecret, SecretString};
+use tempfile::NamedTempFile;
 
 use crate::cli::Cli;
-use crate::db::CreateAccountParams;
 use crate::db::connection::Db;
+use crate::db::{Actor, CreateAccountParams};
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::passphrase;
@@ -70,13 +73,13 @@ pub fn run(
         std::fs::remove_file(db_path)?;
     }
 
-    let db = Db::open(db_path, passphrase.as_ref())?;
-
     if demo {
-        populate_demo_data(&db, &cli.principal())?;
+        create_demo_ledger(db_path, passphrase.as_ref(), &cli.principal())?;
         if !cli.verbosity.quiet {
             eprintln!("[ok] Populated demo data (3 companies, Q1 2025 walkthrough data)");
         }
+    } else {
+        Db::open(db_path, passphrase.as_ref())?;
     }
 
     if cli.is_json() {
@@ -90,6 +93,66 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// A separate ledger created with the built-in demo books.
+#[derive(Debug)]
+pub struct DemoLedger {
+    path: PathBuf,
+}
+
+impl DemoLedger {
+    /// Path at which the verified demo ledger was published.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Create a verified demo ledger at a fresh path for a trusted host such as Desktop.
+///
+/// The built-in fixtures use the normal audited company, account and posting
+/// operations. A supplied passphrase encrypts the new database. The caller
+/// chooses the path and configures access and policy before serving the ledger.
+///
+/// # Errors
+/// Returns an error for an existing destination, a SQLite sidecar, an empty
+/// passphrase, or a failure to stage, seed, verify or publish the database.
+pub fn create_demo_ledger(
+    path: &Path,
+    passphrase: Option<&SecretString>,
+    actor: &Actor,
+) -> Result<DemoLedger, CliError> {
+    let exists =
+        || CliError::Validation(format!("database already exists at '{}'", path.display()));
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Err(exists()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if passphrase.is_some_and(|secret| secret.expose_secret().is_empty()) {
+        return Err(CliError::Usage("passphrase cannot be empty".into()));
+    }
+    super::backup::reject_sidecars(path)?;
+    let directory = super::backup::staging_directory(path)?;
+    let staged = NamedTempFile::new_in(directory.path())?;
+    let db = Db::open(staged.path(), passphrase)?;
+    db.in_write_batch(|| populate_demo_data(&db, actor))?;
+    super::verify::verify(&db)?;
+    // Close the only connection so SQLite checkpoints its WAL before publication.
+    drop(db);
+    super::backup::reject_sidecars(staged.path())?;
+    super::backup::reject_sidecars(path)?;
+    staged.persist_noclobber(path).map_err(|error| {
+        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            exists()
+        } else {
+            error.error.into()
+        }
+    })?;
+    Ok(DemoLedger {
+        path: path.to_owned(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -879,6 +942,50 @@ mod tests {
     use super::*;
     use crate::db::Db;
     use crate::db::test_support::fixture_actor;
+
+    #[test]
+    fn desktop_demo_is_encrypted_and_published_to_a_new_path() -> Result<(), CliError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("demo.db");
+        let passphrase = SecretString::from(tempfile::tempdir()?.path().display().to_string());
+        let actor = Actor::new("desktop-demo");
+
+        let demo = create_demo_ledger(&path, Some(&passphrase), &actor)?;
+        assert_eq!(demo.path(), path);
+        assert!(Db::open_snapshot(demo.path(), None).is_err());
+        let db = Db::open_snapshot(demo.path(), Some(&passphrase))?;
+        assert_eq!(crate::db::list_companies(db.read())?.len(), 3);
+        assert!(db.has_cipher_salt());
+        super::super::verify::verify(&db)?;
+
+        let before = std::fs::read(&path)?;
+        assert!(matches!(
+            create_demo_ledger(&path, None, &actor),
+            Err(CliError::Validation(_))
+        ));
+        assert_eq!(std::fs::read(&path)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_demo_leaves_an_existing_ledger_untouched() -> Result<(), CliError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("owner.db");
+        let actor = Actor::new("owner");
+        let db = Db::open(&path, None)?;
+        let company = "personal".parse()?;
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            crate::db::create_company(grant, &company, "Owner's books", None)
+        })?;
+        assert!(matches!(
+            create_demo_ledger(&path, None, &actor),
+            Err(CliError::Validation(_))
+        ));
+        let companies = crate::db::list_companies(db.read())?;
+        assert_eq!(companies.len(), 1);
+        assert_eq!(companies[0].name, "Owner's books");
+        Ok(())
+    }
 
     #[test]
     fn demo_data_populates_and_balances() {
