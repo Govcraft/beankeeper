@@ -1,12 +1,19 @@
 //! Read-only opening journal preparation within an active setup generation.
 
-use beankeeper::core::JournalEntry;
-use beankeeper::types::{AccountCode, Currency, DebitOrCredit, Entry, Money, PositiveMoney};
+use beankeeper::core::{JournalEntry, Transaction};
+use beankeeper::types::{
+    AccountCode, Currency, DebitOrCredit, Entry, Money, PositiveMoney, Sha256Hex,
+};
 use chrono::NaiveDate;
 use serde::Serialize;
+use serde_json::{Value, json};
 
-use super::{ActiveSession, Generation, books, with_active_session};
-use crate::db::{Actor, Db, accounts, companies::CompanySlug, periods};
+use super::{
+    ActiveSession, Generation, books,
+    requests::{SetupReference, apply_once, digest},
+    with_active_session,
+};
+use crate::db::{Actor, Db, accounts, companies::CompanySlug, periods, proposals};
 use crate::error::CliError;
 use crate::output::{amounts::format_money, json::serialize_display};
 
@@ -47,6 +54,14 @@ pub(crate) struct OpeningRequest {
 
 #[derive(Serialize)]
 pub(crate) struct OpeningPreview<'a> {
+    #[serde(flatten)]
+    details: PreviewDetails<'a>,
+    #[serde(serialize_with = "serialize_display")]
+    fingerprint: Sha256Hex,
+}
+
+#[derive(Serialize)]
+struct PreviewDetails<'a> {
     #[serde(serialize_with = "serialize_display")]
     company: &'a CompanySlug,
     profile_revision: books::ProfileRevision,
@@ -109,38 +124,112 @@ pub(crate) fn preview<'a>(
     request: &'a OpeningRequest,
 ) -> Result<OpeningPreview<'a>, CliError> {
     with_active_session(db, actor, request.generation, |session| {
-        let profile = books::current_profile(session, &request.company)?;
-        let description = request.description.trim();
-        if description.is_empty() {
-            return Err(CliError::Validation(
-                "opening description must not be empty".into(),
-            ));
-        }
-        let mut journal = JournalEntry::new(request.date, description, request.currency);
-        for (direction, lines) in [
-            (DebitOrCredit::Debit, &request.debits),
-            (DebitOrCredit::Credit, &request.credits),
-        ] {
-            for line in lines {
-                journal =
-                    journal.entry(opening_entry(session, &request.company, line, direction)?)?;
+        prepare(session, request).map(|prepared| prepared.preview)
+    })
+}
+
+pub(crate) fn reserve(
+    db: &Db,
+    actor: &Actor,
+    request: &OpeningRequest,
+    reference: &SetupReference,
+    expected: &Sha256Hex,
+) -> Result<Value, CliError> {
+    with_active_session(db, actor, request.generation, |session| {
+        let lines = |side: &[OpeningLine]| {
+            side.iter()
+                .map(|line| {
+                    json!([
+                        line.account.as_str(),
+                        line.amount.money().amount().minor_units().to_string(),
+                        line.memo
+                    ])
+                })
+                .collect::<Vec<_>>()
+        };
+        let input = json!([
+            "opening-reserve-v1",
+            request.company.as_str(),
+            request.date,
+            request.currency.code(),
+            request.description.trim(),
+            expected.as_str(),
+            lines(&request.debits),
+            lines(&request.credits)
+        ]);
+        apply_once(session, reference, &request.company, &input, || {
+            let prepared = prepare(session, request)?;
+            if prepared.preview.fingerprint != *expected {
+                return Err(CliError::Validation(
+                    "opening preview differs from the current request or book; preview it again"
+                        .into(),
+                ));
             }
-        }
-        let journal = journal.post()?;
-        let _period =
-            periods::check_posting(session.connection, request.company.as_str(), journal.date())?;
-        Ok(OpeningPreview {
-            company: &request.company,
-            profile_revision: profile.revision,
-            date: journal.date(),
-            description: journal.description().to_owned(),
-            currency: journal.currency(),
-            entries: journal.entries().iter().map(PreviewEntry::from).collect(),
-            totals: PreviewTotals {
-                debits: journal.total().into(),
-                credits: journal.total().into(),
-            },
+            let proposal = proposals::reserve_setup_opening(
+                session,
+                &request.company,
+                &prepared.journal,
+                reference.as_str(),
+            )?;
+            Ok(json!({
+                "reference": reference.as_str(),
+                "proposal_id": proposal.id,
+                "generation": session.session().generation,
+                "proposal_created_at": proposal.created_at,
+                "preview": prepared.preview,
+            }))
         })
+    })
+}
+
+struct PreparedOpening<'a> {
+    preview: OpeningPreview<'a>,
+    journal: Transaction,
+}
+
+fn prepare<'a>(
+    session: &ActiveSession<'_>,
+    request: &'a OpeningRequest,
+) -> Result<PreparedOpening<'a>, CliError> {
+    let profile = books::current_profile(session, &request.company)?;
+    let description = request.description.trim();
+    if description.is_empty() {
+        return Err(CliError::Validation(
+            "opening description must not be empty".into(),
+        ));
+    }
+    let mut journal = JournalEntry::new(request.date, description, request.currency);
+    for (direction, lines) in [
+        (DebitOrCredit::Debit, &request.debits),
+        (DebitOrCredit::Credit, &request.credits),
+    ] {
+        for line in lines {
+            journal = journal.entry(opening_entry(session, &request.company, line, direction)?)?;
+        }
+    }
+    let journal = journal.post()?;
+    let _period =
+        periods::check_posting(session.connection, request.company.as_str(), journal.date())?;
+    let details = PreviewDetails {
+        company: &request.company,
+        profile_revision: profile.revision,
+        date: journal.date(),
+        description: journal.description().to_owned(),
+        currency: journal.currency(),
+        entries: journal.entries().iter().map(PreviewEntry::from).collect(),
+        totals: PreviewTotals {
+            debits: journal.total().into(),
+            credits: journal.total().into(),
+        },
+    };
+    let encoded = serde_json::to_vec(&("opening-preview-v1", &details))
+        .map_err(|error| CliError::General(error.to_string()))?;
+    Ok(PreparedOpening {
+        preview: OpeningPreview {
+            details,
+            fingerprint: digest(encoded),
+        },
+        journal,
     })
 }
 

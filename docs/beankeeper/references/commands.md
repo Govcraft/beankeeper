@@ -237,6 +237,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
 | `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Apply book, profile, chart, and account setup requests using a live generation and request reference |
 | `ledger_setup_opening_preview` | Preview checked opening entries and totals with an active setup credential |
+| `ledger_setup_opening_reserve` | Hold a previewed opening journal and return its approval proposal ID |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
@@ -362,9 +363,21 @@ bk --json setup opening-preview home --generation 1 --date 2026-01-01 \
 ```
 
 The preview returns the profile revision, resolved account names, directions,
-memos, tax categories, and the balanced totals. Every amount contains an exact
-`amount_minor` string and an `amount_display` string in major units. Posting
-requires the normal approval path.
+memos, tax categories, balanced totals, and a `fingerprint`. Every amount contains an exact
+`amount_minor` string and an `amount_display` string in major units.
+
+Call `ledger_setup_opening_reserve` with the same preview input under
+`opening`, the returned `fingerprint`, and a stable `reference`. The
+equivalent CLI command is `bk setup opening-reserve` with the preview flags
+plus `--reference` and `--fingerprint`. The result includes the reference,
+proposal ID, original setup generation, proposal creation time, and preview.
+An exact retry returns the same result. A changed request under the same
+reference returns `VALIDATION`.
+
+The owner reviews the held proposal and uses `bk txn approve PROPOSAL_ID`
+or `txn_approve` with a live `ledger/approve` credential for a different
+identity. This approval requirement applies under either ledger policy and
+after the setup session ends.
 
 ### Report kinds
 
@@ -382,7 +395,7 @@ Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
-`ledger_setup_account_add`, and `ledger_setup_opening_preview` from the router.
+`ledger_setup_account_add`, `ledger_setup_opening_preview`, and `ledger_setup_opening_reserve` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement

@@ -15,6 +15,12 @@ use crate::error::CliError;
 #[derive(Debug, Clone)]
 pub(crate) struct SetupReference(Box<str>);
 
+impl SetupReference {
+    pub(super) fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 impl fmt::Display for SetupReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.pad(&self.0)
@@ -47,7 +53,7 @@ pub(super) fn apply_once(
     let receipt: Option<(String, String)> = conn
         .query_row(
             "SELECT fingerprint, outcome FROM setup_requests WHERE reference = ?1",
-            [reference.0.as_ref()],
+            [reference.as_str()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
@@ -70,7 +76,7 @@ pub(super) fn apply_once(
         "INSERT INTO setup_requests (reference, generation, fingerprint, outcome)
          VALUES (?1, ?2, ?3, ?4)",
         params![
-            reference.0.as_ref(),
+            reference.as_str(),
             generation.get(),
             fingerprint.as_str(),
             outcome_json,
@@ -97,6 +103,6 @@ pub(super) fn apply_once(
     Ok(outcome)
 }
 
-fn digest(value: impl AsRef<[u8]>) -> Sha256Hex {
+pub(super) fn digest(value: impl AsRef<[u8]>) -> Sha256Hex {
     Sha256Hex::from_digest(Sha256::digest(value).into())
 }

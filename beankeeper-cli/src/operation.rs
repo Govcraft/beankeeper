@@ -94,6 +94,7 @@ macro_rules! operations {
                     "setup.chart-apply" => Ok(Self::LedgerSetupChartApply),
                     "setup.account-add" => Ok(Self::LedgerSetupAccountAdd),
                     "setup.opening-preview" => Ok(Self::LedgerSetupOpeningPreview),
+                    "setup.opening-reserve" => Ok(Self::LedgerSetupOpeningReserve),
                     "report.1099-nec" => Ok(Self::ReportVendor1099),
                     _ => Err(CliError::Usage("operation has no capability mapping".into())),
                 }
@@ -121,6 +122,7 @@ operations! {
     LedgerSetupChartApply => ("ledger.setup.chart.apply", Setup),
     LedgerSetupAccountAdd => ("ledger.setup.account.add", Setup),
     LedgerSetupOpeningPreview => ("ledger.setup.opening.preview", Setup),
+    LedgerSetupOpeningReserve => ("ledger.setup.opening.reserve", Setup),
     PeriodList => ("period.list", Read),
     CompanyList => ("company.list", Read),
     CompanyShow => ("company.show", Read),

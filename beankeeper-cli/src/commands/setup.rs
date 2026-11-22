@@ -1,6 +1,6 @@
 //! Readiness for the selected ledger's onboarding flow.
 
-use beankeeper::types::{AccountCode, AccountType, Currency};
+use beankeeper::types::{AccountCode, AccountType, Currency, Sha256Hex};
 use chrono::NaiveDate;
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -67,6 +67,8 @@ pub enum SetupCommand {
     AccountAdd(AccountAddArgs),
     /// Preview the balanced entries for a book's opening balances.
     OpeningPreview(OpeningPreviewArgs),
+    /// Reserve a previewed opening journal for approval.
+    OpeningReserve(OpeningReserveArgs),
     /// Cancel a setup generation and deactivate its credential.
     Revoke {
         /// Setup generation returned by begin.
@@ -88,6 +90,7 @@ impl SetupCommand {
             Self::ChartApply(_) => Operation::LedgerSetupChartApply,
             Self::AccountAdd(_) => Operation::LedgerSetupAccountAdd,
             Self::OpeningPreview(_) => Operation::LedgerSetupOpeningPreview,
+            Self::OpeningReserve(_) => Operation::LedgerSetupOpeningReserve,
         }
     }
 }
@@ -247,6 +250,19 @@ impl OpeningPreviewArgs {
             credits: lines(&self.credit)?,
         })
     }
+}
+
+/// Inputs to hold a previewed opening journal for approval.
+#[derive(Debug, Args)]
+pub struct OpeningReserveArgs {
+    #[command(flatten)]
+    opening: OpeningPreviewArgs,
+    /// Stable reference to reuse for an exact retry.
+    #[arg(long)]
+    reference: SetupReference,
+    /// Fingerprint returned by opening-preview.
+    #[arg(long)]
+    fingerprint: Sha256Hex,
 }
 
 /// Persisted setup facts for the selected ledger.
@@ -426,6 +442,13 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
                 name: &args.name,
                 account_type: args.account_type,
             },
+        )?,
+        SetupCommand::OpeningReserve(args) => openings::reserve(
+            &db,
+            &actor,
+            &args.opening.request()?,
+            &args.reference,
+            &args.fingerprint,
         )?,
         SetupCommand::Status => return run_status(cli),
         SetupCommand::BookShow { company } => return run_book_show(cli, company),

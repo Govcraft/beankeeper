@@ -8,7 +8,7 @@ use super::audit::{self, Actor};
 use super::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
 use crate::capability::Capability;
 use crate::error::CliError;
-use crate::identity::{Approve, Granted};
+use crate::identity::{Approve, Granted, require_live_capability};
 
 /// A typed, time-sortable identifier for a pending posting request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,6 +298,7 @@ impl<'a> PendingProposal<'a> {
 
     fn approve(self, grant: &Granted<'_, Approve>) -> Result<(Proposal, Proposal), CliError> {
         let actor = grant.actor();
+        self.require_setup_reviewer(actor)?;
         let mut payload = self.before.payload.clone();
         super::spend_limits::debit_total(&payload.entries)?;
         let (existing, proposal_id) = (payload.metadata.as_deref(), self.before.id.as_str());
@@ -330,7 +331,40 @@ impl<'a> PendingProposal<'a> {
         Ok(self.transition(state))
     }
 
+    fn require_setup_reviewer(&self, actor: &Actor) -> Result<(), CliError> {
+        // Proposal proposer attribution and the original issuance audit event
+        // are immutable. Session termination does not change this origin.
+        let setup_origin = self.conn.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM audit_log
+                WHERE entity = 'agent' AND action = 'token_issue' AND entity_id = ?1
+                  AND json_extract(after, '$.agent_uri') = ?2
+                  AND json_type(after, '$.capabilities') = 'array'
+                  AND json_array_length(after, '$.capabilities') = 1
+                  AND json_extract(after, '$.capabilities[0]') = ?3
+             )",
+            params![
+                self.before.proposer_jti,
+                self.before.proposer_uri,
+                Capability::Setup.path()
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if setup_origin {
+            let reviewer = require_live_capability(self.conn, actor, Capability::Approve)?;
+            if reviewer.uri() == self.before.proposer_uri
+                || reviewer.jti() == self.before.proposer_jti
+            {
+                return Err(CliError::Forbidden(
+                    "setup proposals require a different reviewer".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn reject(self, actor: &Actor, reason: Option<&str>) -> Result<(Proposal, Proposal), CliError> {
+        self.require_setup_reviewer(actor)?;
         let own = actor.agent_uri() == Some(self.before.proposer_uri.as_str());
         let can_approve = actor
             .identity()
@@ -552,14 +586,7 @@ fn reserve(
             None => super::transactions::build_journal(conn, p, source)?,
         };
         if let Some(reference) = p.reference {
-            let posted: Option<i64> = conn
-                .query_row(
-                    "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
-                    params![p.company_slug, reference],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(id) = posted {
+            if let Some(id) = posted_reference(conn, p.company_slug, reference)? {
                 return match p.on_conflict {
                     ConflictStrategy::Skip => {
                         Ok(serde_json::json!({"status":"skipped", "transaction_id": id}))
@@ -589,17 +616,90 @@ fn reserve(
             reference: p.reference.map(str::to_owned),
             on_conflict: p.on_conflict,
         };
-        let id = ProposalId::new();
-        let json = serde_json::to_string(&payload)
-            .map_err(|error| CliError::General(error.to_string()))?;
-        conn.execute(
-            "INSERT INTO txn_proposals(id, company_slug, status, payload, reference, debit_total, currency, proposer_uri, proposer_jti)
-             VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id.as_str(), p.company_slug, json, p.reference, total, p.currency, identity.uri(), identity.jti()],
-        )?;
-        serde_json::to_value(get(conn, p.company_slug, id.as_str())?)
-            .map_err(|error| CliError::General(error.to_string()))
+        let proposal = insert_pending(conn, p.company_slug, &payload, total, identity)?;
+        serde_json::to_value(proposal).map_err(|error| CliError::General(error.to_string()))
     })
+}
+
+pub(in crate::db) fn reserve_setup_opening(
+    session: &audit::setup::ActiveSession<'_>,
+    company: &super::companies::CompanySlug,
+    journal: &beankeeper::core::Transaction,
+    reference: &str,
+) -> Result<Proposal, CliError> {
+    let conn = session.connection();
+    let company = company.as_str();
+    if let Some(id) = posted_reference(conn, company, reference)? {
+        return Err(CliError::Validation(format!(
+            "transaction with reference '{reference}' already exists (id: {id})"
+        )));
+    }
+    check_reference(conn, company, reference)?;
+    let identity = session.actor().identity().ok_or_else(|| {
+        CliError::Unauthorized("opening reservation requires an active setup credential".into())
+    })?;
+    let minor = |money: beankeeper::types::Money| {
+        i64::try_from(money.amount().minor_units()).map_err(|_| {
+            CliError::Validation("opening amount exceeds proposal storage range".into())
+        })
+    };
+    let total = minor(journal.total())?;
+    let entries = journal
+        .entries()
+        .iter()
+        .map(|entry| {
+            Ok(PostEntryParams {
+                account_code: entry.account().code().to_string(),
+                direction: entry.direction().code().into(),
+                amount: minor(entry.amount())?,
+                memo: entry.memo().map(str::to_owned),
+                tax_category: entry.tax_category().map(str::to_owned),
+            })
+        })
+        .collect::<Result<_, CliError>>()?;
+    let payload = PostingPayload {
+        description: journal.description().to_owned(),
+        metadata: None,
+        currency: journal.currency().code().into(),
+        date: journal.date().to_string(),
+        entries,
+        correlate: None,
+        reference: Some(reference.to_owned()),
+        on_conflict: ConflictStrategy::Error,
+    };
+    insert_pending(conn, company, &payload, total, identity)
+}
+
+fn insert_pending(
+    conn: &Connection,
+    company: &str,
+    payload: &PostingPayload,
+    total: i64,
+    identity: &crate::identity::VerifiedAgent,
+) -> Result<Proposal, CliError> {
+    let id = ProposalId::new();
+    let json =
+        serde_json::to_string(payload).map_err(|error| CliError::General(error.to_string()))?;
+    conn.execute(
+        "INSERT INTO txn_proposals(id, company_slug, status, payload, reference, debit_total, currency, proposer_uri, proposer_jti)
+         VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id.as_str(), company, json, payload.reference, total, payload.currency, identity.uri(), identity.jti()],
+    )?;
+    get(conn, company, id.as_str())
+}
+
+fn posted_reference(
+    conn: &Connection,
+    company: &str,
+    reference: &str,
+) -> Result<Option<i64>, CliError> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
+            params![company, reference],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 pub(crate) fn check_reference(

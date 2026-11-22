@@ -5,7 +5,7 @@ use std::{borrow::Cow, fmt, str::FromStr};
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountType, Currency},
+    types::{AccountCode, AccountType, Currency, Sha256Hex},
 };
 use chrono::NaiveDate;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -77,6 +77,14 @@ impl TextValue for AccountCode {
 
     fn schema() -> Schema {
         json_schema!({"type": "string", "pattern": "^[0-9.-]+$"})
+    }
+}
+
+impl TextValue for Sha256Hex {
+    const NAME: &'static str = "opening preview fingerprint";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "pattern": "^[a-f0-9]{64}$"})
     }
 }
 
