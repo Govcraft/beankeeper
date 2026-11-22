@@ -72,7 +72,7 @@ impl TryFrom<ReportOptions> for ReportCommand {
             }),
             ReportOptions::Ledger(input) => Ok(ledger(input)),
             ReportOptions::BudgetVariance(input) => budget_variance(input),
-            ReportOptions::Aging(input) => aging(input),
+            ReportOptions::Aging(input) => Ok(aging(input)),
             ReportOptions::Reconciliation(input) => Ok(reconciliation(input)),
             ReportOptions::CashFlow(input) => cash_flow(input),
         }
@@ -201,14 +201,9 @@ fn budget_variance(input: BudgetVarianceInput) -> Result<ReportCommand, CliError
     }))
 }
 
-fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
-    if input.account.is_empty() {
-        return Err(CliError::Usage(
-            "aging requires at least one account".into(),
-        ));
-    }
-    Ok(ReportCommand::Aging(crate::cli::AgingCommandArgs {
-        account: text_list(input.account),
+fn aging(input: AgingInput) -> ReportCommand {
+    ReportCommand::Aging(crate::cli::AgingCommandArgs {
+        account: text_list(input.account.into_vec()),
         include_children: input.include_children,
         as_of: calendar_arg(input.as_of),
         buckets: input.buckets.unwrap_or_else(|| "30,60,90".into()),
@@ -219,7 +214,7 @@ fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
         detail: input.detail,
         group_across_accounts: input.group_across_accounts,
         filter_metadata: input.filter_metadata,
-    }))
+    })
 }
 
 fn reconciliation(input: ReconciliationInput) -> ReportCommand {

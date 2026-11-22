@@ -71,6 +71,8 @@ pub struct Pagination {
     pub returned: usize,
     pub total: i64,
     pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<i64>,
 }
 
 impl Pagination {
@@ -84,7 +86,20 @@ impl Pagination {
             returned,
             total,
             has_more: offset.saturating_add(i64::try_from(returned).unwrap_or(i64::MAX)) < total,
+            next_offset: None,
         }
+    }
+
+    /// Include a continuation offset when the page advances and more rows exist.
+    #[must_use]
+    pub fn with_next_offset(mut self) -> Self {
+        if self.has_more && self.returned > 0 {
+            self.next_offset = Some(
+                self.offset
+                    .saturating_add(i64::try_from(self.returned).unwrap_or(i64::MAX)),
+            );
+        }
+        self
     }
 }
 

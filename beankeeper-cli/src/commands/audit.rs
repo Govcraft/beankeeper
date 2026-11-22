@@ -35,8 +35,8 @@ impl<'a> TryFrom<&'a AuditLogArgs> for ListAuditParams<'a> {
             company_slug: args.company.as_ref(),
             entity: args.entity,
             action: args.action,
-            limit: args.limit.max(0),
-            offset: args.offset.max(0),
+            limit: args.limit,
+            offset: args.offset,
         })
     }
 }
@@ -47,13 +47,11 @@ fn run_log(
     params: &ListAuditParams<'_>,
     format: OutputFormat,
 ) -> Result<(), CliError> {
-    let rows = list_audit(db.read(), params)?;
-    let pagination = output::json::Pagination::new(
-        params.limit,
-        params.offset,
-        rows.len(),
-        count_audit(db.read(), params)?,
-    );
+    let (rows, pagination) = db.read_snapshot(|reader| {
+        let rows = list_audit(reader, params)?;
+        let pagination = pagination(db, params, rows.len())?;
+        Ok((rows, pagination))
+    })?;
 
     match format {
         OutputFormat::Json => {
@@ -184,11 +182,12 @@ pub fn pagination(
     returned: usize,
 ) -> Result<output::json::Pagination, CliError> {
     Ok(output::json::Pagination::new(
-        params.limit,
-        params.offset,
+        i64::from(params.limit.get()),
+        params.offset.into(),
         returned,
         count_audit(db.read(), params)?,
-    ))
+    )
+    .with_next_offset())
 }
 
 fn audit_data(

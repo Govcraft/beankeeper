@@ -767,10 +767,11 @@ fn tools_preserve_data_arrays_and_expose_pagination_and_currency_displays() -> T
             }
             let response = client.call(tool, &args)?;
             assert_ne!(response["result"]["isError"], true, "{response}");
-            assert_eq!(
-                response["result"]["_meta"]["pagination"],
-                json!({"limit":limit, "offset":offset, "returned":returned, "total":3, "has_more":has_more})
-            );
+            let mut expected = json!({"limit":limit, "offset":offset, "returned":returned, "total":3, "has_more":has_more});
+            if tool == "audit_log" && has_more {
+                expected["next_offset"] = json!(offset + returned);
+            }
+            assert_eq!(response["result"]["_meta"]["pagination"], expected);
             let data = payload(&response)?;
             assert_eq!(
                 data.as_array().map(Vec::len),
@@ -2893,6 +2894,19 @@ fn account_list_applies_typed_balance_dates_and_currency() -> TestResult {
     command.args(["mcp", "serve"]);
     let mut client = Client::spawn(command)?;
     client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "account_list")
+        .ok_or("missing account_list")?;
+    let description = tool["description"].as_str().ok_or("missing description")?;
+    assert!(description.contains("with_balances=true"));
+    assert!(description.contains("currency"));
+    let basic = client.success("account_list", &json!({"company":"acme"}))?;
+    assert_eq!(basic[0]["code"], "1000");
+    assert!(basic[0].get("debit_total").is_none());
     let arguments = json!({
         "company":"acme", "with_balances":true,
         "from":"2026-01-10", "to":"2026-01-10", "currency":"BHD"
@@ -4194,5 +4208,282 @@ fn assert_owner_approves_opening(
             .code(),
         "approved"
     );
+    Ok(())
+}
+
+#[test]
+fn clearing_signed_statement_amounts_matches_cli_and_preserves_unsigned_magnitudes() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let mut withdrawal = posting("RTT-BANK-2026-11-07-SHELL");
+    withdrawal["description"] = json!("Fuel");
+    withdrawal["debits"] = json!([{"account":"4000","amount":"95.40"}]);
+    withdrawal["credits"] = json!([{"account":"1000","amount":"95.40"}]);
+    client.success("txn_post", &withdrawal)?;
+    client.success("txn_post", &posting("deposit"))?;
+
+    let result = client.success(
+        "txn_clear",
+        &json!({
+            "company":"acme", "account":"1000", "date":"2026-11-07",
+            "batch":[
+                {"reference": "RTT-BANK-2026-11-07-SHELL", "amount":"-95.40"},
+                {"reference": "deposit", "amount":"+2.50"}
+            ]
+        }),
+    )?;
+    assert_eq!(result["cleared_total"], 9790);
+    assert_eq!(result["cleared"][0]["amount"], 9540);
+    assert_eq!(result["cleared"][1]["amount"], 250);
+
+    let mismatch = client.call(
+        "txn_clear",
+        &json!({
+            "company":"acme", "account":"1000", "date":"2026-11-07",
+            "reference":"deposit", "amount":"-1.00"
+        }),
+    )?;
+    let error = payload(&mismatch)?;
+    assert_eq!(error["code"], "VALIDATION");
+    let message = error["message"].as_str().ok_or("missing validation text")?;
+    assert!(
+        message.contains("withdrawal") && message.contains("selected debit entry"),
+        "{error}"
+    );
+
+    withdrawal["reference"] = json!("cli-withdrawal");
+    client.success("txn_post", &withdrawal)?;
+    let cli = bk(&path)?
+        .args([
+            "--json",
+            "--company",
+            "acme",
+            "txn",
+            "clear",
+            "--reference",
+            "cli-withdrawal",
+            "--account",
+            "1000",
+            "--date",
+            "2026-11-07",
+            "--amount",
+            "-95.40",
+        ])
+        .assert()
+        .success();
+    let data: Value = serde_json::from_slice(&cli.get_output().stdout)?;
+    assert_eq!(data["data"]["amount"], result["cleared"][0]["amount"]);
+
+    withdrawal["reference"] = json!("unsigned-withdrawal");
+    client.success("txn_post", &withdrawal)?;
+    let unsigned = client.success(
+        "txn_clear",
+        &json!({
+            "company":"acme", "account":"1000", "date":"2026-11-07",
+            "reference":"unsigned-withdrawal", "amount":"95.40"
+        }),
+    )?;
+    assert_eq!(unsigned["amount"], 9540);
+    Ok(())
+}
+
+#[test]
+fn report_discovery_and_as_of_match_the_cli() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    client.success("txn_post", &posting("as-of"))?;
+
+    let listed = client.request("tools/list", &json!({}))?;
+    let report = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "report")
+        .ok_or("missing report")?;
+    let description = report["description"]
+        .as_str()
+        .ok_or("missing description")?;
+    for kind in cli_report_kinds()? {
+        assert!(description.contains(&kind), "description omits {kind}");
+    }
+    let schema = &report["inputSchema"];
+    let variants = schema["oneOf"]
+        .as_array()
+        .ok_or("missing report variants")?;
+
+    for kind in [
+        "trial-balance",
+        "balance",
+        "balance-sheet",
+        "reconciliation",
+    ] {
+        let variant = variants
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == kind)
+            .ok_or_else(|| format!("missing schema for {kind}: {schema}"))?;
+        let properties = &variant["properties"];
+        assert!(properties.get("as_of").is_some(), "{kind}");
+        assert_eq!(properties["as_of"], properties["to"], "{kind}");
+        assert_eq!(variant["not"]["required"], json!(["to", "as_of"]), "{kind}");
+
+        let mut args = json!({"company":"acme","kind":kind,"as_of":"2026-03-01"});
+        let mut command = bk(&path)?;
+        command.args([
+            "--json",
+            "--company",
+            "acme",
+            "report",
+            kind,
+            "--as-of",
+            "2026-03-01",
+        ]);
+        if matches!(kind, "balance" | "reconciliation") {
+            args["account"] = json!("1000");
+            command.args(["--account", "1000"]);
+        }
+        let output = command.assert().success();
+        let cli: Value = serde_json::from_slice(&output.get_output().stdout)?;
+        assert_eq!(client.success("report", &args)?, cli["data"], "{kind}");
+
+        args["to"] = json!("2026-03-01");
+        let both = client.call("report", &args)?;
+        assert_parameter_rejection(&both, "duplicate field `to`");
+        let both_flags = command.args(["--to", "2026-03-01"]).output()?;
+        assert_eq!(both_flags.status.code(), Some(2), "{kind}");
+        let error = String::from_utf8(both_flags.stderr)?;
+        assert!(error.contains("cannot be used multiple times"), "{error}");
+
+        args.as_object_mut()
+            .ok_or("missing report arguments")?
+            .remove("as_of");
+        assert_eq!(client.success("report", &args)?, cli["data"], "{kind}");
+    }
+
+    let unsupported = client.call(
+        "report",
+        &json!({
+            "company":"acme","kind":"income-statement","as_of":"2026-03-01"
+        }),
+    )?;
+    assert_parameter_rejection(&unsupported, "unknown field `as_of`");
+    assert_parameter_rejection(&unsupported, "`to`");
+    Ok(())
+}
+
+#[test]
+fn same_company_correlation_suggests_audited_alternatives_without_posting() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let mut original = posting("original");
+    original
+        .as_object_mut()
+        .ok_or("missing posting")?
+        .remove("meta");
+    let original = client.success("txn_post", &original)?;
+    let mut correction = posting("correction");
+    correction["correlate"] = original["id"].clone();
+    let response = client.call("txn_post", &correction)?;
+    let error = payload(&response)?;
+    assert_eq!(error["code"], "VALIDATION");
+    let message = error["message"].as_str().ok_or("missing validation text")?;
+    for guidance in [
+        "same company",
+        "txn_reverse",
+        "bk txn reverse",
+        "txn_meta_set",
+        "bk txn meta set",
+    ] {
+        assert!(message.contains(guidance), "{error}");
+    }
+    let transactions = client.success("txn_list", &json!({"company":"acme"}))?;
+    assert_eq!(transactions.as_array().map(Vec::len), Some(1));
+    assert_eq!(transactions[0]["id"], original["id"]);
+    assert!(transactions[0]["metadata"].is_null());
+    Ok(())
+}
+
+#[test]
+fn audit_log_default_page_can_be_resumed() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let listed = client.request("tools/list", &json!({}))?;
+    let audit = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "audit_log")
+        .ok_or("missing audit_log")?;
+    let properties = &audit["inputSchema"]["properties"];
+    assert_eq!(properties["limit"]["default"], 50, "{audit}");
+    assert_eq!(properties["limit"]["maximum"], 100, "{audit}");
+    assert_eq!(properties["offset"]["minimum"], 0, "{audit}");
+
+    for index in 0..51 {
+        client.success("txn_post", &posting(&format!("audit-page-{index}")))?;
+    }
+
+    let mut filters = json!({"company":"acme","entity":"transaction","action":"create"});
+    let first = client.call("audit_log", &filters)?;
+    let first_data = payload(&first)?;
+    let page = &first["result"]["_meta"]["pagination"];
+    assert_eq!(
+        page,
+        &json!({"limit":50,"offset":0,"returned":50,"total":51,"has_more":true,"next_offset":50})
+    );
+    assert_eq!(first_data.as_array().map(Vec::len), Some(50));
+    filters["offset"] = page["next_offset"].clone();
+    let second = client.call("audit_log", &filters)?;
+    let second_data = payload(&second)?;
+    assert_eq!(second_data.as_array().map(Vec::len), Some(1));
+    assert!(second_data[0]["id"].as_i64() < first_data[49]["id"].as_i64());
+    assert_eq!(second["result"]["_meta"]["pagination"]["has_more"], false);
+    assert!(
+        second["result"]["_meta"]["pagination"]
+            .get("next_offset")
+            .is_none()
+    );
+
+    for limit in [-1, 101] {
+        filters["limit"] = json!(limit);
+        let result = client.call("audit_log", &filters)?;
+        assert_parameter_rejection(&result, "audit limit must be between 0 and 100");
+    }
+    Ok(())
+}
+
+#[test]
+fn audit_log_rejects_negative_offset() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let result = client.call("audit_log", &json!({"offset":-1}))?;
+    assert_parameter_rejection(&result, "audit offset must be a nonnegative integer");
     Ok(())
 }

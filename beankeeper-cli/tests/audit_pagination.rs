@@ -154,10 +154,11 @@ fn audit_pagination_counts_filtered_rows_at_below_and_above_limit() -> TestResul
         let output = ledger.run(&json_args)?;
         let value: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(value["data"].as_array().map(Vec::len), Some(returned));
-        assert_eq!(
-            value["meta"]["pagination"],
-            json!({"limit":limit.parse::<i64>()?,"offset":0,"returned":returned,"total":3,"has_more":has_more})
-        );
+        let mut expected = json!({"limit":limit.parse::<i64>()?,"offset":0,"returned":returned,"total":3,"has_more":has_more});
+        if has_more {
+            expected["next_offset"] = json!(returned);
+        }
+        assert_eq!(value["meta"]["pagination"], expected);
         let table = ledger.run(&args)?;
         let stderr = String::from_utf8_lossy(&table.stderr);
         assert_eq!(
@@ -209,20 +210,37 @@ fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
         let value: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(value["data"].as_array().map(Vec::len), Some(returned));
         if returned > 0 {
-            assert_eq!(
-                value["data"][0]["id"],
-                expected_ids[usize::try_from(offset)?]
-            );
+            assert_eq!(value["data"][0]["id"], expected_ids[offset]);
         }
-        assert_eq!(
-            value["meta"]["pagination"],
-            json!({"limit":limit,"offset":offset,"returned":returned,"total":3,"has_more":has_more})
-        );
+        let mut expected = json!({"limit":limit,"offset":offset,"returned":returned,"total":3,"has_more":has_more});
+        if has_more && returned > 0 {
+            expected["next_offset"] = json!(offset + returned);
+        }
+        assert_eq!(value["meta"]["pagination"], expected);
     }
     let output = ledger.run(&["--json", "audit", "log", "--action", "status-change"])?;
     let value: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(value["data"], json!([]));
+    assert_eq!(value["meta"]["pagination"]["limit"], 50);
+    assert_eq!(value["meta"]["pagination"]["offset"], 0);
     assert_eq!(value["meta"]["pagination"]["total"], 0);
+    Ok(())
+}
+
+#[test]
+fn audit_log_rejects_negative_offset() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let output = Command::cargo_bin("bk")?
+        .arg("--db")
+        .arg(dir.path().join("audit.db"))
+        .args(["audit", "log", "--offset", "-1"])
+        .output()?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("audit offset must be a nonnegative integer"),
+        "{stderr}"
+    );
     Ok(())
 }
 

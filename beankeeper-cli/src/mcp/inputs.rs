@@ -15,7 +15,8 @@ use super::input_values::{
 };
 use crate::cli::ActorFilterArg;
 use crate::commands::{
-    reference::TransactionReference, report_periods::CompareArg, txn_import::CsvMapping,
+    reference::TransactionReference, report_periods::CompareArg, txn_clear::StatementAmount,
+    txn_import::CsvMapping,
 };
 use crate::db::audit::setup::{
     Generation,
@@ -24,6 +25,7 @@ use crate::db::audit::setup::{
     },
     statements::{StatementContent, StatementFormat, StatementRequest, StatementSource},
 };
+use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::{
     ActorLabel,
     companies::CompanyName,
@@ -138,6 +140,7 @@ pub(super) struct AccountList {
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
     pub name: Option<String>,
+    /// Set true to include debit, credit, and balance totals. Defaults to false.
     #[serde(default)]
     pub with_balances: bool,
     pub from: Option<Date>,
@@ -280,8 +283,10 @@ pub(super) struct AuditLog {
     pub company: Option<Company>,
     pub entity: Option<AuditEntityArg>,
     pub action: Option<AuditActionArg>,
-    pub limit: Option<PageLimit>,
-    pub offset: Option<PageOffset>,
+    /// Maximum rows. Pass zero to get only the matching count.
+    pub limit: Option<AuditPageLimit>,
+    /// Rows to skip. Use the previous page’s `next_offset` with the same filters.
+    pub offset: Option<AuditPageOffset>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -519,7 +524,7 @@ pub(super) enum TxnClear {
         company: Company,
         transaction_id: TransactionId,
         entry: EntryId,
-        amount: Option<Amount>,
+        amount: Option<Text<StatementAmount>>,
         date: Option<Date>,
         statement: Option<String>,
         status: Option<ClearanceArg>,
@@ -529,7 +534,7 @@ pub(super) enum TxnClear {
         company: Company,
         reference: Reference,
         account: Account,
-        amount: Option<Amount>,
+        amount: Option<Text<StatementAmount>>,
         date: Option<Date>,
         statement: Option<String>,
         status: Option<ClearanceArg>,
@@ -592,10 +597,11 @@ impl<'de> Deserialize<'de> for ClearInput {
 #[serde(deny_unknown_fields)]
 pub(super) struct BatchLine {
     pub reference: Reference,
-    pub amount: Option<Amount>,
+    pub amount: Option<Text<StatementAmount>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(extend("unevaluatedProperties" = false))]
 pub(super) struct Report {
     pub company: Company,
     /// Request versioned chart data with exact major-unit decimal strings.
@@ -639,10 +645,26 @@ pub(super) struct TrendInput {
     pub explain_change: Option<Account>,
 }
 
+// Schemars does not include Serde aliases in the generated properties.
+fn report_end_date_alias(schema: &mut Schema) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
+        && let Some(to) = properties.get("to").cloned()
+    {
+        properties.insert("as_of".into(), to);
+        schema.insert(
+            "not".into(),
+            serde_json::json!({"required": ["to", "as_of"]}),
+        );
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct TrialBalanceInput {
     pub from: Option<Date>,
+    /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
@@ -654,9 +676,12 @@ pub(super) struct TrialBalanceInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct BalanceInput {
     pub account: Account,
     pub from: Option<Date>,
+    /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
     pub currency: Option<CurrencyCode>,
     pub compare: Option<Comparison>,
@@ -676,7 +701,10 @@ pub(super) struct IncomeStatementInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct BalanceSheetInput {
+    /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
     pub currency: Option<CurrencyCode>,
     pub compare: Option<Comparison>,
@@ -730,8 +758,7 @@ pub(super) struct BudgetVarianceInput {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AgingInput {
-    #[serde(default)]
-    pub account: Vec<Account>,
+    pub account: NonEmpty<Account>,
     #[serde(default)]
     pub include_children: bool,
     pub as_of: Option<Date>,
@@ -750,12 +777,15 @@ pub(super) struct AgingInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = report_end_date_alias)]
 pub(super) struct ReconciliationInput {
     /// Bank balances (default) or statement-scoped AR/AP settlements.
     pub mode: Option<ReconciliationModeArg>,
     /// Settlement link metadata key; defaults to `applies_to`.
     pub link_key: Option<String>,
     pub account: Account,
+    /// Inclusive end date. Supply either `to` or `as_of`.
+    #[serde(alias = "as_of")]
     pub to: Option<Date>,
     pub statement_balance: Option<Amount>,
     pub statement: Option<String>,

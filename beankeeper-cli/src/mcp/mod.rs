@@ -522,7 +522,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "List accounts, optionally filtering by type or name and including balances."
+        description = "List accounts, optionally filtered by account_type or name. Set with_balances=true for debit, credit, and balance totals. Use from/to to restrict activity and supply currency when the company uses multiple currencies."
     )]
     async fn account_list(
         &self,
@@ -657,7 +657,20 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Run a financial report. Select kind and that report's options; results match the CLI JSON data payload."
+        description = "Run a financial report for company. Use chart=true for supported charts and chart_all=true for all series. Optional fields unless marked required:
+- trend: metric (required), from, to, period, currency, compare, explain_change.
+- trial-balance: from, to or as_of, account_type, currency, period, compare, explain_change.
+- balance: account (required), from, to or as_of, currency, compare, explain_change.
+- income-statement: from, to, currency, period, compare, explain_change.
+- balance-sheet: to or as_of, currency, compare, explain_change.
+- schedule-c and tax-summary: from, to, currency.
+- 1099 (alias 1099-nec): from, to, currency, threshold.
+- ledger: account, from, to, currency, filter_metadata.
+- budget-variance: year (required), month or from/to (month numbers), account_type, currency, include_unbudgeted.
+- aging: account (at least one required), as_of, include_children, buckets, group_by_metadata, currency, method, link_key, detail, group_across_accounts, filter_metadata.
+- reconciliation: account (required), to or as_of, mode, link_key, statement_balance, statement, filter_metadata, group_by_metadata, currency.
+- cash-flow: from, to, cash_account, currency, compare, explain_change.
+Use only one of as_of and to. For date-range reports without as_of, use from and to."
     )]
     async fn report(
         &self,
@@ -697,7 +710,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Clear or reconcile entries by transaction and entry IDs, reference and account, or an atomic in-memory batch."
+        description = "Clear or reconcile entries by transaction and entry IDs, reference and account, or an atomic in-memory batch. Amounts use major-unit strings. Use a minus sign for withdrawals (credit), an explicit plus for deposits (debit), or an unsigned amount for either side."
     )]
     async fn txn_clear(
         &self,
@@ -763,7 +776,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "List audit changes, optionally filtered by actor, verified agent URI, company, entity, or action."
+        description = "List audit changes in bounded pages, optionally filtered by actor, verified agent URI, company, entity, or action. Continue with _meta.pagination.next_offset and the same filters."
     )]
     async fn audit_log(
         &self,

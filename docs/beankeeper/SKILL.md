@@ -188,7 +188,7 @@ Errors return `"ok": false` with an `"error"` object containing `"code"` and `"m
 
 Key conventions for agents:
 - Monetary JSON fields keep **integer minor units** and add `<field>_display` decimal strings in major units, such as `amount: 250000` with `amount_display: "2500.00"` for USD. Use the display companion when presenting amounts. A null display means the value or currency scale is unknown; never assume USD.
-- `txn list` and `audit log` default to 50 rows. Check `meta.pagination.has_more` and advance `--offset` by the returned row count until false; keep the same filters and a positive limit. The data remains an array. `txn list --count` stays a count-only response.
+- `txn list` and `audit log` default to 50 rows. For transaction pages, advance `--offset` by the returned row count while `meta.pagination.has_more` is true. Audit pages accept up to 100 rows. Continue with `meta.pagination.next_offset` (MCP: `_meta.pagination.next_offset`) and the same filters. Use an audit limit of zero for just the matching count in pagination metadata.
 - Set `BEANKEEPER_DB` and `BEANKEEPER_COMPANY` env vars to avoid repeating `--db` and `--company` on every call
 - Use `--quiet` to suppress stderr status messages
 - Use `--reference` + `--on-conflict skip` for idempotent transaction posting
@@ -308,7 +308,10 @@ See [the host API contract and example](../mcp-host-tools.md).
 - For `report` with `kind: "reconciliation"`, `mode` accepts `bank` (default) or `settlement`. Settlement mode requires `statement` and accepts `link_key` (default `applies_to`) for payment-to-charge metadata links.
 - Use `security_create`, `security_list`, and `security_price` to register symbols, inspect them and record price observations. Trade with `investment_buy` / `investment_sell`, inspect basis with `investment_lots`, and value positions with `investment_holdings`. Quantities and input money are decimal strings; `company` is required. Read-only mode retains the three inspection tools and hides the four writes. See [securities and investment lots](#securities-and-investment-lots) for account setup and trade rules.
 - Use `budget_list`, `budget_set`, `budget_delete`, and `txn_clear` for their CLI equivalents. Budget deletion is confirmed by calling the tool. `txn_clear.batch` accepts an in-memory array of `{reference, amount?}` rows with an `account`; it never reads a file or stdin.
-- `txn_reconcile` checks for orphaned intercompany links without changing data. `verify` checks accounting and audit integrity. `audit_log` accepts `actor` for the exact recorded label, `agent` for the verified URI, and `action: "create"` for postings. MCP uses a sanitized `mcp:<client>` label when neither a configured label nor a verified agent is available, with `mcp:unknown` as the final fallback. The verified URI and token ID are recorded even when a configured label supplies the actor.
+- Pass `with_balances: true` to `account_list` (`bk account list --with-balances`) for debit, credit, and balance totals. Choose a currency when a company uses more than one.
+- Use `as_of` or `to` for `report` kinds `trial-balance`, `balance`, `balance-sheet`, and `reconciliation` (CLI: `--as-of` or `--to`). Aging uses `as_of`. For date-range reports such as `income-statement`, use `from` and `to`.
+- For a same-company correction, use `txn_reverse` (`bk txn reverse`) to create an audited reversal. For a related posting, use `txn_meta_set` (`bk txn meta set`) with a custom metadata key such as `related_transaction`. Correlation links connect different companies.
+- `txn_reconcile` checks for orphaned intercompany links without changing data. `verify` checks accounting and audit integrity. `audit_log` accepts `actor` for the exact recorded label, `agent` for the verified URI, and `action: "create"` for postings. Audit rows include `prev_hash` and `row_hash`. MCP uses a sanitized `mcp:<client>` label when neither a configured label nor a verified agent is available, with `mcp:unknown` as the final fallback. The verified URI and token ID are recorded even when a configured label supplies the actor.
 
 Successful results contain the CLI JSON **data payload**, without its envelope.
 Read JSON text content, or `structuredContent` when present. The SDK uses JSON text
@@ -754,6 +757,10 @@ bk --company acme report reconciliation --account 1200 --statement STMT-03 --sta
 bk --company acme report reconciliation --account 1200 --group-by-metadata carrier \
   --filter-metadata region=west
 ```
+
+For statement amounts, use `-95.40` for a withdrawal (credit) and `+95.40`
+for a deposit (debit) on the selected account. An unsigned amount clears
+either side. The same signs work with `--amount`, batch CSV, and MCP.
 
 Clearing output uses currency units and describes partial clears as `partially cleared`.
 JSON retains existing status values and adds `partially_cleared` and each item’s

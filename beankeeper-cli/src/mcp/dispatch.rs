@@ -834,8 +834,8 @@ fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
         company_slug: company.as_ref(),
         entity: input.entity,
         action: input.action,
-        limit: input.limit.as_ref().map_or(50, PageLimit::get),
-        offset: input.offset.as_ref().map_or(0, PageOffset::get),
+        limit: input.limit.unwrap_or_default(),
+        offset: input.offset.unwrap_or_default(),
     };
     let data = commands::audit::execute_json(db, &params)?;
     let pagination = commands::audit::pagination(db, &params, data.as_array().map_or(0, Vec::len))?;
@@ -845,7 +845,6 @@ fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
 fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
     use commands::txn_clear::{BatchLine, ClearRequestTarget, EntrySelector, execute_json};
     use inputs::TxnClear::{Batch, Entry, Reference};
-    use std::borrow::Cow;
 
     unpaged(match input.0 {
         Entry {
@@ -858,14 +857,14 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             status,
         } => execute_json(
             db,
-            company.into_inner().as_str(),
+            &company.into_inner(),
             actor,
             ClearRequestTarget::Entry {
                 selector: EntrySelector::Id {
                     transaction_id,
                     entry_id: entry,
                 },
-                amount: optional_text(amount).as_deref(),
+                amount: amount.map(Text::into_inner),
             },
             clear_options(date, statement.as_deref(), status),
         ),
@@ -879,14 +878,14 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             status,
         } => execute_json(
             db,
-            company.into_inner().as_str(),
+            &company.into_inner(),
             actor,
             ClearRequestTarget::Entry {
                 selector: EntrySelector::Reference {
                     reference: reference.into_inner().as_str(),
                     account: account.into_inner().as_str(),
                 },
-                amount: optional_text(amount).as_deref(),
+                amount: amount.map(Text::into_inner),
             },
             clear_options(date, statement.as_deref(), status),
         ),
@@ -899,22 +898,21 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             status,
         } => execute_json(
             db,
-            company.into_inner().as_str(),
+            &company.into_inner(),
             actor,
             ClearRequestTarget::Batch {
                 account: account.into_inner().as_str(),
-                lines: Cow::Owned(
-                    batch
-                        .into_vec()
-                        .into_iter()
-                        .zip(1_u64..)
-                        .map(|(item, line)| BatchLine {
-                            line,
-                            reference: item.reference.to_string(),
-                            amount: optional_text(item.amount),
-                        })
-                        .collect(),
-                ),
+                lines: batch
+                    .into_vec()
+                    .into_iter()
+                    .zip(1_u64..)
+                    .map(|(item, line)| BatchLine {
+                        line,
+                        reference: item.reference.into_inner(),
+                        amount: item.amount.map(Text::into_inner),
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()?,
             },
             clear_options(date, statement.as_deref(), status),
         ),

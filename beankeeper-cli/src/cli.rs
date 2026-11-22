@@ -6,6 +6,7 @@ use beankeeper::types::{AccountType, Currency, CurrencyError, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::{ActorLabel, BlankActorLabel};
@@ -982,13 +983,13 @@ pub struct AuditLogArgs {
     #[arg(long, value_enum)]
     pub action: Option<AuditActionArg>,
 
-    /// Maximum number of rows to show.
-    #[arg(long, default_value_t = 50)]
-    pub limit: i64,
+    /// Maximum rows (0 to 100). Use 0 for just the matching count.
+    #[arg(long, default_value_t)]
+    pub limit: AuditPageLimit,
 
     /// Number of matching rows to skip.
-    #[arg(long, default_value_t = 0)]
-    pub offset: i64,
+    #[arg(long, default_value_t, allow_negative_numbers = true)]
+    pub offset: AuditPageOffset,
 }
 
 /// Shared typed classifications for audit-log filters.
@@ -2010,8 +2011,8 @@ pub struct TxnClearArgs {
     #[arg(long, requires = "account", conflicts_with = "amount")]
     pub from_file: Option<InputSource>,
 
-    /// Amount to clear in major units (default: the full remaining amount).
-    #[arg(long)]
+    /// Amount in major units, such as -95.40 for a withdrawal. Omit to clear the remaining amount.
+    #[arg(long, allow_negative_numbers = true)]
     pub amount: Option<String>,
 
     /// Cleared date, or reconciled date with --status reconciled
@@ -2090,7 +2091,7 @@ EXAMPLES:\n  \
         from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
-        #[arg(long)]
+        #[arg(long, visible_alias = "as-of")]
         to: Option<CalendarDateArg>,
 
         /// Filter by account type.
@@ -2137,7 +2138,7 @@ EXAMPLES:\n  \
         from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
-        #[arg(long)]
+        #[arg(long, visible_alias = "as-of")]
         to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
@@ -2200,7 +2201,7 @@ EXAMPLES:\n  \
 ")]
     BalanceSheet {
         /// End date (inclusive). Defaults to today.
-        #[arg(long)]
+        #[arg(long, visible_alias = "as-of")]
         to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
@@ -2491,7 +2492,7 @@ pub struct ReconciliationCommandArgs {
     /// As-of date (inclusive, YYYY-MM-DD). Defaults to today. Counts
     /// clearings cleared on or before it, and as reconciled only those
     /// reconciled on or before it.
-    #[arg(long)]
+    #[arg(long, visible_alias = "as-of")]
     pub to: Option<CalendarDateArg>,
 
     /// Statement amount in major units (e.g. 1234.56): bank ending balance

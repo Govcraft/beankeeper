@@ -366,6 +366,18 @@ impl TextValue for DecimalAmount {
     }
 }
 
+impl TextValue for crate::commands::txn_clear::StatementAmount {
+    const NAME: &'static str = "statement amount";
+
+    fn schema() -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^[+-]?[0-9]+(\\.[0-9]*)?$",
+            "description": "Nonzero decimal in major units. A minus sign denotes a withdrawal (credit), an explicit plus denotes a deposit (debit), and an unsigned amount clears either side."
+        })
+    }
+}
+
 impl TextValue for FiscalYearStart {
     const NAME: &'static str = "fiscal year start";
 
