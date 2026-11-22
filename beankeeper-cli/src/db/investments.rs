@@ -371,7 +371,12 @@ fn security_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Security> {
 ///
 /// # Errors
 /// Returns not-found or storage errors.
-pub fn get_security(conn: ReadConn<'_>, company: &str, symbol: &str) -> Result<Security, CliError> {
+pub fn get_security(
+    scope: &super::companies::Company<'_>,
+    symbol: &str,
+) -> Result<Security, CliError> {
+    let conn = scope.read();
+    let company = scope.slug();
     conn.query_row(
         "SELECT symbol, name, currency FROM securities WHERE company_slug = ?1 AND symbol = ?2",
         params![company, symbol],
@@ -391,7 +396,7 @@ pub fn get_security(conn: ReadConn<'_>, company: &str, symbol: &str) -> Result<S
 /// Rejects empty/invalid symbols, names, or duplicate symbols.
 pub fn create_security(
     grant: Granted<'_, Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     p: &SecurityParams,
 ) -> Result<Security, CliError> {
     if !valid_symbol(&p.symbol) || p.name.trim().is_empty() {
@@ -417,8 +422,9 @@ pub(crate) fn valid_symbol(symbol: &str) -> bool {
 ///
 /// # Errors
 /// Returns storage errors or not-found for an unknown company.
-pub fn list_securities(conn: ReadConn<'_>, company: &str) -> Result<Vec<Security>, CliError> {
-    super::companies::get_company(conn, company)?;
+pub fn list_securities(scope: &super::companies::Company<'_>) -> Result<Vec<Security>, CliError> {
+    let conn = scope.read();
+    let company = scope.slug();
     let mut stmt = conn.prepare(
         "SELECT symbol,name,currency FROM securities WHERE company_slug = ?1 ORDER BY symbol",
     )?;
@@ -433,12 +439,15 @@ pub fn list_securities(conn: ReadConn<'_>, company: &str) -> Result<Vec<Security
 /// Rejects out-of-range or wrong-currency prices, unknown securities and duplicate dates.
 pub fn record_price(
     grant: Granted<'_, Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     p: &PriceParams,
 ) -> Result<Price, CliError> {
     let stored_price = minor(p.price)?;
     grant.mutate("sp_security_price", |tx, actor| {
-        let security = get_security(tx.read(), company, &p.symbol)?;
+        let security = get_security(
+            &crate::db::companies::Company::bind(tx.read(), company.clone())?,
+            &p.symbol,
+        )?;
         require_currency(p.price.money(), security.currency)?;
         let price = Price {
             currency: security.currency,
@@ -454,12 +463,15 @@ pub fn record_price(
 
 fn check_trade(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     symbol: &str,
     asset: &str,
     date: NaiveDate,
 ) -> Result<Security, CliError> {
-    let security = get_security(conn, company, symbol)?;
+    let security = get_security(
+        &crate::db::companies::Company::bind(conn, company.clone())?,
+        symbol,
+    )?;
     let mut statement = conn.prepare_cached(
         "SELECT acquired_date FROM investment_lots WHERE company_slug=?1 AND symbol=?2 AND asset=?3
          UNION ALL
@@ -479,13 +491,15 @@ fn check_trade(
 
 fn checked_account(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     code: &str,
     expected: AccountType,
     error: &str,
 ) -> Result<Account, CliError> {
-    let account =
-        super::accounts::row_to_account(&super::accounts::get_account(conn, company, code)?)?;
+    let account = super::accounts::row_to_account(&super::accounts::get_account(
+        &crate::db::companies::Company::bind(conn, company.clone())?,
+        code,
+    )?)?;
     if account.account_type() == expected {
         Ok(account)
     } else {
@@ -495,7 +509,7 @@ fn checked_account(
 
 fn check_assets(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     asset: &str,
     cash: &str,
 ) -> Result<[Account; 2], CliError> {
@@ -524,7 +538,7 @@ fn entry(account: &Account, direction: DebitOrCredit, amount: PositiveMoney) -> 
 }
 
 struct TradePosting<'a> {
-    company: &'a str,
+    company: &'a crate::db::companies::CompanySlug,
     description: &'a str,
     metadata: &'a str,
     currency: Currency,
@@ -572,7 +586,11 @@ fn post(tx: &AuditedTx<'_>, p: &TradePosting<'_>) -> Result<super::ids::Transact
 /// # Errors
 /// Rejects wrong-currency or out-of-range costs, invalid accounts or date order,
 /// and duplicate references.
-pub fn buy(grant: Granted<'_, Post>, company: &str, p: &BuyParams) -> Result<Trade, CliError> {
+pub fn buy(
+    grant: Granted<'_, Post>,
+    company: &crate::db::companies::CompanySlug,
+    p: &BuyParams,
+) -> Result<Trade, CliError> {
     let cost = minor(p.cost)?;
     grant.mutate("sp_investment_buy", |tx, actor| {
         let reader = tx.read();
@@ -629,7 +647,7 @@ pub fn buy(grant: Granted<'_, Post>, company: &str, p: &BuyParams) -> Result<Tra
 
 fn lots_at(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     security: &Security,
     cutoff: Option<NaiveDate>,
 ) -> Result<Vec<Lot>, CliError> {
@@ -696,13 +714,23 @@ fn lots_at(
 ///
 /// # Errors
 /// Returns unknown-security, storage or invalid persisted quantity errors.
-pub fn list_lots(conn: ReadConn<'_>, company: &str, symbol: &str) -> Result<Vec<Lot>, CliError> {
-    lots_at(conn, company, &get_security(conn, company, symbol)?, None)
+pub fn list_lots(
+    scope: &super::companies::Company<'_>,
+    symbol: &str,
+) -> Result<Vec<Lot>, CliError> {
+    let conn = scope.read();
+    let company = scope.slug();
+    lots_at(
+        conn,
+        &company.as_str().parse()?,
+        &get_security(scope, symbol)?,
+        None,
+    )
 }
 
 fn select_relief(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     security: &Security,
     p: &SellParams,
 ) -> Result<Vec<Relief>, CliError> {
@@ -783,7 +811,11 @@ fn sale_entries<'a>(
 /// # Errors
 /// Rejects overselling, invalid accounts, wrong-currency proceeds, monetary overflow,
 /// and out-of-order trades.
-pub fn sell(grant: Granted<'_, Post>, company: &str, p: &SellParams) -> Result<Trade, CliError> {
+pub fn sell(
+    grant: Granted<'_, Post>,
+    company: &crate::db::companies::CompanySlug,
+    p: &SellParams,
+) -> Result<Trade, CliError> {
     minor(p.proceeds)?;
     if p.gain == p.asset || p.gain == p.cash {
         return Err(invalid("asset, cash and gain accounts must be distinct"));
@@ -848,7 +880,11 @@ pub fn sell(grant: Granted<'_, Post>, company: &str, p: &SellParams) -> Result<T
 /// Compute positions and latest price on or before `as_of`. No ledger writes.
 /// # Errors
 /// Returns storage, invalid persisted data, or valuation/aggregation overflow errors.
-pub fn holdings(db: &Db, company: &str, as_of: NaiveDate) -> Result<Vec<Holding>, CliError> {
+pub fn holdings(
+    db: &Db,
+    company: &crate::db::companies::CompanySlug,
+    as_of: NaiveDate,
+) -> Result<Vec<Holding>, CliError> {
     db.read_snapshot(|reader| holdings_snapshot(reader, company, as_of))
 }
 
@@ -859,7 +895,7 @@ struct DatedPrice {
 
 fn latest_price(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     security: &Security,
     as_of: NaiveDate,
 ) -> Result<Option<DatedPrice>, CliError> {
@@ -887,11 +923,11 @@ struct Position {
 
 fn holdings_snapshot(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     as_of: NaiveDate,
 ) -> Result<Vec<Holding>, CliError> {
     let mut output = Vec::new();
-    for security in list_securities(conn, company)? {
+    for security in list_securities(&crate::db::companies::Company::bind(conn, company.clone())?)? {
         let mut positions = BTreeMap::<String, Position>::new();
         for lot in lots_at(conn, company, &security, Some(as_of))? {
             if lot.remaining_quantity.is_zero() {

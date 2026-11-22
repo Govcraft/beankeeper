@@ -161,7 +161,7 @@ impl Eq for SpendLimit {}
 #[derive(Deserialize)]
 struct StoredLimit {
     agent_uri: String,
-    company_slug: String,
+    company_slug: CompanySlug,
     currency: Currency,
     max_post: Option<i64>,
     daily_limit: Option<i64>,
@@ -175,7 +175,7 @@ impl TryFrom<StoredLimit> for SpendLimit {
             .map_err(|error| CliError::Validation(error.to_string()))?;
         let legacy_uri_spelling =
             (agent.as_str() != stored.agent_uri).then(|| stored.agent_uri.into_boxed_str());
-        let company = stored.company_slug.parse()?;
+        let company = stored.company_slug;
         let caps = Caps::from_minor_units(stored.max_post, stored.daily_limit)?;
         Ok(Self {
             agent,
@@ -219,7 +219,7 @@ impl Serialize for SpendLimit {
 pub fn list(
     conn: ReadConn<'_>,
     uri: &str,
-    company: Option<&str>,
+    company: Option<&crate::db::companies::CompanySlug>,
 ) -> Result<Vec<SpendLimit>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT agent_uri, company_slug, currency, max_post, daily_limit FROM agent_spend_limits
@@ -243,7 +243,7 @@ pub fn list(
     }
     Ok(actual
         .into_iter()
-        .filter(|limit| company.is_none_or(|company| limit.company.as_str() == company))
+        .filter(|limit| company.is_none_or(|company| &limit.company == company))
         .collect())
 }
 
@@ -366,7 +366,7 @@ pub(crate) fn check(conn: ReadConn<'_>, p: &PostTransactionParams<'_>) -> Result
 
 fn daily_used(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     currency: Currency,
     uri: &str,
     date: NaiveDate,
@@ -412,7 +412,7 @@ mod tests {
         db::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme".parse()?,
             "Acme",
             None,
         )?;
@@ -436,7 +436,7 @@ mod tests {
         limit.caps = Caps::from_minor_units(None, Some(3000))?;
         Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &limit))?;
         assert_eq!(
-            list(db.read(), limit.agent_uri(), Some("acme"))?,
+            list(db.read(), limit.agent_uri(), Some(&"acme".parse()?))?,
             [limit.clone()]
         );
         limit.currency = Currency::JPY;
@@ -498,7 +498,7 @@ mod tests {
         let owner = Actor::new("owner");
         Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &legacy))?;
         assert_eq!(
-            serde_json::to_value(list(db.read(), &stored, Some("acme"))?)
+            serde_json::to_value(list(db.read(), &stored, Some(&"acme".parse()?))?)
                 .map_err(|error| CliError::General(error.to_string()))?,
             serde_json::json!([wire])
         );
@@ -543,7 +543,7 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme".parse()?,
                     code,
                     name: code,
                     account_type: kind,
@@ -557,12 +557,24 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 1, 1)
             .ok_or_else(|| CliError::General("invalid test date".into()))?;
         assert_eq!(
-            daily_used(db.read(), "acme", Currency::USD, limit.agent_uri(), date)?,
+            daily_used(
+                db.read(),
+                &"acme".parse()?,
+                Currency::USD,
+                limit.agent_uri(),
+                date
+            )?,
             80000
         );
         legacy_post(db.conn(), limit.agent_uri(), "invalid-date")?;
         assert!(matches!(
-            daily_used(db.read(), "acme", Currency::USD, limit.agent_uri(), date),
+            daily_used(
+                db.read(),
+                &"acme".parse()?,
+                Currency::USD,
+                limit.agent_uri(),
+                date
+            ),
             Err(CliError::Database(_))
         ));
         Ok(())

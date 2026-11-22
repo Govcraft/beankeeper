@@ -38,12 +38,18 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let secret = dir.path().join("passphrase");
         let db = Db::open(&path, Some(&PASSPHRASE.into()))?;
-        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db::create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"acme".parse()?,
+            "Acme",
+            None,
+        )?;
         db::create_account(
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -54,7 +60,7 @@ impl Ledger {
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "4000",
                 name: "Sales",
                 account_type: beankeeper::types::AccountType::Revenue,
@@ -980,7 +986,13 @@ fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    db::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
     cli.db = path;
     cli.passphrase.passphrase_fd = Some(-1);

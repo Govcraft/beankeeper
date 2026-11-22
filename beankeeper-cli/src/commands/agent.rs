@@ -87,11 +87,8 @@ fn run_limit(
                 daily_limit,
             } => {
                 let company = company
-                    .as_deref()
-                    .or(cli
-                        .company
-                        .as_ref()
-                        .map(crate::db::companies::CompanySlug::as_str))
+                    .as_ref()
+                    .or(cli.company.as_ref())
                     .ok_or_else(|| CliError::Usage("agent limit set requires --company".into()))?;
                 let currency = currency.resolve()?;
                 let parse = |value: &String| super::txn::parse_amount_to_minor(value, currency);
@@ -101,7 +98,7 @@ fn run_limit(
                 )?;
                 let limit = spend_limits::SpendLimit::new(
                     parse_agent_uri(agent_uri)?,
-                    company.parse()?,
+                    company.clone(),
                     currency,
                     caps,
                 );
@@ -114,19 +111,13 @@ fn run_limit(
                 let limits = spend_limits::list(
                     db.read(),
                     parse_agent_uri(agent_uri)?.as_str(),
-                    company.as_deref().or(cli
-                        .company
-                        .as_ref()
-                        .map(crate::db::companies::CompanySlug::as_str)),
+                    company.as_ref().or(cli.company.as_ref()),
                 )?;
                 serde_json::to_value(limits.iter().map(SpendLimitJson::from).collect::<Vec<_>>())
             }
             AgentLimitCommand::Clear { agent_uri, company } => {
                 let uri = parse_agent_uri(agent_uri)?;
-                let company = company.as_deref().or(cli
-                    .company
-                    .as_ref()
-                    .map(crate::db::companies::CompanySlug::as_str));
+                let company = company.as_ref().or(cli.company.as_ref());
                 let cleared = Granted::<Admin>::with_db(db, actor, |grant| {
                     audit::clear_spend_limits(grant, uri.as_str(), company)
                 })?;

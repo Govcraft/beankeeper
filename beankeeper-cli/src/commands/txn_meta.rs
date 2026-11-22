@@ -44,7 +44,7 @@ fn execute(
         TxnMetaCommand::Unset { .. } => metadata::MetadataEdit::Unset(arguments.to_vec()),
     };
     Granted::<Post>::with_db(db, actor, |grant| {
-        audit::edit_metadata(grant, company, target, &edit)
+        audit::edit_metadata(grant, &company.parse()?, target, &edit)
     })
 }
 
@@ -69,9 +69,9 @@ pub(crate) fn execute_structured(
     target: audit::MetadataTarget<'_>,
     edit: &metadata::MetadataEdit,
 ) -> Result<serde_json::Value, CliError> {
-    crate::db::get_company(db.read(), company)?;
+    crate::db::get_company(db.read(), &company.parse()?)?;
     let result = Granted::<Post>::with_db(db, actor, |grant| {
-        audit::edit_metadata(grant, company, target, edit)
+        audit::edit_metadata(grant, &company.parse()?, target, edit)
     })?;
     serde_json::to_value(result).map_err(|error| CliError::General(error.to_string()))
 }

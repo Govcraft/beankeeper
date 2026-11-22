@@ -47,8 +47,20 @@ impl Ledger {
         let dir = tempdir()?;
         let path = dir.path().join("loan.db");
         let db = Db::open(&path, None)?;
-        companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
-        companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
+        companies::create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"acme".parse()?,
+            "Acme",
+            None,
+        )?;
+        companies::create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"other".parse()?,
+            "Other",
+            None,
+        )?;
         for (code, kind, tax) in [
             ("1000", beankeeper::types::AccountType::Asset, None),
             ("2000", beankeeper::types::AccountType::Liability, None),
@@ -62,7 +74,7 @@ impl Ledger {
                 db.conn(),
                 &Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme".parse()?,
                     code,
                     name: code,
                     account_type: kind,

@@ -1213,12 +1213,18 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
     std::fs::write(passphrase_file, "mcp-test-passphrase")?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open(path, Some(&passphrase))?;
-    db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    db::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     db::create_account(
         db.conn(),
         &Actor::new("fixture"),
         &CreateAccountParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             code: "1000",
             name: "Cash",
             account_type: beankeeper::types::AccountType::Asset,
@@ -1229,7 +1235,7 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
         db.conn(),
         &Actor::new("fixture"),
         &CreateAccountParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             code: "4000",
             name: "Sales",
             account_type: beankeeper::types::AccountType::Revenue,
@@ -3614,7 +3620,7 @@ fn assert_opening_reservation(
     let id = reserved["proposal_id"]
         .as_str()
         .ok_or("missing proposal ID")?;
-    let pending = beankeeper_cli::db::proposals::get(db.read(), "home", &id.parse()?)?;
+    let pending = beankeeper_cli::db::proposals::get(db.read(), &"home".parse()?, &id.parse()?)?;
     assert_eq!(pending.state.code(), "pending");
     assert_eq!(
         pending.payload.reference.as_deref(),
@@ -3696,7 +3702,7 @@ fn assert_opening_approval_denials(
     let failure: Value = serde_json::from_slice(&rejected.stderr)?;
     assert_eq!(failure["error"]["code"], "FORBIDDEN");
     assert_eq!(
-        beankeeper_cli::db::proposals::get(db.read(), "home", &id.parse()?)?
+        beankeeper_cli::db::proposals::get(db.read(), &"home".parse()?, &id.parse()?)?
             .state
             .code(),
         "pending"
@@ -3720,7 +3726,7 @@ fn assert_opening_requires_review_after_finish(
         .assert()
         .success();
     assert_eq!(
-        beankeeper_cli::db::proposals::get(db.read(), "home", &id.parse()?)?
+        beankeeper_cli::db::proposals::get(db.read(), &"home".parse()?, &id.parse()?)?
             .state
             .code(),
         "approved"
@@ -3813,7 +3819,10 @@ fn assert_owner_approves_opening(
     let id = approved["data"]["transaction_id"]
         .as_i64()
         .ok_or("missing posted transaction ID")?;
-    let (txn, entries) = beankeeper_cli::db::get_transaction(db.read(), "home", id.try_into()?)?;
+    let (txn, entries) = beankeeper_cli::db::get_transaction(
+        &beankeeper_cli::db::companies::Company::bind(db.read(), "home".parse()?)?,
+        id.try_into()?,
+    )?;
     assert_eq!(txn.currency.code(), "BHD");
     assert_eq!(txn.date.to_string(), "2026-01-02");
     assert_eq!(txn.reference.as_deref(), Some("opening-home-2026"));
@@ -3824,7 +3833,7 @@ fn assert_owner_approves_opening(
     assert_eq!(entries[1].account_code, "3000");
     assert_eq!(entries[1].amount.minor_units(), 12_345);
     assert_eq!(
-        beankeeper_cli::db::proposals::get(db.read(), "home", &proposal_id.parse()?)?
+        beankeeper_cli::db::proposals::get(db.read(), &"home".parse()?, &proposal_id.parse()?)?
             .state
             .code(),
         "approved"

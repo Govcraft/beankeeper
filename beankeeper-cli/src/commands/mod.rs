@@ -242,7 +242,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         Command::Company(sub) => company::run(cli, sub),
 
         Command::Account(args) => {
-            let company = require_company(cli)?.as_str();
+            let company = require_company(cli)?;
             account::run(cli, company, &args.command)
         }
 

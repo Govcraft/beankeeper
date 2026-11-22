@@ -248,7 +248,7 @@ pub fn render_orphaned_correlations(
     for o in orphans {
         wtr.write_record([
             &o.transaction_id.to_string(),
-            &o.company_slug,
+            o.company_slug.as_str(),
             &o.description,
             &o.date.to_string(),
             &o.partner_id.to_string(),
@@ -417,7 +417,9 @@ mod tests {
     #[test]
     fn render_companies_single() {
         let rows = vec![CompanyRow {
-            slug: "acme".into(),
+            slug: "acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture slug: {error}")),
             name: "Acme Corp".into(),
             description: None,
             created_at: "2025-01-01".into(),
@@ -430,7 +432,9 @@ mod tests {
     #[test]
     fn render_companies_quoting() {
         let rows = vec![CompanyRow {
-            slug: "acme".into(),
+            slug: "acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture slug: {error}")),
             name: "Acme, Corp".into(), // comma in name
             description: Some("A company".into()),
             created_at: "2025-01-01".into(),
@@ -443,7 +447,7 @@ mod tests {
     #[test]
     fn render_accounts_has_normal_balance() {
         let rows = vec![AccountRow {
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
@@ -458,7 +462,7 @@ mod tests {
     #[test]
     fn render_accounts_revenue_credit() {
         let rows = vec![AccountRow {
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             code: "4000".into(),
             name: "Revenue".into(),
             account_type: beankeeper::types::AccountType::Revenue,
@@ -482,7 +486,7 @@ mod tests {
     fn render_transactions_with_metadata() {
         let rows = vec![TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             description: "Sale".into(),
             metadata: Some("INV-001".into()),
             currency: beankeeper::types::Currency::USD,
@@ -503,7 +507,7 @@ mod tests {
     fn render_transactions_without_metadata() {
         let rows = vec![TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             description: "Sale".into(),
             metadata: None,
             currency: beankeeper::types::Currency::USD,

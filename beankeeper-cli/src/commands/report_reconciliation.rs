@@ -389,7 +389,7 @@ pub(super) fn run_resolved_to(
 ) -> Result<(), CliError> {
     let conn = db.conn();
     let report = db::audit::atomically(conn, || {
-        let company_scope = Company::resolve(conn, company)?;
+        let company_scope = Company::resolve(conn, &company.parse()?)?;
         let report =
             build_resolved_report(conn, &company_scope, resolved.account, resolved.request)?;
         let report = match resolved.mode {
@@ -531,7 +531,7 @@ pub fn compute_reconciliation(
 ) -> Result<ReconciliationReport, CliError> {
     let conn = db.conn();
     db::audit::atomically(conn, || {
-        let company = Company::resolve(conn, company)?;
+        let company = Company::resolve(conn, &company.parse()?)?;
         build_typed_report(conn, &company, request)?.check_difference()
     })
 }
@@ -551,7 +551,7 @@ pub fn compute_settlement_reconciliation(
     let link_key = settlement::resolve_link_key(request.statement, link_key)?;
     let conn = db.conn();
     db::audit::atomically(conn, || {
-        let company = Company::resolve(conn, company)?;
+        let company = Company::resolve(conn, &company.parse()?)?;
         let report = build_typed_report(conn, &company, request)?;
         settlement::apply(conn, &company, report, link_key)?.check_difference()
     })
@@ -562,8 +562,7 @@ fn build_typed_report(
     company: &Company<'_>,
     request: &ReconciliationRequest<'_>,
 ) -> Result<ReconciliationReport, CliError> {
-    let account =
-        db::accounts::get_account_on_connection(conn, company.slug().as_str(), request.account)?;
+    let account = db::accounts::get_account_on_connection(conn, company.slug(), request.account)?;
     build_resolved_report(
         conn,
         company,
@@ -589,7 +588,7 @@ pub fn build_report(
     args: &ReconciliationArgs<'_>,
 ) -> Result<ReconciliationReport, CliError> {
     db::audit::atomically(conn, || {
-        let company = Company::resolve(conn, company)?;
+        let company = Company::resolve(conn, &company.parse()?)?;
         build_cli_report(conn, &company, args)?.check_difference()
     })
 }
@@ -610,7 +609,7 @@ fn resolve_cli_request<'a>(
     as_of: Option<NaiveDate>,
 ) -> Result<(db::AccountRow, ResolvedRequest<'a>), CliError> {
     let filters = metadata_filter::parse_filters(args.filter_metadata)?;
-    let account = db::accounts::get_account_on_connection(conn, company, args.account)?;
+    let account = db::accounts::get_account_on_connection(conn, &company.parse()?, args.account)?;
     let currency = resolve_currency(conn, company, args.currency)?;
     let statement_balance = args
         .statement_balance

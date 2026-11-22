@@ -212,7 +212,7 @@ fn prepare<'a>(
     let journal = journal.post()?;
     periods::ensure_open(
         ReadConn::new(session.connection),
-        request.company.as_str(),
+        &request.company.as_str().parse()?,
         journal.date(),
     )?;
     let details = PreviewDetails {
@@ -245,8 +245,7 @@ fn opening_entry(
     direction: DebitOrCredit,
 ) -> Result<Entry, CliError> {
     let row = accounts::get_account(
-        ReadConn::new(session.connection),
-        company.as_str(),
+        &crate::db::companies::Company::bind(ReadConn::new(session.connection), company.clone())?,
         line.account.as_str(),
     )
     .map_err(|error| match error {

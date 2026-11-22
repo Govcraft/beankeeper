@@ -277,7 +277,7 @@ pub fn compute_trend(
     request: TrendRequest,
 ) -> Result<TrendReport, CliError> {
     db::audit::atomically(db.conn(), || {
-        db::companies::get_company(db.read(), company)?;
+        db::companies::get_company(db.read(), &company.parse()?)?;
         let columns = period_columns(request.dates.from(), request.dates.to(), request.period)?;
         let rows = columns
             .iter()
@@ -324,7 +324,13 @@ fn column_rows(
         TrendMetric::Spending => (Some(AccountType::Expense), Some(column.from)),
         TrendMetric::NetWorth => (None, None),
     };
-    db::compute_trial_balance(db.conn(), company, filter, from, Some(column.to), currency)
+    db::compute_trial_balance(
+        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        filter,
+        from,
+        Some(column.to),
+        currency,
+    )
 }
 
 fn overflow() -> CliError {

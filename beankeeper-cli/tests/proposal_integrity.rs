@@ -16,7 +16,13 @@ fn pending() -> Result<(Db, String), Box<dyn Error>> {
 
 fn pending_with_entries(entries: serde_json::Value) -> Result<(Db, String), Box<dyn Error>> {
     let db = Db::open_in_memory()?;
-    db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    db::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     let id = "proposal".create_type_id::<V7>().to_string();
     let payload = PostingPayload {
         description: "Review".into(),
@@ -57,7 +63,7 @@ fn proposals_require_immutable_payloads_and_audited_terminal_transitions() -> Te
         beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
             &db,
             &Actor::new("reviewer"),
-            |grant| audit::reject_proposal(grant, "acme", &id.parse()?, Some("No")),
+            |grant| audit::reject_proposal(grant, &"acme".parse()?, &id.parse()?, Some("No")),
         )?;
     assert_eq!(outcome.state.code(), "rejected");
     verify::execute_json(&db)?;
@@ -78,7 +84,7 @@ fn verify_detects_changed_resolution_even_if_protection_triggers_are_removed() -
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
         &db,
         &Actor::new("reviewer"),
-        |grant| audit::reject_proposal(grant, "acme", &id.parse()?, Some("No")),
+        |grant| audit::reject_proposal(grant, &"acme".parse()?, &id.parse()?, Some("No")),
     )?;
     db.conn().execute_batch(
         "DROP TRIGGER protect_proposal_payload; DROP TRIGGER protect_proposal_resolution;",
@@ -106,7 +112,7 @@ fn resolution_preserves_the_direction_spelling_of_a_legacy_proposal() -> TestRes
         beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
             &db,
             &Actor::new("reviewer"),
-            |grant| audit::reject_proposal(grant, "acme", &id.parse()?, None),
+            |grant| audit::reject_proposal(grant, &"acme".parse()?, &id.parse()?, None),
         )?;
     assert_eq!(proposal.payload.entries[0].direction, DebitOrCredit::Debit);
     let direction: String = db.conn().query_row(

@@ -12,7 +12,7 @@ use crate::error::CliError;
 pub(in crate::db) fn store_security(
     tx: &AuditedTx<'_>,
     actor: &Actor,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     params: &SecurityParams,
 ) -> Result<Security, CliError> {
     let conn = tx.connection();
@@ -20,7 +20,10 @@ pub(in crate::db) fn store_security(
         "INSERT INTO securities(company_slug,symbol,name,currency) VALUES (?1,?2,?3,?4)",
         params![company, params.symbol, params.name, params.currency.code()],
     )?;
-    let security = get_security(tx.read(), company, &params.symbol)?;
+    let security = get_security(
+        &crate::db::companies::Company::bind(tx.read(), company.clone())?,
+        &params.symbol,
+    )?;
     record_insert(
         conn,
         actor,
@@ -35,7 +38,7 @@ pub(in crate::db) fn store_security(
 pub(in crate::db) fn store_price(
     tx: &AuditedTx<'_>,
     actor: &Actor,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     price: &Price,
     minor_units: i64,
 ) -> Result<(), CliError> {
@@ -57,7 +60,7 @@ pub(in crate::db) fn store_price(
 pub(in crate::db) fn store_lot(
     tx: &AuditedTx<'_>,
     actor: &Actor,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     lot: &Lot,
     minor_units: i64,
 ) -> Result<(), CliError> {
@@ -81,7 +84,7 @@ pub(in crate::db) fn store_lot(
 pub(in crate::db) fn store_reliefs(
     tx: &AuditedTx<'_>,
     actor: &Actor,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     date: NaiveDate,
     transaction_id: crate::db::ids::TransactionId,
     relief: &[Relief],

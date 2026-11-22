@@ -73,7 +73,7 @@ fn seed_automation(db: &Db, actor: &Actor) -> Result<(), CliError> {
         audit::set_annual_budget(
             grant,
             &db::SetAnnualBudgetParams {
-                company_slug: "acme-consulting",
+                company_slug: &"acme-consulting".parse()?,
                 account_code: "5000",
                 currency: Currency::USD,
                 year: 2025,
@@ -85,7 +85,7 @@ fn seed_automation(db: &Db, actor: &Actor) -> Result<(), CliError> {
     Granted::<Post>::with_db(db, actor, |grant| {
         rules::create_rule(
             grant,
-            "acme-consulting",
+            &"acme-consulting".parse()?,
             "office supplies".parse()?,
             "5200",
             10,
@@ -95,7 +95,7 @@ fn seed_automation(db: &Db, actor: &Actor) -> Result<(), CliError> {
     Granted::<Post>::with_db(db, actor, |grant| {
         schedules::create_schedule(
             grant,
-            "acme-consulting",
+            &"acme-consulting".parse()?,
             &schedules::CreateScheduleParams {
                 description: "Monthly office rent".into(),
                 currency: Currency::USD,
@@ -142,7 +142,7 @@ fn seed_investments(db: &Db, actor: &Actor) -> Result<(), CliError> {
     Granted::<Post>::with_db(db, actor, |grant| {
         investments::create_security(
             grant,
-            "personal",
+            &"personal".parse()?,
             &investments::SecurityParams {
                 symbol: "DEMO".into(),
                 name: "Fictional Demo Fund".into(),
@@ -157,7 +157,7 @@ fn seed_investments(db: &Db, actor: &Actor) -> Result<(), CliError> {
         Granted::<Post>::with_db(db, actor, |grant| {
             investments::buy(
                 grant,
-                "personal",
+                &"personal".parse()?,
                 &investments::BuyParams {
                     symbol: "DEMO".into(),
                     quantity: quantity
@@ -176,7 +176,7 @@ fn seed_investments(db: &Db, actor: &Actor) -> Result<(), CliError> {
     Granted::<Post>::with_db(db, actor, |grant| {
         investments::sell(
             grant,
-            "personal",
+            &"personal".parse()?,
             &investments::SellParams {
                 symbol: "DEMO".into(),
                 quantity: "4"
@@ -196,7 +196,7 @@ fn seed_investments(db: &Db, actor: &Actor) -> Result<(), CliError> {
     Granted::<Post>::with_db(db, actor, |grant| {
         investments::record_price(
             grant,
-            "personal",
+            &"personal".parse()?,
             &investments::PriceParams {
                 symbol: "DEMO".into(),
                 date: date("2025-03-31")?,
@@ -270,13 +270,16 @@ fn seed_settlement(db: &Db, actor: &Actor) -> Result<(), CliError> {
         Some(r#"{"applies_to":"AC-SETTLE-INVOICE"}"#),
     )?;
     for id in [charge, payment] {
-        let (_, entries) = db::get_transaction(db.read(), "acme-consulting", id)?;
+        let (_, entries) = db::get_transaction(
+            &crate::db::companies::Company::bind(db.read(), "acme-consulting".parse()?)?,
+            id,
+        )?;
         for entry in entries.iter().filter(|entry| entry.account_code == "1150") {
             Granted::<Reconcile>::with_db(db, actor, |grant| {
                 audit::clear_entry(
                     grant,
                     &audit::ClearRequest {
-                        company_slug: "acme-consulting",
+                        company_slug: &"acme-consulting".parse()?,
                         transaction_id: id,
                         entry_id: entry.id,
                         amount: Some(162_000_i64.try_into()?),

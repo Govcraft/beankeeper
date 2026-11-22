@@ -100,7 +100,7 @@ pub fn build_schedule_c(
     currency: Currency,
 ) -> Result<TaxReport<ScheduleSummary>, CliError> {
     crate::db::audit::atomically(db.conn(), || {
-        crate::db::companies::get_company(db.read(), company)?;
+        crate::db::companies::get_company(db.read(), &company.parse()?)?;
         let entries = load_entries(db, company, period, currency)?;
         Ok(TaxReport {
             period,
@@ -125,7 +125,7 @@ pub fn build_vendors(
     threshold: VendorThreshold,
 ) -> Result<TaxReport<VendorSummary>, CliError> {
     crate::db::audit::atomically(db.conn(), || {
-        crate::db::companies::get_company(db.read(), company)?;
+        crate::db::companies::get_company(db.read(), &company.parse()?)?;
         let currency = threshold.money().currency();
         let entries = load_entries(db, company, period, currency)?;
         Ok(TaxReport {

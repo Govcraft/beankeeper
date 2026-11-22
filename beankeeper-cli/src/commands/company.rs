@@ -58,7 +58,7 @@ pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
             crate::db::delete_company(db.conn(), &actor, slug, confirmed)?;
             if format == OutputFormat::Json {
                 let meta = cli.meta(Operation::CompanyDelete, None);
-                let rendered = output::json::render_deleted(slug, meta)?;
+                let rendered = output::json::render_deleted(slug.as_str(), meta)?;
                 println!("{rendered}");
             }
             if !cli.verbosity.quiet {
@@ -136,7 +136,7 @@ mod tests {
     fn mcp_company_api_never_creates_or_deletes() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
         let create = CompanyCommand::Create {
-            slug: "acme".into(),
+            slug: "acme".parse()?,
             name: "Acme".into(),
             description: None,
         };
@@ -151,12 +151,12 @@ mod tests {
         companies::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme".parse()?,
             "Acme",
             None,
         )?;
         let delete = CompanyCommand::Delete {
-            slug: "acme".into(),
+            slug: "acme".parse()?,
             force: true,
         };
         assert!(matches!(
@@ -166,7 +166,7 @@ mod tests {
         let shown = execute_json(
             &db,
             &CompanyCommand::Show {
-                slug: "acme".into(),
+                slug: "acme".parse()?,
             },
         )?;
         assert_eq!(shown[0]["name"], "Acme");

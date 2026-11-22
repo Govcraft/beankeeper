@@ -31,7 +31,7 @@ pub fn run(
 ) -> Result<(), CliError> {
     let db_handle = cli.open_db()?;
     if !matches!(sub, TxnCommand::Reconcile) {
-        crate::db::companies::get_company(db_handle.read(), company)?;
+        crate::db::companies::get_company(db_handle.read(), &company.parse()?)?;
     }
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
@@ -158,7 +158,7 @@ fn execute_reverse(
         db::audit::reverse_transaction(
             grant,
             &db::audit::ReverseTransactionParams {
-                company_slug: company,
+                company_slug: &company.parse()?,
                 id: *id,
                 date,
                 description: description.as_deref(),
@@ -205,7 +205,7 @@ pub fn execute_json_with_pagination(
     actor: &db::Actor,
 ) -> Result<(serde_json::Value, Option<serde_json::Value>), CliError> {
     if !matches!(sub, TxnCommand::Reconcile) {
-        db::get_company(db_handle.read(), company)?;
+        db::get_company(db_handle.read(), &company.parse()?)?;
     }
     let mut out = Vec::new();
     match sub {
@@ -359,21 +359,24 @@ fn run_list_or_count(
         count,
     } = args;
 
-    let mut lp = transactions::ListTransactionParams::for_company(company);
-    lp.account_filter = account.as_deref();
-    lp.from_date = *from;
-    lp.to_date = *to;
-    lp.limit = limit.sql_limit();
-    lp.offset = i64::from(*offset);
-    lp.description_like = description.as_deref();
-    lp.reference_filter = reference.as_deref();
-    lp.metadata_like = metadata.as_deref();
     let meta_eq = db::metadata_filter::parse_filters(meta)?;
-    lp.meta_eq = &meta_eq;
-    lp.tax_category_filter = tax_category.as_deref();
-    lp.direction_filter = *direction;
+    let mut lp = transactions::ListTransactionParams {
+        account_filter: account.as_deref(),
+        from_date: *from,
+        to_date: *to,
+        limit: limit.sql_limit(),
+        offset: i64::from(*offset),
+        description_like: description.as_deref(),
+        reference_filter: reference.as_deref(),
+        metadata_like: metadata.as_deref(),
+        meta_eq: &meta_eq,
+        tax_category_filter: tax_category.as_deref(),
+        direction_filter: *direction,
+        ..Default::default()
+    };
 
-    db_handle.read_snapshot(|_| {
+    db_handle.read_snapshot(|reader| {
+        let scope = Company::bind(reader, company.parse()?)?;
         lp.value_filter = list_value_filter(
             db_handle.conn(),
             company,
@@ -389,9 +392,9 @@ fn run_list_or_count(
         )?;
 
         if *count {
-            run_count(cli, db_handle, &lp, format, out)
+            run_count(cli, &scope, &lp, format, out)
         } else {
-            run_list(cli, db_handle, &lp, format, use_color, out)
+            run_list(cli, &scope, &lp, format, use_color, out)
         }
     })
 }
@@ -602,7 +605,7 @@ fn execute_proposal(
             });
         }
         TxnProposalCommand::Proposals { include_rejected } => {
-            let rows = db::proposals::list(db.conn(), company, actor, *include_rejected)?;
+            let rows = db::proposals::list(db.conn(), &company.parse()?, actor, *include_rejected)?;
             serde_json::to_value(
                 rows.iter()
                     .map(super::posting_output::ProposalJson::from)
@@ -611,13 +614,13 @@ fn execute_proposal(
         }
         TxnProposalCommand::Approve { id } => {
             let row = Granted::<Approve>::with_db(db, actor, |grant| {
-                db::audit::approve_proposal(grant, company, id)
+                db::audit::approve_proposal(grant, &company.parse()?, id)
             })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
         TxnProposalCommand::Reject { id, reason } => {
             let row = Granted::<ResolveProposal>::with_db(db, actor, |grant| {
-                db::audit::reject_proposal(grant, company, id, reason.as_deref())
+                db::audit::reject_proposal(grant, &company.parse()?, id, reason.as_deref())
             })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
@@ -702,7 +705,7 @@ pub(crate) fn execute_posting_json(
     actor: &db::Actor,
     mode: PostingMode,
 ) -> Result<serde_json::Value, CliError> {
-    db::get_company(db.read(), company)?;
+    db::get_company(db.read(), &company.parse()?)?;
     with_post_params(company, request, actor, |params| match mode {
         PostingMode::Post => Granted::<Post>::with_db(db, actor, |grant| {
             transactions::post_from_source(grant, params, transactions::PostingSource::Command)
@@ -756,7 +759,7 @@ fn with_post_params<T>(
     // idempotency/dedup key, so the raw value is also what conflict checks
     // compare against.
     let params = transactions::PostTransactionParams {
-        company_slug: company,
+        company_slug: &company.parse()?,
         description,
         metadata,
         currency,
@@ -814,14 +817,14 @@ fn print_post_result(
 /// Execute the `txn list` subcommand.
 fn run_list(
     cli: &Cli,
-    db_handle: &Db,
+    company: &Company<'_>,
     params: &transactions::ListTransactionParams<'_>,
     format: OutputFormat,
     use_color: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let rows = transactions::list_transactions(db_handle.read(), params)?;
-    let total = transactions::count_transactions(db_handle.read(), params)?;
+    let rows = transactions::list_transactions(company, params)?;
+    let total = transactions::count_transactions(company, params)?;
     let pagination = output::json::Pagination::new(params.limit, params.offset, rows.len(), total);
 
     match format {
@@ -831,15 +834,14 @@ fn run_list(
         }
         OutputFormat::Json => {
             // For JSON, include entries for each transaction
-            let company = Company::resolve(db_handle.conn(), params.company_slug)?;
             let mut entries_map: HashMap<crate::db::ids::TransactionId, Vec<db::EntryRow>> =
                 HashMap::new();
             for txn in &rows {
-                let entries = transactions::get_entries_for_transaction(&company, txn.id)?;
+                let entries = transactions::get_entries_for_transaction(company, txn.id)?;
                 entries_map.insert(txn.id, entries);
             }
             let meta = cli
-                .meta(Operation::TxnList, Some(params.company_slug))
+                .meta(Operation::TxnList, Some(company.slug().as_str()))
                 .with_pagination(pagination.clone());
             let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
             writeln!(out, "{rendered}")?;
@@ -872,16 +874,16 @@ fn run_list(
 /// Execute the `txn list --count` subcommand.
 fn run_count(
     cli: &Cli,
-    db_handle: &Db,
+    company: &Company<'_>,
     params: &transactions::ListTransactionParams<'_>,
     format: OutputFormat,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let count = transactions::count_transactions(db_handle.read(), params)?;
+    let count = transactions::count_transactions(company, params)?;
 
     match format {
         OutputFormat::Json => {
-            let meta = cli.meta(Operation::TxnList, Some(params.company_slug));
+            let meta = cli.meta(Operation::TxnList, Some(company.slug().as_str()));
             let rendered = output::json::render_count(count, meta)?;
             writeln!(out, "{rendered}")?;
         }
@@ -914,9 +916,9 @@ fn run_show(
     meta: output::json::Meta,
 ) -> Result<(), CliError> {
     let (format, use_color) = display;
-    let company_scope = Company::resolve(db_handle.conn(), company)?;
-    let (txn, entries) = transactions::get_scoped_transaction(&company_scope, id)?;
-    let att_rows = attachments::list_attachments(db_handle.read(), company, id)?;
+    let company_scope = Company::bind(db_handle.read(), company.parse()?)?;
+    let (txn, entries) = transactions::get_transaction(&company_scope, id)?;
+    let att_rows = attachments::list_attachments(&company_scope, id)?;
     let mut clearings: HashMap<crate::db::ids::EntryId, Vec<db::clearings::Clearing>> =
         HashMap::new();
     for e in &entries {
@@ -986,7 +988,10 @@ fn run_attach(
 
     let (att_id, hash) = Granted::<Post>::with_db(db_handle, &cli.principal(), |grant| {
         // 2. Validate the transaction exists for this company
-        let _txn = transactions::get_transaction(db_handle.read(), company, transaction_id)?;
+        let _txn = transactions::get_transaction(
+            &Company::bind(db_handle.read(), company.parse()?)?,
+            transaction_id,
+        )?;
 
         // 3. Validate source file exists
         let source = Path::new(file_path);
@@ -1009,7 +1014,7 @@ fn run_attach(
         let params = attachments::StoreAttachmentParams {
             transaction_id,
             entry_id,
-            company_slug: company,
+            company_slug: &company.parse()?,
             uri: &uri,
             document_type: doc_type,
             hash: Some(&hash),
@@ -1106,7 +1111,7 @@ mod tests {
         db::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme".parse()?,
             "Acme",
             None,
         )?;
@@ -1114,7 +1119,7 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -1125,7 +1130,7 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "4000",
                 name: "Revenue",
                 account_type: beankeeper::types::AccountType::Revenue,

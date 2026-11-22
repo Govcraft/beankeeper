@@ -233,16 +233,16 @@ impl Serialize for BookAccount {
 pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>, CliError> {
     let conn = db.conn();
     atomically(conn, || {
-        let named = get_company(db.read(), company.as_str())?;
+        let named = get_company(db.read(), company)?;
         let profile = if get_schema_version(conn)? >= BOOK_PROFILE_SCHEMA_VERSION {
             find_profile(db.read(), company)?
         } else {
             None
         };
+        let scope = crate::db::companies::Company::bind(db.read(), company.clone())?;
         let accounts = list_accounts(
-            db.read(),
+            &scope,
             &ListAccountParams {
-                company_slug: company.as_str(),
                 type_filter: None,
                 name_filter: None,
             },
@@ -422,7 +422,7 @@ fn create_book(
     let row = create_company(
         session.connection,
         session.actor(),
-        company.as_str(),
+        company,
         checked_name(name)?,
         None,
     )?;
@@ -435,7 +435,7 @@ fn initialize_book(
     company: &CompanySlug,
     settings: BookSettings,
 ) -> Result<Value, CliError> {
-    let row = get_company(ReadConn::new(session.connection), company.as_str())?;
+    let row = get_company(ReadConn::new(session.connection), company)?;
     if find_profile(ReadConn::new(session.connection), company)?.is_some() {
         return Err(CliError::Validation(format!(
             "book '{company}' already has a setup profile"
@@ -529,7 +529,7 @@ fn record_profile<'a>(
         session.connection,
         session.actor(),
         AuditChange {
-            company_slug: Some(company.as_str()),
+            company_slug: Some(company),
             entity: AuditEntity::Company,
             entity_id: "setup.book.profile",
             action: AuditAction::StatusChange,
@@ -572,7 +572,7 @@ fn create_setup_account(
         session.connection,
         session.actor(),
         &CreateAccountParams {
-            company_slug: company.as_str(),
+            company_slug: company,
             code,
             name: checked_name(name)?,
             account_type,

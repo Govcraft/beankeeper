@@ -338,7 +338,7 @@ impl SummaryReport {
 }
 
 fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, CliError> {
-    db::companies::get_company(db.read(), company)?;
+    db::companies::get_company(db.read(), &company.parse()?)?;
     let periods = args.periods(chrono::Local::now().date_naive())?;
     let currency = super::report_currency::resolve_report_currency(
         db.conn(),
@@ -346,8 +346,7 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
         crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
     )?;
     let rows = db::compute_trial_balance(
-        db.conn(),
-        company,
+        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
         None,
         None,
         Some(periods.current.to),
@@ -373,8 +372,7 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
     )?;
     let activity = |period: Period| {
         db::compute_trial_balance(
-            db.conn(),
-            company,
+            &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
             None,
             Some(period.from),
             Some(period.to),
@@ -491,7 +489,7 @@ mod tests {
         db::create_company(
             db.conn(),
             &db::Actor::new("summary fixture"),
-            "co",
+            &"co".parse()?,
             "Company",
             None,
         )?;

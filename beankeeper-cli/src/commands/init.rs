@@ -126,7 +126,7 @@ fn post_with_metadata(
         post_transaction(
             grant,
             &PostTransactionParams {
-                company_slug: company,
+                company_slug: &company.parse()?,
                 description: desc,
                 metadata,
                 currency: beankeeper::types::Currency::USD,
@@ -239,21 +239,21 @@ fn seed_companies(conn: &rusqlite::Connection, actor: &crate::db::Actor) -> Resu
     create_company(
         conn,
         actor,
-        "acme-consulting",
+        &"acme-consulting".parse()?,
         "Acme Consulting LLC",
         Some("Demo consulting firm"),
     )?;
     create_company(
         conn,
         actor,
-        "acme-products",
+        &"acme-products".parse()?,
         "Acme Products Inc",
         Some("Demo product company"),
     )?;
     create_company(
         conn,
         actor,
-        "personal",
+        &"personal".parse()?,
         "Personal",
         Some("Owner personal finances"),
     )?;
@@ -283,7 +283,7 @@ fn seed_company_accounts(
             conn,
             actor,
             &CreateAccountParams {
-                company_slug: company,
+                company_slug: &company.parse()?,
                 code,
                 name,
                 account_type,
@@ -913,10 +913,14 @@ mod tests {
 
         for (slug, expected_count) in &expected_accounts {
             // Verify accounts exist
+            let scope = crate::db::companies::Company::resolve(
+                db.conn(),
+                &slug.parse().expect("fixture company"),
+            )
+            .expect("bind demo company");
             let accounts = crate::db::list_accounts(
-                db.read(),
+                &scope,
                 &crate::db::ListAccountParams {
-                    company_slug: slug,
                     type_filter: None,
                     name_filter: None,
                 },
@@ -930,8 +934,11 @@ mod tests {
 
             // Verify trial balance is balanced
             let balances = crate::db::compute_trial_balance(
-                db.conn(),
-                slug,
+                &crate::db::companies::Company::resolve(
+                    db.conn(),
+                    &slug.parse().expect("fixture company"),
+                )
+                .expect("resolve fixture company"),
                 None,
                 None,
                 None,

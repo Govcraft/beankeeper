@@ -335,7 +335,7 @@ pub enum AgentLimitCommand {
     Set {
         agent_uri: String,
         #[arg(long)]
-        company: Option<String>,
+        company: Option<CompanySlug>,
         #[arg(long)]
         currency: CurrencyArg,
         #[arg(long)]
@@ -347,13 +347,13 @@ pub enum AgentLimitCommand {
     Show {
         agent_uri: String,
         #[arg(long)]
-        company: Option<String>,
+        company: Option<CompanySlug>,
     },
     /// Clear all currency limits for the agent, optionally in one company.
     Clear {
         agent_uri: String,
         #[arg(long)]
-        company: Option<String>,
+        company: Option<CompanySlug>,
     },
 }
 
@@ -967,7 +967,7 @@ pub enum AuditCommand {
 pub struct AuditLogArgs {
     /// Restrict to one company slug.
     #[arg(long)]
-    pub company: Option<String>,
+    pub company: Option<CompanySlug>,
 
     /// Restrict to one verified agent URI.
     #[arg(long)]
@@ -1326,7 +1326,7 @@ EXAMPLES:\n  \
 ")]
     Create {
         /// Company slug (lowercase alphanumeric and hyphens).
-        slug: String,
+        slug: CompanySlug,
         /// Company display name.
         name: String,
         /// Optional company description.
@@ -1353,7 +1353,7 @@ EXAMPLES:\n  \
 ")]
     Show {
         /// Company slug.
-        slug: String,
+        slug: CompanySlug,
     },
 
     /// Delete a company.
@@ -1367,7 +1367,7 @@ EXAMPLES:\n  \
 ")]
     Delete {
         /// Company slug.
-        slug: String,
+        slug: CompanySlug,
         /// Skip confirmation prompt.
         #[arg(long)]
         force: bool,
@@ -2839,6 +2839,20 @@ mod tests {
             resolve_format(Some(OutputFormat::Csv), &cli),
             OutputFormat::Csv
         );
+    }
+
+    #[test]
+    fn company_slugs_are_validated_in_each_cli_scope() {
+        for args in [
+            &["bk", "--company", "Acme", "account", "list"][..],
+            &["bk", "company", "create", "-acme", "Acme"],
+            &["bk", "company", "show", "acme corp"],
+            &["bk", "company", "delete", "Acme", "--force"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
+
+        assert!(Cli::try_parse_from(["bk", "company", "show", "acme-2"]).is_ok());
     }
 
     #[test]

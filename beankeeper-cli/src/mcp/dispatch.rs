@@ -164,7 +164,7 @@ impl Request {
             Self::InvestmentLots(input) => call_investment_lots(db, actor, input),
             Self::InvestmentHoldings(input) => call_investment_holdings(db, actor, input),
             Self::CompanyList(_) => call_company_list(db),
-            Self::CompanyShow(input) => call_company_show(db, &input),
+            Self::CompanyShow(input) => call_company_show(db, input),
             Self::AccountList(input) => call_account_list(db, actor, input),
             Self::AccountShow(input) => call_account_show(db, actor, input),
             Self::AccountCreate(input) => call_account_create(db, actor, input),
@@ -416,11 +416,11 @@ fn call_company_list(db: &Db) -> Response {
     unpaged(commands::company::execute_json(db, &CompanyCommand::List))
 }
 
-fn call_company_show(db: &Db, input: &inputs::CompanyShow) -> Response {
+fn call_company_show(db: &Db, input: inputs::CompanyShow) -> Response {
     unpaged(commands::company::execute_json(
         db,
         &CompanyCommand::Show {
-            slug: input.slug.to_string(),
+            slug: input.slug.into_inner(),
         },
     ))
 }
@@ -429,7 +429,7 @@ fn call_account_list(db: &Db, actor: &Actor, input: inputs::AccountList) -> Resp
     execute_account(
         db,
         actor,
-        input.company.into_inner().as_str(),
+        &input.company.into_inner(),
         &AccountCommand::List {
             account_type: input.account_type,
             name: input.name,
@@ -445,7 +445,7 @@ fn call_account_show(db: &Db, actor: &Actor, input: inputs::AccountShow) -> Resp
     execute_account(
         db,
         actor,
-        input.company.into_inner().as_str(),
+        &input.company.into_inner(),
         &AccountCommand::Show {
             code: input.code.to_string(),
         },
@@ -456,7 +456,7 @@ fn call_account_create(db: &Db, actor: &Actor, input: inputs::AccountCreate) -> 
     execute_account(
         db,
         actor,
-        input.company.into_inner().as_str(),
+        &input.company.into_inner(),
         &AccountCommand::Create {
             code: input.code.to_string(),
             name: input.name,
@@ -763,7 +763,12 @@ fn execute_investment(
     ))
 }
 
-fn execute_account(db: &Db, actor: &Actor, company: &str, command: &AccountCommand) -> Response {
+fn execute_account(
+    db: &Db,
+    actor: &Actor,
+    company: &crate::db::companies::CompanySlug,
+    command: &AccountCommand,
+) -> Response {
     unpaged(commands::account::execute_json_with_actor(
         db, company, command, actor,
     ))
@@ -781,10 +786,10 @@ fn execute_period(db: &Db, actor: &Actor, company: &str, command: &PeriodCommand
 
 fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
     let agent = optional_text(input.agent);
-    let company = optional_text(input.company);
+    let company = input.company.map(Text::into_inner);
     let params = crate::db::ListAuditParams {
         agent_uri: agent.as_deref(),
-        company_slug: company.as_deref(),
+        company_slug: company.as_ref(),
         entity: input.entity,
         action: input.action,
         limit: input.limit.as_ref().map_or(50, PageLimit::get),

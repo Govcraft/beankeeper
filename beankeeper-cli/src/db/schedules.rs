@@ -122,7 +122,7 @@ fn parse_stored_date(date: &str) -> Result<NaiveDate, CliError> {
 #[derive(Debug, Clone, Serialize)]
 pub struct Schedule {
     pub id: ScheduleId,
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub description: String,
     #[serde(serialize_with = "crate::output::json::serialize_display")]
     pub currency: Currency,
@@ -174,16 +174,16 @@ pub struct RunOptions {
 /// Rejects invalid descriptions, dates, currency, accounts or unbalanced entries.
 pub fn create_schedule(
     grant: Granted<'_, Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     params: &CreateScheduleParams,
 ) -> Result<Schedule, CliError> {
     grant.mutate("sp_schedule_create", |tx, actor| {
         let reader = tx.read();
-        super::companies::get_company(reader, company)?;
+        let scope = super::companies::Company::bind(reader, company.clone())?;
         validate_template(params)?;
         let mut entries = params.entries.clone();
         for entry in &mut entries {
-            let account = super::accounts::get_account(reader, company, &entry.account_code)?;
+            let account = super::accounts::get_account(&scope, &entry.account_code)?;
             super::accounts::row_to_account(&account)?;
             if entry.tax_category.is_none() {
                 entry.tax_category = account.default_tax_category;
@@ -191,7 +191,7 @@ pub fn create_schedule(
         }
         let schedule = Schedule {
             id: ScheduleId::generate(),
-            company_slug: company.into(),
+            company_slug: company.clone(),
             description: params.description.clone(),
             currency: params.currency,
             start_date: params.start_date,
@@ -248,7 +248,9 @@ fn validate_entries(entries: &[PostEntryParams]) -> Result<(), CliError> {
 ///
 /// # Errors
 /// Returns storage errors or errors decoding invalid stored dates or IDs.
-pub fn list_schedules(conn: ReadConn<'_>, company: &str) -> Result<Vec<Schedule>, CliError> {
+pub fn list_schedules(scope: &super::companies::Company<'_>) -> Result<Vec<Schedule>, CliError> {
+    let conn = scope.read();
+    let company = scope.slug();
     let mut stmt = conn.prepare(
         "SELECT id FROM schedules WHERE company_slug = ?1 ORDER BY next_due IS NULL, next_due, id",
     )?;
@@ -256,20 +258,23 @@ pub fn list_schedules(conn: ReadConn<'_>, company: &str) -> Result<Vec<Schedule>
         .query_map([company], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     ids.into_iter()
-        .map(|id| get_schedule(conn, company, &id.parse()?))
+        .map(|id| get_schedule(conn, &company.as_str().parse()?, &id.parse()?))
         .collect()
 }
 
 pub(crate) fn list_schedules_on_connection(
     conn: &Connection,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
 ) -> Result<Vec<Schedule>, CliError> {
-    list_schedules(ReadConn::new(conn), company)
+    list_schedules(&crate::db::companies::Company::bind(
+        ReadConn::new(conn),
+        company.clone(),
+    )?)
 }
 
 pub(crate) fn get_schedule(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: &ScheduleId,
 ) -> Result<Schedule, CliError> {
     let row = conn
@@ -321,7 +326,7 @@ pub(crate) fn get_schedule(
         .collect::<Result<_, _>>()?;
     Ok(Schedule {
         id: id.clone(),
-        company_slug: company.into(),
+        company_slug: company.clone(),
         description: row.0,
         currency: row.1.parse().map_err(|error| {
             CliError::Database(format!("invalid stored schedule currency: {error}"))
@@ -342,7 +347,7 @@ pub(crate) fn get_schedule(
 /// Returns not-found for another company's schedule, or storage/audit errors.
 pub fn cancel_schedule(
     grant: Granted<'_, Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: &ScheduleId,
 ) -> Result<Schedule, CliError> {
     grant.mutate("sp_schedule_cancel", |tx, actor| {
@@ -368,7 +373,7 @@ pub fn cancel_schedule(
 /// all postings and template progress on failure.
 pub fn run_due(
     grant: Granted<'_, Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     through: NaiveDate,
     dry_run: bool,
 ) -> Result<Vec<Occurrence>, CliError> {
@@ -394,7 +399,7 @@ pub fn run_due(
 /// all postings and template progress on failure.
 pub fn run_due_with_options(
     grant: Granted<'_, Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     through: NaiveDate,
     options: RunOptions,
 ) -> Result<Vec<Occurrence>, CliError> {
@@ -429,7 +434,7 @@ pub fn run_due_with_options(
 /// Returns invalid template, recurrence, or database errors.
 pub fn preview_due(
     reader: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     through: NaiveDate,
 ) -> Result<Vec<Occurrence>, CliError> {
     let mut occurrences = Vec::new();
@@ -440,11 +445,17 @@ pub fn preview_due(
     Ok(occurrences)
 }
 
-fn pending_schedules(reader: ReadConn<'_>, company: &str) -> Result<Vec<Schedule>, CliError> {
-    Ok(list_schedules(reader, company)?
-        .into_iter()
-        .filter(|schedule| schedule.state.next_due().is_some())
-        .collect())
+fn pending_schedules(
+    reader: ReadConn<'_>,
+    company: &crate::db::companies::CompanySlug,
+) -> Result<Vec<Schedule>, CliError> {
+    Ok(list_schedules(&crate::db::companies::Company::bind(
+        reader,
+        company.clone(),
+    )?)?
+    .into_iter()
+    .filter(|schedule| schedule.state.next_due().is_some())
+    .collect())
 }
 
 fn sort_occurrences(occurrences: &mut [Occurrence]) {
@@ -504,9 +515,9 @@ fn execute_schedule(
     output: &mut Vec<Occurrence>,
 ) -> Result<Schedule, CliError> {
     validate_entries(&before.entries)?;
+    let scope = super::companies::Company::bind(reader, before.company_slug.clone())?;
     for entry in &before.entries {
-        let account =
-            super::accounts::get_account(reader, &before.company_slug, &entry.account_code)?;
+        let account = super::accounts::get_account(&scope, &entry.account_code)?;
         super::accounts::row_to_account(&account)?;
     }
     let mut after = before.clone();

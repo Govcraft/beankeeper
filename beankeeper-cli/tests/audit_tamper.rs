@@ -25,12 +25,18 @@ impl Ledger {
         let dir = tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
-        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db::create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"acme".parse()?,
+            "Acme",
+            None,
+        )?;
         db::create_account(
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -41,7 +47,7 @@ impl Ledger {
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "4000",
                 name: "Revenue",
                 account_type: beankeeper::types::AccountType::Revenue,
@@ -58,7 +64,7 @@ impl Ledger {
         ];
         {
             let params = PostTransactionParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 description: "Sale",
                 metadata: None,
                 currency: beankeeper::types::Currency::USD,
@@ -399,7 +405,7 @@ fn allowed_clearing_and_metadata_mutations_keep_verification_healthy() -> TestRe
     Granted::<Reconcile>::with_db(&ledger.db, &Actor::new("clearer"), |grant| {
         db::set_entry_status(
             grant,
-            "acme",
+            &"acme".parse()?,
             1.try_into()?,
             1.try_into()?,
             db::EntryStatus::Cleared,
@@ -541,7 +547,7 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
     }
     {
         let params = PostTransactionParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             description: "Large balance",
             metadata: None,
             currency: beankeeper::types::Currency::USD,

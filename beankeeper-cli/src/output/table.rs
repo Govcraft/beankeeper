@@ -72,7 +72,7 @@ pub fn render_companies(companies: &[CompanyRow], use_color: bool) -> String {
 
     for c in companies {
         table.add_row(vec![
-            Cell::new(styled(&c.slug, cyan_style(), use_color)),
+            Cell::new(styled(c.slug.as_str(), cyan_style(), use_color)),
             Cell::new(&c.name),
             Cell::new(c.description.as_deref().unwrap_or("")),
             Cell::new(styled(&c.created_at, dim_style(), use_color)),
@@ -581,7 +581,7 @@ pub fn render_orphaned_correlations(
     for o in orphans {
         table.add_row(vec![
             o.transaction_id.to_string(),
-            o.company_slug.clone(),
+            o.company_slug.to_string(),
             o.date.to_string(),
             o.description.clone(),
             o.partner_id.to_string(),
@@ -779,7 +779,7 @@ mod tests {
     fn budgets_use_each_rows_currency() {
         let rows = [Currency::USD, Currency::JPY, Currency::BHD].map(|currency| BudgetRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             account_code: "5000".into(),
             currency,
             year: 2026,
@@ -844,7 +844,9 @@ mod tests {
     #[test]
     fn render_companies_single() {
         let rows = vec![CompanyRow {
-            slug: "acme".into(),
+            slug: "acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture slug: {error}")),
             name: "Acme Corp".into(),
             description: None,
             created_at: "2025-01-01 00:00:00".into(),
@@ -859,13 +861,17 @@ mod tests {
     fn render_companies_plural() {
         let rows = vec![
             CompanyRow {
-                slug: "acme".into(),
+                slug: "acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture slug: {error}")),
                 name: "Acme Corp".into(),
                 description: None,
                 created_at: "2025-01-01".into(),
             },
             CompanyRow {
-                slug: "globex".into(),
+                slug: "globex"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture slug: {error}")),
                 name: "Globex Inc".into(),
                 description: Some("Global exports".into()),
                 created_at: "2025-02-01".into(),
@@ -885,7 +891,7 @@ mod tests {
     #[test]
     fn render_accounts_shows_normal_balance() {
         let rows = vec![AccountRow {
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
@@ -914,7 +920,7 @@ mod tests {
     fn render_transaction_list_shows_id_and_date() {
         let rows = vec![TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             description: "Test sale".into(),
             metadata: None,
             currency: Currency::USD,
@@ -940,7 +946,7 @@ mod tests {
     fn render_transaction_detail_balanced() {
         let txn = TransactionRow {
             id: crate::db::ids::fixture_id(42),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             description: "Cash sale".into(),
             metadata: Some("INV-001".into()),
             currency: Currency::USD,
@@ -958,7 +964,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(1),
                 transaction_id: crate::db::ids::fixture_id(42),
                 account_code: "1000".into(),
-                company_slug: "acme".into(),
+                company_slug: "acme".parse().expect("fixture company"),
                 direction: DebitOrCredit::Debit,
                 amount: 5000_i64
                     .try_into()
@@ -971,7 +977,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(2),
                 transaction_id: crate::db::ids::fixture_id(42),
                 account_code: "4000".into(),
-                company_slug: "acme".into(),
+                company_slug: "acme".parse().expect("fixture company"),
                 direction: DebitOrCredit::Credit,
                 amount: 5000_i64
                     .try_into()
@@ -995,7 +1001,7 @@ mod tests {
     fn render_transaction_detail_unbalanced() {
         let txn = TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             description: "Bad".into(),
             metadata: None,
             currency: Currency::USD,
@@ -1013,7 +1019,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(1),
                 transaction_id: crate::db::ids::fixture_id(1),
                 account_code: "1000".into(),
-                company_slug: "acme".into(),
+                company_slug: "acme".parse().expect("fixture company"),
                 direction: DebitOrCredit::Debit,
                 amount: 5000_i64
                     .try_into()
@@ -1026,7 +1032,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(2),
                 transaction_id: crate::db::ids::fixture_id(1),
                 account_code: "4000".into(),
-                company_slug: "acme".into(),
+                company_slug: "acme".parse().expect("fixture company"),
                 direction: DebitOrCredit::Credit,
                 amount: 3000_i64
                     .try_into()

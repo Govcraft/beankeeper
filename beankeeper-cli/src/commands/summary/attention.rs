@@ -197,7 +197,8 @@ fn recurring(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> 
         .as_of
         .checked_add_days(Days::new(14))
         .ok_or_else(date_overflow)?;
-    let schedules = db::schedules::list_schedules_on_connection(context.conn, context.company)?;
+    let schedules =
+        db::schedules::list_schedules_on_connection(context.conn, &context.company.parse()?)?;
     let mut count = 0_usize;
     let mut schedule_count = 0_usize;
     let mut total = 0;
@@ -373,7 +374,7 @@ mod tests {
         db::companies::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "co",
+            &"co".parse()?,
             "Company",
             None,
         )?;
@@ -389,7 +390,7 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "co",
+                    company_slug: &"co".parse()?,
                     code,
                     name,
                     account_type: kind,
@@ -427,7 +428,7 @@ mod tests {
         let result = db::transactions::post_fixture(
             db,
             &PostTransactionParams {
-                company_slug: "co",
+                company_slug: &"co".parse()?,
                 description: "Attention fixture",
                 metadata,
                 currency: beankeeper::types::Currency::USD,
@@ -470,7 +471,7 @@ mod tests {
         params: &schedules::CreateScheduleParams,
     ) -> Result<schedules::Schedule, CliError> {
         Granted::<Post>::with_db(db, actor, |grant| {
-            schedules::create_schedule(grant, "co", params)
+            schedules::create_schedule(grant, &"co".parse()?, params)
         })
     }
 
@@ -520,14 +521,14 @@ mod tests {
     fn unreconciled_includes_cleared_items_until_reconciliation_date() -> TestResult {
         let db = setup()?;
         let id = post(&db, "2024-01-01", ("1000", "4000"), 10000, None, None)?;
-        let company = db::companies::Company::resolve(db.conn(), "co")?;
+        let company = db::companies::Company::resolve(db.conn(), &"co".parse()?)?;
         let entry_id = db::get_entries_for_transaction(&company, id)?
             .into_iter()
             .find(|entry| entry.account_code == "1000")
             .ok_or("missing cash entry")?
             .id;
         let mut request = db::audit::ClearRequest {
-            company_slug: "co",
+            company_slug: &"co".parse()?,
             transaction_id: id,
             entry_id,
             amount: None,
@@ -576,7 +577,10 @@ mod tests {
         assert_eq!(facts["recurring_due"]["schedule_count"], 1);
         assert_eq!(facts["recurring_due"]["total"], 1400);
         assert_eq!(db.conn().total_changes(), before);
-        let schedules = db::schedules::list_schedules(db.read(), "co")?;
+        let schedules = db::schedules::list_schedules(&crate::db::companies::Company::bind(
+            db.read(),
+            "co".parse()?,
+        )?)?;
         assert_eq!(schedules[0].state.next_due(), Some("2020-01-01".parse()?));
         Ok(())
     }
@@ -600,12 +604,12 @@ mod tests {
         create_schedule(&db, &actor, &params)?;
         let through = "2024-02-03".parse()?;
         Granted::<Post>::with_db(&db, &actor, |grant| {
-            schedules::run_due(grant, "co", through, false)
+            schedules::run_due(grant, &"co".parse()?, through, false)
         })?;
         params.start_date = "2024-02-04".parse()?;
         let cancelled = create_schedule(&db, &actor, &params)?;
         Granted::<Post>::with_db(&db, &actor, |grant| {
-            schedules::cancel_schedule(grant, "co", &cancelled.id)
+            schedules::cancel_schedule(grant, &"co".parse()?, &cancelled.id)
         })?;
         params.start_date = "2024-02-15".parse()?;
         create_schedule(&db, &actor, &params)?;

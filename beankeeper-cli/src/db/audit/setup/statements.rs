@@ -273,10 +273,11 @@ pub(crate) fn prepare_in_session(
 
     let profile = books::current_profile(session, &request.company)?;
     let conn = ReadConn::new(session.connection);
-    let company = request.company.as_str();
+    let company = &request.company;
+    let scope = crate::db::companies::Company::bind(conn, company.clone())?;
     let bank_code = request.bank.as_str();
     let suspense_code = request.suspense.as_str();
-    let bank = StatementAccount::load(conn, company, bank_code)?;
+    let bank = StatementAccount::load(&scope, bank_code)?;
     if !matches!(
         bank.account.account_type(),
         AccountType::Asset | AccountType::Liability
@@ -285,8 +286,8 @@ pub(crate) fn prepare_in_session(
             "statement bank account must be an asset or liability".into(),
         ));
     }
-    let suspense = StatementAccount::load(conn, company, suspense_code)?;
-    let rules = rules::list_rules(conn, company)?;
+    let suspense = StatementAccount::load(&scope, suspense_code)?;
+    let rules = rules::list_rules(&scope)?;
     let sources = request.source.decode(request)?;
     if sources.is_empty() {
         return Err(CliError::Validation(
@@ -317,7 +318,7 @@ pub(crate) fn prepare_in_session(
         let contra = match contra_accounts.entry(contra_code) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(StatementAccount::load(conn, company, contra_code)?)
+                entry.insert(StatementAccount::load(&scope, contra_code)?)
             }
         };
         let existing_transaction = prior_posting
@@ -356,8 +357,8 @@ struct StatementAccount {
 }
 
 impl StatementAccount {
-    fn load(conn: ReadConn<'_>, company: &str, code: &str) -> Result<Self, CliError> {
-        let row = accounts::get_account(conn, company, code)?;
+    fn load(company: &crate::db::companies::Company<'_>, code: &str) -> Result<Self, CliError> {
+        let row = accounts::get_account(company, code)?;
         Ok(Self {
             account: accounts::row_to_account(&row)?,
             tax_category: row.default_tax_category,

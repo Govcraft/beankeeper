@@ -32,7 +32,13 @@ impl Ledger {
         std::fs::write(&passphrase_file, "capability-test-passphrase")?;
         let passphrase: SecretString = "capability-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db::create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"acme".parse()?,
+            "Acme",
+            None,
+        )?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
             ("4000", beankeeper::types::AccountType::Revenue),
@@ -42,7 +48,7 @@ impl Ledger {
                 db.conn(),
                 &Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme".parse()?,
                     code,
                     name: code,
                     account_type: kind,

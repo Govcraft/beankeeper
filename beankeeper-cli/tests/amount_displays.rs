@@ -109,7 +109,7 @@ fn typed_budget_variance_retains_currency_and_matches_cli() -> Result<(), Box<dy
     let report = compute_budget_variance(
         &db,
         &BudgetVarianceParams {
-            company_slug: "co",
+            company_slug: &"co".parse()?,
             currency,
             months: BudgetMonths::new(2026, Month::March, Month::March)?,
             account_type: Some(AccountType::Asset),

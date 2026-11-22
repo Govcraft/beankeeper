@@ -166,7 +166,7 @@ fn in_process_reports_preserve_validation_and_missing_company_errors() -> TestRe
     beankeeper_cli::db::companies::create_company(
         db.conn(),
         &Actor::new("fixture"),
-        "test",
+        &"test".parse()?,
         "Test",
         None,
     )?;

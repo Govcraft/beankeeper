@@ -53,18 +53,19 @@ fn export_json(db: &Db) -> Result<String, CliError> {
     let mut company_exports = Vec::new();
 
     for company in &companies {
+        let scope = Company::bind(db.read(), company.slug.clone())?;
         let accounts = db::list_accounts(
-            db.read(),
+            &scope,
             &db::accounts::ListAccountParams {
-                company_slug: &company.slug,
                 type_filter: None,
                 name_filter: None,
             },
         )?;
-        let scope = Company::resolve(db.conn(), &company.slug)?;
-        let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
-        txn_params.limit = i64::MAX;
-        let transactions = db::list_transactions(db.read(), &txn_params)?;
+        let txn_params = db::ListTransactionParams {
+            limit: i64::MAX,
+            ..Default::default()
+        };
+        let transactions = db::list_transactions(&scope, &txn_params)?;
 
         let mut txn_exports = Vec::new();
         for txn in &transactions {
@@ -140,10 +141,10 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
     // Section 2: Accounts (all companies)
     let mut all_accounts = Vec::new();
     for company in &companies {
+        let scope = Company::bind(db.read(), company.slug.clone())?;
         let accounts = db::list_accounts(
-            db.read(),
+            &scope,
             &db::accounts::ListAccountParams {
-                company_slug: &company.slug,
                 type_filter: None,
                 name_filter: None,
             },
@@ -157,7 +158,12 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
     for a in &all_accounts {
         acct_wtr
-            .write_record([&a.company_slug, &a.code, &a.name, a.account_type.code()])
+            .write_record([
+                a.company_slug.as_str(),
+                &a.code,
+                &a.name,
+                a.account_type.code(),
+            ])
             .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
     }
     let acct_bytes = acct_wtr
@@ -184,10 +190,12 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         .map_err(|e| CliError::General(format!("CSV serialization failed: {e}")))?;
 
     for company in &companies {
-        let scope = Company::resolve(db.conn(), &company.slug)?;
-        let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
-        txn_params.limit = i64::MAX;
-        let transactions = db::list_transactions(db.read(), &txn_params)?;
+        let scope = Company::bind(db.read(), company.slug.clone())?;
+        let txn_params = db::ListTransactionParams {
+            limit: i64::MAX,
+            ..Default::default()
+        };
+        let transactions = db::list_transactions(&scope, &txn_params)?;
         for txn in &transactions {
             let entries = db::get_entries_for_transaction(&scope, txn.id)?;
             for entry in &entries {

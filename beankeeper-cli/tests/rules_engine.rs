@@ -24,7 +24,13 @@ impl Ledger {
         let path = dir.path().join("rules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
+            companies::create_company(
+                db.conn(),
+                &Actor::new("fixture"),
+                &company.parse()?,
+                company,
+                None,
+            )?;
             for (code, kind, tax) in [
                 ("1000", beankeeper::types::AccountType::Asset, None),
                 (
@@ -47,7 +53,7 @@ impl Ledger {
                     db.conn(),
                     &Actor::new("fixture"),
                     &CreateAccountParams {
-                        company_slug: company,
+                        company_slug: &company.parse()?,
                         code,
                         name: code,
                         account_type: kind,
@@ -220,7 +226,10 @@ fn matching_is_literal_lowercase_and_uses_priority_then_id() -> TestResult {
     ledger.create("coffee", "9000", "10")?;
     ledger.create("CAFÉ 10%_", "5000", "0")?;
     let db = Db::open_existing(&ledger.path, None)?;
-    let rules = rules::list_rules(db.read(), "acme")?;
+    let rules = rules::list_rules(&beankeeper_cli::db::companies::Company::bind(
+        db.read(),
+        "acme".parse()?,
+    )?)?;
     assert_eq!(rules[0].priority, 10);
     assert!(rules[0].id.to_string() < rules[1].id.to_string());
     assert_eq!(
@@ -469,12 +478,18 @@ fn ofx_dry_run_and_posting_both_reject_self_posting_rules() -> TestResult {
 #[test]
 fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     let db = Db::open_in_memory()?;
-    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     accounts::create_account(
         db.conn(),
         &Actor::new("fixture"),
         &CreateAccountParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             code: "5000",
             name: "Dining",
             account_type: beankeeper::types::AccountType::Expense,
@@ -484,20 +499,26 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     let actor = Actor::new("rules-test");
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     Granted::<Post>::with_db(&db, &actor, |grant| {
-        assert!(rules::create_rule(grant, "acme", "coffee".parse()?, "5000", 0).is_err());
+        assert!(rules::create_rule(grant, &"acme".parse()?, "coffee".parse()?, "5000", 0).is_err());
         Ok(())
     })?;
-    assert!(rules::list_rules(db.read(), "acme")?.is_empty());
+    assert!(
+        rules::list_rules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?
+        .is_empty()
+    );
     db.conn().execute_batch("DROP TRIGGER fail_rule_audit;")?;
     let rule = Granted::<Post>::with_db(&db, &actor, |grant| {
-        rules::create_rule(grant, "acme", "coffee".parse()?, "5000", 0)
+        rules::create_rule(grant, &"acme".parse()?, "coffee".parse()?, "5000", 0)
     })?;
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     Granted::<Post>::with_db(&db, &actor, |grant| {
         assert!(
             audit::delete_rule(
                 grant,
-                "acme",
+                &"acme".parse()?,
                 &rule.id,
                 beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
             )
@@ -505,7 +526,14 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
         );
         Ok(())
     })?;
-    assert_eq!(rules::list_rules(db.read(), "acme")?.len(), 1);
+    assert_eq!(
+        rules::list_rules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?
+        .len(),
+        1
+    );
     audit::verify_hash_chain(db.read())?;
     Ok(())
 }

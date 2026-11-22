@@ -36,7 +36,13 @@ impl Ledger {
         let passphrase: SecretString = "proposal-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
         for company in ["acme", "other"] {
-            db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
+            db::create_company(
+                db.conn(),
+                &Actor::new("fixture"),
+                &company.parse()?,
+                company,
+                None,
+            )?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("5000", beankeeper::types::AccountType::Expense),
@@ -45,7 +51,7 @@ impl Ledger {
                     db.conn(),
                     &Actor::new("fixture"),
                     &CreateAccountParams {
-                        company_slug: company,
+                        company_slug: &company.parse()?,
                         code,
                         name: code,
                         account_type: kind,
@@ -193,8 +199,10 @@ fn assert_approved_details(
     let transaction_id = resolved["transaction_id"]
         .as_i64()
         .ok_or("missing transaction ID")?;
-    let (txn, entries) =
-        transactions::get_transaction(ledger.db.read(), "acme", transaction_id.try_into()?)?;
+    let (txn, entries) = transactions::get_transaction(
+        &beankeeper_cli::db::companies::Company::bind(ledger.db.read(), "acme".parse()?)?,
+        transaction_id.try_into()?,
+    )?;
     assert_eq!(txn.agent_uri.as_deref(), Some(approver.uri.as_str()));
     assert_eq!(
         txn.token_jti.as_deref(),
@@ -760,7 +768,8 @@ fn period_lock_blocks_approval_atomically_and_reopen_requires_admin() -> TestRes
     assert_eq!(ledger.count("transactions")?, 0);
     assert_eq!(ledger.count("entries")?, 0);
     assert_eq!(ledger.count("audit_log")?, history);
-    let pending = beankeeper_cli::db::proposals::get(ledger.db.read(), "acme", &id.parse()?)?;
+    let pending =
+        beankeeper_cli::db::proposals::get(ledger.db.read(), &"acme".parse()?, &id.parse()?)?;
     assert_eq!(pending.state.code(), "pending");
     error_code(
         &ledger.call("acme", &reopen, Some(&approver.token))?,

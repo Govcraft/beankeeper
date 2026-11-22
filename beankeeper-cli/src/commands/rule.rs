@@ -14,7 +14,7 @@ use crate::output::json;
 /// Returns validation, storage, or output errors.
 pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    companies::get_company(db.read(), company)?;
+    companies::get_company(db.read(), &company.parse()?)?;
     let actor = cli.principal();
     let (name, rows) = match command {
         RuleCommand::Create {
@@ -24,17 +24,29 @@ pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliErr
         } => (
             Operation::RuleCreate,
             vec![Granted::<Post>::with_db(&db, &actor, |grant| {
-                rules::create_rule(grant, company, contains.clone(), account, *priority)
+                rules::create_rule(
+                    grant,
+                    &company.parse()?,
+                    contains.clone(),
+                    account,
+                    *priority,
+                )
             })?],
         ),
-        RuleCommand::List => (Operation::RuleList, rules::list_rules(db.read(), company)?),
+        RuleCommand::List => (
+            Operation::RuleList,
+            rules::list_rules(&crate::db::companies::Company::bind(
+                db.read(),
+                company.parse()?,
+            )?)?,
+        ),
         RuleCommand::Delete { id, force } => {
             let Some(confirmed) = confirm_deletion(*force, &format!("rule {id}"))? else {
                 eprintln!("aborted");
                 return Ok(());
             };
             Granted::<Post>::with_db(&db, &actor, |grant| {
-                audit::delete_rule(grant, company, id, confirmed)
+                audit::delete_rule(grant, &company.parse()?, id, confirmed)
             })?;
             return render_deleted(cli, company, id);
         }

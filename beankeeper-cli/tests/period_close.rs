@@ -26,7 +26,13 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
+            db::create_company(
+                db.conn(),
+                &Actor::new("fixture"),
+                &company.parse()?,
+                company,
+                None,
+            )?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("4000", beankeeper::types::AccountType::Revenue),
@@ -35,7 +41,7 @@ impl Ledger {
                     db.conn(),
                     &Actor::new("fixture"),
                     &CreateAccountParams {
-                        company_slug: company,
+                        company_slug: &company.parse()?,
                         code,
                         name: code,
                         account_type: kind,
@@ -266,7 +272,7 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
     assert!(matches!(
         {
             let params = transactions::PostTransactionParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 description: "Bypass",
                 currency: beankeeper::types::Currency::USD,
                 date: "2026-1-31"
@@ -320,7 +326,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
             Err(CliError::Database(_))
         ));
         assert!(matches!(
-            periods::ensure_open(ledger.db.read(), "acme", "2026-02-01".parse()?),
+            periods::ensure_open(ledger.db.read(), &"acme".parse()?, "2026-02-01".parse()?),
             Err(CliError::Database(_))
         ));
     }
