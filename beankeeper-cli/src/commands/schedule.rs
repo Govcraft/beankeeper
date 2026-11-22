@@ -119,7 +119,11 @@ fn create_params(args: &ScheduleCreateArgs) -> Result<schedules::CreateScheduleP
         (credit, beankeeper::types::DebitOrCredit::Credit),
     ] {
         for arg in args {
-            let (account_code, amount, memo) = super::txn::parse_entry_arg(arg, currency)?;
+            let super::txn::PostingLine {
+                account_code,
+                amount,
+                memo,
+            } = super::txn::parse_entry_arg(arg, currency)?;
             entries.push(PostEntryParams {
                 tax_category: tax.get(&account_code).cloned(),
                 account_code,

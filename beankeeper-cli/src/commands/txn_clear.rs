@@ -26,6 +26,7 @@ use serde::Serialize;
 
 use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnClearArgs, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
+use crate::db::amounts::PositiveMinorUnits;
 use crate::db::clearings::SkipReason;
 use crate::db::companies::Company;
 use crate::db::connection::Db;
@@ -320,20 +321,17 @@ fn parse_date(date: &str) -> Result<NaiveDate, CliError> {
         .map_err(|_| CliError::Validation(format!("invalid --date '{date}': expected YYYY-MM-DD")))
 }
 
-fn parse_amount(s: &str, target: &EntryTarget) -> Result<i64, CliError> {
+fn parse_amount(s: &str, target: &EntryTarget) -> Result<PositiveMinorUnits, CliError> {
     let minor = parse_amount_to_minor(s.trim(), target.currency)?;
-    if minor <= 0 {
-        return Err(CliError::Validation(format!(
-            "clearing amount must be positive, got '{s}'"
-        )));
-    }
-    Ok(minor)
+    minor
+        .try_into()
+        .map_err(|_| CliError::Validation(format!("clearing amount must be positive, got '{s}'")))
 }
 
 fn apply(
     ctx: &Ctx<'_>,
     target: &EntryTarget,
-    amount: Option<i64>,
+    amount: Option<PositiveMinorUnits>,
 ) -> Result<ClearOutcome, CliError> {
     match ctx.status.to_clearing_status() {
         None => db::unclear_entry(

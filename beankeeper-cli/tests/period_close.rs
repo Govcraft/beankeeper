@@ -245,14 +245,18 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
         transactions::PostEntryParams {
             account_code: "1000".into(),
             direction: beankeeper::types::DebitOrCredit::Debit,
-            amount: 100,
+            amount: 100_i64
+                .try_into()
+                .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
             memo: None,
             tax_category: None,
         },
         transactions::PostEntryParams {
             account_code: "4000".into(),
             direction: beankeeper::types::DebitOrCredit::Credit,
-            amount: 100,
+            amount: 100_i64
+                .try_into()
+                .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
             memo: None,
             tax_category: None,
         },

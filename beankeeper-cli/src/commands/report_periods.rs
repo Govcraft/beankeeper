@@ -554,16 +554,6 @@ pub fn range_label(from: NaiveDate, to: NaiveDate) -> String {
     format!("{from}..{to}")
 }
 
-/// Net amount of a balance row on its account's normal side.
-#[must_use]
-pub fn normal_side_net(row: &db::BalanceRow) -> i64 {
-    if row.account_type.is_debit_normal() {
-        row.debit_total.saturating_sub(row.credit_total)
-    } else {
-        row.credit_total.saturating_sub(row.debit_total)
-    }
-}
-
 /// Fetch the balance rows for one column window.
 pub(super) fn fetch_window_rows(
     conn: &rusqlite::Connection,
@@ -638,7 +628,11 @@ impl ColumnTotals {
     }
 }
 
-fn net_amount(row: &db::BalanceRow) -> Result<i64, CliError> {
+/// Net amount of a balance row on its account's normal side.
+///
+/// # Errors
+/// Returns validation when the net does not fit in a report amount.
+pub fn normal_side_net(row: &db::BalanceRow) -> Result<i64, CliError> {
     let (positive, negative) = if row.account_type.is_debit_normal() {
         (row.debit_total, row.credit_total)
     } else {
@@ -713,7 +707,7 @@ fn build_lines(
         )?;
         let mut subtotals = ColumnTotals::default();
         for row in rows {
-            let net = net_amount(&row)?;
+            let net = normal_side_net(&row)?;
             subtotals.add(&row, net)?;
             let line = accounts
                 .entry(row.code.clone())

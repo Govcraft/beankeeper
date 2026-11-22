@@ -245,9 +245,7 @@ pub struct ClearingJson {
     state: ClearingState,
 }
 
-/// Builds an entry's JSON; `clearings` adds the clearing breakdown.
-fn entry_json(e: &EntryRow, currency: Currency, clearings: Option<&[Clearing]>) -> EntryJson {
-    let cleared = clearings.map(crate::db::clearings::cleared_sum);
+fn entry_json(e: &EntryRow, currency: Currency) -> EntryJson {
     EntryJson {
         id: e.id,
         account_code: e.account_code.clone(),
@@ -256,16 +254,29 @@ fn entry_json(e: &EntryRow, currency: Currency, clearings: Option<&[Clearing]>) 
         memo: e.memo.clone(),
         tax_category: e.tax_category.clone(),
         status: e.status,
-        cleared_amount: cleared.map(|c| MoneyField::from_minor("cleared_amount", c, currency)),
-        remaining_amount: cleared.map(|c| {
-            MoneyField::from_minor(
-                "remaining_amount",
-                i128::from(e.amount) - i128::from(c),
-                currency,
-            )
-        }),
-        clearings: clearings.map(|cs| {
-            cs.iter()
+        cleared_amount: None,
+        remaining_amount: None,
+        clearings: None,
+    }
+}
+
+fn entry_with_clearings(
+    entry: &EntryRow,
+    currency: Currency,
+    clearings: &[Clearing],
+) -> Result<EntryJson, CliError> {
+    let cleared = crate::db::clearings::cleared_sum(clearings)?;
+    let remaining = crate::db::clearings::remaining_amount(entry.amount, cleared)?;
+    Ok(EntryJson {
+        cleared_amount: Some(MoneyField::from_minor("cleared_amount", cleared, currency)),
+        remaining_amount: Some(MoneyField::from_minor(
+            "remaining_amount",
+            remaining,
+            currency,
+        )),
+        clearings: Some(
+            clearings
+                .iter()
                 .map(|c| ClearingJson {
                     id: c.id,
                     amount: MoneyField::from_minor("amount", c.amount, currency),
@@ -273,9 +284,10 @@ fn entry_json(e: &EntryRow, currency: Currency, clearings: Option<&[Clearing]>) 
                     statement_ref: c.statement_ref.clone(),
                     state: c.state(),
                 })
-                .collect()
-        }),
-    }
+                .collect(),
+        ),
+        ..entry_json(entry, currency)
+    })
 }
 
 #[derive(Serialize)]
@@ -404,11 +416,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
         .map(|txn| {
             let entries = entries_map
                 .get(&txn.id)
-                .map(|rows| {
-                    rows.iter()
-                        .map(|e| entry_json(e, txn.currency, None))
-                        .collect()
-                })
+                .map(|rows| rows.iter().map(|e| entry_json(e, txn.currency)).collect())
                 .unwrap_or_default();
 
             TransactionJson {
@@ -458,10 +466,11 @@ pub fn render_transactions_with_attachments<
                     rows.iter()
                         .map(|e| {
                             let clearings = clearings_map.get(&e.id).map_or(&[][..], Vec::as_slice);
-                            entry_json(e, txn.currency, Some(clearings))
+                            entry_with_clearings(e, txn.currency, clearings)
                         })
-                        .collect()
+                        .collect::<Result<Vec<_>, _>>()
                 })
+                .transpose()?
                 .unwrap_or_default();
 
             let att = attachments_map
@@ -480,7 +489,7 @@ pub fn render_transactions_with_attachments<
                 })
                 .unwrap_or_default();
 
-            TransactionWithAttachmentsJson {
+            Ok(TransactionWithAttachmentsJson {
                 id: txn.id,
                 description: txn.description.clone(),
                 metadata: txn.metadata.clone(),
@@ -492,9 +501,9 @@ pub fn render_transactions_with_attachments<
                 date: txn.date.clone(),
                 entries,
                 attachments: att,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, CliError>>()?;
 
     envelope_ok(meta, rows)
 }
@@ -1133,7 +1142,9 @@ mod tests {
                     account_code: "1000".into(),
                     company_slug: "acme".into(),
                     direction: beankeeper::types::DebitOrCredit::Debit,
-                    amount: 5000,
+                    amount: 5000_i64
+                        .try_into()
+                        .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                     memo: None,
                     tax_category: None,
                     status: EntryStatus::Uncleared,
@@ -1144,7 +1155,9 @@ mod tests {
                     account_code: "4000".into(),
                     company_slug: "acme".into(),
                     direction: beankeeper::types::DebitOrCredit::Credit,
-                    amount: 5000,
+                    amount: 5000_i64
+                        .try_into()
+                        .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                     memo: None,
                     tax_category: None,
                     status: EntryStatus::Uncleared,

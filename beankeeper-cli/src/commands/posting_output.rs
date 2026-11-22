@@ -28,7 +28,7 @@ impl<'a> PostingLineJson<'a> {
             .iter()
             .map(|entry| Self {
                 entry,
-                amount_display: amount_display(entry.amount, currency),
+                amount_display: amount_display(entry.amount.minor_units(), currency),
             })
             .collect()
     }
@@ -158,7 +158,9 @@ mod tests {
                 entries: vec![PostEntryParams {
                     account_code: "5000".into(),
                     direction: beankeeper::types::DebitOrCredit::Debit,
-                    amount: 1234,
+                    amount: 1234_i64
+                        .try_into()
+                        .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                     memo: Some("Office".into()),
                     tax_category: None,
                 }],

@@ -1209,7 +1209,7 @@ fn explain(
                 .iter()
                 .filter(|e| cash_codes.contains(&e.account_code))
             {
-                let value = ReportMoney::from_minor(entry.amount, currency);
+                let value = ReportMoney::from_minor(entry.amount.minor_units(), currency);
                 cash = match entry.direction {
                     beankeeper::types::DebitOrCredit::Debit => cash.add(value)?,
                     beankeeper::types::DebitOrCredit::Credit => cash.subtract(value)?,

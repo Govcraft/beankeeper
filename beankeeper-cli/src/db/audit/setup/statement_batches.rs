@@ -60,7 +60,7 @@ struct FrozenEntry {
         serialize_with = "crate::output::json::serialize_display",
         deserialize_with = "deserialize_minor"
     )]
-    amount_minor: i64,
+    amount_minor: crate::db::amounts::PositiveMinorUnits,
     amount_display: String,
     memo: Option<String>,
     tax_category: Option<String>,
@@ -85,10 +85,13 @@ enum DirectionCode {
     Credit,
 }
 
-fn deserialize_minor<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<i64, D::Error> {
-    String::deserialize(decoder)?
-        .parse()
-        .map_err(serde::de::Error::custom)
+fn deserialize_minor<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<crate::db::amounts::PositiveMinorUnits, D::Error> {
+    let minor = String::deserialize(decoder)?
+        .parse::<i64>()
+        .map_err(serde::de::Error::custom)?;
+    minor.try_into().map_err(serde::de::Error::custom)
 }
 
 #[derive(Serialize)]
@@ -469,7 +472,7 @@ fn freeze(
                     account_code: entry.account().code().to_string(),
                     account_name: entry.account().name().to_owned(),
                     direction: entry.direction(),
-                    amount_minor: i64::try_from(amount.amount().minor_units()).map_err(|_| {
+                    amount_minor: amount.amount().try_into().map_err(|_| {
                         CliError::Validation("statement amount exceeds storage".into())
                     })?,
                     amount_display: format_money(amount),

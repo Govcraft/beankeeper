@@ -180,7 +180,7 @@ fn postings(
             row.date,
             row.description.clone(),
             row.reference.clone(),
-            row.amount,
+            row.amount.into(),
             report_aging::parse_link_spec(row.metadata.as_deref(), link_key),
         )?;
         result.push(Posting { row, movement });
@@ -556,7 +556,10 @@ fn match_settlement(
             .get(&charge.transaction_id)
             .map_or(Ok(charge.amount()), |c| i64::try_from(minor(c.expected)))
             .map_err(|_| super::overflow())?;
-        let room = expected.saturating_sub(already).max(0);
+        let room = expected
+            .checked_sub(already)
+            .ok_or_else(super::overflow)?
+            .max(0);
         let take = if pos + 1 == found.len() {
             excess
         } else {
@@ -566,7 +569,7 @@ fn match_settlement(
         result.charge_transaction_ids.push(charge.transaction_id);
         excess -= take;
         if pos + 1 == found.len() {
-            excess = take.saturating_sub(room);
+            excess = take.checked_sub(room).ok_or_else(super::overflow)?;
         }
     }
     result.excess = money(excess, currency);

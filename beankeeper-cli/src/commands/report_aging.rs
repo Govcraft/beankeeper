@@ -60,9 +60,9 @@
 
 use crate::operation::Operation;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::num::{NonZeroI64, NonZeroU32};
+use std::num::NonZeroU32;
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{Amount, Currency, Money};
 use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
@@ -73,6 +73,7 @@ use serde_json::Value;
 
 use crate::cli::{AgingMethodArg, Cli, OutputFormat};
 use crate::db;
+use crate::db::amounts::PositiveMinorUnits;
 use crate::db::connection::Db;
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
@@ -143,12 +144,19 @@ impl AgingKind {
     }
 
     /// Signed charge amount for a transaction's debit/credit totals.
-    #[must_use]
-    pub fn charge_amount(self, debit_total: i64, credit_total: i64) -> i64 {
-        match self {
-            Self::Receivable => debit_total.saturating_sub(credit_total),
-            Self::Payable => credit_total.saturating_sub(debit_total),
-        }
+    ///
+    /// # Errors
+    /// Returns validation if the difference exceeds the supported range.
+    pub fn charge_amount(
+        self,
+        debit_total: Amount,
+        credit_total: Amount,
+    ) -> Result<Amount, CliError> {
+        let (charge, settlement) = match self {
+            Self::Receivable => (debit_total, credit_total),
+            Self::Payable => (credit_total, debit_total),
+        };
+        charge.checked_sub(settlement).ok_or_else(aging_overflow)
     }
 
     fn title(self) -> &'static str {
@@ -243,20 +251,11 @@ pub enum LinkSpec {
     Invalid(Value),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PositiveAmount(NonZeroI64);
-
-impl PositiveAmount {
-    fn get(self) -> i64 {
-        self.0.get()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AgedMovement {
-    Charge(PositiveAmount),
+    Charge(PositiveMinorUnits),
     Settlement {
-        amount: PositiveAmount,
+        amount: PositiveMinorUnits,
         links: LinkSpec,
     },
     /// Occupies a linkable transaction identity without opening or closing a charge.
@@ -284,17 +283,23 @@ impl Movement {
         date: NaiveDate,
         description: String,
         reference: Option<String>,
-        amount: i64,
+        amount: Amount,
         links: LinkSpec,
     ) -> Result<Self, CliError> {
-        let magnitude = amount.checked_abs().ok_or_else(aging_overflow)?;
-        let kind = match NonZeroI64::new(magnitude).map(PositiveAmount) {
-            Some(magnitude) if amount > 0 => AgedMovement::Charge(magnitude),
-            Some(magnitude) => AgedMovement::Settlement {
-                amount: magnitude,
-                links,
-            },
-            None => AgedMovement::Neutral,
+        let kind = if amount == Amount::ZERO {
+            AgedMovement::Neutral
+        } else {
+            let magnitude = amount.checked_abs().ok_or_else(aging_overflow)?;
+            let magnitude =
+                PositiveMinorUnits::try_from(magnitude).map_err(|_| aging_overflow())?;
+            if amount > Amount::ZERO {
+                AgedMovement::Charge(magnitude)
+            } else {
+                AgedMovement::Settlement {
+                    amount: magnitude,
+                    links,
+                }
+            }
         };
         Ok(Self {
             transaction_id,
@@ -307,8 +312,8 @@ impl Movement {
 
     fn signed_amount(&self) -> i64 {
         match self.kind {
-            AgedMovement::Charge(amount) => amount.get(),
-            AgedMovement::Settlement { amount, .. } => -amount.get(),
+            AgedMovement::Charge(amount) => amount.minor_units(),
+            AgedMovement::Settlement { amount, .. } => -amount.minor_units(),
             AgedMovement::Neutral => 0,
         }
     }
@@ -319,7 +324,7 @@ impl Movement {
 
     pub(super) fn settlement(&self) -> Option<(i64, &LinkSpec)> {
         match &self.kind {
-            AgedMovement::Settlement { amount, links } => Some((amount.get(), links)),
+            AgedMovement::Settlement { amount, links } => Some((amount.minor_units(), links)),
             AgedMovement::Charge(_) | AgedMovement::Neutral => None,
         }
     }
@@ -463,12 +468,12 @@ pub(super) struct TargetIndex<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ResolvedCharge {
     pub(super) transaction_id: i64,
-    amount: PositiveAmount,
+    amount: PositiveMinorUnits,
 }
 
 impl ResolvedCharge {
     pub(super) fn amount(self) -> i64 {
-        self.amount.get()
+        self.amount.minor_units()
     }
 }
 
@@ -566,8 +571,8 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    fn charge(&mut self, m: &Movement, amount: PositiveAmount) {
-        let amount = amount.get();
+    fn charge(&mut self, m: &Movement, amount: PositiveMinorUnits) {
+        let amount = amount.minor_units();
         // At most one charge's worth can be consumed here. The remaining
         // credit stays wide until the completed report is projected.
         let consumed = amount.min(i64::try_from(self.unapplied).unwrap_or(i64::MAX));
@@ -583,8 +588,8 @@ impl<'a> Matcher<'a> {
         });
     }
 
-    fn settle(&mut self, m: &Movement, amount: PositiveAmount, links: &LinkSpec) {
-        let mut payment = amount.get();
+    fn settle(&mut self, m: &Movement, amount: PositiveMinorUnits, links: &LinkSpec) {
+        let mut payment = amount.minor_units();
         if self.index.is_some() {
             payment = self.apply_links(m, amount, links);
         }
@@ -603,8 +608,8 @@ impl<'a> Matcher<'a> {
     }
 
     /// Apply `payment` to the settlement's linked charges; returns the excess.
-    fn apply_links(&mut self, m: &Movement, amount: PositiveAmount, links: &LinkSpec) -> i64 {
-        let mut payment = amount.get();
+    fn apply_links(&mut self, m: &Movement, amount: PositiveMinorUnits, links: &LinkSpec) -> i64 {
+        let mut payment = amount.minor_units();
         let targets = match links {
             LinkSpec::None => return payment,
             LinkSpec::Invalid(raw) => {
@@ -657,7 +662,7 @@ impl<'a> Matcher<'a> {
 
 fn unmatched(
     m: &Movement,
-    amount: PositiveAmount,
+    amount: PositiveMinorUnits,
     link: Value,
     target: Option<LinkTarget>,
     reason: UnmatchedReason,
@@ -665,7 +670,7 @@ fn unmatched(
     UnmatchedLink {
         settlement_transaction_id: m.transaction_id,
         settlement_date: m.date,
-        settlement_amount: amount.get(),
+        settlement_amount: amount.minor_units(),
         link,
         target,
         reason,
@@ -973,9 +978,11 @@ pub fn build_report(
     method: MatchMethod,
 ) -> Result<AgingReport, CliError> {
     let mut by_group: BTreeMap<Option<String>, Vec<Movement>> = BTreeMap::new();
-    let mut account_balance: i128 = 0;
+    let mut account_balance = Amount::ZERO;
     for (key, m) in grouped {
-        account_balance += i128::from(m.signed_amount());
+        account_balance = account_balance
+            .checked_add(Amount::from(m.signed_amount()))
+            .ok_or_else(aging_overflow)?;
         by_group.entry(key).or_default().push(m);
     }
 
@@ -1027,7 +1034,8 @@ pub fn build_report(
         bucket_totals,
         total_open,
         unapplied_credit,
-        account_balance: i64::try_from(account_balance).map_err(|_| aging_overflow())?,
+        account_balance: i64::try_from(account_balance.minor_units())
+            .map_err(|_| aging_overflow())?,
         unmatched_links,
     })
 }
@@ -1556,7 +1564,9 @@ fn age_account(
                 date,
                 r.description,
                 r.reference,
-                scope.kind.charge_amount(r.debit_total, r.credit_total),
+                scope
+                    .kind
+                    .charge_amount(r.debit_total.into(), r.credit_total.into())?,
                 links,
             )?,
         ));
@@ -2615,24 +2625,24 @@ mod tests {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap_or_else(|e| panic!("bad date {s}: {e}"))
     }
 
-    fn mv(id: i64, date: &str, amount: i64) -> Movement {
+    fn mv(id: i64, date: &str, amount: i128) -> Movement {
         movement_with_links(id, date, amount, LinkSpec::None)
     }
 
-    fn movement_with_links(id: i64, date: &str, amount: i64, links: LinkSpec) -> Movement {
+    fn movement_with_links(id: i64, date: &str, amount: i128, links: LinkSpec) -> Movement {
         Movement::new(
             id,
             d(date),
             format!("txn {id}"),
             Some(format!("R{id}")),
-            amount,
+            amount.into(),
             links,
         )
         .unwrap_or_else(|error| panic!("test movement: {error}"))
     }
 
     /// A settlement linked to the given targets.
-    fn linked(id: i64, date: &str, amount: i64, targets: Vec<LinkTarget>) -> Movement {
+    fn linked(id: i64, date: &str, amount: i128, targets: Vec<LinkTarget>) -> Movement {
         movement_with_links(id, date, amount, LinkSpec::Targets(targets))
     }
 
@@ -2802,7 +2812,7 @@ mod tests {
     fn aging_rejects_overflow_instead_of_wrapping_bucket_total() {
         let result = build_report(
             vec![
-                (None, mv(1, "2026-01-01", i64::MAX)),
+                (None, mv(1, "2026-01-01", i128::from(i64::MAX))),
                 (None, mv(2, "2026-01-01", 1)),
             ],
             d("2026-02-01"),
@@ -2816,10 +2826,10 @@ mod tests {
     fn large_intermediate_credit_is_retained_until_matching_completes() {
         let report = report_for(
             vec![
-                (None, mv(1, "2026-01-01", -i64::MAX)),
-                (None, mv(2, "2026-01-02", -i64::MAX)),
-                (None, mv(3, "2026-01-03", i64::MAX)),
-                (None, mv(4, "2026-01-04", i64::MAX)),
+                (None, mv(1, "2026-01-01", -i128::from(i64::MAX))),
+                (None, mv(2, "2026-01-02", -i128::from(i64::MAX))),
+                (None, mv(3, "2026-01-03", i128::from(i64::MAX))),
+                (None, mv(4, "2026-01-04", i128::from(i64::MAX))),
             ],
             d("2026-02-01"),
             default_buckets(),
@@ -3264,8 +3274,18 @@ mod tests {
 
     #[test]
     fn charge_amount_by_kind() {
-        assert_eq!(AgingKind::Receivable.charge_amount(500, 200), 300);
-        assert_eq!(AgingKind::Payable.charge_amount(500, 200), -300);
+        assert_eq!(
+            AgingKind::Receivable
+                .charge_amount(Amount::new(500), Amount::new(200))
+                .ok(),
+            Some(Amount::new(300))
+        );
+        assert_eq!(
+            AgingKind::Payable
+                .charge_amount(Amount::new(500), Amount::new(200))
+                .ok(),
+            Some(Amount::new(-300))
+        );
         assert_eq!(
             AgingKind::from_account_type(beankeeper::types::AccountType::Revenue),
             None

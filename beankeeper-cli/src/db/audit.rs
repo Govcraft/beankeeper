@@ -20,9 +20,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::amounts::PositiveMinorUnits;
 use super::clearings::{
     ClearPlan, ClearSpec, Clearing, ClearingStatus, SkipReason, cleared_sum, derive_status,
-    get_entry_target, list_clearings, plan_clear, plan_unclear,
+    get_entry_target, list_clearings, plan_clear, plan_unclear, remaining_amount,
 };
 use super::companies::Company;
 use super::connection::ReadConn;
@@ -1107,7 +1108,7 @@ pub struct ClearRequest<'a> {
     pub transaction_id: TransactionId,
     pub entry_id: EntryId,
     /// Minor units; `None` clears the full remaining amount.
-    pub amount: Option<i64>,
+    pub amount: Option<PositiveMinorUnits>,
     /// `YYYY-MM-DD`: the cleared date of a new clearing and, with status
     /// reconciled, the reconciled date of every clearing created or promoted.
     /// Must not be before the transaction date.
@@ -1155,7 +1156,7 @@ pub struct ClearOutcome {
     /// Amount newly cleared (or removed, for `uncleared`) by this call.
     pub amount: i64,
     /// Entry amount.
-    pub entry_amount: i64,
+    pub entry_amount: PositiveMinorUnits,
     /// Total cleared amount after the call.
     pub cleared_amount: i64,
     /// `entry_amount - cleared_amount`.
@@ -1182,10 +1183,10 @@ pub fn atomically<T>(
 fn sync_entry_status(
     company: &Company<'_>,
     entry_id: EntryId,
-    entry_amount: i64,
+    entry_amount: PositiveMinorUnits,
 ) -> Result<(Vec<Clearing>, EntryStatus), CliError> {
     let after = list_clearings(company, entry_id)?;
-    let status = derive_status(entry_amount, &after);
+    let status = derive_status(entry_amount, &after)?;
     company.conn().execute(
         "UPDATE entries SET status = ?1 WHERE id = ?2 AND company_slug = ?3",
         params![status.as_str(), entry_id, company.slug().as_str()],
@@ -1258,7 +1259,7 @@ fn record_clearing_change(
 fn insert_clearing(
     conn: &Connection,
     req: &ClearRequest<'_>,
-    amount: i64,
+    amount: PositiveMinorUnits,
 ) -> Result<i64, CliError> {
     let state = req.status.on(req.date);
     let date = req.date.to_string();
@@ -1299,8 +1300,8 @@ pub fn clear_entry(
         let company = Company::resolve(conn, req.company_slug)?;
         let target = get_entry_target(&company, req.transaction_id, req.entry_id)?;
         let existing = list_clearings(&company, req.entry_id)?;
-        let before_sum = cleared_sum(&existing);
-        let before_status = derive_status(target.amount, &existing);
+        let before_sum = cleared_sum(&existing)?;
+        let before_status = derive_status(target.amount, &existing)?;
         let plan = plan_clear(
             target.amount,
             &existing,
@@ -1323,7 +1324,7 @@ pub fn clear_entry(
                     amount: 0,
                     entry_amount: target.amount,
                     cleared_amount: before_sum,
-                    remaining_amount: target.amount - before_sum,
+                    remaining_amount: remaining_amount(target.amount, before_sum)?,
                     previous_status: before_status,
                     entry_status: before_status,
                     skip_reason: Some(reason),
@@ -1336,7 +1337,7 @@ pub fn clear_entry(
                 } else {
                     ClearAction::Reconciled
                 };
-                (action, Some(id), amount, promote)
+                (action, Some(id), amount.minor_units(), promote)
             }
             ClearPlan::Promote { ids } => (ClearAction::Reconciled, None, 0, ids),
         };
@@ -1351,7 +1352,7 @@ pub fn clear_entry(
         }
 
         let (after, status) = sync_entry_status(&company, req.entry_id, target.amount)?;
-        let after_sum = cleared_sum(&after);
+        let after_sum = cleared_sum(&after)?;
         let affected: Vec<Clearing> = after
             .into_iter()
             .filter(|c| Some(c.id) == inserted || promote.contains(&c.id))
@@ -1382,7 +1383,7 @@ pub fn clear_entry(
             amount,
             entry_amount: target.amount,
             cleared_amount: after_sum,
-            remaining_amount: target.amount - after_sum,
+            remaining_amount: remaining_amount(target.amount, after_sum)?,
             previous_status: before_status,
             entry_status: status,
             skip_reason: None,
@@ -1409,8 +1410,8 @@ pub fn unclear_entry(
         let company = Company::resolve(conn, company_slug)?;
         let target = get_entry_target(&company, transaction_id, entry_id)?;
         let existing = list_clearings(&company, entry_id)?;
-        let before_sum = cleared_sum(&existing);
-        let before_status = derive_status(target.amount, &existing);
+        let before_sum = cleared_sum(&existing)?;
+        let before_status = derive_status(target.amount, &existing)?;
         let ids = plan_unclear(&existing, statement);
 
         if ids.is_empty() {
@@ -1422,7 +1423,7 @@ pub fn unclear_entry(
                 amount: 0,
                 entry_amount: target.amount,
                 cleared_amount: before_sum,
-                remaining_amount: target.amount - before_sum,
+                remaining_amount: remaining_amount(target.amount, before_sum)?,
                 previous_status: before_status,
                 entry_status: before_status,
                 skip_reason: Some(SkipReason::NothingToUnclear),
@@ -1437,7 +1438,7 @@ pub fn unclear_entry(
             conn.execute("DELETE FROM entry_clearings WHERE id = ?1", params![id])?;
         }
         let (after, status) = sync_entry_status(&company, entry_id, target.amount)?;
-        let after_sum = cleared_sum(&after);
+        let after_sum = cleared_sum(&after)?;
         record_clearing_change(
             conn,
             actor,
@@ -1456,10 +1457,10 @@ pub fn unclear_entry(
             entry_id,
             action: ClearAction::Uncleared,
             clearing_id: None,
-            amount: cleared_sum(&removed),
+            amount: cleared_sum(&removed)?,
             entry_amount: target.amount,
             cleared_amount: after_sum,
-            remaining_amount: target.amount - after_sum,
+            remaining_amount: remaining_amount(target.amount, after_sum)?,
             previous_status: before_status,
             entry_status: status,
             skip_reason: None,
@@ -2758,7 +2759,7 @@ mod tests {
             company_slug: "acme",
             transaction_id: fixture_txn(1),
             entry_id: fixture_entry(1),
-            amount,
+            amount: amount.map(|minor| minor.try_into().expect("positive test clearing amount")),
             date: date.parse().expect("test clearing date"),
             statement: stmt,
             status: ClearingStatus::Cleared,

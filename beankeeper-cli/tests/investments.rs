@@ -156,7 +156,7 @@ fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
             .iter()
             .find(|entry| entry.account_code == "4000")
             .unwrap();
-        assert_eq!(gain.amount, 50);
+        assert_eq!(gain.amount.minor_units(), 50);
         assert_eq!(
             gain.direction,
             if method == LotSelection::Fifo {

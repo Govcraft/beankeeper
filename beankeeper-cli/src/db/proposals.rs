@@ -675,7 +675,7 @@ pub(in crate::db) fn reserve_setup_opening(
             Ok(PostEntryParams {
                 account_code: entry.account().code().to_string(),
                 direction: entry.direction(),
-                amount: minor(entry.amount())?,
+                amount: minor(entry.amount())?.try_into()?,
                 memo: entry.memo().map(str::to_owned),
                 tax_category: entry.tax_category().map(str::to_owned),
             })

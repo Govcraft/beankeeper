@@ -271,7 +271,7 @@ fn seed_settlement(conn: &Connection, actor: &Actor) -> Result<(), CliError> {
                     company_slug: "acme-consulting",
                     transaction_id: id.try_into()?,
                     entry_id: entry.id.try_into()?,
-                    amount: Some(162_000),
+                    amount: Some(162_000_i64.try_into()?),
                     date: date("2025-03-31")?,
                     statement: Some("DEMO-2025-03"),
                     status: db::clearings::ClearingStatus::Cleared,

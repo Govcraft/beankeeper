@@ -214,7 +214,7 @@ fn recurring(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> 
             .entries
             .iter()
             .filter(|entry| entry.direction.is_debit())
-            .try_fold(0, |sum, entry| add(sum, entry.amount))?;
+            .try_fold(0, |sum, entry| add(sum, entry.amount.minor_units()))?;
         let before = count;
         while let Some(date) = future_occurrence(schedule, index)? {
             if date > through {
@@ -355,7 +355,8 @@ fn load_movements(
                 sub(credit, debit)?
             } else {
                 sub(debit, credit)?
-            },
+            }
+            .into(),
             report_aging::parse_link_spec(metadata.as_deref(), report_aging::DEFAULT_LINK_KEY),
         )
     })
@@ -413,7 +414,9 @@ mod tests {
         PostEntryParams {
             account_code: code.into(),
             direction,
-            amount,
+            amount: amount
+                .try_into()
+                .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
             memo: None,
             tax_category: None,
         }

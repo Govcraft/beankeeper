@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use super::amounts::{format_minor_grouped, format_money_grouped};
 use super::{TrialBalanceTotals, trial_balance_overflow};
-use crate::db::clearings::{Clearing, cleared_sum};
+use crate::db::clearings::{Clearing, cleared_sum, remaining_amount};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, BudgetRow, BudgetVarianceReport,
     CompanyRow, EntryRow, EntryStatus, TransactionRow,
@@ -320,7 +320,7 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
 
         if let Some(map) = clearings {
             let list = map.get(&entry.id).map_or(&[][..], Vec::as_slice);
-            lines.extend(clearing_lines(entry, list, txn.currency, use_color));
+            lines.extend(clearing_lines(entry, list, txn.currency, use_color)?);
         }
     }
 
@@ -348,15 +348,16 @@ fn clearing_lines(
     clearings: &[Clearing],
     currency: Currency,
     use_color: bool,
-) -> Vec<String> {
-    let cleared = cleared_sum(clearings);
+) -> Result<Vec<String>, CliError> {
+    let cleared = cleared_sum(clearings)?;
+    let remaining = remaining_amount(entry.amount, cleared)?;
     let mut out = vec![styled(
         &format!(
             "       entry #{}: cleared {} of {}, remaining {}",
             entry.id,
             format_minor_grouped(cleared, currency),
             format_minor_grouped(entry.amount, currency),
-            format_minor_grouped(entry.amount - cleared, currency),
+            format_minor_grouped(remaining, currency),
         ),
         dim_style(),
         use_color,
@@ -380,7 +381,7 @@ fn clearing_lines(
             date = c.cleared_on(),
         ));
     }
-    out
+    Ok(out)
 }
 
 /// Render a trial balance report as a table with totals and balance status.
@@ -959,7 +960,9 @@ mod tests {
                 account_code: "1000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Debit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
@@ -970,7 +973,9 @@ mod tests {
                 account_code: "4000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Credit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
@@ -1008,7 +1013,9 @@ mod tests {
                 account_code: "1000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Debit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
@@ -1019,7 +1026,9 @@ mod tests {
                 account_code: "4000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Credit,
-                amount: 3000,
+                amount: 3000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
@@ -1028,11 +1037,15 @@ mod tests {
         let out = render_transaction_detail(&txn, &entries, false).expect("representable totals");
         assert!(out.contains("[!!] UNBALANCED"));
         let debit = EntryRow {
-            amount: i64::MAX,
+            amount: i64::MAX
+                .try_into()
+                .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
             ..entries[0].clone()
         };
         let credit = EntryRow {
-            amount: i64::MAX,
+            amount: i64::MAX
+                .try_into()
+                .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
             ..entries[1].clone()
         };
         let wide = render_transaction_detail(&txn, &[debit.clone(), debit, credit], false)

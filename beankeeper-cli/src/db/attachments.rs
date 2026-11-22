@@ -230,14 +230,18 @@ mod tests {
             transactions::PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
             transactions::PostEntryParams {
                 account_code: "4000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },

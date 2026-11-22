@@ -96,7 +96,9 @@ fn entry(code: &str, direction: beankeeper::types::DebitOrCredit) -> PostEntryPa
     PostEntryParams {
         account_code: code.into(),
         direction,
-        amount: 100,
+        amount: 100_i64
+            .try_into()
+            .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
         memo: None,
         tax_category: None,
     }
@@ -512,7 +514,7 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
         entry("4000", beankeeper::types::DebitOrCredit::Credit),
     ];
     for entry in &mut entries {
-        entry.amount = i64::MAX;
+        entry.amount = i64::MAX.try_into()?;
     }
     db::post_transaction(
         ledger.db.conn(),

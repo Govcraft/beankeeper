@@ -294,11 +294,15 @@ impl OpeningPreviewArgs {
             inputs
                 .iter()
                 .map(|line| {
-                    let (code, minor, memo) = super::txn::parse_entry_arg(line, self.currency)?;
-                    let account = code
+                    let super::txn::PostingLine {
+                        account_code,
+                        amount,
+                        memo,
+                    } = super::txn::parse_entry_arg(line, self.currency)?;
+                    let account = account_code
                         .parse::<AccountCode>()
                         .map_err(|error| CliError::Validation(error.to_string()))?;
-                    OpeningLine::new(account, minor, self.currency, memo)
+                    OpeningLine::new(account, amount.minor_units(), self.currency, memo)
                 })
                 .collect::<Result<Vec<_>, _>>()
         };

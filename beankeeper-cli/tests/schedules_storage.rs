@@ -61,7 +61,9 @@ fn template() -> Result<CreateScheduleParams, CliError> {
         .map(|(account, direction)| PostEntryParams {
             account_code: account.into(),
             direction,
-            amount: 125_000,
+            amount: 125_000_i64
+                .try_into()
+                .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
             memo: Some("rent memo".into()),
             tax_category: None,
         })
@@ -76,10 +78,7 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     let actor = Actor::new("schedule-test");
     let mut cases = Vec::new();
     let mut invalid = template()?;
-    invalid.entries[0].amount = 1;
-    cases.push(invalid);
-    let mut invalid = template()?;
-    invalid.entries[0].amount = 0;
+    invalid.entries[0].amount = 1_i64.try_into()?;
     cases.push(invalid);
     let mut invalid = template()?;
     invalid.entries[0].direction = beankeeper::types::DebitOrCredit::Credit;
@@ -95,7 +94,7 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     cases.push(invalid);
     let mut invalid = template()?;
     invalid.entries.push(invalid.entries[0].clone());
-    invalid.entries[0].amount = i64::MAX;
+    invalid.entries[0].amount = i64::MAX.try_into()?;
     cases.push(invalid);
     for invalid in cases {
         assert!(schedules::create_schedule(db.conn(), &actor, "acme", &invalid).is_err());
