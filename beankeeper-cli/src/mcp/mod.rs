@@ -407,6 +407,18 @@ impl LedgerServer {
             .await
     }
 
+    #[tool(
+        description = "Validate and preview a balanced opening journal for an active setup book."
+    )]
+    async fn ledger_setup_opening_preview(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupOpeningPreview>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupOpeningPreview(input), context)
+            .await
+    }
+
     #[tool(description = "List companies in the ledger.")]
     async fn company_list(
         &self,

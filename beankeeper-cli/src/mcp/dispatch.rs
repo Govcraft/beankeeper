@@ -13,6 +13,8 @@ use crate::cli::{
 use crate::commands;
 use crate::commands::txn::{PostingMode, PostingRequest};
 use crate::db::audit::setup::books::{self, BookChange};
+use crate::db::audit::setup::openings::{self, OpeningLine, OpeningRequest};
+
 use crate::db::{Actor, Db, audit::MetadataTarget, metadata};
 use crate::error::CliError;
 use crate::operation::Operation;
@@ -47,6 +49,7 @@ requests! {
     LedgerSetupBookUpdate(LedgerSetupBookUpdate),
     LedgerSetupChartApply(LedgerSetupChartApply),
     LedgerSetupAccountAdd(LedgerSetupAccountAdd),
+    LedgerSetupOpeningPreview(LedgerSetupOpeningPreview),
     SecurityCreate(SecurityCreate),
     SecurityList(CompanyScope),
     SecurityPrice(SecurityPrice),
@@ -147,6 +150,7 @@ impl Request {
                     account_type: input.account_type.into_inner(),
                 },
             ),
+            Self::LedgerSetupOpeningPreview(input) => setup_opening_preview(db, actor, input),
             Self::Report(input) => super::report_input::execute(db, input),
             Self::SecurityCreate(input) => call_security_create(db, actor, input),
             Self::SecurityList(input) => call_security_list(db, actor, input),
@@ -209,6 +213,37 @@ fn setup_book_change(
         &target.company.into_inner(),
         change,
     ))
+}
+
+fn setup_opening_preview(
+    db: &Db,
+    actor: &Actor,
+    input: inputs::LedgerSetupOpeningPreview,
+) -> Response {
+    let currency = input.currency.into_inner();
+    let lines = |side: super::input_values::NonEmpty<inputs::Line>| {
+        side.into_vec()
+            .into_iter()
+            .map(|line| {
+                let amount = line.amount.into_inner();
+                let minor = commands::txn::parse_amount_to_minor(amount.as_str(), currency)?;
+                OpeningLine::new(line.account.into_inner(), minor, currency, line.memo)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let request = OpeningRequest {
+        company: input.company.into_inner(),
+        generation: input.generation,
+        date: input.date.into_inner().date(),
+        currency,
+        description: input
+            .description
+            .unwrap_or_else(|| openings::DEFAULT_DESCRIPTION.to_string()),
+        debits: lines(input.debits)?,
+        credits: lines(input.credits)?,
+    };
+    let preview = openings::preview(db, actor, &request)?;
+    unpaged(serde_json::to_value(preview).map_err(|error| CliError::General(error.to_string())))
 }
 
 fn call_security_create(db: &Db, actor: &Actor, input: inputs::SecurityCreate) -> Response {

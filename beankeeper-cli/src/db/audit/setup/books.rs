@@ -453,7 +453,7 @@ fn initialize_book(
     Ok(json!({"name": row.name, "profile": profile}))
 }
 
-fn current_profile<'a>(
+pub(super) fn current_profile<'a>(
     session: &ActiveSession<'_>,
     company: &'a CompanySlug,
 ) -> Result<BookProfile<'a>, CliError> {

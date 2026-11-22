@@ -236,6 +236,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 |------|----------------------|
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
 | `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Apply book, profile, chart, and account setup requests using a live generation and request reference |
+| `ledger_setup_opening_preview` | Preview checked opening entries and totals with an active setup credential |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
@@ -348,6 +349,23 @@ profile flags, active generation and a fresh reference to record a correction.
 The chart operation commits all its accounts together. Choose a separate
 account code for each real account.
 
+### Opening journal preview
+
+Call `ledger_setup_opening_preview` with the book's `company`, the active
+`generation`, an explicit `date` and `currency`, and nonempty `debits` and
+`credits`. Each line takes an `account` code, an `amount` string in major
+units, and an optional `memo`. The description defaults to Opening balances.
+
+```bash
+bk --json setup opening-preview home --generation 1 --date 2026-01-01 \
+  --currency USD --debit 1010:125.50 --credit 3000:125.50
+```
+
+The preview returns the profile revision, resolved account names, directions,
+memos, tax categories, and the balanced totals. Every amount contains an exact
+`amount_minor` string and an `amount_display` string in major units. Posting
+requires the normal approval path.
+
 ### Report kinds
 
 `report.kind` accepts `trial-balance`, `balance`,
@@ -364,7 +382,7 @@ Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
-and `ledger_setup_account_add` from the router.
+`ledger_setup_account_add`, and `ledger_setup_opening_preview` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
