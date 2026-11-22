@@ -576,7 +576,10 @@ All transaction commands (except `reconcile`) require `--company`.
 
 ### `bk txn post`
 
-Record a balanced journal entry. Debits must equal credits.
+Record a balanced journal entry. Debits must equal credits. The default
+`direct` grant posts immediately. A credential issued with
+`--write-mode propose-only` reserves a pending proposal with the same inputs.
+MCP `txn_post` follows the same rule.
 
 ```bash
 bk --company acme txn post -d "Office rent" \
@@ -784,7 +787,8 @@ are not copied. Table views of `txn show` and `txn list` display the links;
 JSON exposes them in `metadata`. The posting, original link and `reverse`
 audit record commit atomically, recording `--actor` / `BK_ACTOR` as usual.
 
-JSON returns the `txn post` result shape with `meta.command = "txn.reverse"`.
+The undo uses reversal authority directly. JSON returns the direct posting
+result shape with `meta.command = "txn.reverse"`.
 Missing/foreign IDs exit 5; invalid dates, duplicate references, reconciled
 originals and repeated reversals exit 3. Reversing a reversal is allowed,
 but each transaction can be reversed only once.

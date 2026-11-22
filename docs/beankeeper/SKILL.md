@@ -107,7 +107,27 @@ Each changed batch records whole-object snapshots under `metadata_set` or
 leaves `{}`. Dates and financial fields stay unchanged, so tagging an original
 AR charge preserves its age under `report aging --filter-metadata status=disputed`.
 
-## Spend limits and approval
+## Record first and inform the owner
+
+Use `bk txn post` or MCP `txn_post` for ordinary bookkeeping. The bookkeeper
+grant posts directly by default. After a successful post, tell the owner what
+you recorded in plain words. Include the amount and currency, the company and
+transaction ID, and offer to undo the posting in one step. Offer a Desktop
+detail link when one is available.
+
+Use `bk txn reverse ID` or `txn_reverse` in the selected company to undo a
+posted transaction. The owner needs `ledger/reverse` when enforcement is on.
+This immediately appends an audited reversal linked to the original. Use
+`bk audit log --by-actor ACTOR` or the MCP `audit_log` filter `actor` to find the
+post or its undo.
+
+If the owner issued your credential with `--write-mode propose-only`, the same
+post operation returns `status: "pending"` and a proposal ID. Tell the owner
+what is pending. A separate reviewer with approval authority can post it.
+Use the explicit `txn propose` or `txn_propose` operation for ad hoc sign-off
+when the owner requests it.
+
+## Existing spend limits and proposal operations
 
 `bk agent limit set URI --company acme --currency USD --max-post 500 --daily-limit 2000`
 sets optional per-post and transaction-date limits, measured by total debits.
@@ -118,9 +138,9 @@ even with enforcement off. All tokens for one URI share usage. With any limit
 for an agent/company, other currencies require matching rows; no limits means no
 amount cap. Named actors without a token have no URI bucket.
 
-On a spend `FORBIDDEN` response, use `txn propose` with the same posting flags
-if authorized for `ledger/propose`. A verified token is always required to
-propose. Proposals freeze accounts, tax defaults and payload, reserve their
+If a configured limit denies a posting, report the named error to the owner.
+A verified token is always required to propose. Proposals freeze accounts,
+tax defaults and payload, reserve their
 reference and create no posted transaction or audit row. `txn proposals` lists
 pending requests; `--include-rejected` includes all resolved statuses. Read/propose
 grants see owned requests; approve/admin grants see all under enforcement.
@@ -212,6 +232,8 @@ add `meta.agent`. `bk audit log --agent URI` filters identity. `bk agent list`
 shows public claims and revocation dates without secrets. `bk agent revoke
 URI_OR_JTI` revokes one token or all current tokens for a URI, idempotently.
 Revocation does not invalidate historical chain verification.
+Issue a replacement credential with `--write-mode propose-only` when the owner
+opts into sign-off for that agent. Issuance and listing show the `write_mode`.
 
 Enforcement defaults off. `bk policy show` returns `enforce` and `updated_at`.
 Before enabling, issue and save an admin token, for example with
@@ -301,7 +323,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
 - Use `company_create` with `slug`, `name`, and optional `description` to add a company. Use `ledger_setup_book_create` in an active setup session when the company also needs a setup profile. Both use the same audited company insert.
 - Call `company_delete` with `slug` when the owner asks to delete that company. The call confirms deletion, records the eligible company's prior state in the audit log, and returns `{"deleted":"slug"}`. On `VALIDATION` for retained data, explain that the company keeps its history and use `txn_reverse` for posting corrections. Both company tools require `ledger/admin` under enforcement and are hidden in read-only mode.
-- Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Supply a stable `reference` and `on_conflict: "skip"` for retries; only `error` and `skip` are accepted conflict strategies. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
+- Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Direct grants post immediately. Propose-only grants return a pending proposal. Supply a stable `reference` and `on_conflict: "skip"` for retries of posted references. Find a pending reference with `txn_proposals`. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
 - Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: ["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset` takes the same selector and `keys: ["status", "dispute_id"]`. Values are strings; relationship keys are reserved. These writes preserve financial fields and use one audited batch per change. Both tools are absent in read-only mode.
 - Call `txn_reverse` with `company` and the original `id` to create a linked mirror posting; optional fields are `date`, `description`, and `reference`. Supply the same explicit `reference` on retries to get `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed. Existing clearings stay on the original; reversal entries start uncleared. This write tool is absent in read-only mode.
 - Call `txn_list` or `txn_show` to inspect posted entries. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
@@ -374,7 +396,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk txn proposals` | List visible pending requests, optionally including resolved proposals |
 | `bk txn approve/reject` | Resolve a pending proposal; `withdraw` aliases rejection of an owned request |
 | `bk txn list` | Search and filter transactions |
-| `bk txn reverse ID` | Post a linked mirror transaction (alias `void`); reject reconciled originals |
+| `bk txn reverse ID` | Undo a posting immediately with a linked mirror transaction (alias `void`). Reconciled originals cannot be reversed. |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
 | `bk schedule create/list/run/cancel` | Manage pending recurring templates and post due occurrences |
