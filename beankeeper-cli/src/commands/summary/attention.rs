@@ -433,7 +433,7 @@ mod tests {
                 company_slug: "co",
                 description: "Attention fixture",
                 metadata,
-                currency: "USD",
+                currency: beankeeper::types::Currency::USD,
                 date,
                 entries: &[
                     entry(accounts.0, beankeeper::types::DebitOrCredit::Debit, amount),

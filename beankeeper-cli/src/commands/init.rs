@@ -127,7 +127,7 @@ fn post_with_metadata(
             company_slug: company,
             description: desc,
             metadata,
-            currency: "USD",
+            currency: beankeeper::types::Currency::USD,
             date,
             entries,
             correlate,

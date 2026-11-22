@@ -4,7 +4,6 @@ use std::fmt::Write;
 
 use beankeeper::types::{AccountType, Amount, Currency, Money};
 use chrono::{Month, NaiveDate};
-use rusqlite::types::Type;
 
 use super::connection::{Db, ReadConn};
 use crate::db::{BudgetRow, BudgetVarianceRow};
@@ -283,7 +282,7 @@ fn load_variance_rows(
 
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
         Box::new(p.company_slug.to_string()),
-        Box::new(p.currency.code().to_owned()),
+        Box::new(p.currency),
         Box::new(p.months.year()),
         Box::new(p.months.from().number_from_month()),
         Box::new(p.months.to().number_from_month()),
@@ -292,7 +291,7 @@ fn load_variance_rows(
     ];
 
     if let Some(at) = p.account_type {
-        param_values.push(Box::new(at.code()));
+        param_values.push(Box::new(at));
     }
 
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -300,10 +299,6 @@ fn load_variance_rows(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
-        let account_type: String = row.get(2)?;
-        let account_type = account_type.parse().map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
-        })?;
         let budget_amount: i64 = row.get(3)?;
         let actual_amount: i64 = row.get(4)?;
         let variance_amount: i64 = row.get(5)?;
@@ -311,7 +306,7 @@ fn load_variance_rows(
         Ok(BudgetVarianceRow {
             code: row.get(0)?,
             name: row.get(1)?,
-            account_type,
+            account_type: row.get(2)?,
             budget_amount: money(budget_amount),
             actual_amount: money(actual_amount),
             variance_amount: money(variance_amount),
@@ -564,7 +559,7 @@ mod tests {
             company_slug: "acme",
             description: "Test expense",
             metadata: None,
-            currency: "USD",
+            currency: beankeeper::types::Currency::USD,
             date,
             entries: &entries,
             correlate: None,
@@ -597,7 +592,7 @@ mod tests {
             company_slug: "acme",
             description: "Test revenue",
             metadata: None,
-            currency: "USD",
+            currency: beankeeper::types::Currency::USD,
             date,
             entries: &entries,
             correlate: None,

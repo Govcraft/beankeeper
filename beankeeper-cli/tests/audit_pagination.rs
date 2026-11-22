@@ -87,7 +87,7 @@ impl Ledger {
                 company_slug: company,
                 description: "Sale",
                 metadata: None,
-                currency,
+                currency: currency.parse()?,
                 date: "2026-01-01",
                 entries: &entries,
                 correlate: None,

@@ -161,7 +161,7 @@ impl Eq for SpendLimit {}
 struct StoredLimit {
     agent_uri: String,
     company_slug: String,
-    currency: String,
+    currency: Currency,
     max_post: Option<i64>,
     daily_limit: Option<i64>,
 }
@@ -175,19 +175,12 @@ impl TryFrom<StoredLimit> for SpendLimit {
         let legacy_uri_spelling =
             (agent.as_str() != stored.agent_uri).then(|| stored.agent_uri.into_boxed_str());
         let company = stored.company_slug.parse()?;
-        let currency =
-            stored
-                .currency
-                .parse()
-                .map_err(|error: beankeeper::types::CurrencyError| {
-                    CliError::Validation(error.to_string())
-                })?;
         let caps = Caps::from_minor_units(stored.max_post, stored.daily_limit)?;
         Ok(Self {
             agent,
             legacy_uri_spelling,
             company,
-            currency,
+            currency: stored.currency,
             caps,
         })
     }
@@ -350,7 +343,7 @@ pub(crate) fn check(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<
     }
     let limit = limits
         .iter()
-        .find(|limit| limit.currency.code() == p.currency)
+        .find(|limit| limit.currency == p.currency)
         .ok_or_else(|| forbidden("no spend limit is configured for this currency"))?;
     let amount = debit_total(p.entries)?;
     if limit
@@ -378,7 +371,7 @@ pub(crate) fn check(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<
 fn daily_used(
     conn: &Connection,
     company: &str,
-    currency: &str,
+    currency: Currency,
     uri: &str,
     date: NaiveDate,
 ) -> Result<i128, CliError> {
@@ -563,12 +556,12 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 1, 1)
             .ok_or_else(|| CliError::General("invalid test date".into()))?;
         assert_eq!(
-            daily_used(db.conn(), "acme", "USD", limit.agent_uri(), date)?,
+            daily_used(db.conn(), "acme", Currency::USD, limit.agent_uri(), date)?,
             80000
         );
         legacy_post(db.conn(), limit.agent_uri(), "invalid-date")?;
         assert!(matches!(
-            daily_used(db.conn(), "acme", "USD", limit.agent_uri(), date),
+            daily_used(db.conn(), "acme", Currency::USD, limit.agent_uri(), date),
             Err(CliError::Database(_))
         ));
         Ok(())

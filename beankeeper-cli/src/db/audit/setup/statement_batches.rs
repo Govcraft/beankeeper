@@ -36,7 +36,7 @@ struct FrozenBatch {
     source_sha256: Sha256Hex,
     bank: String,
     suspense: String,
-    currency: String,
+    currency: beankeeper::types::Currency,
     rows: Vec<FrozenRow>,
 }
 
@@ -455,7 +455,7 @@ fn freeze(
         source_sha256: preview.content_hash,
         bank: preview.bank.to_string(),
         suspense: preview.suspense.to_string(),
-        currency: preview.currency.code().into(),
+        currency: preview.currency,
         rows: Vec::with_capacity(preview.rows.len()),
     };
     for row in preview.rows {
@@ -763,7 +763,7 @@ fn require_existing_match(
     if transaction.reference.as_deref() != Some(row.reference.as_str())
         || transaction.date != row.date
         || transaction.description != row.description
-        || transaction.currency.code() != batch.currency
+        || transaction.currency != batch.currency
         || !metadata_matches
         || !entries_match
     {
@@ -790,7 +790,7 @@ impl<'a> ApprovedStatementPosting<'a> {
             company_slug: &self.batch.company,
             description: &self.row.description,
             metadata: self.row.metadata.as_deref(),
-            currency: &self.batch.currency,
+            currency: self.batch.currency,
             date: &self.row.date,
             entries: self.entries,
             correlate: None,

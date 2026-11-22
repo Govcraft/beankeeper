@@ -42,7 +42,7 @@ fn amount_display(minor: i64, currency: Option<Currency>) -> Option<String> {
 struct PostingPayloadJson<'a> {
     description: &'a str,
     metadata: Option<&'a str>,
-    currency: &'a str,
+    currency: Currency,
     date: &'a str,
     entries: Vec<PostingLineJson<'a>>,
     correlate: Option<i64>,
@@ -55,12 +55,9 @@ impl<'a> From<&'a PostingPayload> for PostingPayloadJson<'a> {
         Self {
             description: &payload.description,
             metadata: payload.metadata.as_deref(),
-            currency: &payload.currency,
+            currency: payload.currency,
             date: &payload.date,
-            entries: PostingLineJson::for_entries(
-                &payload.entries,
-                Currency::from_code(&payload.currency).ok(),
-            ),
+            entries: PostingLineJson::for_entries(&payload.entries, Some(payload.currency)),
             correlate: payload.correlate,
             reference: payload.reference.as_deref(),
             on_conflict: payload.on_conflict,
@@ -77,7 +74,7 @@ pub(super) struct ProposalJson<'a> {
     reference: Option<&'a str>,
     debit_total: i64,
     debit_total_display: Option<String>,
-    currency: &'a str,
+    currency: Currency,
     proposer_uri: &'a str,
     proposer_jti: &'a str,
     created_at: &'a str,
@@ -104,11 +101,8 @@ impl<'a> From<&'a Proposal> for ProposalJson<'a> {
             payload: PostingPayloadJson::from(&proposal.payload),
             reference: proposal.reference.as_deref(),
             debit_total: proposal.debit_total,
-            debit_total_display: amount_display(
-                proposal.debit_total,
-                Currency::from_code(&proposal.currency).ok(),
-            ),
-            currency: &proposal.currency,
+            debit_total_display: amount_display(proposal.debit_total, Some(proposal.currency)),
+            currency: proposal.currency,
             proposer_uri: &proposal.proposer_uri,
             proposer_jti: &proposal.proposer_jti,
             created_at: &proposal.created_at,
@@ -142,7 +136,7 @@ mod tests {
     #[test]
     fn proposal_projected_bytes_preserve_audit_shape_and_currency_scope()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut proposal = Proposal {
+        let proposal = Proposal {
             payload_json: serde_json::Value::Null,
             id: "proposal_01h455vb4pex5vsknk084sn02q".parse()?,
             company_slug: "acme".into(),
@@ -159,7 +153,7 @@ mod tests {
             payload: PostingPayload {
                 description: "Expense".into(),
                 metadata: Some(r#"{"amount":1}"#.into()),
-                currency: "BHD".into(),
+                currency: Currency::BHD,
                 date: "2026-02-01".into(),
                 entries: vec![PostEntryParams {
                     account_code: "5000".into(),
@@ -174,7 +168,7 @@ mod tests {
             },
             reference: Some("EX-1".into()),
             debit_total: 1234,
-            currency: "BHD".into(),
+            currency: Currency::BHD,
             proposer_uri: "proposer".into(),
             proposer_jti: "propose-token".into(),
             created_at: "2026-01-31T00:00:00Z".into(),
@@ -190,14 +184,6 @@ mod tests {
             expected
         );
 
-        proposal.payload.currency = "invalid-legacy-code".into();
-        let projected = serde_json::to_value(ProposalJson::from(&proposal))?;
-        assert_eq!(projected["debit_total_display"], "1.234");
-        assert_eq!(projected["payload"]["entries"][0]["amount"], 1234);
-        assert_eq!(
-            projected["payload"]["entries"][0].get("amount_display"),
-            Some(&Value::Null)
-        );
         Ok(())
     }
 }

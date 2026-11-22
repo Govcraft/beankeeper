@@ -741,7 +741,7 @@ fn with_post_params<T>(
         company_slug: company,
         description,
         metadata,
-        currency: currency.code(),
+        currency,
         date: &effective_date,
         entries: &db_entries,
         correlate: *correlate,

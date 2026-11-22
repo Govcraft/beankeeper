@@ -40,7 +40,7 @@ impl PaymentData {
 
 #[derive(Serialize)]
 struct ScheduleData {
-    currency: String,
+    currency: Currency,
     #[serde(flatten)]
     principal: MoneyField,
     annual_rate: String,
@@ -82,7 +82,7 @@ fn calculate(args: &LoanCalculationArgs) -> Result<(Currency, ScheduleData), Cli
     Ok((
         currency,
         ScheduleData {
-            currency: currency.to_string(),
+            currency,
             principal: MoneyField::new("principal", Money::new(principal, currency)),
             annual_rate: rate.to_string(),
             months: args.months,

@@ -1479,7 +1479,7 @@ mod tests {
         let payload = proposals::PostingPayload {
             description: "Review".into(),
             metadata: None,
-            currency: "USD".into(),
+            currency: beankeeper::types::Currency::USD,
             date: "2026-01-01".into(),
             entries: Vec::new(),
             correlate: None,

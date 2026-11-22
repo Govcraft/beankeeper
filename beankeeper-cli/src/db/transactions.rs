@@ -62,7 +62,7 @@ pub struct PostTransactionParams<'a> {
     pub company_slug: &'a str,
     pub description: &'a str,
     pub metadata: Option<&'a str>,
-    pub currency: &'a str,
+    pub currency: Currency,
     pub date: &'a str,
     pub entries: &'a [PostEntryParams],
     /// If set, correlate with this existing transaction ID (intercompany linking).
@@ -256,7 +256,11 @@ fn post_transaction_inner(
 
     let journal = match prepared {
         Some(journal) => {
-            require_canonical_currency(journal.currency(), p.currency)?;
+            if journal.currency() != p.currency {
+                return Err(CliError::Validation(
+                    "posting currency does not match the journal".into(),
+                ));
+            }
             journal
         }
         None => build_journal(conn, p, source)?,
@@ -303,10 +307,7 @@ pub(crate) fn build_journal(
             invalid(error)
         }
     })?;
-    let currency = Currency::from_code(request.currency).map_err(invalid)?;
-    if source == PostingSource::Storage {
-        require_canonical_currency(currency, request.currency)?;
-    }
+    let currency = request.currency;
     let mut journal = JournalEntry::new(date, request.description, currency);
     for entry in request.entries {
         let account = super::accounts::get_account(
@@ -340,17 +341,6 @@ pub(crate) fn build_journal(
         PostingSource::Command => command_posting_error(error, currency),
         PostingSource::Import | PostingSource::Proposal => error.into(),
     })
-}
-
-fn require_canonical_currency(currency: Currency, code: &str) -> Result<(), CliError> {
-    if currency.code() == code {
-        Ok(())
-    } else {
-        Err(CliError::Validation(format!(
-            "transaction currency must use the canonical code {}",
-            currency.code(),
-        )))
-    }
 }
 
 fn entry_error(error: beankeeper::types::EntryError, source: PostingSource) -> CliError {
@@ -838,7 +828,7 @@ pub fn get_entries_for_transaction(
             transaction_id: row.get(1)?,
             account_code: row.get(2)?,
             company_slug: row.get(3)?,
-            direction: super::direction::read(row, 4)?,
+            direction: row.get(4)?,
             amount: row.get(5)?,
             memo: row.get(6)?,
             tax_category: row.get(7)?,
@@ -981,7 +971,7 @@ mod tests {
             company_slug: "acme",
             description,
             metadata,
-            currency: "USD",
+            currency: Currency::USD,
             date,
             entries,
             correlate: None,
@@ -1040,15 +1030,8 @@ mod tests {
         let mut two_debits = sample_entries();
         two_debits[1].direction = DebitOrCredit::Debit;
         let balanced = sample_entries();
-        for (entries, currency) in [
-            (unbalanced.as_slice(), "USD"),
-            (two_debits.as_slice(), "USD"),
-            (&balanced[..1], "USD"),
-            (balanced.as_slice(), "ZZZ"),
-            (balanced.as_slice(), "usd"),
-        ] {
-            let mut request = make_params(entries, "Invalid", None, "2026-01-05");
-            request.currency = currency;
+        for entries in [unbalanced.as_slice(), two_debits.as_slice(), &balanced[..1]] {
+            let request = make_params(entries, "Invalid", None, "2026-01-05");
             assert!(matches!(
                 post_transaction(db.conn(), &request),
                 Err(CliError::Validation(_))

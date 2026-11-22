@@ -554,7 +554,7 @@ fn execute_schedule(
                     company_slug: &after.company_slug,
                     description: &after.description,
                     metadata: after.metadata.as_deref(),
-                    currency: after.currency.code(),
+                    currency: after.currency,
                     date: &date_text,
                     entries: &after.entries,
                     correlate: None,

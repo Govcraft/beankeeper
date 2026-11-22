@@ -217,7 +217,17 @@ fn budget_and_rule_deletions_require_force_outside_a_terminal()
     let db = Connection::open(&books.path)?;
     let rule_id: String =
         db.query_row("SELECT id FROM categorization_rules", [], |row| row.get(0))?;
-    let budget = ["budget", "delete", "5000", "--year", "2026", "--month", "3"];
+    let budget = [
+        "budget",
+        "delete",
+        "5000",
+        "--year",
+        "2026",
+        "--month",
+        "3",
+        "--currency",
+        "usd",
+    ];
     let rule = ["rule", "delete", rule_id.as_str()];
     let before = books.row_counts();
     for args in [budget.as_slice(), rule.as_slice()] {
