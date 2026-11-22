@@ -78,12 +78,18 @@ Backup and restore are CLI commands and are not exposed over MCP.
 
 ### `bk verify`
 
-Check ledger integrity: validates the schema version and database structure. Returns exit code 0 if healthy. In JSON mode, returns the schema version and a `"healthy"` status string.
+Verify the entire ledger and show the evidence. The report includes per-currency
+balances for each company, the recomputed audit head, row counts, and the outcome
+of each check. A passing verification exits 0. A failed check exits 4 and names
+the check and the affected record where available.
 
 ```bash
 bk verify
-bk --json verify   # Returns { "data": { "schema_version": 23, "status": "healthy" } }
+bk --json verify
 ```
+
+The MCP `verify` tool returns the same evidence as the CLI JSON `data` field.
+See [verify JSON](json-api.md#verify).
 
 ### `bk export`
 

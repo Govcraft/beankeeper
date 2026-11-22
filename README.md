@@ -53,7 +53,12 @@ Database triggers reject changes to posted financial fields, entry details, and 
 
 Every new posting, including imports and reversals, stores `posted_by` and a `create` audit record containing its immutable transaction and entry details. Set the principal with `--actor NAME` or `BK_ACTOR`. `bk txn show` displays the poster; JSON transaction output includes `posted_by`. Legacy transactions have an unknown poster (`null` in JSON).
 
-Audit rows form a SHA-256 hash chain. `bk verify` checks the chain, its tail, new posting snapshots, and accounting invariants alongside SQLite integrity and foreign keys. It reports the first broken link or invalid transaction as a `DATABASE` error (exit code 4).
+`bk verify` checks every company in one ledger snapshot. It reports currency-by-currency
+debit and credit totals, row counts, named checks, and the SHA-256 audit-chain head
+after recomputing every row hash. Use `bk --json verify` or the MCP `verify` tool for
+the same structured evidence. Failures identify the first failed check and the
+affected record where available (`DATABASE`, exit code 4).
+See [verification and its limits](docs/audit-integrity.md#verification-and-limits).
 
 These protections detect tampering against the stored chain; they are not signatures or an external trust anchor. Someone with unrestricted database access can remove triggers and rewrite the ledger, hashes, and sequence together, or restore an older complete database. See [audit integrity](docs/audit-integrity.md) for the format, migration behavior, and limits.
 
