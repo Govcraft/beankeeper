@@ -375,7 +375,9 @@ An exact retry returns the same result. A changed request under the same
 reference returns `VALIDATION`.
 
 The owner reviews the held proposal and uses `bk txn approve PROPOSAL_ID`
-or `txn_approve` with the existing approval authority.
+or `txn_approve` with a live `ledger/approve` credential for a different
+identity. This approval requirement applies under either ledger policy and
+after the setup session ends.
 
 ### Report kinds
 

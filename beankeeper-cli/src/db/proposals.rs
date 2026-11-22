@@ -8,7 +8,7 @@ use super::audit::{self, Actor};
 use super::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
 use crate::capability::Capability;
 use crate::error::CliError;
-use crate::identity::{Approve, Granted};
+use crate::identity::{Approve, Granted, require_live_capability};
 
 /// A typed, time-sortable identifier for a pending posting request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,6 +298,7 @@ impl<'a> PendingProposal<'a> {
 
     fn approve(self, grant: &Granted<'_, Approve>) -> Result<(Proposal, Proposal), CliError> {
         let actor = grant.actor();
+        self.require_setup_reviewer(actor)?;
         let mut payload = self.before.payload.clone();
         super::spend_limits::debit_total(&payload.entries)?;
         let (existing, proposal_id) = (payload.metadata.as_deref(), self.before.id.as_str());
@@ -330,7 +331,40 @@ impl<'a> PendingProposal<'a> {
         Ok(self.transition(state))
     }
 
+    fn require_setup_reviewer(&self, actor: &Actor) -> Result<(), CliError> {
+        // Proposal proposer attribution and the original issuance audit event
+        // are immutable. Session termination does not change this origin.
+        let setup_origin = self.conn.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM audit_log
+                WHERE entity = 'agent' AND action = 'token_issue' AND entity_id = ?1
+                  AND json_extract(after, '$.agent_uri') = ?2
+                  AND json_type(after, '$.capabilities') = 'array'
+                  AND json_array_length(after, '$.capabilities') = 1
+                  AND json_extract(after, '$.capabilities[0]') = ?3
+             )",
+            params![
+                self.before.proposer_jti,
+                self.before.proposer_uri,
+                Capability::Setup.path()
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if setup_origin {
+            let reviewer = require_live_capability(self.conn, actor, Capability::Approve)?;
+            if reviewer.uri() == self.before.proposer_uri
+                || reviewer.jti() == self.before.proposer_jti
+            {
+                return Err(CliError::Forbidden(
+                    "setup proposals require a different reviewer".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn reject(self, actor: &Actor, reason: Option<&str>) -> Result<(Proposal, Proposal), CliError> {
+        self.require_setup_reviewer(actor)?;
         let own = actor.agent_uri() == Some(self.before.proposer_uri.as_str());
         let can_approve = actor
             .identity()

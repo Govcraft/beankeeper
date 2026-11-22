@@ -2727,7 +2727,7 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         generation,
     )?;
 
-    assert_opening_reservation(
+    let (late_proposal, reviewer_token) = assert_opening_reservation(
         &mut setup_client,
         &db,
         &path,
@@ -2743,6 +2743,13 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         &passphrase_path,
         owner_token,
         generation,
+    )?;
+    assert_opening_requires_review_after_finish(
+        &db,
+        &path,
+        &passphrase_path,
+        &late_proposal,
+        &reviewer_token,
     )
 }
 
@@ -3255,14 +3262,13 @@ fn assert_opening_reservation(
     passphrase: &Path,
     token: &str,
     generation: i64,
-) -> TestResult {
-    use beankeeper_cli::db::Actor;
+) -> Result<(String, String), Box<dyn Error>> {
+    assert!(!beankeeper_cli::db::policy::get(db.conn())?.enforce);
 
     let owner_review = proposal_identity(db, "owner_review", &["ledger/approve"])?;
     let owner_token = owner_review["token"]
         .as_str()
         .ok_or("missing reviewer token")?;
-    beankeeper_cli::db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
 
     let mut input = opening_preview_input(generation);
     input["date"] = json!("2026-01-02");
@@ -3317,21 +3323,7 @@ fn assert_opening_reservation(
     let error = client.call("ledger_setup_opening_reserve", &stale)?;
     assert_eq!(payload(&error)?["code"], "VALIDATION");
     assert_eq!(setup_audit_count(db)?, before + 1);
-    let denied = bk(path)?
-        .arg("--passphrase-file")
-        .arg(passphrase)
-        .args([
-            "--agent-token",
-            token,
-            "--company",
-            "home",
-            "txn",
-            "approve",
-            id,
-        ])
-        .output()?;
-    assert!(!denied.status.success());
-    assert!(String::from_utf8_lossy(&denied.stderr).contains("ledger/approve"));
+    assert_opening_approval_denials(db, path, passphrase, token, id)?;
 
     assert_owner_approves_opening(db, path, passphrase, owner_token, id)?;
     let approved_count = setup_audit_count(db)?;
@@ -3340,8 +3332,99 @@ fn assert_opening_reservation(
         reserved
     );
     assert_eq!(setup_audit_count(db)?, approved_count);
-    beankeeper_cli::db::audit::verify_hash_chain(db.conn())?;
+    let mut late = reservation;
+    late["reference"] = json!("opening-home-after-session");
+    let late = client.success("ledger_setup_opening_reserve", &late)?;
+    let late_id = late["proposal_id"]
+        .as_str()
+        .ok_or("missing later proposal ID")?;
+    Ok((late_id.to_owned(), owner_token.to_owned()))
+}
+
+fn assert_opening_approval_denials(
+    db: &beankeeper_cli::db::Db,
+    path: &Path,
+    passphrase: &Path,
+    setup_token: &str,
+    id: &str,
+) -> TestResult {
+    let reader = proposal_identity(db, "setup_reader", &["ledger/read"])?;
+    let reader = reader["token"].as_str().ok_or("missing reader token")?;
+    let audit = setup_audit_count(db)?;
+    for (token, expected) in [
+        (None, "UNAUTHORIZED"),
+        (Some(reader), "FORBIDDEN"),
+        (Some(setup_token), "FORBIDDEN"),
+    ] {
+        let result = opening_approval_command(path, passphrase, token, id)?.output()?;
+        assert!(!result.status.success());
+        let failure: Value = serde_json::from_slice(&result.stderr)?;
+        assert_eq!(failure["error"]["code"], expected);
+    }
+    let rejected = bk(path)?
+        .arg("--passphrase-file")
+        .arg(passphrase)
+        .args([
+            "--agent-token",
+            reader,
+            "--company",
+            "home",
+            "--json",
+            "txn",
+            "reject",
+            id,
+        ])
+        .output()?;
+    assert!(!rejected.status.success());
+    let failure: Value = serde_json::from_slice(&rejected.stderr)?;
+    assert_eq!(failure["error"]["code"], "FORBIDDEN");
+    assert_eq!(
+        beankeeper_cli::db::proposals::get(db.conn(), "home", id)?
+            .state
+            .code(),
+        "pending"
+    );
+    assert_eq!(setup_audit_count(db)?, audit);
     Ok(())
+}
+
+fn assert_opening_requires_review_after_finish(
+    db: &beankeeper_cli::db::Db,
+    path: &Path,
+    passphrase: &Path,
+    id: &str,
+    reviewer: &str,
+) -> TestResult {
+    let result = opening_approval_command(path, passphrase, None, id)?.output()?;
+    assert!(!result.status.success());
+    let failure: Value = serde_json::from_slice(&result.stderr)?;
+    assert_eq!(failure["error"]["code"], "UNAUTHORIZED");
+    opening_approval_command(path, passphrase, Some(reviewer), id)?
+        .assert()
+        .success();
+    assert_eq!(
+        beankeeper_cli::db::proposals::get(db.conn(), "home", id)?
+            .state
+            .code(),
+        "approved"
+    );
+    beankeeper_cli::db::audit::verify_hash_chain(db.read())?;
+    Ok(())
+}
+
+fn opening_approval_command(
+    path: &Path,
+    passphrase: &Path,
+    token: Option<&str>,
+    id: &str,
+) -> Result<Command, Box<dyn Error>> {
+    let mut command = bk(path)?;
+    command.arg("--passphrase-file").arg(passphrase);
+    if let Some(token) = token {
+        command.args(["--agent-token", token]);
+    }
+    command.args(["--company", "home", "--json", "txn", "approve", id]);
+    Ok(command)
 }
 
 fn assert_cli_replays_opening_reservation(
@@ -3402,20 +3485,8 @@ fn assert_owner_approves_opening(
     owner_token: &str,
     proposal_id: &str,
 ) -> TestResult {
-    let approved = bk(path)?
-        .arg("--passphrase-file")
-        .arg(passphrase)
-        .args([
-            "--agent-token",
-            owner_token,
-            "--company",
-            "home",
-            "--json",
-            "txn",
-            "approve",
-            proposal_id,
-        ])
-        .output()?;
+    let approved =
+        opening_approval_command(path, passphrase, Some(owner_token), proposal_id)?.output()?;
     assert!(
         approved.status.success(),
         "{}",
