@@ -26,7 +26,7 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
             serde_json::to_value(ScheduleJson::from(&schedule))
         }
         ScheduleCommand::List { all, due_through } => {
-            let rows: Vec<_> = schedules::list_schedules(db.conn(), company)?
+            let rows: Vec<_> = schedules::list_schedules(db.read(), company)?
                 .into_iter()
                 .filter(|row| *all || row.state.next_due().is_some())
                 .filter(|row| {

@@ -201,7 +201,7 @@ fn recurring(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> 
         .as_of
         .checked_add_days(Days::new(14))
         .ok_or_else(date_overflow)?;
-    let schedules = db::schedules::list_schedules(context.conn, context.company)?;
+    let schedules = db::schedules::list_schedules_on_connection(context.conn, context.company)?;
     let mut count = 0_usize;
     let mut schedule_count = 0_usize;
     let mut total = 0;
@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(facts["recurring_due"]["schedule_count"], 1);
         assert_eq!(facts["recurring_due"]["total"], 1400);
         assert_eq!(db.conn().total_changes(), before);
-        let schedules = db::schedules::list_schedules(db.conn(), "co")?;
+        let schedules = db::schedules::list_schedules(db.read(), "co")?;
         assert_eq!(schedules[0].state.next_due(), Some("2020-01-01".parse()?));
         Ok(())
     }
