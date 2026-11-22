@@ -55,3 +55,93 @@ pub fn verify_accounting(conn: ReadConn<'_>) -> Result<(), CliError> {
     }
     Ok(())
 }
+
+/// Verify that ledger-controlled relationship metadata refers to existing records.
+///
+/// # Errors
+/// Returns a database error identifying an invalid link or a missing target.
+pub fn verify_links(conn: ReadConn<'_>) -> Result<(), CliError> {
+    use super::metadata::LinkKey;
+
+    let mut transactions = conn.prepare(
+        "SELECT id, company_slug, metadata FROM transactions WHERE metadata IS NOT NULL ORDER BY id",
+    )?;
+    let rows = transactions.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, company, metadata) = row?;
+        let Some(fields) = super::metadata::link_fields(&metadata) else {
+            continue;
+        };
+        for (key, value) in fields {
+            let Some(kind) = LinkKey::classify(&key) else {
+                continue;
+            };
+            if value.is_null() || kind == LinkKey::Settlement {
+                continue;
+            }
+            let invalid = || {
+                CliError::Database(format!(
+                    "transaction #{id}: invalid or missing '{key}' target"
+                ))
+            };
+            let found: bool = if kind == LinkKey::Proposal {
+                let target = value.as_str().ok_or_else(invalid)?;
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM txn_proposals WHERE id = ?1 AND company_slug = ?2)",
+                    params![target, company],
+                    |row| row.get(0),
+                )?
+            } else {
+                let target = value.as_i64().ok_or_else(invalid)?;
+                conn.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM transactions
+                        WHERE id = ?1 AND (?2 OR company_slug = ?3)
+                    )",
+                    params![target, kind == LinkKey::Correlate, company],
+                    |row| row.get(0),
+                )?
+            };
+            if !found {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{companies::create_company, connection::Db};
+
+    #[test]
+    fn missing_persisted_relationship_identifies_its_transaction() -> Result<(), CliError> {
+        let db = Db::open_in_memory()?;
+        create_company(
+            db.conn(),
+            &crate::db::Actor::new("fixture"),
+            "acme",
+            "Acme",
+            None,
+        )?;
+        let row = db.conn().query_row(
+            "INSERT INTO transactions (company_slug, description, metadata, date)
+             VALUES (?1, ?2, ?3, ?4) RETURNING id",
+            params!["acme", "Legacy entry", r#"{"reverses":999}"#, "2024-01-15"],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert!(matches!(
+            verify_links(db.read()),
+            Err(CliError::Database(message))
+                if message == format!("transaction #{row}: invalid or missing 'reverses' target")
+        ));
+        Ok(())
+    }
+}

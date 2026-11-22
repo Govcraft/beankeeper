@@ -169,10 +169,18 @@ fn reconcile_succeeds_with_plain_text_metadata() {
 }
 
 #[test]
-fn reconcile_still_reports_orphans_alongside_plain_text() {
+fn reconcile_still_reports_orphans_alongside_plain_text() -> Result<(), Box<dyn std::error::Error>>
+{
     let (_dir, db) = setup();
     post(&db, "acme", "Opening", &["-m", "open:1000"]);
-    let orphan = post(&db, "acme", "Dangling", &["-m", r#"{"correlate":999}"#]);
+    let orphan = post(&db, "acme", "Dangling", &[]);
+    // Earlier writers accepted this metadata. Seed the historical row directly.
+    let conn = rusqlite::Connection::open(&db)?;
+    conn.execute(
+        "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
+        rusqlite::params![r#"{"correlate":999}"#, orphan],
+    )?;
+    drop(conn);
 
     let (success, stdout, _) = run_bk(&db, &["--json", "txn", "reconcile"]);
     assert!(!success, "orphans make reconcile exit non-zero");
@@ -183,6 +191,7 @@ fn reconcile_still_reports_orphans_alongside_plain_text() {
     assert_eq!(data.len(), 1, "{v}");
     assert_eq!(data[0]["transaction_id"], Value::from(orphan));
     assert_eq!(data[0]["partner_id"], Value::from(999));
+    Ok(())
 }
 
 #[test]

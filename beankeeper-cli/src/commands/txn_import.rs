@@ -1,14 +1,13 @@
 //! Atomic CSV bank imports and JSON bulk journal posting.
 //!
 //! Parsing and normalization are independent of storage. Every posting is
-//! validated by `JournalEntry::post` and persisted through `post_transaction`.
+//! validated and persisted by the shared transaction writer.
 //! Dry runs exercise that same path inside a transaction that is rolled back.
 
 use crate::operation::Operation;
 use std::collections::HashMap;
 
-use beankeeper::core::JournalEntry;
-use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
+use beankeeper::types::Currency;
 use chrono::NaiveDate;
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -125,7 +124,7 @@ struct PreparedTransaction {
     #[serde(serialize_with = "crate::output::json::serialize_display")]
     currency: Currency,
     entries: Vec<PreparedEntry>,
-    metadata: Option<String>,
+    metadata: Option<db::metadata::UserAnnotations>,
     #[serde(skip)]
     reference: Option<TransactionReference>,
 }
@@ -171,7 +170,8 @@ fn prepare_json(
         entries,
         metadata: input
             .metadata
-            .map(|value| serde_json::Value::Object(value).to_string()),
+            .map(db::metadata::UserAnnotations::from_fields)
+            .transpose()?,
         reference: input.reference.as_deref().map(str::parse).transpose()?,
     })
 }
@@ -305,44 +305,6 @@ fn read_transactions(
     }
 }
 
-/// Resolve account defaults and validate exactly the entries that will be stored.
-fn validate_posting(
-    db: &Db,
-    company: &str,
-    prepared: &mut PreparedTransaction,
-) -> Result<Vec<transactions::PostEntryParams>, CliError> {
-    let currency = prepared.currency;
-    let mut journal = JournalEntry::new(prepared.date, &prepared.description, currency);
-    let mut entries = Vec::new();
-    for entry in &mut prepared.entries {
-        let row = accounts::get_account(db.conn(), company, &entry.account_code)?;
-        let account = db::row_to_account(&row)?;
-        let money = Money::from_minor(i128::from(entry.amount), currency);
-        let direction = match entry.direction {
-            EntryDirection::Debit => DebitOrCredit::Debit,
-            EntryDirection::Credit => DebitOrCredit::Credit,
-        };
-        let mut posting = match &entry.memo {
-            Some(memo) => Entry::with_memo(account, money, direction, memo)?,
-            None => Entry::new(account, money, direction)?,
-        };
-        entry.tax_category = entry.tax_category.clone().or(row.default_tax_category);
-        if let Some(category) = &entry.tax_category {
-            posting = posting.with_tax_category(category);
-        }
-        journal = journal.entry(posting)?;
-        entries.push(transactions::PostEntryParams {
-            account_code: entry.account_code.clone(),
-            direction: entry.direction.as_str().to_string(),
-            amount: entry.amount,
-            memo: entry.memo.clone(),
-            tax_category: entry.tax_category.clone(),
-        });
-    }
-    journal.post()?;
-    Ok(entries)
-}
-
 fn row_reference(
     prepared: &mut PreparedTransaction,
     format: ImportFormat,
@@ -409,30 +371,32 @@ fn post_import(
     occurrences: &mut HashMap<String, usize>,
 ) -> Result<ImportOutcome, CliError> {
     let reference = row_reference(&mut prepared, ctx.format, occurrences)?;
-    // Skip source duplicates before consulting rules that may have changed.
-    if ctx.format == ImportFormat::Csv
+    // Existing CSV references are checked against the uncategorized source.
+    // A changed rule cannot change the identity or validation of a replay.
+    let skip_source = ctx.format == ImportFormat::Csv
         && ctx.strategy == transactions::ConflictStrategy::Skip
-        && transactions::reference_exists(ctx.db.conn(), ctx.company, &reference)?
-    {
-        // Preserve source validation while ignoring changed categorization.
-        validate_posting(ctx.db, ctx.company, &mut prepared)?;
-        return Ok(ImportOutcome {
-            id: None,
-            date: prepared.date.to_string(),
-            description: prepared.description,
-            reference,
-            status: ImportStatus::Skipped,
-        });
-    }
-    // Source identity must not depend on mutable categorization rules.
-    if ctx.format == ImportFormat::Csv {
+        && transactions::reference_exists(ctx.db.conn(), ctx.company, &reference)?;
+    if !skip_source && ctx.format == ImportFormat::Csv {
         categorize_csv(&mut prepared, ctx.rules, ctx.bank, ctx.suspense)?;
     }
-    let entries = validate_posting(ctx.db, ctx.company, &mut prepared)?;
+    let entries = prepared
+        .entries
+        .iter()
+        .map(|entry| transactions::PostEntryParams {
+            account_code: entry.account_code.clone(),
+            direction: entry.direction.as_str().into(),
+            amount: entry.amount,
+            memo: entry.memo.clone(),
+            tax_category: entry.tax_category.clone(),
+        })
+        .collect::<Vec<_>>();
     let params = transactions::PostTransactionParams {
         company_slug: ctx.company,
         description: &prepared.description,
-        metadata: prepared.metadata.as_deref(),
+        metadata: prepared
+            .metadata
+            .as_ref()
+            .map(db::metadata::UserAnnotations::as_str),
         currency: prepared.currency.code(),
         date: &prepared.date.to_string(),
         entries: &entries,
@@ -441,11 +405,17 @@ fn post_import(
         on_conflict: ctx.strategy,
         actor: ctx.actor,
     };
-    let (id, status) = match transactions::post_transaction(ctx.db.conn(), &params)? {
-        transactions::PostResult::Created(id) => {
-            ((!ctx.dry_run).then_some(id), ImportStatus::Imported)
+    let source = transactions::PostingSource::Import;
+    let (id, status) = if skip_source {
+        transactions::build_journal(ctx.db.conn(), &params, source)?;
+        (None, ImportStatus::Skipped)
+    } else {
+        match transactions::post_from_source(ctx.db.conn(), &params, source)? {
+            transactions::PostResult::Created(id) => {
+                ((!ctx.dry_run).then_some(id), ImportStatus::Imported)
+            }
+            transactions::PostResult::Skipped(_) => (None, ImportStatus::Skipped),
         }
-        transactions::PostResult::Skipped(_) => (None, ImportStatus::Skipped),
     };
     Ok(ImportOutcome {
         id,

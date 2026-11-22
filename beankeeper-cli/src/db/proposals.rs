@@ -299,14 +299,15 @@ impl<'a> PendingProposal<'a> {
     fn approve(self, grant: &Granted<'_, Approve>) -> Result<(Proposal, Proposal), CliError> {
         let actor = grant.actor();
         let mut payload = self.before.payload.clone();
-        validate_posting(self.conn, &payload.params(&self.before.company_slug, actor))?;
+        super::spend_limits::debit_total(&payload.entries)?;
         let (existing, proposal_id) = (payload.metadata.as_deref(), self.before.id.as_str());
-        let mut metadata: serde_json::Value =
-            existing.and_then(super::metadata::normalize).map_or_else(
+        let mut metadata = super::metadata::UserAnnotations::parse(existing)?
+            .map(super::metadata::UserAnnotations::into_normalized)
+            .map_or_else(
                 || serde_json::json!({}),
                 super::metadata::NormalizedMetadata::into_value,
             );
-        metadata["proposal_id"] = serde_json::json!(proposal_id);
+        metadata[super::metadata::PROPOSAL_KEY] = serde_json::json!(proposal_id);
         payload.metadata = Some(metadata.to_string());
         let posting = ApprovedPosting {
             conn: self.conn,
@@ -521,13 +522,35 @@ pub fn create(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
 ) -> Result<serde_json::Value, CliError> {
-    let identity = p.actor.identity().ok_or_else(|| {
-        CliError::Unauthorized("txn propose requires a verified agent token".into())
-    })?;
+    reserve(conn, p, super::transactions::PostingSource::Proposal)
+}
+
+pub(crate) fn create_from_command(
+    conn: &Connection,
+    p: &PostTransactionParams<'_>,
+) -> Result<serde_json::Value, CliError> {
+    reserve(conn, p, super::transactions::PostingSource::Command)
+}
+
+fn reserve(
+    conn: &Connection,
+    p: &PostTransactionParams<'_>,
+    source: super::transactions::PostingSource,
+) -> Result<serde_json::Value, CliError> {
     audit::atomically(conn, || {
+        let preflight = (source == super::transactions::PostingSource::Command)
+            .then(|| super::transactions::build_journal(conn, p, source))
+            .transpose()?;
+        let identity = p.actor.identity().ok_or_else(|| {
+            CliError::Unauthorized("txn propose requires a verified agent token".into())
+        })?;
         audit::require_capability(conn, p.actor, Capability::Propose)?;
-        reject_reserved_metadata(p.metadata)?;
-        validate_posting(conn, p)?;
+        super::metadata::UserAnnotations::parse(p.metadata)?;
+        let total = super::spend_limits::debit_total(p.entries)?;
+        let journal = match preflight {
+            Some(journal) => journal,
+            None => super::transactions::build_journal(conn, p, source)?,
+        };
         if let Some(reference) = p.reference {
             let posted: Option<i64> = conn
                 .query_row(
@@ -553,7 +576,15 @@ pub fn create(
             metadata: p.metadata.map(str::to_owned),
             currency: p.currency.into(),
             date: p.date.into(),
-            entries: p.entries.to_vec(),
+            entries: p
+                .entries
+                .iter()
+                .zip(journal.entries())
+                .map(|(input, entry)| PostEntryParams {
+                    tax_category: entry.tax_category().map(str::to_owned),
+                    ..input.clone()
+                })
+                .collect(),
             correlate: p.correlate,
             reference: p.reference.map(str::to_owned),
             on_conflict: p.on_conflict,
@@ -564,27 +595,11 @@ pub fn create(
         conn.execute(
             "INSERT INTO txn_proposals(id, company_slug, status, payload, reference, debit_total, currency, proposer_uri, proposer_jti)
              VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id.as_str(), p.company_slug, json, p.reference, super::spend_limits::debit_total(p.entries)?, p.currency, identity.uri(), identity.jti()],
+            params![id.as_str(), p.company_slug, json, p.reference, total, p.currency, identity.uri(), identity.jti()],
         )?;
         serde_json::to_value(get(conn, p.company_slug, id.as_str())?)
             .map_err(|error| CliError::General(error.to_string()))
     })
-}
-
-/// Reject attempts to forge the approval relationship through posting metadata.
-///
-/// # Errors
-/// Returns a validation error if a reserved approval key is present, even null.
-pub(crate) fn reject_reserved_metadata(metadata: Option<&str>) -> Result<(), CliError> {
-    if let Some(object) = metadata.and_then(|raw| {
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw).ok()
-    }) && object.contains_key("proposal_id")
-    {
-        return Err(CliError::Validation(
-            "metadata key 'proposal_id' is reserved for approvals".into(),
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn check_reference(
@@ -601,32 +616,6 @@ pub(crate) fn check_reference(
             "reference '{reference}' is reserved by a pending proposal"
         )));
     }
-    Ok(())
-}
-
-/// Revalidate frozen account references, dates, amounts and currency before approval.
-pub(crate) fn validate_posting(
-    conn: &Connection,
-    p: &PostTransactionParams<'_>,
-) -> Result<(), CliError> {
-    super::spend_limits::debit_total(p.entries)?;
-    let currency = beankeeper::types::Currency::from_code(p.currency)
-        .map_err(|error| CliError::Validation(error.to_string()))?;
-    let date = chrono::NaiveDate::parse_from_str(p.date, "%Y-%m-%d")
-        .map_err(|error| CliError::Validation(error.to_string()))?;
-    let mut journal = beankeeper::core::JournalEntry::new(date, p.description, currency);
-    for entry in p.entries {
-        let account = super::accounts::get_account(conn, p.company_slug, &entry.account_code)?;
-        let account = super::accounts::row_to_account(&account)?;
-        let amount = beankeeper::types::Money::from_minor(i128::from(entry.amount), currency);
-        let line = if entry.direction.eq_ignore_ascii_case("debit") {
-            beankeeper::types::Entry::debit(account, amount)?
-        } else {
-            beankeeper::types::Entry::credit(account, amount)?
-        };
-        journal = journal.entry(line)?;
-    }
-    journal.post()?;
     Ok(())
 }
 

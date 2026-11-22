@@ -3,8 +3,8 @@
 use std::{fmt, str::FromStr};
 
 use beankeeper::{
-    core::{Frequency, JournalEntry, RecurrenceError, occurrence_date},
-    types::{Amount, Currency},
+    core::{Frequency, RecurrenceError, occurrence_date},
+    types::Currency,
 };
 use chrono::NaiveDate;
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
@@ -178,17 +178,10 @@ pub fn create_schedule(
     audit::atomically(conn, || {
         super::companies::get_company(conn, company)?;
         validate_template(params)?;
-        validate_posting(
-            conn,
-            company,
-            params.start_date,
-            &params.description,
-            params.currency,
-            &params.entries,
-        )?;
         let mut entries = params.entries.clone();
         for entry in &mut entries {
             let account = super::accounts::get_account(conn, company, &entry.account_code)?;
+            super::accounts::row_to_account(&account)?;
             if entry.tax_category.is_none() {
                 entry.tax_category = account.default_tax_category;
             }
@@ -205,11 +198,8 @@ pub fn create_schedule(
                 next_due: params.start_date,
             },
             entries,
-            metadata: params
-                .metadata
-                .as_deref()
-                .and_then(super::metadata::normalize)
-                .map(super::metadata::NormalizedMetadata::into_string),
+            metadata: super::metadata::UserAnnotations::parse(params.metadata.as_deref())?
+                .map(super::metadata::UserAnnotations::into_string),
             occurrence_index: 0,
         };
         conn.execute(
@@ -299,37 +289,6 @@ fn validate_entries(entries: &[PostEntryParams]) -> Result<(), CliError> {
             "schedule entries must have equal nonzero debits and credits".into(),
         ));
     }
-    Ok(())
-}
-
-fn validate_posting(
-    conn: &Connection,
-    company: &str,
-    date: NaiveDate,
-    description: &str,
-    currency: Currency,
-    entries: &[PostEntryParams],
-) -> Result<(), CliError> {
-    validate_entries(entries)?;
-    let mut journal = JournalEntry::new(date, description, currency);
-    for entry in entries {
-        let account = super::accounts::row_to_account(&super::accounts::get_account(
-            conn,
-            company,
-            &entry.account_code,
-        )?)?;
-        let amount = Amount::new(i128::from(entry.amount));
-        journal = match entry.direction.as_str() {
-            "debit" => journal.debit(&account, amount)?,
-            "credit" => journal.credit(&account, amount)?,
-            _ => {
-                return Err(CliError::Validation(
-                    "schedule entry direction must be debit or credit".into(),
-                ));
-            }
-        };
-    }
-    journal.post()?;
     Ok(())
 }
 
@@ -565,14 +524,12 @@ fn execute_schedule(
     dry_run: bool,
     output: &mut Vec<Occurrence>,
 ) -> Result<(), CliError> {
-    validate_posting(
-        conn,
-        &before.company_slug,
-        before.start_date,
-        &before.description,
-        before.currency,
-        &before.entries,
-    )?;
+    validate_entries(&before.entries)?;
+    for entry in &before.entries {
+        let account =
+            super::accounts::get_account(conn, &before.company_slug, &entry.account_code)?;
+        super::accounts::row_to_account(&account)?;
+    }
     let mut after = before.clone();
 
     while let Some(date) = after.state.next_due().filter(|date| *date <= through) {

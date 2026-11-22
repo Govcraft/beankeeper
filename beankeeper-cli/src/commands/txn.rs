@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-use beankeeper::core::{JournalEntry, TransactionError};
 use beankeeper::types::{Currency, DocumentType, Money};
 
 use crate::cli::{
@@ -13,7 +12,7 @@ use crate::cli::{
 use crate::db::companies::{AllCompanies, Company};
 use crate::db::connection::Db;
 use crate::db::transactions::TransactionValueFilter;
-use crate::db::{self, accounts, attachments, transactions};
+use crate::db::{self, attachments, transactions};
 use crate::error::CliError;
 use crate::output;
 
@@ -575,30 +574,6 @@ pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, 
     Ok(if negative { -magnitude } else { magnitude })
 }
 
-/// Validate a posting and retain the input currency in balance diagnostics.
-fn validate_journal(journal: JournalEntry, currency: Currency) -> Result<(), CliError> {
-    match journal.post() {
-        Ok(_) => Ok(()),
-        Err(TransactionError::Unbalanced {
-            total_debits,
-            total_credits,
-        }) => {
-            let difference = Money::new(total_debits, currency)
-                .checked_sub(Money::new(total_credits, currency))
-                .and_then(Money::checked_abs)
-                .map_err(|error| CliError::Validation(error.to_string()))?
-                .amount()
-                .format_decimal(currency.minor_units());
-            let debits = total_debits.format_decimal(currency.minor_units());
-            let credits = total_credits.format_decimal(currency.minor_units());
-            Err(CliError::Validation(format!(
-                "transaction is unbalanced: debits={debits} {currency}, credits={credits} {currency} (difference {difference} {currency})"
-            )))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
 /// Execute a proposal operation through the shared CLI/MCP implementation.
 fn execute_proposal(
     db: &Db,
@@ -608,13 +583,9 @@ fn execute_proposal(
 ) -> Result<serde_json::Value, CliError> {
     let value = match args {
         TxnProposalCommand::Propose(args) => {
-            return with_post_params(
-                db,
-                company,
-                &PostingRequest::try_from(args)?,
-                actor,
-                |params| db::proposals::create(db.conn(), params),
-            );
+            return with_post_params(company, &PostingRequest::try_from(args)?, actor, |params| {
+                db::proposals::create_from_command(db.conn(), params)
+            });
         }
         TxnProposalCommand::Proposals { include_rejected } => serde_json::to_value(
             db::proposals::list(db.conn(), company, actor, *include_rejected)?,
@@ -636,13 +607,9 @@ fn execute_post(
     args: &PostingArgs,
     actor: &db::Actor,
 ) -> Result<transactions::PostResult, CliError> {
-    with_post_params(
-        db,
-        company,
-        &PostingRequest::try_from(args)?,
-        actor,
-        |params| transactions::post_transaction(db.conn(), params),
-    )
+    with_post_params(company, &PostingRequest::try_from(args)?, actor, |params| {
+        transactions::post_from_source(db.conn(), params, transactions::PostingSource::Command)
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -710,16 +677,17 @@ pub(crate) fn execute_posting_json(
     mode: PostingMode,
 ) -> Result<serde_json::Value, CliError> {
     db::get_company(db.conn(), company)?;
-    with_post_params(db, company, request, actor, |params| match mode {
-        PostingMode::Post => transactions::post_transaction(db.conn(), params)
-            .and_then(output::json::post_result_data),
-        PostingMode::Propose => db::proposals::create(db.conn(), params)
+    with_post_params(company, request, actor, |params| match mode {
+        PostingMode::Post => {
+            transactions::post_from_source(db.conn(), params, transactions::PostingSource::Command)
+                .and_then(output::json::post_result_data)
+        }
+        PostingMode::Propose => db::proposals::create_from_command(db.conn(), params)
             .map(|data| output::json::with_amount_displays(data, None)),
     })
 }
 
 fn with_post_params<T>(
-    db_handle: &Db,
     company: &str,
     request: &PostingRequest,
     actor: &db::Actor,
@@ -743,38 +711,23 @@ fn with_post_params<T>(
     let metadata = metadata.as_deref();
     let effective_date = date.format("%Y-%m-%d").to_string();
 
-    // 4. Look up accounts, resolve tax categories, and build library Entry objects
-    let mut journal = JournalEntry::new(*date, description, currency);
-    if let Some(meta) = metadata {
-        journal = journal.with_metadata(meta);
+    let mut db_entries = Vec::with_capacity(parsed_debits.len() + parsed_credits.len());
+    for (lines, direction) in [
+        (parsed_debits, beankeeper::types::DebitOrCredit::Debit),
+        (parsed_credits, beankeeper::types::DebitOrCredit::Credit),
+    ] {
+        db_entries.extend(
+            lines
+                .iter()
+                .map(|(code, amount, memo)| transactions::PostEntryParams {
+                    account_code: code.clone(),
+                    direction: direction.code().into(),
+                    amount: *amount,
+                    memo: memo.clone(),
+                    tax_category: tax_map.get(code).cloned(),
+                }),
+        );
     }
-
-    // Helper: resolve tax_category for an entry (explicit --tax > account default > None)
-    let resolve_tax = |code: &str, account_row: &db::AccountRow| -> Option<String> {
-        tax_map
-            .get(code)
-            .cloned()
-            .or_else(|| account_row.default_tax_category.clone())
-    };
-
-    for (args, debit) in [(parsed_debits, true), (parsed_credits, false)] {
-        for arg in args {
-            let entry = library_entry(db_handle, company, arg, currency, debit, &resolve_tax)?;
-            journal = journal.entry(entry)?;
-        }
-    }
-
-    // 5. Validate via post() - enforces balance invariant
-    validate_journal(journal, currency)?;
-
-    // 6. Build entries for DB persistence
-    let db_entries = build_db_entries(
-        db_handle,
-        company,
-        parsed_debits,
-        parsed_credits,
-        &resolve_tax,
-    )?;
 
     // Store the user-supplied reference key verbatim so that it round-trips
     // through `txn list --reference <KEY>`. The reference column is itself the
@@ -811,32 +764,6 @@ fn conflict_strategy(arg: crate::cli::OnConflictArg) -> transactions::ConflictSt
     }
 }
 
-/// Look up the account of one parsed `--debit`/`--credit` argument and build
-/// the library entry (with its memo and resolved tax category).
-fn library_entry(
-    db_handle: &Db,
-    company: &str,
-    (code, minor, memo): &(String, i64, Option<String>),
-    currency: Currency,
-    debit: bool,
-    resolve_tax: &dyn Fn(&str, &db::AccountRow) -> Option<String>,
-) -> Result<beankeeper::types::Entry, CliError> {
-    use beankeeper::types::Entry;
-    let row = accounts::get_account(db_handle.conn(), company, code)?;
-    let account = db::row_to_account(&row)?;
-    let money = Money::from_minor(i128::from(*minor), currency);
-    let entry = match (debit, memo) {
-        (true, Some(m)) => Entry::debit_with_memo(account, money, m)?,
-        (true, None) => Entry::debit(account, money)?,
-        (false, Some(m)) => Entry::credit_with_memo(account, money, m)?,
-        (false, None) => Entry::credit(account, money)?,
-    };
-    Ok(match resolve_tax(code, &row) {
-        Some(cat) => entry.with_tax_category(cat),
-        None => entry,
-    })
-}
-
 /// Report a posted (or skipped) transaction: JSON on stdout, status on stderr.
 fn print_post_result(
     cli: &Cli,
@@ -860,38 +787,6 @@ fn print_post_result(
     }
 
     Ok(())
-}
-
-/// Build DB entry params from parsed debit/credit args.
-fn build_db_entries(
-    db_handle: &Db,
-    company: &str,
-    parsed_debits: &[(String, i64, Option<String>)],
-    parsed_credits: &[(String, i64, Option<String>)],
-    resolve_tax: &dyn Fn(&str, &db::AccountRow) -> Option<String>,
-) -> Result<Vec<transactions::PostEntryParams>, CliError> {
-    let mut db_entries = Vec::new();
-    for (code, minor, memo) in parsed_debits {
-        let row = accounts::get_account(db_handle.conn(), company, code)?;
-        db_entries.push(transactions::PostEntryParams {
-            account_code: code.clone(),
-            direction: "debit".to_string(),
-            amount: *minor,
-            memo: memo.clone(),
-            tax_category: resolve_tax(code, &row),
-        });
-    }
-    for (code, minor, memo) in parsed_credits {
-        let row = accounts::get_account(db_handle.conn(), company, code)?;
-        db_entries.push(transactions::PostEntryParams {
-            account_code: code.clone(),
-            direction: "credit".to_string(),
-            amount: *minor,
-            memo: memo.clone(),
-            tax_category: resolve_tax(code, &row),
-        });
-    }
-    Ok(db_entries)
 }
 
 /// Execute the `txn list` subcommand.
@@ -1262,6 +1157,15 @@ mod tests {
         assert_eq!(first["created"], true);
         assert_eq!(retry["skipped"], true);
         assert_eq!(retry["existing_id"], first["id"]);
+        let mut invalid_retry = args;
+        *invalid_retry
+            .iter_mut()
+            .find(|argument| **argument == "4000:12.50")
+            .expect("fixture credit") = "4000:12.49";
+        assert!(
+            matches!(execute_args(&db, &invalid_retry), Err(CliError::Validation(message))
+                if message.contains("transaction is unbalanced"))
+        );
         let listed = execute_args(&db, &["txn", "list", "--reference", "invoice-1"])?;
         assert_eq!(listed.as_array().map(Vec::len), Some(1));
         assert_eq!(listed[0]["reference"], "invoice-1");

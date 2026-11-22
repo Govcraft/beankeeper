@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use beankeeper::core::{JournalEntry, Transaction};
+use beankeeper::core::{JournalEntry, Transaction, TransactionError};
 use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
 use chrono::NaiveDate;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -115,20 +115,54 @@ pub fn post_transaction(
 pub(super) fn post_approved_transaction(
     approval: super::proposals::ApprovedPosting<'_>,
 ) -> Result<PostResult, CliError> {
-    post(approval.connection(), &Posting::Approved(approval))
+    post_with_source(
+        approval.connection(),
+        &Posting::Approved(approval),
+        PostingSource::Proposal,
+    )
+}
+
+/// The origin of the request determines its validation order and diagnostics.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PostingSource {
+    Storage,
+    Command,
+    Import,
+    Proposal,
+}
+
+pub(crate) fn post_from_source(
+    conn: &Connection,
+    params: &PostTransactionParams<'_>,
+    source: PostingSource,
+) -> Result<PostResult, CliError> {
+    post_with_source(conn, &Posting::Direct(params), source)
+}
+
+pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<PostResult, CliError> {
+    post(reversal.connection(), &Posting::Reversal(reversal))
 }
 
 enum Posting<'a> {
     Direct(&'a PostTransactionParams<'a>),
     Approved(super::proposals::ApprovedPosting<'a>),
+    Reversal(audit::ReversalPosting<'a>),
 }
 
 fn post(conn: &Connection, posting: &Posting<'_>) -> Result<PostResult, CliError> {
+    post_with_source(conn, posting, PostingSource::Storage)
+}
+
+fn post_with_source(
+    conn: &Connection,
+    posting: &Posting<'_>,
+    source: PostingSource,
+) -> Result<PostResult, CliError> {
     // Use a savepoint so we can roll back on error without affecting
     // any outer transaction.
     conn.execute_batch("SAVEPOINT post_txn")?;
 
-    let result = post_transaction_inner(conn, posting);
+    let result = post_transaction_inner(conn, posting, source);
 
     match &result {
         Ok(_) => conn.execute_batch("RELEASE post_txn")?,
@@ -141,15 +175,22 @@ fn post(conn: &Connection, posting: &Posting<'_>) -> Result<PostResult, CliError
 fn post_transaction_inner(
     conn: &Connection,
     posting: &Posting<'_>,
+    source: PostingSource,
 ) -> Result<PostResult, CliError> {
     let approved;
     let p = match posting {
         Posting::Direct(params) => *params,
+        Posting::Reversal(reversal) => reversal.params(),
         Posting::Approved(approval) => {
             approved = approval.params();
             &approved
         }
     };
+    // Command and import diagnostics precede idempotency. Raw API retries
+    // look up the existing reference before validating entries.
+    let prepared = (source != PostingSource::Storage)
+        .then(|| build_journal(conn, p, source))
+        .transpose()?;
     // Check for duplicate reference before inserting.
     if let Some(ref_str) = p.reference {
         let existing: Option<i64> = conn
@@ -174,17 +215,37 @@ fn post_transaction_inner(
         }
     }
 
-    if let Posting::Direct(_) = posting {
-        super::proposals::reject_reserved_metadata(p.metadata)?;
+    if !matches!(posting, Posting::Approved(_)) {
         if let Some(reference) = p.reference {
             super::proposals::check_reference(conn, p.company_slug, reference)?;
         }
         super::spend_limits::check(conn, p)?;
     }
 
-    let posting = ValidatedPosting::build(conn, p)?;
-    let effective_metadata = build_metadata(p.metadata, p.correlate)?;
-    persist_posting(posting, effective_metadata.as_deref())
+    let journal = match prepared {
+        Some(journal) => {
+            require_canonical_currency(journal.currency(), p.currency)?;
+            journal
+        }
+        None => build_journal(conn, p, source)?,
+    };
+    let period = super::periods::check_posting(conn, p.company_slug, journal.date())?;
+    let validated = ValidatedPosting {
+        journal,
+        period,
+        request: p,
+    };
+    let metadata = match posting {
+        Posting::Direct(_) => metadata::UserAnnotations::parse(p.metadata)?
+            .map(metadata::UserAnnotations::into_normalized),
+        Posting::Approved(_) => p.metadata.and_then(metadata::normalize),
+        Posting::Reversal(reversal) => Some(metadata::reversal_link(reversal.original_id())?),
+    };
+    let effective_metadata = match p.correlate {
+        None => metadata.map(metadata::NormalizedMetadata::into_string),
+        Some(partner_id) => Some(metadata::with_correlation(metadata, partner_id)?),
+    };
+    persist_posting(validated, effective_metadata.as_deref())
 }
 
 /// The only input to the posting insert. The validated journal and open
@@ -195,41 +256,95 @@ struct ValidatedPosting<'a> {
     request: &'a PostTransactionParams<'a>,
 }
 
-impl<'a> ValidatedPosting<'a> {
-    fn build(
-        conn: &'a Connection,
-        request: &'a PostTransactionParams<'a>,
-    ) -> Result<Self, CliError> {
-        let date = chrono::NaiveDate::parse_from_str(request.date, "%Y-%m-%d")
-            .map_err(|error| CliError::Validation(format!("invalid transaction date: {error}")))?;
-        let currency = Currency::from_code(request.currency).map_err(invalid)?;
-        if currency.code() != request.currency {
-            return Err(CliError::Validation(format!(
-                "transaction currency must use the canonical code {}",
-                currency.code(),
-            )));
+/// Build a sealed journal for posting or for a preview without storage effects.
+pub(crate) fn build_journal(
+    conn: &Connection,
+    request: &PostTransactionParams<'_>,
+    source: PostingSource,
+) -> Result<Transaction, CliError> {
+    let date = NaiveDate::parse_from_str(request.date, "%Y-%m-%d").map_err(|error| {
+        if source == PostingSource::Storage {
+            CliError::Validation(format!("invalid transaction date: {error}"))
+        } else {
+            invalid(error)
         }
-        let mut journal = JournalEntry::new(date, request.description, currency);
-        for entry in request.entries {
-            let account =
-                super::accounts::get_account(conn, request.company_slug, &entry.account_code)
-                    .map_err(|error| match error {
-                        CliError::NotFound(message) => CliError::Validation(message),
-                        other => other,
-                    })?;
-            let account = super::accounts::row_to_account(&account)?;
-            journal = journal
-                .entry(posting_entry(entry, account, currency)?)
-                .map_err(invalid)?;
-        }
-        let journal = journal.post().map_err(invalid)?;
-        let period = super::periods::check_posting(conn, request.company_slug, journal.date())?;
-        Ok(Self {
-            journal,
-            period,
-            request,
-        })
+    })?;
+    let currency = Currency::from_code(request.currency).map_err(invalid)?;
+    if source == PostingSource::Storage {
+        require_canonical_currency(currency, request.currency)?;
     }
+    let mut journal = JournalEntry::new(date, request.description, currency);
+    for entry in request.entries {
+        let account = super::accounts::get_account(conn, request.company_slug, &entry.account_code)
+            .map_err(|error| match (source, error) {
+                (PostingSource::Storage, CliError::NotFound(message)) => {
+                    CliError::Validation(message)
+                }
+                (_, error) => error,
+            })?;
+        let default_tax = if matches!(source, PostingSource::Command | PostingSource::Import) {
+            account.default_tax_category.as_deref()
+        } else {
+            None
+        };
+        let tax = entry.tax_category.as_deref().or(default_tax);
+        let line = posting_entry(
+            entry,
+            super::accounts::row_to_account(&account)?,
+            currency,
+            tax,
+            source,
+        )?;
+        journal = journal
+            .entry(line)
+            .map_err(|error| entry_error(error, source))?;
+    }
+    journal.post().map_err(|error| match source {
+        PostingSource::Storage => invalid(error),
+        PostingSource::Command => command_posting_error(error, currency),
+        PostingSource::Import | PostingSource::Proposal => error.into(),
+    })
+}
+
+fn require_canonical_currency(currency: Currency, code: &str) -> Result<(), CliError> {
+    if currency.code() == code {
+        Ok(())
+    } else {
+        Err(CliError::Validation(format!(
+            "transaction currency must use the canonical code {}",
+            currency.code(),
+        )))
+    }
+}
+
+fn entry_error(error: beankeeper::types::EntryError, source: PostingSource) -> CliError {
+    if source == PostingSource::Storage {
+        invalid(error)
+    } else {
+        error.into()
+    }
+}
+
+fn command_posting_error(error: TransactionError, currency: Currency) -> CliError {
+    let TransactionError::Unbalanced {
+        total_debits,
+        total_credits,
+    } = error
+    else {
+        return error.into();
+    };
+    let difference = Money::new(total_debits, currency)
+        .checked_sub(Money::new(total_credits, currency))
+        .and_then(Money::checked_abs);
+    let difference = match difference {
+        Ok(value) => value.amount().format_decimal(currency.minor_units()),
+        Err(error) => return invalid(error),
+    };
+    let debits = total_debits.format_decimal(currency.minor_units());
+    let credits = total_credits.format_decimal(currency.minor_units());
+    CliError::Validation(format!(
+        "transaction is unbalanced: debits={debits} {currency}, credits={credits} {currency} (difference {difference} {currency})"
+    ))
 }
 
 fn invalid(error: impl std::fmt::Display) -> CliError {
@@ -240,6 +355,8 @@ fn posting_entry(
     raw: &PostEntryParams,
     account: beankeeper::types::Account,
     currency: Currency,
+    tax: Option<&str>,
+    source: PostingSource,
 ) -> Result<Entry, CliError> {
     let direction = if raw.direction.eq_ignore_ascii_case("debit") {
         DebitOrCredit::Debit
@@ -256,8 +373,8 @@ fn posting_entry(
         Some(memo) => Entry::with_memo(account, money, direction, memo),
         None => Entry::new(account, money, direction),
     }
-    .map_err(invalid)?;
-    Ok(match &raw.tax_category {
+    .map_err(|error| entry_error(error, source))?;
+    Ok(match tax {
         Some(category) => entry.with_tax_category(category),
         None => entry,
     })
@@ -319,23 +436,6 @@ fn persist_posting(
     audit::record_creation(conn, p.actor, company, txn_id)?;
 
     Ok(PostResult::Created(txn_id))
-}
-
-/// Build the stored metadata from user metadata and an optional correlate ID.
-///
-/// The result is always `None` or a JSON object (see [`metadata`] for the
-/// normalization rules), so every writer that goes through `post_transaction`
-/// -- `txn post`, the OFX importer, demo data -- stores the same shape.
-fn build_metadata(
-    user_metadata: Option<&str>,
-    correlate: Option<i64>,
-) -> Result<Option<String>, CliError> {
-    match correlate {
-        None => Ok(user_metadata
-            .and_then(metadata::normalize)
-            .map(metadata::NormalizedMetadata::into_string)),
-        Some(cid) => metadata::with_correlate(user_metadata, cid).map(Some),
-    }
 }
 
 /// Currency and optional entry amount bounds for a transaction search.
@@ -923,6 +1023,30 @@ mod tests {
         ] {
             let mut request = make_params(entries, "Invalid", None, "2026-01-05");
             request.currency = currency;
+            assert!(matches!(
+                post_transaction(db.conn(), &request),
+                Err(CliError::Validation(_))
+            ));
+        }
+        assert_eq!(count()?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_post_rejects_reserved_links_before_writing() -> Result<(), CliError> {
+        let db = setup();
+        let count = || -> rusqlite::Result<i64> {
+            db.conn().query_row(
+            "SELECT (SELECT COUNT(*) FROM transactions) + (SELECT COUNT(*) FROM entries) + (SELECT COUNT(*) FROM audit_log)",
+            [],
+            |row| row.get(0),
+        )
+        };
+        let before = count()?;
+        let entries = sample_entries();
+        for key in ["correlate", "reverses", "reversed_by", "proposal_id"] {
+            let metadata = format!(r#"{{"{key}":999}}"#);
+            let request = make_params(&entries, "Forged link", Some(&metadata), "2024-01-15");
             assert!(matches!(
                 post_transaction(db.conn(), &request),
                 Err(CliError::Validation(_))

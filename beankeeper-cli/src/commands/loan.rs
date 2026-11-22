@@ -6,8 +6,8 @@ use beankeeper::types::{Amount, Currency, Money};
 use serde::Serialize;
 
 use crate::cli::{
-    Cli, LoanCalculationArgs, LoanCommand, LoanPayArgs, OutputFormat, PostingArgs, TxnCommand,
-    require_company, resolve_format,
+    Cli, LoanCalculationArgs, LoanCommand, LoanPayArgs, OutputFormat, require_company,
+    resolve_format,
 };
 use crate::error::CliError;
 use crate::output::amounts::MoneyField;
@@ -165,29 +165,44 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
             )));
         }
     }
-    let mut debit = Vec::new();
-    for (code, amount) in [
+    let date = super::txn::posting_date(Some(&args.date))?;
+    let line = |code: &str, amount: MoneyField| {
+        let minor = i64::try_from(amount.minor_units()).map_err(validation)?;
+        Ok::<_, CliError>((code.to_owned(), minor, None))
+    };
+    let debit = [
         (&args.liability, row.principal),
         (&args.interest_account, row.interest),
-    ] {
-        if amount.minor_units() > 0 {
-            debit.push(format!("{code}:{}", amount.decimal()));
-        }
-    }
-    let post = TxnCommand::Post(PostingArgs {
+    ]
+    .into_iter()
+    .filter(|(_, amount)| amount.minor_units() > 0)
+    .map(|(code, amount)| line(code, amount))
+    .collect::<Result<Vec<_>, _>>()?;
+    let credit = vec![line(&args.paying_account, row.payment)?];
+    let reference = args
+        .reference
+        .parse()
+        .map_err(|error| CliError::Validation(format!("invalid reference: {error}")))?;
+    let post = super::txn::PostingRequest {
         description: format!("Loan payment {} ({})", row.number, args.reference.trim()),
         debit,
-        credit: vec![format!("{}:{}", args.paying_account, row.payment.decimal())],
+        credit,
         metadata: None,
-        meta: Vec::new(),
-        currency: currency.into(),
-        date: Some(args.date.clone()),
+        annotations: Vec::new(),
+        currency,
+        date,
         correlate: None,
-        reference: Some(args.reference.clone()),
+        reference: Some(reference),
         on_conflict: args.on_conflict,
-        tax: Vec::new(),
-    });
-    let result = super::txn::execute_json(cli, &db, company, &post, &cli.principal())?;
+        tax: std::collections::HashMap::new(),
+    };
+    let result = super::txn::execute_posting_json(
+        &db,
+        company,
+        &post,
+        &cli.principal(),
+        super::txn::PostingMode::Post,
+    )?;
     // On a skipped reference the existing transaction may have different terms;
     // return only its identity/status, never claim that it contains this split.
     if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {
