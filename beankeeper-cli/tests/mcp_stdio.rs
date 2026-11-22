@@ -982,6 +982,43 @@ fn company_tools_share_cli_results_checks_and_audit() -> TestResult {
 }
 
 #[test]
+fn company_mutations_use_the_resolved_actor_and_support_actor_filters() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command
+        .env("BK_ACTOR", "env-label")
+        .args(["--actor", "  company-operator  ", "mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    client.success(
+        "company_create",
+        &json!({"slug":"new-company", "name":"New Company"}),
+    )?;
+    client.success("company_delete", &json!({"slug":"new-company"}))?;
+
+    let audit = client.success("audit_log", &json!({"actor":"company-operator"}))?;
+    let rows = audit.as_array().ok_or("audit data is not an array")?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["action"], "company_delete");
+    assert_eq!(rows[1]["action"], "create");
+    for row in rows {
+        assert_eq!(row["actor"], "company-operator");
+        assert_eq!(row["entity"], "company");
+        assert_eq!(row["entity_id"], "new-company");
+    }
+    let cli = bk(&path)?
+        .args(["--json", "audit", "log", "--by-actor", "company-operator"])
+        .assert()
+        .success();
+    let cli: Value = serde_json::from_slice(&cli.get_output().stdout)?;
+    assert_eq!(cli["data"], audit);
+    Ok(())
+}
+
+#[test]
 fn mcp_writes_have_chained_audit_records_and_pass_cli_verification() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");

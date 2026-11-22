@@ -949,7 +949,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("demo.db");
         let passphrase = SecretString::from(tempfile::tempdir()?.path().display().to_string());
-        let actor = Actor::new("desktop-demo");
+        let actor = Actor::new("desktop-demo".parse()?);
 
         let demo = create_demo_ledger(&path, Some(&passphrase), &actor)?;
         assert_eq!(demo.path(), path);
@@ -972,7 +972,7 @@ mod tests {
     fn desktop_demo_leaves_an_existing_ledger_untouched() -> Result<(), CliError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("owner.db");
-        let actor = Actor::new("owner");
+        let actor = Actor::new("owner".parse()?);
         let db = Db::open(&path, None)?;
         let company = "personal".parse()?;
         Granted::<Admin>::with_db(&db, &actor, |grant| {
