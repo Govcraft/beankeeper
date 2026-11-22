@@ -252,6 +252,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `ledger_setup_statement_receipt` | Read audited import provenance with `company` and `batch_id` |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
+| `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
+| `company_delete` | `slug`. Returns `CONFIRMATION_REQUIRED` for an empty company so the owner can confirm with `bk company delete SLUG`. Refuses companies with retained data |
 | `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
@@ -435,7 +437,7 @@ alias for `1099`.
 
 ### Read-only tools
 
-Read-only mode removes `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
+Read-only mode removes `company_create`, `company_delete`, `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
 `txn_reject`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
@@ -450,6 +452,21 @@ excludes it from read-only discovery and calls. Capability enforcement may
 further restrict discovery: stdio filters at startup and HTTP per request.
 `audit_log` accepts `actor` for the exact recorded label and `agent` for the
 verified agent URI. Supply both to match both fields.
+
+### Intentional CLI-only mutations
+
+| CLI command | Reason |
+|---|---|
+| `bk init` | Ledger initialization chooses a local path, encryption and a new trust boundary. A trusted Desktop host can use `create_demo_ledger` to seed a separate file. |
+| `bk backup`, `bk restore` | Deal with local full-ledger snapshot paths. The owner chooses the files and confirms replacement. |
+| `bk key init`, `bk agent issue`, `bk agent revoke` | Owner-managed trust root and credential lifecycle. Setup sessions have their own scoped owner tools. |
+| `bk agent limit set`, `bk agent limit clear`, `bk policy set` | Owner-managed authorization policy and limits. |
+| `bk company delete` | MCP checks eligibility through `company_delete`. The owner completes the irreversible operation locally. |
+| `bk account delete` | Permanent catalog deletion uses local confirmation. |
+| `bk txn import`, `bk txn attach` | The CLI works with local files. The bounded, reviewed statement import path has separate setup MCP tools. |
+| `bk rule create`, `bk rule delete` | Rule management is deferred until the MCP rule contract is available. |
+| `bk schedule create`, `bk schedule cancel`, `bk schedule run` | Recurring template management and execution are deferred until the MCP scheduling contract is available. |
+| `bk loan pay` | The dedicated loan-terms input and payment calculation are deferred. Agents can already post a balanced payment through `txn_post`. |
 
 Results match the CLI JSON `data` payload. JSON text content is always included;
 `structuredContent` is also supplied when its shape is supported by the negotiated

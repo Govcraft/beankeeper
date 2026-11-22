@@ -60,6 +60,7 @@ The `companies` array contains the exported companies with their accounts and tr
 | `NOT_FOUND` | Entity does not exist |
 | `UNAUTHORIZED` | Missing required, invalid, expired, revoked or untrusted agent token (exit 6) |
 | `FORBIDDEN` | Verified token lacks the required capability (exit 7) |
+| `CONFIRMATION_REQUIRED` | The owner must confirm permanent company deletion locally |
 | `GENERAL` | Other error |
 | `IO` | File I/O error |
 
