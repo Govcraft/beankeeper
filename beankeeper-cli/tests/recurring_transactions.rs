@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
+use beankeeper::types::Currency;
 use beankeeper_cli::db::{self, Actor, Db, accounts, companies, transactions};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
@@ -146,7 +147,9 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
     let id = created["id"].as_str().ok_or("missing schedule ID")?;
     assert!(id.starts_with("sched_"));
     assert_eq!(ledger.count("transactions")?, 0);
-    for row in db::compute_trial_balance(ledger.db()?.conn(), "acme", None, None, None, None)? {
+    for row in
+        db::compute_trial_balance(ledger.db()?.conn(), "acme", None, None, None, Currency::USD)?
+    {
         assert_eq!((row.debit_total, row.credit_total), (0, 0));
     }
     let pending = ledger.run("acme", &["schedule", "list"])?;

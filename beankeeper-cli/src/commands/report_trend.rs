@@ -54,7 +54,7 @@ pub struct TrendArgs {
     pub period: PeriodArg,
     /// Transaction currency. Required for companies with multiple currencies.
     #[arg(long)]
-    pub currency: Option<String>,
+    pub currency: Option<crate::cli::CurrencyArg>,
     /// Compare the full range with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
     #[arg(long)]
     pub compare: Option<super::report_periods::CompareArg>,
@@ -254,7 +254,7 @@ fn compute(db: &Db, company: &str, args: &TrendArgs) -> Result<TrendReport, CliE
         let currency = super::report_currency::resolve_report_currency(
             db.conn(),
             company,
-            args.currency.as_deref(),
+            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
         )?;
         compute_trend(
             db,
@@ -329,14 +329,7 @@ fn column_rows(
         TrendMetric::Spending => (Some(AccountType::Expense.code()), Some(from.as_str())),
         TrendMetric::NetWorth => (None, None),
     };
-    db::compute_trial_balance(
-        db.conn(),
-        company,
-        filter,
-        from,
-        Some(&to),
-        Some(currency.code()),
-    )
+    db::compute_trial_balance(db.conn(), company, filter, from, Some(&to), currency)
 }
 
 fn overflow() -> CliError {

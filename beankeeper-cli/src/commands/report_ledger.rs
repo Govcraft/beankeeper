@@ -41,7 +41,7 @@ use crate::error::CliError;
 use crate::output;
 use crate::output::json::Meta;
 
-/// Options for the ledger report, as parsed from the command line.
+/// Options for building and running a ledger report. Omitted dates are unbounded.
 pub struct LedgerOptions<'a> {
     /// Account codes to include; empty means every account with activity.
     pub accounts: &'a [String],
@@ -50,8 +50,16 @@ pub struct LedgerOptions<'a> {
     /// End date (inclusive), `YYYY-MM-DD`.
     pub to: Option<&'a str>,
     /// Currency to report in; resolved from the company's data when `None`.
-    pub currency: Option<&'a str>,
+    pub currency: Option<Currency>,
     /// `KEY=VALUE` metadata filters (AND-ed); see [`metadata_filter`].
+    pub filter_metadata: &'a [String],
+}
+
+pub(super) struct LedgerRequest<'a> {
+    pub accounts: &'a [String],
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub currency: Option<Currency>,
     pub filter_metadata: &'a [String],
 }
 
@@ -91,7 +99,8 @@ pub struct LedgerAccount {
 /// The complete ledger report.
 #[derive(Debug, Clone, Serialize)]
 pub struct LedgerReport {
-    pub currency: String,
+    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    pub currency: Currency,
     pub from: Option<String>,
     pub to: Option<String>,
     /// Active metadata filters; when non-empty, opening and running balances
@@ -117,30 +126,40 @@ pub fn run(
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    run_to(cli, db, company, opts, &mut output)
+    let report = build_report(db.conn(), company, opts)?;
+    write_report(cli, company, &report, &mut output)
 }
 
-pub(crate) fn run_to(
+pub(super) fn run_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    opts: &LedgerOptions<'_>,
+    request: &LedgerRequest<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let report = build_report(db.conn(), company, opts)?;
-    let minor_units = Currency::from_code(&report.currency).map_or(2, |c| c.minor_units());
+    let report = build_report_for_request(db.conn(), company, request)?;
+    write_report(cli, company, &report, output)
+}
+
+fn write_report(
+    cli: &Cli,
+    company: &str,
+    report: &LedgerReport,
+    output: &mut super::report::ReportOutput<'_>,
+) -> Result<(), CliError> {
+    let minor_units = report.currency.minor_units();
 
     match output.format {
         OutputFormat::Table => writeln!(
             output.writer,
             "{}",
-            render_table(&report, minor_units, output.use_color)
+            render_table(report, minor_units, output.use_color)
         )?,
         OutputFormat::Json => {
             let meta = cli.meta(Operation::ReportLedger, Some(company));
-            writeln!(output.writer, "{}", render_json(&report, meta)?)?;
+            writeln!(output.writer, "{}", render_json(report, meta)?)?;
         }
-        OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report)?)?,
+        OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,
     }
 
     if !cli.verbosity.quiet {
@@ -180,12 +199,27 @@ pub fn build_report(
         )));
     }
 
-    let currency = resolve_ledger_currency(conn, company, opts.currency)?;
-    let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
+    let request = LedgerRequest {
+        accounts: opts.accounts,
+        from,
+        to,
+        currency: opts.currency,
+        filter_metadata: opts.filter_metadata,
+    };
+    build_report_for_request(conn, company, &request)
+}
 
-    let explicit = !opts.accounts.is_empty();
+fn build_report_for_request(
+    conn: &Connection,
+    company: &str,
+    request: &LedgerRequest<'_>,
+) -> Result<LedgerReport, CliError> {
+    let currency = resolve_ledger_currency(conn, company, request.currency)?;
+    let filters = metadata_filter::parse_filters(request.filter_metadata)?;
+
+    let explicit = !request.accounts.is_empty();
     let accounts: Vec<db::AccountRow> = if explicit {
-        let codes: BTreeSet<&str> = opts.accounts.iter().map(String::as_str).collect();
+        let codes: BTreeSet<&str> = request.accounts.iter().map(String::as_str).collect();
         codes
             .into_iter()
             .map(|code| db::get_account(conn, company, code))
@@ -201,14 +235,14 @@ pub fn build_report(
         )?
     };
 
+    let scope = StatementScope {
+        currency,
+        from: request.from,
+        to: request.to,
+        filters: &filters,
+    };
     let mut out = Vec::new();
     for acct in accounts {
-        let scope = StatementScope {
-            currency: &currency,
-            from: opts.from,
-            to: opts.to,
-            filters: &filters,
-        };
         let statement = account_statement(conn, company, &acct, &scope)?;
         // Without an explicit --account list, only include accounts with
         // activity: entries in the period or a non-zero opening balance.
@@ -219,8 +253,8 @@ pub fn build_report(
 
     Ok(LedgerReport {
         currency,
-        from: opts.from.map(str::to_string),
-        to: opts.to.map(str::to_string),
+        from: request.from.map(|date| date.to_string()),
+        to: request.to.map(|date| date.to_string()),
         metadata_filters: filters,
         accounts: out,
     })
@@ -240,10 +274,9 @@ fn validate_date(flag: &str, value: &str) -> Result<NaiveDate, CliError> {
 fn resolve_ledger_currency(
     conn: &Connection,
     company: &str,
-    explicit: Option<&str>,
-) -> Result<String, CliError> {
+    explicit: Option<Currency>,
+) -> Result<Currency, CliError> {
     super::report_currency::resolve_report_currency(conn, company, explicit)
-        .map(|c| c.code().to_string())
 }
 
 /// Signed effect of a debit/credit pair on an account's normal-side balance.
@@ -266,9 +299,9 @@ fn with_filter_params(
 
 /// What a statement covers: currency, period and metadata filters.
 struct StatementScope<'a> {
-    currency: &'a str,
-    from: Option<&'a str>,
-    to: Option<&'a str>,
+    currency: Currency,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
     filters: &'a [MetadataFilter],
 }
 
@@ -286,12 +319,12 @@ fn account_statement(
         filters,
     } = *scope;
     // `?1..?4`: company, account, currency, and a date.
-    let base = |date: Option<&str>| {
+    let base = |date: Option<NaiveDate>| {
         vec![
             Some(company.to_string()),
             Some(acct.code.clone()),
-            Some(currency.to_string()),
-            date.map(str::to_string),
+            Some(currency.code().to_string()),
+            date.map(|date| date.to_string()),
         ]
     };
     let debit_normal = acct.account_type.is_debit_normal();
@@ -328,7 +361,7 @@ fn account_statement(
     ))?;
     // `?5` (`--to`) is always bound, even when `None`.
     let mut values = base(from);
-    values.push(to.map(str::to_string));
+    values.push(to.map(|date| date.to_string()));
     let values = with_filter_params(values, &filter);
     let raw = stmt.query_map(params_from_iter(values), |row| {
         let direction = crate::db::direction::read(row, 6)?;
@@ -446,7 +479,7 @@ pub fn render_csv(report: &LedgerReport) -> Result<String, CliError> {
             a.code.as_str(),
             a.name.as_str(),
             a.account_type.as_str(),
-            report.currency.as_str(),
+            report.currency.code(),
         ];
         let opening = a.opening_balance.to_string();
         wtr.write_record(prefix.iter().copied().chain([

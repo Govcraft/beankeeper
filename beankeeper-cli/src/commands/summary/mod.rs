@@ -37,7 +37,8 @@ pub struct SummaryArgs {
     pub compare_to: Option<String>,
     /// Currency code; required when the company's currencies are ambiguous.
     #[arg(long)]
-    pub currency: Option<String>,
+    #[schemars(with = "Option<String>")]
+    pub currency: Option<crate::cli::CurrencyArg>,
     /// Cash asset account (repeatable). Defaults to cash/bank/checking/savings names.
     #[arg(long = "cash-account")]
     #[serde(default)]
@@ -346,7 +347,7 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
     let currency = super::report_currency::resolve_report_currency(
         db.conn(),
         company,
-        args.currency.as_deref(),
+        crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
     )?;
     let rows = db::compute_trial_balance(
         db.conn(),
@@ -354,7 +355,7 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
         None,
         None,
         Some(&periods.current.to.to_string()),
-        Some(currency.code()),
+        currency,
     )?;
     let cash = select_accounts(
         &rows,
@@ -371,7 +372,7 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
             None,
             Some(&period.from.to_string()),
             Some(&period.to.to_string()),
-            Some(currency.code()),
+            currency,
         )
     };
     let current = activity(periods.current)?;
@@ -486,7 +487,7 @@ mod tests {
         )?;
         let args = SummaryArgs {
             to: Some("2024-03-15".into()),
-            currency: Some("BHD".into()),
+            currency: Some(Currency::BHD.into()),
             ..SummaryArgs::default()
         };
         let report = compute(&db, "co", &args)?;
