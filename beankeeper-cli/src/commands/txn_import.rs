@@ -20,6 +20,7 @@ use crate::cli::{Cli, ImportFormat, OnConflictArg, OutputFormat, TxnImportArgs};
 use crate::db::connection::Db;
 use crate::db::{self, accounts, transactions};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 use crate::output::json;
 
 /// Options for CSV mapping and the default CSV/JSON transaction currency.
@@ -466,10 +467,12 @@ fn post_import(
     };
     let source = transactions::PostingSource::Import;
     let (id, status) = if skip_source {
-        transactions::build_journal(ctx.db.conn(), &params, source)?;
+        transactions::build_journal(ctx.db.read(), &params, source)?;
         (None, ImportStatus::Skipped)
     } else {
-        match transactions::post_from_source(ctx.db.conn(), &params, source)? {
+        match Granted::<Post>::with_db(ctx.db, ctx.actor, |grant| {
+            transactions::post_from_source(grant, &params, source)
+        })? {
             transactions::PostResult::Created(id) => {
                 ((!ctx.dry_run).then_some(id), ImportStatus::Imported)
             }
@@ -553,51 +556,54 @@ pub fn run(
         suspense.as_deref(),
     )?;
     let actor = cli.principal();
-    let transaction = db.conn().unchecked_transaction()?;
-    let rules = load_csv_rules(db, company, format, account.as_deref(), suspense.as_deref())?;
-    let mut result = BatchResult {
-        dry_run: *dry_run,
-        imported: 0,
-        skipped: 0,
-        errors: 0,
-        transactions: Vec::new(),
-    };
-    let mut occurrences = HashMap::new();
-    let ctx = ImportContext {
-        db,
-        company,
-        actor: &actor,
-        format,
-        rules: &rules,
-        bank: account.as_deref(),
-        suspense: suspense.as_deref(),
-        strategy,
-        dry_run: *dry_run,
-    };
-    for (index, prepared) in prepared.into_iter().enumerate() {
-        let outcome =
-            post_import(&ctx, prepared, &mut occurrences).map_err(|error| match error {
-                CliError::Forbidden(message) => {
-                    CliError::Forbidden(format!("import transaction {}: {message}", index + 1))
-                }
-                CliError::Unauthorized(message) => {
-                    CliError::Unauthorized(format!("import transaction {}: {message}", index + 1))
-                }
-                other => invalid(format!("import transaction {}: {other}", index + 1)),
-            })?;
-        match outcome.status {
-            ImportStatus::Imported => result.imported += 1,
-            ImportStatus::Skipped => result.skipped += 1,
+    let import = || {
+        let rules = load_csv_rules(db, company, format, account.as_deref(), suspense.as_deref())?;
+        let mut result = BatchResult {
+            dry_run: *dry_run,
+            imported: 0,
+            skipped: 0,
+            errors: 0,
+            transactions: Vec::new(),
+        };
+        let mut occurrences = HashMap::new();
+        let ctx = ImportContext {
+            db,
+            company,
+            actor: &actor,
+            format,
+            rules: &rules,
+            bank: account.as_deref(),
+            suspense: suspense.as_deref(),
+            strategy,
+            dry_run: *dry_run,
+        };
+        for (index, prepared) in prepared.into_iter().enumerate() {
+            let outcome =
+                post_import(&ctx, prepared, &mut occurrences).map_err(|error| match error {
+                    CliError::Forbidden(message) => {
+                        CliError::Forbidden(format!("import transaction {}: {message}", index + 1))
+                    }
+                    CliError::Unauthorized(message) => CliError::Unauthorized(format!(
+                        "import transaction {}: {message}",
+                        index + 1
+                    )),
+                    other => invalid(format!("import transaction {}: {other}", index + 1)),
+                })?;
+            match outcome.status {
+                ImportStatus::Imported => result.imported += 1,
+                ImportStatus::Skipped => result.skipped += 1,
+            }
+            result.transactions.push(outcome);
         }
-        result.transactions.push(outcome);
-    }
-    // Render before committing, so a serialization failure cannot hide a commit.
-    let rendered = render_result(cli, company, &result)?;
-    if *dry_run {
-        transaction.rollback()?;
+        // Render before committing, so a serialization failure cannot hide a commit.
+        // A rendering error must leave the ledger untouched.
+        render_result(cli, company, &result)
+    };
+    let rendered = if *dry_run {
+        db.preview_write_batch(import)?
     } else {
-        transaction.commit()?;
-    }
+        db.in_write_batch(import)?
+    };
     if let Some(rendered) = rendered {
         println!("{rendered}");
     }

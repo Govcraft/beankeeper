@@ -15,7 +15,7 @@ use crate::db::connection::Db;
 use crate::db::transactions::TransactionValueFilter;
 use crate::db::{self, attachments, transactions};
 use crate::error::CliError;
-use crate::identity::{Granted, Post};
+use crate::identity::{Approve, Granted, Post, Propose, ResolveProposal, Reverse};
 use crate::output;
 
 /// Run a `bk txn` subcommand.
@@ -38,7 +38,7 @@ pub fn run(
 
     match sub {
         TxnCommand::Proposal(args) => {
-            let data = db::audit::atomically(db_handle.conn(), || {
+            let execute = || {
                 use secrecy::ExposeSecret;
                 crate::identity::authorize_known_operation(
                     db_handle.conn(),
@@ -46,7 +46,12 @@ pub fn run(
                     super::operation(&cli.command),
                 )?;
                 execute_proposal(&db_handle, company, args, &cli.principal())
-            })?;
+            };
+            let data = if matches!(args, TxnProposalCommand::Proposals { .. }) {
+                db_handle.read_snapshot(|_| execute())?
+            } else {
+                db_handle.in_write_batch(execute)?
+            };
             if format == OutputFormat::Json {
                 println!(
                     "{}",
@@ -149,19 +154,20 @@ fn execute_reverse(
         .as_deref()
         .map(str::parse::<super::reference::TransactionReference>)
         .transpose()?;
-    db::audit::reverse_transaction(
-        db_handle.conn(),
-        &db::audit::ReverseTransactionParams {
-            company_slug: company,
-            id: *id,
-            date,
-            description: description.as_deref(),
-            reference: reference
-                .as_ref()
-                .map(super::reference::TransactionReference::as_str),
-            actor,
-        },
-    )
+    Granted::<Reverse>::with_db(db_handle, actor, |grant| {
+        db::audit::reverse_transaction(
+            grant,
+            &db::audit::ReverseTransactionParams {
+                company_slug: company,
+                id: *id,
+                date,
+                description: description.as_deref(),
+                reference: reference
+                    .as_ref()
+                    .map(super::reference::TransactionReference::as_str),
+            },
+        )
+    })
 }
 
 /// Execute a supported transaction operation without writing to stdout.
@@ -367,7 +373,7 @@ fn run_list_or_count(
     lp.tax_category_filter = tax_category.as_deref();
     lp.direction_filter = *direction;
 
-    db::audit::atomically(db_handle.conn(), || {
+    db_handle.read_snapshot(|_| {
         lp.value_filter = list_value_filter(
             db_handle.conn(),
             company,
@@ -590,7 +596,9 @@ fn execute_proposal(
     let value = match args {
         TxnProposalCommand::Propose(args) => {
             return with_post_params(company, &PostingRequest::try_from(args)?, actor, |params| {
-                super::posting_output::create_proposal_json(db.conn(), params)
+                Granted::<Propose>::with_db(db, actor, |grant| {
+                    super::posting_output::create_proposal_json(grant, params)
+                })
             });
         }
         TxnProposalCommand::Proposals { include_rejected } => {
@@ -602,11 +610,15 @@ fn execute_proposal(
             )
         }
         TxnProposalCommand::Approve { id } => {
-            let row = db::audit::approve_proposal(db.conn(), actor, company, id)?;
+            let row = Granted::<Approve>::with_db(db, actor, |grant| {
+                db::audit::approve_proposal(grant, company, id)
+            })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
         TxnProposalCommand::Reject { id, reason } => {
-            let row = db::audit::reject_proposal(db.conn(), actor, company, id, reason.as_deref())?;
+            let row = Granted::<ResolveProposal>::with_db(db, actor, |grant| {
+                db::audit::reject_proposal(grant, company, id, reason.as_deref())
+            })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
     };
@@ -621,7 +633,9 @@ fn execute_post(
     actor: &db::Actor,
 ) -> Result<transactions::PostResult, CliError> {
     with_post_params(company, &PostingRequest::try_from(args)?, actor, |params| {
-        transactions::post_from_source(db.conn(), params, transactions::PostingSource::Command)
+        Granted::<Post>::with_db(db, actor, |grant| {
+            transactions::post_from_source(grant, params, transactions::PostingSource::Command)
+        })
     })
 }
 
@@ -690,11 +704,13 @@ pub(crate) fn execute_posting_json(
 ) -> Result<serde_json::Value, CliError> {
     db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| match mode {
-        PostingMode::Post => {
-            transactions::post_from_source(db.conn(), params, transactions::PostingSource::Command)
-                .and_then(output::json::post_result_data)
-        }
-        PostingMode::Propose => super::posting_output::create_proposal_json(db.conn(), params),
+        PostingMode::Post => Granted::<Post>::with_db(db, actor, |grant| {
+            transactions::post_from_source(grant, params, transactions::PostingSource::Command)
+        })
+        .and_then(output::json::post_result_data),
+        PostingMode::Propose => Granted::<Propose>::with_db(db, actor, |grant| {
+            super::posting_output::create_proposal_json(grant, params)
+        }),
     })
 }
 

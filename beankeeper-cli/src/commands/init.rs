@@ -96,7 +96,7 @@ pub fn run(
 // ---------------------------------------------------------------------------
 
 fn post(
-    context: (&rusqlite::Connection, &crate::db::Actor),
+    context: (&Db, &crate::db::Actor),
     company: &str,
     desc: &str,
     date: &str,
@@ -107,7 +107,7 @@ fn post(
 }
 
 fn post_with_metadata(
-    context: (&rusqlite::Connection, &crate::db::Actor),
+    context: (&Db, &crate::db::Actor),
     company: &str,
     description_and_date: (&str, &str),
     entries: &[PostEntryParams],
@@ -116,26 +116,29 @@ fn post_with_metadata(
 ) -> Result<crate::db::ids::TransactionId, CliError> {
     use crate::db::post_transaction;
     use crate::db::transactions::PostTransactionParams;
+    use crate::identity::{Granted, Post};
 
-    let (conn, actor) = context;
+    let (db, actor) = context;
     let (desc, date) = description_and_date;
     let (reference, correlate) = reference;
 
-    post_transaction(
-        conn,
-        &PostTransactionParams {
-            company_slug: company,
-            description: desc,
-            metadata,
-            currency: beankeeper::types::Currency::USD,
-            date: crate::cli::CalendarDateArg::decode(date).posting_date()?,
-            entries,
-            correlate: correlate.map(Into::into),
-            reference: Some(reference),
-            on_conflict: crate::db::ConflictStrategy::Error,
-            actor,
-        },
-    )
+    Granted::<Post>::with_db(db, actor, |grant| {
+        post_transaction(
+            grant,
+            &PostTransactionParams {
+                company_slug: company,
+                description: desc,
+                metadata,
+                currency: beankeeper::types::Currency::USD,
+                date: crate::cli::CalendarDateArg::decode(date).posting_date()?,
+                entries,
+                correlate: correlate.map(Into::into),
+                reference: Some(reference),
+                on_conflict: crate::db::ConflictStrategy::Error,
+                actor,
+            },
+        )
+    })
     .map(|res| match res {
         crate::db::PostResult::Created(id) | crate::db::PostResult::Skipped(id) => id,
     })
@@ -220,10 +223,10 @@ fn populate_demo_data(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError>
 
     seed_companies(conn, actor)?;
     seed_accounts(conn, actor)?;
-    seed_consulting_transactions(conn, actor)?;
-    seed_products_transactions(conn, actor)?;
-    seed_personal_transactions(conn, actor)?;
-    seed_intercompany_transactions(conn, actor)?;
+    seed_consulting_transactions(db, actor)?;
+    seed_products_transactions(db, actor)?;
+    seed_personal_transactions(db, actor)?;
+    seed_intercompany_transactions(db, actor)?;
     demo_features::seed(db, actor)?;
 
     Ok(())
@@ -553,13 +556,10 @@ fn seed_personal_accounts(
 }
 
 /// Seed the acme-consulting demo transactions.
-fn seed_consulting_transactions(
-    conn: &rusqlite::Connection,
-    actor: &crate::db::Actor,
-) -> Result<(), CliError> {
+fn seed_consulting_transactions(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     // C1. Owner invests $25,000 into consulting LLC
     let _c1 = post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Owner capital contribution",
         "2025-01-01",
@@ -569,7 +569,7 @@ fn seed_consulting_transactions(
 
     // C2. Pay January rent
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "January office rent",
         "2025-01-05",
@@ -579,7 +579,7 @@ fn seed_consulting_transactions(
 
     // C3. Invoice client for January consulting
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Invoice #101 - Globex Corp",
         "2025-01-15",
@@ -589,7 +589,7 @@ fn seed_consulting_transactions(
 
     // C4. Collect payment from Globex
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Payment from Globex Corp",
         "2025-01-28",
@@ -599,7 +599,7 @@ fn seed_consulting_transactions(
 
     // C5. Buy office supplies
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Office supplies - paper and toner",
         "2025-02-03",
@@ -609,7 +609,7 @@ fn seed_consulting_transactions(
 
     // C6. Invoice client for February consulting
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Invoice #102 - Initech",
         "2025-02-15",
@@ -619,7 +619,7 @@ fn seed_consulting_transactions(
 
     // C7. Pay February rent
     post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "February office rent",
         "2025-02-05",
@@ -631,13 +631,10 @@ fn seed_consulting_transactions(
 }
 
 /// Seed the acme-products demo transactions.
-fn seed_products_transactions(
-    conn: &rusqlite::Connection,
-    actor: &crate::db::Actor,
-) -> Result<(), CliError> {
+fn seed_products_transactions(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     // P1. Owner invests $15,000 into products company
     let _p1 = post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "Owner capital contribution",
         "2025-01-01",
@@ -647,7 +644,7 @@ fn seed_products_transactions(
 
     // P2. Purchase initial inventory
     post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "Initial widget inventory (500 units)",
         "2025-01-08",
@@ -660,7 +657,7 @@ fn seed_products_transactions(
 
     // P3. Sell 100 widgets to retail customer
     post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "Widget sale - 100 units",
         "2025-01-20",
@@ -670,7 +667,7 @@ fn seed_products_transactions(
 
     // P4. Record COGS for that sale
     post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "COGS - 100 widgets sold",
         "2025-01-20",
@@ -680,7 +677,7 @@ fn seed_products_transactions(
 
     // P5. Collect payment from retail customer
     post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "Payment received - widget sale",
         "2025-02-01",
@@ -690,7 +687,7 @@ fn seed_products_transactions(
 
     // P6. Pay shipping costs
     post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "Shipping costs - January",
         "2025-01-31",
@@ -702,13 +699,10 @@ fn seed_products_transactions(
 }
 
 /// Seed the personal-books demo transactions.
-fn seed_personal_transactions(
-    conn: &rusqlite::Connection,
-    actor: &crate::db::Actor,
-) -> Result<(), CliError> {
+fn seed_personal_transactions(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     // R1. Starting balance (savings)
     post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "Opening balance - savings",
         "2025-01-01",
@@ -718,7 +712,7 @@ fn seed_personal_transactions(
 
     // R2. Starting balance (checking)
     post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "Opening balance - checking",
         "2025-01-01",
@@ -728,7 +722,7 @@ fn seed_personal_transactions(
 
     // R3. Pay personal rent
     post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "January apartment rent",
         "2025-01-03",
@@ -738,7 +732,7 @@ fn seed_personal_transactions(
 
     // R4. Groceries
     post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "Weekly groceries",
         "2025-01-07",
@@ -748,7 +742,7 @@ fn seed_personal_transactions(
 
     // R5. Utilities
     post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "Electric and internet",
         "2025-01-15",
@@ -758,7 +752,7 @@ fn seed_personal_transactions(
 
     // R6. Pay February rent
     post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "February apartment rent",
         "2025-02-03",
@@ -768,7 +762,7 @@ fn seed_personal_transactions(
 
     // R7. Investment dividend
     post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "Quarterly dividend - index fund",
         "2025-01-31",
@@ -780,16 +774,13 @@ fn seed_personal_transactions(
 }
 
 /// Seed the intercompany demo transactions (mirror pairs with correlation).
-fn seed_intercompany_transactions(
-    conn: &rusqlite::Connection,
-    actor: &crate::db::Actor,
-) -> Result<(), CliError> {
+fn seed_intercompany_transactions(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
     // IC1. Owner funds acme-consulting from personal savings
     //   personal side: savings down, receivable from consulting up
     //   consulting side: already recorded as C1 above — but that was equity.
     //   This is a separate loan: owner lends $5,000 to consulting.
     let ic1_personal = post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "Loan to Acme Consulting",
         "2025-01-02",
@@ -797,7 +788,7 @@ fn seed_intercompany_transactions(
         ("IC-001-P", None),
     )?;
     let _ic1_consulting = post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Loan from owner (personal)",
         "2025-01-02",
@@ -809,7 +800,7 @@ fn seed_intercompany_transactions(
     //   consulting side: software expense, payable to acme-products
     //   products side: receivable from consulting, licence revenue
     let ic2_consulting = post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Software licences from Acme Products",
         "2025-02-01",
@@ -817,7 +808,7 @@ fn seed_intercompany_transactions(
         ("IC-002-C", None),
     )?;
     let _ic2_products = post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "Licence sale to Acme Consulting",
         "2025-02-01",
@@ -849,7 +840,7 @@ fn seed_intercompany_transactions(
     //
     //   Intercompany link is on the net cash transfer ($3,767.50).
     let ic3_consulting = post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "February payroll - owner salary",
         "2025-02-15",
@@ -863,7 +854,7 @@ fn seed_intercompany_transactions(
         ("IC-003-C", None),
     )?;
     let _ic3_personal = post(
-        (conn, actor),
+        (db, actor),
         "personal",
         "February paycheck from Acme Consulting",
         "2025-02-15",
@@ -881,7 +872,7 @@ fn seed_intercompany_transactions(
     //   consulting side: pay down AP, cash out
     //   products side: receive cash, clear receivable
     let ic4_consulting = post(
-        (conn, actor),
+        (db, actor),
         "acme-consulting",
         "Payment to Acme Products - licence invoice",
         "2025-02-20",
@@ -889,7 +880,7 @@ fn seed_intercompany_transactions(
         ("IC-004-C", None),
     )?;
     let _ic4_products = post(
-        (conn, actor),
+        (db, actor),
         "acme-products",
         "Payment from Acme Consulting",
         "2025-02-20",

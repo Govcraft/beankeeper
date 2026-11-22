@@ -445,7 +445,7 @@ mod tests {
 
     use super::*;
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
-    use crate::db::{Actor, Db, audit, create_account, create_company, post_transaction};
+    use crate::db::{Actor, Db, audit, create_account, create_company};
     use crate::identity::{Budget, Granted};
 
     fn test_actor() -> Actor {
@@ -586,7 +586,8 @@ mod tests {
             on_conflict: ConflictStrategy::Error,
             actor: &actor,
         };
-        post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
+        crate::db::transactions::post_fixture(db, &params)
+            .unwrap_or_else(|e| panic!("post failed: {e}"));
     }
 
     fn post_revenue(db: &Db, date: &str, amount: i64) {
@@ -624,7 +625,8 @@ mod tests {
             on_conflict: ConflictStrategy::Error,
             actor: &actor,
         };
-        post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
+        crate::db::transactions::post_fixture(db, &params)
+            .unwrap_or_else(|e| panic!("post failed: {e}"));
     }
 
     fn fixture_month(month: u8) -> Month {

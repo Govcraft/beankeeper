@@ -6,11 +6,13 @@ use mti::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use super::audit::savepoint::AuditedTx;
 use super::audit::{self, Actor};
+use super::connection::ReadConn;
 use super::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
 use crate::capability::Capability;
 use crate::error::CliError;
-use crate::identity::{Approve, Granted, require_live_capability};
+use crate::identity::{Approve, Granted, Propose, ResolveProposal};
 
 /// A typed, time-sortable identifier for a pending posting request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +148,7 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    fn new(conn: &Connection, actor: &Actor) -> Result<Self, CliError> {
+    fn new(conn: ReadConn<'_>, actor: &Actor) -> Result<Self, CliError> {
         let at = conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
             row.get(0)
         })?;
@@ -306,25 +308,24 @@ impl Serialize for Proposal {
 
 /// A pending proposal loaded from the same book that will resolve it.
 struct PendingProposal<'a> {
-    conn: &'a Connection,
+    tx: &'a AuditedTx<'a>,
     before: Proposal,
 }
 
 impl<'a> PendingProposal<'a> {
-    fn load(conn: &'a Connection, company: &str, id: &ProposalId) -> Result<Self, CliError> {
-        verify_resolutions(conn)?;
-        let before = get(conn, company, id)?;
+    fn load(tx: &'a AuditedTx<'a>, company: &str, id: &ProposalId) -> Result<Self, CliError> {
+        verify_resolutions(tx.read())?;
+        let before = get(tx.read(), company, id)?;
         if before.state != ProposalState::Pending {
             return Err(CliError::Validation(format!(
                 "proposal '{id}' is already {}",
                 before.state.code(),
             )));
         }
-        Ok(Self { conn, before })
+        Ok(Self { tx, before })
     }
 
-    fn approve(self, grant: &Granted<'_, Approve>) -> Result<(Proposal, Proposal), CliError> {
-        let actor = grant.actor();
+    fn approve(self, tx: &AuditedTx<'_>, actor: &Actor) -> Result<(Proposal, Proposal), CliError> {
         self.require_setup_reviewer(actor)?;
         let mut payload = self.before.payload.clone();
         super::spend_limits::debit_total(&payload.entries)?;
@@ -338,7 +339,7 @@ impl<'a> PendingProposal<'a> {
         metadata[super::metadata::PROPOSAL_KEY] = serde_json::json!(proposal_id);
         payload.metadata = Some(metadata.to_string());
         let posting = ApprovedPosting {
-            conn: self.conn,
+            tx,
             company: &self.before.company_slug,
             actor,
             payload,
@@ -352,7 +353,7 @@ impl<'a> PendingProposal<'a> {
             }
         };
         let state = ProposalState::Approved {
-            resolution: Resolution::new(self.conn, actor)?,
+            resolution: Resolution::new(self.tx.read(), actor)?,
             transaction_id,
         };
         Ok(self.transition(state))
@@ -361,7 +362,7 @@ impl<'a> PendingProposal<'a> {
     fn require_setup_reviewer(&self, actor: &Actor) -> Result<(), CliError> {
         // Proposal proposer attribution and the original issuance audit event
         // are immutable. Session termination does not change this origin.
-        let setup_origin = self.conn.query_row(
+        let setup_origin = self.tx.read().query_row(
             "SELECT EXISTS (
                 SELECT 1 FROM audit_log
                 WHERE entity = 'agent' AND action = 'token_issue' AND entity_id = ?1
@@ -378,7 +379,7 @@ impl<'a> PendingProposal<'a> {
             |row| row.get::<_, bool>(0),
         )?;
         if setup_origin {
-            let reviewer = require_live_capability(self.conn, actor, Capability::Approve)?;
+            let reviewer = audit::require_setup_proposal_reviewer(self.tx, actor)?;
             if reviewer.uri() == self.before.proposer_uri
                 || reviewer.jti() == self.before.proposer_jti
             {
@@ -390,21 +391,18 @@ impl<'a> PendingProposal<'a> {
         Ok(())
     }
 
-    fn reject(self, actor: &Actor, reason: Option<&str>) -> Result<(Proposal, Proposal), CliError> {
+    fn reject(
+        self,
+        tx: &AuditedTx<'_>,
+        actor: &Actor,
+        reason: Option<&str>,
+    ) -> Result<(Proposal, Proposal), CliError> {
         self.require_setup_reviewer(actor)?;
         let own = actor.agent_uri() == Some(self.before.proposer_uri.as_str());
-        let can_approve = actor
-            .identity()
-            .map(|identity| identity.allows(Capability::Approve))
-            .transpose()?
-            .unwrap_or(false);
-        let required = if own && !can_approve {
-            Capability::Propose
-        } else {
-            Capability::Approve
-        };
-        audit::require_capability(self.conn, actor, required)?;
-        let resolution = Resolution::new(self.conn, actor)?;
+        if !own {
+            Granted::<Approve>::check(tx, actor)?;
+        }
+        let resolution = Resolution::new(self.tx.read(), actor)?;
         let reason = reason.map(str::to_owned);
         let state = if own {
             ProposalState::Withdrawn { resolution, reason }
@@ -422,16 +420,14 @@ impl<'a> PendingProposal<'a> {
 }
 
 pub(super) fn approve(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Approve>,
     company: &str,
     id: &ProposalId,
 ) -> Result<Proposal, CliError> {
-    audit::savepoint::with_audited_tx(conn, "sp_atomic_batch", |tx| {
-        let grant = Granted::<Approve>::check(tx, actor)?;
-        let (before, after) = PendingProposal::load(conn, company, id)?.approve(&grant)?;
+    grant.mutate("sp_approve_proposal", |tx, actor| {
+        let (before, after) = PendingProposal::load(tx, company, id)?.approve(tx, actor)?;
         audit::record_proposal_resolution(ProposalTransition {
-            conn,
+            tx,
             actor,
             before,
             after,
@@ -440,16 +436,15 @@ pub(super) fn approve(
 }
 
 pub(super) fn reject(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, ResolveProposal>,
     company: &str,
     id: &ProposalId,
     reason: Option<&str>,
 ) -> Result<Proposal, CliError> {
-    audit::atomically(conn, || {
-        let (before, after) = PendingProposal::load(conn, company, id)?.reject(actor, reason)?;
+    grant.mutate("sp_reject_proposal", |tx, actor| {
+        let (before, after) = PendingProposal::load(tx, company, id)?.reject(tx, actor, reason)?;
         audit::record_proposal_resolution(ProposalTransition {
-            conn,
+            tx,
             actor,
             before,
             after,
@@ -459,30 +454,30 @@ pub(super) fn reject(
 
 /// A consumed pending proposal and its authorized resolution.
 pub(super) struct ProposalTransition<'a> {
-    conn: &'a Connection,
+    tx: &'a AuditedTx<'a>,
     actor: &'a Actor,
     before: Proposal,
     after: Proposal,
 }
 
 impl<'a> ProposalTransition<'a> {
-    pub(super) fn into_parts(self) -> (&'a Connection, &'a Actor, Proposal, Proposal) {
-        (self.conn, self.actor, self.before, self.after)
+    pub(super) fn into_parts(self) -> (&'a AuditedTx<'a>, &'a Actor, Proposal, Proposal) {
+        (self.tx, self.actor, self.before, self.after)
     }
 }
 
 /// The exact frozen posting being approved. Its only constructor is approval
 /// of a pending proposal, and it is consumed on the originating connection.
 pub(super) struct ApprovedPosting<'a> {
-    conn: &'a Connection,
+    tx: &'a audit::savepoint::AuditedTx<'a>,
     company: &'a str,
     actor: &'a Actor,
     payload: PostingPayload,
 }
 
 impl<'a> ApprovedPosting<'a> {
-    pub(super) fn connection(&self) -> &'a Connection {
-        self.conn
+    pub(super) fn transaction(&self) -> &'a audit::savepoint::AuditedTx<'a> {
+        self.tx
     }
 
     pub(super) fn params(&self) -> PostTransactionParams<'_> {
@@ -519,7 +514,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
 ///
 /// # Errors
 /// Returns not found or a database error.
-pub fn get(conn: &Connection, company: &str, id: &ProposalId) -> Result<Proposal, CliError> {
+pub fn get(conn: ReadConn<'_>, company: &str, id: &ProposalId) -> Result<Proposal, CliError> {
     conn.query_row(
         &format!("SELECT {COLUMNS} FROM txn_proposals WHERE company_slug = ?1 AND id = ?2"),
         params![company, id],
@@ -573,10 +568,10 @@ pub(crate) fn can_review_all(conn: &Connection, actor: &Actor) -> Result<bool, C
 /// # Errors
 /// Rejects missing identity, invalid postings and reserved/duplicate references.
 pub fn create(
-    conn: &Connection,
+    grant: Granted<'_, Propose>,
     p: &PostTransactionParams<'_>,
 ) -> Result<serde_json::Value, CliError> {
-    match reserve(conn, p, super::transactions::PostingSource::Proposal)? {
+    match reserve(grant, p, super::transactions::PostingSource::Proposal)? {
         ProposalCreation::Created(proposal) => {
             serde_json::to_value(proposal).map_err(|error| CliError::General(error.to_string()))
         }
@@ -592,33 +587,33 @@ pub(crate) enum ProposalCreation {
 }
 
 pub(crate) fn create_from_command(
-    conn: &Connection,
+    grant: Granted<'_, Propose>,
     p: &PostTransactionParams<'_>,
 ) -> Result<ProposalCreation, CliError> {
-    reserve(conn, p, super::transactions::PostingSource::Command)
+    reserve(grant, p, super::transactions::PostingSource::Command)
 }
 
 fn reserve(
-    conn: &Connection,
+    grant: Granted<'_, Propose>,
     p: &PostTransactionParams<'_>,
     source: super::transactions::PostingSource,
 ) -> Result<ProposalCreation, CliError> {
-    audit::atomically(conn, || {
+    grant.mutate("sp_reserve_proposal", |tx, actor| {
+        let reader = tx.read();
         let preflight = (source == super::transactions::PostingSource::Command)
-            .then(|| super::transactions::build_journal(conn, p, source))
+            .then(|| super::transactions::build_journal(reader, p, source))
             .transpose()?;
-        let identity = p.actor.identity().ok_or_else(|| {
+        let identity = actor.identity().ok_or_else(|| {
             CliError::Unauthorized("txn propose requires a verified agent token".into())
         })?;
-        audit::require_capability(conn, p.actor, Capability::Propose)?;
         super::metadata::UserAnnotations::parse(p.metadata)?;
         let total = super::spend_limits::debit_total(p.entries)?;
         let journal = match preflight {
             Some(journal) => journal,
-            None => super::transactions::build_journal(conn, p, source)?,
+            None => super::transactions::build_journal(reader, p, source)?,
         };
         if let Some(reference) = p.reference {
-            if let Some(id) = posted_reference(conn, p.company_slug, reference)? {
+            if let Some(id) = posted_reference(reader, p.company_slug, reference)? {
                 return match p.on_conflict {
                     ConflictStrategy::Skip => Ok(ProposalCreation::Skipped(id)),
                     ConflictStrategy::Error => Err(CliError::Validation(format!(
@@ -626,7 +621,7 @@ fn reserve(
                     ))),
                 };
             }
-            check_reference(conn, p.company_slug, reference)?;
+            check_reference(reader, p.company_slug, reference)?;
         }
         let payload = PostingPayload {
             description: p.description.into(),
@@ -646,7 +641,7 @@ fn reserve(
             reference: p.reference.map(str::to_owned),
             on_conflict: p.on_conflict,
         };
-        insert_pending(conn, p.company_slug, &payload, total, identity)
+        insert_pending(tx, p.company_slug, &payload, total, identity)
             .map(|proposal| ProposalCreation::Created(Box::new(proposal)))
     })
 }
@@ -659,12 +654,12 @@ pub(in crate::db) fn reserve_setup_opening(
 ) -> Result<Proposal, CliError> {
     let conn = session.connection();
     let company = company.as_str();
-    if let Some(id) = posted_reference(conn, company, reference)? {
+    if let Some(id) = posted_reference(ReadConn::new(conn), company, reference)? {
         return Err(CliError::Validation(format!(
             "transaction with reference '{reference}' already exists (id: {id})"
         )));
     }
-    check_reference(conn, company, reference)?;
+    check_reference(ReadConn::new(conn), company, reference)?;
     let identity = session.actor().identity().ok_or_else(|| {
         CliError::Unauthorized("opening reservation requires an active setup credential".into())
     })?;
@@ -697,29 +692,25 @@ pub(in crate::db) fn reserve_setup_opening(
         reference: Some(reference.to_owned()),
         on_conflict: ConflictStrategy::Error,
     };
-    insert_pending(conn, company, &payload, total, identity)
+    audit::savepoint::with_audited_tx(conn, "sp_setup_proposal", |tx| {
+        insert_pending(tx, company, &payload, total, identity)
+    })
 }
 
 fn insert_pending(
-    conn: &Connection,
+    tx: &AuditedTx<'_>,
     company: &str,
     payload: &PostingPayload,
     total: i64,
     identity: &crate::identity::VerifiedAgent,
 ) -> Result<Proposal, CliError> {
     let id = ProposalId::new();
-    let json =
-        serde_json::to_string(payload).map_err(|error| CliError::General(error.to_string()))?;
-    conn.execute(
-        "INSERT INTO txn_proposals(id, company_slug, status, payload, reference, debit_total, currency, proposer_uri, proposer_jti)
-         VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![id.as_str(), company, json, payload.reference, total, payload.currency, identity.uri(), identity.jti()],
-    )?;
-    get(conn, company, &id)
+    audit::insert_pending_proposal(tx, company, &id, payload, total, identity)?;
+    get(tx.read(), company, &id)
 }
 
 fn posted_reference(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     reference: &str,
 ) -> Result<Option<crate::db::ids::TransactionId>, CliError> {
@@ -733,7 +724,7 @@ fn posted_reference(
 }
 
 pub(crate) fn check_reference(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     reference: &str,
 ) -> Result<(), CliError> {
@@ -754,7 +745,7 @@ pub(crate) fn check_reference(
 ///
 /// # Errors
 /// Returns database errors for missing, changed or unaudited resolutions.
-pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
+pub(crate) fn verify_resolutions(conn: ReadConn<'_>) -> Result<(), CliError> {
     let mut stmt = conn.prepare(
         "SELECT company_slug, id FROM txn_proposals WHERE status != 'pending'
          UNION SELECT company_slug, entity_id FROM audit_log WHERE entity = 'proposal'",
@@ -793,12 +784,9 @@ pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
         } = &proposal.state
         {
             let (uri, jti) = resolution.by.columns();
-            let (transaction, _) = super::transactions::get_transaction(
-                super::connection::ReadConn::new(conn),
-                &company,
-                *transaction_id,
-            )
-            .map_err(|_| invalid())?;
+            let (transaction, _) =
+                super::transactions::get_transaction(conn, &company, *transaction_id)
+                    .map_err(|_| invalid())?;
             let link = transaction
                 .metadata
                 .as_deref()

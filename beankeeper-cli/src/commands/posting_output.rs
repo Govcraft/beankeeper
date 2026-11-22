@@ -1,7 +1,7 @@
 //! Presentation of posting lines in template and proposal responses.
 
+use crate::identity::{Granted, Propose};
 use beankeeper::types::{Currency, Money};
-use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -116,10 +116,10 @@ impl<'a> From<&'a Proposal> for ProposalJson<'a> {
 }
 
 pub(super) fn create_proposal_json(
-    conn: &Connection,
+    grant: Granted<'_, Propose>,
     request: &PostTransactionParams<'_>,
 ) -> Result<Value, CliError> {
-    match proposals::create_from_command(conn, request)? {
+    match proposals::create_from_command(grant, request)? {
         ProposalCreation::Created(row) => serde_json::to_value(ProposalJson::from(row.as_ref()))
             .map_err(|error| CliError::General(error.to_string())),
         ProposalCreation::Skipped(transaction_id) => {

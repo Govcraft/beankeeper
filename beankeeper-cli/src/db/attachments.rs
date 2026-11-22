@@ -261,7 +261,7 @@ mod tests {
             on_conflict: transactions::ConflictStrategy::Error,
             actor: &actor,
         };
-        match transactions::post_transaction(db.conn(), &params)
+        match crate::db::transactions::post_fixture(db, &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"))
         {
             transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => id,

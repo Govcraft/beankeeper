@@ -47,6 +47,14 @@ impl<'a> AuditedTx<'a> {
         super::record_insert(self.connection, actor, company, creation, id, data)
     }
 
+    fn rollback(mut self) -> Result<(), CliError> {
+        let name = self.name;
+        self.connection
+            .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))?;
+        self.active = false;
+        Ok(())
+    }
+
     fn commit(mut self) -> Result<(), CliError> {
         self.connection
             .execute_batch(&format!("RELEASE {}", self.name))?;
@@ -75,6 +83,17 @@ pub(in crate::db) fn with_audited_tx<T>(
     let transaction = AuditedTx::begin(connection, name)?;
     let value = run(&transaction)?;
     transaction.commit()?;
+    Ok(value)
+}
+
+pub(in crate::db) fn with_rolled_back_audited_tx<T>(
+    connection: &Connection,
+    name: &'static str,
+    run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    let transaction = AuditedTx::begin(connection, name)?;
+    let value = run(&transaction)?;
+    transaction.rollback()?;
     Ok(value)
 }
 

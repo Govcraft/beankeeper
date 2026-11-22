@@ -1493,7 +1493,7 @@ mod tests {
              VALUES (?1, 'legacy', 'pending', ?2, 100, 'USD', 'proposer', 'jti')",
             params![id, serde_json::to_string(&payload).map_err(|e| CliError::General(e.to_string()))?],
         )?;
-        audit::reject_proposal(&conn, &owner, "legacy", &id.parse()?, Some("v19 review"))?;
+        reject_v19_proposal(&conn, &owner, &id)?;
         crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
             audit::set_policy(grant, true)
         })?;
@@ -1523,12 +1523,12 @@ mod tests {
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(&conn)?.enforce);
         assert_eq!(
-            proposals::get(&conn, "legacy", &id.parse()?)?
+            proposals::get(ReadConn::new(&conn), "legacy", &id.parse()?)?
                 .state
                 .reason(),
             Some("v19 review")
         );
-        proposals::verify_resolutions(&conn)?;
+        proposals::verify_resolutions(ReadConn::new(&conn))?;
         // The existing policy and proposal protection triggers survive rebuilding audit_log.
         assert!(
             conn.execute("UPDATE ledger_policy SET enforce = 0", [])
@@ -1557,7 +1557,12 @@ mod tests {
             )
         })?;
         assert!(
-            periods::check_posting(&conn, "legacy", periods::parse_date("2026-01-31")?).is_err()
+            periods::ensure_open(
+                ReadConn::new(&conn),
+                "legacy",
+                periods::parse_date("2026-01-31")?
+            )
+            .is_err()
         );
         audit::verify_hash_chain(ReadConn::new(&conn))?;
         audit::verify_creations(ReadConn::new(&conn))?;
@@ -1566,6 +1571,24 @@ mod tests {
         assert_eq!(history(&conn)?.last().map(|row| row.0), Some(4));
         ensure_schema(&conn)?;
         Ok(())
+    }
+
+    fn reject_v19_proposal(
+        conn: &Connection,
+        owner: &super::super::Actor,
+        id: &str,
+    ) -> Result<(), CliError> {
+        use crate::identity::{Granted, ResolveProposal};
+        super::super::audit::savepoint::with_audited_tx(conn, "sp_proposal_fixture", |tx| {
+            let grant = Granted::<ResolveProposal>::check(tx, owner)?;
+            super::super::audit::reject_proposal(
+                grant,
+                "legacy",
+                &id.parse()?,
+                Some("v19 review"),
+            )?;
+            Ok(())
+        })
     }
 
     #[test]

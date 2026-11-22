@@ -39,7 +39,7 @@ pub(crate) fn verify(db: &Db) -> Result<i64, CliError> {
         crate::db::audit::verify_hash_chain(reader)?;
         crate::db::policy::get(db.conn())?;
         crate::db::periods::verify(reader)?;
-        crate::db::proposals::verify_resolutions(db.conn())?;
+        crate::db::proposals::verify_resolutions(db.read())?;
         crate::db::spend_limits::verify(reader)?;
         crate::db::verification::verify_accounting(reader)?;
         crate::db::audit::verify_creations(reader)?;

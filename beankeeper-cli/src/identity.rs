@@ -15,8 +15,10 @@ use serde_json::{Value, json};
 
 use crate::capability::Capability;
 use crate::db::Actor;
-pub use crate::db::audit::grant::{Admin, Budget, Granted, Post, Reconcile};
-pub(crate) use crate::db::audit::grant::{Approve, SetupOwner, StatementApprover};
+pub use crate::db::audit::grant::{
+    Admin, Approve, Budget, Granted, Post, Propose, Reconcile, ResolveProposal, Reverse,
+};
+pub(crate) use crate::db::audit::grant::{SetupOwner, StatementApprover};
 use crate::error::CliError;
 use crate::operation::{Operation, Permission};
 

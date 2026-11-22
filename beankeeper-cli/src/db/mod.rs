@@ -33,8 +33,8 @@ pub use attachments::{
 };
 pub use audit::{
     Actor, AuditLogRow, ClearAction, ClearOutcome, ClearRequest, EntryStatus, ListAuditParams,
-    atomically, clear_entry, correlate_partner, count_audit, delete_account, delete_budget,
-    delete_company, list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
+    atomically, clear_entry, count_audit, delete_account, delete_budget, delete_company,
+    list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
 };
 pub use budgets::{
     BudgetCoverage, BudgetMonths, BudgetVarianceParams, BudgetVarianceReport, ListBudgetParams,
@@ -512,7 +512,8 @@ mod tests {
             on_conflict: transactions::ConflictStrategy::Error,
             actor: &actor,
         };
-        post_transaction(db.conn(), &params).unwrap_or_else(|e| panic!("post failed: {e}"));
+        crate::db::transactions::post_fixture(db, &params)
+            .unwrap_or_else(|e| panic!("post failed: {e}"));
     }
 
     #[test]
