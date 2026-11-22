@@ -17,7 +17,7 @@ use chrono::{NaiveDate, SecondsFormat, Utc};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use crate::db::clearings::Clearing;
-use crate::db::ids::{AttachmentId, TransactionId};
+use crate::db::ids::{AttachmentId, EntryId, TransactionId};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, ClearingState, CompanyRow,
     EntryRow, EntryStatus, PostResult, TransactionRow,
@@ -196,7 +196,7 @@ pub struct AccountJson {
 
 #[derive(Serialize)]
 pub struct TransactionJson {
-    id: i64,
+    id: TransactionId,
     description: String,
     metadata: Option<String>,
     reference: Option<String>,
@@ -212,7 +212,7 @@ pub struct TransactionJson {
 #[derive(Serialize)]
 pub struct EntryJson {
     /// Entry id (the `--entry` of `txn clear`).
-    id: i64,
+    id: EntryId,
     account_code: String,
     direction: &'static str,
     #[serde(flatten)]
@@ -235,7 +235,7 @@ pub struct EntryJson {
 /// One clearing of an entry (`txn show`).
 #[derive(Serialize)]
 pub struct ClearingJson {
-    id: i64,
+    id: crate::db::ids::ClearingId,
     #[serde(flatten)]
     amount: MoneyField,
     cleared_date: NaiveDate,
@@ -302,7 +302,7 @@ pub struct AttachmentJson<'a> {
 
 #[derive(Serialize)]
 struct TransactionWithAttachmentsJson<'a> {
-    id: i64,
+    id: TransactionId,
     description: String,
     metadata: Option<String>,
     reference: Option<String>,
@@ -408,7 +408,7 @@ pub fn render_accounts(accounts: &[AccountRow], meta: Meta) -> Result<String, Cl
 /// Returns `CliError::General` if JSON serialisation fails.
 pub fn render_transactions<S: ::std::hash::BuildHasher>(
     transactions: &[TransactionRow],
-    entries_map: &HashMap<i64, Vec<EntryRow>, S>,
+    entries_map: &HashMap<TransactionId, Vec<EntryRow>, S>,
     meta: Meta,
 ) -> Result<String, CliError> {
     let rows: Vec<TransactionJson> = transactions
@@ -452,9 +452,9 @@ pub fn render_transactions_with_attachments<
     U: ::std::hash::BuildHasher,
 >(
     transactions: &[TransactionRow],
-    entries_map: &HashMap<i64, Vec<EntryRow>, S>,
-    attachments_map: &HashMap<i64, Vec<AttachmentRow>, T>,
-    clearings_map: &HashMap<i64, Vec<Clearing>, U>,
+    entries_map: &HashMap<TransactionId, Vec<EntryRow>, S>,
+    attachments_map: &HashMap<TransactionId, Vec<AttachmentRow>, T>,
+    clearings_map: &HashMap<EntryId, Vec<Clearing>, U>,
     meta: Meta,
 ) -> Result<String, CliError> {
     let rows: Vec<_> = transactions
@@ -581,7 +581,7 @@ pub(crate) fn account_balance_data(balance: &BalanceRow, currency: Currency) -> 
 
 #[derive(Serialize)]
 struct OrphanedCorrelationJson {
-    transaction_id: i64,
+    transaction_id: TransactionId,
     company: String,
     description: String,
     date: chrono::NaiveDate,
@@ -745,9 +745,9 @@ pub(crate) fn post_result_data(result: PostResult) -> Result<serde_json::Value, 
     #[derive(Serialize)]
     struct PostResultJson {
         #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<i64>,
+        id: Option<TransactionId>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        existing_id: Option<i64>,
+        existing_id: Option<TransactionId>,
         created: bool,
         skipped: bool,
     }
@@ -849,7 +849,7 @@ pub fn render_import_result(
     #[derive(Serialize)]
     struct ImportTransactionJson {
         #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<i64>,
+        id: Option<TransactionId>,
         date: String,
         description: String,
         #[serde(flatten)]
@@ -865,7 +865,7 @@ pub fn render_import_result(
 
     for t in &result.imported {
         transactions.push(ImportTransactionJson {
-            id: if dry_run { None } else { Some(t.id) },
+            id: t.id,
             date: t.date.clone(),
             description: t.description.clone(),
             amount: MoneyField::new("amount", t.amount),
@@ -915,7 +915,7 @@ pub fn render_import_result(
 
 #[derive(Serialize)]
 struct BudgetJson {
-    id: i64,
+    id: crate::db::ids::BudgetId,
     account_code: String,
     #[serde(serialize_with = "serialize_display")]
     currency: Currency,
@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn render_transactions_with_entries() {
         let txns = vec![TransactionRow {
-            id: 1,
+            id: crate::db::ids::fixture_id(1),
             company_slug: "acme".into(),
             description: "Sale".into(),
             metadata: None,
@@ -1136,11 +1136,11 @@ mod tests {
         }];
         let mut map = HashMap::new();
         map.insert(
-            1,
+            crate::db::ids::fixture_id(1),
             vec![
                 EntryRow {
-                    id: 1,
-                    transaction_id: 1,
+                    id: crate::db::ids::fixture_id(1),
+                    transaction_id: crate::db::ids::fixture_id(1),
                     account_code: "1000".into(),
                     company_slug: "acme".into(),
                     direction: beankeeper::types::DebitOrCredit::Debit,
@@ -1152,8 +1152,8 @@ mod tests {
                     status: EntryStatus::Uncleared,
                 },
                 EntryRow {
-                    id: 2,
-                    transaction_id: 1,
+                    id: crate::db::ids::fixture_id(2),
+                    transaction_id: crate::db::ids::fixture_id(1),
                     account_code: "4000".into(),
                     company_slug: "acme".into(),
                     direction: beankeeper::types::DebitOrCredit::Credit,
@@ -1178,7 +1178,7 @@ mod tests {
     #[test]
     fn render_transactions_missing_entries() {
         let txns = vec![TransactionRow {
-            id: 99,
+            id: crate::db::ids::fixture_id(99),
             company_slug: "acme".into(),
             description: "Orphan".into(),
             metadata: None,

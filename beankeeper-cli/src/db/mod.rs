@@ -87,7 +87,7 @@ pub struct AccountRow {
 /// A row from the `transactions` table.
 #[derive(Debug, Clone)]
 pub struct TransactionRow {
-    pub id: i64,
+    pub id: ids::TransactionId,
     pub company_slug: String,
     pub description: String,
     pub metadata: Option<String>,
@@ -104,8 +104,8 @@ pub struct TransactionRow {
 /// A row from the `entries` table.
 #[derive(Debug, Clone)]
 pub struct EntryRow {
-    pub id: i64,
-    pub transaction_id: i64,
+    pub id: ids::EntryId,
+    pub transaction_id: ids::TransactionId,
     pub account_code: String,
     pub company_slug: String,
     pub direction: beankeeper::types::DebitOrCredit,
@@ -118,7 +118,7 @@ pub struct EntryRow {
 /// A row from the `budgets` table.
 #[derive(Debug, Clone)]
 pub struct BudgetRow {
-    pub id: i64,
+    pub id: ids::BudgetId,
     pub company_slug: String,
     pub account_code: String,
     pub currency: Currency,

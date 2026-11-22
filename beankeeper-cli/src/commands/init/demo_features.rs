@@ -279,8 +279,8 @@ fn seed_settlement(db: &Db, actor: &Actor) -> Result<(), CliError> {
                     grant,
                     &audit::ClearRequest {
                         company_slug: "acme-consulting",
-                        transaction_id: id.try_into()?,
-                        entry_id: entry.id.try_into()?,
+                        transaction_id: id,
+                        entry_id: entry.id,
                         amount: Some(162_000_i64.try_into()?),
                         date: date("2025-03-31")?,
                         statement: Some("DEMO-2025-03"),

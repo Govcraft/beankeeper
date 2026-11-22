@@ -109,7 +109,7 @@ pub struct ImportResult {
 /// A successfully posted transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedTransaction {
-    pub id: i64,
+    pub id: Option<crate::db::ids::TransactionId>,
     pub date: String,
     pub description: String,
     pub amount: Money,
@@ -318,7 +318,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
 
     if ctx.dry_run {
         return TransactionOutcome::Imported(ImportedTransaction {
-            id: 0,
+            id: None,
             date: prepared.date.to_string(),
             description: prepared.description.clone(),
             amount: prepared.amount(),
@@ -430,7 +430,7 @@ fn insert_transaction(
     match transactions::post_transaction(ctx.conn, &params) {
         Ok(transactions::PostResult::Created(id)) => {
             TransactionOutcome::Imported(ImportedTransaction {
-                id,
+                id: Some(id),
                 date: prepared.date.to_string(),
                 description: prepared.description.clone(),
                 amount: prepared.amount(),

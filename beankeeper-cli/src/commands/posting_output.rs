@@ -45,7 +45,7 @@ struct PostingPayloadJson<'a> {
     currency: Currency,
     date: chrono::NaiveDate,
     entries: Vec<PostingLineJson<'a>>,
-    correlate: Option<i64>,
+    correlate: Option<crate::db::ids::PartnerTransactionId>,
     reference: Option<&'a str>,
     on_conflict: ConflictStrategy,
 }
@@ -81,7 +81,7 @@ pub(super) struct ProposalJson<'a> {
     resolved_at: Option<&'a str>,
     resolved_by_uri: Option<&'a str>,
     resolved_by_jti: Option<&'a str>,
-    transaction_id: Option<i64>,
+    transaction_id: Option<crate::db::ids::TransactionId>,
     reason: Option<&'a str>,
 }
 
@@ -148,7 +148,7 @@ mod tests {
                         jti: "review-token".into(),
                     },
                 },
-                transaction_id: 12,
+                transaction_id: crate::db::ids::fixture_id(12),
             },
             payload: PostingPayload {
                 description: "Expense".into(),

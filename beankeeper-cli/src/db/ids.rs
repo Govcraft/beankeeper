@@ -89,7 +89,14 @@ macro_rules! row_ids {
 row_ids! {
     /// An immutable posted transaction identifier.
     TransactionId => "transaction ID",
+    /// A transaction identifier used as the other side of a correlation.
+    PartnerTransactionId => "partner transaction ID",
     /// An entry identifier within a posted transaction.
+    ///
+    /// ```compile_fail
+    /// use beankeeper_cli::db::ids::{EntryId, TransactionId};
+    /// fn wrong_id(entry: EntryId) -> TransactionId { entry }
+    /// ```
     EntryId => "entry ID",
     /// An identifier for a clearing applied to a posted entry.
     ClearingId => "clearing ID",
@@ -99,4 +106,15 @@ row_ids! {
     AttachmentId => "attachment ID",
     /// A frozen statement batch awaiting or bearing owner approval.
     StatementBatchId => "statement batch ID",
+}
+
+impl From<TransactionId> for PartnerTransactionId {
+    fn from(id: TransactionId) -> Self {
+        Self(id.0)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_id<T: TryFrom<i64, Error = CliError>>(id: i64) -> T {
+    id.try_into().expect("positive fixture identifier")
 }

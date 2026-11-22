@@ -208,7 +208,7 @@ pub struct Lot {
     pub symbol: String,
     pub asset: String,
     pub acquired_date: NaiveDate,
-    pub transaction_id: i64,
+    pub transaction_id: super::ids::TransactionId,
     #[serde(serialize_with = "serialize_display")]
     pub quantity: PositiveQuantity,
     #[serde(serialize_with = "serialize_minor")]
@@ -234,7 +234,7 @@ pub struct Relief {
 pub struct Trade {
     #[serde(serialize_with = "serialize_display")]
     pub currency: Currency,
-    pub transaction_id: i64,
+    pub transaction_id: super::ids::TransactionId,
     pub lot_id: Option<LotId>,
     #[serde(serialize_with = "serialize_display")]
     pub quantity: PositiveQuantity,
@@ -534,7 +534,7 @@ struct TradePosting<'a> {
     actor: &'a Actor,
 }
 
-fn post(tx: &AuditedTx<'_>, p: &TradePosting<'_>) -> Result<i64, CliError> {
+fn post(tx: &AuditedTx<'_>, p: &TradePosting<'_>) -> Result<super::ids::TransactionId, CliError> {
     let mut entries = Vec::with_capacity(p.entries.len());
     for entry in p.entries {
         let money = entry.amount.money();

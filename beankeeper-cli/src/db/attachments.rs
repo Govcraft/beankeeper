@@ -264,9 +264,7 @@ mod tests {
         match transactions::post_transaction(db.conn(), &params)
             .unwrap_or_else(|e| panic!("post failed: {e}"))
         {
-            transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => {
-                id.try_into().unwrap_or_else(|e| panic!("post ID: {e}"))
-            }
+            transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => id,
         }
     }
 
@@ -463,9 +461,9 @@ mod tests {
 
         // Get an entry ID from the posted transaction
         let company = super::super::companies::Company::resolve(db.conn(), "acme")?;
-        let entries = transactions::get_entries_for_transaction(&company, txn_id.get())
+        let entries = transactions::get_entries_for_transaction(&company, txn_id)
             .unwrap_or_else(|e| panic!("get entries: {e}"));
-        let entry_id = entries[0].id.try_into()?;
+        let entry_id = entries[0].id;
 
         let params = StoreAttachmentParams {
             transaction_id: txn_id,

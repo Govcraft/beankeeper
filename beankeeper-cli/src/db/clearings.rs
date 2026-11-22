@@ -55,7 +55,7 @@ use serde::{Serialize, Serializer, ser::SerializeStruct};
 use super::amounts::PositiveMinorUnits;
 use super::audit::EntryStatus;
 use super::companies::Company;
-use crate::db::ids::{EntryId, TransactionId};
+use crate::db::ids::{ClearingId, EntryId, TransactionId};
 use crate::error::CliError;
 
 /// Status of a single clearing row.
@@ -146,8 +146,8 @@ impl Serialize for ClearingState {
 /// One persisted clearing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Clearing {
-    pub id: i64,
-    pub entry_id: i64,
+    pub id: ClearingId,
+    pub entry_id: EntryId,
     pub amount: PositiveMinorUnits,
     cleared_date: NaiveDate,
     pub statement_ref: Option<String>,
@@ -276,10 +276,10 @@ pub enum ClearPlan {
     /// ids) to reconciled.
     Insert {
         amount: PositiveMinorUnits,
-        promote: Vec<i64>,
+        promote: Vec<ClearingId>,
     },
     /// Promote existing clearings to reconciled; insert nothing.
-    Promote { ids: Vec<i64> },
+    Promote { ids: Vec<ClearingId> },
     /// Change nothing.
     Skip(SkipReason),
 }
@@ -380,7 +380,7 @@ pub fn plan_clear(
         amount => amount,
     };
 
-    let promote: Vec<i64> = if spec.status == ClearingStatus::Reconciled
+    let promote: Vec<ClearingId> = if spec.status == ClearingStatus::Reconciled
         && spec.amount.is_none()
         && spec.statement.is_none()
     {
@@ -419,7 +419,7 @@ fn check_promotable(c: &Clearing, reconciled_date: NaiveDate) -> Result<(), CliE
 }
 
 /// The error for a `cleared` request on reconciled (locked) clearings.
-fn locked_error(entry_id: i64, statement: Option<&str>) -> CliError {
+fn locked_error(entry_id: EntryId, statement: Option<&str>) -> CliError {
     let (what, flag) = match statement {
         Some(s) => (
             format!("entry {entry_id} is reconciled by statement '{s}'"),
@@ -436,7 +436,7 @@ fn locked_error(entry_id: i64, statement: Option<&str>) -> CliError {
 /// Plans an "unclear": the ids of the clearings to remove (all of the
 /// entry's clearings, or only the given statement's).
 #[must_use]
-pub fn plan_unclear(existing: &[Clearing], statement: Option<&str>) -> Vec<i64> {
+pub fn plan_unclear(existing: &[Clearing], statement: Option<&str>) -> Vec<ClearingId> {
     existing
         .iter()
         .filter(|c| statement.is_none_or(|s| c.statement_ref.as_deref() == Some(s)))
@@ -630,8 +630,8 @@ mod tests {
         status: ClearingStatus,
     ) -> Clearing {
         Clearing {
-            id,
-            entry_id: 1,
+            id: crate::db::ids::fixture_id(id),
+            entry_id: crate::db::ids::fixture_id(1),
             amount,
             cleared_date: date(TXN_DATE),
             statement_ref: stmt.map(str::to_string),
@@ -836,7 +836,9 @@ mod tests {
         // Reconciling a statement promotes its clearing.
         assert_eq!(
             plan_clear(units(100), &existing, &reconcile(Some("S1"), DATE)).ok(),
-            Some(ClearPlan::Promote { ids: vec![7] })
+            Some(ClearPlan::Promote {
+                ids: vec![crate::db::ids::fixture_id(7)]
+            })
         );
     }
 
@@ -848,13 +850,15 @@ mod tests {
             plan_clear(units(100), &partial, &reconcile).ok(),
             Some(ClearPlan::Insert {
                 amount: units(60),
-                promote: vec![1]
+                promote: vec![crate::db::ids::fixture_id(1)]
             })
         );
         let full = [c(1, units(100), None, Cleared)];
         assert_eq!(
             plan_clear(units(100), &full, &reconcile).ok(),
-            Some(ClearPlan::Promote { ids: vec![1] })
+            Some(ClearPlan::Promote {
+                ids: vec![crate::db::ids::fixture_id(1)]
+            })
         );
         let done = [c(1, units(100), None, Reconciled)];
         assert_eq!(
@@ -903,7 +907,9 @@ mod tests {
         }
         assert_eq!(
             plan_clear(units(100), &existing, &reconcile(Some("S1"), "2026-02-15")).ok(),
-            Some(ClearPlan::Promote { ids: vec![7] })
+            Some(ClearPlan::Promote {
+                ids: vec![crate::db::ids::fixture_id(7)]
+            })
         );
     }
 
@@ -962,8 +968,17 @@ mod tests {
             c(1, units(30), Some("S1"), Cleared),
             c(2, units(20), None, Cleared),
         ];
-        assert_eq!(plan_unclear(&existing, None), vec![1, 2]);
-        assert_eq!(plan_unclear(&existing, Some("S1")), vec![1]);
-        assert_eq!(plan_unclear(&existing, Some("S9")), Vec::<i64>::new());
+        assert_eq!(
+            plan_unclear(&existing, None),
+            vec![crate::db::ids::fixture_id(1), crate::db::ids::fixture_id(2)]
+        );
+        assert_eq!(
+            plan_unclear(&existing, Some("S1")),
+            vec![crate::db::ids::fixture_id(1)]
+        );
+        assert_eq!(
+            plan_unclear(&existing, Some("S9")),
+            Vec::<ClearingId>::new()
+        );
     }
 }

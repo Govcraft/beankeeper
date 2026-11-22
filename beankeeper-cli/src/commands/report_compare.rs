@@ -239,7 +239,7 @@ struct Mover {
 
 #[derive(Debug)]
 struct TransactionContribution {
-    transaction_id: i64,
+    transaction_id: crate::db::ids::TransactionId,
     date: NaiveDate,
     description: String,
     reference: Option<String>,
@@ -1145,7 +1145,7 @@ struct PayeeMetadata {
 }
 
 struct StoredContribution {
-    id: i64,
+    id: crate::db::ids::TransactionId,
     date: NaiveDate,
     description: String,
     metadata: Option<String>,
@@ -1769,7 +1769,7 @@ mod tests {
             values: ComparisonValues::new(usd(150), usd(100))?,
         };
         let contribution = |id, minor| TransactionContribution {
-            transaction_id: id,
+            transaction_id: crate::db::ids::fixture_id(id),
             date: NaiveDate::default(),
             description: "Rent".into(),
             reference: None,
@@ -1783,7 +1783,7 @@ mod tests {
         assert_eq!(result.change, usd(50));
         assert_eq!(result.payees.len(), 1);
         assert_eq!(result.payees[0].change, usd(50));
-        assert_eq!(result.transactions[0].transaction_id, 1);
+        assert_eq!(result.transactions[0].transaction_id.get(), 1);
         Ok(())
     }
 }

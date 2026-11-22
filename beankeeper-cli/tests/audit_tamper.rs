@@ -194,8 +194,8 @@ fn sql_blocks_financial_edits_deletes_and_replace_even_without_recursive_trigger
 #[test]
 fn posts_and_reversals_record_creators_and_skip_retries_without_new_audit_rows() -> TestResult {
     let ledger = Ledger::new()?;
-    assert_eq!(ledger.post("original")?, PostResult::Created(1));
-    assert_eq!(ledger.post("original")?, PostResult::Skipped(1));
+    assert_eq!(ledger.post("original")?, PostResult::Created(1.try_into()?));
+    assert_eq!(ledger.post("original")?, PostResult::Skipped(1.try_into()?));
     let result = ledger
         .command()?
         .args([
@@ -257,7 +257,7 @@ fn creation_audit_failure_rolls_back_posting_and_chain_sequence() -> TestResult 
         .db
         .conn()
         .execute_batch("DROP TRIGGER fail_creation;")?;
-    assert_eq!(ledger.post("original")?, PostResult::Created(1));
+    assert_eq!(ledger.post("original")?, PostResult::Created(1.try_into()?));
     success(&ledger.verify()?)?;
     Ok(())
 }

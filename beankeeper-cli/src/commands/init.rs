@@ -101,8 +101,8 @@ fn post(
     desc: &str,
     date: &str,
     entries: &[PostEntryParams],
-    reference: (&str, Option<i64>),
-) -> Result<i64, CliError> {
+    reference: (&str, Option<crate::db::ids::TransactionId>),
+) -> Result<crate::db::ids::TransactionId, CliError> {
     post_with_metadata(context, company, (desc, date), entries, reference, None)
 }
 
@@ -111,9 +111,9 @@ fn post_with_metadata(
     company: &str,
     description_and_date: (&str, &str),
     entries: &[PostEntryParams],
-    reference: (&str, Option<i64>),
+    reference: (&str, Option<crate::db::ids::TransactionId>),
     metadata: Option<&str>,
-) -> Result<i64, CliError> {
+) -> Result<crate::db::ids::TransactionId, CliError> {
     use crate::db::post_transaction;
     use crate::db::transactions::PostTransactionParams;
 
@@ -130,7 +130,7 @@ fn post_with_metadata(
             currency: beankeeper::types::Currency::USD,
             date: crate::cli::CalendarDateArg::decode(date).posting_date()?,
             entries,
-            correlate,
+            correlate: correlate.map(Into::into),
             reference: Some(reference),
             on_conflict: crate::db::ConflictStrategy::Error,
             actor,

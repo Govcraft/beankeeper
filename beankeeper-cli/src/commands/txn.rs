@@ -640,7 +640,7 @@ pub(crate) struct PostingRequest {
     pub credit: Vec<PostingLine>,
     pub metadata: Option<String>,
     pub annotations: Vec<(String, String)>,
-    pub correlate: Option<i64>,
+    pub correlate: Option<crate::db::ids::PartnerTransactionId>,
     pub reference: Option<super::reference::TransactionReference>,
     pub on_conflict: crate::cli::OnConflictArg,
     pub tax: HashMap<String, String>,
@@ -816,7 +816,8 @@ fn run_list(
         OutputFormat::Json => {
             // For JSON, include entries for each transaction
             let company = Company::resolve(db_handle.conn(), params.company_slug)?;
-            let mut entries_map: HashMap<i64, Vec<db::EntryRow>> = HashMap::new();
+            let mut entries_map: HashMap<crate::db::ids::TransactionId, Vec<db::EntryRow>> =
+                HashMap::new();
             for txn in &rows {
                 let entries = transactions::get_entries_for_transaction(&company, txn.id)?;
                 entries_map.insert(txn.id, entries);
@@ -891,7 +892,7 @@ fn run_count(
 fn run_show(
     db_handle: &Db,
     company: &str,
-    id: i64,
+    id: crate::db::ids::TransactionId,
     display: (OutputFormat, bool),
     out: &mut dyn Write,
     meta: output::json::Meta,
@@ -899,13 +900,11 @@ fn run_show(
     let (format, use_color) = display;
     let company_scope = Company::resolve(db_handle.conn(), company)?;
     let (txn, entries) = transactions::get_scoped_transaction(&company_scope, id)?;
-    let att_rows = attachments::list_attachments(db_handle.read(), company, id.try_into()?)?;
-    let mut clearings: HashMap<i64, Vec<db::clearings::Clearing>> = HashMap::new();
+    let att_rows = attachments::list_attachments(db_handle.read(), company, id)?;
+    let mut clearings: HashMap<crate::db::ids::EntryId, Vec<db::clearings::Clearing>> =
+        HashMap::new();
     for e in &entries {
-        clearings.insert(
-            e.id,
-            db::clearings::list_clearings(&company_scope, e.id.try_into()?)?,
-        );
+        clearings.insert(e.id, db::clearings::list_clearings(&company_scope, e.id)?);
     }
 
     // Determine currency minor units for formatting
@@ -925,9 +924,11 @@ fn run_show(
             }
         }
         OutputFormat::Json => {
-            let mut entries_map: HashMap<i64, Vec<db::EntryRow>> = HashMap::new();
+            let mut entries_map: HashMap<crate::db::ids::TransactionId, Vec<db::EntryRow>> =
+                HashMap::new();
             entries_map.insert(txn.id, entries);
-            let mut att_map: HashMap<i64, Vec<db::AttachmentRow>> = HashMap::new();
+            let mut att_map: HashMap<crate::db::ids::TransactionId, Vec<db::AttachmentRow>> =
+                HashMap::new();
             att_map.insert(txn.id, att_rows);
             let rendered = output::json::render_transactions_with_attachments(
                 &[txn],
@@ -969,7 +970,7 @@ fn run_attach(
 
     let (att_id, hash) = Granted::<Post>::with_db(db_handle, &cli.principal(), |grant| {
         // 2. Validate the transaction exists for this company
-        let _txn = transactions::get_transaction(db_handle.read(), company, transaction_id.get())?;
+        let _txn = transactions::get_transaction(db_handle.read(), company, transaction_id)?;
 
         // 3. Validate source file exists
         let source = Path::new(file_path);

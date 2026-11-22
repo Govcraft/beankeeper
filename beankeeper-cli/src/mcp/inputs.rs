@@ -24,7 +24,7 @@ use crate::db::audit::setup::{
     statements::{StatementContent, StatementFormat, StatementRequest, StatementSource},
 };
 use crate::db::{
-    ids::{EntryId, StatementBatchId, TransactionId},
+    ids::{EntryId, PartnerTransactionId, StatementBatchId, TransactionId},
     investments::LotId,
     proposals::ProposalId,
 };
@@ -442,7 +442,7 @@ pub(super) struct TxnPost {
     pub metadata: Option<String>,
     pub currency: Option<CurrencyCode>,
     pub date: Option<Date>,
-    pub correlate: Option<TransactionId>,
+    pub correlate: Option<PartnerTransactionId>,
     pub reference: Option<Reference>,
     pub on_conflict: Option<OnConflictArg>,
     #[serde(default)]

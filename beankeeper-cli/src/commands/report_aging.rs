@@ -58,6 +58,7 @@
 //! age and shows what is still open after every settlement applied to it.
 //! Unapplied credit cannot be attributed to a charge and is not shown.
 
+use crate::db::ids::TransactionId;
 use crate::operation::Operation;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::NonZeroU32;
@@ -216,7 +217,7 @@ pub enum LinkTarget {
     /// string is an integer (optionally `#`-prefixed), it is tried as an id.
     Reference(String),
     /// The charge's transaction id.
-    TransactionId(i64),
+    TransactionId(TransactionId),
 }
 
 impl LinkTarget {
@@ -225,12 +226,12 @@ impl LinkTarget {
     pub fn to_json(&self) -> Value {
         match self {
             Self::Reference(s) => Value::String(s.clone()),
-            Self::TransactionId(id) => Value::from(*id),
+            Self::TransactionId(id) => Value::from(id.get()),
         }
     }
 
     /// The transaction id a reference string falls back to, if any.
-    fn fallback_id(&self) -> Option<i64> {
+    fn fallback_id(&self) -> Option<TransactionId> {
         match self {
             Self::Reference(s) => s.strip_prefix('#').unwrap_or(s).parse().ok(),
             Self::TransactionId(id) => Some(*id),
@@ -265,7 +266,7 @@ enum AgedMovement {
 /// One transaction's net effect on the account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Movement {
-    pub transaction_id: i64,
+    pub transaction_id: TransactionId,
     pub date: NaiveDate,
     pub description: String,
     pub reference: Option<String>,
@@ -279,7 +280,7 @@ impl Movement {
     ///
     /// Returns [`CliError::Validation`] when the settlement magnitude exceeds the supported amount.
     pub fn new(
-        transaction_id: i64,
+        transaction_id: TransactionId,
         date: NaiveDate,
         description: String,
         reference: Option<String>,
@@ -337,7 +338,7 @@ fn aging_overflow() -> CliError {
 /// A charge with a remaining open amount after settlement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenItem {
-    pub transaction_id: i64,
+    pub transaction_id: TransactionId,
     pub date: NaiveDate,
     pub description: String,
     pub reference: Option<String>,
@@ -414,7 +415,7 @@ impl Serialize for UnmatchedReason {
 /// A settlement link that could not be honoured.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmatchedLink {
-    pub settlement_transaction_id: i64,
+    pub settlement_transaction_id: TransactionId,
     pub settlement_date: NaiveDate,
     /// The settlement's full amount (positive).
     pub settlement_amount: i64,
@@ -462,12 +463,12 @@ fn sorted_movements(movements: &[Movement]) -> Vec<&Movement> {
 /// Lookup of link targets among a set of movements.
 pub(super) struct TargetIndex<'a> {
     by_reference: HashMap<&'a str, &'a Movement>,
-    by_id: HashMap<i64, &'a Movement>,
+    by_id: HashMap<TransactionId, &'a Movement>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ResolvedCharge {
-    pub(super) transaction_id: i64,
+    pub(super) transaction_id: TransactionId,
     amount: PositiveMinorUnits,
 }
 
@@ -533,7 +534,7 @@ struct Matcher<'a> {
     /// Charges in processing order (including fully settled ones).
     charges: Vec<OpenItem>,
     /// Transaction id -> index into `charges`.
-    charge_pos: HashMap<i64, usize>,
+    charge_pos: HashMap<TransactionId, usize>,
     /// All charges before this index have nothing open.
     fifo_start: usize,
     unapplied: i128,
@@ -887,7 +888,7 @@ pub fn parse_link_spec(metadata: Option<&str>, key: &str) -> LinkSpec {
             }
             Value::Number(n) => n
                 .as_i64()
-                .filter(|&id| id > 0)
+                .and_then(|id| id.try_into().ok())
                 .map(LinkTarget::TransactionId),
             _ => None,
         }
@@ -1155,7 +1156,7 @@ pub fn common_kind(accounts: &[db::AccountRow]) -> Result<AgingKind, CliError> {
 /// Returns [`CliError::Validation`] if a restricted total exceeds the supported range.
 pub fn restrict_to_charges(
     report: &mut AgingReport,
-    keep: impl Fn(i64) -> bool,
+    keep: impl Fn(TransactionId) -> bool,
 ) -> Result<(), CliError> {
     for g in &mut report.groups {
         g.items.retain(|a| keep(a.item.transaction_id));
@@ -1311,7 +1312,7 @@ pub fn combine(
 
 /// A transaction's net debits/credits on the account.
 struct TxnTotals {
-    id: i64,
+    id: TransactionId,
     date: NaiveDate,
     description: String,
     reference: Option<String>,
@@ -1372,7 +1373,7 @@ pub(super) fn find_link_target(
     conn: &Connection,
     company: &str,
     target: &LinkTarget,
-) -> Result<Option<i64>, CliError> {
+) -> Result<Option<TransactionId>, CliError> {
     if let LinkTarget::Reference(r) = target {
         let id = conn
             .query_row(
@@ -1938,7 +1939,7 @@ fn describe_unmatched(u: &UnmatchedLink, r: &MultiAgingReport, ctx: &RenderConte
         .map_or_else(String::new, |c| format!(", {c}"));
     format!(
         "settlement txn {} ({account}{}{who}, {}): link {}={} ignored -- {}; applied FIFO",
-        u.settlement_transaction_id,
+        u.settlement_transaction_id.get(),
         u.settlement_date.format("%Y-%m-%d"),
         format_minor_grouped(u.settlement_amount, ctx.currency),
         ctx.link_key.unwrap_or(DEFAULT_LINK_KEY),
@@ -2261,7 +2262,7 @@ struct BucketAmountJson<'a> {
 #[derive(Serialize)]
 struct OpenItemJson<'a> {
     account: &'a str,
-    transaction_id: i64,
+    transaction_id: TransactionId,
     date: String,
     reference: Option<&'a str>,
     description: &'a str,
@@ -2296,7 +2297,7 @@ struct TotalsJson<'a> {
 #[derive(Serialize)]
 struct UnmatchedLinkJson<'a> {
     account: Option<&'a str>,
-    settlement_transaction_id: i64,
+    settlement_transaction_id: TransactionId,
     settlement_date: String,
     #[serde(flatten)]
     settlement_amount: MoneyField,
@@ -2622,7 +2623,7 @@ mod tests {
 
     fn movement_with_links(id: i64, date: &str, amount: i128, links: LinkSpec) -> Movement {
         Movement::new(
-            id,
+            crate::db::ids::fixture_id(id),
             d(date),
             format!("txn {id}"),
             Some(format!("R{id}")),
@@ -2644,7 +2645,7 @@ mod tests {
     fn open_of(r: &MatchResult) -> Vec<(i64, i64)> {
         r.open_items
             .iter()
-            .map(|i| (i.transaction_id, i.open))
+            .map(|i| (i.transaction_id.get(), i.open))
             .collect()
     }
 
@@ -2695,7 +2696,7 @@ mod tests {
         ]);
         assert_eq!(r.unapplied_credit, 0);
         assert_eq!(r.open_items.len(), 1);
-        assert_eq!(r.open_items[0].transaction_id, 2);
+        assert_eq!(r.open_items[0].transaction_id.get(), 2);
         assert_eq!(r.open_items[0].original, 500);
         assert_eq!(r.open_items[0].open, 300);
     }
@@ -2716,7 +2717,7 @@ mod tests {
         ]);
         assert_eq!(r.unapplied_credit, 0);
         assert_eq!(r.open_items.len(), 1);
-        assert_eq!(r.open_items[0].transaction_id, 3);
+        assert_eq!(r.open_items[0].transaction_id.get(), 3);
         assert_eq!(r.open_items[0].open, 400);
     }
 
@@ -2835,7 +2836,12 @@ mod tests {
     fn neutral_movement_is_a_known_target_but_cannot_be_settled() {
         let result = apply_specific(&[
             mv(1, "2026-01-01", 0),
-            linked(2, "2026-01-02", -10, vec![LinkTarget::TransactionId(1)]),
+            linked(
+                2,
+                "2026-01-02",
+                -10,
+                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(1))],
+            ),
         ]);
         assert_eq!(result.unapplied_credit, 10);
         assert_eq!(
@@ -2946,11 +2952,11 @@ mod tests {
         let as_of = d("2026-03-01");
         let ungrouped = report_for(rows(false), as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(ungrouped.groups.len(), 1);
-        assert_eq!(ungrouped.groups[0].items[0].item.transaction_id, 2);
+        assert_eq!(ungrouped.groups[0].items[0].item.transaction_id.get(), 2);
 
         let grouped = report_for(rows(true), as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(grouped.groups.len(), 2);
-        assert_eq!(grouped.groups[0].items[0].item.transaction_id, 1);
+        assert_eq!(grouped.groups[0].items[0].item.transaction_id.get(), 1);
         assert_eq!(grouped.groups[1].items, Vec::<AgedItem>::new());
         assert_eq!(grouped.net(), ungrouped.net());
     }
@@ -3015,7 +3021,12 @@ mod tests {
             mv(1, "2026-01-01", 100),
             mv(2, "2026-02-01", 100),
             mv(3, "2026-02-02", 100),
-            linked(4, "2026-03-01", -100, vec![LinkTarget::TransactionId(2)]),
+            linked(
+                4,
+                "2026-03-01",
+                -100,
+                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(2))],
+            ),
             linked(5, "2026-03-02", -40, vec![by_ref("#3")]),
             linked(6, "2026-03-03", -10, vec![by_ref("3")]),
         ]);
@@ -3086,7 +3097,7 @@ mod tests {
         let reasons: Vec<(i64, UnmatchedReason)> = r
             .unmatched_links
             .iter()
-            .map(|u| (u.settlement_transaction_id, u.reason))
+            .map(|u| (u.settlement_transaction_id.get(), u.reason))
             .collect();
         assert_eq!(
             reasons,
@@ -3133,7 +3144,12 @@ mod tests {
             mv(4, "2026-01-03", 30),
             linked(5, "2026-01-04", -500, vec![by_ref("R3"), by_ref("R1")]),
             mv(6, "2026-01-05", 120),
-            linked(7, "2026-01-06", -4, vec![LinkTarget::TransactionId(6)]),
+            linked(
+                7,
+                "2026-01-06",
+                -4,
+                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(6))],
+            ),
         ];
         let balance: i128 = movements
             .iter()
@@ -3158,11 +3174,16 @@ mod tests {
         );
         assert_eq!(
             parse_link_spec(Some(r#"{"applies_to":42}"#), k),
-            LinkSpec::Targets(vec![LinkTarget::TransactionId(42)])
+            LinkSpec::Targets(vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(
+                42
+            ))])
         );
         assert_eq!(
             parse_link_spec(Some(r#"{"applies_to":["A",7]}"#), k),
-            LinkSpec::Targets(vec![by_ref("A"), LinkTarget::TransactionId(7)])
+            LinkSpec::Targets(vec![
+                by_ref("A"),
+                LinkTarget::TransactionId(crate::db::ids::fixture_id(7))
+            ])
         );
         for none in [
             None,
@@ -3212,7 +3233,7 @@ mod tests {
             .iter()
             .map(|u| {
                 (
-                    u.settlement_transaction_id,
+                    u.settlement_transaction_id.get(),
                     u.counterparty.as_deref(),
                     u.reason,
                 )
@@ -3408,7 +3429,7 @@ mod tests {
         ];
         let mut r = report_for(grouped, as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(r.unapplied_credit, 70);
-        restrict_to_charges(&mut r, |id| id == 1 || id == 5)
+        restrict_to_charges(&mut r, |id| matches!(id.get(), 1 | 5))
             .unwrap_or_else(|error| panic!("restrict test report: {error}"));
 
         // Only charge 1 survives: still 180 days old, net of the payment.

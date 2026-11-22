@@ -153,7 +153,7 @@ pub struct CreateScheduleParams {
 pub struct Occurrence {
     pub schedule_id: ScheduleId,
     pub date: NaiveDate,
-    pub transaction_id: Option<i64>,
+    pub transaction_id: Option<super::ids::TransactionId>,
 }
 
 /// Maximum occurrences in one company run without an explicit override.
@@ -500,7 +500,7 @@ fn execute_schedule(
     reader: ReadConn<'_>,
     before: &Schedule,
     through: NaiveDate,
-    mut post: impl FnMut(&Schedule, NaiveDate) -> Result<Option<i64>, CliError>,
+    mut post: impl FnMut(&Schedule, NaiveDate) -> Result<Option<super::ids::TransactionId>, CliError>,
     output: &mut Vec<Occurrence>,
 ) -> Result<Schedule, CliError> {
     validate_entries(&before.entries)?;
@@ -526,7 +526,7 @@ fn post_occurrence(
     actor: &Actor,
     schedule: &Schedule,
     date: NaiveDate,
-) -> Result<i64, CliError> {
+) -> Result<super::ids::TransactionId, CliError> {
     let reference = format!("schedule:{}:{date}", schedule.id);
     let result = audit::post_in_audited_scope(
         tx,

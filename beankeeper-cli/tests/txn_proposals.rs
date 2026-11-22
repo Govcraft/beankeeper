@@ -193,7 +193,8 @@ fn assert_approved_details(
     let transaction_id = resolved["transaction_id"]
         .as_i64()
         .ok_or("missing transaction ID")?;
-    let (txn, entries) = transactions::get_transaction(ledger.db.read(), "acme", transaction_id)?;
+    let (txn, entries) =
+        transactions::get_transaction(ledger.db.read(), "acme", transaction_id.try_into()?)?;
     assert_eq!(txn.agent_uri.as_deref(), Some(approver.uri.as_str()));
     assert_eq!(
         txn.token_jti.as_deref(),
@@ -759,7 +760,7 @@ fn period_lock_blocks_approval_atomically_and_reopen_requires_admin() -> TestRes
     assert_eq!(ledger.count("transactions")?, 0);
     assert_eq!(ledger.count("entries")?, 0);
     assert_eq!(ledger.count("audit_log")?, history);
-    let pending = beankeeper_cli::db::proposals::get(ledger.db.conn(), "acme", id)?;
+    let pending = beankeeper_cli::db::proposals::get(ledger.db.conn(), "acme", &id.parse()?)?;
     assert_eq!(pending.state.code(), "pending");
     error_code(
         &ledger.call("acme", &reopen, Some(&approver.token))?,

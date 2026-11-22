@@ -1493,7 +1493,7 @@ mod tests {
              VALUES (?1, 'legacy', 'pending', ?2, 100, 'USD', 'proposer', 'jti')",
             params![id, serde_json::to_string(&payload).map_err(|e| CliError::General(e.to_string()))?],
         )?;
-        audit::reject_proposal(&conn, &owner, "legacy", &id, Some("v19 review"))?;
+        audit::reject_proposal(&conn, &owner, "legacy", &id.parse()?, Some("v19 review"))?;
         crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
             audit::set_policy(grant, true)
         })?;
@@ -1523,7 +1523,9 @@ mod tests {
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(&conn)?.enforce);
         assert_eq!(
-            proposals::get(&conn, "legacy", &id)?.state.reason(),
+            proposals::get(&conn, "legacy", &id.parse()?)?
+                .state
+                .reason(),
             Some("v19 review")
         );
         proposals::verify_resolutions(&conn)?;
@@ -1872,7 +1874,12 @@ mod tests {
             let changed = audit::savepoint::with_audited_tx(&conn, "sp_metadata_fixture", |tx| {
                 let actor = Actor::new("v15");
                 let grant = Granted::<Post>::check(tx, &actor)?;
-                audit::edit_metadata(grant, "legacy", audit::MetadataTarget::Id(id), &edit)
+                audit::edit_metadata(
+                    grant,
+                    "legacy",
+                    audit::MetadataTarget::Id(id.try_into()?),
+                    &edit,
+                )
             })?;
             assert!(changed.changed);
         }

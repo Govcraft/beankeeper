@@ -327,7 +327,7 @@ fn load_movements(
         ],
         |row| {
             Ok((
-                row.get::<_, i64>(0)?,
+                row.get::<_, crate::db::ids::TransactionId>(0)?,
                 db::calendar_date::read(row, 1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
@@ -423,7 +423,7 @@ mod tests {
         amount: i64,
         reference: Option<&str>,
         metadata: Option<&str>,
-    ) -> Result<i64, CliError> {
+    ) -> Result<crate::db::ids::TransactionId, CliError> {
         let result = db::post_transaction(
             db.conn(),
             &PostTransactionParams {
@@ -528,8 +528,8 @@ mod tests {
             .id;
         let mut request = db::audit::ClearRequest {
             company_slug: "co",
-            transaction_id: id.try_into()?,
-            entry_id: entry_id.try_into()?,
+            transaction_id: id,
+            entry_id,
             amount: None,
             date: "2024-01-15".parse()?,
             statement: Some("statement"),
