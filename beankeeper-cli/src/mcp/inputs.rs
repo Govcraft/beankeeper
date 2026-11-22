@@ -349,6 +349,18 @@ pub(super) struct Line {
     pub memo: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LedgerSetupOpeningPreview {
+    pub company: Company,
+    pub generation: Generation,
+    pub date: Date,
+    pub currency: CurrencyCode,
+    pub description: Option<String>,
+    pub debits: NonEmpty<Line>,
+    pub credits: NonEmpty<Line>,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TxnPost {

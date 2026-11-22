@@ -378,7 +378,6 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
     let mut client = Client::spawn(command)?;
     client.initialize()?;
     let listed_tools = client.request("tools/list", &json!({}))?;
-    let names = tool_names(&listed_tools)?;
     let expected: BTreeSet<_> = [
         "security_create",
         "security_list",
@@ -417,6 +416,7 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "ledger_setup_book_update",
         "ledger_setup_chart_apply",
         "ledger_setup_account_add",
+        "ledger_setup_opening_preview",
         "budget_list",
         "budget_set",
         "budget_delete",
@@ -427,7 +427,7 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
     ]
     .into_iter()
     .collect();
-    assert_eq!(names, expected);
+    assert_eq!(tool_names(&listed_tools)?, expected);
     assert_eq!(
         client.success("company_list", &json!({}))?[0]["slug"],
         "acme"
@@ -934,6 +934,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "ledger_setup_book_update",
         "ledger_setup_chart_apply",
         "ledger_setup_account_add",
+        "ledger_setup_opening_preview",
     ] {
         assert!(!names.contains(name));
     }
@@ -2691,6 +2692,7 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
             "ledger_setup_book_update",
             "ledger_setup_chart_apply",
             "ledger_setup_account_add",
+            "ledger_setup_opening_preview",
         ])
     );
     let status = setup_client.success("ledger_setup_status", &json!({}))?;
@@ -2713,6 +2715,15 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         &book,
     )?;
 
+    assert_opening_preview(
+        &mut setup_client,
+        &db,
+        &path,
+        &passphrase_path,
+        setup_token,
+        generation,
+    )?;
+
     let ended = bk(&path)?
         .arg("--passphrase-file")
         .arg(&passphrase_path)
@@ -2731,6 +2742,11 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         ended["data"]
     );
     let denied = setup_client.call("ledger_setup_status", &json!({}))?;
+    assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
+    let denied = setup_client.call(
+        "ledger_setup_opening_preview",
+        &opening_preview_input(generation),
+    )?;
     assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
     Ok(())
 }
@@ -3045,5 +3061,159 @@ fn assert_setup_chart_collision_rolls_back(
     )?;
     assert_eq!(count_accounts, 1);
     assert_eq!(setup_audit_count(db)?, count);
+    Ok(())
+}
+
+fn opening_preview_input(generation: i64) -> Value {
+    json!({
+        "company":"home", "generation": generation, "date":"2026-01-01", "currency":"BHD",
+        "debits":[{"account":"1010", "amount":"12.345", "memo":"Opening asset"}],
+        "credits":[{"account":"3000", "amount":"12.345"}],
+    })
+}
+
+fn assert_opening_preview(
+    client: &mut Client,
+    db: &beankeeper_cli::db::Db,
+    path: &Path,
+    passphrase: &Path,
+    token: &str,
+    generation: i64,
+) -> TestResult {
+    let state = || {
+        db.conn().query_row(
+            "SELECT (SELECT COUNT(*) FROM audit_log), (SELECT COUNT(*) FROM transactions),
+                (SELECT COUNT(*) FROM txn_proposals), (SELECT COUNT(*) FROM setup_requests)",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+    };
+    let before = state()?;
+    let input = opening_preview_input(generation);
+    let preview = client.success("ledger_setup_opening_preview", &input)?;
+    assert_eq!(preview["date"], "2026-01-01");
+    assert_eq!(preview["currency"], "BHD");
+    assert_eq!(preview["entries"][0]["account_name"], "Chase Checking");
+    assert_eq!(preview["entries"][0]["memo"], "Opening asset");
+    assert_eq!(preview["entries"][1]["direction"], "credit");
+    assert_eq!(
+        preview["totals"]["debits"],
+        json!({"amount_minor":"12345", "amount_display":"12.345"})
+    );
+    assert_eq!(preview["totals"]["debits"], preview["totals"]["credits"]);
+    assert_cli_opening_preview_matches(path, passphrase, token, generation, &preview)?;
+
+    let mut invalid = input.clone();
+    invalid["credits"][0]["amount"] = json!("12.346");
+    assert_eq!(
+        payload(&client.call("ledger_setup_opening_preview", &invalid)?)?["code"],
+        "VALIDATION"
+    );
+    invalid = input.clone();
+    invalid["company"] = json!("studio");
+    assert_eq!(
+        payload(&client.call("ledger_setup_opening_preview", &invalid)?)?["code"],
+        "VALIDATION"
+    );
+    invalid = input.clone();
+    invalid["generation"] = json!(generation + 1);
+    assert_eq!(
+        payload(&client.call("ledger_setup_opening_preview", &invalid)?)?["code"],
+        "FORBIDDEN"
+    );
+
+    let mut wide = input.clone();
+    wide["debits"] = json!(vec![
+        json!({"account":"1010", "amount":"9000000000000000"});
+        3
+    ]);
+    wide["credits"] = json!(vec![
+        json!({"account":"3000", "amount":"9000000000000000"});
+        3
+    ]);
+    let wide = client.success("ledger_setup_opening_preview", &wide)?;
+    assert_eq!(
+        wide["totals"]["debits"]["amount_minor"],
+        "27000000000000000000"
+    );
+    assert_eq!(
+        wide["totals"]["debits"]["amount_display"],
+        "27000000000000000.000"
+    );
+    assert_eq!(state()?, before);
+
+    bk(path)?
+        .arg("--passphrase-file")
+        .arg(passphrase)
+        .args([
+            "--company",
+            "home",
+            "period",
+            "close",
+            "--through",
+            "2026-01-01",
+        ])
+        .assert()
+        .success();
+    let closed = state()?;
+    let blocked = client.call("ledger_setup_opening_preview", &input)?;
+    assert_eq!(payload(&blocked)?["code"], "VALIDATION");
+    assert!(
+        payload(&blocked)?["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("closed period"))
+    );
+    assert_eq!(state()?, closed);
+    Ok(())
+}
+
+fn assert_cli_opening_preview_matches(
+    path: &Path,
+    passphrase: &Path,
+    token: &str,
+    generation: i64,
+    expected: &Value,
+) -> TestResult {
+    let cli = bk(path)?
+        .arg("--passphrase-file")
+        .arg(passphrase)
+        .args([
+            "--agent-token",
+            token,
+            "--json",
+            "setup",
+            "opening-preview",
+            "home",
+        ])
+        .args([
+            "--generation",
+            &generation.to_string(),
+            "--date",
+            "2026-01-01",
+            "--currency",
+            "BHD",
+        ])
+        .args([
+            "--debit",
+            "1010:12.345:Opening asset",
+            "--credit",
+            "3000:12.345",
+        ])
+        .output()?;
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let report = serde_json::from_slice::<Value>(&cli.stdout)?;
+    assert_eq!(report["meta"]["command"], "ledger.setup.opening.preview");
+    assert_eq!(&report["data"], expected);
     Ok(())
 }

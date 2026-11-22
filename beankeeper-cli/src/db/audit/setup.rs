@@ -1,6 +1,7 @@
 //! Audited lifecycle for credentials limited to the active setup session.
 
 pub(crate) mod books;
+pub(crate) mod openings;
 mod requests;
 
 use std::num::NonZeroI64;

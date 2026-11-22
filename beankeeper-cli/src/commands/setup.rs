@@ -1,6 +1,7 @@
 //! Readiness for the selected ledger's onboarding flow.
 
 use beankeeper::types::{AccountCode, AccountType, Currency};
+use chrono::NaiveDate;
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
@@ -10,6 +11,7 @@ use crate::db::{
     audit::setup::{
         self, End, Generation,
         books::{self, BookChange, ChartTemplate, SetupReference},
+        openings::{self, OpeningLine, OpeningRequest},
     },
     companies::CompanySlug,
 };
@@ -63,6 +65,8 @@ pub enum SetupCommand {
     ChartApply(ChartApplyArgs),
     /// Add a real account to a book.
     AccountAdd(AccountAddArgs),
+    /// Preview the balanced entries for a book's opening balances.
+    OpeningPreview(OpeningPreviewArgs),
     /// Cancel a setup generation and deactivate its credential.
     Revoke {
         /// Setup generation returned by begin.
@@ -83,6 +87,7 @@ impl SetupCommand {
             Self::BookUpdate(_) => Operation::LedgerSetupBookUpdate,
             Self::ChartApply(_) => Operation::LedgerSetupChartApply,
             Self::AccountAdd(_) => Operation::LedgerSetupAccountAdd,
+            Self::OpeningPreview(_) => Operation::LedgerSetupOpeningPreview,
         }
     }
 }
@@ -193,6 +198,57 @@ pub struct AccountAddArgs {
     account_type: AccountType,
 }
 
+/// Inputs to validate and preview an opening journal.
+#[derive(Debug, Args)]
+pub struct OpeningPreviewArgs {
+    /// Company whose opening balances are being prepared.
+    company: CompanySlug,
+    /// Active generation returned by setup begin.
+    #[arg(long)]
+    generation: Generation,
+    /// Opening date, in YYYY-MM-DD.
+    #[arg(long)]
+    date: NaiveDate,
+    /// Explicit currency for every line.
+    #[arg(long)]
+    currency: Currency,
+    /// Description for the opening journal.
+    #[arg(long, default_value = openings::DEFAULT_DESCRIPTION)]
+    description: String,
+    /// Debit line in ACCOUNT:AMOUNT[:MEMO] format. May repeat.
+    #[arg(long, required = true)]
+    debit: Vec<String>,
+    /// Credit line in ACCOUNT:AMOUNT[:MEMO] format. May repeat.
+    #[arg(long, required = true)]
+    credit: Vec<String>,
+}
+
+impl OpeningPreviewArgs {
+    fn request(&self) -> Result<OpeningRequest, CliError> {
+        let lines = |inputs: &[String]| {
+            inputs
+                .iter()
+                .map(|line| {
+                    let (code, minor, memo) = super::txn::parse_entry_arg(line, self.currency)?;
+                    let account = code
+                        .parse::<AccountCode>()
+                        .map_err(|error| CliError::Validation(error.to_string()))?;
+                    OpeningLine::new(account, minor, self.currency, memo)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        Ok(OpeningRequest {
+            company: self.company.clone(),
+            generation: self.generation,
+            date: self.date,
+            currency: self.currency,
+            description: self.description.clone(),
+            debits: lines(&self.debit)?,
+            credits: lines(&self.credit)?,
+        })
+    }
+}
+
 /// Persisted setup facts for the selected ledger.
 #[derive(Debug, Serialize)]
 pub struct SetupStatus {
@@ -284,6 +340,20 @@ fn run_book_show(cli: &Cli, company: &CompanySlug) -> Result<(), CliError> {
     )
 }
 
+fn run_opening_preview(cli: &Cli, args: &OpeningPreviewArgs) -> Result<(), CliError> {
+    let db = open_setup_snapshot(cli)?;
+    let _snapshot = db.conn().unchecked_transaction()?;
+    cli.verify_agent(&db)?;
+    let request = args.request()?;
+    let preview = openings::preview(&db, &cli.principal(), &request)?;
+    print_setup_data(
+        cli,
+        Operation::LedgerSetupOpeningPreview,
+        Some(args.company.as_str()),
+        preview,
+    )
+}
+
 pub(crate) fn begin_json(
     db: &Db,
     actor: &Actor,
@@ -312,6 +382,7 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
     let db = match command {
         SetupCommand::Status => return run_status(cli),
         SetupCommand::BookShow { company } => return run_book_show(cli, company),
+        SetupCommand::OpeningPreview(args) => return run_opening_preview(cli, args),
         _ => cli.open_db()?,
     };
     let actor = cli.principal();
@@ -358,6 +429,7 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
         )?,
         SetupCommand::Status => return run_status(cli),
         SetupCommand::BookShow { company } => return run_book_show(cli, company),
+        SetupCommand::OpeningPreview(args) => return run_opening_preview(cli, args),
     };
     print_setup_data(cli, command.operation(), None, data)
 }
