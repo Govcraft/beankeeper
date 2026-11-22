@@ -164,6 +164,11 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
     };
     let navigation = issue("ui/navigate")?["data"].clone();
     let narrow = issue("ui/navigate/panel")?["data"].clone();
+    let administrator = issue("ledger/admin")?;
+    let owner = Actor::new("owner").with_identity(identity::verify(
+        ledger.db.conn(),
+        text(&administrator["data"], "token")?,
+    )?);
     let uri = AgentUri::parse(text(&navigation, "agent_uri")?)?;
     assert_eq!(uri.capability_path().as_str(), "ui");
     assert_eq!(navigation["capabilities"], json!(["ui/navigate"]));
@@ -180,40 +185,30 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
     );
     assert!(legacy_identity.allows(Capability::Post)?);
     assert!(!legacy_identity.allows(Capability::Navigate)?);
+    let authorize = |token, capability| identity::authorize(ledger.db.conn(), token, capability);
     for enforce in [false, true] {
-        db::audit::set_policy(ledger.db.conn(), &Actor::new("owner"), enforce)?;
-        assert!(
-            identity::authorize(
-                ledger.db.conn(),
-                Some(text(&navigation, "token")?),
-                Capability::Navigate
-            )?
-            .is_some()
-        );
+        identity::Granted::<identity::Admin>::with(ledger.db.conn(), &owner, |grant| {
+            db::audit::set_policy(grant, enforce)
+        })?;
+        assert!(authorize(Some(text(&navigation, "token")?), Capability::Navigate)?.is_some());
         for issued in [&legacy, &narrow] {
             assert!(matches!(
-                identity::authorize(
-                    ledger.db.conn(),
-                    Some(text(issued, "token")?),
-                    Capability::Navigate
-                ),
+                authorize(Some(text(issued, "token")?), Capability::Navigate),
                 Err(CliError::Forbidden(_))
             ));
         }
         assert!(matches!(
-            identity::authorize(ledger.db.conn(), None, Capability::Navigate),
+            authorize(None, Capability::Navigate),
             Err(CliError::Unauthorized(_))
         ));
     }
     assert!(matches!(
-        identity::authorize(
-            ledger.db.conn(),
-            Some(text(&navigation, "token")?),
-            Capability::Read
-        ),
+        authorize(Some(text(&navigation, "token")?), Capability::Read),
         Err(CliError::Forbidden(_))
     ));
-    db::audit::set_policy(ledger.db.conn(), &Actor::new("owner"), false)?;
+    identity::Granted::<identity::Admin>::with(ledger.db.conn(), &owner, |grant| {
+        db::audit::set_policy(grant, false)
+    })?;
     let before = ledger.count("agent_tokens")?;
     for caps in [
         "ui",

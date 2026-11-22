@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use beankeeper_cli::db::{self, Actor, Db};
-use beankeeper_cli::identity::{self, IssueRequest};
+use beankeeper_cli::identity::{self, Admin, Granted, IssueRequest};
 use reqwest::blocking::{Client, Response};
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -104,7 +104,9 @@ impl Ledger {
     }
 
     fn enforce(&self) -> TestResult {
-        db::audit::set_policy(self.db()?.conn(), &Actor::new("owner"), true)?;
+        Granted::<Admin>::with(self.db()?.conn(), &Actor::new("owner"), |grant| {
+            db::audit::set_policy(grant, true)
+        })?;
         Ok(())
     }
 }
@@ -1399,8 +1401,24 @@ fn verify_host_policy(
 ) -> TestResult {
     let navigator = token(navigation)?;
     let reader = token(&ledger.reader)?;
+    let db = ledger.db()?;
+    let owner = Actor::new("owner");
+    let issued = identity::issue(
+        db.conn(),
+        &owner,
+        &IssueRequest {
+            name: "policy_admin",
+            capabilities: &["ledger/admin".into()],
+            ttl: Duration::from_secs(600),
+            public_key: None,
+            generate_key: true,
+        },
+    )?;
+    let owner = owner.with_identity(identity::verify(db.conn(), token(&issued)?)?);
     for enforce in [true, false, true] {
-        db::audit::set_policy(ledger.db()?.conn(), &Actor::new("owner"), enforce)?;
+        Granted::<Admin>::with(db.conn(), &owner, |grant| {
+            db::audit::set_policy(grant, enforce)
+        })?;
         for credential in [None, Some(reader), Some(navigator)] {
             let tools = rpc(session.request(credential, "tools/list", json!({}))?)?;
             let names: Vec<_> = tools["result"]["tools"]

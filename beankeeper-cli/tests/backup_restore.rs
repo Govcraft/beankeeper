@@ -618,10 +618,10 @@ fn restore_cannot_replace_an_enforced_destination_with_an_unenforced_snapshot() 
         .assert()
         .success();
     let db = Db::open(&destination, None)?;
-    beankeeper_cli::db::audit::set_policy(
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
         db.conn(),
         &beankeeper_cli::db::Actor::new("owner"),
-        true,
+        |grant| beankeeper_cli::db::audit::set_policy(grant, true),
     )?;
     drop(db);
     let original = std::fs::read(&destination)?;

@@ -1433,7 +1433,9 @@ mod tests {
             params![id, serde_json::to_string(&payload).map_err(|e| CliError::General(e.to_string()))?],
         )?;
         audit::reject_proposal(&conn, &owner, "legacy", &id, Some("v19 review"))?;
-        audit::set_policy(&conn, &owner, true)?;
+        crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
+            audit::set_policy(grant, true)
+        })?;
         let history = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
             Ok(conn
                 .prepare(
@@ -1483,7 +1485,7 @@ mod tests {
                  FROM audit_log ORDER BY id DESC LIMIT 1", [hash_version],
             ).is_err());
         }
-        audit::set_policy(&conn, &owner, false)?;
+        audit::change_legacy_policy_fixture(&conn, &owner, false)?;
         audit::change_period(
             &conn,
             &owner,
@@ -1521,7 +1523,11 @@ mod tests {
             )?;
             assert_eq!(count, 2);
             if corruption == "collision" {
-                super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
+                crate::identity::Granted::<crate::identity::Admin>::with(
+                    &conn,
+                    &super::super::Actor::new("owner"),
+                    |grant| super::super::audit::set_policy(grant, true),
+                )?;
                 super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
         }
@@ -1533,7 +1539,9 @@ mod tests {
         let conn = v17_connection()?;
         apply_v18(&conn)?;
         let owner = super::super::Actor::new("owner");
-        super::super::audit::set_policy(&conn, &owner, true)?;
+        crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
+            super::super::audit::set_policy(grant, true)
+        })?;
         let history = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
             Ok(conn
                 .prepare("SELECT id, row_hash, COALESCE(after, '') FROM audit_log ORDER BY id")?
@@ -1545,7 +1553,7 @@ mod tests {
         assert_eq!(get_schema_version(&conn)?, 19);
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(&conn)?.enforce);
-        super::super::audit::set_policy(&conn, &owner, false)?;
+        super::super::audit::change_legacy_policy_fixture(&conn, &owner, false)?;
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(&conn)?;
         assert_eq!(
@@ -1571,7 +1579,11 @@ mod tests {
             assert!(conn.prepare("SELECT * FROM txn_proposals").is_err());
             assert!(conn.prepare("SELECT * FROM audit_log_v19").is_err());
             if corruption == "collision" {
-                super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
+                crate::identity::Granted::<crate::identity::Admin>::with(
+                    &conn,
+                    &super::super::Actor::new("owner"),
+                    |grant| super::super::audit::set_policy(grant, true),
+                )?;
                 assert!(super::super::policy::get(&conn)?.enforce);
                 super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
@@ -1615,7 +1627,11 @@ mod tests {
         let result = conn.execute("INSERT INTO audit_log (id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
             SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 2 FROM audit_log ORDER BY id DESC LIMIT 1", []);
         assert!(result.is_err());
-        super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
+        crate::identity::Granted::<crate::identity::Admin>::with(
+            &conn,
+            &super::super::Actor::new("owner"),
+            |grant| super::super::audit::set_policy(grant, true),
+        )?;
         assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(4));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(&conn)?;

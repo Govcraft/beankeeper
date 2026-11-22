@@ -9,7 +9,6 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
-use secrecy::ExposeSecret;
 
 use super::{LedgerServer, http, tool_error};
 use crate::capability::Capability;
@@ -39,8 +38,8 @@ pub struct HostTool {
 /// Application tools served beside the built-in ledger tools on one endpoint.
 ///
 /// The catalog is captured once at construction. Beankeeper filters discovery,
-/// re-verifies the current request's token immediately before dispatch, and
-/// enforces each declared grant even when ledger policy enforcement is off.
+/// checks the verified request identity against the live registry and trust root
+/// before dispatch, and enforces each grant even when ledger policy is off.
 /// The identity comes from that request, never the session's initialize token.
 /// No raw credential or database connection is passed to the handler.
 ///
@@ -110,10 +109,7 @@ impl<H> HostServer<H> {
         &self,
         context: &RequestContext<RoleServer>,
     ) -> Result<VerifiedAgent, CliError> {
-        let token = self
-            .ledger
-            .request_token(context)?
-            .ok_or_else(|| CliError::Unauthorized("HTTP requires an agent token".into()))?;
+        let identity = super::http_identity(context)?.clone();
         let db = self.ledger.db.clone();
         tokio::task::spawn_blocking(move || {
             let db = db
@@ -121,7 +117,8 @@ impl<H> HostServer<H> {
                 .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
             crate::db::audit::atomically(db.conn(), || {
                 crate::db::policy::get(db.conn())?;
-                crate::identity::verify(db.conn(), token.expose_secret())
+                identity.check_live(db.conn())?;
+                Ok(Arc::unwrap_or_clone(identity))
             })
         })
         .await

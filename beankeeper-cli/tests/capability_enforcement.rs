@@ -9,7 +9,7 @@ use std::time::Duration;
 use agent_uri_attestation::{AttestationClaims, Issuer, SigningKey};
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db};
-use beankeeper_cli::identity::{self, IssueRequest};
+use beankeeper_cli::identity::{self, Admin, Granted, IssueRequest};
 use rusqlite::params;
 use secrecy::SecretString;
 use serde_json::Value;
@@ -503,7 +503,12 @@ fn policy_changes_are_atomic_and_raw_mutation_or_missing_state_fails_closed() ->
         assert!(ledger.db.conn().execute(sql, []).is_err());
     }
     ledger.db.conn().execute_batch("CREATE TRIGGER fail_policy_update BEFORE UPDATE ON ledger_policy BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;")?;
-    assert!(db::audit::set_policy(ledger.db.conn(), &Actor::new("owner"), true).is_err());
+    assert!(
+        Granted::<Admin>::with(ledger.db.conn(), &Actor::new("owner"), |grant| {
+            db::audit::set_policy(grant, true)
+        })
+        .is_err()
+    );
     assert!(!db::policy::get(ledger.db.conn())?.enforce);
     assert_eq!(ledger.count("audit_log")?, count);
     ledger
@@ -511,6 +516,15 @@ fn policy_changes_are_atomic_and_raw_mutation_or_missing_state_fails_closed() ->
         .conn()
         .execute_batch("DROP TRIGGER fail_policy_update;")?;
     ledger.enable()?;
+    let before = ledger.count("audit_log")?;
+    assert!(matches!(
+        Granted::<Admin>::with(ledger.db.conn(), &Actor::new("owner"), |grant| {
+            db::audit::set_policy(grant, false)
+        }),
+        Err(beankeeper_cli::error::CliError::Unauthorized(_))
+    ));
+    assert!(db::policy::get(ledger.db.conn())?.enforce);
+    assert_eq!(ledger.count("audit_log")?, before);
     let admin = ledger.issue(&["ledger/admin"])?;
     ledger.run(&["policy", "set", "--enforce", "on"], Some(&admin))?;
     assert_eq!(ledger.count("audit_log")?, count + 2); // one policy change and one token issuance

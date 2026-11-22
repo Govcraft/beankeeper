@@ -1816,7 +1816,11 @@ fn proposal_tools_filter_grants_and_post_approved_requests_with_reviewer_identit
     let db = Db::open_existing(&path, Some(&passphrase))?;
     let requester = proposal_identity(&db, "requester", &["ledger/read", "ledger/propose"])?;
     let reviewer = proposal_identity(&db, "reviewer", &["ledger/read", "ledger/approve"])?;
-    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
+        db.conn(),
+        &Actor::new("owner"),
+        |grant| db::audit::set_policy(grant, true),
+    )?;
     let mut agent = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
     let listed = agent.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
@@ -1908,7 +1912,11 @@ fn mcp_posting_checks_spend_limits_while_proposals_use_the_approval_gate() -> Te
         ])
         .assert()
         .success();
-    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
+        db.conn(),
+        &Actor::new("owner"),
+        |grant| db::audit::set_policy(grant, true),
+    )?;
     let mut writer = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
     let rejected = writer.call("txn_post", &posting("over-limit"))?;
     assert_eq!(rejected["result"]["isError"], true);
@@ -1944,7 +1952,11 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let token = issued["token"].as_str().ok_or("token")?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
-    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
+        db.conn(),
+        &Actor::new("owner"),
+        |grant| db::audit::set_policy(grant, true),
+    )?;
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
@@ -2003,7 +2015,11 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
     assert!(tool_names(&listed)?.contains("txn_reconcile"));
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
-    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
+        db.conn(),
+        &Actor::new("owner"),
+        |grant| db::audit::set_policy(grant, true),
+    )?;
     for (name, input, capability) in [
         ("txn_post", posting("forbidden"), "ledger/post"),
         (
@@ -2080,7 +2096,11 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
         },
     )?;
     let token = issued["token"].as_str().ok_or("token")?;
-    db::audit::set_policy(db.conn(), &Actor::new("owner"), true)?;
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with(
+        db.conn(),
+        &Actor::new("owner"),
+        |grant| db::audit::set_policy(grant, true),
+    )?;
     let mut writer = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = writer.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;

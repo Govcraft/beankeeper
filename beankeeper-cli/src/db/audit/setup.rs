@@ -420,7 +420,9 @@ mod tests {
 
         for enforce in [false, true] {
             if enforce {
-                super::super::set_policy(db.conn(), &owner, true)?;
+                identity::Granted::<identity::Admin>::with(db.conn(), &owner, |grant| {
+                    super::super::set_policy(grant, true)
+                })?;
             }
             assert!(identity::authorize_operation(db.conn(), Some(token), "setup.status").is_ok());
             for operation in ["txn.post", "account.create", "agent.issue", "setup.finish"] {
