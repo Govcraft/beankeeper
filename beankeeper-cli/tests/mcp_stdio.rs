@@ -2577,6 +2577,10 @@ fn setup_status_matches_cli_for_an_empty_encrypted_ledger() -> TestResult {
 
 #[test]
 fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
+    use beankeeper::types::AccountType;
+    use beankeeper_cli::commands::setup::{BookAccountCode, book_facts};
+    use beankeeper_cli::db::Db;
+
     let temp = tempdir()?;
     let path = temp.path().join("legacy.db");
     seed(&path)?;
@@ -2584,7 +2588,9 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
     connection.execute_batch(
         "DROP TABLE setup_requests;
          DROP TABLE setup_book_profiles;
-         DELETE FROM schema_version WHERE version = 22;",
+         DELETE FROM schema_version WHERE version = 22;
+         INSERT INTO accounts(company_slug, code, name, type)
+           VALUES ('acme', 'CASH', 'Legacy Cash', 'asset');",
     )?;
     let read = bk(&path)?
         .args(["--json", "setup", "book-show", "acme"])
@@ -2598,6 +2604,14 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
     assert_eq!(facts["data"]["company"], "acme");
     assert!(facts["data"]["profile"].is_null());
     assert_eq!(facts["data"]["accounts"][0]["code"], "1000");
+    let legacy = facts["data"]["accounts"]
+        .as_array()
+        .ok_or("missing setup accounts")?
+        .iter()
+        .find(|account| account["code"] == "CASH")
+        .ok_or("missing legacy account")?;
+    assert_eq!(legacy["name"], "Legacy Cash");
+    assert_eq!(legacy["type"], "asset");
     let status = bk(&path)?.args(["--json", "setup", "status"]).output()?;
     assert!(
         status.status.success(),
@@ -2605,6 +2619,31 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
         String::from_utf8_lossy(&status.stderr)
     );
     assert_eq!(beankeeper_cli::db::get_schema_version(&connection)?, 21);
+    drop(connection);
+
+    let db = Db::open_existing(&path, None)?;
+    let company = "acme".parse()?;
+    let typed = book_facts(&db, &company)?;
+    assert!(
+        matches!(&typed.accounts[0].code, BookAccountCode::Validated(code) if code.as_str() == "1000")
+    );
+    let typed_legacy = typed
+        .accounts
+        .iter()
+        .find(|account| account.code.as_str() == "CASH")
+        .ok_or("missing typed legacy account")?;
+    assert!(matches!(&typed_legacy.code, BookAccountCode::Legacy(code) if code == "CASH"));
+    assert_eq!(typed_legacy.account_type, AccountType::Asset);
+    assert_eq!(serde_json::to_value(typed)?, facts["data"]);
+
+    let mut server = bk(&path)?;
+    server.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(server)?;
+    client.initialize()?;
+    assert_eq!(
+        client.success("ledger_setup_book_show", &json!({"company":"acme"}))?,
+        facts["data"]
+    );
     Ok(())
 }
 

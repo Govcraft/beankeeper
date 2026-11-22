@@ -13,7 +13,7 @@ use super::{ActiveSession, Generation, requests::apply_once, with_active_session
 use crate::db::{
     AccountRow, Db, ListAccountParams, accounts::CreateAccountParams, companies::CompanySlug,
     connection::ReadConn, create_account, create_company, get_company, get_schema_version,
-    list_accounts, row_to_account, schema::BOOK_PROFILE_SCHEMA_VERSION,
+    list_accounts, schema::BOOK_PROFILE_SCHEMA_VERSION,
 };
 use crate::error::CliError;
 
@@ -175,11 +175,38 @@ pub struct BookFacts<'a> {
     pub accounts: Vec<BookAccount>,
 }
 
+/// An existing account code read from a ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BookAccountCode {
+    /// Code that meets the current account-code rules.
+    Validated(AccountCode),
+    /// Original code from a ledger that allowed a different format.
+    Legacy(String),
+}
+
+impl BookAccountCode {
+    fn from_stored(code: String) -> Self {
+        match AccountCode::new(&code) {
+            Ok(code) => Self::Validated(code),
+            Err(_) => Self::Legacy(code),
+        }
+    }
+
+    /// The exact code as stored in the book.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Validated(code) => code.as_str(),
+            Self::Legacy(code) => code,
+        }
+    }
+}
+
 /// Saved account fields used in book setup.
 #[derive(Debug)]
 pub struct BookAccount {
     /// Account code within the company.
-    pub code: AccountCode,
+    pub code: BookAccountCode,
     /// Name of the account.
     pub name: String,
     /// Accounting classification.
@@ -222,11 +249,16 @@ pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>
         )?
         .into_iter()
         .map(|row| {
-            let account = row_to_account(&row)?;
+            let account_type = row.account_type.parse::<AccountType>().map_err(|error| {
+                CliError::Database(format!(
+                    "invalid stored account type for '{}': {error}",
+                    row.code
+                ))
+            })?;
             Ok(BookAccount {
-                code: account.code().clone(),
+                code: BookAccountCode::from_stored(row.code),
                 name: row.name,
-                account_type: account.account_type(),
+                account_type,
                 default_tax_category: row.default_tax_category,
             })
         })

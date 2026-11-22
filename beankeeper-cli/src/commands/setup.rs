@@ -19,8 +19,8 @@ use crate::operation::Operation;
 use crate::output::json;
 
 pub use crate::db::audit::setup::books::{
-    BookAccount, BookFacts, BookProfile, BookPurpose, BookSettings, FiscalYearStart,
-    ProfileRevision, book_facts,
+    BookAccount, BookAccountCode, BookFacts, BookProfile, BookPurpose, BookSettings,
+    FiscalYearStart, ProfileRevision, book_facts,
 };
 
 const OLDEST_SETUP_READ_SCHEMA: i64 = 20;
