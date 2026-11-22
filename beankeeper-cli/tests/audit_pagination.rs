@@ -221,7 +221,26 @@ fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
     let output = ledger.run(&["--json", "audit", "log", "--action", "status-change"])?;
     let value: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(value["data"], json!([]));
+    assert_eq!(value["meta"]["pagination"]["limit"], 50);
+    assert_eq!(value["meta"]["pagination"]["offset"], 0);
     assert_eq!(value["meta"]["pagination"]["total"], 0);
+    Ok(())
+}
+
+#[test]
+fn audit_log_rejects_negative_offset() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let output = Command::cargo_bin("bk")?
+        .arg("--db")
+        .arg(dir.path().join("audit.db"))
+        .args(["audit", "log", "--offset", "-1"])
+        .output()?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("audit offset must be a nonnegative integer"),
+        "{stderr}"
+    );
     Ok(())
 }
 

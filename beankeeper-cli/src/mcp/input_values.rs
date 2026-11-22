@@ -301,19 +301,6 @@ impl Serialize for PageLimit {
     }
 }
 
-impl JsonSchema for crate::db::audit::AuditPageLimit {
-    fn schema_name() -> Cow<'static, str> {
-        "audit page limit".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "integer", "minimum": 0, "maximum": Self::MAX,
-            "default": Self::DEFAULT.get()
-        })
-    }
-}
-
 /// Rows to skip before returning a page.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(transparent)]

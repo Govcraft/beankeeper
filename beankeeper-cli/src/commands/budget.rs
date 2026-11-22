@@ -359,8 +359,8 @@ mod tests {
                 company_slug: Some(&"acme".parse()?),
                 entity: None,
                 action: None,
-                limit: 50.try_into()?,
-                offset: 0,
+                limit: db::audit::AuditPageLimit::default(),
+                offset: db::audit::AuditPageOffset::default(),
             },
         )?;
         assert_eq!(audit[0]["actor"], "mcp:test-client");
@@ -392,8 +392,8 @@ mod tests {
             company_slug: None,
             entity: None,
             action: None,
-            limit: 50.try_into()?,
-            offset: 0,
+            limit: db::audit::AuditPageLimit::default(),
+            offset: db::audit::AuditPageOffset::default(),
         };
         let before = super::super::audit::execute_json(&db, &log)?;
         assert!(matches!(

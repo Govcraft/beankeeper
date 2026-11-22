@@ -25,6 +25,7 @@ use crate::db::audit::setup::{
     },
     statements::{StatementContent, StatementFormat, StatementRequest, StatementSource},
 };
+use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::{
     ActorLabel,
     companies::CompanyName,
@@ -282,10 +283,10 @@ pub(super) struct AuditLog {
     pub company: Option<Company>,
     pub entity: Option<AuditEntityArg>,
     pub action: Option<AuditActionArg>,
-    /// Maximum rows. Omit for 50 rows, or pass zero to get only the matching count.
-    pub limit: Option<crate::db::audit::AuditPageLimit>,
+    /// Maximum rows. Pass zero to get only the matching count.
+    pub limit: Option<AuditPageLimit>,
     /// Rows to skip. Use the previous page’s `next_offset` with the same filters.
-    pub offset: Option<PageOffset>,
+    pub offset: Option<AuditPageOffset>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

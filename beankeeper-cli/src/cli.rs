@@ -6,6 +6,7 @@ use beankeeper::types::{AccountType, Currency, CurrencyError, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::{ActorLabel, BlankActorLabel};
@@ -983,20 +984,12 @@ pub struct AuditLogArgs {
     pub action: Option<AuditActionArg>,
 
     /// Maximum rows (0 to 100). Use 0 for just the matching count.
-    #[arg(
-        long,
-        default_value_t = crate::db::audit::AuditPageLimit::DEFAULT,
-        value_parser = parse_audit_limit,
-    )]
-    pub limit: crate::db::audit::AuditPageLimit,
+    #[arg(long, default_value_t)]
+    pub limit: AuditPageLimit,
 
     /// Number of matching rows to skip.
-    #[arg(long, default_value_t = 0)]
-    pub offset: i64,
-}
-
-fn parse_audit_limit(value: &str) -> Result<crate::db::audit::AuditPageLimit, CliError> {
-    value.parse()
+    #[arg(long, default_value_t, allow_negative_numbers = true)]
+    pub offset: AuditPageOffset,
 }
 
 /// Shared typed classifications for audit-log filters.

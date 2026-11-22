@@ -776,7 +776,7 @@ Use only one of as_of and to. For date-range reports without as_of, use from and
     }
 
     #[tool(
-        description = "List audit changes, optionally filtered by actor, verified agent URI, company, entity, or action. Defaults to 50 rows and accepts up to 100 per page. Continue with _meta.pagination.next_offset and the same filters."
+        description = "List audit changes in bounded pages, optionally filtered by actor, verified agent URI, company, entity, or action. Continue with _meta.pagination.next_offset and the same filters."
     )]
     async fn audit_log(
         &self,

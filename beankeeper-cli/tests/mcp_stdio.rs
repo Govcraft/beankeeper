@@ -4409,6 +4409,19 @@ fn audit_log_default_page_can_be_resumed() -> TestResult {
     command.args(["mcp", "serve"]);
     let mut client = Client::spawn(command)?;
     client.initialize()?;
+
+    let listed = client.request("tools/list", &json!({}))?;
+    let audit = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "audit_log")
+        .ok_or("missing audit_log")?;
+    let properties = &audit["inputSchema"]["properties"];
+    assert_eq!(properties["limit"]["default"], 50, "{audit}");
+    assert_eq!(properties["limit"]["maximum"], 100, "{audit}");
+    assert_eq!(properties["offset"]["minimum"], 0, "{audit}");
+
     for index in 0..51 {
         client.success("txn_post", &posting(&format!("audit-page-{index}")))?;
     }
@@ -4439,5 +4452,20 @@ fn audit_log_default_page_can_be_resumed() -> TestResult {
         let result = client.call("audit_log", &filters)?;
         assert_parameter_rejection(&result, "audit limit must be between 0 and 100");
     }
+    Ok(())
+}
+
+#[test]
+fn audit_log_rejects_negative_offset() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let result = client.call("audit_log", &json!({"offset":-1}))?;
+    assert_parameter_rejection(&result, "audit offset must be a nonnegative integer");
     Ok(())
 }

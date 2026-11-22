@@ -36,7 +36,7 @@ impl<'a> TryFrom<&'a AuditLogArgs> for ListAuditParams<'a> {
             entity: args.entity,
             action: args.action,
             limit: args.limit,
-            offset: args.offset.max(0),
+            offset: args.offset,
         })
     }
 }
@@ -183,7 +183,7 @@ pub fn pagination(
 ) -> Result<output::json::Pagination, CliError> {
     Ok(output::json::Pagination::new(
         i64::from(params.limit.get()),
-        params.offset,
+        params.offset.into(),
         returned,
         count_audit(db.read(), params)?,
     )
