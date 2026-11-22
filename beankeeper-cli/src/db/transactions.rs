@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::amounts::PositiveMinorUnits;
 use super::audit::{self, Actor};
-use super::companies::{AllCompanies, Company};
+use super::companies::{AllCompanies, Company, CompanySlug, company_exists};
 use super::connection::ReadConn;
 use super::metadata;
 use super::metadata_filter;
@@ -756,20 +756,31 @@ pub fn count_transactions(
 /// # Errors
 /// Returns `CliError::NotFound` if the company or transaction does not exist.
 pub fn get_transaction(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company_slug: &str,
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
-    let company = Company::resolve(conn, company_slug)?;
-    get_scoped_transaction(&company, id)
+    let slug: CompanySlug = company_slug.parse()?;
+    if !company_exists(conn, slug.as_str())? {
+        return Err(CliError::NotFound(format!("company '{slug}' not found")));
+    }
+    read_transaction(conn, &slug, id)
 }
 
 pub(crate) fn get_scoped_transaction(
     company: &Company<'_>,
     id: i64,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
-    let company_slug = company.slug().as_str();
-    let mut stmt = company.conn().prepare(
+    read_transaction(company.read(), company.slug(), id)
+}
+
+fn read_transaction(
+    conn: ReadConn<'_>,
+    company: &CompanySlug,
+    id: i64,
+) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
+    let company_slug = company.as_str();
+    let mut stmt = conn.prepare(
         "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti \
          FROM transactions \
          WHERE company_slug = ?1 AND id = ?2",
@@ -800,7 +811,7 @@ pub(crate) fn get_scoped_transaction(
         }
     };
 
-    let entries = get_entries_for_transaction(company, id)?;
+    let entries = read_entries(conn, company, id)?;
 
     Ok((txn, entries))
 }
@@ -814,7 +825,15 @@ pub fn get_entries_for_transaction(
     company: &Company<'_>,
     txn_id: i64,
 ) -> Result<Vec<EntryRow>, CliError> {
-    let mut stmt = company.conn().prepare_cached(
+    read_entries(company.read(), company.slug(), txn_id)
+}
+
+fn read_entries(
+    conn: ReadConn<'_>,
+    company: &CompanySlug,
+    txn_id: i64,
+) -> Result<Vec<EntryRow>, CliError> {
+    let mut stmt = conn.prepare_cached(
         "SELECT e.id, e.transaction_id, e.account_code, e.company_slug, e.direction, \
          e.amount, e.memo, e.tax_category, e.status \
          FROM transactions t \
@@ -823,7 +842,7 @@ pub fn get_entries_for_transaction(
          ORDER BY e.id",
     )?;
 
-    let rows = stmt.query_map(params![txn_id, company.slug().as_str()], |row| {
+    let rows = stmt.query_map(params![txn_id, company.as_str()], |row| {
         Ok(EntryRow {
             id: row.get(0)?,
             transaction_id: row.get(1)?,
@@ -997,7 +1016,7 @@ mod tests {
             panic!("expected Created");
         };
 
-        let result = get_transaction(db.conn(), "acme", id);
+        let result = get_transaction(db.read(), "acme", id);
         assert!(result.is_ok());
         let (txn, entry_rows) = result.unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(txn.description, "Test sale");
@@ -1015,7 +1034,7 @@ mod tests {
             panic!("expected Created");
         };
         let (txn, _) =
-            get_transaction(db.conn(), "acme", id).unwrap_or_else(|e| panic!("get failed: {e}"));
+            get_transaction(db.read(), "acme", id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(txn.metadata.as_deref(), Some(r#"{"ref":"INV-001"}"#));
     }
 
@@ -1096,7 +1115,7 @@ mod tests {
     #[test]
     fn get_missing_transaction_is_not_found() {
         let db = setup();
-        let result = get_transaction(db.conn(), "acme", 999);
+        let result = get_transaction(db.read(), "acme", 999);
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
@@ -1247,7 +1266,7 @@ mod tests {
              VALUES ('acme', 'Legacy transaction', 'BAD', '2024-01-15')",
             [],
         )?;
-        let result = get_transaction(conn, "acme", conn.last_insert_rowid());
+        let result = get_transaction(ReadConn::new(conn), "acme", conn.last_insert_rowid());
         assert!(matches!(
             result,
             Err(CliError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
@@ -1570,7 +1589,7 @@ mod tests {
             panic!("expected Created");
         };
         let (txn, _) =
-            get_transaction(db.conn(), "acme", id).unwrap_or_else(|e| panic!("get failed: {e}"));
+            get_transaction(db.read(), "acme", id).unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(txn.metadata.as_deref(), Some(r#"{"memo":"open:1000"}"#));
     }
 

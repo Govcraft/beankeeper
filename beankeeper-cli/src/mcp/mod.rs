@@ -1003,7 +1003,7 @@ mod tests {
         )?;
         assert_eq!(posted_by, "mcp:investment-client");
         crate::db::audit::verify_hash_chain(db.read())?;
-        crate::db::audit::verify_creations(db.conn())?;
+        crate::db::audit::verify_creations(db.read())?;
         Ok(())
     }
 

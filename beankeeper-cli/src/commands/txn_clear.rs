@@ -27,12 +27,13 @@ use serde::Serialize;
 use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnClearArgs, resolve_format};
 use crate::commands::txn::parse_amount_to_minor;
 use crate::db::amounts::PositiveMinorUnits;
+use crate::db::audit::{Reconciliation, with_reconciliation};
 use crate::db::clearings::SkipReason;
-use crate::db::companies::Company;
 use crate::db::connection::Db;
 use crate::db::ids::{EntryId, TransactionId};
 use crate::db::{self, Actor, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
 use crate::error::CliError;
+use crate::identity::{Granted, Reconcile};
 use crate::output;
 use crate::output::amounts::{MoneyField, OptionalMoneyField, format_money_grouped};
 
@@ -53,12 +54,11 @@ pub fn run(
     let options = cli_options(args)?;
     let actor = cli.principal();
     let result = compute(db_handle, company, &actor, target, options)?;
-    let ctx = result.context(db_handle, company, actor);
     let format = resolve_format(None, cli);
     let meta = meta.unwrap_or_else(|| cli.meta(Operation::TxnClear, Some(company)));
     match &result.items {
-        ClearedItems::Single(item) => render_single(cli, &ctx, item, format, meta),
-        ClearedItems::Batch(batch) => render_batch(cli, &ctx, batch, format, meta),
+        ClearedItems::Single(item) => render_single(cli, &result.settings, item, format, meta),
+        ClearedItems::Batch(batch) => render_batch(cli, &result.settings, batch, format, meta),
     }
 }
 
@@ -103,10 +103,9 @@ pub(crate) fn execute_json(
         validate_inline_batch(lines)?;
     }
     let result = compute(db_handle, company, actor, target, options)?;
-    let ctx = result.context(db_handle, company, actor.clone());
     match &result.items {
-        ClearedItems::Single(item) => single_data(&ctx, item),
-        ClearedItems::Batch(batch) => batch_data(&ctx, batch),
+        ClearedItems::Single(item) => single_data(&result.settings, item),
+        ClearedItems::Batch(batch) => batch_data(&result.settings, batch),
     }
 }
 
@@ -208,23 +207,8 @@ fn batch_total_overflow() -> CliError {
 }
 
 struct Execution<'a> {
-    date: NaiveDate,
-    statement: Option<&'a str>,
-    status: ClearanceArg,
+    settings: ClearanceSettings<'a>,
     items: ClearedItems<'a>,
-}
-
-impl Execution<'_> {
-    fn context<'a>(&'a self, db: &'a Db, company: &'a str, actor: Actor) -> Ctx<'a> {
-        Ctx {
-            conn: db.conn(),
-            actor,
-            company,
-            date: self.date,
-            statement: self.statement,
-            status: self.status,
-        }
-    }
 }
 
 fn compute<'a>(
@@ -239,34 +223,28 @@ fn compute<'a>(
         .unwrap_or_else(|| chrono::Local::now().date_naive());
     let statement = options.statement.map(str::trim).filter(|s| !s.is_empty());
     let status = options.status;
-    let ctx = Ctx {
-        conn: db_handle.conn(),
-        actor: actor.clone(),
-        company,
+    let settings = ClearanceSettings {
         date,
         statement,
         status,
     };
-    let items = match selection {
-        ClearRequestTarget::Entry { selector, amount } => {
-            validate_amount_status(amount, status)?;
-            let target = resolve_entry(&ctx, selector)?;
-            let amount = amount
-                .map(|amount| parse_amount(amount, &target))
-                .transpose()?;
-            let outcome = apply(&ctx, &target, amount)?;
-            ClearedItems::Single(Item::new(None, &target, &outcome))
-        }
-        ClearRequestTarget::Batch { account, lines } => {
-            ClearedItems::Batch(run_batch(&ctx, account, &lines)?)
-        }
-    };
-    Ok(Execution {
-        date,
-        statement,
-        status,
-        items,
-    })
+    let items = Granted::<Reconcile>::with_db(db_handle, actor, |grant| {
+        with_reconciliation(grant, |writer| match selection {
+            ClearRequestTarget::Entry { selector, amount } => {
+                validate_amount_status(amount, status)?;
+                let target = resolve_entry(writer, company, selector)?;
+                let amount = amount
+                    .map(|amount| parse_amount(amount, &target))
+                    .transpose()?;
+                let outcome = apply(writer, company, &settings, &target, amount)?;
+                Ok(ClearedItems::Single(Item::new(None, &target, &outcome)))
+            }
+            ClearRequestTarget::Batch { account, lines } => {
+                run_batch(writer, company, &settings, account, &lines).map(ClearedItems::Batch)
+            }
+        })
+    })?;
+    Ok(Execution { settings, items })
 }
 
 fn validate_inline_batch(lines: &[BatchLine]) -> Result<(), CliError> {
@@ -284,24 +262,24 @@ fn validate_inline_batch(lines: &[BatchLine]) -> Result<(), CliError> {
     Ok(())
 }
 
-fn resolve_entry(ctx: &Ctx<'_>, selector: EntrySelector<'_>) -> Result<EntryTarget, CliError> {
-    let company = Company::resolve(ctx.conn, ctx.company)?;
+fn resolve_entry(
+    writer: &Reconciliation<'_>,
+    company: &str,
+    selector: EntrySelector<'_>,
+) -> Result<EntryTarget, CliError> {
     match selector {
         EntrySelector::Id {
             transaction_id,
             entry_id,
-        } => db::get_entry_target(&company, transaction_id, entry_id),
+        } => writer.entry(company, transaction_id, entry_id),
         EntrySelector::Reference { reference, account } => {
-            db::find_entry_by_reference(&company, reference, account)
+            writer.entry_by_reference(company, reference, account)
         }
     }
 }
 
 /// Shared settings for every entry in one invocation.
-struct Ctx<'a> {
-    conn: &'a rusqlite::Connection,
-    actor: Actor,
-    company: &'a str,
+struct ClearanceSettings<'a> {
     /// `--date`: the cleared date of new clearings and, with
     /// `--status reconciled`, the reconciled date.
     date: NaiveDate,
@@ -309,7 +287,7 @@ struct Ctx<'a> {
     status: ClearanceArg,
 }
 
-impl Ctx<'_> {
+impl ClearanceSettings<'_> {
     /// The reconciled date this invocation sets, if any.
     fn reconciled_date(&self) -> Option<NaiveDate> {
         (self.status == ClearanceArg::Reconciled).then_some(self.date)
@@ -329,32 +307,28 @@ fn parse_amount(s: &str, target: &EntryTarget) -> Result<PositiveMinorUnits, Cli
 }
 
 fn apply(
-    ctx: &Ctx<'_>,
+    writer: &Reconciliation<'_>,
+    company: &str,
+    ctx: &ClearanceSettings<'_>,
     target: &EntryTarget,
     amount: Option<PositiveMinorUnits>,
 ) -> Result<ClearOutcome, CliError> {
     match ctx.status.to_clearing_status() {
-        None => db::unclear_entry(
-            ctx.conn,
-            &ctx.actor,
-            ctx.company,
+        None => writer.unclear_entry(
+            company,
             target.transaction_id,
             target.entry_id,
             ctx.statement,
         ),
-        Some(status) => db::clear_entry(
-            ctx.conn,
-            &ctx.actor,
-            &ClearRequest {
-                company_slug: ctx.company,
-                transaction_id: target.transaction_id,
-                entry_id: target.entry_id,
-                amount,
-                date: ctx.date,
-                statement: ctx.statement,
-                status,
-            },
-        ),
+        Some(status) => writer.clear_entry(&ClearRequest {
+            company_slug: company,
+            transaction_id: target.transaction_id,
+            entry_id: target.entry_id,
+            amount,
+            date: ctx.date,
+            statement: ctx.statement,
+            status,
+        }),
     }
 }
 
@@ -459,11 +433,13 @@ fn at_line(line: u64, reference: &str, e: CliError) -> CliError {
 }
 
 fn run_batch<'a>(
-    ctx: &Ctx<'_>,
+    writer: &Reconciliation<'_>,
+    company: &str,
+    ctx: &ClearanceSettings<'_>,
     account: &'a str,
     lines: &[BatchLine],
 ) -> Result<ClearedBatch<'a>, CliError> {
-    db::accounts::get_account_on_connection(ctx.conn, ctx.company, account)?;
+    db::get_account(writer.read(), company, account)?;
     if ctx.status == ClearanceArg::Uncleared && lines.iter().any(|l| l.amount.is_some()) {
         return Err(CliError::Usage(
             "amounts cannot be used with --status uncleared".into(),
@@ -471,11 +447,12 @@ fn run_batch<'a>(
     }
 
     // Resolve and validate everything first, then apply atomically.
-    let company = Company::resolve(ctx.conn, ctx.company)?;
     let mut resolved = Vec::with_capacity(lines.len());
     for l in lines {
         let wrap = |e| at_line(l.line, &l.reference, e);
-        let target = db::find_entry_by_reference(&company, &l.reference, account).map_err(wrap)?;
+        let target = writer
+            .entry_by_reference(company, &l.reference, account)
+            .map_err(wrap)?;
         let amount = l
             .amount
             .as_deref()
@@ -485,21 +462,19 @@ fn run_batch<'a>(
         resolved.push((l, target, amount));
     }
 
-    db::atomically(ctx.conn, || {
-        let items = resolved
-            .iter()
-            .map(|(l, target, amount)| {
-                apply(ctx, target, *amount)
-                    .map(|o| Item::new(Some(l.line), target, &o))
-                    .map_err(|e| at_line(l.line, &l.reference, e))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let total = batch_total(&items)?;
-        Ok(ClearedBatch {
-            account,
-            items,
-            total,
+    let items = resolved
+        .iter()
+        .map(|(l, target, amount)| {
+            apply(writer, company, ctx, target, *amount)
+                .map(|o| Item::new(Some(l.line), target, &o))
+                .map_err(|e| at_line(l.line, &l.reference, e))
         })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total = batch_total(&items)?;
+    Ok(ClearedBatch {
+        account,
+        items,
+        total,
     })
 }
 
@@ -594,7 +569,7 @@ const CSV_HEADER: [&str; 12] = [
     "skip_reason",
 ];
 
-fn to_csv(ctx: &Ctx<'_>, items: &[Item]) -> Result<String, CliError> {
+fn to_csv(ctx: &ClearanceSettings<'_>, items: &[Item]) -> Result<String, CliError> {
     let csv_err = |e: csv::Error| CliError::General(format!("CSV serialization failed: {e}"));
     let mut wtr = csv::Writer::from_writer(Vec::new());
     wtr.write_record(CSV_HEADER).map_err(csv_err)?;
@@ -644,7 +619,7 @@ fn describe(i: &Item) -> String {
     }
 }
 
-fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError> {
+fn single_data(ctx: &ClearanceSettings<'_>, item: &Item) -> Result<serde_json::Value, CliError> {
     #[derive(Serialize)]
     struct Single<'a> {
         #[serde(flatten)]
@@ -670,7 +645,7 @@ fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError
 
 fn render_single(
     cli: &Cli,
-    ctx: &Ctx<'_>,
+    ctx: &ClearanceSettings<'_>,
     item: &Item,
     format: OutputFormat,
     meta: output::json::Meta,
@@ -689,7 +664,10 @@ fn render_single(
     Ok(())
 }
 
-fn batch_data(ctx: &Ctx<'_>, batch: &ClearedBatch<'_>) -> Result<serde_json::Value, CliError> {
+fn batch_data(
+    ctx: &ClearanceSettings<'_>,
+    batch: &ClearedBatch<'_>,
+) -> Result<serde_json::Value, CliError> {
     #[derive(Serialize)]
     struct Batch<'a> {
         account: &'a str,
@@ -733,7 +711,7 @@ fn batch_data(ctx: &Ctx<'_>, batch: &ClearedBatch<'_>) -> Result<serde_json::Val
 
 fn render_batch(
     cli: &Cli,
-    ctx: &Ctx<'_>,
+    ctx: &ClearanceSettings<'_>,
     batch: &ClearedBatch<'_>,
     format: OutputFormat,
     meta: output::json::Meta,

@@ -15,6 +15,7 @@ use crate::db::connection::Db;
 use crate::db::transactions::TransactionValueFilter;
 use crate::db::{self, attachments, transactions};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 use crate::output;
 
 /// Run a `bk txn` subcommand.
@@ -970,37 +971,40 @@ fn run_attach(
         .parse()
         .map_err(|e| CliError::Validation(format!("{e}")))?;
 
-    // 2. Validate the transaction exists for this company
-    let _txn = transactions::get_transaction(db_handle.conn(), company, transaction_id.get())?;
+    let (att_id, hash) = Granted::<Post>::with_db(db_handle, &cli.principal(), |grant| {
+        // 2. Validate the transaction exists for this company
+        let _txn = transactions::get_transaction(db_handle.read(), company, transaction_id.get())?;
 
-    // 3. Validate source file exists
-    let source = Path::new(file_path);
-    if !source.exists() {
-        return Err(CliError::NotFound(format!("file not found: {file_path}")));
-    }
+        // 3. Validate source file exists
+        let source = Path::new(file_path);
+        if !source.exists() {
+            return Err(CliError::NotFound(format!("file not found: {file_path}")));
+        }
 
-    // 4. Hash and store the file in content-addressed storage
-    let (hash, stored_path) = attachments::hash_and_store_file(source, &cli.db)?;
+        // 4. Hash and store the file in content-addressed storage
+        let (hash, stored_path) = attachments::hash_and_store_file(source, &cli.db)?;
 
-    // 5. Derive the URI (relative to db parent) and original filename
-    let uri = stored_path.file_name().map_or_else(
-        || stored_path.to_string_lossy().to_string(),
-        |n| format!("attachments/{}", n.to_string_lossy()),
-    );
+        // 5. Derive the URI (relative to db parent) and original filename
+        let uri = stored_path.file_name().map_or_else(
+            || stored_path.to_string_lossy().to_string(),
+            |n| format!("attachments/{}", n.to_string_lossy()),
+        );
 
-    let original_filename = source.file_name().map(|n| n.to_string_lossy().to_string());
+        let original_filename = source.file_name().map(|n| n.to_string_lossy().to_string());
 
-    // 6. Insert attachment record
-    let params = attachments::StoreAttachmentParams {
-        transaction_id,
-        entry_id,
-        company_slug: company,
-        uri: &uri,
-        document_type: doc_type,
-        hash: Some(&hash),
-        original_filename: original_filename.as_deref(),
-    };
-    let att_id = attachments::store_attachment(db_handle.conn(), &cli.principal(), &params)?;
+        // 6. Insert attachment record
+        let params = attachments::StoreAttachmentParams {
+            transaction_id,
+            entry_id,
+            company_slug: company,
+            uri: &uri,
+            document_type: doc_type,
+            hash: Some(&hash),
+            original_filename: original_filename.as_deref(),
+        };
+        let att_id = attachments::store_attachment(grant, &params)?;
+        Ok((att_id, hash))
+    })?;
 
     let format = crate::cli::resolve_format(None, cli);
     if format == crate::cli::OutputFormat::Json {

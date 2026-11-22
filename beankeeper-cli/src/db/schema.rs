@@ -1545,17 +1545,18 @@ mod tests {
             ).is_err());
         }
         audit::change_legacy_policy_fixture(&conn, &owner, false)?;
-        audit::change_period(
-            &conn,
-            &owner,
-            "legacy",
-            periods::PeriodChange::Close("2026-01-31".parse()?),
-        )?;
+        crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
+            audit::change_period(
+                grant,
+                "legacy",
+                periods::PeriodChange::Close("2026-01-31".parse()?),
+            )
+        })?;
         assert!(
             periods::check_posting(&conn, "legacy", periods::parse_date("2026-01-31")?).is_err()
         );
         audit::verify_hash_chain(ReadConn::new(&conn))?;
-        audit::verify_creations(&conn)?;
+        audit::verify_creations(ReadConn::new(&conn))?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
         periods::verify(ReadConn::new(&conn))?;
         assert_eq!(history(&conn)?.last().map(|row| row.0), Some(4));
@@ -1614,9 +1615,9 @@ mod tests {
         assert!(super::super::policy::get(&conn)?.enforce);
         super::super::audit::change_legacy_policy_fixture(&conn, &owner, false)?;
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(&conn)?;
+        super::super::audit::verify_creations(ReadConn::new(&conn))?;
         assert_eq!(
-            super::super::spend_limits::list(&conn, "unconfigured", None)?,
+            super::super::spend_limits::list(ReadConn::new(&conn), "unconfigured", None)?,
             Vec::new()
         );
         ensure_schema(&conn)?;
@@ -1693,7 +1694,7 @@ mod tests {
         )?;
         assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(4));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(&conn)?;
+        super::super::audit::verify_creations(ReadConn::new(&conn))?;
         for sql in [
             "DELETE FROM audit_log",
             "UPDATE audit_log SET actor = 'tampered'",
@@ -1789,7 +1790,7 @@ mod tests {
         };
         assert_eq!(before, after);
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(&conn)?;
+        super::super::audit::verify_creations(ReadConn::new(&conn))?;
         for sql in [
             "DELETE FROM audit_log",
             "UPDATE audit_log SET actor = 'tampered'",
@@ -1829,7 +1830,7 @@ mod tests {
         )?;
         assert_eq!(historical, retained);
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(&conn)?;
+        super::super::audit::verify_creations(ReadConn::new(&conn))?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
             conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
@@ -1843,6 +1844,7 @@ mod tests {
     #[test]
     fn v15_preserves_history_and_metadata_edits_extend_the_chain() -> Result<(), CliError> {
         use super::super::{Actor, audit, metadata::MetadataEdit};
+        use crate::identity::{Granted, Post};
         let conn = v12_connection()?;
         seed_v12_creation(&conn)?;
         apply_v13(&conn)?;
@@ -1865,19 +1867,15 @@ mod tests {
             MetadataEdit::Set(vec![("status".into(), "disputed".into())]),
             MetadataEdit::Unset(vec!["status".into()]),
         ] {
-            assert!(
-                audit::edit_metadata(
-                    &conn,
-                    &Actor::new("v15"),
-                    "legacy",
-                    audit::MetadataTarget::Id(id),
-                    &edit
-                )?
-                .changed
-            );
+            let changed = audit::savepoint::with_audited_tx(&conn, "sp_metadata_fixture", |tx| {
+                let actor = Actor::new("v15");
+                let grant = Granted::<Post>::check(tx, &actor)?;
+                audit::edit_metadata(grant, "legacy", audit::MetadataTarget::Id(id), &edit)
+            })?;
+            assert!(changed.changed);
         }
         audit::verify_hash_chain(ReadConn::new(&conn))?;
-        audit::verify_creations(&conn)?;
+        audit::verify_creations(ReadConn::new(&conn))?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
             conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
@@ -1909,6 +1907,8 @@ mod tests {
     #[test]
     fn v14_preserves_history_and_extends_the_chain_with_rules() -> Result<(), CliError> {
         use super::super::{Actor, audit, rules};
+        use crate::identity::{Granted, Post};
+
         let conn = v12_connection()?;
         seed_v12_creation(&conn)?;
         apply_v13(&conn)?;
@@ -1929,24 +1929,23 @@ mod tests {
         ensure_schema(&conn)?;
         assert_eq!(get_schema_version(&conn)?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
-        let rule = rules::create_rule(
-            &conn,
-            &Actor::new("v14"),
-            "legacy",
-            "sale".parse()?,
-            "4000",
-            0,
-        )?;
-        audit::delete_rule(
-            &conn,
-            &Actor::new("v14"),
-            "legacy",
-            &rule.id,
-            crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
-        )?;
+        let actor = Actor::new("v14");
+        let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
+            let grant = Granted::<Post>::check(tx, &actor)?;
+            rules::create_rule(grant, "legacy", "sale".parse()?, "4000", 0)
+        })?;
+        audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
+            let grant = Granted::<Post>::check(tx, &actor)?;
+            audit::delete_rule(
+                grant,
+                "legacy",
+                &rule.id,
+                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+            )
+        })?;
         assert_eq!(&hashes(&conn)?[..2], before.as_slice());
         audit::verify_hash_chain(ReadConn::new(&conn))?;
-        audit::verify_creations(&conn)?;
+        audit::verify_creations(ReadConn::new(&conn))?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
             conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
@@ -2053,7 +2052,7 @@ mod tests {
         )?;
         assert_eq!(tail, (old_hash, 2));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(&conn)?;
+        super::super::audit::verify_creations(ReadConn::new(&conn))?;
         ensure_schema(&conn)?;
         Ok(())
     }

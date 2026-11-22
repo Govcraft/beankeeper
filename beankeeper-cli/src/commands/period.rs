@@ -3,6 +3,7 @@
 use crate::cli::{Cli, OutputFormat, PeriodCommand, resolve_format};
 use crate::db::{Actor, Db, audit, periods};
 use crate::error::CliError;
+use crate::identity::{Admin, Granted};
 use crate::operation::Operation;
 use crate::output::json;
 
@@ -30,21 +31,15 @@ pub fn execute(
     command: &PeriodCommand,
     actor: &Actor,
 ) -> Result<Vec<periods::PeriodLock>, CliError> {
-    match command {
-        PeriodCommand::Close { through } => Ok(vec![audit::change_period(
-            db.conn(),
-            actor,
-            company,
-            periods::PeriodChange::Close(through.parse()?),
-        )?]),
-        PeriodCommand::Reopen { reason } => Ok(vec![audit::change_period(
-            db.conn(),
-            actor,
-            company,
-            periods::PeriodChange::Reopen(reason.parse()?),
-        )?]),
-        PeriodCommand::List => periods::list(db.read(), company),
-    }
+    let change = match command {
+        PeriodCommand::Close { through } => periods::PeriodChange::Close(through.parse()?),
+        PeriodCommand::Reopen { reason } => periods::PeriodChange::Reopen(reason.parse()?),
+        PeriodCommand::List => return periods::list(db.read(), company),
+    };
+    let lock = Granted::<Admin>::with_db(db, actor, |grant| {
+        audit::change_period(grant, company, change)
+    })?;
+    Ok(vec![lock])
 }
 
 /// Execute and render a period command in JSON, table, or CSV form.

@@ -198,7 +198,7 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
             .as_i64()
             .ok_or("missing transaction ID")?;
         let (txn, entries) =
-            transactions::get_transaction(ledger.db()?.conn(), "acme", transaction_id)?;
+            transactions::get_transaction(ledger.db()?.read(), "acme", transaction_id)?;
         assert_eq!(txn.date, date);
         assert_eq!(txn.description, "Rent");
         assert_eq!(txn.posted_by.as_deref(), Some("schedule-test"));
@@ -251,7 +251,7 @@ fn one_time_splits_and_default_tax_categories_post_only_once() -> TestResult {
     let id = posted[0]["transaction_id"]
         .as_i64()
         .ok_or("missing transaction ID")?;
-    let (_, entries) = transactions::get_transaction(ledger.db()?.conn(), "acme", id)?;
+    let (_, entries) = transactions::get_transaction(ledger.db()?.read(), "acme", id)?;
     assert_eq!(entries.len(), 3);
     for (account, amount, tax) in [
         ("5000", 825, "default-expense"),
@@ -422,7 +422,7 @@ fn currency_precision_is_preserved_in_scheduled_postings() -> TestResult {
         let id = posted[0]["transaction_id"]
             .as_i64()
             .ok_or("missing transaction ID")?;
-        let (txn, entries) = transactions::get_transaction(ledger.db()?.conn(), "acme", id)?;
+        let (txn, entries) = transactions::get_transaction(ledger.db()?.read(), "acme", id)?;
         assert_eq!(txn.currency.code(), currency);
         assert!(
             entries

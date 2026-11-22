@@ -467,7 +467,7 @@ pub fn plan_unclear(existing: &[Clearing], statement: Option<&str>) -> Vec<i64> 
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_clearings(company: &Company<'_>, entry_id: EntryId) -> Result<Vec<Clearing>, CliError> {
-    let mut stmt = company.conn().prepare_cached(
+    let mut stmt = company.read().prepare_cached(
         "SELECT c.id, c.entry_id, c.amount, c.cleared_date, c.statement_ref, c.status, \
          c.reconciled_date \
          FROM entries e \
@@ -565,7 +565,7 @@ pub fn get_entry_target(
 ) -> Result<EntryTarget, CliError> {
     let slug = company.slug().as_str();
     company
-        .conn()
+        .read()
         .query_row(
             &format!("{TARGET_SELECT} WHERE t.company_slug = ?1 AND t.id = ?2 AND e.id = ?3"),
             params![slug, transaction_id, entry_id],
@@ -592,7 +592,7 @@ pub fn find_entry_by_reference(
     account: &str,
 ) -> Result<EntryTarget, CliError> {
     let slug = company.slug().as_str();
-    let conn = company.conn();
+    let conn = company.read();
     let txn_id: Option<TransactionId> = conn
         .query_row(
             "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",

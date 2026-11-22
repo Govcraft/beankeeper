@@ -3,6 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 
+use super::audit::savepoint::{AuditedTx, with_audited_tx};
 use crate::error::CliError;
 
 mod read;
@@ -133,6 +134,14 @@ impl Db {
     /// Returns a reference to the underlying `rusqlite` connection.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    pub(super) fn with_audited_tx<T>(
+        &self,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        with_audited_tx(&self.conn, name, run)
     }
 
     /// Borrows this ledger for query-only access without exposing its SQLite connection.

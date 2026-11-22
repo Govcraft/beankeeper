@@ -8,6 +8,7 @@ use crate::confirmation::confirm_deletion;
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::identity::{Budget, Granted};
 use crate::operation::Operation;
 use crate::output;
 
@@ -87,18 +88,19 @@ fn compute<'a>(
             let Some(confirmed) = confirm_deletion(*force, &format!("budget for {scope}"))? else {
                 return Ok(None);
             };
-            db::delete_budget(
-                db.conn(),
-                actor,
-                &db::budgets::DeleteBudgetParams {
-                    company_slug: company,
-                    account_code: account,
-                    currency: currency.resolve()?,
-                    year: *year,
-                    month: month.map(BudgetMonth::get),
-                },
-                confirmed,
-            )
+            Granted::<Budget>::with_db(db, actor, |grant| {
+                db::delete_budget(
+                    grant,
+                    &db::budgets::DeleteBudgetParams {
+                        company_slug: company,
+                        account_code: account,
+                        currency: currency.resolve()?,
+                        year: *year,
+                        month: month.map(BudgetMonth::get),
+                    },
+                    confirmed,
+                )
+            })
             .map(BudgetData::Deleted)
         }
     }
@@ -186,10 +188,9 @@ fn set(
             "account '{account}' not found in company '{company}'"
         )));
     }
-    match scope {
+    Granted::<Budget>::with_db(db, actor, |grant| match scope {
         BudgetScope::Annual(annual) => db::set_annual_budget(
-            db.conn(),
-            actor,
+            grant,
             &db::SetAnnualBudgetParams {
                 company_slug: company,
                 account_code: account,
@@ -200,8 +201,7 @@ fn set(
             },
         ),
         BudgetScope::Monthly { month, amount } => db::set_budget(
-            db.conn(),
-            actor,
+            grant,
             &db::SetBudgetParams {
                 company_slug: company,
                 account_code: account,
@@ -213,7 +213,7 @@ fn set(
             },
         )
         .map(|row| vec![row]),
-    }
+    })
 }
 
 fn command(sub: &BudgetCommand) -> Operation {

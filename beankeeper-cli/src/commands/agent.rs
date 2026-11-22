@@ -70,6 +70,7 @@ fn run_limit(
     sub: &AgentLimitCommand,
 ) -> Result<serde_json::Value, CliError> {
     use crate::db::{audit, spend_limits};
+    use crate::identity::{Admin, Granted};
     use secrecy::ExposeSecret;
     audit::atomically(db.conn(), || {
         identity::authorize_known_operation(
@@ -104,12 +105,14 @@ fn run_limit(
                     currency,
                     caps,
                 );
-                let stored = audit::set_spend_limit(db.conn(), actor, &limit)?;
+                let stored = Granted::<Admin>::with_db(db, actor, |grant| {
+                    audit::set_spend_limit(grant, &limit)
+                })?;
                 serde_json::to_value(SpendLimitJson::from(&stored))
             }
             AgentLimitCommand::Show { agent_uri, company } => {
                 let limits = spend_limits::list(
-                    db.conn(),
+                    db.read(),
                     parse_agent_uri(agent_uri)?.as_str(),
                     company.as_deref().or(cli
                         .company
@@ -119,15 +122,14 @@ fn run_limit(
                 serde_json::to_value(limits.iter().map(SpendLimitJson::from).collect::<Vec<_>>())
             }
             AgentLimitCommand::Clear { agent_uri, company } => {
-                let cleared = audit::clear_spend_limits(
-                    db.conn(),
-                    actor,
-                    parse_agent_uri(agent_uri)?.as_str(),
-                    company.as_deref().or(cli
-                        .company
-                        .as_ref()
-                        .map(crate::db::companies::CompanySlug::as_str)),
-                )?;
+                let uri = parse_agent_uri(agent_uri)?;
+                let company = company.as_deref().or(cli
+                    .company
+                    .as_ref()
+                    .map(crate::db::companies::CompanySlug::as_str));
+                let cleared = Granted::<Admin>::with_db(db, actor, |grant| {
+                    audit::clear_spend_limits(grant, uri.as_str(), company)
+                })?;
                 return Ok(serde_json::json!({"cleared": cleared}));
             }
         };

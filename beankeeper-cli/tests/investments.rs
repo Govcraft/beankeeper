@@ -12,10 +12,51 @@ use beankeeper_cli::{
         verification,
     },
     error::CliError,
+    identity::{Admin, Granted, Post},
 };
 use chrono::NaiveDate;
 
 type TestResult = Result<(), CliError>;
+
+fn create_security(
+    db: &Db,
+    actor: &Actor,
+    company: &str,
+    params: &SecurityParams,
+) -> Result<investments::Security, CliError> {
+    Granted::<Post>::with_db(db, actor, |grant| {
+        investments::create_security(grant, company, params)
+    })
+}
+
+fn record_price(
+    db: &Db,
+    actor: &Actor,
+    company: &str,
+    params: &PriceParams,
+) -> Result<investments::Price, CliError> {
+    Granted::<Post>::with_db(db, actor, |grant| {
+        investments::record_price(grant, company, params)
+    })
+}
+
+fn buy(
+    db: &Db,
+    actor: &Actor,
+    company: &str,
+    params: &BuyParams,
+) -> Result<investments::Trade, CliError> {
+    Granted::<Post>::with_db(db, actor, |grant| investments::buy(grant, company, params))
+}
+
+fn sell(
+    db: &Db,
+    actor: &Actor,
+    company: &str,
+    params: &SellParams,
+) -> Result<investments::Trade, CliError> {
+    Granted::<Post>::with_db(db, actor, |grant| investments::sell(grant, company, params))
+}
 
 fn date(value: &str) -> Result<NaiveDate, CliError> {
     value
@@ -62,8 +103,8 @@ fn fixture() -> Result<Db, CliError> {
             )?;
         }
         for symbol in ["ABC", "XYZ"] {
-            investments::create_security(
-                db.conn(),
+            create_security(
+                &db,
                 &Actor::new("investment-test"),
                 company,
                 &SecurityParams {
@@ -118,7 +159,7 @@ fn state(db: &Db) -> Result<(i64, i64, i64, i64), CliError> {
 fn verify(db: &Db) -> TestResult {
     verification::verify_accounting(db.read())?;
     audit::verify_hash_chain(db.read())?;
-    audit::verify_creations(db.conn())
+    audit::verify_creations(db.read())
 }
 
 #[test]
@@ -126,21 +167,11 @@ fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
     for (method, expected_basis) in [(LotSelection::Fifo, 100), (LotSelection::Lifo, 200)] {
         let db = fixture()?;
         let actor = Actor::new("investment-test");
-        let older = investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 100, "2026-01-01")?,
-        )?;
-        let newer = investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 200, "2026-01-02")?,
-        )?;
+        let older = buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
+        let newer = buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
         let mut params = sale("1", 150, "2026-01-03")?;
         params.selection = method.clone();
-        let sold = investments::sell(db.conn(), &actor, "acme", &params)?;
+        let sold = sell(&db, &actor, "acme", &params)?;
         assert_eq!(minor(sold.cost_basis), expected_basis);
         assert_eq!(minor(sold.realized_gain), 150 - expected_basis);
         let expected_lot = if method == LotSelection::Fifo {
@@ -151,7 +182,7 @@ fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
         assert_eq!(sold.relief.len(), 1);
         assert_eq!(Some(&sold.relief[0].lot_id), expected_lot.as_ref());
         let (_, entries) =
-            beankeeper_cli::db::get_transaction(db.conn(), "acme", sold.transaction_id)?;
+            beankeeper_cli::db::get_transaction(db.read(), "acme", sold.transaction_id)?;
         let gain = entries
             .iter()
             .find(|entry| entry.account_code == "4000")
@@ -174,19 +205,9 @@ fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
 fn a_sale_can_exhaust_one_lot_and_partially_relieve_another() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("1", 100, "2026-01-01")?,
-    )?;
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("1", 200, "2026-01-02")?,
-    )?;
-    let sold = investments::sell(db.conn(), &actor, "acme", &sale("1.5", 300, "2026-01-03")?)?;
+    buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
+    buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
+    let sold = sell(&db, &actor, "acme", &sale("1.5", 300, "2026-01-03")?)?;
     assert_eq!(minor(sold.cost_basis), 200);
     assert_eq!(minor(sold.realized_gain), 100);
     assert_eq!(sold.relief.len(), 2);
@@ -204,24 +225,14 @@ fn same_date_lots_have_a_stable_id_tiebreaker() -> TestResult {
     for method in [LotSelection::Fifo, LotSelection::Lifo] {
         let db = fixture()?;
         let actor = Actor::new("investment-test");
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 100, "2026-01-01")?,
-        )?;
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 200, "2026-01-01")?,
-        )?;
+        buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
+        buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-01")?)?;
         let lots = investments::list_lots(db.read(), "acme", "ABC")?;
         assert!(lots[0].id < lots[1].id);
         let expected = &lots[usize::from(method == LotSelection::Lifo)];
         let mut params = sale("1", 150, "2026-01-01")?;
         params.selection = method.clone();
-        let sold = investments::sell(db.conn(), &actor, "acme", &params)?;
+        let sold = sell(&db, &actor, "acme", &params)?;
         assert_eq!(sold.relief[0].lot_id, expected.id);
         assert_eq!(sold.cost_basis, expected.cost_basis.nonnegative());
         verify(&db)?;
@@ -233,35 +244,25 @@ fn same_date_lots_have_a_stable_id_tiebreaker() -> TestResult {
 fn specific_lots_are_scoped_to_company_symbol_and_account() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("1", 100, "2026-01-01")?,
-    )?;
-    let newer = investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("1", 200, "2026-01-02")?,
-    )?;
+    buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
+    let newer = buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
     let mut params = sale("1", 250, "2026-01-03")?;
     let lot = newer
         .lot_id
         .ok_or_else(|| CliError::General("expected purchased lot".into()))?;
     params.selection = LotSelection::Specific(lot.clone());
     let before = state(&db)?;
-    assert!(investments::sell(db.conn(), &actor, "other", &params).is_err());
+    assert!(sell(&db, &actor, "other", &params).is_err());
     params.symbol = "XYZ".into();
-    assert!(investments::sell(db.conn(), &actor, "acme", &params).is_err());
+    assert!(sell(&db, &actor, "acme", &params).is_err());
     params.symbol = "ABC".into();
     params.asset = "1300".into();
-    assert!(investments::sell(db.conn(), &actor, "acme", &params).is_err());
+    assert!(sell(&db, &actor, "acme", &params).is_err());
     params.asset = "1200".into();
     assert!(LotSelection::from_flags(LotMethod::Fifo, Some(lot.clone())).is_err());
     assert!(LotSelection::from_flags(LotMethod::Specific, None).is_err());
     assert_eq!(state(&db)?, before);
-    let sold = investments::sell(db.conn(), &actor, "acme", &params)?;
+    let sold = sell(&db, &actor, "acme", &params)?;
     assert_eq!(minor(sold.cost_basis), 200);
     assert_eq!(sold.relief[0].lot_id, lot);
     let lots = investments::list_lots(db.read(), "acme", "ABC")?;
@@ -274,15 +275,10 @@ fn specific_lots_are_scoped_to_company_symbol_and_account() -> TestResult {
 fn fractional_partial_sales_conserve_the_original_basis() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("0.75", 100, "2026-01-01")?,
-    )?;
+    buy(&db, &actor, "acme", &purchase("0.75", 100, "2026-01-01")?)?;
     let mut costs = Vec::new();
     for day in ["2026-01-02", "2026-01-03", "2026-01-04"] {
-        let sold = investments::sell(db.conn(), &actor, "acme", &sale("0.25", 50, day)?)?;
+        let sold = sell(&db, &actor, "acme", &sale("0.25", 50, day)?)?;
         assert_eq!(sold.quantity.to_string(), "0.25");
         costs.push(minor(sold.cost_basis));
     }
@@ -299,16 +295,11 @@ fn fractional_partial_sales_conserve_the_original_basis() -> TestResult {
 fn historical_holdings_apply_only_trades_and_prices_known_at_the_cutoff() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("3", 300, "2026-01-01")?,
-    )?;
-    investments::sell(db.conn(), &actor, "acme", &sale("1", 150, "2026-01-03")?)?;
+    buy(&db, &actor, "acme", &purchase("3", 300, "2026-01-01")?)?;
+    sell(&db, &actor, "acme", &sale("1", 150, "2026-01-03")?)?;
     for (day, price) in [("2026-01-02", 120), ("2026-01-04", 250)] {
-        investments::record_price(
-            db.conn(),
+        record_price(
+            &db,
             &actor,
             "acme",
             &PriceParams {
@@ -349,9 +340,9 @@ fn dates_across_the_four_digit_year_boundary_keep_chronological_order() -> TestR
     let db = fixture()?;
     let actor = Actor::new("investment-test");
     for (day, price) in [("9999-12-31", 120), ("+10000-01-01", 250)] {
-        investments::buy(db.conn(), &actor, "acme", &purchase("1", 100, day)?)?;
-        investments::record_price(
-            db.conn(),
+        buy(&db, &actor, "acme", &purchase("1", 100, day)?)?;
+        record_price(
+            &db,
             &actor,
             "acme",
             &PriceParams {
@@ -362,7 +353,7 @@ fn dates_across_the_four_digit_year_boundary_keep_chronological_order() -> TestR
         )?;
     }
     let before = state(&db)?;
-    assert!(investments::sell(db.conn(), &actor, "acme", &sale("1", 150, "9999-12-31")?).is_err());
+    assert!(sell(&db, &actor, "acme", &sale("1", 150, "9999-12-31")?).is_err());
     let prior = investments::holdings(&db, "acme", date("9999-12-31")?)?;
     let current = investments::holdings(&db, "acme", date("+10000-01-01")?)?;
     assert_eq!(prior[0].market_value.map(minor), Some(120));
@@ -379,7 +370,7 @@ fn investment_money_stays_bound_to_security_currency() -> TestResult {
     let before = state(&db)?;
     purchase.cost =
         PositiveMoney::new(Money::eur(100)).map_err(|error| CliError::Bean(error.into()))?;
-    assert!(investments::buy(db.conn(), &actor, "acme", &purchase).is_err());
+    assert!(buy(&db, &actor, "acme", &purchase).is_err());
     let wrong_price =
         NonNegativeMoney::new(Money::eur(100)).map_err(|error| CliError::Bean(error.into()))?;
     let mut price = PriceParams {
@@ -387,10 +378,10 @@ fn investment_money_stays_bound_to_security_currency() -> TestResult {
         date: date("2026-01-01")?,
         price: wrong_price,
     };
-    assert!(investments::record_price(db.conn(), &actor, "acme", &price).is_err());
+    assert!(record_price(&db, &actor, "acme", &price).is_err());
     assert_eq!(state(&db)?, before);
     price.price = usd(100)?;
-    let recorded = investments::record_price(db.conn(), &actor, "acme", &price)?;
+    let recorded = record_price(&db, &actor, "acme", &price)?;
     assert!(recorded.id.as_str().parse::<LotId>().is_err());
     verify(&db)
 }
@@ -401,13 +392,13 @@ fn oversells_and_duplicate_references_leave_no_partial_state() -> TestResult {
     let actor = Actor::new("investment-test");
     let mut bought = purchase("1", 100, "2026-01-01")?;
     bought.reference = Some("buy-1".into());
-    investments::buy(db.conn(), &actor, "acme", &bought)?;
+    buy(&db, &actor, "acme", &bought)?;
     let before = state(&db)?;
-    assert!(investments::buy(db.conn(), &actor, "acme", &bought).is_err());
-    assert!(investments::sell(db.conn(), &actor, "acme", &sale("2", 300, "2026-01-02")?).is_err());
+    assert!(buy(&db, &actor, "acme", &bought).is_err());
+    assert!(sell(&db, &actor, "acme", &sale("2", 300, "2026-01-02")?).is_err());
     let mut duplicate = sale("1", 150, "2026-01-02")?;
     duplicate.reference = Some("buy-1".into());
-    assert!(investments::sell(db.conn(), &actor, "acme", &duplicate).is_err());
+    assert!(sell(&db, &actor, "acme", &duplicate).is_err());
     assert_eq!(state(&db)?, before);
     let lots = investments::list_lots(db.read(), "acme", "ABC")?;
     assert_eq!(lots[0].remaining_quantity.to_string(), "1");
@@ -427,23 +418,11 @@ fn relief_or_audit_failure_rolls_back_the_entire_sale() -> TestResult {
     ] {
         let db = fixture()?;
         let actor = Actor::new("investment-test");
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 100, "2026-01-01")?,
-        )?;
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 200, "2026-01-02")?,
-        )?;
+        buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
+        buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
         let before = state(&db)?;
         db.conn().execute_batch(trigger)?;
-        assert!(
-            investments::sell(db.conn(), &actor, "acme", &sale("2", 450, "2026-01-03")?).is_err()
-        );
+        assert!(sell(&db, &actor, "acme", &sale("2", 450, "2026-01-03")?).is_err());
         assert_eq!(state(&db)?, before);
         let lots = investments::list_lots(db.read(), "acme", "ABC")?;
         assert_eq!(lots[0].remaining_quantity.to_string(), "1");
@@ -464,15 +443,7 @@ fn lot_creation_failure_rolls_back_the_purchase_posting() -> TestResult {
         "CREATE TRIGGER fail_lot BEFORE INSERT ON investment_lots
          BEGIN SELECT RAISE(ABORT, 'lot unavailable'); END;",
     )?;
-    assert!(
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 100, "2026-01-01")?
-        )
-        .is_err()
-    );
+    assert!(buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?).is_err());
     assert_eq!(state(&db)?, before);
     verify(&db)
 }
@@ -481,18 +452,12 @@ fn lot_creation_failure_rolls_back_the_purchase_posting() -> TestResult {
 fn aggregate_basis_overflow_rejects_reports_and_sales_without_changes() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("1", i64::MAX, "2026-01-01")?,
-    )?;
-    investments::buy(db.conn(), &actor, "acme", &purchase("1", 1, "2026-01-02")?)?;
+    buy(&db, &actor, "acme", &purchase("1", i64::MAX, "2026-01-01")?)?;
+    buy(&db, &actor, "acme", &purchase("1", 1, "2026-01-02")?)?;
     let before = state(&db)?;
     let report_error = investments::holdings(&db, "acme", date("2026-01-03")?).unwrap_err();
     assert!(report_error.to_string().contains("overflow"));
-    let sell_error =
-        investments::sell(db.conn(), &actor, "acme", &sale("2", 0, "2026-01-03")?).unwrap_err();
+    let sell_error = sell(&db, &actor, "acme", &sale("2", 0, "2026-01-03")?).unwrap_err();
     assert!(sell_error.to_string().contains("overflow"));
     assert_eq!(state(&db)?, before);
     verify(&db)
@@ -502,9 +467,9 @@ fn aggregate_basis_overflow_rejects_reports_and_sales_without_changes() -> TestR
 fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(db.conn(), &actor, "acme", &purchase("2", 1, "2026-01-01")?)?;
-    investments::record_price(
-        db.conn(),
+    buy(&db, &actor, "acme", &purchase("2", 1, "2026-01-01")?)?;
+    record_price(
+        &db,
         &actor,
         "acme",
         &PriceParams {
@@ -527,7 +492,7 @@ fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
         let mut params = purchase("1", 1, day)?;
         params.symbol = "XYZ".into();
         params.quantity = maximum;
-        investments::buy(db.conn(), &actor, "other", &params)?;
+        buy(&db, &actor, "other", &params)?;
     }
     assert!(
         investments::holdings(&db, "other", date("2026-01-02")?)
@@ -542,39 +507,18 @@ fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
 fn trades_reject_backdating_within_the_same_security_and_account() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("2", 200, "2026-01-02")?,
-    )?;
+    buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-02")?)?;
     let before = state(&db)?;
-    assert!(
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 100, "2026-01-01")?
-        )
-        .is_err()
-    );
-    assert!(investments::sell(db.conn(), &actor, "acme", &sale("1", 100, "2026-01-01")?).is_err());
+    assert!(buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?).is_err());
+    assert!(sell(&db, &actor, "acme", &sale("1", 100, "2026-01-01")?).is_err());
     assert_eq!(state(&db)?, before);
-    investments::sell(db.conn(), &actor, "acme", &sale("1", 100, "2026-01-04")?)?;
+    sell(&db, &actor, "acme", &sale("1", 100, "2026-01-04")?)?;
     let after_sale = state(&db)?;
-    assert!(
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 100, "2026-01-03")?
-        )
-        .is_err()
-    );
+    assert!(buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-03")?).is_err());
     assert_eq!(state(&db)?, after_sale);
     let mut other_position = purchase("1", 100, "2026-01-01")?;
     other_position.asset = "1300".into();
-    investments::buy(db.conn(), &actor, "acme", &other_position)?;
+    buy(&db, &actor, "acme", &other_position)?;
     verify(&db)
 }
 
@@ -586,8 +530,8 @@ fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult 
     assert!(Currency::from_code("BAD").is_err());
     for (symbol, name) in [("bad symbol", "bad"), ("NEW", " ")] {
         assert!(
-            investments::create_security(
-                db.conn(),
+            create_security(
+                &db,
                 &actor,
                 "acme",
                 &SecurityParams {
@@ -601,9 +545,9 @@ fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult 
     }
     let mut params = purchase("1", 100, "2026-01-01")?;
     params.asset = "5000".into();
-    assert!(investments::buy(db.conn(), &actor, "acme", &params).is_err());
+    assert!(buy(&db, &actor, "acme", &params).is_err());
     params.asset = "1000".into();
-    assert!(investments::buy(db.conn(), &actor, "acme", &params).is_err());
+    assert!(buy(&db, &actor, "acme", &params).is_err());
     assert!(PositiveQuantity::try_from(Quantity::ZERO).is_err());
     assert_eq!(state(&db)?, before);
     let price = PriceParams {
@@ -611,9 +555,9 @@ fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult 
         date: date("2026-01-01")?,
         price: usd(0)?,
     };
-    investments::record_price(db.conn(), &actor, "acme", &price)?;
+    record_price(&db, &actor, "acme", &price)?;
     let after_price = state(&db)?;
-    assert!(investments::record_price(db.conn(), &actor, "acme", &price).is_err());
+    assert!(record_price(&db, &actor, "acme", &price).is_err());
     assert_eq!(state(&db)?, after_price);
     verify(&db)
 }
@@ -622,15 +566,10 @@ fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult 
 fn investment_records_cannot_be_updated_deleted_or_replaced() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("2", 200, "2026-01-01")?,
-    )?;
-    investments::sell(db.conn(), &actor, "acme", &sale("1", 150, "2026-01-02")?)?;
-    investments::record_price(
-        db.conn(),
+    buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-01")?)?;
+    sell(&db, &actor, "acme", &sale("1", 150, "2026-01-02")?)?;
+    record_price(
+        &db,
         &actor,
         "acme",
         &PriceParams {
@@ -680,21 +619,17 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
 
     let db = fixture()?;
     let actor = Actor::new("investment-test");
-    let bought = investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("2", 200, "2026-01-01")?,
-    )?;
-    let sold = investments::sell(db.conn(), &actor, "acme", &sale("1", 150, "2026-01-02")?)?;
+    let bought = buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-01")?)?;
+    let sold = sell(&db, &actor, "acme", &sale("1", 150, "2026-01-02")?)?;
     for id in [bought.transaction_id, sold.transaction_id] {
-        audit::edit_metadata(
-            db.conn(),
-            &actor,
-            "acme",
-            audit::MetadataTarget::Id(id),
-            &MetadataEdit::Unset(vec!["investment".into()]),
-        )?;
+        Granted::<Post>::with_db(&db, &actor, |grant| {
+            audit::edit_metadata(
+                grant,
+                "acme",
+                audit::MetadataTarget::Id(id),
+                &MetadataEdit::Unset(vec!["investment".into()]),
+            )
+        })?;
         let before = state(&db)?;
         let error = audit::reverse_transaction(
             db.conn(),
@@ -725,31 +660,22 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
 fn closed_period_blocks_purchases_and_sales_without_lot_side_effects() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("close-test");
-    investments::buy(
-        db.conn(),
-        &actor,
-        "acme",
-        &purchase("2", 200, "2026-01-01")?,
-    )?;
-    audit::change_period(
-        db.conn(),
-        &actor,
-        "acme",
-        beankeeper_cli::db::periods::PeriodChange::Close("2026-01-31".parse()?),
-    )?;
+    buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-01")?)?;
+    Granted::<Admin>::with_db(&db, &actor, |grant| {
+        audit::change_period(
+            grant,
+            "acme",
+            beankeeper_cli::db::periods::PeriodChange::Close("2026-01-31".parse()?),
+        )
+    })?;
     let before = state(&db)?;
     assert!(matches!(
-        investments::buy(
-            db.conn(),
-            &actor,
-            "acme",
-            &purchase("1", 100, "2026-01-31")?
-        ),
+        buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-31")?),
         Err(CliError::Validation(_))
     ));
     assert_eq!(state(&db)?, before);
     assert!(matches!(
-        investments::sell(db.conn(), &actor, "acme", &sale("1", 150, "2026-01-31")?),
+        sell(&db, &actor, "acme", &sale("1", 150, "2026-01-31")?),
         Err(CliError::Validation(_))
     ));
     assert_eq!(state(&db)?, before);

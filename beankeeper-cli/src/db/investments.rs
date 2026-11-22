@@ -15,12 +15,14 @@ use beankeeper::{
 use chrono::NaiveDate;
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
-use rusqlite::{Connection, OptionalExtension, ToSql, params};
+use rusqlite::{OptionalExtension, ToSql, params};
 use serde::{Serialize, Serializer};
 
+use super::audit::savepoint::AuditedTx;
 use super::connection::{Db, ReadConn};
 use super::{Actor, PostEntryParams, PostResult, PostTransactionParams, audit};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 
 macro_rules! investment_id {
     ($(#[$doc:meta])* $name:ident, $prefix:literal) => {
@@ -29,7 +31,7 @@ macro_rules! investment_id {
         pub struct $name(MagicTypeId);
 
         impl $name {
-            fn new() -> Self {
+            pub(super) fn new() -> Self {
                 Self($prefix.create_type_id::<V7>())
             }
 
@@ -277,7 +279,7 @@ fn money_error(error: MoneyError) -> CliError {
     CliError::Bean(error.into())
 }
 
-fn minor(value: impl Into<Money>) -> Result<i64, CliError> {
+pub(super) fn minor(value: impl Into<Money>) -> Result<i64, CliError> {
     i64::try_from(value.into().amount().minor_units())
         .map_err(|_| domain(InvestmentError::Overflow))
 }
@@ -304,7 +306,7 @@ fn other_sql_error(error: impl std::error::Error + Send + Sync + 'static) -> Fro
 }
 
 // SQLite keeps exact 128-bit share atom counts as text.
-struct StoredAtoms(PositiveQuantity);
+pub(super) struct StoredAtoms(pub(super) PositiveQuantity);
 
 impl FromSql for StoredAtoms {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
@@ -388,8 +390,7 @@ pub fn get_security(conn: ReadConn<'_>, company: &str, symbol: &str) -> Result<S
 /// # Errors
 /// Rejects empty/invalid symbols, names, or duplicate symbols.
 pub fn create_security(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     company: &str,
     p: &SecurityParams,
 ) -> Result<Security, CliError> {
@@ -398,22 +399,9 @@ pub fn create_security(
             "symbol must be 1-32 ASCII letters, digits, '.', '-', '_' or ':'; name must not be empty",
         ));
     }
-    audit::atomically(conn, || {
-        super::companies::get_company(ReadConn::new(conn), company)?;
-        conn.execute(
-            "INSERT INTO securities(company_slug,symbol,name,currency) VALUES (?1,?2,?3,?4)",
-            params![company, p.symbol, p.name, p.currency.code()],
-        )?;
-        let security = get_security(ReadConn::new(conn), company, &p.symbol)?;
-        audit::record_insert(
-            conn,
-            actor,
-            company,
-            audit::Creation::Security,
-            &p.symbol,
-            &serde_json::json!(&security),
-        )?;
-        Ok(security)
+    grant.mutate("sp_security_create", |tx, actor| {
+        super::companies::get_company(tx.read(), company)?;
+        audit::investment::store_security(tx, actor, company, p)
     })
 }
 
@@ -444,14 +432,13 @@ pub fn list_securities(conn: ReadConn<'_>, company: &str) -> Result<Vec<Security
 /// # Errors
 /// Rejects out-of-range or wrong-currency prices, unknown securities and duplicate dates.
 pub fn record_price(
-    conn: &Connection,
-    actor: &Actor,
+    grant: Granted<'_, Post>,
     company: &str,
     p: &PriceParams,
 ) -> Result<Price, CliError> {
     let stored_price = minor(p.price)?;
-    audit::atomically(conn, || {
-        let security = get_security(ReadConn::new(conn), company, &p.symbol)?;
+    grant.mutate("sp_security_price", |tx, actor| {
+        let security = get_security(tx.read(), company, &p.symbol)?;
         require_currency(p.price.money(), security.currency)?;
         let price = Price {
             currency: security.currency,
@@ -460,27 +447,19 @@ pub fn record_price(
             date: p.date,
             price: p.price,
         };
-        conn.execute("INSERT INTO security_prices(id,company_slug,symbol,date,price) VALUES (?1,?2,?3,?4,?5)", params![price.id,company,p.symbol,p.date.to_string(),stored_price])?;
-        audit::record_insert(
-            conn,
-            actor,
-            company,
-            audit::Creation::Price,
-            price.id.as_str(),
-            &serde_json::json!(&price),
-        )?;
+        audit::investment::store_price(tx, actor, company, &price, stored_price)?;
         Ok(price)
     })
 }
 
 fn check_trade(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     symbol: &str,
     asset: &str,
     date: NaiveDate,
 ) -> Result<Security, CliError> {
-    let security = get_security(ReadConn::new(conn), company, symbol)?;
+    let security = get_security(conn, company, symbol)?;
     let mut statement = conn.prepare_cached(
         "SELECT acquired_date FROM investment_lots WHERE company_slug=?1 AND symbol=?2 AND asset=?3
          UNION ALL
@@ -499,17 +478,14 @@ fn check_trade(
 }
 
 fn checked_account(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     code: &str,
     expected: AccountType,
     error: &str,
 ) -> Result<Account, CliError> {
-    let account = super::accounts::row_to_account(&super::accounts::get_account(
-        ReadConn::new(conn),
-        company,
-        code,
-    )?)?;
+    let account =
+        super::accounts::row_to_account(&super::accounts::get_account(conn, company, code)?)?;
     if account.account_type() == expected {
         Ok(account)
     } else {
@@ -518,7 +494,7 @@ fn checked_account(
 }
 
 fn check_assets(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     asset: &str,
     cash: &str,
@@ -558,7 +534,7 @@ struct TradePosting<'a> {
     actor: &'a Actor,
 }
 
-fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
+fn post(tx: &AuditedTx<'_>, p: &TradePosting<'_>) -> Result<i64, CliError> {
     let mut entries = Vec::with_capacity(p.entries.len());
     for entry in p.entries {
         let money = entry.amount.money();
@@ -571,8 +547,8 @@ fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
             tax_category: None,
         });
     }
-    match super::post_transaction(
-        conn,
+    match audit::post_in_audited_scope(
+        tx,
         &PostTransactionParams {
             company_slug: p.company,
             description: p.description,
@@ -596,17 +572,12 @@ fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
 /// # Errors
 /// Rejects wrong-currency or out-of-range costs, invalid accounts or date order,
 /// and duplicate references.
-pub fn buy(
-    conn: &Connection,
-    actor: &Actor,
-    company: &str,
-    p: &BuyParams,
-) -> Result<Trade, CliError> {
+pub fn buy(grant: Granted<'_, Post>, company: &str, p: &BuyParams) -> Result<Trade, CliError> {
     let cost = minor(p.cost)?;
-    audit::atomically(conn, || {
-        audit::lock_investment_writer(conn)?;
-        let security = check_trade(conn, company, &p.symbol, &p.asset, p.date)?;
-        let [asset, cash] = check_assets(conn, company, &p.asset, &p.cash)?;
+    grant.mutate("sp_investment_buy", |tx, actor| {
+        let reader = tx.read();
+        let security = check_trade(reader, company, &p.symbol, &p.asset, p.date)?;
+        let [asset, cash] = check_assets(reader, company, &p.asset, &p.cash)?;
         let lot_id = LotId::new();
         let metadata = serde_json::json!({
             "investment": "buy", "symbol": p.symbol, "lot_id": lot_id,
@@ -618,7 +589,7 @@ pub fn buy(
             entry(&cash, DebitOrCredit::Credit, p.cost),
         ];
         let transaction_id = post(
-            conn,
+            tx,
             &TradePosting {
                 company,
                 description: &format!("Buy {} {}", p.quantity, p.symbol),
@@ -629,12 +600,6 @@ pub fn buy(
                 reference: p.reference.as_deref(),
                 actor,
             },
-        )?;
-        conn.execute(
-            "INSERT INTO investment_lots(id,company_slug,symbol,asset,quantity,cost_basis,acquired_date,transaction_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![lot_id, company, p.symbol, p.asset, StoredAtoms(p.quantity), cost,
-                p.date.to_string(), transaction_id],
         )?;
         let lot = Lot {
             currency: security.currency,
@@ -648,14 +613,7 @@ pub fn buy(
             remaining_quantity: p.quantity.quantity(),
             remaining_cost_basis: p.cost.nonnegative(),
         };
-        audit::record_insert(
-            conn,
-            actor,
-            company,
-            audit::Creation::Lot,
-            lot.id.as_str(),
-            &serde_json::json!(&lot),
-        )?;
+        audit::investment::store_lot(tx, actor, company, &lot, cost)?;
         Ok(Trade {
             currency: security.currency,
             transaction_id,
@@ -820,62 +778,29 @@ fn sale_entries<'a>(
     Ok(entries)
 }
 
-fn record_reliefs(
-    conn: &Connection,
-    actor: &Actor,
-    company: &str,
-    date: NaiveDate,
-    transaction_id: i64,
-    relief: &[Relief],
-) -> Result<(), CliError> {
-    for allocation in relief {
-        let id = ReliefId::new();
-        conn.execute(
-            "INSERT INTO lot_reliefs(id,company_slug,lot_id,quantity,cost_basis,date,transaction_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![id, company, allocation.lot_id, StoredAtoms(allocation.quantity),
-                minor(allocation.cost_basis)?, date.to_string(), transaction_id],
-        )?;
-        audit::record_insert(
-            conn,
-            actor,
-            company,
-            audit::Creation::Lot,
-            id.as_str(),
-            &serde_json::json!({"relief": allocation, "date": date, "transaction_id": transaction_id}),
-        )?;
-    }
-    Ok(())
-}
-
 /// Relieve FIFO/LIFO/specific lots and post cash, basis and gain/loss atomically.
 ///
 /// # Errors
 /// Rejects overselling, invalid accounts, wrong-currency proceeds, monetary overflow,
 /// and out-of-order trades.
-pub fn sell(
-    conn: &Connection,
-    actor: &Actor,
-    company: &str,
-    p: &SellParams,
-) -> Result<Trade, CliError> {
+pub fn sell(grant: Granted<'_, Post>, company: &str, p: &SellParams) -> Result<Trade, CliError> {
     minor(p.proceeds)?;
     if p.gain == p.asset || p.gain == p.cash {
         return Err(invalid("asset, cash and gain accounts must be distinct"));
     }
-    audit::atomically(conn, || {
-        audit::lock_investment_writer(conn)?;
-        let security = check_trade(conn, company, &p.symbol, &p.asset, p.date)?;
+    grant.mutate("sp_investment_sell", |tx, actor| {
+        let reader = tx.read();
+        let security = check_trade(reader, company, &p.symbol, &p.asset, p.date)?;
         require_currency(p.proceeds.money(), security.currency)?;
-        let [asset, cash] = check_assets(conn, company, &p.asset, &p.cash)?;
+        let [asset, cash] = check_assets(reader, company, &p.asset, &p.cash)?;
         let gain_account = checked_account(
-            conn,
+            reader,
             company,
             &p.gain,
             AccountType::Revenue,
             "gain account must have type revenue; losses debit that account",
         )?;
-        let relief = select_relief(ReadConn::new(conn), company, &security, p)?;
+        let relief = select_relief(reader, company, &security, p)?;
         let zero = NonNegativeMoney::zero(security.currency);
         let basis = relief
             .iter()
@@ -894,7 +819,7 @@ pub fn sell(
         })
         .to_string();
         let transaction_id = post(
-            conn,
+            tx,
             &TradePosting {
                 company,
                 description: &format!("Sell {} {}", p.quantity, p.symbol),
@@ -906,7 +831,7 @@ pub fn sell(
                 actor,
             },
         )?;
-        record_reliefs(conn, actor, company, p.date, transaction_id, &relief)?;
+        audit::investment::store_reliefs(tx, actor, company, p.date, transaction_id, &relief)?;
         Ok(Trade {
             currency: security.currency,
             transaction_id,

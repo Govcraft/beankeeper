@@ -7,6 +7,7 @@ use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{Actor, Db, accounts, audit, companies, rules};
+use beankeeper_cli::identity::{Granted, Post};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -306,7 +307,7 @@ fn csv_categorizes_both_directions_preserves_fallback_and_isolates_companies() -
     )?;
     assert_eq!(other_fallback, 3);
     audit::verify_hash_chain(db.read())?;
-    audit::verify_creations(db.conn())?;
+    audit::verify_creations(db.read())?;
     Ok(())
 }
 
@@ -444,7 +445,7 @@ fn ofx_matches_name_and_memo_applies_tax_defaults_and_preserves_references() -> 
         ]
     );
     audit::verify_hash_chain(db.read())?;
-    audit::verify_creations(db.conn())?;
+    audit::verify_creations(db.read())?;
     Ok(())
 }
 
@@ -482,21 +483,28 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     )?;
     let actor = Actor::new("rules-test");
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
-    assert!(rules::create_rule(db.conn(), &actor, "acme", "coffee".parse()?, "5000", 0).is_err());
+    Granted::<Post>::with_db(&db, &actor, |grant| {
+        assert!(rules::create_rule(grant, "acme", "coffee".parse()?, "5000", 0).is_err());
+        Ok(())
+    })?;
     assert!(rules::list_rules(db.read(), "acme")?.is_empty());
     db.conn().execute_batch("DROP TRIGGER fail_rule_audit;")?;
-    let rule = rules::create_rule(db.conn(), &actor, "acme", "coffee".parse()?, "5000", 0)?;
+    let rule = Granted::<Post>::with_db(&db, &actor, |grant| {
+        rules::create_rule(grant, "acme", "coffee".parse()?, "5000", 0)
+    })?;
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
-    assert!(
-        audit::delete_rule(
-            db.conn(),
-            &actor,
-            "acme",
-            &rule.id,
-            beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
-        )
-        .is_err()
-    );
+    Granted::<Post>::with_db(&db, &actor, |grant| {
+        assert!(
+            audit::delete_rule(
+                grant,
+                "acme",
+                &rule.id,
+                beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
+            )
+            .is_err()
+        );
+        Ok(())
+    })?;
     assert_eq!(rules::list_rules(db.read(), "acme")?.len(), 1);
     audit::verify_hash_chain(db.read())?;
     Ok(())

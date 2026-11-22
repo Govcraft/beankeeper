@@ -9,6 +9,7 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use super::companies::CompanySlug;
+use super::connection::ReadConn;
 use super::transactions::{PostEntryParams, PostTransactionParams};
 use crate::error::CliError;
 
@@ -216,7 +217,7 @@ impl Serialize for SpendLimit {
 /// # Errors
 /// Returns storage errors or a database error if live limits differ from their audit history.
 pub fn list(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     uri: &str,
     company: Option<&str>,
 ) -> Result<Vec<SpendLimit>, CliError> {
@@ -253,7 +254,7 @@ fn integrity_error(uri: &str) -> CliError {
 }
 
 fn audited_limits(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     uri: &str,
 ) -> Result<BTreeMap<(CompanySlug, &'static str), SpendLimit>, CliError> {
     let mut expected = BTreeMap::new();
@@ -292,7 +293,7 @@ fn audited_limits(
 }
 
 /// Check every live or historically configured URI, including deleted limit rows.
-pub(crate) fn verify(conn: &Connection) -> Result<(), CliError> {
+pub(crate) fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
     let mut stmt = conn.prepare(
         "SELECT agent_uri FROM agent_spend_limits UNION
          SELECT entity_id FROM audit_log WHERE entity = 'spend_limit' AND action = 'limit_set'",
@@ -334,7 +335,7 @@ pub(crate) fn check(conn: &Connection, p: &PostTransactionParams<'_>) -> Result<
     let Some(uri) = p.actor.agent_uri() else {
         return Ok(());
     };
-    let limits = list(conn, uri, Some(p.company_slug))?;
+    let limits = list(ReadConn::new(conn), uri, Some(p.company_slug))?;
     if limits.is_empty() {
         return Ok(());
     }
@@ -408,6 +409,7 @@ mod tests {
 
     use super::*;
     use crate::db::{self, Actor, Db, audit};
+    use crate::identity::{Admin, Granted};
 
     fn ledger() -> Result<(Db, SpendLimit), CliError> {
         let db = Db::open_in_memory()?;
@@ -434,23 +436,27 @@ mod tests {
     fn audited_revisions_and_clears_preserve_limit_integrity() -> Result<(), CliError> {
         let (db, mut limit) = ledger()?;
         let owner = Actor::new("owner");
-        audit::set_spend_limit(db.conn(), &owner, &limit)?;
+        Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &limit))?;
         limit.caps = Caps::from_minor_units(None, Some(3000))?;
-        audit::set_spend_limit(db.conn(), &owner, &limit)?;
+        Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &limit))?;
         assert_eq!(
-            list(db.conn(), limit.agent_uri(), Some("acme"))?,
+            list(db.read(), limit.agent_uri(), Some("acme"))?,
             [limit.clone()]
         );
         limit.currency = Currency::JPY;
-        audit::set_spend_limit(db.conn(), &owner, &limit)?;
-        assert_eq!(list(db.conn(), limit.agent_uri(), None)?.len(), 2);
-        verify(db.conn())?;
+        Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &limit))?;
+        assert_eq!(list(db.read(), limit.agent_uri(), None)?.len(), 2);
+        verify(db.read())?;
         assert_eq!(
-            audit::clear_spend_limits(db.conn(), &owner, limit.agent_uri(), None)?,
+            Granted::<Admin>::with_db(&db, &owner, |grant| audit::clear_spend_limits(
+                grant,
+                limit.agent_uri(),
+                None
+            ))?,
             2
         );
-        assert_eq!(list(db.conn(), limit.agent_uri(), None)?, Vec::new());
-        verify(db.conn())?;
+        assert_eq!(list(db.read(), limit.agent_uri(), None)?, Vec::new());
+        verify(db.read())?;
         audit::verify_hash_chain(db.read())?;
         Ok(())
     }
@@ -494,17 +500,19 @@ mod tests {
         assert_eq!(legacy.agent(), limit.agent());
         assert_eq!(legacy.agent_uri(), stored);
         let owner = Actor::new("owner");
-        audit::set_spend_limit(db.conn(), &owner, &legacy)?;
+        Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &legacy))?;
         assert_eq!(
-            serde_json::to_value(list(db.conn(), &stored, Some("acme"))?)
+            serde_json::to_value(list(db.read(), &stored, Some("acme"))?)
                 .map_err(|error| CliError::General(error.to_string()))?,
             serde_json::json!([wire])
         );
         assert_eq!(
-            audit::clear_spend_limits(db.conn(), &owner, &stored, None)?,
+            Granted::<Admin>::with_db(&db, &owner, |grant| audit::clear_spend_limits(
+                grant, &stored, None
+            ))?,
             1
         );
-        verify(db.conn())?;
+        verify(db.read())?;
         audit::verify_hash_chain(db.read())?;
         Ok(())
     }

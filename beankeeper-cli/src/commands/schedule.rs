@@ -9,6 +9,7 @@ use super::posting_output::PostingLineJson;
 use crate::cli::{Cli, OutputFormat, ScheduleCommand, ScheduleCreateArgs, resolve_format};
 use crate::db::{self, PostEntryParams, schedules};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 use crate::output::json;
 
 /// Execute a company-scoped schedule command.
@@ -22,7 +23,9 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
     let data = match command {
         ScheduleCommand::Create(args) => {
             let params = create_params(args)?;
-            let schedule = schedules::create_schedule(db.conn(), &actor, company, &params)?;
+            let schedule = Granted::<Post>::with_db(&db, &actor, |grant| {
+                schedules::create_schedule(grant, company, &params)
+            })?;
             serde_json::to_value(ScheduleJson::from(&schedule))
         }
         ScheduleCommand::List { all, due_through } => {
@@ -43,19 +46,27 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
             allow_large_run,
         } => {
             let through = through.unwrap_or_else(|| chrono::Local::now().date_naive());
-            serde_json::to_value(schedules::run_due_with_options(
-                db.conn(),
-                &actor,
-                company,
-                through,
-                schedules::RunOptions {
-                    dry_run: *dry_run,
-                    allow_large_run: *allow_large_run,
-                },
-            )?)
+            let occurrences = if *dry_run {
+                db.read_snapshot(|reader| schedules::preview_due(reader, company, through))?
+            } else {
+                Granted::<Post>::with_db(&db, &actor, |grant| {
+                    schedules::run_due_with_options(
+                        grant,
+                        company,
+                        through,
+                        schedules::RunOptions {
+                            dry_run: false,
+                            allow_large_run: *allow_large_run,
+                        },
+                    )
+                })?
+            };
+            serde_json::to_value(occurrences)
         }
         ScheduleCommand::Cancel { id } => {
-            let schedule = schedules::cancel_schedule(db.conn(), &actor, company, id)?;
+            let schedule = Granted::<Post>::with_db(&db, &actor, |grant| {
+                schedules::cancel_schedule(grant, company, id)
+            })?;
             serde_json::to_value(ScheduleJson::from(&schedule))
         }
     }

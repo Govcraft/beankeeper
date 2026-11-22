@@ -3,6 +3,7 @@ use super::reference::TransactionReference;
 use crate::cli::{Cli, OutputFormat, TxnMetaCommand, resolve_format};
 use crate::db::{Actor, audit, connection::Db, metadata};
 use crate::error::CliError;
+use crate::identity::{Granted, Post};
 
 fn execute(
     db: &Db,
@@ -42,7 +43,9 @@ fn execute(
         }
         TxnMetaCommand::Unset { .. } => metadata::MetadataEdit::Unset(arguments.to_vec()),
     };
-    audit::edit_metadata(db.conn(), actor, company, target, &edit)
+    Granted::<Post>::with_db(db, actor, |grant| {
+        audit::edit_metadata(grant, company, target, &edit)
+    })
 }
 
 /// Execute an annotation edit with an explicit actor and no terminal output.
@@ -67,7 +70,9 @@ pub(crate) fn execute_structured(
     edit: &metadata::MetadataEdit,
 ) -> Result<serde_json::Value, CliError> {
     crate::db::get_company(db.read(), company)?;
-    let result = audit::edit_metadata(db.conn(), actor, company, target, edit)?;
+    let result = Granted::<Post>::with_db(db, actor, |grant| {
+        audit::edit_metadata(grant, company, target, edit)
+    })?;
     serde_json::to_value(result).map_err(|error| CliError::General(error.to_string()))
 }
 

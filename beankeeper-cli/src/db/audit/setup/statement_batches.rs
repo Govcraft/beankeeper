@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-use super::super::{AuditAction, AuditChange, AuditEntity, atomically, record};
+use super::super::{AuditAction, AuditChange, AuditEntity, record};
 use super::requests::SetupReference;
 use super::statements::{StatementFormat, StatementPreview, StatementRequest, prepare_in_session};
 use super::{ActiveSession, Generation, SessionState, find_session, with_active_session};
@@ -490,7 +490,7 @@ fn freeze(
             existing_transaction: row.existing_transaction,
         };
         if let Some(id) = row.existing_transaction {
-            require_existing_match(session.connection, &batch, &row, id)?;
+            require_existing_match(ReadConn::new(session.connection), &batch, &row, id)?;
         }
         batch.rows.push(row);
     }
@@ -504,9 +504,9 @@ pub(crate) fn commit(
     batch_id: StatementBatchId,
     expected: &Sha256Hex,
 ) -> Result<StatementReceipt, CliError> {
-    atomically(db.conn(), || {
-        let grant = Granted::<StatementApprover>::check(db.conn(), actor)?;
-        let conn = grant.connection();
+    db.with_audited_tx("sp_atomic_batch", |tx| {
+        let grant = Granted::<StatementApprover>::check(tx, actor)?;
+        let conn = db.conn();
         let reader = ReadConn::new(conn);
         let preview = load(reader, company.as_str(), batch_id)?;
         if &preview.stamp.preview_sha256 != expected {
@@ -697,7 +697,7 @@ fn apply_batch(
     };
     for row in &batch.rows {
         let (transaction_id, items) = if let Some(id) = row.existing_transaction {
-            require_existing_match(conn, batch, row, id)?;
+            require_existing_match(ReadConn::new(conn), batch, row, id)?;
             (id, &mut receipt.preexisting)
         } else {
             let entry_params: Vec<_> = row
@@ -732,7 +732,7 @@ fn reference_conflict(reference: &str) -> CliError {
 }
 
 fn require_existing_match(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     batch: &FrozenBatch,
     row: &FrozenRow,
     id: TransactionId,

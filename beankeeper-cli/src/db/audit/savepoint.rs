@@ -3,10 +3,11 @@
 use rusqlite::{Connection, Params};
 
 use super::{Actor, Creation};
+use crate::db::connection::ReadConn;
 
 use crate::error::CliError;
 
-pub(super) struct AuditedTx<'a> {
+pub(in crate::db) struct AuditedTx<'a> {
     connection: &'a Connection,
     name: &'static str,
     active: bool,
@@ -20,6 +21,14 @@ impl<'a> AuditedTx<'a> {
             name,
             active: true,
         })
+    }
+
+    pub(super) const fn connection(&self) -> &'a Connection {
+        self.connection
+    }
+
+    pub(in crate::db) const fn read(&self) -> ReadConn<'_> {
+        ReadConn::new(self.connection)
     }
 
     pub(super) fn insert(&self, sql: &str, params: impl Params) -> Result<i64, CliError> {
@@ -58,7 +67,7 @@ impl Drop for AuditedTx<'_> {
     }
 }
 
-pub(super) fn with_audited_tx<T>(
+pub(in crate::db) fn with_audited_tx<T>(
     connection: &Connection,
     name: &'static str,
     run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
