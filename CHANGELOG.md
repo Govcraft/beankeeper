@@ -43,6 +43,13 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   company uses several. Applies to both CLI and MCP.
   ([#155](https://github.com/Govcraft/beankeeper/issues/155))
 
+- CLI and MCP clearing accept signed statement amounts. Point-in-time reports
+  accept an as-of date alias, and MCP discovery explains report options and how
+  to request account balances. Same-company correlation errors point to the
+  audited reversal and metadata tools. Audit history pages have a 100-row
+  maximum and return a continuation offset when more rows remain.
+  ([#236](https://github.com/Govcraft/beankeeper/issues/236))
+
 ## [0.28.0] - Unreleased
 
 ### Added

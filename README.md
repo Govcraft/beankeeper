@@ -40,8 +40,10 @@ Monetary JSON fields retain integer minor units and add decimal-string companion
 for example `"amount": 180000, "amount_display": "1800.00"` for USD.
 `txn list` and `audit log` keep their data arrays and expose
 `meta.pagination` with filtered totals and `has_more`; table mode warns on stderr
-when more rows exist. Continue with `--offset` and `--limit`. MCP tools expose
-the same amounts and put pagination in the tool result’s `_meta.pagination`.
+when more rows exist. Audit pages default to 50 rows and accept up to 100. For
+the next page, pass `meta.pagination.next_offset` to `--offset` with the same
+filters. MCP tools expose the same amounts and put pagination in the tool
+result’s `_meta.pagination`.
 
 Named error codes (`NOT_FOUND`, `VALIDATION`, `DATABASE`, etc.), `meta.command` in dot notation, consistent field presence. The agent can handle `bk` output reliably without parsing human-readable text or guessing at shapes.
 
@@ -508,6 +510,17 @@ This catalog covers the full router. Capability enforcement can restrict discove
 further. Company-scoped tools require a `company` argument. `report` takes a `kind`
 and its options, with all 13 CLI report kinds available, including `schedule-c`,
 `1099` and `trend`. See the [report-kind list](docs/beankeeper/references/commands.md#report-kinds).
+For `trial-balance`, `balance`, `balance-sheet`, and `reconciliation`, use
+`as_of` or `to` in MCP and `--as-of` or `--to` in the CLI. Use `as_of` for
+`aging`. For date-range reports such as `income-statement`, use `from` and `to`.
+
+`txn_clear` and `bk txn clear` accept signed major-unit statement amounts such
+as `-95.40` for a withdrawal (credit) or `+95.40` for a deposit (debit) on
+the selected account. An unsigned amount clears an entry on either side.
+For same-company corrections, use `txn_reverse` / `bk txn reverse`. For a
+reference to a related posting, use `txn_meta_set` / `bk txn meta set` with a
+custom metadata key such as `related_transaction`.
+
 Tool schemas describe the accepted arguments. For example, `txn_post` takes:
 
 ```json
@@ -1120,7 +1133,9 @@ currencies requires `--currency` (MCP: `currency`). With no selection,
 `bk` uses the company's sole transaction currency, or USD if the company has
 no transactions. `BEANKEEPER_CURRENCY` does not select a currency for this query.
 
-`bk account list` can include balances in a single query:
+Set `with_balances: true` in MCP `account_list` or pass `--with-balances`
+to `bk account list` to include debit, credit, and balance totals. Supply a
+currency if the company has transactions in several currencies.
 
 ```sh
 # List expense accounts with their debit/credit totals

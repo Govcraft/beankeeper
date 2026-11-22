@@ -254,7 +254,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
-| `account_list`, `account_show` | `company`; list accepts `account_type`, `name`, `with_balances`, `from`, `to`; show accepts `code` |
+| `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
 | `txn_propose` | Same posting arguments as `txn_post`; requires a verified proposer, reserves the reference and waits for approval without posting |
@@ -433,7 +433,9 @@ file or `-` for stdin in the CLI. Supply bounded content directly to MCP.
 `income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `ledger`, `budget-variance`,
 `cash-flow`, `aging`, `reconciliation`, or `trend`, including their period/comparison and
 metadata options. These are the 13 canonical CLI report kinds; `1099-nec` is an
-alias for `1099`.
+alias for `1099`. Trial balance, account balance, balance sheet, and
+reconciliation take `as_of` as an alias for `to` (CLI: `--as-of` for `--to`).
+Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 

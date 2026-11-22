@@ -122,8 +122,10 @@ display_amount = json_amount / (10 ^ currency_minor_units)
 `has_more` means `offset + returned < total`, including an empty page requested
 with limit zero. Use a positive limit and advance the offset by `returned` while
 `has_more` is true. Negative transaction limits retain SQLite’s unlimited
-semantics; audit limits and offsets are clamped at zero. Negative transaction
-offsets act as zero. A page ending exactly at the total has `has_more: false`.
+semantics. Audit limits default to 50 and must be between 0 and 100. Nonempty
+audit pages with more results also return `next_offset`. Use it with the same
+filters. Negative offsets act as zero. A page ending exactly at the total has
+`has_more: false`.
 Concurrent ledger changes can affect later pages. Table mode prints truncation
 notices to stderr unless `--quiet` is set.
 
