@@ -463,7 +463,7 @@ mutation tools are absent and cannot be called.
 | Tools | Purpose |
 | --- | --- |
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
-| `ledger_setup_book_create`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure personal and business books, charts, and accounts with an active setup grant |
+| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure personal and business books, charts, and accounts with an active setup grant |
 | `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `company_list`, `company_show` | Inspect companies |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |
@@ -474,6 +474,7 @@ mutation tools are absent and cannot be called.
 | `investment_buy`, `investment_sell`, `investment_lots`, `investment_holdings` | Trade, inspect lots and value holdings |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
+| `ledger_setup_book_show` | Read a book's current profile, fiscal year, base currency, and named accounts |
 | `report` | Run CLI reports |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |

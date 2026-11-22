@@ -9,10 +9,7 @@ use crate::db::{
     Actor, Db,
     audit::setup::{
         self, End, Generation,
-        books::{
-            self, BookChange, BookPurpose, BookSettings, ChartTemplate, FiscalYearStart,
-            ProfileRevision, SetupReference,
-        },
+        books::{self, BookChange, ChartTemplate, SetupReference},
     },
     companies::CompanySlug,
 };
@@ -21,6 +18,13 @@ use crate::identity;
 use crate::operation::Operation;
 use crate::output::json;
 
+pub use crate::db::audit::setup::books::{
+    BookAccount, BookAccountCode, BookFacts, BookProfile, BookPurpose, BookSettings,
+    FiscalYearStart, ProfileRevision, book_facts,
+};
+
+const OLDEST_SETUP_READ_SCHEMA: i64 = 20;
+
 pub(crate) const DEFAULT_TTL: &str = "15m";
 
 /// Ledger setup operations.
@@ -28,6 +32,11 @@ pub(crate) const DEFAULT_TTL: &str = "15m";
 pub enum SetupCommand {
     /// Read the state of a ledger before adding setup data.
     Status,
+    /// Read the current profile and accounts for one book.
+    BookShow {
+        /// Company slug of the book.
+        company: CompanySlug,
+    },
     /// Issue the agent credential for one new setup generation.
     Begin {
         /// Name for the setup agent.
@@ -46,6 +55,8 @@ pub enum SetupCommand {
     },
     /// Create a personal or business book and its first profile.
     BookCreate(BookCreateArgs),
+    /// Add the first profile to an existing book.
+    BookInitialize(BookInitializeArgs),
     /// Record a new profile revision for a book.
     BookUpdate(BookUpdateArgs),
     /// Create the accounts from a versioned chart template.
@@ -63,10 +74,12 @@ impl SetupCommand {
     pub(crate) const fn operation(&self) -> Operation {
         match self {
             Self::Status => Operation::LedgerSetupStatus,
+            Self::BookShow { .. } => Operation::LedgerSetupBookShow,
             Self::Begin { .. } => Operation::LedgerSetupBegin,
             Self::Finish { .. } => Operation::LedgerSetupFinish,
             Self::Revoke { .. } => Operation::LedgerSetupRevoke,
             Self::BookCreate(_) => Operation::LedgerSetupBookCreate,
+            Self::BookInitialize(_) => Operation::LedgerSetupBookInitialize,
             Self::BookUpdate(_) => Operation::LedgerSetupBookUpdate,
             Self::ChartApply(_) => Operation::LedgerSetupChartApply,
             Self::AccountAdd(_) => Operation::LedgerSetupAccountAdd,
@@ -134,6 +147,15 @@ pub struct BookCreateArgs {
     target: BookTarget,
     /// Name of the personal or business book.
     name: String,
+    #[command(flatten)]
+    settings: BookSettingsArgs,
+}
+
+/// Arguments to record the first profile for an existing book.
+#[derive(Debug, Args)]
+pub struct BookInitializeArgs {
+    #[command(flatten)]
+    target: BookTarget,
     #[command(flatten)]
     settings: BookSettingsArgs,
 }
@@ -212,7 +234,7 @@ pub fn status(db: &Db) -> Result<SetupStatus, CliError> {
 }
 
 fn run_status(cli: &Cli) -> Result<(), CliError> {
-    let db = Db::open_snapshot(&cli.db, cli.resolve_passphrase()?)?;
+    let db = open_setup_snapshot(cli)?;
     let _snapshot = db.conn().unchecked_transaction()?;
     cli.verify_agent(&db)?;
     let state = status(&db)?;
@@ -245,6 +267,23 @@ fn run_status(cli: &Cli) -> Result<(), CliError> {
     Ok(())
 }
 
+fn open_setup_snapshot(cli: &Cli) -> Result<Db, CliError> {
+    Db::open_compatible_snapshot(&cli.db, cli.resolve_passphrase()?, OLDEST_SETUP_READ_SCHEMA)
+}
+
+fn run_book_show(cli: &Cli, company: &CompanySlug) -> Result<(), CliError> {
+    let db = open_setup_snapshot(cli)?;
+    let _snapshot = db.conn().unchecked_transaction()?;
+    cli.verify_agent(&db)?;
+    let facts = book_facts(&db, company)?;
+    print_setup_data(
+        cli,
+        Operation::LedgerSetupBookShow,
+        Some(company.as_str()),
+        facts,
+    )
+}
+
 pub(crate) fn begin_json(
     db: &Db,
     actor: &Actor,
@@ -270,10 +309,11 @@ pub(crate) fn end_json(
 }
 
 pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
-    if matches!(command, SetupCommand::Status) {
-        return run_status(cli);
-    }
-    let db = cli.open_db()?;
+    let db = match command {
+        SetupCommand::Status => return run_status(cli),
+        SetupCommand::BookShow { company } => return run_book_show(cli, company),
+        _ => cli.open_db()?,
+    };
     let actor = cli.principal();
     let data = match command {
         SetupCommand::Begin {
@@ -291,6 +331,10 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
                 settings: (&args.settings).into(),
             },
         )?,
+        SetupCommand::BookInitialize(args) => {
+            args.target
+                .apply(&db, &actor, BookChange::Initialize((&args.settings).into()))?
+        }
         SetupCommand::BookUpdate(args) => args.target.apply(
             &db,
             &actor,
@@ -313,11 +357,21 @@ pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
             },
         )?,
         SetupCommand::Status => return run_status(cli),
+        SetupCommand::BookShow { company } => return run_book_show(cli, company),
     };
+    print_setup_data(cli, command.operation(), None, data)
+}
+
+fn print_setup_data(
+    cli: &Cli,
+    operation: Operation,
+    company: Option<&str>,
+    data: impl Serialize,
+) -> Result<(), CliError> {
     if cli.is_json() {
         println!(
             "{}",
-            json::envelope_ok(cli.meta(command.operation().name(), None), data)?
+            json::envelope_ok(cli.meta(operation.name(), company), data)?
         );
     } else {
         println!(

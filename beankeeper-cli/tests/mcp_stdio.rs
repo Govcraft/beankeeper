@@ -408,10 +408,12 @@ fn initialize_lists_tools_and_posts_lists_reports_and_retries() -> TestResult {
         "report",
         "financial_summary",
         "ledger_setup_status",
+        "ledger_setup_book_show",
         "ledger_setup_begin",
         "ledger_setup_finish",
         "ledger_setup_revoke",
         "ledger_setup_book_create",
+        "ledger_setup_book_initialize",
         "ledger_setup_book_update",
         "ledger_setup_chart_apply",
         "ledger_setup_account_add",
@@ -900,8 +902,9 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 18);
     assert!(names.contains("ledger_setup_status"));
+    assert!(names.contains("ledger_setup_book_show"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
     assert!(!names.contains("period_close"));
@@ -927,6 +930,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "ledger_setup_finish",
         "ledger_setup_revoke",
         "ledger_setup_book_create",
+        "ledger_setup_book_initialize",
         "ledger_setup_book_update",
         "ledger_setup_chart_apply",
         "ledger_setup_account_add",
@@ -1943,8 +1947,9 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 18);
     assert!(names.contains("ledger_setup_status"));
+    assert!(names.contains("ledger_setup_book_show"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
     assert!(!names.contains("period_close"));
@@ -1955,6 +1960,9 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
             beankeeper_cli::capability::Capability::Read
         );
     }
+    let facts = client.success("ledger_setup_book_show", &json!({"company":"acme"}))?;
+    assert_eq!(facts["company"], "acme");
+    assert!(facts["profile"].is_null());
     client.success("company_list", &json!({}))?;
     for kind in ["schedule-c", "1099", "1099-nec"] {
         client.success(
@@ -2091,8 +2099,9 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 18);
     assert!(names.contains("ledger_setup_status"));
+    assert!(names.contains("ledger_setup_book_show"));
     assert!(!names.contains("txn_post"));
     writer.success("verify", &json!({}))?;
     Ok(())
@@ -2567,6 +2576,78 @@ fn setup_status_matches_cli_for_an_empty_encrypted_ledger() -> TestResult {
 }
 
 #[test]
+fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
+    use beankeeper::types::AccountType;
+    use beankeeper_cli::commands::setup::{BookAccountCode, book_facts};
+    use beankeeper_cli::db::Db;
+
+    let temp = tempdir()?;
+    let path = temp.path().join("legacy.db");
+    seed(&path)?;
+    let connection = rusqlite::Connection::open(&path)?;
+    connection.execute_batch(
+        "DROP TABLE setup_requests;
+         DROP TABLE setup_book_profiles;
+         DELETE FROM schema_version WHERE version = 22;
+         INSERT INTO accounts(company_slug, code, name, type)
+           VALUES ('acme', 'CASH', 'Legacy Cash', 'asset');",
+    )?;
+    let read = bk(&path)?
+        .args(["--json", "setup", "book-show", "acme"])
+        .output()?;
+    assert!(
+        read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let facts = serde_json::from_slice::<Value>(&read.stdout)?;
+    assert_eq!(facts["data"]["company"], "acme");
+    assert!(facts["data"]["profile"].is_null());
+    assert_eq!(facts["data"]["accounts"][0]["code"], "1000");
+    let legacy = facts["data"]["accounts"]
+        .as_array()
+        .ok_or("missing setup accounts")?
+        .iter()
+        .find(|account| account["code"] == "CASH")
+        .ok_or("missing legacy account")?;
+    assert_eq!(legacy["name"], "Legacy Cash");
+    assert_eq!(legacy["type"], "asset");
+    let status = bk(&path)?.args(["--json", "setup", "status"]).output()?;
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert_eq!(beankeeper_cli::db::get_schema_version(&connection)?, 21);
+    drop(connection);
+
+    let db = Db::open_existing(&path, None)?;
+    let company = "acme".parse()?;
+    let typed = book_facts(&db, &company)?;
+    assert!(
+        matches!(&typed.accounts[0].code, BookAccountCode::Validated(code) if code.as_str() == "1000")
+    );
+    let typed_legacy = typed
+        .accounts
+        .iter()
+        .find(|account| account.code.as_str() == "CASH")
+        .ok_or("missing typed legacy account")?;
+    assert!(matches!(&typed_legacy.code, BookAccountCode::Legacy(code) if code == "CASH"));
+    assert_eq!(typed_legacy.account_type, AccountType::Asset);
+    assert_eq!(serde_json::to_value(typed)?, facts["data"]);
+
+    let mut server = bk(&path)?;
+    server.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(server)?;
+    client.initialize()?;
+    assert_eq!(
+        client.success("ledger_setup_book_show", &json!({"company":"acme"}))?,
+        facts["data"]
+    );
+    Ok(())
+}
+
+#[test]
 fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     use agent_uri_attestation::SigningKey;
     use beankeeper_cli::db::{Actor, Db};
@@ -2604,7 +2685,9 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         tool_names(&listed)?,
         BTreeSet::from([
             "ledger_setup_status",
+            "ledger_setup_book_show",
             "ledger_setup_book_create",
+            "ledger_setup_book_initialize",
             "ledger_setup_book_update",
             "ledger_setup_chart_apply",
             "ledger_setup_account_add",
@@ -2614,12 +2697,57 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     assert_eq!(status["transactions"], 0);
 
     let book = exercise_setup_books(&mut setup_client, &db, generation)?;
-    let replay = bk(&path)?
+    assert_setup_book_facts(&mut setup_client, &path, &passphrase_path, setup_token)?;
+    assert_existing_book_initializes_in_place(
+        &mut setup_client,
+        &db,
+        &path,
+        &passphrase_path,
+        generation,
+    )?;
+    assert_cli_replays_setup_book_creation(
+        &path,
+        &passphrase_path,
+        setup_token,
+        generation,
+        &book,
+    )?;
+
+    let ended = bk(&path)?
         .arg("--passphrase-file")
         .arg(&passphrase_path)
+        .args(["--agent-token", owner_token, "--json", "setup", "finish"])
+        .arg(generation.to_string())
+        .output()?;
+    assert!(
+        ended.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ended.stderr)
+    );
+    let ended: Value = serde_json::from_slice(&ended.stdout)?;
+    assert_eq!(ended["data"]["state"], "finished");
+    assert_eq!(
+        owner_client.success("ledger_setup_finish", &json!({ "generation": generation }))?,
+        ended["data"]
+    );
+    let denied = setup_client.call("ledger_setup_status", &json!({}))?;
+    assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
+    Ok(())
+}
+
+fn assert_cli_replays_setup_book_creation(
+    path: &Path,
+    passphrase: &Path,
+    token: &str,
+    generation: i64,
+    expected: &Value,
+) -> TestResult {
+    let replay = bk(path)?
+        .arg("--passphrase-file")
+        .arg(passphrase)
         .args([
             "--agent-token",
-            setup_token,
+            token,
             "--json",
             "setup",
             "book-create",
@@ -2647,29 +2775,151 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         String::from_utf8_lossy(&replay.stderr)
     );
     assert_eq!(
-        serde_json::from_slice::<Value>(&replay.stdout)?["data"],
-        book
+        &serde_json::from_slice::<Value>(&replay.stdout)?["data"],
+        expected
     );
 
-    let ended = bk(&path)?
+    Ok(())
+}
+
+fn assert_existing_book_initializes_in_place(
+    client: &mut Client,
+    db: &beankeeper_cli::db::Db,
+    path: &Path,
+    passphrase: &Path,
+    generation: i64,
+) -> TestResult {
+    let run = |args: &[&str]| -> TestResult {
+        bk(path)?
+            .arg("--passphrase-file")
+            .arg(passphrase)
+            .args(args)
+            .assert()
+            .success();
+        Ok(())
+    };
+    run(&["company", "create", "personal", "Personal"])?;
+    run(&[
+        "--company",
+        "personal",
+        "account",
+        "create",
+        "1000",
+        "Existing Checking",
+        "--type",
+        "asset",
+    ])?;
+    run(&[
+        "--company",
+        "personal",
+        "account",
+        "create",
+        "3000",
+        "Existing Equity",
+        "--type",
+        "equity",
+    ])?;
+    run(&[
+        "--company",
+        "personal",
+        "txn",
+        "post",
+        "-d",
+        "Prior deposit",
+        "--debit",
+        "1000:41.25",
+        "--credit",
+        "3000:41.25",
+        "--reference",
+        "prior-deposit",
+    ])?;
+
+    let snapshot = || {
+        db.conn().query_row(
+            "SELECT json_array(t.id, t.description, t.reference, t.currency,
+                 (SELECT json_group_array(json_array(e.id, e.account_code, e.direction, e.amount))
+                  FROM entries e WHERE e.transaction_id = t.id))
+         FROM transactions t WHERE t.company_slug = 'personal'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+    };
+    let transaction = snapshot()?;
+    let company = json!({"company":"personal"});
+    let prior = client.success("ledger_setup_book_show", &company)?;
+    assert!(prior["profile"].is_null());
+
+    let initial = json!({
+        "target": setup_book_target("personal", generation, "desktop-personal-profile"),
+        "settings": {"purpose":"personal", "base_currency":"USD", "fiscal_year_start":"01-01"},
+    });
+    let profile = client.success("ledger_setup_book_initialize", &initial)?;
+    assert_eq!(profile["name"], "Personal");
+    assert!(profile["profile"]["supersedes"].is_null());
+    let facts = client.success("ledger_setup_book_show", &company)?;
+    assert_eq!(facts["name"], prior["name"]);
+    assert_eq!(facts["accounts"], prior["accounts"]);
+    assert_eq!(facts["profile"], profile["profile"]);
+    assert_eq!(transaction, snapshot()?);
+
+    let audit = setup_audit_count(db)?;
+    assert_eq!(
+        client.success("ledger_setup_book_initialize", &initial)?,
+        profile
+    );
+    let mut conflicting = initial.clone();
+    conflicting["settings"]["fiscal_year_start"] = json!("04-01");
+    let conflict = client.call("ledger_setup_book_initialize", &conflicting)?;
+    assert_eq!(payload(&conflict)?["code"], "VALIDATION");
+    conflicting = initial;
+    conflicting["target"]["reference"] = json!("desktop-personal-profile-new");
+    let already_profiled = client.call("ledger_setup_book_initialize", &conflicting)?;
+    let error = payload(&already_profiled)?;
+    assert_eq!(error["code"], "VALIDATION");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("already has a setup profile"))
+    );
+    assert_eq!(setup_audit_count(db)?, audit);
+    assert_eq!(transaction, snapshot()?);
+    beankeeper_cli::db::audit::verify_hash_chain(db.conn())?;
+    Ok(())
+}
+
+fn assert_setup_book_facts(
+    client: &mut Client,
+    path: &Path,
+    passphrase: &Path,
+    token: &str,
+) -> TestResult {
+    let facts = client.success("ledger_setup_book_show", &json!({"company":"home"}))?;
+    assert_eq!(facts["name"], "Home");
+    assert_eq!(facts["profile"]["base_currency"], "CAD");
+    assert_eq!(facts["profile"]["fiscal_year_start"], "07-01");
+    assert_eq!(facts["accounts"][1]["code"], "1010");
+    assert_eq!(facts["accounts"][1]["name"], "Chase Checking");
+    assert_eq!(facts["accounts"][1]["type"], "asset");
+    let cli = bk(path)?
         .arg("--passphrase-file")
-        .arg(&passphrase_path)
-        .args(["--agent-token", owner_token, "--json", "setup", "finish"])
-        .arg(generation.to_string())
+        .arg(passphrase)
+        .args([
+            "--agent-token",
+            token,
+            "--json",
+            "setup",
+            "book-show",
+            "home",
+        ])
         .output()?;
     assert!(
-        ended.status.success(),
+        cli.status.success(),
         "{}",
-        String::from_utf8_lossy(&ended.stderr)
+        String::from_utf8_lossy(&cli.stderr)
     );
-    let ended: Value = serde_json::from_slice(&ended.stdout)?;
-    assert_eq!(ended["data"]["state"], "finished");
-    assert_eq!(
-        owner_client.success("ledger_setup_finish", &json!({ "generation": generation }))?,
-        ended["data"]
-    );
-    let denied = setup_client.call("ledger_setup_status", &json!({}))?;
-    assert_eq!(payload(&denied)?["code"], "UNAUTHORIZED");
+    let report = serde_json::from_slice::<Value>(&cli.stdout)?;
+    assert_eq!(report["meta"]["command"], "ledger.setup.book.show");
+    assert_eq!(report["data"], facts);
     Ok(())
 }
 

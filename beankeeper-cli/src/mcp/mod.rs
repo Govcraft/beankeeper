@@ -306,6 +306,18 @@ impl LedgerServer {
     }
 
     #[tool(
+        description = "Read one book's current profile, fiscal-year start, currency, and accounts."
+    )]
+    async fn ledger_setup_book_show(
+        &self,
+        Parameters(input): Parameters<inputs::CompanyScope>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupBookShow(input), context)
+            .await
+    }
+
+    #[tool(
         description = "Issue a short-lived setup-only credential for the encrypted ledger. Requires a live owner Admin credential."
     )]
     async fn ledger_setup_begin(
@@ -348,6 +360,18 @@ impl LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         self.execute(Request::LedgerSetupBookCreate(input), context)
+            .await
+    }
+
+    #[tool(
+        description = "Record the first profile for an existing book in an active setup generation."
+    )]
+    async fn ledger_setup_book_initialize(
+        &self,
+        Parameters(input): Parameters<inputs::LedgerSetupBookInitialize>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.execute(Request::LedgerSetupBookInitialize(input), context)
             .await
     }
 

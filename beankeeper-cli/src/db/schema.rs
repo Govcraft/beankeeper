@@ -4,7 +4,8 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = 22;
+pub(crate) const CURRENT_VERSION: i64 = BOOK_PROFILE_SCHEMA_VERSION;
+pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -130,7 +131,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     if version < 21 {
         apply_v21(conn)?;
     }
-    if version < 22 {
+    if version < BOOK_PROFILE_SCHEMA_VERSION {
         apply_v22(conn)?;
     }
 
