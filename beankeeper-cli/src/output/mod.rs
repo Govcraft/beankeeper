@@ -78,14 +78,14 @@ mod tests {
             BalanceRow {
                 code: "1000".into(),
                 name: "Cash".into(),
-                account_type: "asset".into(),
+                account_type: beankeeper::types::AccountType::Asset,
                 debit_total: i64::MAX,
                 credit_total: 0,
             },
             BalanceRow {
                 code: "1100".into(),
                 name: "Receivables".into(),
-                account_type: "asset".into(),
+                account_type: beankeeper::types::AccountType::Asset,
                 debit_total: 1,
                 credit_total: 0,
             },
@@ -95,11 +95,11 @@ mod tests {
             Some("acme"),
         );
         assert!(matches!(
-            json::render_trial_balance(&accounts, meta),
+            json::render_trial_balance(&accounts, beankeeper::types::Currency::USD, meta),
             Err(CliError::Validation(_))
         ));
         assert!(matches!(
-            table::render_trial_balance(&accounts, "USD", 2, false, None),
+            table::render_trial_balance(&accounts, beankeeper::types::Currency::USD, false, None),
             Err(CliError::Validation(_))
         ));
     }

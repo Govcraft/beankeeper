@@ -430,11 +430,6 @@ impl std::fmt::Display for LedgerAccountCode {
     }
 }
 
-fn parse_kind(kind: &str) -> Result<AccountType, CliError> {
-    kind.parse::<AccountType>()
-        .map_err(|e| CliError::Validation(e.to_string()))
-}
-
 struct Request<'a> {
     kind: &'static str,
     from: Option<&'a str>,
@@ -802,7 +797,7 @@ fn snapshot(
     let mut earnings = zero;
     for row in rows {
         let code = LedgerAccountCode::from_balance(&row);
-        let kind = parse_kind(&row.account_type)?;
+        let kind = row.account_type;
         let debit = ReportMoney::from_minor(row.debit_total, currency);
         let credit = ReportMoney::from_minor(row.credit_total, currency);
         let amount = if kind.is_debit_normal() {
@@ -814,7 +809,7 @@ fn snapshot(
             match kind {
                 AccountType::Revenue => earnings = earnings.add(amount)?,
                 AccountType::Expense => earnings = earnings.subtract(amount)?,
-                _ => {}
+                AccountType::Asset | AccountType::Liability | AccountType::Equity => {}
             }
         }
         let include = if let Some(wanted) = req.account {
@@ -832,7 +827,7 @@ fn snapshot(
                 AccountType::Liability => TotalKey::TotalLiabilities,
                 AccountType::Equity => TotalKey::TotalEquity,
                 AccountType::Expense => TotalKey::TotalSpending,
-                _ => TotalKey::Total,
+                AccountType::Revenue => TotalKey::Total,
             };
             let total = totals.entry(key).or_insert(zero);
             *total = total.add(amount)?;
@@ -900,7 +895,7 @@ fn period_snapshot(
     prior: bool,
 ) -> Result<Snapshot, CliError> {
     let type_filter = if let ReportCommand::TrialBalance { account_type, .. } = sub {
-        account_type.map(|t| format!("{t:?}").to_lowercase())
+        *account_type
     } else {
         None
     };
@@ -909,7 +904,7 @@ fn period_snapshot(
         context.db.conn(),
         context.company,
         kind,
-        type_filter.as_deref(),
+        type_filter,
         context.currency,
         windows.dates(prior),
     )?;
@@ -921,7 +916,7 @@ fn period_snapshot(
     let mut accounts = BTreeMap::new();
     for row in rows {
         let code = LedgerAccountCode::from_balance(&row);
-        let kind = parse_kind(&row.account_type)?;
+        let kind = row.account_type;
         let debit = ReportMoney::from_minor(row.debit_total, context.currency);
         let credit = ReportMoney::from_minor(row.credit_total, context.currency);
         let amount = if kind.is_debit_normal() {
@@ -1381,10 +1376,7 @@ fn period_comparison_table(data: &ComparisonReport, use_color: bool) -> String {
             .change_percent
             .map_or_else(|| "n/a".to_owned(), |p| format!("{}%", p.0.to_fixed(1)));
         let values = [values.current, values.prior, values.change].map(|amount| {
-            crate::output::report_periods::format_amount(
-                amount.minor(),
-                data.currency.minor_units(),
-            )
+            crate::output::amounts::format_minor_grouped(amount.minor(), data.currency)
         });
         values
             .into_iter()
@@ -1701,9 +1693,6 @@ mod tests {
         assert!(
             matches!(result, Err(CliError::Validation(message)) if message.contains("currency mismatch"))
         );
-        assert!(
-            matches!(parse_kind("unknown"), Err(CliError::Validation(message)) if message.contains("account type"))
-        );
     }
 
     #[test]
@@ -1745,7 +1734,7 @@ mod tests {
             code: LedgerAccountCode::from_balance(&db::BalanceRow {
                 code: "5000".into(),
                 name: "Rent".into(),
-                account_type: "expense".into(),
+                account_type: beankeeper::types::AccountType::Expense,
                 debit_total: 150,
                 credit_total: 0,
             }),

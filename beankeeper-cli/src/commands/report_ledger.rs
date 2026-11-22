@@ -25,13 +25,13 @@
 use crate::operation::Operation;
 use std::collections::BTreeSet;
 
-use beankeeper::types::{Currency, DebitOrCredit};
+use beankeeper::types::{Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use rusqlite::{Connection, params_from_iter};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::cli::{Cli, OutputFormat};
 use crate::db;
@@ -39,7 +39,8 @@ use crate::db::connection::Db;
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
 use crate::output;
-use crate::output::json::Meta;
+use crate::output::amounts::{MoneyField, format_money_grouped};
+use crate::output::json::{Meta, serialize_display};
 
 /// Options for building and running a ledger report. Omitted dates are unbounded.
 pub struct LedgerOptions<'a> {
@@ -86,7 +87,7 @@ pub struct LedgerAccount {
     pub code: String,
     pub name: String,
     #[serde(rename = "type")]
-    pub account_type: String,
+    pub account_type: beankeeper::types::AccountType,
     /// `"debit"` or `"credit"`.
     pub normal_balance: &'static str,
     pub opening_balance: i64,
@@ -97,9 +98,8 @@ pub struct LedgerAccount {
 }
 
 /// The complete ledger report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct LedgerReport {
-    #[serde(serialize_with = "crate::output::json::serialize_display")]
     pub currency: Currency,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -107,6 +107,91 @@ pub struct LedgerReport {
     /// count matching entries only.
     pub metadata_filters: Vec<MetadataFilter>,
     pub accounts: Vec<LedgerAccount>,
+}
+
+#[derive(Serialize)]
+struct LedgerJson<'a> {
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+    metadata_filters: &'a [MetadataFilter],
+    accounts: Vec<LedgerAccountJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct LedgerAccountJson<'a> {
+    code: &'a str,
+    name: &'a str,
+    r#type: &'a str,
+    normal_balance: &'static str,
+    #[serde(flatten)]
+    opening_balance: MoneyField,
+    entries: Vec<LedgerLineJson<'a>>,
+    #[serde(flatten)]
+    total_debits: MoneyField,
+    #[serde(flatten)]
+    total_credits: MoneyField,
+    #[serde(flatten)]
+    closing_balance: MoneyField,
+}
+
+#[derive(Serialize)]
+struct LedgerLineJson<'a> {
+    date: &'a str,
+    transaction_id: i64,
+    entry_id: i64,
+    description: &'a str,
+    reference: Option<&'a str>,
+    memo: Option<&'a str>,
+    #[serde(flatten)]
+    debit: MoneyField,
+    #[serde(flatten)]
+    credit: MoneyField,
+    #[serde(flatten)]
+    balance: MoneyField,
+}
+
+impl Serialize for LedgerReport {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let money = |key, minor| MoneyField::from_minor(key, minor, self.currency);
+        LedgerJson {
+            currency: self.currency,
+            from: self.from.as_deref(),
+            to: self.to.as_deref(),
+            metadata_filters: &self.metadata_filters,
+            accounts: self
+                .accounts
+                .iter()
+                .map(|account| LedgerAccountJson {
+                    code: &account.code,
+                    name: &account.name,
+                    r#type: account.account_type.code(),
+                    normal_balance: account.account_type.normal_balance().code(),
+                    opening_balance: money("opening_balance", account.opening_balance),
+                    entries: account
+                        .entries
+                        .iter()
+                        .map(|line| LedgerLineJson {
+                            date: &line.date,
+                            transaction_id: line.transaction_id,
+                            entry_id: line.entry_id,
+                            description: &line.description,
+                            reference: line.reference.as_deref(),
+                            memo: line.memo.as_deref(),
+                            debit: money("debit", line.debit),
+                            credit: money("credit", line.credit),
+                            balance: money("balance", line.balance),
+                        })
+                        .collect(),
+                    total_debits: money("total_debits", account.total_debits),
+                    total_credits: money("total_credits", account.total_credits),
+                    closing_balance: money("closing_balance", account.closing_balance),
+                })
+                .collect(),
+        }
+        .serialize(serializer)
+    }
 }
 
 /// Execute `bk report ledger`.
@@ -147,17 +232,13 @@ fn write_report(
     report: &LedgerReport,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let minor_units = report.currency.minor_units();
-
     match output.format {
-        OutputFormat::Table => writeln!(
-            output.writer,
-            "{}",
-            render_table(report, minor_units, output.use_color)
-        )?,
+        OutputFormat::Table => {
+            writeln!(output.writer, "{}", render_table(report, output.use_color))?;
+        }
         OutputFormat::Json => {
             let meta = cli.meta(Operation::ReportLedger, Some(company));
-            writeln!(output.writer, "{}", render_json(report, meta)?)?;
+            output.write_json(meta, report, None)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,
     }
@@ -399,7 +480,7 @@ fn account_statement(
     Ok(LedgerAccount {
         code: acct.code.clone(),
         name: acct.name.clone(),
-        account_type: acct.account_type.code().to_owned(),
+        account_type: acct.account_type,
         normal_balance: acct.account_type.normal_balance().code(),
         opening_balance,
         entries,
@@ -478,7 +559,7 @@ pub fn render_csv(report: &LedgerReport) -> Result<String, CliError> {
         let prefix = [
             a.code.as_str(),
             a.name.as_str(),
-            a.account_type.as_str(),
+            a.account_type.code(),
             report.currency.code(),
         ];
         let opening = a.opening_balance.to_string();
@@ -560,43 +641,17 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
 
 /// Format minor units with thousands separators; zero renders as empty when
 /// `blank_zero` is set (used for the debit/credit columns).
-fn fmt_amount(minor: i64, decimals: u8, blank_zero: bool) -> String {
+fn fmt_amount(minor: i64, currency: Currency, blank_zero: bool) -> String {
     if blank_zero && minor == 0 {
-        return String::new();
-    }
-    let abs = minor.unsigned_abs();
-    let divisor = 10u64.pow(u32::from(decimals));
-    let whole = (abs / divisor).to_string();
-    let mut grouped = String::with_capacity(whole.len() + whole.len() / 3);
-    for (i, ch) in whole.chars().enumerate() {
-        if i > 0 && (whole.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    let body = if decimals == 0 {
-        grouped
+        String::new()
     } else {
-        format!(
-            "{grouped}.{frac:0>w$}",
-            frac = abs % divisor,
-            w = usize::from(decimals)
-        )
-    };
-    if minor < 0 { format!("-{body}") } else { body }
-}
-
-/// Capitalise the first letter of an account-type string.
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    chars.next().map_or_else(String::new, |c| {
-        c.to_uppercase().collect::<String>() + chars.as_str()
-    })
+        format_money_grouped(Money::from_minor(i128::from(minor), currency))
+    }
 }
 
 /// Render the report as a series of comfy-table statements, one per account.
 #[must_use]
-pub fn render_table(report: &LedgerReport, decimals: u8, use_color: bool) -> String {
+pub fn render_table(report: &LedgerReport, use_color: bool) -> String {
     let bold = anstyle::Style::new().bold();
     let cyan = anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
     let dim = anstyle::Style::new().dimmed();
@@ -631,7 +686,7 @@ pub fn render_table(report: &LedgerReport, decimals: u8, use_color: bool) -> Str
             "{} {} ({}, {}-normal)",
             styled(&a.code, cyan, use_color),
             styled(&a.name, bold, use_color),
-            capitalize(&a.account_type),
+            a.account_type,
             a.normal_balance
         ));
 
@@ -661,7 +716,7 @@ pub fn render_table(report: &LedgerReport, decimals: u8, use_color: bool) -> Str
             Cell::new(""),
             Cell::new(""),
             Cell::new(""),
-            right(fmt_amount(a.opening_balance, decimals, false)),
+            right(fmt_amount(a.opening_balance, report.currency, false)),
         ]);
         for e in &a.entries {
             table.add_row(vec![
@@ -669,9 +724,9 @@ pub fn render_table(report: &LedgerReport, decimals: u8, use_color: bool) -> Str
                 right(e.transaction_id.to_string()),
                 Cell::new(&e.description),
                 Cell::new(e.reference.as_deref().unwrap_or("")),
-                right(fmt_amount(e.debit, decimals, true)),
-                right(fmt_amount(e.credit, decimals, true)),
-                right(fmt_amount(e.balance, decimals, false)),
+                right(fmt_amount(e.debit, report.currency, true)),
+                right(fmt_amount(e.credit, report.currency, true)),
+                right(fmt_amount(e.balance, report.currency, false)),
             ]);
         }
         table.add_row(vec![
@@ -680,17 +735,17 @@ pub fn render_table(report: &LedgerReport, decimals: u8, use_color: bool) -> Str
             Cell::new(styled("Closing balance", bold, use_color)),
             Cell::new(""),
             right(styled(
-                &fmt_amount(a.total_debits, decimals, false),
+                &fmt_amount(a.total_debits, report.currency, false),
                 bold,
                 use_color,
             )),
             right(styled(
-                &fmt_amount(a.total_credits, decimals, false),
+                &fmt_amount(a.total_credits, report.currency, false),
                 bold,
                 use_color,
             )),
             right(styled(
-                &fmt_amount(a.closing_balance, decimals, false),
+                &fmt_amount(a.closing_balance, report.currency, false),
                 bold,
                 use_color,
             )),
@@ -713,9 +768,9 @@ mod tests {
 
     #[test]
     fn fmt_amount_formats() {
-        assert_eq!(fmt_amount(123_456, 2, false), "1,234.56");
-        assert_eq!(fmt_amount(-5000, 0, false), "-5,000");
-        assert_eq!(fmt_amount(0, 2, true), "");
-        assert_eq!(fmt_amount(0, 2, false), "0.00");
+        assert_eq!(fmt_amount(123_456, Currency::USD, false), "1,234.56");
+        assert_eq!(fmt_amount(-5000, Currency::JPY, false), "-5,000");
+        assert_eq!(fmt_amount(0, Currency::USD, true), "");
+        assert_eq!(fmt_amount(0, Currency::USD, false), "0.00");
     }
 }

@@ -326,7 +326,7 @@ fn column_rows(
     let from = column.from.to_string();
     let to = column.to.to_string();
     let (filter, from) = match metric {
-        TrendMetric::Spending => (Some(AccountType::Expense.code()), Some(from.as_str())),
+        TrendMetric::Spending => (Some(AccountType::Expense), Some(from.as_str())),
         TrendMetric::NetWorth => (None, None),
     };
     db::compute_trial_balance(db.conn(), company, filter, from, Some(&to), currency)
@@ -349,13 +349,11 @@ fn worth_totals(rows: &[BalanceRow]) -> Result<(i64, i64), CliError> {
     let mut assets = 0_i64;
     let mut liabilities = 0_i64;
     for row in rows {
-        let kind = row.account_type.parse().map_err(|error| {
-            CliError::Database(format!("invalid stored account type in trend: {error}"))
-        })?;
+        let kind = row.account_type;
         let total = match kind {
             AccountType::Asset => &mut assets,
             AccountType::Liability => &mut liabilities,
-            _ => continue,
+            AccountType::Equity | AccountType::Revenue | AccountType::Expense => continue,
         };
         *total = total.checked_add(net(row, kind)?).ok_or_else(overflow)?;
     }
@@ -505,11 +503,11 @@ fn csv_error(error: &csv::Error) -> CliError {
 mod tests {
     use super::*;
 
-    fn row(kind: &str, debit_total: i64, credit_total: i64) -> BalanceRow {
+    fn row(kind: AccountType, debit_total: i64, credit_total: i64) -> BalanceRow {
         BalanceRow {
             code: "1000".into(),
             name: "Account".into(),
-            account_type: kind.into(),
+            account_type: kind,
             debit_total,
             credit_total,
         }
@@ -517,15 +515,33 @@ mod tests {
 
     #[test]
     fn aggregation_rejects_amount_overflow() {
-        assert!(net(&row("expense", i64::MIN, 1), AccountType::Expense).is_err());
-        assert!(worth_totals(&[row("asset", i64::MAX, 0), row("asset", 1, 0)]).is_err());
-        let rows = vec![row("asset", i64::MAX, 0), row("liability", 1, 0)];
+        assert!(
+            net(
+                &row(AccountType::Expense, i64::MIN, 1),
+                AccountType::Expense
+            )
+            .is_err()
+        );
+        assert!(
+            worth_totals(&[
+                row(AccountType::Asset, i64::MAX, 0),
+                row(AccountType::Asset, 1, 0)
+            ])
+            .is_err()
+        );
+        let rows = vec![
+            row(AccountType::Asset, i64::MAX, 0),
+            row(AccountType::Liability, 1, 0),
+        ];
         assert!(net_worth_series(std::iter::once(Ok(rows))).is_err());
     }
 
     #[test]
     fn contra_balances_preserve_signs() -> Result<(), CliError> {
-        let rows = vec![row("asset", 0, 10), row("liability", 20, 0)];
+        let rows = vec![
+            row(AccountType::Asset, 0, 10),
+            row(AccountType::Liability, 20, 0),
+        ];
         let series = net_worth_series(std::iter::once(Ok(rows)))?;
         assert_eq!(series[0].amounts, [-10]);
         assert_eq!(series[1].amounts, [-20]);
@@ -538,7 +554,7 @@ mod tests {
         let expense = |code: &str, amount| BalanceRow {
             code: code.to_string(),
             name: code.to_string(),
-            ..row("expense", amount, 0)
+            ..row(AccountType::Expense, amount, 0)
         };
         let columns = [
             vec![expense("5000", 10), expense("5100", 20)],

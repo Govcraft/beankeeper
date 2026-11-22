@@ -20,7 +20,7 @@ use crate::operation::Operation;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, Money};
 use chrono::NaiveDate;
 use serde::Serialize;
 
@@ -33,6 +33,7 @@ use crate::db::ids::{EntryId, TransactionId};
 use crate::db::{self, Actor, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
 use crate::error::CliError;
 use crate::output;
+use crate::output::amounts::{MoneyField, OptionalMoneyField, format_money_grouped};
 
 /// Execute `bk txn clear`.
 ///
@@ -160,37 +161,31 @@ enum ClearedItems<'a> {
 struct ClearedBatch<'a> {
     account: &'a str,
     items: Vec<Item>,
-    total: Option<BatchTotal>,
+    total: Option<Money>,
 }
 
-#[derive(Clone, Copy)]
-struct BatchTotal {
-    currency: Currency,
-    amount: i64,
+fn batch_total(items: &[Item]) -> Result<Option<Money>, CliError> {
+    let Some(currency) = items
+        .first()
+        .map(|item| item.currency)
+        .filter(|currency| items.iter().all(|item| item.currency == *currency))
+    else {
+        return Ok(None);
+    };
+    let amount = items
+        .iter()
+        .filter(|item| !item.skipped())
+        .try_fold(0_i128, |total, item| {
+            total
+                .checked_add(item.amount.minor_units())
+                .ok_or_else(batch_total_overflow)
+        })?;
+    i64::try_from(amount).map_err(|_| batch_total_overflow())?;
+    Ok(Some(Money::from_minor(amount, currency)))
 }
 
-impl BatchTotal {
-    fn from_items(items: &[Item]) -> Result<Option<Self>, CliError> {
-        let Some(currency) = items
-            .first()
-            .map(|item| item.currency)
-            .filter(|currency| items.iter().all(|item| item.currency == *currency))
-        else {
-            return Ok(None);
-        };
-        let amount =
-            items
-                .iter()
-                .filter(|item| !item.skipped())
-                .try_fold(0i64, |total, item| {
-                    total.checked_add(item.amount).ok_or_else(|| {
-                        CliError::Validation(
-                            "cleared total exceeds the supported minor-unit range".into(),
-                        )
-                    })
-                })?;
-        Ok(Some(Self { currency, amount }))
-    }
+fn batch_total_overflow() -> CliError {
+    CliError::Validation("cleared total exceeds the supported minor-unit range".into())
 }
 
 struct Execution<'a> {
@@ -488,7 +483,7 @@ fn run_batch<'a>(
                     .map_err(|e| at_line(l.line, &l.reference, e))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let total = BatchTotal::from_items(&items)?;
+        let total = batch_total(&items)?;
         Ok(ClearedBatch {
             account,
             items,
@@ -514,10 +509,14 @@ struct Item {
     #[serde(serialize_with = "crate::output::json::serialize_display")]
     currency: Currency,
     /// Amount cleared (or removed) by this call, minor units.
-    amount: i64,
-    entry_amount: i64,
-    cleared_amount: i64,
-    remaining_amount: i64,
+    #[serde(flatten)]
+    amount: MoneyField,
+    #[serde(flatten)]
+    entry_amount: MoneyField,
+    #[serde(flatten)]
+    cleared_amount: MoneyField,
+    #[serde(flatten)]
+    remaining_amount: MoneyField,
     partially_cleared: bool,
     previous_status: EntryStatus,
     entry_status: EntryStatus,
@@ -534,10 +533,18 @@ impl Item {
             action: o.action,
             clearing_id: o.clearing_id,
             currency: target.currency,
-            amount: o.amount,
-            entry_amount: o.entry_amount,
-            cleared_amount: o.cleared_amount,
-            remaining_amount: o.remaining_amount,
+            amount: MoneyField::from_minor("amount", o.amount, target.currency),
+            entry_amount: MoneyField::from_minor("entry_amount", o.entry_amount, target.currency),
+            cleared_amount: MoneyField::from_minor(
+                "cleared_amount",
+                o.cleared_amount,
+                target.currency,
+            ),
+            remaining_amount: MoneyField::from_minor(
+                "remaining_amount",
+                o.remaining_amount,
+                target.currency,
+            ),
             partially_cleared: o.cleared_amount > 0 && o.remaining_amount > 0,
             previous_status: o.previous_status,
             entry_status: o.entry_status,
@@ -587,9 +594,9 @@ fn to_csv(ctx: &Ctx<'_>, items: &[Item]) -> Result<String, CliError> {
             i.transaction_id.to_string(),
             i.entry_id.to_string(),
             i.action.as_str().to_string(),
-            i.amount.to_string(),
-            i.cleared_amount.to_string(),
-            i.remaining_amount.to_string(),
+            i.amount.minor_units().to_string(),
+            i.cleared_amount.minor_units().to_string(),
+            i.remaining_amount.minor_units().to_string(),
             i.entry_status.to_string(),
             ctx.date.to_string(),
             ctx.statement.unwrap_or_default().to_string(),
@@ -609,7 +616,6 @@ fn to_csv(ctx: &Ctx<'_>, items: &[Item]) -> Result<String, CliError> {
 fn describe(i: &Item) -> String {
     let what = format!("entry #{} of transaction #{}", i.entry_id, i.transaction_id);
     let currency = i.currency;
-    let amount = |minor| output::table::format_amount(minor, currency.minor_units());
     let status = if i.partially_cleared {
         "partially cleared"
     } else {
@@ -620,9 +626,9 @@ fn describe(i: &Item) -> String {
         None => format!(
             "[ok] {what} {} ({} {currency}); cleared {} of {} {currency}, entry now {status}",
             i.action.as_str(),
-            amount(i.amount),
-            amount(i.cleared_amount),
-            amount(i.entry_amount)
+            format_money_grouped(i.amount.money()),
+            format_money_grouped(i.cleared_amount.money()),
+            format_money_grouped(i.entry_amount.money())
         ),
     }
 }
@@ -648,7 +654,6 @@ fn single_data(ctx: &Ctx<'_>, item: &Item) -> Result<serde_json::Value, CliError
         statement: ctx.statement,
     };
     serde_json::to_value(data)
-        .map(|value| output::json::with_amount_displays(value, None))
         .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
@@ -686,9 +691,11 @@ fn batch_data(ctx: &Ctx<'_>, batch: &ClearedBatch<'_>) -> Result<serde_json::Val
         cleared_count: usize,
         skipped_count: usize,
         /// Sum of cleared minor units when the batch has one currency.
-        cleared_total: Option<i64>,
+        #[serde(flatten)]
+        cleared_total: OptionalMoneyField,
         /// Currency of the total, absent for a batch spanning currencies.
-        currency: Option<&'a str>,
+        #[serde(serialize_with = "crate::output::json::serialize_optional_currency")]
+        currency: Option<Currency>,
         cleared: Vec<&'a Item>,
         skipped: Vec<&'a Item>,
     }
@@ -704,13 +711,12 @@ fn batch_data(ctx: &Ctx<'_>, batch: &ClearedBatch<'_>) -> Result<serde_json::Val
         count: batch.items.len(),
         cleared_count: cleared.len(),
         skipped_count: skipped.len(),
-        cleared_total: batch.total.map(|total| total.amount),
-        currency: batch.total.map(|total| total.currency.code()),
+        cleared_total: OptionalMoneyField("cleared_total", batch.total),
+        currency: batch.total.as_ref().map(Money::currency),
         cleared,
         skipped,
     };
     serde_json::to_value(data)
-        .map(|value| output::json::with_amount_displays(value, None))
         .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 

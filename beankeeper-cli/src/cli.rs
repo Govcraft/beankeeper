@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use beankeeper::types::{Currency, CurrencyError, DebitOrCredit};
+use beankeeper::types::{AccountType, Currency, CurrencyError, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -1324,8 +1324,8 @@ EXAMPLES:\n  \
         /// Account display name.
         name: String,
         /// Account type.
-        #[arg(long = "type", value_enum)]
-        account_type: AccountTypeArg,
+        #[arg(long = "type", value_parser = account_type_parser())]
+        account_type: AccountType,
         /// Default tax category for entries posted to this account.
         #[arg(long)]
         default_tax_category: Option<String>,
@@ -1345,8 +1345,8 @@ EXAMPLES:\n  \
 ")]
     List {
         /// Filter by account type.
-        #[arg(long = "type", value_enum)]
-        account_type: Option<AccountTypeArg>,
+        #[arg(long = "type", value_parser = account_type_parser())]
+        account_type: Option<AccountType>,
 
         /// Search by account name (substring, case-insensitive).
         #[arg(long)]
@@ -1936,8 +1936,8 @@ EXAMPLES:\n  \
         to: Option<String>,
 
         /// Filter by account type.
-        #[arg(long = "type", value_enum)]
-        account_type: Option<AccountTypeArg>,
+        #[arg(long = "type", value_parser = account_type_parser())]
+        account_type: Option<AccountType>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
         /// are included. Required when the company has transactions in more
@@ -2158,8 +2158,8 @@ EXAMPLES:\n  \
         to: Option<i32>,
 
         /// Filter by account type.
-        #[arg(long = "type", value_enum)]
-        account_type: Option<AccountTypeArg>,
+        #[arg(long = "type", value_parser = account_type_parser())]
+        account_type: Option<AccountType>,
 
         /// Currency code. When omitted, inferred from the company's
         /// transactions (required if they use more than one currency).
@@ -2499,28 +2499,17 @@ impl ClearanceArg {
     }
 }
 
-/// Account type argument for CLI.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccountTypeArg {
-    Asset,
-    Liability,
-    Equity,
-    Revenue,
-    Expense,
-}
+fn account_type_parser() -> impl clap::builder::TypedValueParser<Value = AccountType> {
+    use clap::builder::{PossibleValuesParser, TypedValueParser as _};
 
-impl AccountTypeArg {
-    /// Convert to the library's `AccountType`.
-    #[must_use]
-    pub fn to_library_type(self) -> beankeeper::types::AccountType {
-        match self {
-            Self::Asset => beankeeper::types::AccountType::Asset,
-            Self::Liability => beankeeper::types::AccountType::Liability,
-            Self::Equity => beankeeper::types::AccountType::Equity,
-            Self::Revenue => beankeeper::types::AccountType::Revenue,
-            Self::Expense => beankeeper::types::AccountType::Expense,
-        }
-    }
+    PossibleValuesParser::new([
+        AccountType::Asset.code(),
+        AccountType::Liability.code(),
+        AccountType::Equity.code(),
+        AccountType::Revenue.code(),
+        AccountType::Expense.code(),
+    ])
+    .try_map(|value| value.parse::<AccountType>())
 }
 
 /// Settlement matching method for `report aging`.
@@ -2758,30 +2747,6 @@ mod tests {
         let cli = Cli::parse_from(["bk", "verify"]);
         let result = require_company(&cli);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn account_type_arg_converts_to_library_type() {
-        assert_eq!(
-            AccountTypeArg::Asset.to_library_type(),
-            beankeeper::types::AccountType::Asset,
-        );
-        assert_eq!(
-            AccountTypeArg::Liability.to_library_type(),
-            beankeeper::types::AccountType::Liability,
-        );
-        assert_eq!(
-            AccountTypeArg::Equity.to_library_type(),
-            beankeeper::types::AccountType::Equity,
-        );
-        assert_eq!(
-            AccountTypeArg::Revenue.to_library_type(),
-            beankeeper::types::AccountType::Revenue,
-        );
-        assert_eq!(
-            AccountTypeArg::Expense.to_library_type(),
-            beankeeper::types::AccountType::Expense,
-        );
     }
 
     #[test]

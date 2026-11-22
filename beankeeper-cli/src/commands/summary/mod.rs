@@ -147,7 +147,7 @@ fn sub(left: i64, right: i64) -> Result<i64, CliError> {
 }
 
 fn net(row: &BalanceRow) -> Result<i64, CliError> {
-    if matches!(row.account_type.as_str(), "asset" | "expense") {
+    if row.account_type.is_debit_normal() {
         sub(row.debit_total, row.credit_total)
     } else {
         sub(row.credit_total, row.debit_total)
@@ -161,7 +161,7 @@ fn sum<'a>(mut rows: impl Iterator<Item = &'a BalanceRow>) -> Result<i64, CliErr
 fn select_accounts(
     rows: &[BalanceRow],
     explicit: &[String],
-    kind: &str,
+    kind: beankeeper::types::AccountType,
     keywords: &[&str],
 ) -> Result<Vec<String>, CliError> {
     if explicit.is_empty() {
@@ -360,11 +360,21 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
     let cash = select_accounts(
         &rows,
         &args.cash_account,
-        "asset",
+        beankeeper::types::AccountType::Asset,
         super::report_cash_flow::DEFAULT_CASH_NAME_KEYWORDS,
     )?;
-    let receivables = select_accounts(&rows, &args.receivable_account, "asset", &["receivable"])?;
-    let payables = select_accounts(&rows, &args.payable_account, "liability", &["payable"])?;
+    let receivables = select_accounts(
+        &rows,
+        &args.receivable_account,
+        beankeeper::types::AccountType::Asset,
+        &["receivable"],
+    )?;
+    let payables = select_accounts(
+        &rows,
+        &args.payable_account,
+        beankeeper::types::AccountType::Liability,
+        &["payable"],
+    )?;
     let activity = |period: Period| {
         db::compute_trial_balance(
             db.conn(),
@@ -400,8 +410,12 @@ fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, 
     );
     let cash_on_hand = sum(rows.iter().filter(|row| cash.contains(&row.code)))?;
     let owed_to_you = sum(rows.iter().filter(|row| receivables.contains(&row.code)))?;
-    let you_owe = sum(rows.iter().filter(|row| row.account_type == "liability"))?;
-    let assets = sum(rows.iter().filter(|row| row.account_type == "asset"))?;
+    let you_owe = sum(rows
+        .iter()
+        .filter(|row| row.account_type == beankeeper::types::AccountType::Liability))?;
+    let assets = sum(rows
+        .iter()
+        .filter(|row| row.account_type == beankeeper::types::AccountType::Asset))?;
     let field = |name, value| MoneyField::new(name, money(value, currency));
     let standing = Standing {
         as_of: periods.current.to,

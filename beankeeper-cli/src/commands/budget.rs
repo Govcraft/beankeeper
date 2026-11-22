@@ -250,7 +250,7 @@ pub fn execute_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{AccountCommand, AccountTypeArg, AuditCommand, CompanyCommand};
+    use crate::cli::{AccountCommand, AuditCommand, CompanyCommand};
 
     fn ledger() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
@@ -267,7 +267,7 @@ mod tests {
             &AccountCommand::Create {
                 code: "5000".into(),
                 name: "Rent".into(),
-                account_type: AccountTypeArg::Expense,
+                account_type: beankeeper::types::AccountType::Expense,
                 default_tax_category: None,
             },
         )?;

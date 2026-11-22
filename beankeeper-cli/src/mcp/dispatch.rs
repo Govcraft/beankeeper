@@ -431,7 +431,7 @@ fn call_account_list(db: &Db, actor: &Actor, input: inputs::AccountList) -> Resp
         actor,
         input.company.into_inner().as_str(),
         &AccountCommand::List {
-            account_type: input.account_type.map(Into::into),
+            account_type: input.account_type,
             name: input.name,
             with_balances: input.with_balances,
             from: input.from.map(|date| date.into_inner().date()),
@@ -460,7 +460,7 @@ fn call_account_create(db: &Db, actor: &Actor, input: inputs::AccountCreate) -> 
         &AccountCommand::Create {
             code: input.code.to_string(),
             name: input.name,
-            account_type: input.account_type.into(),
+            account_type: input.account_type,
             default_tax_category: input.default_tax_category,
         },
     )
@@ -978,7 +978,6 @@ macro_rules! convert {
 }
 
 convert!(OnConflictArg => cli::OnConflictArg { Error, Skip });
-convert!(AccountTypeArg => cli::AccountTypeArg { Asset, Liability, Equity, Revenue, Expense });
 convert!(ClearanceArg => cli::ClearanceArg { Uncleared, Cleared, Reconciled });
 convert!(PeriodArg => commands::report_periods::PeriodArg { Month, Quarter, Year });
 convert!(TrendMetricArg => commands::report_trend::TrendMetric { Spending, NetWorth });

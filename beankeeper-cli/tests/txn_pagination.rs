@@ -23,7 +23,10 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
-        for (code, kind) in [("1000", "asset"), ("4000", "revenue")] {
+        for (code, kind) in [
+            ("1000", beankeeper::types::AccountType::Asset),
+            ("4000", beankeeper::types::AccountType::Revenue),
+        ] {
             accounts::create_account(
                 db.conn(),
                 &Actor::new("fixture"),

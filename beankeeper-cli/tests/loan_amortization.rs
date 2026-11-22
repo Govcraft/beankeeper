@@ -50,9 +50,13 @@ impl Ledger {
         companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
         companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
         for (code, kind, tax) in [
-            ("1000", "asset", None),
-            ("2000", "liability", None),
-            ("5000", "expense", Some("interest")),
+            ("1000", beankeeper::types::AccountType::Asset, None),
+            ("2000", beankeeper::types::AccountType::Liability, None),
+            (
+                "5000",
+                beankeeper::types::AccountType::Expense,
+                Some("interest"),
+            ),
         ] {
             accounts::create_account(
                 db.conn(),

@@ -43,11 +43,11 @@ fn fixture() -> Result<Db, CliError> {
     for company in ["acme", "other"] {
         companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
         for (code, kind) in [
-            ("1000", "asset"),
-            ("1200", "asset"),
-            ("1300", "asset"),
-            ("4000", "revenue"),
-            ("5000", "expense"),
+            ("1000", beankeeper::types::AccountType::Asset),
+            ("1200", beankeeper::types::AccountType::Asset),
+            ("1300", beankeeper::types::AccountType::Asset),
+            ("4000", beankeeper::types::AccountType::Revenue),
+            ("5000", beankeeper::types::AccountType::Expense),
         ] {
             accounts::create_account(
                 db.conn(),

@@ -7,7 +7,7 @@ use crate::operation::Operation;
 use std::fmt;
 use std::path::Path;
 
-use beankeeper::types::Currency;
+use beankeeper::types::{Currency, Money};
 use chrono::NaiveDate;
 use ofx_rs::{
     OfxDocument,
@@ -21,6 +21,7 @@ use crate::cli::{Cli, ImportFormat, InputSource};
 use crate::db::connection::Db;
 use crate::db::{accounts, transactions};
 use crate::error::CliError;
+use crate::output::amounts::format_money_grouped;
 use crate::output::json;
 
 // ---------------------------------------------------------------------------
@@ -111,8 +112,7 @@ pub struct ImportedTransaction {
     pub id: i64,
     pub date: String,
     pub description: String,
-    pub amount_minor: i64,
-    pub currency: String,
+    pub amount: Money,
     pub is_inflow: bool,
 }
 
@@ -121,8 +121,7 @@ pub struct ImportedTransaction {
 pub struct SkippedTransaction {
     pub date: String,
     pub description: String,
-    pub amount_minor: i64,
-    pub currency: String,
+    pub amount: Money,
     pub reference: String,
 }
 
@@ -131,8 +130,7 @@ pub struct SkippedTransaction {
 pub struct FailedTransaction {
     pub date: String,
     pub description: String,
-    pub amount_minor: i64,
-    pub currency: String,
+    pub amount: Money,
     pub error: String,
 }
 
@@ -247,6 +245,12 @@ pub(crate) struct PreparedTransaction {
     currency: Currency,
 }
 
+impl PreparedTransaction {
+    fn amount(&self) -> Money {
+        Money::from_minor(i128::from(self.amount_minor), self.currency)
+    }
+}
+
 /// Prepare a single OFX transaction for posting.
 pub(crate) fn prepare_transaction(
     txn: &ofx_rs::aggregates::StatementTransaction,
@@ -300,8 +304,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
             return TransactionOutcome::Failed(FailedTransaction {
                 date: prepared.date.to_string(),
                 description: prepared.description.clone(),
-                amount_minor: prepared.amount_minor,
-                currency: prepared.currency.code().into(),
+                amount: prepared.amount(),
                 error: error.to_string(),
             });
         }
@@ -312,8 +315,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
             id: 0,
             date: prepared.date.to_string(),
             description: prepared.description.clone(),
-            amount_minor: prepared.amount_minor,
-            currency: prepared.currency.code().into(),
+            amount: prepared.amount(),
             is_inflow: prepared.is_inflow,
         });
     }
@@ -338,8 +340,7 @@ fn check_conflict(
                 TransactionOutcome::Failed(FailedTransaction {
                     date: prepared.date.to_string(),
                     description: prepared.description.clone(),
-                    amount_minor: prepared.amount_minor,
-                    currency: prepared.currency.code().into(),
+                    amount: prepared.amount(),
                     error: format!("duplicate reference: {}", prepared.reference),
                 })
             }
@@ -347,8 +348,7 @@ fn check_conflict(
                 TransactionOutcome::Skipped(SkippedTransaction {
                     date: prepared.date.to_string(),
                     description: prepared.description.clone(),
-                    amount_minor: prepared.amount_minor,
-                    currency: prepared.currency.code().into(),
+                    amount: prepared.amount(),
                     reference: prepared.reference.clone(),
                 })
             }
@@ -357,8 +357,7 @@ fn check_conflict(
         Err(e) => Some(TransactionOutcome::Failed(FailedTransaction {
             date: prepared.date.to_string(),
             description: prepared.description.clone(),
-            amount_minor: prepared.amount_minor,
-            currency: prepared.currency.code().into(),
+            amount: prepared.amount(),
             error: e.to_string(),
         })),
     }
@@ -427,8 +426,7 @@ fn insert_transaction(
                 id,
                 date: prepared.date.to_string(),
                 description: prepared.description.clone(),
-                amount_minor: prepared.amount_minor,
-                currency: prepared.currency.code().into(),
+                amount: prepared.amount(),
                 is_inflow: prepared.is_inflow,
             })
         }
@@ -437,8 +435,7 @@ fn insert_transaction(
             TransactionOutcome::Skipped(SkippedTransaction {
                 date: prepared.date.to_string(),
                 description: prepared.description.clone(),
-                amount_minor: prepared.amount_minor,
-                currency: prepared.currency.code().into(),
+                amount: prepared.amount(),
                 reference: prepared.reference.clone(),
             })
         }
@@ -448,8 +445,7 @@ fn insert_transaction(
         Err(e) => TransactionOutcome::Failed(FailedTransaction {
             date: prepared.date.to_string(),
             description: prepared.description.clone(),
-            amount_minor: prepared.amount_minor,
-            currency: prepared.currency.code().into(),
+            amount: prepared.amount(),
             error: e.to_string(),
         }),
     }
@@ -504,8 +500,7 @@ fn process_transactions(
                 result.errors.push(FailedTransaction {
                     date: format_ofx_date(txn.date_posted()),
                     description: build_description(txn.name(), txn.memo(), txn.fit_id().as_str()),
-                    amount_minor: 0,
-                    currency: ctx.currency.code().into(),
+                    amount: Money::from_minor(0, ctx.currency),
                     error: e.to_string(),
                 });
                 continue;
@@ -686,7 +681,9 @@ fn render_result(
                 let action = if dry_run { "would import" } else { "imported" };
                 eprintln!(
                     "  [{action}] {}  {:<50} {sign}{}",
-                    t.date, t.description, t.amount_minor
+                    t.date,
+                    t.description,
+                    format_money_grouped(t.amount)
                 );
             }
             for t in &result.skipped {

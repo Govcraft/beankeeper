@@ -76,8 +76,7 @@ use crate::db;
 use crate::db::connection::Db;
 use crate::db::metadata_filter::{self, MetadataFilter};
 use crate::error::CliError;
-use crate::output;
-use crate::output::amounts::MoneyField;
+use crate::output::amounts::{MoneyField, format_minor_grouped};
 
 /// Counterparty label used when metadata does not carry the grouping key
 /// (missing key, non-JSON or non-object metadata, or an unsupported value).
@@ -137,7 +136,9 @@ impl AgingKind {
         match account_type {
             beankeeper::types::AccountType::Asset => Some(Self::Receivable),
             beankeeper::types::AccountType::Liability => Some(Self::Payable),
-            _ => None,
+            beankeeper::types::AccountType::Equity
+            | beankeeper::types::AccountType::Revenue
+            | beankeeper::types::AccountType::Expense => None,
         }
     }
 
@@ -1685,14 +1686,10 @@ pub(crate) fn run_to(
             "{}",
             render_table(&report, &ctx, output.use_color)
         )?,
-        OutputFormat::Json => writeln!(
-            output.writer,
-            "{}",
-            render_json(
-                &report,
-                &ctx,
-                cli.meta(Operation::ReportAging, Some(company))
-            )?
+        OutputFormat::Json => output.write_json(
+            cli.meta(Operation::ReportAging, Some(company)),
+            aging_json(&report, &ctx),
+            None,
         )?,
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report, &ctx)?)?,
     }
@@ -1897,7 +1894,7 @@ fn describe_unmatched(u: &UnmatchedLink, r: &MultiAgingReport, ctx: &RenderConte
         "settlement txn {} ({account}{}{who}, {}): link {}={} ignored -- {}; applied FIFO",
         u.settlement_transaction_id,
         u.settlement_date.format("%Y-%m-%d"),
-        format_amount(u.settlement_amount, ctx.currency.minor_units()),
+        format_minor_grouped(u.settlement_amount, ctx.currency),
         ctx.link_key.unwrap_or(DEFAULT_LINK_KEY),
         u.link,
         u.reason.describe(),
@@ -1916,35 +1913,9 @@ fn styled(text: &str, style: anstyle::Style, use_color: bool) -> String {
     }
 }
 
-/// Format minor units with thousands separators and decimal places.
-fn format_amount(minor_units: i64, decimal_places: u8) -> String {
-    let negative = minor_units < 0;
-    let abs = minor_units.unsigned_abs();
-    let divisor = 10u64.pow(u32::from(decimal_places));
-    let whole = (abs / divisor).to_string();
-    let frac = abs % divisor;
-
-    let mut with_commas = String::with_capacity(whole.len() + whole.len() / 3);
-    for (i, ch) in whole.chars().enumerate() {
-        if i > 0 && (whole.len() - i).is_multiple_of(3) {
-            with_commas.push(',');
-        }
-        with_commas.push(ch);
-    }
-    let body = if decimal_places == 0 {
-        with_commas
-    } else {
-        format!(
-            "{with_commas}.{frac:0>width$}",
-            width = usize::from(decimal_places)
-        )
-    };
-    if negative { format!("-{body}") } else { body }
-}
-
 /// Net amount for display: a net credit is negative and marked `CR`.
-fn format_net(net: i64, decimal_places: u8) -> String {
-    let amount = format_amount(net, decimal_places);
+fn format_net(net: i64, currency: Currency) -> String {
+    let amount = format_minor_grouped(net, currency);
     if net < 0 {
         format!("{amount} CR")
     } else {
@@ -1999,7 +1970,7 @@ fn render_summary_table(
     use_color: bool,
 ) -> Table {
     let bold = anstyle::Style::new().bold();
-    let mu = ctx.currency.minor_units();
+    let currency = ctx.currency;
     let account_col = shows_account_column(r, ctx);
     let mut table = new_table();
 
@@ -2036,11 +2007,14 @@ fn render_summary_table(
         cells.extend(
             r.buckets
                 .amounts(row.bucket_totals)
-                .map(|(_, value)| right(cell(format_amount(value, mu)))),
+                .map(|(_, value)| right(cell(format_minor_grouped(value, currency)))),
         );
-        cells.push(right(cell(format_amount(row.total_open, mu))));
-        cells.push(right(cell(format_amount(row.unapplied_credit, mu))));
-        cells.push(right(cell(format_net(row.net(), mu))));
+        cells.push(right(cell(format_minor_grouped(row.total_open, currency))));
+        cells.push(right(cell(format_minor_grouped(
+            row.unapplied_credit,
+            currency,
+        ))));
+        cells.push(right(cell(format_net(row.net(), currency))));
         table.add_row(cells);
     }
     table
@@ -2065,7 +2039,7 @@ fn render_detail(
     use_color: bool,
 ) -> Vec<String> {
     let bold = anstyle::Style::new().bold();
-    let mu = ctx.currency.minor_units();
+    let currency = ctx.currency;
     let multi = r.accounts.len() > 1;
     let leaf = if ctx.group_by.is_some() {
         RowKind::Counterparty
@@ -2116,8 +2090,8 @@ fn render_detail(
                     Cell::new(&a.item.description),
                     right(a.age_days.to_string()),
                     Cell::new(&r.buckets.classify(a.age_days).label),
-                    right(format_amount(a.item.original, mu)),
-                    right(format_amount(a.item.open, mu)),
+                    right(format_minor_grouped(a.item.original, currency)),
+                    right(format_minor_grouped(a.item.open, currency)),
                 ]);
                 table.add_row(cells);
             }
@@ -2126,8 +2100,8 @@ fn render_detail(
         if row.unapplied_credit > 0 {
             lines.push(format!(
                 "  Unapplied credit: {} (net {})",
-                format_amount(row.unapplied_credit, mu),
-                format_net(row.net(), mu)
+                format_minor_grouped(row.unapplied_credit, currency),
+                format_net(row.net(), currency)
             ));
         }
     }
@@ -2159,7 +2133,7 @@ fn title(r: &MultiAgingReport, ctx: &RenderContext<'_>) -> String {
 /// and the net-credit note.
 fn footer(r: &MultiAgingReport, ctx: &RenderContext<'_>, use_color: bool) -> Vec<String> {
     let dim = anstyle::Style::new().dimmed();
-    let mu = ctx.currency.minor_units();
+    let currency = ctx.currency;
     let balance_label = if r.accounts.len() > 1 {
         format!("Combined balance of {} accounts", r.accounts.len())
     } else {
@@ -2169,14 +2143,14 @@ fn footer(r: &MultiAgingReport, ctx: &RenderContext<'_>, use_color: bool) -> Vec
     if ctx.filters.is_empty() {
         lines.push(format!(
             "{balance_label}: {} = total open {} - unapplied credit {}",
-            format_net(r.account_balance, mu),
-            format_amount(r.total_open, mu),
-            format_amount(r.unapplied_credit, mu),
+            format_net(r.account_balance, currency),
+            format_minor_grouped(r.total_open, currency),
+            format_minor_grouped(r.unapplied_credit, currency),
         ));
     } else {
         lines.push(format!(
             "{balance_label} (unfiltered): {}",
-            format_net(r.account_balance, mu)
+            format_net(r.account_balance, currency)
         ));
         lines.push(styled(
             "Filtered: only open charges whose metadata matches are shown, net of every \
@@ -2434,11 +2408,7 @@ fn account_json<'a>(
 /// JSON output: per-account sections (`accounts[]`), the counterparty groups
 /// combined across accounts (`groups[]`), and combined `totals`. Amounts are
 /// minor units; every open item names its `account`.
-fn render_json(
-    r: &MultiAgingReport,
-    ctx: &RenderContext<'_>,
-    meta: output::json::Meta,
-) -> Result<String, CliError> {
+fn aging_json<'a>(r: &'a MultiAgingReport, ctx: &'a RenderContext<'_>) -> AgingJson<'a> {
     let b = &r.buckets;
     let currency = ctx.currency;
     let groups = r
@@ -2461,7 +2431,7 @@ fn render_json(
         })
         .collect();
 
-    let data = AgingJson {
+    AgingJson {
         kind: ctx.kind,
         as_of: ctx.as_of,
         currency: ctx.currency.code(),
@@ -2488,16 +2458,7 @@ fn render_json(
         ),
         account_balance: money_field("account_balance", r.account_balance, currency),
         unmatched_links: unmatched_json(&r.unmatched_links, currency),
-    };
-
-    let env = output::json::Envelope {
-        ok: true,
-        meta,
-        data: Some(data),
-        error: None,
-    };
-    serde_json::to_string_pretty(&env)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))
+    }
 }
 
 fn csv_error(e: &csv::Error) -> CliError {
@@ -3237,8 +3198,8 @@ mod tests {
             MatchMethod::Fifo,
         );
         assert_eq!(r.groups[0].net(), -30);
-        assert_eq!(format_net(r.groups[0].net(), 2), "-0.30 CR");
-        assert_eq!(format_net(30, 2), "0.30");
+        assert_eq!(format_net(r.groups[0].net(), Currency::USD), "-0.30 CR");
+        assert_eq!(format_net(30, Currency::USD), "0.30");
     }
 
     #[test]
@@ -3268,9 +3229,9 @@ mod tests {
 
     #[test]
     fn format_amount_basic() {
-        assert_eq!(format_amount(123_456, 2), "1,234.56");
-        assert_eq!(format_amount(-5, 2), "-0.05");
-        assert_eq!(format_amount(5000, 0), "5,000");
+        assert_eq!(format_minor_grouped(123_456, Currency::USD), "1,234.56");
+        assert_eq!(format_minor_grouped(-5, Currency::USD), "-0.05");
+        assert_eq!(format_minor_grouped(5000, Currency::JPY), "5,000");
     }
 
     #[test]

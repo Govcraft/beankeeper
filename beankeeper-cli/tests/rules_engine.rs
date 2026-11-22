@@ -25,10 +25,22 @@ impl Ledger {
         for company in ["acme", "other"] {
             companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
             for (code, kind, tax) in [
-                ("1000", "asset", None),
-                ("4000", "revenue", Some("sales")),
-                ("5000", "expense", Some("dining")),
-                ("9000", "expense", Some("fallback")),
+                ("1000", beankeeper::types::AccountType::Asset, None),
+                (
+                    "4000",
+                    beankeeper::types::AccountType::Revenue,
+                    Some("sales"),
+                ),
+                (
+                    "5000",
+                    beankeeper::types::AccountType::Expense,
+                    Some("dining"),
+                ),
+                (
+                    "9000",
+                    beankeeper::types::AccountType::Expense,
+                    Some("fallback"),
+                ),
             ] {
                 accounts::create_account(
                     db.conn(),
@@ -464,7 +476,7 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
             company_slug: "acme",
             code: "5000",
             name: "Dining",
-            account_type: "expense",
+            account_type: beankeeper::types::AccountType::Expense,
             default_tax_category: None,
         },
     )?;

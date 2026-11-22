@@ -70,12 +70,13 @@ pub(super) fn comparison(
     prior: &[BalanceRow],
     currency: Currency,
 ) -> Result<Vec<Comparison>, CliError> {
-    let total =
-        |rows: &[BalanceRow], kind: &str| sum(rows.iter().filter(|row| row.account_type == kind));
-    let income = total(current, "revenue")?;
-    let last_income = total(prior, "revenue")?;
-    let spending = total(current, "expense")?;
-    let last_spending = total(prior, "expense")?;
+    let total = |rows: &[BalanceRow], kind: beankeeper::types::AccountType| {
+        sum(rows.iter().filter(|row| row.account_type == kind))
+    };
+    let income = total(current, beankeeper::types::AccountType::Revenue)?;
+    let last_income = total(prior, beankeeper::types::AccountType::Revenue)?;
+    let spending = total(current, beankeeper::types::AccountType::Expense)?;
+    let last_spending = total(prior, beankeeper::types::AccountType::Expense)?;
     Ok(vec![
         Comparison::new("income", "Income", income, last_income, currency)?,
         Comparison::new("spending", "Spending", spending, last_spending, currency)?,
@@ -96,7 +97,7 @@ pub(super) fn movers(
 ) -> Result<Vec<Comparison>, CliError> {
     let mut changes = current
         .iter()
-        .filter(|row| row.account_type == "expense")
+        .filter(|row| row.account_type == beankeeper::types::AccountType::Expense)
         .map(|row| {
             let prior = prior
                 .iter()

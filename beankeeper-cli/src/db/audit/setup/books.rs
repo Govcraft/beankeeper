@@ -575,7 +575,7 @@ fn create_setup_account(
             company_slug: company.as_str(),
             code,
             name: checked_name(name)?,
-            account_type: account_type.code(),
+            account_type,
             default_tax_category: None,
         },
     )

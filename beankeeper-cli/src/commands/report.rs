@@ -5,7 +5,7 @@ use beankeeper::types::{AccountType, Currency};
 use chrono::{Month, NaiveDate};
 use serde::Serialize;
 
-use crate::cli::{AccountTypeArg, Cli, OutputFormat, ReportCommand, resolve_format};
+use crate::cli::{Cli, OutputFormat, ReportCommand, resolve_format};
 use crate::commands::report_currency::resolve_report_currency;
 use crate::commands::report_tax::{self, TaxInvocation};
 use crate::db;
@@ -13,7 +13,7 @@ use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::output;
 use crate::output::chart::{self, Chart, WithChart};
-use crate::output::json::{Envelope, Meta, serialize_payload};
+use crate::output::json::{Envelope, Meta};
 
 pub use super::report_dates::DateRange;
 use super::report_dates::DateWindow;
@@ -66,9 +66,22 @@ impl<'a> ReportOutput<'a> {
         report: impl Serialize,
         chart: Option<Chart>,
     ) -> Result<(), CliError> {
-        let data = WithChart { report, chart };
+        if let Some(chart) = chart {
+            self.write_data(
+                meta,
+                WithChart {
+                    report,
+                    chart: Some(chart),
+                },
+            )
+        } else {
+            self.write_data(meta, report)
+        }
+    }
+
+    fn write_data(&mut self, meta: Meta, data: impl Serialize) -> Result<(), CliError> {
         if let Some(payload) = self.json_payload.as_deref_mut() {
-            *payload = Some(serialize_payload(&data, &meta).map_err(|error| json_error(&error))?);
+            *payload = Some(serde_json::to_value(&data).map_err(|error| json_error(&error))?);
         } else {
             let envelope = Envelope {
                 ok: true,
@@ -102,24 +115,14 @@ pub fn execute_json(
     company: &str,
     sub: &ReportCommand,
 ) -> Result<serde_json::Value, CliError> {
-    let mut bytes = Vec::new();
+    let mut writer = std::io::sink();
     let mut payload = None;
     let mut output = ReportOutput {
         json_payload: Some(&mut payload),
-        ..ReportOutput::new(OutputFormat::Json, false, &mut bytes)
+        ..ReportOutput::new(OutputFormat::Json, false, &mut writer)
     };
     run_to(cli, db, company, sub, &mut output)?;
-    if let Some(payload) = payload {
-        return Ok(payload);
-    }
-
-    // Reports without a typed JSON output path still use their existing renderer.
-    let mut envelope: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| CliError::General(format!("invalid report JSON: {error}")))?;
-    envelope
-        .get_mut("data")
-        .map(serde_json::Value::take)
-        .ok_or_else(|| CliError::General("report did not produce a data payload".into()))
+    payload.ok_or_else(|| CliError::General("report did not produce a data payload".into()))
 }
 
 fn run_to(
@@ -272,7 +275,7 @@ struct StatementOptions<'a> {
     from: Option<&'a str>,
     to: Option<&'a str>,
     currency: Option<&'a crate::cli::CurrencyArg>,
-    account_type: Option<&'a AccountTypeArg>,
+    account_type: Option<&'a AccountType>,
 }
 
 impl<'a> StatementOptions<'a> {
@@ -309,18 +312,15 @@ fn run_trial_balance(
         company,
         crate::cli::CurrencyArg::resolve_optional(currency)?,
     )?;
-    let type_filter = account_type.map(|t| t.to_library_type().code());
+    let type_filter = account_type.copied();
     let balances = db::compute_trial_balance(db.conn(), company, type_filter, from, to, currency)?;
-
-    let minor_units = currency.minor_units();
 
     match output.format {
         OutputFormat::Table => {
             let title = build_period_title("Trial Balance", currency.code(), from, to);
             let rendered = output::table::render_trial_balance(
                 &balances,
-                currency.code(),
-                minor_units,
+                currency,
                 output.use_color,
                 Some(&title),
             )?;
@@ -330,8 +330,11 @@ fn run_trial_balance(
             let meta = cli
                 .meta(Operation::ReportTrialBalance, Some(company))
                 .with_currency(currency);
-            let rendered = output::json::render_trial_balance(&balances, meta)?;
-            writeln!(output.writer, "{rendered}")?;
+            output.write_json(
+                meta,
+                output::json::trial_balance_data(&balances, currency)?,
+                None,
+            )?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_trial_balance(&balances)?;
@@ -371,7 +374,7 @@ fn run_balance(
     let balance_row = db::BalanceRow {
         code: account_row.code.clone(),
         name: account_row.name.clone(),
-        account_type: account_row.account_type.code().to_owned(),
+        account_type: account_row.account_type,
         debit_total,
         credit_total,
     };
@@ -384,8 +387,7 @@ fn run_balance(
                 account_type: account_row.account_type,
                 debit_total,
                 credit_total,
-                currency_code: currency.code(),
-                currency_minor_units: currency.minor_units(),
+                currency,
                 use_color: output.use_color,
             };
             let title = build_period_title("Account Balance", currency.code(), from, to);
@@ -396,9 +398,11 @@ fn run_balance(
             let meta = cli
                 .meta(Operation::ReportBalance, Some(company))
                 .with_currency(currency);
-            let rendered =
-                output::json::render_account_balance(&balance_row, currency.code(), meta)?;
-            writeln!(output.writer, "{rendered}")?;
+            output.write_json(
+                meta,
+                output::json::account_balance_data(&balance_row, currency),
+                None,
+            )?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_account_balance(&balance_row, currency.code())?;
@@ -488,14 +492,7 @@ pub fn compute_income_statement(
         let from = dates.from().to_string();
         let to = dates.to().to_string();
         let load = |kind: AccountType| {
-            db::compute_trial_balance(
-                conn,
-                company,
-                Some(kind.code()),
-                Some(&from),
-                Some(&to),
-                currency,
-            )
+            db::compute_trial_balance(conn, company, Some(kind), Some(&from), Some(&to), currency)
         };
         output::statements::build_income_statement(
             dates,
@@ -577,7 +574,7 @@ pub fn compute_balance_sheet(
         db::companies::get_company(conn, company)?;
         let to = as_of.to_string();
         let load = |kind: AccountType| {
-            db::compute_trial_balance(conn, company, Some(kind.code()), None, Some(&to), currency)
+            db::compute_trial_balance(conn, company, Some(kind), None, Some(&to), currency)
         };
         output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
             as_of,
@@ -630,25 +627,18 @@ fn run_tax_summary(
         crate::cli::CurrencyArg::resolve_optional(currency)?,
     )?;
     let rows = db::compute_tax_summary(db.conn(), company, from, to, currency)?;
-    let minor_units = currency.minor_units();
 
     match output.format {
         OutputFormat::Table => {
             let title = build_period_title("Tax Summary", currency.code(), from, to);
-            let rendered = output::table::render_tax_summary(
-                &rows,
-                currency.code(),
-                minor_units,
-                output.use_color,
-            );
+            let rendered = output::table::render_tax_summary(&rows, currency, output.use_color);
             print_period_table(&rendered, &title, output.writer)?;
         }
         OutputFormat::Json => {
             let meta = cli
                 .meta(Operation::ReportTaxSummary, Some(company))
                 .with_currency(currency);
-            let rendered = output::json::render_tax_summary(&rows, meta)?;
-            writeln!(output.writer, "{rendered}")?;
+            output.write_json(meta, output::json::tax_summary_data(&rows, currency), None)?;
         }
         OutputFormat::Csv => {
             let rendered = output::csv::render_tax_summary(&rows)?;
@@ -668,7 +658,7 @@ struct BudgetVarianceOptions<'a> {
     month: Option<i32>,
     from: Option<i32>,
     to: Option<i32>,
-    account_type: Option<&'a AccountTypeArg>,
+    account_type: Option<&'a AccountType>,
     currency: Option<&'a crate::cli::CurrencyArg>,
     include_unbudgeted: bool,
 }
@@ -691,7 +681,7 @@ fn run_budget_variance(
         include_unbudgeted,
     } = *opts;
     let months = budget_months(year, month, from, to)?;
-    let account_type = account_type.copied().map(AccountTypeArg::to_library_type);
+    let account_type = account_type.copied();
     let currency = resolve_report_currency(
         db.conn(),
         company,

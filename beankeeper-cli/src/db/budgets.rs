@@ -496,7 +496,7 @@ mod tests {
                 company_slug: "acme",
                 code: "1000",
                 name: "Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         )
@@ -508,7 +508,7 @@ mod tests {
                 company_slug: "acme",
                 code: "4000",
                 name: "Revenue",
-                account_type: "revenue",
+                account_type: beankeeper::types::AccountType::Revenue,
                 default_tax_category: None,
             },
         )
@@ -520,7 +520,7 @@ mod tests {
                 company_slug: "acme",
                 code: "5000",
                 name: "Rent Expense",
-                account_type: "expense",
+                account_type: beankeeper::types::AccountType::Expense,
                 default_tax_category: None,
             },
         )
@@ -532,7 +532,7 @@ mod tests {
                 company_slug: "acme",
                 code: "5100",
                 name: "Supplies",
-                account_type: "expense",
+                account_type: beankeeper::types::AccountType::Expense,
                 default_tax_category: None,
             },
         )

@@ -541,7 +541,10 @@ mod tests {
     fn daily_bucket_counts_legacy_date_spellings_and_rejects_invalid_dates() -> Result<(), CliError>
     {
         let (db, limit) = ledger()?;
-        for (code, kind) in [("1000", "asset"), ("5000", "expense")] {
+        for (code, kind) in [
+            ("1000", beankeeper::types::AccountType::Asset),
+            ("5000", beankeeper::types::AccountType::Expense),
+        ] {
             db::create_account(
                 db.conn(),
                 &crate::db::Actor::new("fixture"),

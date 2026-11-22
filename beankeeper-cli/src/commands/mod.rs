@@ -1,6 +1,7 @@
 pub mod account;
 pub mod agent;
 pub mod audit;
+mod audit_snapshot;
 pub mod backup;
 pub mod budget;
 pub mod company;

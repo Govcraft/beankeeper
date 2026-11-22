@@ -33,7 +33,11 @@ impl Ledger {
         let passphrase: SecretString = "capability-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
         db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
-        for (code, kind) in [("1000", "asset"), ("4000", "revenue"), ("5000", "expense")] {
+        for (code, kind) in [
+            ("1000", beankeeper::types::AccountType::Asset),
+            ("4000", beankeeper::types::AccountType::Revenue),
+            ("5000", beankeeper::types::AccountType::Expense),
+        ] {
             db::create_account(
                 db.conn(),
                 &Actor::new("fixture"),

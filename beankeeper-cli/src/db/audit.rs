@@ -2646,7 +2646,7 @@ mod tests {
                     company_slug: "acme",
                     code: "1100",
                     name: "New",
-                    account_type: "asset",
+                    account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None,
                 },
             )
@@ -2768,7 +2768,7 @@ mod tests {
                 company_slug: "acme",
                 code: "1100",
                 name: "Unused Cash",
-                account_type: "asset",
+                account_type: beankeeper::types::AccountType::Asset,
                 default_tax_category: None,
             },
         )
