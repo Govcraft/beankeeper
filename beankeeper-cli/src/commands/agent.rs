@@ -3,28 +3,33 @@
 use beankeeper::types::Money;
 use serde::Serialize;
 
-use crate::cli::{AgentCommand, AgentLimitCommand, Cli, Command};
+use crate::cli::{AgentCommand, AgentLimitCommand, Cli};
 use crate::db::spend_limits::{Cap, SpendLimit};
 use crate::error::CliError;
 use crate::identity::{self, IssueRequest};
 use crate::output::amounts::OptionalMoneyField;
 
-/// Execute a key or agent command with the ordinary JSON envelope.
+pub(super) fn run_key(cli: &Cli) -> Result<(), CliError> {
+    let db = cli.open_db()?;
+    let data = identity::init_root(db.conn(), &cli.principal())?;
+    render(cli, &data)
+}
+
+/// Execute an agent command with the ordinary JSON envelope.
 ///
 /// # Errors
 /// Returns storage, token or input validation errors.
-pub fn run(cli: &Cli) -> Result<(), CliError> {
+pub fn run(cli: &Cli, command: &AgentCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
     let actor = cli.principal();
-    let data = match &cli.command {
-        Command::Key(_) => identity::init_root(db.conn(), &actor)?,
-        Command::Agent(AgentCommand::Issue {
+    let data = match command {
+        AgentCommand::Issue {
             name,
             caps,
             ttl,
             public_key,
             generate_key,
-        }) => identity::issue_credential(
+        } => identity::issue_credential(
             db.conn(),
             &actor,
             &IssueRequest {
@@ -36,13 +41,14 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
             },
         )?
         .response_json(),
-        Command::Agent(AgentCommand::Limit(sub)) => run_limit(cli, &db, &actor, sub)?,
-        Command::Agent(AgentCommand::List) => identity::list(db.conn())?,
-        Command::Agent(AgentCommand::Revoke { target }) => {
-            identity::revoke(db.conn(), &actor, target)?
-        }
-        _ => return Err(CliError::Usage("expected key or agent command".into())),
+        AgentCommand::Limit(sub) => run_limit(cli, &db, &actor, sub)?,
+        AgentCommand::List => identity::list(db.conn())?,
+        AgentCommand::Revoke { target } => identity::revoke(db.conn(), &actor, target)?,
     };
+    render(cli, &data)
+}
+
+fn render(cli: &Cli, data: &serde_json::Value) -> Result<(), CliError> {
     if cli.is_json() {
         println!(
             "{}",
@@ -51,7 +57,7 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
     } else {
         println!(
             "{}",
-            serde_json::to_string_pretty(&data).map_err(|e| CliError::General(e.to_string()))?
+            serde_json::to_string_pretty(data).map_err(|e| CliError::General(e.to_string()))?
         );
     }
     Ok(())

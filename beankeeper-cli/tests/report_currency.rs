@@ -270,6 +270,29 @@ fn budget_variance_infers_company_currency() {
 }
 
 #[test]
+fn budget_variance_keeps_month_validation_in_the_command() {
+    let (_dir, db) = setup(&[]);
+
+    for (args, message) in [
+        (["--month", "13"], "month must be 1-12, got 13"),
+        (["--from", "0"], "from/to months must be 1-12"),
+    ] {
+        let mut command = vec![
+            "--company",
+            "co",
+            "report",
+            "budget-variance",
+            "--year",
+            "2026",
+        ];
+        command.extend(args);
+        let result = run_bk(&db, &command);
+        assert_eq!(result.code, Some(3), "{result:?}", result = result.stderr);
+        assert!(result.stderr.contains(message), "{}", result.stderr);
+    }
+}
+
+#[test]
 fn company_without_transactions_defaults_to_usd() {
     let (_dir, db) = setup(&[]);
     let bal = json_data(&db, &["report", "balance", "--account", "1000"]);

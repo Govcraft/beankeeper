@@ -11,7 +11,7 @@ use rusqlite::params;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use super::report::ReportOutput;
-use super::report_dates::DateWindow;
+use super::report_dates::DateRange;
 use super::report_periods::{CompareArg, MultiReportKind, prior_range, range_label};
 use crate::cli::{Cli, OutputFormat, ReportCommand};
 use crate::db::{self, connection::Db};
@@ -430,19 +430,65 @@ impl std::fmt::Display for LedgerAccountCode {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Kind<'a> {
+    IncomeStatement,
+    TrialBalance(Option<AccountType>),
+    Balance(&'a str),
+    BalanceSheet,
+    Trend(&'a super::report_trend::TrendArgs),
+    CashFlow(&'a super::report_cash_flow::CashFlowArgs),
+}
+
+impl Kind<'_> {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::IncomeStatement => "income-statement",
+            Self::TrialBalance(_) => "trial-balance",
+            Self::Balance(_) => "balance",
+            Self::BalanceSheet => "balance-sheet",
+            Self::Trend(_) => "trend",
+            Self::CashFlow(_) => "cash-flow",
+        }
+    }
+
+    const fn operation(self) -> Operation {
+        match self {
+            Self::IncomeStatement => Operation::ReportIncomeStatementCompare,
+            Self::TrialBalance(_) => Operation::ReportTrialBalanceCompare,
+            Self::Balance(_) => Operation::ReportBalance,
+            Self::BalanceSheet => Operation::ReportBalanceSheet,
+            Self::Trend(_) => Operation::ReportTrend,
+            Self::CashFlow(_) => Operation::ReportCashFlow,
+        }
+    }
+
+    const fn is_legacy(self) -> bool {
+        matches!(self, Self::IncomeStatement | Self::TrialBalance(_))
+    }
+}
+
+impl<'a> Kind<'a> {
+    const fn account(self) -> Option<&'a str> {
+        match self {
+            Self::Balance(account) => Some(account),
+            _ => None,
+        }
+    }
+}
+
 struct Request<'a> {
-    kind: &'static str,
+    kind: Kind<'a>,
     from: Option<&'a str>,
     to: Option<&'a str>,
     currency: Option<&'a crate::cli::CurrencyArg>,
     compare: CompareArg,
     explain: Option<&'a str>,
-    account: Option<&'a str>,
     cumulative: bool,
 }
 
 fn request(sub: &ReportCommand) -> Option<Request<'_>> {
-    let (kind, from, to, currency, compare, explain, account, cumulative) = match sub {
+    let (kind, from, to, currency, compare, explain, cumulative) = match sub {
         ReportCommand::IncomeStatement {
             from,
             to,
@@ -451,13 +497,12 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
             explain_change,
             ..
         } => (
-            "income-statement",
+            Kind::IncomeStatement,
             from.as_deref(),
             to,
             currency,
             compare,
             explain_change,
-            None,
             false,
         ),
         ReportCommand::TrialBalance {
@@ -466,15 +511,15 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
             currency,
             compare,
             explain_change,
+            account_type,
             ..
         } => (
-            "trial-balance",
+            Kind::TrialBalance(*account_type),
             from.as_deref(),
             to,
             currency,
             compare,
             explain_change,
-            None,
             false,
         ),
         ReportCommand::Balance {
@@ -485,13 +530,12 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
             compare,
             explain_change,
         } => (
-            "balance",
+            Kind::Balance(account),
             from.as_deref(),
             to,
             currency,
             compare,
             explain_change,
-            Some(account.as_str()),
             from.is_none(),
         ),
         ReportCommand::BalanceSheet {
@@ -500,33 +544,30 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
             compare,
             explain_change,
         } => (
-            "balance-sheet",
+            Kind::BalanceSheet,
             None,
             to,
             currency,
             compare,
             explain_change,
-            None,
             true,
         ),
         ReportCommand::Trend(args) => (
-            "trend",
+            Kind::Trend(args),
             args.from.as_deref(),
             &args.to,
             &args.currency,
             &args.compare,
             &args.explain_change,
-            None,
             matches!(args.metric, super::report_trend::TrendMetric::NetWorth),
         ),
         ReportCommand::CashFlow(args) => (
-            "cash-flow",
+            Kind::CashFlow(args),
             args.from.as_deref(),
             &args.to,
             &args.currency,
             &args.compare,
             &args.explain_change,
-            None,
             false,
         ),
         _ => return None,
@@ -538,7 +579,6 @@ fn request(sub: &ReportCommand) -> Option<Request<'_>> {
         currency: currency.as_ref(),
         compare: (*compare)?,
         explain: explain.as_deref(),
-        account,
         cumulative,
     })
 }
@@ -551,7 +591,7 @@ pub(super) fn try_run_to(
     output: &mut ReportOutput<'_>,
 ) -> Option<Result<(), CliError>> {
     let req = request(sub)?;
-    Some(run(cli, db, company, sub, &req, output))
+    Some(run(cli, db, company, &req, output))
 }
 
 struct Windows {
@@ -564,18 +604,18 @@ struct Windows {
 
 impl Windows {
     fn resolve(req: &Request<'_>) -> Result<Self, CliError> {
-        let window =
-            DateWindow::resolve(req.from, req.to, true, chrono::Local::now().date_naive())?;
+        let range = DateRange::resolve(req.from, req.to, chrono::Local::now().date_naive())?;
+        let to = range.to();
         let from = if req.cumulative && req.from.is_none() {
-            window.to.with_day(1)
+            to.with_day(1)
+                .ok_or_else(|| CliError::Validation("date is out of the supported range".into()))?
         } else {
-            window.from
-        }
-        .ok_or_else(|| CliError::Validation("missing comparison start".into()))?;
-        let (prior_from, prior_to) = prior_range(from, window.to, req.compare)?;
+            range.from()
+        };
+        let (prior_from, prior_to) = prior_range(from, to, req.compare)?;
         Ok(Self {
             from,
-            to: window.to,
+            to,
             prior_from,
             prior_to,
             cumulative: req.cumulative,
@@ -614,7 +654,6 @@ fn run(
     cli: &Cli,
     db: &Db,
     company: &str,
-    sub: &ReportCommand,
     req: &Request<'_>,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
@@ -625,7 +664,7 @@ fn run(
             company,
             crate::cli::CurrencyArg::resolve_optional(req.currency)?,
         )?;
-        if let Some(account) = req.account {
+        if let Some(account) = req.kind.account() {
             db::accounts::get_account(db.conn(), company, account)?;
         }
         let context = Context {
@@ -634,12 +673,12 @@ fn run(
             company,
             currency,
         };
-        let mut data = comparison_data(&context, sub, req, &windows)?;
+        let mut data = comparison_data(&context, req, &windows)?;
         data.movers = ranked_movers(&data.accounts);
         data.summary = summary(&data);
         let code = req
             .explain
-            .or(req.account)
+            .or(req.kind.account())
             .or_else(|| data.movers.first().map(|row| row.line.code.as_str()));
         data.desktop_view = desktop_view(company, code, &windows, currency);
         if let Some(code) = req.explain {
@@ -654,22 +693,18 @@ fn run(
                 })?;
             data.explanation = Some(explain(&context, account, &data, &windows)?);
         }
-        render(&context, sub, req, &data, output)
+        render(&context, req, &data, output)
     })
 }
 
 fn comparison_data(
     context: &Context<'_>,
-    sub: &ReportCommand,
     req: &Request<'_>,
     windows: &Windows,
 ) -> Result<ComparisonReport, CliError> {
-    let current = snapshot(context, sub, req, windows, false)?;
-    let prior = snapshot(context, sub, req, windows, true)?;
-    let legacy = matches!(
-        sub,
-        ReportCommand::IncomeStatement { .. } | ReportCommand::TrialBalance { .. }
-    );
+    let current = snapshot(context, req, windows, false)?;
+    let prior = snapshot(context, req, windows, true)?;
+    let legacy = req.kind.is_legacy();
     let zero = ReportMoney::from_minor(0, context.currency);
     // Missing activity in a window is explicitly represented by a zero pair.
     // Each account's metadata comes from an actual row, never a failed lookup.
@@ -702,7 +737,7 @@ fn comparison_data(
             })
         })
         .collect::<Result<Vec<_>, CliError>>()?;
-    if matches!(sub, ReportCommand::IncomeStatement { .. }) {
+    if matches!(req.kind, Kind::IncomeStatement) {
         accounts.sort_by_key(|line| {
             (
                 u8::from(line.kind != AccountType::Revenue),
@@ -722,7 +757,7 @@ fn comparison_data(
         .map(|(key, [current, prior])| Ok((key, ComparisonValues::new(current, prior)?)))
         .collect::<Result<_, CliError>>()?;
     Ok(ComparisonReport {
-        report: req.kind,
+        report: req.kind.name(),
         mode: "compare",
         compare: req.compare.as_str(),
         from: windows.from,
@@ -746,7 +781,7 @@ fn comparison_data(
         accounts,
         totals: Totals(totals),
         cash_accounts: (!legacy).then_some(current.cash_accounts),
-        metric: if let ReportCommand::Trend(args) = sub {
+        metric: if let Kind::Trend(args) = req.kind {
             Some(args.metric)
         } else {
             None
@@ -760,7 +795,6 @@ fn comparison_data(
 
 fn snapshot(
     context: &Context<'_>,
-    sub: &ReportCommand,
     req: &Request<'_>,
     windows: &Windows,
     prior: bool,
@@ -771,15 +805,27 @@ fn snapshot(
         currency,
         ..
     } = *context;
-    if let ReportCommand::CashFlow(args) = sub {
-        return cash_snapshot(context, args, windows.dates(prior));
-    }
-    if let Some(kind) = match sub {
-        ReportCommand::IncomeStatement { .. } => Some(MultiReportKind::IncomeStatement),
-        ReportCommand::TrialBalance { .. } => Some(MultiReportKind::TrialBalance),
-        _ => None,
-    } {
-        return period_snapshot(context, sub, kind, windows, prior);
+    match req.kind {
+        Kind::CashFlow(args) => return cash_snapshot(context, args, windows.dates(prior)),
+        Kind::IncomeStatement => {
+            return period_snapshot(
+                context,
+                MultiReportKind::IncomeStatement,
+                None,
+                windows,
+                prior,
+            );
+        }
+        Kind::TrialBalance(account_type) => {
+            return period_snapshot(
+                context,
+                MultiReportKind::TrialBalance,
+                account_type,
+                windows,
+                prior,
+            );
+        }
+        _ => {}
     }
     let (from, to) = windows.bounds(prior);
     let rows = db::compute_trial_balance(
@@ -793,7 +839,7 @@ fn snapshot(
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
     let zero = ReportMoney::from_minor(0, currency);
-    let spending = matches!(sub, ReportCommand::Trend(args) if matches!(args.metric, super::report_trend::TrendMetric::Spending));
+    let spending = matches!(req.kind, Kind::Trend(args) if matches!(args.metric, super::report_trend::TrendMetric::Spending));
     let mut earnings = zero;
     for row in rows {
         let code = LedgerAccountCode::from_balance(&row);
@@ -805,18 +851,18 @@ fn snapshot(
         } else {
             credit.subtract(debit)?
         };
-        if matches!(sub, ReportCommand::BalanceSheet { .. }) {
+        if matches!(req.kind, Kind::BalanceSheet) {
             match kind {
                 AccountType::Revenue => earnings = earnings.add(amount)?,
                 AccountType::Expense => earnings = earnings.subtract(amount)?,
                 AccountType::Asset | AccountType::Liability | AccountType::Equity => {}
             }
         }
-        let include = if let Some(wanted) = req.account {
+        let include = if let Some(wanted) = req.kind.account() {
             code.as_str() == wanted
         } else if spending {
             kind == AccountType::Expense
-        } else if matches!(sub, ReportCommand::Trend(_)) {
+        } else if matches!(req.kind, Kind::Trend(_)) {
             matches!(kind, AccountType::Asset | AccountType::Liability)
         } else {
             kind.is_balance_sheet()
@@ -841,7 +887,7 @@ fn snapshot(
             );
         }
     }
-    finish_snapshot_totals(sub, &mut totals, earnings)?;
+    finish_snapshot_totals(req.kind, &mut totals, earnings)?;
     Ok(Snapshot {
         accounts,
         totals,
@@ -850,12 +896,12 @@ fn snapshot(
 }
 
 fn finish_snapshot_totals(
-    sub: &ReportCommand,
+    kind: Kind<'_>,
     totals: &mut BTreeMap<TotalKey, ReportMoney>,
     earnings: ReportMoney,
 ) -> Result<(), CliError> {
     let zero = earnings.zero();
-    if matches!(sub, ReportCommand::BalanceSheet { .. }) {
+    if matches!(kind, Kind::BalanceSheet) {
         totals.insert(TotalKey::ComputedEarnings, earnings);
         totals.insert(
             TotalKey::TotalLiabilitiesAndEquity,
@@ -864,7 +910,7 @@ fn finish_snapshot_totals(
                 .add(earnings)?,
         );
     }
-    if matches!(sub, ReportCommand::Trend(args) if matches!(args.metric, super::report_trend::TrendMetric::NetWorth))
+    if matches!(kind, Kind::Trend(args) if matches!(args.metric, super::report_trend::TrendMetric::NetWorth))
     {
         totals.insert(
             TotalKey::NetWorth,
@@ -889,22 +935,17 @@ fn category_total(
 
 fn period_snapshot(
     context: &Context<'_>,
-    sub: &ReportCommand,
     kind: MultiReportKind,
+    account_type: Option<AccountType>,
     windows: &Windows,
     prior: bool,
 ) -> Result<Snapshot, CliError> {
-    let type_filter = if let ReportCommand::TrialBalance { account_type, .. } = sub {
-        *account_type
-    } else {
-        None
-    };
     // Both period layouts share this ledger query and its window selection.
     let rows = super::report_periods::fetch_window_rows(
         context.db.conn(),
         context.company,
         kind,
-        type_filter,
+        account_type,
         context.currency,
         windows.dates(prior),
     )?;
@@ -1261,7 +1302,6 @@ fn finish_explanation(
 
 fn render(
     context: &Context<'_>,
-    sub: &ReportCommand,
     req: &Request<'_>,
     data: &ComparisonReport,
     output: &mut ReportOutput<'_>,
@@ -1274,20 +1314,13 @@ fn render(
     } = *context;
     match output.format {
         OutputFormat::Json => {
-            let id = match req.kind {
-                "income-statement" => Operation::ReportIncomeStatementCompare,
-                "trial-balance" => Operation::ReportTrialBalanceCompare,
-                "balance" => Operation::ReportBalance,
-                "balance-sheet" => Operation::ReportBalanceSheet,
-                "cash-flow" => Operation::ReportCashFlow,
-                _ => Operation::ReportTrend,
-            };
+            let id = req.kind.operation();
             let chart = chart::requested(cli, || {
-                let view = match sub {
-                    ReportCommand::IncomeStatement { .. } => ComparisonView::IncomeStatement,
-                    ReportCommand::TrialBalance { .. } => ComparisonView::TrialBalance,
-                    ReportCommand::Trend(args) => ComparisonView::Trend(args.period, args.metric),
-                    ReportCommand::CashFlow(_) => ComparisonView::CashFlow(
+                let view = match req.kind {
+                    Kind::IncomeStatement => ComparisonView::IncomeStatement,
+                    Kind::TrialBalance(_) => ComparisonView::TrialBalance,
+                    Kind::Trend(args) => ComparisonView::Trend(args.period, args.metric),
+                    Kind::CashFlow(_) => ComparisonView::CashFlow(
                         data.cash_accounts.as_deref().ok_or_else(|| {
                             CliError::General(
                                 "cash-flow comparison is missing its cash accounts".into(),
@@ -1310,7 +1343,7 @@ fn render(
         }
         OutputFormat::Table => {
             writeln!(output.writer, "{}", data.summary)?;
-            if matches!(req.kind, "income-statement" | "trial-balance") {
+            if req.kind.is_legacy() {
                 writeln!(
                     output.writer,
                     "{}",

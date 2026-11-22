@@ -60,8 +60,36 @@ pub(super) struct LedgerRequest<'a> {
     pub accounts: &'a [String],
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
-    pub currency: Option<Currency>,
-    pub filter_metadata: &'a [String],
+    currency: Currency,
+    filters: Vec<MetadataFilter>,
+}
+
+impl<'a> LedgerOptions<'a> {
+    pub(super) fn resolve_cli(
+        &self,
+        db: &Db,
+        company: &str,
+        today: NaiveDate,
+    ) -> Result<LedgerRequest<'a>, CliError> {
+        let dates = super::report_dates::DateWindow::resolve(self.from, self.to, today)?;
+        self.resolve(db.conn(), company, dates.from, Some(dates.to))
+    }
+
+    fn resolve(
+        &self,
+        conn: &Connection,
+        company: &str,
+        from: Option<NaiveDate>,
+        to: Option<NaiveDate>,
+    ) -> Result<LedgerRequest<'a>, CliError> {
+        Ok(LedgerRequest {
+            accounts: self.accounts,
+            from,
+            to,
+            currency: resolve_ledger_currency(conn, company, self.currency)?,
+            filters: metadata_filter::parse_filters(self.filter_metadata)?,
+        })
+    }
 }
 
 /// One entry line of an account statement.
@@ -219,7 +247,7 @@ pub(super) fn run_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    request: &LedgerRequest<'_>,
+    request: LedgerRequest<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let report = build_report_for_request(db.conn(), company, request)?;
@@ -280,23 +308,16 @@ pub fn build_report(
         )));
     }
 
-    let request = LedgerRequest {
-        accounts: opts.accounts,
-        from,
-        to,
-        currency: opts.currency,
-        filter_metadata: opts.filter_metadata,
-    };
-    build_report_for_request(conn, company, &request)
+    let request = opts.resolve(conn, company, from, to)?;
+    build_report_for_request(conn, company, request)
 }
 
 fn build_report_for_request(
     conn: &Connection,
     company: &str,
-    request: &LedgerRequest<'_>,
+    request: LedgerRequest<'_>,
 ) -> Result<LedgerReport, CliError> {
-    let currency = resolve_ledger_currency(conn, company, request.currency)?;
-    let filters = metadata_filter::parse_filters(request.filter_metadata)?;
+    let currency = request.currency;
 
     let explicit = !request.accounts.is_empty();
     let accounts: Vec<db::AccountRow> = if explicit {
@@ -320,7 +341,7 @@ fn build_report_for_request(
         currency,
         from: request.from,
         to: request.to,
-        filters: &filters,
+        filters: &request.filters,
     };
     let mut out = Vec::new();
     for acct in accounts {
@@ -336,7 +357,7 @@ fn build_report_for_request(
         currency,
         from: request.from.map(|date| date.to_string()),
         to: request.to.map(|date| date.to_string()),
-        metadata_filters: filters,
+        metadata_filters: request.filters,
         accounts: out,
     })
 }

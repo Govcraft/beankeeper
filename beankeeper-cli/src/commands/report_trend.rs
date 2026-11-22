@@ -214,14 +214,14 @@ struct Series {
     amounts: Vec<i64>,
 }
 
-pub(crate) fn run_to(
+pub(super) fn run_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    args: &TrendArgs,
+    request: TrendRequest,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let report = compute(db, company, args)?;
+    let report = compute_trend(db, company, request)?;
     match output.format {
         OutputFormat::Json => {
             let meta = cli
@@ -237,36 +237,33 @@ pub(crate) fn run_to(
     if !cli.verbosity.quiet {
         eprintln!(
             "[ok] {} generated ({} columns)",
-            args.metric.title().to_lowercase(),
+            request.metric.title().to_lowercase(),
             report.columns.len()
         );
     }
     Ok(())
 }
 
-fn compute(db: &Db, company: &str, args: &TrendArgs) -> Result<TrendReport, CliError> {
-    let dates = DateRange::resolve(
-        args.from.as_deref(),
-        args.to.as_deref(),
-        chrono::Local::now().date_naive(),
-    )?;
-    db::audit::atomically(db.conn(), || {
+impl TrendArgs {
+    pub(super) fn resolve(
+        &self,
+        db: &Db,
+        company: &str,
+        today: NaiveDate,
+    ) -> Result<TrendRequest, CliError> {
+        let dates = DateRange::resolve(self.from.as_deref(), self.to.as_deref(), today)?;
         let currency = super::report_currency::resolve_report_currency(
             db.conn(),
             company,
-            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
+            crate::cli::CurrencyArg::resolve_optional(self.currency.as_ref())?,
         )?;
-        compute_trend(
-            db,
-            company,
-            TrendRequest {
-                dates,
-                currency,
-                metric: args.metric,
-                period: args.period,
-            },
-        )
-    })
+        Ok(TrendRequest {
+            dates,
+            currency,
+            metric: self.metric,
+            period: self.period,
+        })
+    }
 }
 
 /// Compute a trend in one currency on an already-open ledger.

@@ -321,52 +321,74 @@ impl ReconciliationReport {
     }
 }
 
-/// Dispatch bank or settlement reconciliation.
-///
-/// # Errors
-/// Returns an error for invalid options, account/currency, or database failures.
-pub(crate) fn run_command_to(
+enum ReportMode<'a> {
+    Bank,
+    Settlement { link_key: &'a str },
+}
+
+pub(super) struct ResolvedReconciliation<'a> {
+    account: db::AccountRow,
+    request: ResolvedRequest<'a>,
+    mode: ReportMode<'a>,
+}
+
+impl<'a> ResolvedReconciliation<'a> {
+    pub(super) fn resolve(
+        db: &Db,
+        company: &str,
+        command: &'a crate::cli::ReconciliationCommandArgs,
+        today: NaiveDate,
+    ) -> Result<Self, CliError> {
+        let as_of =
+            super::report_dates::DateWindow::resolve(None, command.to.as_deref(), today)?.to;
+        let args = ReconciliationArgs {
+            account: &command.account,
+            to: None,
+            statement_balance: command.statement_balance.as_deref(),
+            statement: command.statement.as_deref(),
+            filter_metadata: &command.filter_metadata,
+            group_by_metadata: command.group_by_metadata.as_deref(),
+            currency: crate::cli::CurrencyArg::resolve_optional(command.currency.as_ref())?,
+        };
+        let mode = match command.mode {
+            ReconciliationMode::Bank if command.link_key.is_some() => {
+                return Err(CliError::Usage(
+                    "--link-key requires --mode settlement".into(),
+                ));
+            }
+            ReconciliationMode::Bank => ReportMode::Bank,
+            ReconciliationMode::Settlement => ReportMode::Settlement {
+                link_key: settlement::resolve_link_key(
+                    args.statement,
+                    command.link_key.as_deref(),
+                )?,
+            },
+        };
+        let (account, request) = resolve_cli_request(db.conn(), company, &args, Some(as_of))?;
+        Ok(Self {
+            account,
+            request,
+            mode,
+        })
+    }
+}
+
+pub(super) fn run_resolved_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    command: &crate::cli::ReconciliationCommandArgs,
+    resolved: ResolvedReconciliation<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let crate::cli::ReconciliationCommandArgs {
-        account,
-        to,
-        statement_balance,
-        statement,
-        filter_metadata,
-        group_by_metadata,
-        currency,
-        mode,
-        link_key,
-    } = command;
-    let args = ReconciliationArgs {
-        account,
-        to: to.as_deref(),
-        statement_balance: statement_balance.as_deref(),
-        statement: statement.as_deref(),
-        filter_metadata,
-        group_by_metadata: group_by_metadata.as_deref(),
-        currency: crate::cli::CurrencyArg::resolve_optional(currency.as_ref())?,
-    };
-    if *mode == ReconciliationMode::Bank {
-        if link_key.is_some() {
-            return Err(CliError::Usage(
-                "--link-key requires --mode settlement".into(),
-            ));
-        }
-        return run_to(cli, db, company, &args, output);
-    }
-    let link_key = settlement::resolve_link_key(args.statement, link_key.as_deref())?;
     let conn = db.conn();
-    let report = db::audit::atomically(conn, || {
-        let company = Company::resolve(conn, company)?;
-        let report = build_cli_report(conn, &company, &args)?;
-        settlement::apply(conn, &company, report, link_key)
-    })?;
+    let company_scope = Company::resolve(conn, company)?;
+    let report = build_resolved_report(conn, &company_scope, resolved.account, resolved.request)?;
+    let report = match resolved.mode {
+        ReportMode::Bank => report,
+        ReportMode::Settlement { link_key } => {
+            settlement::apply(conn, &company_scope, report, link_key)?
+        }
+    };
     render(cli, company, &report, output)
 }
 
@@ -569,17 +591,24 @@ fn build_cli_report(
         .to
         .map(|date| super::report_dates::parse_date("--to", date))
         .transpose()?;
+    let (account, request) = resolve_cli_request(conn, company.slug().as_str(), args, as_of)?;
+    build_resolved_report(conn, company, account, request)
+}
+
+fn resolve_cli_request<'a>(
+    conn: &Connection,
+    company: &str,
+    args: &ReconciliationArgs<'a>,
+    as_of: Option<NaiveDate>,
+) -> Result<(db::AccountRow, ResolvedRequest<'a>), CliError> {
     let filters = metadata_filter::parse_filters(args.filter_metadata)?;
-    let slug = company.slug().as_str();
-    let account = db::get_account(conn, slug, args.account)?;
-    let currency = resolve_currency(conn, slug, args.currency)?;
+    let account = db::get_account(conn, company, args.account)?;
+    let currency = resolve_currency(conn, company, args.currency)?;
     let statement_balance = args
         .statement_balance
         .map(|s| parse_signed_amount(s, currency).map(|units| money(units, currency)))
         .transpose()?;
-    build_resolved_report(
-        conn,
-        company,
+    Ok((
         account,
         ResolvedRequest {
             currency,
@@ -589,7 +618,7 @@ fn build_cli_report(
             filters,
             group_by_metadata: args.group_by_metadata,
         },
-    )
+    ))
 }
 
 fn normalize_statement(statement: Option<&str>) -> Option<&str> {

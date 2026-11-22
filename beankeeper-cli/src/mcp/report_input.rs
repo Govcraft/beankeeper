@@ -3,13 +3,13 @@
 use serde_json::Value;
 
 use super::dispatch::{optional_text, text_list, unpaged};
-use super::input_values::{Month, Text};
+use super::input_values::Text;
 use super::inputs::{
     AgingInput, BalanceInput, BalanceSheetInput, BudgetVarianceInput, CashFlowInput,
     IncomeStatementInput, LedgerInput, ReconciliationInput, Report, ReportOptions, TaxPeriodInput,
     TrendInput, TrialBalanceInput, Vendor1099Input,
 };
-use crate::cli::{Cli, Command, CurrencyArg, ReportArgs, ReportCommand};
+use crate::cli::{BudgetVarianceArgs, Cli, Command, CurrencyArg, ReportArgs, ReportCommand};
 use crate::commands::{
     report,
     report_cash_flow::CashFlowArgs,
@@ -179,22 +179,15 @@ fn ledger(input: LedgerInput) -> ReportCommand {
     }
 }
 
-fn report_month(month: Option<&Month>) -> Result<Option<i32>, CliError> {
-    month
-        .map(|month| i32::try_from(month.get()))
-        .transpose()
-        .map_err(|error| CliError::Validation(error.to_string()))
-}
-
 fn budget_variance(input: BudgetVarianceInput) -> Result<ReportCommand, CliError> {
     if input.month.is_some() && (input.from.is_some() || input.to.is_some()) {
         return Err(CliError::Usage("month conflicts with from and to".into()));
     }
-    Ok(ReportCommand::BudgetVariance {
+    Ok(ReportCommand::BudgetVariance(BudgetVarianceArgs {
         year: input.year,
-        month: report_month(input.month.as_ref())?,
-        from: report_month(input.from.as_ref())?,
-        to: report_month(input.to.as_ref())?,
+        month: input.month.map(|month| month.into_inner().into()),
+        from: input.from.map(|month| month.into_inner().into()),
+        to: input.to.map(|month| month.into_inner().into()),
         account_type: input.account_type,
         currency: input
             .currency
@@ -205,7 +198,7 @@ fn budget_variance(input: BudgetVarianceInput) -> Result<ReportCommand, CliError
                     .map(|code| CurrencyArg::decode(&code))
             }),
         include_unbudgeted: input.include_unbudgeted,
-    })
+    }))
 }
 
 fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {

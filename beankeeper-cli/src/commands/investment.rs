@@ -4,7 +4,7 @@ use crate::operation::Operation;
 use beankeeper::types::{Money, NonNegativeMoney, PositiveMoney};
 use serde_json::Value;
 
-use crate::cli::{Cli, Command, InvestmentCommand, OutputFormat, SecurityCommand, resolve_format};
+use crate::cli::{Cli, InvestmentCommand, OutputFormat, SecurityCommand, resolve_format};
 use crate::db::{Actor, Db, investments};
 use crate::error::CliError;
 use crate::output::json;
@@ -12,29 +12,24 @@ use crate::output::json;
 mod wire;
 use wire::Wire;
 
-/// Run one company-scoped security or investment command.
-///
-/// # Errors
-/// Returns validation, persistence, or output errors.
-pub fn run(cli: &Cli, company: &str) -> Result<(), CliError> {
+pub(super) fn run_security(
+    cli: &Cli,
+    company: &str,
+    command: &SecurityCommand,
+) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    let actor = cli.principal();
-    let (name, data) = match &cli.command {
-        Command::Security(args) => (
-            args.command.operation(),
-            execute_security(&db, company, &args.command, &actor)?,
-        ),
-        Command::Investment(args) => (
-            args.command.operation(),
-            execute_investment(&db, company, &args.command, &actor)?,
-        ),
-        _ => {
-            return Err(CliError::Usage(
-                "expected security or investment command".into(),
-            ));
-        }
-    };
-    render(cli, company, name, &data)
+    let data = execute_security(&db, company, command, &cli.principal())?;
+    render(cli, company, command.operation(), &data)
+}
+
+pub(super) fn run_investment(
+    cli: &Cli,
+    company: &str,
+    command: &InvestmentCommand,
+) -> Result<(), CliError> {
+    let db = cli.open_db()?;
+    let data = execute_investment(&db, company, command, &cli.principal())?;
+    render(cli, company, command.operation(), &data)
 }
 
 /// Execute a security operation using the same behavior for CLI and MCP.
@@ -291,11 +286,15 @@ mod tests {
         ])
         .map_err(|error| CliError::Usage(error.to_string()))?;
         assert_eq!(crate::cli::require_company(&cli)?.as_str(), "acme");
-        let Command::Investment(args) = cli.command else {
-            return Err(CliError::General("expected investment command".into()));
+        let crate::cli::Command::Investment(args) = cli.command else {
+            return Err(CliError::General(
+                "investment test fixture parsed a different command".into(),
+            ));
         };
         let InvestmentCommand::Buy { trade, cost } = args.command else {
-            return Err(CliError::General("expected purchase".into()));
+            return Err(CliError::General(
+                "investment test fixture parsed a different operation".into(),
+            ));
         };
         assert_eq!(trade.quantity.atoms(), 1);
         assert_eq!(cost, "1.23");

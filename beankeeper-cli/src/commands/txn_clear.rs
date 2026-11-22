@@ -48,9 +48,10 @@ pub fn run(
     args: &TxnClearArgs,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
-    let target = resolve_request(args, BatchInput::Cli)?;
+    let target = resolve_target(args)?;
+    let options = cli_options(args)?;
     let actor = cli.principal();
-    let result = compute(db_handle, company, args, &actor, target)?;
+    let result = compute(db_handle, company, &actor, target, options)?;
     let ctx = result.context(db_handle, company, actor);
     let format = resolve_format(None, cli);
     let meta = meta.unwrap_or_else(|| cli.meta(Operation::TxnClear, Some(company)));
@@ -60,25 +61,47 @@ pub fn run(
     }
 }
 
-/// Clear entries without reading files or writing to stdout.
-///
-/// Batch callers provide parsed lines directly. The result matches the CLI's
-/// JSON data payload, and every mutation uses the supplied audit actor.
-///
-/// # Errors
-///
-/// Returns the same argument, validation and database errors as `bk txn clear`.
-/// A batch is atomic and a failing batch changes nothing.
-pub fn execute_json(
-    db_handle: &Db,
+pub(super) fn execute_cli_json(
+    db: &Db,
     company: &str,
     args: &TxnClearArgs,
     actor: &Actor,
-    batch: Option<&[BatchLine]>,
+) -> Result<serde_json::Value, CliError> {
+    if args.from_file.is_some() {
+        return Err(CliError::Usage(
+            "MCP batch input must be supplied directly".into(),
+        ));
+    }
+    execute_json(
+        db,
+        company,
+        actor,
+        resolve_target(args)?,
+        cli_options(args)?,
+    )
+}
+
+fn cli_options(args: &TxnClearArgs) -> Result<ClearOptions<'_>, CliError> {
+    Ok(ClearOptions {
+        date: args.date.as_deref().map(parse_date).transpose()?,
+        statement: args.statement.as_deref(),
+        status: args.status,
+    })
+}
+
+/// Clear entries from an already decoded target and options.
+pub(crate) fn execute_json(
+    db_handle: &Db,
+    company: &str,
+    actor: &Actor,
+    target: ClearRequestTarget<'_>,
+    options: ClearOptions<'_>,
 ) -> Result<serde_json::Value, CliError> {
     db::get_company(db_handle.conn(), company)?;
-    let target = resolve_request(args, BatchInput::Mcp(batch))?;
-    let result = compute(db_handle, company, args, actor, target)?;
+    if let ClearRequestTarget::Batch { lines, .. } = &target {
+        validate_inline_batch(lines)?;
+    }
+    let result = compute(db_handle, company, actor, target, options)?;
     let ctx = result.context(db_handle, company, actor.clone());
     match &result.items {
         ClearedItems::Single(item) => single_data(&ctx, item),
@@ -86,12 +109,14 @@ pub fn execute_json(
     }
 }
 
-enum BatchInput<'a> {
-    Cli,
-    Mcp(Option<&'a [BatchLine]>),
+#[derive(Clone, Copy)]
+pub(crate) struct ClearOptions<'a> {
+    pub date: Option<NaiveDate>,
+    pub statement: Option<&'a str>,
+    pub status: ClearanceArg,
 }
 
-enum ClearRequestTarget<'a> {
+pub(crate) enum ClearRequestTarget<'a> {
     Entry {
         selector: EntrySelector<'a>,
         amount: Option<&'a str>,
@@ -103,7 +128,7 @@ enum ClearRequestTarget<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum EntrySelector<'a> {
+pub(crate) enum EntrySelector<'a> {
     Id {
         transaction_id: TransactionId,
         entry_id: EntryId,
@@ -114,43 +139,36 @@ enum EntrySelector<'a> {
     },
 }
 
-fn resolve_request<'a>(
-    args: &'a TxnClearArgs,
-    input: BatchInput<'a>,
-) -> Result<ClearRequestTarget<'a>, CliError> {
+fn resolve_target(args: &TxnClearArgs) -> Result<ClearRequestTarget<'_>, CliError> {
     let amount = args.amount.as_deref();
-    if args.status == ClearanceArg::Uncleared && amount.is_some() {
-        return Err(CliError::Usage(
-            "--amount cannot be used with --status uncleared".into(),
-        ));
-    }
-    let selection = match (
+    validate_amount_status(amount, args.status)?;
+    match (
         args.transaction_id,
         args.entry,
         args.reference.as_deref(),
         args.account.as_deref(),
         args.from_file.as_ref(),
-        input,
     ) {
-        (Some(transaction_id), Some(entry_id), None, None, None, BatchInput::Cli | BatchInput::Mcp(None)) => {
-            ClearRequestTarget::Entry { selector: EntrySelector::Id { transaction_id, entry_id }, amount }
+        (Some(transaction_id), Some(entry_id), None, None, None) => {
+            Ok(ClearRequestTarget::Entry { selector: EntrySelector::Id { transaction_id, entry_id }, amount })
         }
-        (None, None, Some(reference), Some(account), None, BatchInput::Cli | BatchInput::Mcp(None)) => {
-            ClearRequestTarget::Entry { selector: EntrySelector::Reference { reference, account }, amount }
+        (None, None, Some(reference), Some(account), None) => {
+            Ok(ClearRequestTarget::Entry { selector: EntrySelector::Reference { reference, account }, amount })
         }
-        (None, None, None, Some(account), Some(source), BatchInput::Cli) if amount.is_none() => {
-            ClearRequestTarget::Batch { account, lines: Cow::Owned(parse_batch(&source.read_text()?)?) }
+        (None, None, None, Some(account), Some(source)) if amount.is_none() => {
+            Ok(ClearRequestTarget::Batch { account, lines: Cow::Owned(parse_batch(&source.read_text()?)?) })
         }
-        (None, None, None, Some(account), _, BatchInput::Mcp(Some(lines))) if amount.is_none() => {
-            validate_inline_batch(lines)?;
-            ClearRequestTarget::Batch { account, lines: Cow::Borrowed(lines) }
-        }
-        (None, None, None, Some(_), Some(_), BatchInput::Mcp(None)) => {
-            return Err(CliError::Usage("MCP batch input must be supplied directly".into()));
-        }
-        _ => return Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into())),
-    };
-    Ok(selection)
+        _ => Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into())),
+    }
+}
+
+fn validate_amount_status(amount: Option<&str>, status: ClearanceArg) -> Result<(), CliError> {
+    if status == ClearanceArg::Uncleared && amount.is_some() {
+        return Err(CliError::Usage(
+            "--amount cannot be used with --status uncleared".into(),
+        ));
+    }
+    Ok(())
 }
 
 enum ClearedItems<'a> {
@@ -211,17 +229,15 @@ impl Execution<'_> {
 fn compute<'a>(
     db_handle: &Db,
     company: &str,
-    args: &'a TxnClearArgs,
     actor: &Actor,
     selection: ClearRequestTarget<'a>,
+    options: ClearOptions<'a>,
 ) -> Result<Execution<'a>, CliError> {
-    let date = resolve_date(args.date.as_deref())?;
-    let statement = args
-        .statement
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let status = args.status;
+    let date = options
+        .date
+        .unwrap_or_else(|| chrono::Local::now().date_naive());
+    let statement = options.statement.map(str::trim).filter(|s| !s.is_empty());
+    let status = options.status;
     let ctx = Ctx {
         conn: db_handle.conn(),
         actor: actor.clone(),
@@ -232,6 +248,7 @@ fn compute<'a>(
     };
     let items = match selection {
         ClearRequestTarget::Entry { selector, amount } => {
+            validate_amount_status(amount, status)?;
             let target = resolve_entry(&ctx, selector)?;
             let amount = amount
                 .map(|amount| parse_amount(amount, &target))
@@ -298,13 +315,9 @@ impl Ctx<'_> {
     }
 }
 
-fn resolve_date(date: Option<&str>) -> Result<NaiveDate, CliError> {
-    match date {
-        Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| {
-            CliError::Validation(format!("invalid --date '{d}': expected YYYY-MM-DD"))
-        }),
-        None => Ok(chrono::Local::now().date_naive()),
-    }
+fn parse_date(date: &str) -> Result<NaiveDate, CliError> {
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| CliError::Validation(format!("invalid --date '{date}': expected YYYY-MM-DD")))
 }
 
 fn parse_amount(s: &str, target: &EntryTarget) -> Result<i64, CliError> {
@@ -799,10 +812,9 @@ mod tests {
     #[test]
     fn date_validation() {
         assert_eq!(
-            resolve_date(Some("2026-03-31")).ok(),
+            parse_date("2026-03-31").ok(),
             NaiveDate::from_ymd_opt(2026, 3, 31)
         );
-        assert!(resolve_date(Some("31/03/2026")).is_err());
-        assert!(resolve_date(None).is_ok());
+        assert!(parse_date("31/03/2026").is_err());
     }
 }

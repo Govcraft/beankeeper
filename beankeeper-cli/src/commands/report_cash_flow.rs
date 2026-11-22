@@ -351,17 +351,26 @@ pub fn run(
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    run_to(cli, db, company, args, &mut output)
+    db::audit::atomically(db.conn(), || {
+        let request = args.resolve(db, company, chrono::Local::now().date_naive())?;
+        run_to(cli, db, company, request, &mut output)
+    })
 }
 
-pub(crate) fn run_to(
+pub(super) fn run_to(
     cli: &Cli,
     db: &Db,
     company: &str,
-    args: &CashFlowArgs,
+    request: CashFlowRequest<'_>,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let statement = compute(db, company, args)?;
+    let statement = compute_scoped(
+        db,
+        company,
+        request.dates,
+        request.currency,
+        request.accounts.iter().map(String::as_str),
+    )?;
 
     match output.format {
         OutputFormat::Table => writeln!(
@@ -393,27 +402,32 @@ pub(crate) fn run_to(
     Ok(())
 }
 
-fn compute(db: &Db, company: &str, args: &CashFlowArgs) -> Result<CashFlowStatement, CliError> {
-    let dates = DateRange::resolve(
-        args.from.as_deref(),
-        args.to.as_deref(),
-        chrono::Local::now().date_naive(),
-    )?;
-    let conn = db.conn();
-    db::audit::atomically(conn, || {
+#[derive(Clone, Copy)]
+pub(super) struct CashFlowRequest<'a> {
+    dates: DateRange,
+    currency: Currency,
+    accounts: &'a [String],
+}
+
+impl CashFlowArgs {
+    pub(super) fn resolve(
+        &self,
+        db: &Db,
+        company: &str,
+        today: chrono::NaiveDate,
+    ) -> Result<CashFlowRequest<'_>, CliError> {
+        let dates = DateRange::resolve(self.from.as_deref(), self.to.as_deref(), today)?;
         let currency = super::report_currency::resolve_report_currency(
-            conn,
+            db.conn(),
             company,
-            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
+            crate::cli::CurrencyArg::resolve_optional(self.currency.as_ref())?,
         )?;
-        compute_scoped(
-            db,
-            company,
+        Ok(CashFlowRequest {
             dates,
             currency,
-            args.cash_account.iter().map(String::as_str),
-        )
-    })
+            accounts: &self.cash_account,
+        })
+    }
 }
 
 /// Compute a cash flow report on an already-open ledger using explicit dates

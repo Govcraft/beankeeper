@@ -6,40 +6,34 @@ use rusqlite::OptionalExtension as _;
 use serde_json::Value;
 
 use super::audit_snapshot::{embedded_currency, project_snapshot};
-use crate::cli::{AuditCommand, Cli, OutputFormat, resolve_format};
+use crate::cli::{AuditLogArgs, Cli, OutputFormat, resolve_format};
 use crate::db::audit::AuditEntity;
 use crate::db::{Db, ListAuditParams, count_audit, list_audit};
 use crate::error::CliError;
 use crate::output;
 
-/// Execute the `audit` command group.
+/// Execute `bk audit log`.
 ///
 /// # Errors
 ///
 /// Returns [`CliError`] on database or rendering failure.
-pub fn run(cli: &Cli, sub: &AuditCommand) -> Result<(), CliError> {
+pub fn run(cli: &Cli, args: &AuditLogArgs) -> Result<(), CliError> {
     let db = cli.open_db()?;
     let format = resolve_format(None, cli);
 
-    run_log(cli, &db, &list_params(sub), format)
+    run_log(cli, &db, &args.into(), format)
 }
 
-fn list_params(sub: &AuditCommand) -> ListAuditParams<'_> {
-    let AuditCommand::Log {
-        agent,
-        company,
-        entity,
-        action,
-        limit,
-        offset,
-    } = sub;
-    ListAuditParams {
-        agent_uri: agent.as_deref(),
-        company_slug: company.as_deref(),
-        entity: *entity,
-        action: *action,
-        limit: (*limit).max(0),
-        offset: (*offset).max(0),
+impl<'a> From<&'a AuditLogArgs> for ListAuditParams<'a> {
+    fn from(args: &'a AuditLogArgs) -> Self {
+        Self {
+            agent_uri: args.agent.as_deref(),
+            company_slug: args.company.as_deref(),
+            entity: args.entity,
+            action: args.action,
+            limit: args.limit.max(0),
+            offset: args.offset.max(0),
+        }
     }
 }
 
@@ -159,8 +153,8 @@ fn print_count(returned: usize, pagination: &output::json::Pagination) {
 /// # Errors
 ///
 /// Returns database errors if the audit trail cannot be read.
-pub fn execute_json(db: &Db, sub: &AuditCommand) -> Result<serde_json::Value, CliError> {
-    let rows = list_audit(db.conn(), &list_params(sub))?;
+pub fn execute_json(db: &Db, params: &ListAuditParams<'_>) -> Result<serde_json::Value, CliError> {
+    let rows = list_audit(db.conn(), params)?;
     Ok(serde_json::Value::Array(audit_data(db, &rows)?))
 }
 
@@ -171,15 +165,14 @@ pub fn execute_json(db: &Db, sub: &AuditCommand) -> Result<serde_json::Value, Cl
 /// Returns database errors if matching audit rows cannot be counted.
 pub fn pagination(
     db: &Db,
-    sub: &AuditCommand,
+    params: &ListAuditParams<'_>,
     returned: usize,
 ) -> Result<output::json::Pagination, CliError> {
-    let params = list_params(sub);
     Ok(output::json::Pagination::new(
         params.limit,
         params.offset,
         returned,
-        count_audit(db.conn(), &params)?,
+        count_audit(db.conn(), params)?,
     ))
 }
 

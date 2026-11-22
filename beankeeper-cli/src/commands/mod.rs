@@ -127,7 +127,7 @@ pub fn operation(cmd: &Command) -> Operation {
         },
         Command::Report(args) => report_operation(&args.command),
         Command::Audit(args) => match &args.command {
-            AuditCommand::Log { .. } => Operation::AuditLog,
+            AuditCommand::Log(_) => Operation::AuditLog,
         },
     }
 }
@@ -153,7 +153,7 @@ fn report_operation(command: &ReportCommand) -> Operation {
         ReportCommand::TaxSummary { .. } => Operation::ReportTaxSummary,
         ReportCommand::ScheduleC(_) => Operation::ReportScheduleC,
         ReportCommand::Vendor1099(_) => Operation::ReportVendor1099,
-        ReportCommand::BudgetVariance { .. } => Operation::ReportBudgetVariance,
+        ReportCommand::BudgetVariance(_) => Operation::ReportBudgetVariance,
         ReportCommand::Ledger { .. } => Operation::ReportLedger,
         ReportCommand::Aging(_) => Operation::ReportAging,
         ReportCommand::Reconciliation(_) => Operation::ReportReconciliation,
@@ -196,9 +196,11 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         }
         Command::Backup { output, force } => backup::backup(cli, output, *force),
         Command::Restore { input, force } => backup::restore(cli, input, *force),
-        Command::Security(_) | Command::Investment(_) => {
-            let company = require_company(cli)?.as_str();
-            investment::run(cli, company)
+        Command::Security(args) => {
+            investment::run_security(cli, require_company(cli)?.as_str(), &args.command)
+        }
+        Command::Investment(args) => {
+            investment::run_investment(cli, require_company(cli)?.as_str(), &args.command)
         }
         Command::Schedule(args) => {
             let company = require_company(cli)?.as_str();
@@ -209,7 +211,8 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             let company = require_company(cli)?.as_str();
             rule::run(cli, company, &args.command)
         }
-        Command::Key(_) | Command::Agent(_) => agent::run(cli),
+        Command::Key(crate::cli::KeyCommand::Init) => agent::run_key(cli),
+        Command::Agent(command) => agent::run(cli, command),
         Command::Policy(command) => policy::run(cli, command),
         Command::Mcp(crate::cli::McpCommand::Serve {
             read_only,
@@ -264,6 +267,8 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         }
 
         // Audit is cross-company by design, so --company is not required.
-        Command::Audit(args) => audit::run(cli, &args.command),
+        Command::Audit(args) => match &args.command {
+            AuditCommand::Log(args) => audit::run(cli, args),
+        },
     }
 }

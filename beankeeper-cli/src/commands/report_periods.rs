@@ -294,37 +294,47 @@ pub(crate) fn try_run_to(
     sub: &ReportCommand,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Option<Result<(), CliError>> {
-    let (kind, layout) = requested_layout(sub)?;
-    let Layout::Periods(period) = layout else {
-        return super::report_compare::try_run_to(cli, db, company, sub, output);
-    };
-    let (from, to, account_type, currency) = match sub {
+    let request = match sub {
         ReportCommand::IncomeStatement {
-            from, to, currency, ..
-        } => (from, to, None, currency),
+            period: Some(period),
+            from,
+            to,
+            currency,
+            ..
+        } => Request {
+            kind: MultiReportKind::IncomeStatement,
+            period: *period,
+            from: from.as_deref(),
+            to: to.as_deref(),
+            account_type: None,
+            currency: currency.as_ref(),
+        },
         ReportCommand::TrialBalance {
+            period: Some(period),
             from,
             to,
             account_type,
             currency,
             ..
-        } => (from, to, account_type.as_ref(), currency),
-        _ => return None,
-    };
-    Some(run(
-        cli,
-        db,
-        company,
-        &Request {
-            kind,
-            period,
+        } => Request {
+            kind: MultiReportKind::TrialBalance,
+            period: *period,
             from: from.as_deref(),
             to: to.as_deref(),
-            account_type,
+            account_type: *account_type,
             currency: currency.as_ref(),
         },
-        output,
-    ))
+        ReportCommand::IncomeStatement {
+            compare: Some(_), ..
+        }
+        | ReportCommand::TrialBalance {
+            compare: Some(_), ..
+        } => {
+            return super::report_compare::try_run_to(cli, db, company, sub, output);
+        }
+        _ => return None,
+    };
+    Some(run(cli, db, company, &request, output))
 }
 
 /// Parsed inputs for a multi-column report.
@@ -333,7 +343,7 @@ struct Request<'a> {
     period: PeriodArg,
     from: Option<&'a str>,
     to: Option<&'a str>,
-    account_type: Option<&'a AccountType>,
+    account_type: Option<AccountType>,
     currency: Option<&'a crate::cli::CurrencyArg>,
 }
 
@@ -353,12 +363,11 @@ fn run(
         company,
         crate::cli::CurrencyArg::resolve_optional(req.currency)?,
     )?;
-    let type_filter = req.account_type.copied();
     let (accounts, summary) = build_lines(
         db.conn(),
         company,
         req.kind,
-        type_filter,
+        req.account_type,
         currency,
         &columns,
     )?;
