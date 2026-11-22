@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::dispatch::{calendar_arg, optional_text, text_list, unpaged};
-use super::input_values::Text;
+use super::input_values::{CalendarDate, Text};
 use super::inputs::{
     AgingInput, BalanceInput, BalanceSheetInput, BudgetVarianceInput, CashFlowInput,
     IncomeStatementInput, LedgerInput, ReconciliationInput, Report, ReportOptions, TaxPeriodInput,
@@ -53,6 +53,16 @@ fn comparison(
     Ok(compare.map(Text::into_inner))
 }
 
+fn end_date(
+    to: Option<Text<CalendarDate>>,
+    as_of: Option<Text<CalendarDate>>,
+) -> Result<Option<crate::cli::CalendarDateArg>, CliError> {
+    match (to, as_of) {
+        (Some(_), Some(_)) => Err(CliError::Usage("specify either as_of or to".into())),
+        (date, None) | (None, date) => Ok(calendar_arg(date)),
+    }
+}
+
 impl TryFrom<ReportOptions> for ReportCommand {
     type Error = CliError;
 
@@ -72,8 +82,8 @@ impl TryFrom<ReportOptions> for ReportCommand {
             }),
             ReportOptions::Ledger(input) => Ok(ledger(input)),
             ReportOptions::BudgetVariance(input) => budget_variance(input),
-            ReportOptions::Aging(input) => aging(input),
-            ReportOptions::Reconciliation(input) => Ok(reconciliation(input)),
+            ReportOptions::Aging(input) => Ok(aging(input)),
+            ReportOptions::Reconciliation(input) => reconciliation(input),
             ReportOptions::CashFlow(input) => cash_flow(input),
         }
     }
@@ -99,7 +109,7 @@ fn trial_balance(input: TrialBalanceInput) -> Result<ReportCommand, CliError> {
     )?;
     Ok(ReportCommand::TrialBalance {
         from: calendar_arg(input.from),
-        to: calendar_arg(input.to),
+        to: end_date(input.to, input.as_of)?,
         account_type: input.account_type,
         currency: input.currency.map(|currency| currency.into_inner().into()),
         period: input.period.map(Into::into),
@@ -112,7 +122,7 @@ fn balance(input: BalanceInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::Balance {
         account: input.account.to_string(),
         from: calendar_arg(input.from),
-        to: calendar_arg(input.to),
+        to: end_date(input.to, input.as_of)?,
         currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
@@ -137,7 +147,7 @@ fn income_statement(input: IncomeStatementInput) -> Result<ReportCommand, CliErr
 
 fn balance_sheet(input: BalanceSheetInput) -> Result<ReportCommand, CliError> {
     Ok(ReportCommand::BalanceSheet {
-        to: calendar_arg(input.to),
+        to: end_date(input.to, input.as_of)?,
         currency: input.currency.map(|currency| currency.into_inner().into()),
         compare: comparison(input.compare, false, input.explain_change.is_some())?,
         explain_change: optional_text(input.explain_change),
@@ -201,14 +211,9 @@ fn budget_variance(input: BudgetVarianceInput) -> Result<ReportCommand, CliError
     }))
 }
 
-fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
-    if input.account.is_empty() {
-        return Err(CliError::Usage(
-            "aging requires at least one account".into(),
-        ));
-    }
-    Ok(ReportCommand::Aging(crate::cli::AgingCommandArgs {
-        account: text_list(input.account),
+fn aging(input: AgingInput) -> ReportCommand {
+    ReportCommand::Aging(crate::cli::AgingCommandArgs {
+        account: text_list(input.account.into_vec()),
         include_children: input.include_children,
         as_of: calendar_arg(input.as_of),
         buckets: input.buckets.unwrap_or_else(|| "30,60,90".into()),
@@ -219,21 +224,23 @@ fn aging(input: AgingInput) -> Result<ReportCommand, CliError> {
         detail: input.detail,
         group_across_accounts: input.group_across_accounts,
         filter_metadata: input.filter_metadata,
-    }))
+    })
 }
 
-fn reconciliation(input: ReconciliationInput) -> ReportCommand {
-    ReportCommand::Reconciliation(crate::cli::ReconciliationCommandArgs {
-        mode: input.mode.map(Into::into).unwrap_or_default(),
-        link_key: input.link_key,
-        account: input.account.to_string(),
-        to: calendar_arg(input.to),
-        statement_balance: optional_text(input.statement_balance),
-        statement: input.statement,
-        filter_metadata: input.filter_metadata,
-        group_by_metadata: input.group_by_metadata,
-        currency: input.currency.map(|currency| currency.into_inner().into()),
-    })
+fn reconciliation(input: ReconciliationInput) -> Result<ReportCommand, CliError> {
+    Ok(ReportCommand::Reconciliation(
+        crate::cli::ReconciliationCommandArgs {
+            mode: input.mode.map(Into::into).unwrap_or_default(),
+            link_key: input.link_key,
+            account: input.account.to_string(),
+            to: end_date(input.to, input.as_of)?,
+            statement_balance: optional_text(input.statement_balance),
+            statement: input.statement,
+            filter_metadata: input.filter_metadata,
+            group_by_metadata: input.group_by_metadata,
+            currency: input.currency.map(|currency| currency.into_inner().into()),
+        },
+    ))
 }
 
 fn cash_flow(input: CashFlowInput) -> Result<ReportCommand, CliError> {

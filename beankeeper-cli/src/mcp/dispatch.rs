@@ -834,7 +834,9 @@ fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
         company_slug: company.as_ref(),
         entity: input.entity,
         action: input.action,
-        limit: input.limit.as_ref().map_or(50, PageLimit::get),
+        limit: input
+            .limit
+            .unwrap_or(crate::db::audit::AuditPageLimit::DEFAULT),
         offset: input.offset.as_ref().map_or(0, PageOffset::get),
     };
     let data = commands::audit::execute_json(db, &params)?;

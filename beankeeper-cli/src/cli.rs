@@ -982,13 +982,21 @@ pub struct AuditLogArgs {
     #[arg(long, value_enum)]
     pub action: Option<AuditActionArg>,
 
-    /// Maximum number of rows to show.
-    #[arg(long, default_value_t = 50)]
-    pub limit: i64,
+    /// Maximum rows (0 to 100). Use 0 for just the matching count.
+    #[arg(
+        long,
+        default_value_t = crate::db::audit::AuditPageLimit::DEFAULT,
+        value_parser = parse_audit_limit,
+    )]
+    pub limit: crate::db::audit::AuditPageLimit,
 
     /// Number of matching rows to skip.
     #[arg(long, default_value_t = 0)]
     pub offset: i64,
+}
+
+fn parse_audit_limit(value: &str) -> Result<crate::db::audit::AuditPageLimit, CliError> {
+    value.parse()
 }
 
 /// Shared typed classifications for audit-log filters.
@@ -2090,7 +2098,7 @@ EXAMPLES:\n  \
         from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
-        #[arg(long)]
+        #[arg(long, visible_alias = "as-of")]
         to: Option<CalendarDateArg>,
 
         /// Filter by account type.
@@ -2137,7 +2145,7 @@ EXAMPLES:\n  \
         from: Option<CalendarDateArg>,
 
         /// End date (inclusive). Defaults to today.
-        #[arg(long)]
+        #[arg(long, visible_alias = "as-of")]
         to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
@@ -2200,7 +2208,7 @@ EXAMPLES:\n  \
 ")]
     BalanceSheet {
         /// End date (inclusive). Defaults to today.
-        #[arg(long)]
+        #[arg(long, visible_alias = "as-of")]
         to: Option<CalendarDateArg>,
 
         /// Report currency (e.g. USD, MXN). Only transactions in this currency
@@ -2491,7 +2499,7 @@ pub struct ReconciliationCommandArgs {
     /// As-of date (inclusive, YYYY-MM-DD). Defaults to today. Counts
     /// clearings cleared on or before it, and as reconciled only those
     /// reconciled on or before it.
-    #[arg(long)]
+    #[arg(long, visible_alias = "as-of")]
     pub to: Option<CalendarDateArg>,
 
     /// Statement amount in major units (e.g. 1234.56): bank ending balance

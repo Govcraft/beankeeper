@@ -359,7 +359,7 @@ mod tests {
                 company_slug: Some(&"acme".parse()?),
                 entity: None,
                 action: None,
-                limit: 50,
+                limit: 50.try_into()?,
                 offset: 0,
             },
         )?;
@@ -392,7 +392,7 @@ mod tests {
             company_slug: None,
             entity: None,
             action: None,
-            limit: 50,
+            limit: 50.try_into()?,
             offset: 0,
         };
         let before = super::super::audit::execute_json(&db, &log)?;

@@ -1557,7 +1557,7 @@ fn correlate_partner(
 
     if &partner_company == new_company {
         return Err(CliError::Validation(format!(
-            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'"
+            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'. Use txn_reverse (bk txn reverse) for an audited correction, or txn_meta_set (bk txn meta set) with a custom metadata key to record a related transaction"
         )));
     }
 
@@ -2462,6 +2462,65 @@ pub(super) fn change_schedule(
 // Reading the trail
 // ---------------------------------------------------------------------------
 
+/// A bounded row count for an audit-log page. Zero returns only the count.
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "i64", into = "u8")]
+pub struct AuditPageLimit(u8);
+
+impl AuditPageLimit {
+    /// Default page size used by both the CLI and MCP.
+    pub const DEFAULT: Self = Self(50);
+    /// Largest audit page a caller can request.
+    pub const MAX: u8 = 100;
+
+    /// Page size in rows.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for AuditPageLimit {
+    type Error = CliError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        u8::try_from(value)
+            .ok()
+            .filter(|value| *value <= Self::MAX)
+            .map(Self)
+            .ok_or_else(Self::invalid)
+    }
+}
+
+impl AuditPageLimit {
+    fn invalid() -> CliError {
+        CliError::Validation(format!("audit limit must be between 0 and {}", Self::MAX))
+    }
+}
+
+impl std::str::FromStr for AuditPageLimit {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<i64>()
+            .map_err(|_| Self::invalid())?
+            .try_into()
+    }
+}
+
+impl std::fmt::Display for AuditPageLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl From<AuditPageLimit> for u8 {
+    fn from(value: AuditPageLimit) -> Self {
+        value.get()
+    }
+}
+
 /// Filters and pagination for [`list_audit`].
 pub struct ListAuditParams<'a> {
     pub actor: Option<&'a ActorLabel>,
@@ -2469,7 +2528,7 @@ pub struct ListAuditParams<'a> {
     pub company_slug: Option<&'a crate::db::companies::CompanySlug>,
     pub entity: Option<AuditEntity>,
     pub action: Option<AuditAction>,
-    pub limit: i64,
+    pub limit: AuditPageLimit,
     pub offset: i64,
 }
 
@@ -2523,7 +2582,9 @@ pub fn list_audit(
 ) -> Result<Vec<AuditLogRow>, CliError> {
     let (filter, mut values) = audit_filter(params);
     let sql = format!("SELECT {AUDIT_COLUMNS}{filter} ORDER BY id DESC LIMIT ? OFFSET ?");
-    values.push(rusqlite::types::Value::Integer(params.limit));
+    values.push(rusqlite::types::Value::Integer(i64::from(
+        params.limit.get(),
+    )));
     values.push(rusqlite::types::Value::Integer(params.offset));
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), read_audit_row)?;
@@ -2715,7 +2776,7 @@ mod tests {
             company_slug: Some(&"acme".parse()?),
             entity: Some(AuditEntity::Transaction),
             action: Some(AuditAction::Attach),
-            limit: 10,
+            limit: 10.try_into()?,
             offset: 0,
         };
         let records = list_audit(db.read(), &filters)?;
