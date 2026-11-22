@@ -1,6 +1,6 @@
 //! Human-readable table output using `comfy-table` and `anstyle` colours.
 
-use beankeeper::types::DebitOrCredit;
+use beankeeper::types::{Amount, DebitOrCredit};
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
@@ -30,12 +30,17 @@ use crate::error::CliError;
 /// - `format_amount(1234567, 3)` => `"1,234.567"`
 /// - `format_amount(0, 2)` => `"0.00"`
 pub(crate) fn format_amount(minor_units: i64, decimal_places: u8) -> String {
+    format_wide_amount(i128::from(minor_units), decimal_places)
+}
+
+fn format_wide_amount(minor_units: i128, decimal_places: u8) -> String {
     let negative = minor_units < 0;
     let abs_units = minor_units.unsigned_abs();
-    let divisor = 10u64.pow(u32::from(decimal_places));
-
-    let whole = abs_units / divisor;
-    let frac = abs_units % divisor;
+    let (whole, frac) = 10u128
+        .checked_pow(u32::from(decimal_places))
+        .map_or((0, abs_units), |divisor| {
+            (abs_units / divisor, abs_units % divisor)
+        });
 
     let whole_str = format_with_commas(whole);
 
@@ -54,7 +59,7 @@ pub(crate) fn format_amount(minor_units: i64, decimal_places: u8) -> String {
 }
 
 /// Insert thousands-separator commas into a non-negative integer.
-fn format_with_commas(n: u64) -> String {
+fn format_with_commas(n: u128) -> String {
     let s = n.to_string();
     let len = s.len();
 
@@ -269,13 +274,15 @@ fn reversal_links(txn: &TransactionRow) -> String {
 }
 
 /// Render a single transaction in detail with its entry lines.
-#[must_use]
+///
+/// # Errors
+/// Returns a validation error if entry totals exceed the supported amount.
 pub fn render_transaction_detail(
     txn: &TransactionRow,
     entries: &[EntryRow],
     currency_minor_units: u8,
     use_color: bool,
-) -> String {
+) -> Result<String, CliError> {
     render_transaction_detail_with_clearings::<std::hash::RandomState>(
         txn,
         entries,
@@ -288,14 +295,16 @@ pub fn render_transaction_detail(
 /// Render a single transaction in detail. With `clearings` (entry id to its
 /// clearings), each entry line is followed by its id, cleared and remaining
 /// amounts, and one line per clearing.
-#[must_use]
+///
+/// # Errors
+/// Returns a validation error if entry totals exceed the supported amount.
 pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
     txn: &TransactionRow,
     entries: &[EntryRow],
     clearings: Option<&HashMap<i64, Vec<Clearing>, S>>,
     currency_minor_units: u8,
     use_color: bool,
-) -> String {
+) -> Result<String, CliError> {
     let mut lines = Vec::new();
 
     // Header
@@ -350,22 +359,18 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
     // Entries
     lines.push(styled("  Entries:", bold_style(), use_color));
 
-    let mut total_debits: i64 = 0;
-    let mut total_credits: i64 = 0;
+    let mut total_debits = Amount::ZERO;
+    let mut total_credits = Amount::ZERO;
 
     for entry in entries {
         let amount_str = format_amount(entry.amount, currency_minor_units);
-
-        let (prefix, direction_style) = match entry.direction {
-            DebitOrCredit::Debit => {
-                total_debits = total_debits.saturating_add(entry.amount);
-                ("DR", cyan_style())
-            }
-            DebitOrCredit::Credit => {
-                total_credits = total_credits.saturating_add(entry.amount);
-                ("CR", dim_style())
-            }
+        let (total, prefix, direction_style) = match entry.direction {
+            DebitOrCredit::Debit => (&mut total_debits, "DR", cyan_style()),
+            DebitOrCredit::Credit => (&mut total_credits, "CR", dim_style()),
         };
+        *total = total.checked_add(entry.amount.into()).ok_or_else(|| {
+            CliError::Validation("transaction total exceeds the supported amount".into())
+        })?;
 
         let memo_suffix = entry
             .memo
@@ -398,8 +403,8 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
     lines.push(String::new());
 
     // Totals
-    let debit_str = format_amount(total_debits, currency_minor_units);
-    let credit_str = format_amount(total_credits, currency_minor_units);
+    let debit_str = format_wide_amount(total_debits.minor_units(), currency_minor_units);
+    let credit_str = format_wide_amount(total_credits.minor_units(), currency_minor_units);
     lines.push(format!("  Total Debits:  {debit_str}"));
     lines.push(format!("  Total Credits: {credit_str}"));
 
@@ -409,7 +414,7 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
         lines.push(styled("  [!!] UNBALANCED", red_bold_style(), use_color));
     }
 
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 /// The `txn show` lines under an entry: its id with cleared and remaining
@@ -578,10 +583,10 @@ pub fn render_account_balance(p: &AccountBalanceParams<'_>) -> String {
     // Net balance: debit-normal accounts use (debits - credits),
     // credit-normal accounts use (credits - debits).
     let net = match account_type {
-        "asset" | "expense" => debit_total.saturating_sub(credit_total),
-        _ => credit_total.saturating_sub(debit_total),
+        "asset" | "expense" => i128::from(debit_total) - i128::from(credit_total),
+        _ => i128::from(credit_total) - i128::from(debit_total),
     };
-    let net_str = format_amount(net, currency_minor_units);
+    let net_str = format_wide_amount(net, currency_minor_units);
     lines.push(format!("  Balance: {net_str} {currency_code}"));
 
     lines.join("\n")
@@ -709,14 +714,15 @@ pub fn render_tax_summary(
     ]);
 
     for row in rows {
-        let net = row.debit_total.saturating_sub(row.credit_total);
+        let net = i128::from(row.debit_total) - i128::from(row.credit_total);
         table.add_row(vec![
             Cell::new(styled(&row.tax_category, cyan_style(), use_color)),
             Cell::new(format_amount(row.debit_total, currency_minor_units))
                 .set_alignment(CellAlignment::Right),
             Cell::new(format_amount(row.credit_total, currency_minor_units))
                 .set_alignment(CellAlignment::Right),
-            Cell::new(format_amount(net, currency_minor_units)).set_alignment(CellAlignment::Right),
+            Cell::new(format_wide_amount(net, currency_minor_units))
+                .set_alignment(CellAlignment::Right),
         ]);
     }
 
@@ -1098,7 +1104,8 @@ mod tests {
                 status: EntryStatus::Uncleared,
             },
         ];
-        let out = render_transaction_detail(&txn, &entries, 2, false);
+        let out =
+            render_transaction_detail(&txn, &entries, 2, false).expect("representable totals");
         assert!(out.contains("42"));
         assert!(out.contains("Cash sale"));
         assert!(out.contains("INV-001"));
@@ -1147,8 +1154,22 @@ mod tests {
                 status: EntryStatus::Uncleared,
             },
         ];
-        let out = render_transaction_detail(&txn, &entries, 2, false);
+        let out =
+            render_transaction_detail(&txn, &entries, 2, false).expect("representable totals");
         assert!(out.contains("[!!] UNBALANCED"));
+        let debit = EntryRow {
+            amount: i64::MAX,
+            ..entries[0].clone()
+        };
+        let credit = EntryRow {
+            amount: i64::MAX,
+            ..entries[1].clone()
+        };
+        let wide = render_transaction_detail(&txn, &[debit.clone(), debit, credit], 2, false)
+            .expect("totals fit the wide Amount type");
+        assert!(wide.contains("Total Debits:  184,467,440,737,095,516.14"));
+        assert!(wide.contains("Total Credits: 92,233,720,368,547,758.07"));
+        assert!(wide.contains("[!!] UNBALANCED"));
     }
 
     // -- render_trial_balance --

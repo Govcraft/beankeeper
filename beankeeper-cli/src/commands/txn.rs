@@ -1014,7 +1014,7 @@ fn run_show(
                 Some(&clearings),
                 currency_minor_units,
                 use_color,
-            );
+            )?;
             writeln!(out, "{rendered}")?;
             if !att_rows.is_empty() {
                 let att_rendered = output::table::render_attachments(&att_rows, use_color);
