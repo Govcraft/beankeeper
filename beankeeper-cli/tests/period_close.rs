@@ -241,14 +241,14 @@ fn direct_posting_and_sql_cannot_bypass_a_closed_period() -> TestResult {
     let entries = [
         transactions::PostEntryParams {
             account_code: "1000".into(),
-            direction: "debit".into(),
+            direction: beankeeper::types::DebitOrCredit::Debit,
             amount: 100,
             memo: None,
             tax_category: None,
         },
         transactions::PostEntryParams {
             account_code: "4000".into(),
-            direction: "credit".into(),
+            direction: beankeeper::types::DebitOrCredit::Credit,
             amount: 100,
             memo: None,
             tax_category: None,

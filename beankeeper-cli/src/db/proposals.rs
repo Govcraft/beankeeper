@@ -239,12 +239,22 @@ pub struct Proposal {
     pub company_slug: String,
     pub state: ProposalState,
     pub payload: PostingPayload,
+    // Resolution snapshots preserve the exact original payload values, including legacy spelling.
+    pub(crate) payload_json: serde_json::Value,
     pub reference: Option<String>,
     pub debit_total: i64,
     pub currency: String,
     pub proposer_uri: String,
     pub proposer_jti: String,
     pub created_at: String,
+}
+
+impl Proposal {
+    pub(super) fn audit_snapshot(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        value["payload"] = self.payload_json.clone();
+        Ok(value)
+    }
 }
 
 impl Serialize for Proposal {
@@ -468,10 +478,12 @@ const COLUMNS: &str = "id, company_slug, status, payload, reference, debit_total
     proposer_jti, created_at, resolved_at, resolved_by_uri, resolved_by_jti, transaction_id, reason";
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
-    let raw: String = row.get(3)?;
-    let payload = serde_json::from_str(&raw).map_err(|error| {
+    let decode_error = |error: serde_json::Error| {
         rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
-    })?;
+    };
+    let payload_json = serde_json::from_str::<serde_json::Value>(row.get_ref(3)?.as_str()?)
+        .map_err(decode_error)?;
+    let payload = PostingPayload::deserialize(&payload_json).map_err(decode_error)?;
     Ok(Proposal {
         id: row
             .get::<_, String>(0)?
@@ -486,6 +498,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
         company_slug: row.get(1)?,
         state: ProposalState::from_row(row)?,
         payload,
+        payload_json,
         reference: row.get(4)?,
         debit_total: row.get(5)?,
         currency: row.get(6)?,
@@ -660,7 +673,7 @@ pub(in crate::db) fn reserve_setup_opening(
         .map(|entry| {
             Ok(PostEntryParams {
                 account_code: entry.account().code().to_string(),
-                direction: entry.direction().code().into(),
+                direction: entry.direction(),
                 amount: minor(entry.amount())?,
                 memo: entry.memo().map(str::to_owned),
                 tax_category: entry.tax_category().map(str::to_owned),
@@ -750,7 +763,7 @@ pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
             ))
         };
         let proposal = get(conn, &company, &id).map_err(|_| invalid())?;
-        let expected = serde_json::to_value(&proposal).map_err(|_| invalid())?;
+        let expected = proposal.audit_snapshot().map_err(|_| invalid())?;
         let action = match proposal.state {
             ProposalState::Pending => return Err(invalid()),
             ProposalState::Approved { .. } => "proposal_approve",

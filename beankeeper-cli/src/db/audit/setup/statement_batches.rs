@@ -70,7 +70,7 @@ impl FrozenEntry {
     fn posting_params(&self) -> PostEntryParams {
         PostEntryParams {
             account_code: self.account_code.clone(),
-            direction: self.direction.code().into(),
+            direction: self.direction,
             amount: self.amount_minor,
             memo: self.memo.clone(),
             tax_category: self.tax_category.clone(),

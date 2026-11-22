@@ -910,6 +910,9 @@ pub(super) fn record_proposal_resolution(
             return Err(CliError::Database("proposal resolution is pending".into()));
         }
     };
+    let snapshot_error = |error: serde_json::Error| CliError::Database(error.to_string());
+    let before_snapshot = before.audit_snapshot().map_err(snapshot_error)?;
+    let after_snapshot = after.audit_snapshot().map_err(snapshot_error)?;
     record(
         conn,
         actor,
@@ -918,7 +921,10 @@ pub(super) fn record_proposal_resolution(
             entity: AuditEntity::Proposal,
             entity_id: after.id.as_str(),
             action,
-            snapshots: (Some(&snapshot(&before)), Some(&snapshot(&after))),
+            snapshots: (
+                Some(&snapshot(&before_snapshot)),
+                Some(&snapshot(&after_snapshot)),
+            ),
         },
     )?;
     let (uri, jti) = resolution.by.columns();
@@ -1784,7 +1790,7 @@ fn reversal_entries(entries: &[super::EntryRow]) -> Vec<super::transactions::Pos
         .iter()
         .map(|entry| super::transactions::PostEntryParams {
             account_code: entry.account_code.clone(),
-            direction: entry.direction.opposite().code().into(),
+            direction: entry.direction.opposite(),
             amount: entry.amount,
             memo: entry.memo.clone(),
             tax_category: entry.tax_category.clone(),

@@ -30,8 +30,8 @@ fn row_total(amounts: &[i64]) -> i64 {
 
 fn normal_balance_for(account_type: &str) -> &'static str {
     match account_type {
-        "asset" | "expense" => "debit",
-        "liability" | "equity" | "revenue" => "credit",
+        "asset" | "expense" => beankeeper::types::DebitOrCredit::Debit.code(),
+        "liability" | "equity" | "revenue" => beankeeper::types::DebitOrCredit::Credit.code(),
         _ => "unknown",
     }
 }

@@ -143,6 +143,7 @@ mod tests {
     fn proposal_projected_bytes_preserve_audit_shape_and_currency_scope()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut proposal = Proposal {
+            payload_json: serde_json::Value::Null,
             id: "proposal_01h455vb4pex5vsknk084sn02q".parse()?,
             company_slug: "acme".into(),
             state: ProposalState::Approved {
@@ -162,7 +163,7 @@ mod tests {
                 date: "2026-02-01".into(),
                 entries: vec![PostEntryParams {
                     account_code: "5000".into(),
-                    direction: "debit".into(),
+                    direction: beankeeper::types::DebitOrCredit::Debit,
                     amount: 1234,
                     memo: Some("Office".into()),
                     tax_category: None,

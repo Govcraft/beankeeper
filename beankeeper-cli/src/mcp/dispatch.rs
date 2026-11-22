@@ -597,7 +597,7 @@ fn call_txn_list(db: &Db, actor: &Actor, input: inputs::TxnList) -> Response {
             metadata: input.metadata,
             meta: input.meta,
             tax_category: input.tax_category,
-            direction: input.direction.map(Into::into),
+            direction: input.direction,
             count: input.count,
         }),
     )
@@ -979,7 +979,6 @@ macro_rules! convert {
 
 convert!(OnConflictArg => cli::OnConflictArg { Error, Skip });
 convert!(AccountTypeArg => cli::AccountTypeArg { Asset, Liability, Equity, Revenue, Expense });
-convert!(DirectionArg => cli::DirectionArg { Debit, Credit });
 convert!(ClearanceArg => cli::ClearanceArg { Uncleared, Cleared, Reconciled });
 convert!(PeriodArg => commands::report_periods::PeriodArg { Month, Quarter, Year });
 convert!(TrendMetricArg => commands::report_trend::TrendMetric { Spending, NetWorth });

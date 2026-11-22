@@ -702,13 +702,7 @@ fn comparison_data(
                 code: line.code,
                 name: line.name,
                 kind: line.kind,
-                normal_balance: legacy.then(|| {
-                    if line.kind.is_debit_normal() {
-                        "debit"
-                    } else {
-                        "credit"
-                    }
-                }),
+                normal_balance: legacy.then(|| line.kind.normal_balance().code()),
                 values: ComparisonValues::new(line.current, line.prior)?,
             })
         })
