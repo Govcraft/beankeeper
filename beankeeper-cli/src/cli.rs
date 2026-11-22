@@ -2010,8 +2010,8 @@ pub struct TxnClearArgs {
     #[arg(long, requires = "account", conflicts_with = "amount")]
     pub from_file: Option<InputSource>,
 
-    /// Amount to clear in major units (default: the full remaining amount).
-    #[arg(long)]
+    /// Amount in major units, such as -95.40 for a withdrawal. Omit to clear the remaining amount.
+    #[arg(long, allow_negative_numbers = true)]
     pub amount: Option<String>,
 
     /// Cleared date, or reconciled date with --status reconciled

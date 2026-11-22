@@ -845,7 +845,6 @@ fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
 fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
     use commands::txn_clear::{BatchLine, ClearRequestTarget, EntrySelector, execute_json};
     use inputs::TxnClear::{Batch, Entry, Reference};
-    use std::borrow::Cow;
 
     unpaged(match input.0 {
         Entry {
@@ -858,14 +857,14 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             status,
         } => execute_json(
             db,
-            company.into_inner().as_str(),
+            &company.into_inner(),
             actor,
             ClearRequestTarget::Entry {
                 selector: EntrySelector::Id {
                     transaction_id,
                     entry_id: entry,
                 },
-                amount: optional_text(amount).as_deref(),
+                amount: amount.map(Text::into_inner),
             },
             clear_options(date, statement.as_deref(), status),
         ),
@@ -879,14 +878,14 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             status,
         } => execute_json(
             db,
-            company.into_inner().as_str(),
+            &company.into_inner(),
             actor,
             ClearRequestTarget::Entry {
                 selector: EntrySelector::Reference {
                     reference: reference.into_inner().as_str(),
                     account: account.into_inner().as_str(),
                 },
-                amount: optional_text(amount).as_deref(),
+                amount: amount.map(Text::into_inner),
             },
             clear_options(date, statement.as_deref(), status),
         ),
@@ -899,22 +898,20 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
             status,
         } => execute_json(
             db,
-            company.into_inner().as_str(),
+            &company.into_inner(),
             actor,
             ClearRequestTarget::Batch {
                 account: account.into_inner().as_str(),
-                lines: Cow::Owned(
-                    batch
-                        .into_vec()
-                        .into_iter()
-                        .zip(1_u64..)
-                        .map(|(item, line)| BatchLine {
-                            line,
-                            reference: item.reference.to_string(),
-                            amount: optional_text(item.amount),
-                        })
-                        .collect(),
-                ),
+                lines: batch
+                    .into_vec()
+                    .into_iter()
+                    .zip(1_u64..)
+                    .map(|(item, line)| BatchLine {
+                        line,
+                        reference: item.reference.into_inner(),
+                        amount: item.amount.map(Text::into_inner),
+                    })
+                    .collect(),
             },
             clear_options(date, statement.as_deref(), status),
         ),

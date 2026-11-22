@@ -17,19 +17,18 @@
 //! [`crate::db::audit`].
 
 use crate::operation::Operation;
-use std::borrow::Cow;
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt, num::NonZeroU64, str::FromStr};
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
 use serde::Serialize;
 
+use super::reference::TransactionReference;
 use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnClearArgs, resolve_format};
-use crate::commands::txn::parse_amount_to_minor;
 use crate::db::amounts::PositiveMinorUnits;
 use crate::db::audit::{Reconciliation, with_reconciliation};
 use crate::db::clearings::SkipReason;
-use crate::db::companies::Company;
+use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::Db;
 use crate::db::ids::{EntryId, TransactionId};
 use crate::db::{self, Actor, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
@@ -54,7 +53,7 @@ pub fn run(
     let target = resolve_target(args)?;
     let options = cli_options(args)?;
     let actor = cli.principal();
-    let result = compute(db_handle, company, &actor, target, options)?;
+    let result = compute(db_handle, &company.parse()?, &actor, target, options)?;
     let format = resolve_format(None, cli);
     let meta = meta.unwrap_or_else(|| cli.meta(Operation::TxnClear, Some(company)));
     match &result.items {
@@ -76,7 +75,7 @@ pub(super) fn execute_cli_json(
     }
     execute_json(
         db,
-        company,
+        &company.parse()?,
         actor,
         resolve_target(args)?,
         cli_options(args)?,
@@ -94,12 +93,12 @@ fn cli_options(args: &TxnClearArgs) -> Result<ClearOptions<'_>, CliError> {
 /// Clear entries from an already decoded target and options.
 pub(crate) fn execute_json(
     db_handle: &Db,
-    company: &str,
+    company: &CompanySlug,
     actor: &Actor,
     target: ClearRequestTarget<'_>,
     options: ClearOptions<'_>,
 ) -> Result<serde_json::Value, CliError> {
-    db::get_company(db_handle.read(), &company.parse()?)?;
+    db::get_company(db_handle.read(), company)?;
     if let ClearRequestTarget::Batch { lines, .. } = &target {
         validate_inline_batch(lines)?;
     }
@@ -120,11 +119,11 @@ pub(crate) struct ClearOptions<'a> {
 pub(crate) enum ClearRequestTarget<'a> {
     Entry {
         selector: EntrySelector<'a>,
-        amount: Option<&'a str>,
+        amount: Option<StatementAmount>,
     },
     Batch {
         account: &'a str,
-        lines: Cow<'a, [BatchLine]>,
+        lines: Vec<BatchLine>,
     },
 }
 
@@ -141,8 +140,7 @@ pub(crate) enum EntrySelector<'a> {
 }
 
 fn resolve_target(args: &TxnClearArgs) -> Result<ClearRequestTarget<'_>, CliError> {
-    let amount = args.amount.as_deref();
-    validate_amount_status(amount, args.status)?;
+    let amount = args.amount.as_deref().map(str::parse).transpose()?;
     match (
         args.transaction_id,
         args.entry,
@@ -157,13 +155,16 @@ fn resolve_target(args: &TxnClearArgs) -> Result<ClearRequestTarget<'_>, CliErro
             Ok(ClearRequestTarget::Entry { selector: EntrySelector::Reference { reference, account }, amount })
         }
         (None, None, None, Some(account), Some(source)) if amount.is_none() => {
-            Ok(ClearRequestTarget::Batch { account, lines: Cow::Owned(parse_batch(&source.read_text()?)?) })
+            Ok(ClearRequestTarget::Batch { account, lines: parse_batch(&source.read_text()?)? })
         }
         _ => Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into())),
     }
 }
 
-fn validate_amount_status(amount: Option<&str>, status: ClearanceArg) -> Result<(), CliError> {
+fn validate_amount_status(
+    amount: Option<StatementAmount>,
+    status: ClearanceArg,
+) -> Result<(), CliError> {
     if status == ClearanceArg::Uncleared && amount.is_some() {
         return Err(CliError::Usage(
             "--amount cannot be used with --status uncleared".into(),
@@ -214,7 +215,7 @@ struct Execution<'a> {
 
 fn compute<'a>(
     db_handle: &Db,
-    company: &str,
+    company: &CompanySlug,
     actor: &Actor,
     selection: ClearRequestTarget<'a>,
     options: ClearOptions<'a>,
@@ -234,9 +235,7 @@ fn compute<'a>(
             ClearRequestTarget::Entry { selector, amount } => {
                 validate_amount_status(amount, status)?;
                 let target = resolve_entry(writer, company, selector)?;
-                let amount = amount
-                    .map(|amount| parse_amount(amount, &target))
-                    .transpose()?;
+                let amount = amount.map(|amount| amount.for_entry(&target)).transpose()?;
                 let outcome = apply(writer, company, &settings, &target, amount)?;
                 Ok(ClearedItems::Single(Item::new(None, &target, &outcome)))
             }
@@ -254,7 +253,7 @@ fn validate_inline_batch(lines: &[BatchLine]) -> Result<(), CliError> {
     }
     let mut references = HashSet::new();
     for line in lines {
-        if line.reference.trim().is_empty() || !references.insert(line.reference.as_str()) {
+        if !references.insert(&line.reference) {
             return Err(CliError::Validation(
                 "batch references must be non-empty and unique".into(),
             ));
@@ -265,16 +264,16 @@ fn validate_inline_batch(lines: &[BatchLine]) -> Result<(), CliError> {
 
 fn resolve_entry(
     writer: &Reconciliation<'_>,
-    company: &str,
+    company: &CompanySlug,
     selector: EntrySelector<'_>,
 ) -> Result<EntryTarget, CliError> {
     match selector {
         EntrySelector::Id {
             transaction_id,
             entry_id,
-        } => writer.entry(&company.parse()?, transaction_id, entry_id),
+        } => writer.entry(company, transaction_id, entry_id),
         EntrySelector::Reference { reference, account } => {
-            writer.entry_by_reference(&company.parse()?, reference, account)
+            writer.entry_by_reference(company, reference, account)
         }
     }
 }
@@ -301,29 +300,116 @@ fn parse_date(date: &crate::cli::CalendarDateArg) -> Result<NaiveDate, CliError>
     })
 }
 
-fn parse_amount(s: &str, target: &EntryTarget) -> Result<PositiveMinorUnits, CliError> {
-    let minor = parse_amount_to_minor(s.trim(), target.currency)?;
-    minor
-        .try_into()
-        .map_err(|_| CliError::Validation(format!("clearing amount must be positive, got '{s}'")))
+/// Exact, nonzero statement amount before the entry's currency determines scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StatementAmount {
+    direction: Option<DebitOrCredit>,
+    coefficient: NonZeroU64,
+    decimal_places: usize,
+}
+
+impl FromStr for StatementAmount {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.trim();
+        let (direction, magnitude) = match value.as_bytes().first() {
+            Some(b'-') => (Some(DebitOrCredit::Credit), &value[1..]),
+            Some(b'+') => (Some(DebitOrCredit::Debit), &value[1..]),
+            _ => (None, value),
+        };
+        let (whole, fraction) = magnitude.split_once('.').unwrap_or((magnitude, ""));
+        let invalid = || {
+            CliError::Validation(
+                "expected a nonzero decimal clearing amount in major units, such as -95.40 for a withdrawal".into(),
+            )
+        };
+        if whole.is_empty() {
+            return Err(invalid());
+        }
+        let coefficient =
+            whole
+                .bytes()
+                .chain(fraction.bytes())
+                .try_fold(0_u64, |coefficient, digit| {
+                    if !digit.is_ascii_digit() {
+                        return Err(invalid());
+                    }
+                    coefficient
+                        .checked_mul(10)
+                        .and_then(|value| value.checked_add(u64::from(digit - b'0')))
+                        .ok_or_else(|| CliError::Validation("clearing amount is too large".into()))
+                })?;
+        Ok(Self {
+            direction,
+            coefficient: NonZeroU64::new(coefficient).ok_or_else(invalid)?,
+            decimal_places: fraction.len(),
+        })
+    }
+}
+
+impl fmt::Display for StatementAmount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.direction {
+            Some(DebitOrCredit::Credit) => f.write_str("-")?,
+            Some(DebitOrCredit::Debit) => f.write_str("+")?,
+            None => {}
+        }
+        let digits = self.coefficient.get();
+        if self.decimal_places == 0 {
+            return write!(f, "{digits}");
+        }
+        let magnitude = format!("{digits:0width$}", width = self.decimal_places + 1);
+        let (whole, fraction) = magnitude.split_at(magnitude.len() - self.decimal_places);
+        write!(f, "{whole}.{fraction}")
+    }
+}
+
+impl StatementAmount {
+    fn for_entry(self, target: &EntryTarget) -> Result<PositiveMinorUnits, CliError> {
+        if self.direction.is_some_and(|side| side != target.direction) {
+            return Err(CliError::Validation(format!(
+                "amount {self} does not match the selected {} entry; use a minus sign for a withdrawal (credit), an explicit plus for a deposit (debit), or an unsigned amount to clear either side",
+                target.direction.code()
+            )));
+        }
+        let places = target.currency.minor_units();
+        let scale = u8::try_from(self.decimal_places)
+            .ok()
+            .and_then(|value| places.checked_sub(value))
+            .ok_or_else(|| {
+                CliError::Validation(format!(
+                    "amount {self} has too many decimal places for {} (max {places})",
+                    target.currency
+                ))
+            })?;
+        let multiplier = 10_u64.pow(u32::from(scale));
+        let minor = self
+            .coefficient
+            .get()
+            .checked_mul(multiplier)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| CliError::Validation("clearing amount is too large".into()))?;
+        PositiveMinorUnits::try_from(minor).map_err(|error| CliError::Validation(error.to_string()))
+    }
 }
 
 fn apply(
     writer: &Reconciliation<'_>,
-    company: &str,
+    company: &CompanySlug,
     ctx: &ClearanceSettings<'_>,
     target: &EntryTarget,
     amount: Option<PositiveMinorUnits>,
 ) -> Result<ClearOutcome, CliError> {
     match ctx.status.to_clearing_status() {
         None => writer.unclear_entry(
-            &company.parse()?,
+            company,
             target.transaction_id,
             target.entry_id,
             ctx.statement,
         ),
         Some(status) => writer.clear_entry(&ClearRequest {
-            company_slug: &company.parse()?,
+            company_slug: company,
             transaction_id: target.transaction_id,
             entry_id: target.entry_id,
             amount,
@@ -340,13 +426,12 @@ fn apply(
 
 /// One parsed batch line.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BatchLine {
+pub(crate) struct BatchLine {
     /// 1-based line number in the input.
     pub line: u64,
-    pub reference: String,
-    /// Amount in major units as written; `None` clears the full remaining
-    /// amount.
-    pub amount: Option<String>,
+    pub reference: TransactionReference,
+    /// Amount in major units; `None` clears the full remaining amount.
+    pub amount: Option<StatementAmount>,
 }
 
 /// Parse `reference[,amount]` CSV lines. Blank lines and `#` comments are
@@ -357,7 +442,7 @@ pub struct BatchLine {
 ///
 /// Returns [`CliError::Validation`] for malformed lines, an empty batch, or
 /// duplicate references.
-pub fn parse_batch(input: &str) -> Result<Vec<BatchLine>, CliError> {
+pub(crate) fn parse_batch(input: &str) -> Result<Vec<BatchLine>, CliError> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     let mut first = true;
@@ -394,13 +479,10 @@ pub fn parse_batch(input: &str) -> Result<Vec<BatchLine>, CliError> {
                 fields.len()
             )));
         }
-        let reference = fields[0];
-        if reference.is_empty() {
-            return Err(CliError::Validation(format!(
-                "line {line}: missing reference"
-            )));
-        }
-        if !seen.insert(reference.to_string()) {
+        let reference: TransactionReference = fields[0]
+            .parse()
+            .map_err(|_| CliError::Validation(format!("line {line}: missing reference")))?;
+        if !seen.insert(reference.clone()) {
             return Err(CliError::Validation(format!(
                 "line {line}: duplicate reference '{reference}' in batch; combine the amounts into one line"
             )));
@@ -408,10 +490,12 @@ pub fn parse_batch(input: &str) -> Result<Vec<BatchLine>, CliError> {
         let amount = fields
             .get(1)
             .filter(|a| !a.is_empty())
-            .map(|a| (*a).to_string());
+            .map(|a| a.parse::<StatementAmount>())
+            .transpose()
+            .map_err(|error| at_line(line, reference.as_str(), error))?;
         out.push(BatchLine {
             line,
-            reference: reference.to_string(),
+            reference,
             amount,
         });
     }
@@ -436,12 +520,12 @@ fn at_line(line: u64, reference: &str, e: CliError) -> CliError {
 
 fn run_batch<'a>(
     writer: &Reconciliation<'_>,
-    company: &str,
+    company: &CompanySlug,
     ctx: &ClearanceSettings<'_>,
     account: &'a str,
     lines: &[BatchLine],
 ) -> Result<ClearedBatch<'a>, CliError> {
-    let scope = Company::bind(writer.read(), company.parse()?)?;
+    let scope = Company::bind(writer.read(), company.clone())?;
     db::get_account(&scope, account)?;
     if ctx.status == ClearanceArg::Uncleared && lines.iter().any(|l| l.amount.is_some()) {
         return Err(CliError::Usage(
@@ -452,14 +536,13 @@ fn run_batch<'a>(
     // Resolve and validate everything first, then apply atomically.
     let mut resolved = Vec::with_capacity(lines.len());
     for l in lines {
-        let wrap = |e| at_line(l.line, &l.reference, e);
+        let wrap = |e| at_line(l.line, l.reference.as_str(), e);
         let target = writer
-            .entry_by_reference(&company.parse()?, &l.reference, account)
+            .entry_by_reference(company, l.reference.as_str(), account)
             .map_err(wrap)?;
         let amount = l
             .amount
-            .as_deref()
-            .map(|a| parse_amount(a, &target))
+            .map(|amount| amount.for_entry(&target))
             .transpose()
             .map_err(wrap)?;
         resolved.push((l, target, amount));
@@ -470,7 +553,7 @@ fn run_batch<'a>(
         .map(|(l, target, amount)| {
             apply(writer, company, ctx, target, *amount)
                 .map(|o| Item::new(Some(l.line), target, &o))
-                .map_err(|e| at_line(l.line, &l.reference, e))
+                .map_err(|e| at_line(l.line, l.reference.as_str(), e))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let total = batch_total(&items)?;
@@ -753,7 +836,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn batch_parsing() {
+    fn batch_parsing() -> Result<(), CliError> {
         let lines =
             parse_batch("reference,amount\n# comment\nPOL-1,40.50\n\n  POL-2  \n\"POL,3\",1\n")
                 .unwrap_or_else(|e| panic!("parse: {e}"));
@@ -762,21 +845,22 @@ mod tests {
             vec![
                 BatchLine {
                     line: 3,
-                    reference: "POL-1".into(),
-                    amount: Some("40.50".into())
+                    reference: "POL-1".parse()?,
+                    amount: Some("40.50".parse()?)
                 },
                 BatchLine {
                     line: 5,
-                    reference: "POL-2".into(),
+                    reference: "POL-2".parse()?,
                     amount: None
                 },
                 BatchLine {
                     line: 6,
-                    reference: "POL,3".into(),
-                    amount: Some("1".into())
+                    reference: "POL,3".parse()?,
+                    amount: Some("1".parse()?)
                 },
             ]
         );
+        Ok(())
     }
 
     #[test]
@@ -786,6 +870,32 @@ mod tests {
         assert!(parse_batch("A,1,2\n").is_err());
         assert!(parse_batch("A,1\nA,2\n").is_err());
         assert!(parse_batch(",5\n").is_err());
+    }
+
+    #[test]
+    fn signed_amount_scales_to_entry_currency_and_cannot_overflow() -> Result<(), CliError> {
+        let mut target = EntryTarget {
+            transaction_id: 1.try_into()?,
+            entry_id: 1.try_into()?,
+            account_code: "1000".into(),
+            amount: i64::MAX.try_into()?,
+            currency: Currency::BHD,
+            reference: None,
+            date: parse_date(&crate::cli::CalendarDateArg::decode("2026-11-07"))?,
+            direction: DebitOrCredit::Credit,
+        };
+        let statement: StatementAmount = "-0.001".parse()?;
+        assert_eq!(statement.for_entry(&target)?.minor_units(), 1);
+        target.currency = Currency::JPY;
+        assert!(statement.for_entry(&target).is_err());
+        let limit: StatementAmount = "-9223372036854775807".parse()?;
+        assert_eq!(limit.for_entry(&target)?.minor_units(), i64::MAX);
+        let overflow: StatementAmount = "-9223372036854775808".parse()?;
+        assert!(overflow.for_entry(&target).is_err());
+        for invalid in ["-0.00", ".4", "2.5.0", "1e2"] {
+            assert!(invalid.parse::<StatementAmount>().is_err(), "{invalid}");
+        }
+        Ok(())
     }
 
     #[test]

@@ -697,7 +697,7 @@ impl LedgerServer {
     }
 
     #[tool(
-        description = "Clear or reconcile entries by transaction and entry IDs, reference and account, or an atomic in-memory batch."
+        description = "Clear or reconcile entries by transaction and entry IDs, reference and account, or an atomic in-memory batch. Amounts use major-unit strings. Use a minus sign for withdrawals (credit), an explicit plus for deposits (debit), or an unsigned amount for either side."
     )]
     async fn txn_clear(
         &self,

@@ -15,7 +15,8 @@ use super::input_values::{
 };
 use crate::cli::ActorFilterArg;
 use crate::commands::{
-    reference::TransactionReference, report_periods::CompareArg, txn_import::CsvMapping,
+    reference::TransactionReference, report_periods::CompareArg, txn_clear::StatementAmount,
+    txn_import::CsvMapping,
 };
 use crate::db::audit::setup::{
     Generation,
@@ -519,7 +520,7 @@ pub(super) enum TxnClear {
         company: Company,
         transaction_id: TransactionId,
         entry: EntryId,
-        amount: Option<Amount>,
+        amount: Option<Text<StatementAmount>>,
         date: Option<Date>,
         statement: Option<String>,
         status: Option<ClearanceArg>,
@@ -529,7 +530,7 @@ pub(super) enum TxnClear {
         company: Company,
         reference: Reference,
         account: Account,
-        amount: Option<Amount>,
+        amount: Option<Text<StatementAmount>>,
         date: Option<Date>,
         statement: Option<String>,
         status: Option<ClearanceArg>,
@@ -592,7 +593,7 @@ impl<'de> Deserialize<'de> for ClearInput {
 #[serde(deny_unknown_fields)]
 pub(super) struct BatchLine {
     pub reference: Reference,
-    pub amount: Option<Amount>,
+    pub amount: Option<Text<StatementAmount>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

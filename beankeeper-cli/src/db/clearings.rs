@@ -46,7 +46,7 @@
 
 use std::str::FromStr;
 
-use beankeeper::types::{Amount, Currency};
+use beankeeper::types::{Amount, Currency, DebitOrCredit};
 use chrono::NaiveDate;
 use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, params};
@@ -515,13 +515,14 @@ pub struct EntryTarget {
     pub entry_id: EntryId,
     pub account_code: String,
     pub amount: PositiveMinorUnits,
+    pub direction: DebitOrCredit,
     pub currency: Currency,
     pub reference: Option<String>,
     pub date: NaiveDate,
 }
 
 const TARGET_SELECT: &str = "SELECT t.id, e.id, e.account_code, e.amount, t.currency, \
-     t.reference, t.date \
+     t.reference, t.date, e.direction \
      FROM entries e JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug";
 
 fn map_target(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryTarget> {
@@ -533,6 +534,9 @@ fn map_target(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryTarget> {
         currency: row.get(4)?,
         reference: row.get(5)?,
         date: super::calendar_date::read(row, 6)?,
+        direction: DebitOrCredit::from_code(row.get_ref(7)?.as_str()?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+        })?,
     })
 }
 

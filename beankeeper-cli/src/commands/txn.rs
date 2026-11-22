@@ -1310,11 +1310,11 @@ mod tests {
         let run_batch = |input| {
             execute_json(
                 &db,
-                "acme",
+                &"acme".parse()?,
                 &actor,
                 ClearRequestTarget::Batch {
                     account: "1000",
-                    lines: std::borrow::Cow::Owned(parse_batch(input)?),
+                    lines: parse_batch(input)?,
                 },
                 ClearOptions {
                     date: chrono::NaiveDate::from_ymd_opt(2026, 3, 2),
