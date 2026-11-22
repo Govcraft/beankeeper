@@ -286,7 +286,7 @@ pub(crate) fn prepare_in_session(
         ));
     }
     let suspense = StatementAccount::load(conn, company, suspense_code)?;
-    let rules = rules::list_rules(conn, company)?;
+    let rules = rules::list_rules(ReadConn::new(conn), company)?;
     let sources = request.source.decode(request)?;
     if sources.is_empty() {
         return Err(CliError::Validation(

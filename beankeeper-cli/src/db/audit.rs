@@ -2246,7 +2246,7 @@ pub fn delete_rule(
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     atomically(conn, || {
-        let rule = super::rules::list_rules(conn, company)?
+        let rule = super::rules::list_rules(ReadConn::new(conn), company)?
             .into_iter()
             .find(|rule| &rule.id == id)
             .ok_or_else(|| {

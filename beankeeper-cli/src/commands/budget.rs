@@ -52,7 +52,7 @@ fn compute<'a>(
     sub: &'a BudgetCommand,
     actor: &db::Actor,
 ) -> Result<Option<BudgetData<'a>>, CliError> {
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::read_company(db.read(), company)?;
     match sub {
         BudgetCommand::Set(args) => {
             let request = BudgetSetRequest::from_cli(args)?;
@@ -64,7 +64,7 @@ fn compute<'a>(
             account,
             month,
         } => db::list_budgets(
-            db.conn(),
+            db.read(),
             &db::ListBudgetParams {
                 company_slug: company,
                 year: *year,

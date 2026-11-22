@@ -498,7 +498,7 @@ fn load_csv_rules(
         accounts::get_account(db.conn(), company, code)
             .map_err(|error| invalid(format!("CSV account validation: {error}")))?;
     }
-    db::rules::list_rules(db.conn(), company)
+    db::rules::list_rules(db.read(), company)
 }
 
 fn categorize_csv(

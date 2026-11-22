@@ -13,7 +13,7 @@ use crate::output::json;
 /// Returns validation, storage, or output errors.
 pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    companies::get_company(db.conn(), company)?;
+    companies::read_company(db.read(), company)?;
     let actor = cli.principal();
     let (name, rows) = match command {
         RuleCommand::Create {
@@ -31,7 +31,7 @@ pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliErr
                 *priority,
             )?],
         ),
-        RuleCommand::List => (Operation::RuleList, rules::list_rules(db.conn(), company)?),
+        RuleCommand::List => (Operation::RuleList, rules::list_rules(db.read(), company)?),
         RuleCommand::Delete { id, force } => {
             let Some(confirmed) = confirm_deletion(*force, &format!("rule {id}"))? else {
                 eprintln!("aborted");

@@ -6,6 +6,7 @@ use beankeeper::types::{AccountType, Amount, Currency, Money};
 use chrono::{Month, NaiveDate};
 use rusqlite::{Connection, types::Type};
 
+use super::connection::ReadConn;
 use crate::db::{BudgetRow, BudgetVarianceRow};
 use crate::error::CliError;
 
@@ -53,7 +54,7 @@ pub struct ListBudgetParams<'a> {
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_budgets(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     params: &ListBudgetParams<'_>,
 ) -> Result<Vec<BudgetRow>, CliError> {
     let mut sql = String::from(
@@ -686,7 +687,7 @@ mod tests {
         assert_eq!(row.amount, 200_000);
 
         let rows = list_budgets(
-            db.conn(),
+            db.read(),
             &ListBudgetParams {
                 company_slug: "acme",
                 year: 2026,
@@ -735,7 +736,7 @@ mod tests {
         set_budget(db.conn(), &budget("5100", 2026, 1, 5000, None))?;
 
         let all = list_budgets(
-            db.conn(),
+            db.read(),
             &ListBudgetParams {
                 company_slug: "acme",
                 year: 2026,
@@ -746,7 +747,7 @@ mod tests {
         assert_eq!(all.len(), 13);
 
         let rent_only = list_budgets(
-            db.conn(),
+            db.read(),
             &ListBudgetParams {
                 company_slug: "acme",
                 year: 2026,
@@ -757,7 +758,7 @@ mod tests {
         assert_eq!(rent_only.len(), 12);
 
         let jan = list_budgets(
-            db.conn(),
+            db.read(),
             &ListBudgetParams {
                 company_slug: "acme",
                 year: 2026,
@@ -776,7 +777,7 @@ mod tests {
         let deleted = delete_budget(db.conn(), "acme", "5000", Currency::USD, 2026, Some(3))?;
         assert_eq!(deleted, 1);
         let remaining = list_budgets(
-            db.conn(),
+            db.read(),
             &ListBudgetParams {
                 company_slug: "acme",
                 year: 2026,
@@ -795,7 +796,7 @@ mod tests {
         let deleted = delete_budget(db.conn(), "acme", "5000", Currency::USD, 2026, None)?;
         assert_eq!(deleted, 12);
         let remaining = list_budgets(
-            db.conn(),
+            db.read(),
             &ListBudgetParams {
                 company_slug: "acme",
                 year: 2026,

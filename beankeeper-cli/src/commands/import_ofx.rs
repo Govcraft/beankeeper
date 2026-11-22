@@ -593,7 +593,7 @@ pub fn run_import_ofx(
     let conn = db_handle.conn();
     let verbose = cli.verbosity.verbose;
     let actor = cli.principal();
-    let rules = crate::db::rules::list_rules(conn, company)?;
+    let rules = crate::db::rules::list_rules(db_handle.read(), company)?;
     let format = crate::cli::resolve_format(None, cli);
 
     let conflict_strategy = match on_conflict {

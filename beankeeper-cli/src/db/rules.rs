@@ -6,6 +6,7 @@ use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+use super::connection::ReadConn;
 use crate::error::CliError;
 
 /// A categorization rule's globally unique `TypeID`.
@@ -85,7 +86,7 @@ pub struct Rule {
 ///
 /// # Errors
 /// Returns a database error if the query or stored rule data is invalid.
-pub fn list_rules(conn: &Connection, company: &str) -> Result<Vec<Rule>, CliError> {
+pub fn list_rules(conn: ReadConn<'_>, company: &str) -> Result<Vec<Rule>, CliError> {
     let mut stmt = conn.prepare(
         "SELECT id, company_slug, contains, account_code, priority FROM categorization_rules
          WHERE company_slug = ?1 ORDER BY priority DESC, id ASC",

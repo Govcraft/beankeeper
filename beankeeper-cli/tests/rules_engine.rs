@@ -219,7 +219,7 @@ fn matching_is_literal_lowercase_and_uses_priority_then_id() -> TestResult {
     ledger.create("coffee", "9000", "10")?;
     ledger.create("CAFÉ 10%_", "5000", "0")?;
     let db = Db::open_existing(&ledger.path, None)?;
-    let rules = rules::list_rules(db.conn(), "acme")?;
+    let rules = rules::list_rules(db.read(), "acme")?;
     assert_eq!(rules[0].priority, 10);
     assert!(rules[0].id.to_string() < rules[1].id.to_string());
     assert_eq!(
@@ -483,7 +483,7 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     let actor = Actor::new("rules-test");
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     assert!(rules::create_rule(db.conn(), &actor, "acme", "coffee".parse()?, "5000", 0).is_err());
-    assert!(rules::list_rules(db.conn(), "acme")?.is_empty());
+    assert!(rules::list_rules(db.read(), "acme")?.is_empty());
     db.conn().execute_batch("DROP TRIGGER fail_rule_audit;")?;
     let rule = rules::create_rule(db.conn(), &actor, "acme", "coffee".parse()?, "5000", 0)?;
     db.conn().execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
@@ -497,7 +497,7 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
         )
         .is_err()
     );
-    assert_eq!(rules::list_rules(db.conn(), "acme")?.len(), 1);
+    assert_eq!(rules::list_rules(db.read(), "acme")?.len(), 1);
     audit::verify_hash_chain(db.read())?;
     Ok(())
 }
