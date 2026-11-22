@@ -38,8 +38,8 @@ pub struct HostTool {
 /// Application tools served beside the built-in ledger tools on one endpoint.
 ///
 /// The catalog is captured once at construction. Beankeeper filters discovery,
-/// re-verifies the current request's token immediately before dispatch, and
-/// enforces each declared grant even when ledger policy enforcement is off.
+/// checks the verified request identity against the live registry and trust root
+/// before dispatch, and enforces each grant even when ledger policy is off.
 /// The identity comes from that request, never the session's initialize token.
 /// No raw credential or database connection is passed to the handler.
 ///
