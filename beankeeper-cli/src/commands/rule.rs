@@ -4,6 +4,7 @@ use crate::cli::{Cli, OutputFormat, RuleCommand, resolve_format};
 use crate::confirmation::confirm_deletion;
 use crate::db::{audit, companies, rules};
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output::json;
 
 /// Execute a company-scoped rule command.
@@ -20,7 +21,7 @@ pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliErr
             account,
             priority,
         } => (
-            "rule.create",
+            Operation::RuleCreate,
             vec![rules::create_rule(
                 db.conn(),
                 &actor,
@@ -30,7 +31,7 @@ pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliErr
                 *priority,
             )?],
         ),
-        RuleCommand::List => ("rule.list", rules::list_rules(db.conn(), company)?),
+        RuleCommand::List => (Operation::RuleList, rules::list_rules(db.conn(), company)?),
         RuleCommand::Delete { id, force } => {
             let Some(confirmed) = confirm_deletion(*force, &format!("rule {id}"))? else {
                 eprintln!("aborted");
@@ -90,7 +91,7 @@ fn render_deleted(cli: &Cli, company: &str, id: &rules::RuleId) -> Result<(), Cl
         OutputFormat::Json => println!(
             "{}",
             json::envelope_ok(
-                cli.meta("rule.delete", Some(company)),
+                cli.meta(Operation::RuleDelete, Some(company)),
                 serde_json::json!({"deleted": id})
             )?
         ),

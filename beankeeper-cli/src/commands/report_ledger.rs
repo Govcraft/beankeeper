@@ -22,6 +22,7 @@
 //! CSV output is one flat row per line of the statement with a `row_type`
 //! column of `opening`, `entry` or `closing` (see [`render_csv`]).
 
+use crate::operation::Operation;
 use std::collections::BTreeSet;
 
 use beankeeper::types::{AccountType, Currency, DebitOrCredit};
@@ -136,7 +137,7 @@ pub(crate) fn run_to(
             render_table(&report, minor_units, output.use_color)
         )?,
         OutputFormat::Json => {
-            let meta = cli.meta("report.ledger", Some(company));
+            let meta = cli.meta(Operation::ReportLedger, Some(company));
             writeln!(output.writer, "{}", render_json(&report, meta)?)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report)?)?,

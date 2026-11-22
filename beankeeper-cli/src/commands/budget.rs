@@ -6,6 +6,7 @@ use crate::confirmation::confirm_deletion;
 use crate::db;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output;
 
 /// Run a `bk budget` subcommand.
@@ -184,11 +185,11 @@ enum BudgetScope<'a> {
     Annual(&'a str),
 }
 
-fn command(sub: &BudgetCommand) -> &'static str {
+fn command(sub: &BudgetCommand) -> Operation {
     match sub {
-        BudgetCommand::Set(_) => "budget.set",
-        BudgetCommand::List { .. } => "budget.list",
-        BudgetCommand::Delete { .. } => "budget.delete",
+        BudgetCommand::Set(_) => Operation::BudgetSet,
+        BudgetCommand::List { .. } => Operation::BudgetList,
+        BudgetCommand::Delete { .. } => Operation::BudgetDelete,
     }
 }
 

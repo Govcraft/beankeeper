@@ -23,6 +23,7 @@ use crate::db::{
     EntryRow, EntryStatus, PostResult, TransactionRow,
 };
 use crate::error::{CliError, ErrorCode};
+use crate::operation::Operation;
 
 use super::amounts::MoneyField;
 
@@ -40,7 +41,7 @@ pub(crate) fn serialize_display<S: Serializer>(
 /// Response metadata included in every JSON envelope.
 #[derive(Serialize, Clone)]
 pub struct Meta {
-    pub command: String,
+    pub command: Operation,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,9 +142,9 @@ pub struct EnvelopeError {
 
 /// Construct a `Meta` with the current UTC timestamp.
 #[must_use]
-pub fn meta(command: &str, company: Option<&str>) -> Meta {
+pub fn meta(command: Operation, company: Option<&str>) -> Meta {
     Meta {
-        command: command.to_string(),
+        command,
         agent: None,
         company: company.map(str::to_string),
         timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -154,9 +155,9 @@ pub fn meta(command: &str, company: Option<&str>) -> Meta {
 
 /// Construct a `Meta` with an explicit timestamp (for deterministic tests).
 #[must_use]
-pub fn meta_with_timestamp(command: &str, company: Option<&str>, timestamp: String) -> Meta {
+pub fn meta_with_timestamp(command: Operation, company: Option<&str>, timestamp: String) -> Meta {
     Meta {
-        command: command.to_string(),
+        command,
         agent: None,
         company: company.map(str::to_string),
         timestamp,
@@ -1004,13 +1005,13 @@ pub fn render_budget_deleted(count: usize, meta: Meta) -> Result<String, CliErro
 mod tests {
     use super::*;
 
-    fn test_meta(command: &str, company: Option<&str>) -> Meta {
+    fn test_meta(command: Operation, company: Option<&str>) -> Meta {
         meta_with_timestamp(command, company, "2025-01-01T00:00:00Z".to_string())
     }
 
     #[test]
     fn render_companies_empty() {
-        let result = render_companies(&[], test_meta("company.list", None));
+        let result = render_companies(&[], test_meta(Operation::CompanyList, None));
         assert!(result.is_ok());
         let json = result.unwrap_or_default();
         assert!(json.contains(r#""ok": true"#));
@@ -1026,7 +1027,8 @@ mod tests {
             description: None,
             created_at: "2025-01-01T00:00:00".into(),
         }];
-        let json = render_companies(&rows, test_meta("company.show", None)).unwrap_or_default();
+        let json =
+            render_companies(&rows, test_meta(Operation::CompanyShow, None)).unwrap_or_default();
         assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""slug": "acme""#));
         assert!(json.contains(r#""name": "Acme Corp""#));
@@ -1042,8 +1044,8 @@ mod tests {
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];
-        let json =
-            render_accounts(&rows, test_meta("account.list", Some("acme"))).unwrap_or_default();
+        let json = render_accounts(&rows, test_meta(Operation::AccountList, Some("acme")))
+            .unwrap_or_default();
         assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""company": "acme""#));
         assert!(json.contains(r#""type": "asset""#));
@@ -1060,8 +1062,8 @@ mod tests {
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];
-        let json =
-            render_accounts(&rows, test_meta("account.list", Some("acme"))).unwrap_or_default();
+        let json = render_accounts(&rows, test_meta(Operation::AccountList, Some("acme")))
+            .unwrap_or_default();
         assert!(json.contains(r#""normal_balance": "credit""#));
     }
 
@@ -1108,7 +1110,7 @@ mod tests {
                 },
             ],
         );
-        let json = render_transactions(&txns, &map, test_meta("txn.list", Some("acme")))
+        let json = render_transactions(&txns, &map, test_meta(Operation::TxnList, Some("acme")))
             .unwrap_or_default();
         assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""description": "Sale""#));
@@ -1132,8 +1134,12 @@ mod tests {
             token_jti: None,
             reference: None,
         }];
-        let json = render_transactions(&txns, &HashMap::new(), test_meta("txn.list", Some("acme")))
-            .unwrap_or_default();
+        let json = render_transactions(
+            &txns,
+            &HashMap::new(),
+            test_meta(Operation::TxnList, Some("acme")),
+        )
+        .unwrap_or_default();
         assert!(json.contains(r#""entries": []"#));
     }
 
@@ -1155,8 +1161,11 @@ mod tests {
                 credit_total: 10000,
             },
         ];
-        let json = render_trial_balance(&rows, test_meta("report.trial-balance", Some("acme")))
-            .unwrap_or_default();
+        let json = render_trial_balance(
+            &rows,
+            test_meta(Operation::ReportTrialBalance, Some("acme")),
+        )
+        .unwrap_or_default();
         assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""balanced": true"#));
         assert!(json.contains(r#""total_debits": 10000"#));
@@ -1172,8 +1181,11 @@ mod tests {
             debit_total: 10000,
             credit_total: 5000,
         }];
-        let json = render_trial_balance(&rows, test_meta("report.trial-balance", Some("acme")))
-            .unwrap_or_default();
+        let json = render_trial_balance(
+            &rows,
+            test_meta(Operation::ReportTrialBalance, Some("acme")),
+        )
+        .unwrap_or_default();
         assert!(json.contains(r#""balanced": false"#));
     }
 
@@ -1186,8 +1198,12 @@ mod tests {
             debit_total: 15000,
             credit_total: 5000,
         };
-        let json = render_account_balance(&row, "USD", test_meta("report.balance", Some("acme")))
-            .unwrap_or_default();
+        let json = render_account_balance(
+            &row,
+            "USD",
+            test_meta(Operation::ReportBalance, Some("acme")),
+        )
+        .unwrap_or_default();
         assert!(json.contains(r#""ok": true"#));
         assert!(json.contains(r#""code": "1000""#));
         assert!(json.contains(r#""currency": "USD""#));
@@ -1206,7 +1222,7 @@ mod tests {
 
     #[test]
     fn envelope_structure_success() -> Result<(), Box<dyn std::error::Error>> {
-        let json = render_companies(&[], test_meta("company.list", None))?;
+        let json = render_companies(&[], test_meta(Operation::CompanyList, None))?;
         let v: serde_json::Value = serde_json::from_str(&json)?;
         assert_eq!(v["ok"], true);
         assert_eq!(v["meta"]["command"], "company.list");
@@ -1219,7 +1235,7 @@ mod tests {
 
     #[test]
     fn envelope_structure_company_field() -> Result<(), Box<dyn std::error::Error>> {
-        let json = render_accounts(&[], test_meta("account.list", Some("acme")))?;
+        let json = render_accounts(&[], test_meta(Operation::AccountList, Some("acme")))?;
         let v: serde_json::Value = serde_json::from_str(&json)?;
         assert_eq!(v["meta"]["company"], "acme");
         Ok(())
@@ -1227,9 +1243,9 @@ mod tests {
 
     #[test]
     fn meta_with_timestamp_is_deterministic() {
-        let m = meta_with_timestamp("test", None, "2025-06-15T12:00:00Z".to_string());
+        let m = meta_with_timestamp(Operation::Verify, None, "2025-06-15T12:00:00Z".to_string());
         assert_eq!(m.timestamp, "2025-06-15T12:00:00Z");
-        assert_eq!(m.command, "test");
+        assert_eq!(m.command, Operation::Verify);
         assert!(m.company.is_none());
     }
 

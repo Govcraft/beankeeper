@@ -163,7 +163,7 @@ fn render(
         OutputFormat::Json => {
             println!(
                 "{}",
-                json::envelope_ok(cli.meta(command.command_name(), Some(company)), data)?
+                json::envelope_ok(cli.meta(command.operation(), Some(company)), data)?
             );
         }
     }

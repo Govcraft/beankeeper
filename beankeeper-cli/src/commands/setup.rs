@@ -241,7 +241,7 @@ fn run_status(cli: &Cli) -> Result<(), CliError> {
     match resolve_format(None, cli) {
         OutputFormat::Json => println!(
             "{}",
-            json::envelope_ok(cli.meta(Operation::LedgerSetupStatus.name(), None), state)?
+            json::envelope_ok(cli.meta(Operation::LedgerSetupStatus, None), state)?
         ),
         OutputFormat::Csv => {
             println!("companies,accounts,transactions,owner_key_initialized");
@@ -369,10 +369,7 @@ fn print_setup_data(
     data: impl Serialize,
 ) -> Result<(), CliError> {
     if cli.is_json() {
-        println!(
-            "{}",
-            json::envelope_ok(cli.meta(operation.name(), company), data)?
-        );
+        println!("{}", json::envelope_ok(cli.meta(operation, company), data)?);
     } else {
         println!(
             "{}",

@@ -90,7 +90,10 @@ mod tests {
                 credit_total: 0,
             },
         ];
-        let meta = json::meta("report.trial-balance", Some("acme"));
+        let meta = json::meta(
+            crate::operation::Operation::ReportTrialBalance,
+            Some("acme"),
+        );
         assert!(matches!(
             json::render_trial_balance(&accounts, meta),
             Err(CliError::Validation(_))

@@ -179,7 +179,7 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     } else if cli.agent_token.is_some() && matches!(cli.command, Command::Init { .. }) {
         return Err(CliError::Unauthorized("initialization creates a new trust boundary; omit --agent-token and initialize its key afterward".into()));
     }
-    let meta = meta.map(|m| cli.meta(&m.command, m.company.as_deref()));
+    let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
         Command::Setup(command) => setup::run(cli, command),
         Command::Summary(args) => {

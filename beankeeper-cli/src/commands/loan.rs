@@ -1,5 +1,6 @@
 //! Stateless monthly loan calculator and audited payment helper.
 
+use crate::operation::Operation;
 use beankeeper::loan::{AmortizationSchedule, AnnualRate, LoanPayment, LoanTerm, LoanTerms};
 use beankeeper::types::{Amount, Currency, Money};
 use serde::Serialize;
@@ -117,7 +118,7 @@ pub fn run(cli: &Cli, command: &LoanCommand) -> Result<(), CliError> {
             match resolve_format(None, cli) {
                 OutputFormat::Json => println!(
                     "{}",
-                    json::envelope_ok(cli.meta("loan.schedule", None), &schedule,)?
+                    json::envelope_ok(cli.meta(Operation::LoanSchedule, None), &schedule,)?
                 ),
                 OutputFormat::Csv => print_csv(&schedule.payments)?,
                 OutputFormat::Table => {
@@ -200,7 +201,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
     match resolve_format(None, cli) {
         OutputFormat::Json => println!(
             "{}",
-            json::envelope_ok(cli.meta("loan.pay", Some(company)), &result,)?
+            json::envelope_ok(cli.meta(Operation::LoanPay, Some(company)), &result,)?
         ),
         OutputFormat::Table => println!("{status} transaction #{id}"),
         OutputFormat::Csv => {

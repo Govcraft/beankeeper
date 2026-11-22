@@ -3,6 +3,7 @@ use crate::confirmation::confirm_deletion;
 use crate::db::connection::Db;
 use crate::db::{self, AccountBalanceWindow, CreateAccountParams, accounts};
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output;
 
 /// Run a `bk account` subcommand.
@@ -54,11 +55,11 @@ enum AccountData {
     Balances(Vec<db::AccountWithBalanceRow>),
 }
 
-fn operation(sub: &AccountCommand) -> &'static str {
+fn operation(sub: &AccountCommand) -> Operation {
     match sub {
-        AccountCommand::Create { .. } => "account.create",
-        AccountCommand::Show { .. } => "account.show",
-        _ => "account.list",
+        AccountCommand::Create { .. } => Operation::AccountCreate,
+        AccountCommand::Show { .. } => Operation::AccountShow,
+        _ => Operation::AccountList,
     }
 }
 
@@ -182,7 +183,7 @@ fn run_delete(
     let actor = cli.principal();
     crate::db::delete_account(db.conn(), &actor, company, code, confirmed)?;
     if format == OutputFormat::Json {
-        let meta = cli.meta("account.delete", Some(company));
+        let meta = cli.meta(Operation::AccountDelete, Some(company));
         let rendered = output::json::render_deleted(code, meta)?;
         println!("{rendered}");
     }
@@ -195,7 +196,7 @@ fn run_delete(
 /// Render account rows in the requested format.
 fn render_accounts(
     rows: &[crate::db::AccountRow],
-    command: &str,
+    command: Operation,
     company: &str,
     format: OutputFormat,
     use_color: bool,
@@ -233,7 +234,7 @@ fn render_accounts_with_balances(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let meta = cli.meta("account.list", Some(company));
+            let meta = cli.meta(Operation::AccountList, Some(company));
             let rendered = output::json::render_accounts_with_balances(rows, meta)?;
             println!("{rendered}");
         }

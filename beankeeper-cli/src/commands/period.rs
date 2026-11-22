@@ -61,7 +61,7 @@ pub fn run(cli: &Cli, company: &str, command: &PeriodCommand) -> Result<(), CliE
     match format {
         OutputFormat::Json => println!(
             "{}",
-            json::envelope_ok(cli.meta(command_name(command), Some(company)), &rows,)?
+            json::envelope_ok(cli.meta(operation(command), Some(company)), &rows,)?
         ),
         OutputFormat::Table => {
             let mut table = comfy_table::Table::new();

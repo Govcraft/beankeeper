@@ -80,7 +80,7 @@ pub fn run(cli: &Cli, db: &Db, company: &str, sub: &TxnMetaCommand) -> Result<()
     if resolve_format(None, cli) == OutputFormat::Json {
         println!(
             "{}",
-            serde_json::json!({"ok": true, "meta": cli.meta(sub.command_name(), Some(company)), "data": data})
+            serde_json::json!({"ok": true, "meta": cli.meta(sub.operation(), Some(company)), "data": data})
         );
     } else if !cli.verbosity.quiet {
         println!(

@@ -12,6 +12,7 @@ use super::report::ReportOutput;
 use crate::cli::{Cli, OutputFormat};
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::output::json::serialize_display;
 
 pub use super::report_dates::DateRange as Period;
@@ -193,7 +194,7 @@ pub(crate) fn run_to(
             match output.format {
                 OutputFormat::Json => {
                     let meta = cli
-                        .meta("report.schedule-c", Some(company))
+                        .meta(Operation::ReportScheduleC, Some(company))
                         .with_currency(currency);
                     output.write_json(meta, &report, None)?;
                 }
@@ -209,7 +210,7 @@ pub(crate) fn run_to(
             match output.format {
                 OutputFormat::Json => {
                     let meta = cli
-                        .meta("report.1099", Some(company))
+                        .meta(Operation::ReportVendor1099, Some(company))
                         .with_currency(currency);
                     output.write_json(meta, &report, None)?;
                 }

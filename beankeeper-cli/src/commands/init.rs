@@ -1,10 +1,11 @@
-use crate::db::CreateAccountParams;
 use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::cli::Cli;
+use crate::db::CreateAccountParams;
 use crate::db::connection::Db;
 use crate::error::CliError;
+use crate::operation::Operation;
 use crate::passphrase;
 
 mod demo_features;
@@ -78,7 +79,7 @@ pub fn run(
     }
 
     if cli.is_json() {
-        let meta = cli.meta("init", None);
+        let meta = cli.meta(Operation::Init, None);
         let rendered = crate::output::json::render_init(&db_path.display().to_string(), meta)?;
         println!("{rendered}");
     }

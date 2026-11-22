@@ -1,3 +1,4 @@
+use crate::operation::Operation;
 use std::io::Write;
 
 use beankeeper::types::{AccountType, Currency};
@@ -319,7 +320,7 @@ fn run_trial_balance(
         }
         OutputFormat::Json => {
             let meta = cli
-                .meta("report.trial-balance", Some(company))
+                .meta(Operation::ReportTrialBalance, Some(company))
                 .with_currency(currency);
             let rendered = output::json::render_trial_balance(&balances, meta)?;
             writeln!(output.writer, "{rendered}")?;
@@ -387,7 +388,7 @@ fn run_balance(
         }
         OutputFormat::Json => {
             let meta = cli
-                .meta("report.balance", Some(company))
+                .meta(Operation::ReportBalance, Some(company))
                 .with_currency(currency);
             let rendered =
                 output::json::render_account_balance(&balance_row, currency.code(), meta)?;
@@ -443,7 +444,7 @@ fn run_income_statement(
         }
         OutputFormat::Json => {
             let meta = cli
-                .meta("report.income-statement", Some(company))
+                .meta(Operation::ReportIncomeStatement, Some(company))
                 .with_currency(stmt.currency());
             let chart = chart::requested(cli, || {
                 chart::income_statement(company, &stmt, cli.output.chart_all)
@@ -532,7 +533,7 @@ fn run_balance_sheet(
         }
         OutputFormat::Json => {
             let meta = cli
-                .meta("report.balance-sheet", Some(company))
+                .meta(Operation::ReportBalanceSheet, Some(company))
                 .with_currency(sheet.currency());
             output.write_json(meta, &sheet, None)?;
         }
@@ -633,7 +634,7 @@ fn run_tax_summary(
         }
         OutputFormat::Json => {
             let meta = cli
-                .meta("report.tax-summary", Some(company))
+                .meta(Operation::ReportTaxSummary, Some(company))
                 .with_currency(currency);
             let rendered = output::json::render_tax_summary(&rows, meta)?;
             writeln!(output.writer, "{rendered}")?;
@@ -705,7 +706,7 @@ fn run_budget_variance(
         }
         OutputFormat::Json => {
             let meta = cli
-                .meta("report.budget-variance", Some(company))
+                .meta(Operation::ReportBudgetVariance, Some(company))
                 .with_currency(report.currency());
             output.write_json(meta, &report, None)?;
         }

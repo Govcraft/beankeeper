@@ -1,5 +1,6 @@
 //! `bk audit` command: inspect the append-only audit trail.
 
+use crate::operation::Operation;
 use beankeeper::types::Currency;
 use rusqlite::OptionalExtension as _;
 
@@ -57,7 +58,7 @@ fn run_log(
     match format {
         OutputFormat::Json => {
             let meta = cli
-                .meta("audit.log", params.company_slug)
+                .meta(Operation::AuditLog, params.company_slug)
                 .with_pagination(pagination);
             let data = audit_data(db, &rows)?;
             let rendered = serde_json::json!({ "ok": true, "meta": meta, "data": data });

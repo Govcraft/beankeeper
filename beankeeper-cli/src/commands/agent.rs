@@ -46,7 +46,7 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
     if cli.is_json() {
         println!(
             "{}",
-            serde_json::json!({"ok": true, "meta": cli.meta(super::command_name(&cli.command), None), "data": data})
+            serde_json::json!({"ok": true, "meta": cli.meta(super::operation(&cli.command), None), "data": data})
         );
     } else {
         println!(

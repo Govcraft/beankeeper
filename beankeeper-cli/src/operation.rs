@@ -101,6 +101,12 @@ macro_rules! operations {
     };
 }
 
+impl serde::Serialize for Operation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
 operations! {
     Summary => ("summary", Read),
     LedgerSetupStatus => ("ledger.setup.status", SetupStatus),
