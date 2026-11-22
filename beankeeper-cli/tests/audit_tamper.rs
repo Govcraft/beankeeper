@@ -360,7 +360,10 @@ fn verify_rechecks_balance_positive_amounts_currency_and_entry_ownership() -> Te
             "UPDATE entries SET direction = 'invalid' WHERE id = 1",
             "entry #1: invalid entry direction",
         ),
-        ("DELETE FROM entries WHERE id = 1", "at least two entries"),
+        (
+            "DELETE FROM entries WHERE id = 1",
+            "must have at least two entries",
+        ),
         (
             "UPDATE transactions SET currency = 'ZZZ' WHERE id = 1",
             "invalid transaction currency",
