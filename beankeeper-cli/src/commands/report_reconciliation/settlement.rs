@@ -1,6 +1,7 @@
 //! Statement-scoped AR/AP reconciliation. Clearings establish statement
 //! application; linked credits explain the charge's remaining open amount.
 
+use crate::db::ids::{EntryId, TransactionId};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
@@ -29,8 +30,8 @@ pub struct SettlementDetails {
 /// One payable or receivable posting with its settlement totals.
 #[derive(Debug, Clone)]
 pub struct Charge {
-    pub entry_id: i64,
-    pub transaction_id: i64,
+    pub entry_id: EntryId,
+    pub transaction_id: TransactionId,
     pub date: NaiveDate,
     pub reference: Option<String>,
     pub description: String,
@@ -49,15 +50,15 @@ pub struct Charge {
 /// A payment or credit and the charge transactions it was applied to.
 #[derive(Debug, Clone)]
 pub struct Settlement {
-    pub entry_id: i64,
-    pub transaction_id: i64,
+    pub entry_id: EntryId,
+    pub transaction_id: TransactionId,
     pub date: NaiveDate,
     pub reference: Option<String>,
     pub description: String,
     pub metadata: Option<serde_json::Value>,
     pub amount: Money,
     /// Charge transaction ids, in link order.
-    pub charge_transaction_ids: Vec<i64>,
+    pub charge_transaction_ids: Vec<TransactionId>,
     /// Unallocated amount, including excess on the last linked charge.
     pub excess: Money,
     pub reasons: Vec<SettlementReason>,
@@ -153,7 +154,7 @@ fn postings(
     normal: DebitOrCredit,
     link_key: &str,
 ) -> Result<Vec<Posting>, CliError> {
-    let mut grouped: BTreeMap<i64, Vec<EntryRow>> = BTreeMap::new();
+    let mut grouped: BTreeMap<TransactionId, Vec<EntryRow>> = BTreeMap::new();
     for row in rows {
         grouped.entry(row.transaction_id).or_default().push(row);
     }
@@ -206,10 +207,12 @@ fn net_total(
     })
 }
 
-fn reversal_target(row: &EntryRow) -> Option<i64> {
+fn reversal_target(row: &EntryRow) -> Option<TransactionId> {
     super::metadata_for_output(row.metadata.as_deref())?
         .get("reverses")?
-        .as_i64()
+        .as_i64()?
+        .try_into()
+        .ok()
 }
 
 fn charge(posting: &Posting, report: &ReconciliationReport, expected: i64) -> Charge {
@@ -271,7 +274,7 @@ pub(super) fn apply(
     let slug = company.slug().as_str();
     let (all, selected) = load_postings(conn, slug, &report, link_key)?;
     let index = TargetIndex::new(all.iter().map(|p| &p.movement));
-    let mut charges: BTreeMap<i64, Charge> = all
+    let mut charges: BTreeMap<TransactionId, Charge> = all
         .iter()
         .filter(|p| p.row.amount > 0)
         .map(|p| (p.row.transaction_id, charge(p, &report, p.row.amount)))
@@ -360,7 +363,7 @@ fn load_postings(
     company: &str,
     report: &ReconciliationReport,
     link_key: &str,
-) -> Result<(Vec<Posting>, HashSet<i64>), CliError> {
+) -> Result<(Vec<Posting>, HashSet<TransactionId>), CliError> {
     let query = EntryQuery {
         code: &report.code,
         currency: report.currency,
@@ -368,7 +371,7 @@ fn load_postings(
         statement: report.statement.as_deref(),
         filters: &report.filters,
     };
-    let selected: HashSet<i64> = super::load_entries(conn, company, &query)?
+    let selected: HashSet<TransactionId> = super::load_entries(conn, company, &query)?
         .into_iter()
         .map(|r| r.transaction_id)
         .collect();
@@ -398,12 +401,12 @@ struct MatchContext<'a> {
 
 fn apply_settlements(
     ctx: &MatchContext<'_>,
-    selected: &HashSet<i64>,
+    selected: &HashSet<TransactionId>,
     report: &ReconciliationReport,
     details: &mut SettlementDetails,
-    charges: &mut BTreeMap<i64, Charge>,
-) -> Result<BTreeMap<i64, i64>, CliError> {
-    let mut linked: BTreeMap<i64, i64> = BTreeMap::new();
+    charges: &mut BTreeMap<TransactionId, Charge>,
+) -> Result<BTreeMap<TransactionId, i64>, CliError> {
+    let mut linked: BTreeMap<TransactionId, i64> = BTreeMap::new();
     let mut reversals = HashSet::new();
     for posting in ctx.all.iter().filter(|p| p.row.amount < 0) {
         // A reversal of a charge reduces expected receivables rather than
@@ -485,8 +488,8 @@ fn match_settlement(
     posting: &Posting,
     amount: i64,
     link_spec: &LinkSpec,
-    linked: &mut BTreeMap<i64, i64>,
-    charges: &BTreeMap<i64, Charge>,
+    linked: &mut BTreeMap<TransactionId, i64>,
+    charges: &BTreeMap<TransactionId, Charge>,
 ) -> Result<Settlement, CliError> {
     let MatchContext {
         conn,

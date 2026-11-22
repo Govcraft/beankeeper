@@ -83,7 +83,7 @@ pub(in crate::db) fn store_reliefs(
     actor: &Actor,
     company: &str,
     date: NaiveDate,
-    transaction_id: i64,
+    transaction_id: crate::db::ids::TransactionId,
     relief: &[Relief],
 ) -> Result<(), CliError> {
     let conn = tx.connection();

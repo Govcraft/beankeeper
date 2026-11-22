@@ -492,7 +492,7 @@ struct Item {
     transaction_id: TransactionId,
     entry_id: EntryId,
     action: ClearAction,
-    clearing_id: Option<i64>,
+    clearing_id: Option<crate::db::ids::ClearingId>,
     #[serde(serialize_with = "crate::output::json::serialize_display")]
     currency: Currency,
     /// Amount cleared (or removed) by this call, minor units.

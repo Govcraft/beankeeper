@@ -58,6 +58,21 @@ impl Serialize for ProposalId {
     }
 }
 
+impl rusqlite::types::FromSql for ProposalId {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|error| rusqlite::types::FromSqlError::Other(Box::new(error)))
+    }
+}
+
+impl rusqlite::types::ToSql for ProposalId {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(rusqlite::types::ToSqlOutput::from(self.as_str()))
+    }
+}
+
 /// Frozen posting request, including resolved account tax defaults and retry policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostingPayload {
@@ -66,7 +81,7 @@ pub struct PostingPayload {
     pub currency: Currency,
     pub date: NaiveDate,
     pub entries: Vec<PostEntryParams>,
-    pub correlate: Option<i64>,
+    pub correlate: Option<crate::db::ids::PartnerTransactionId>,
     pub reference: Option<String>,
     pub on_conflict: ConflictStrategy,
 }
@@ -155,7 +170,7 @@ pub enum ProposalState {
         /// When and by whom the proposal was approved.
         resolution: Resolution,
         /// Transaction created for this proposal.
-        transaction_id: i64,
+        transaction_id: super::ids::TransactionId,
     },
     /// Declined by a reviewer.
     Rejected {
@@ -207,7 +222,7 @@ impl ProposalState {
         let status = row.get_ref(2)?.as_str()?;
         let at: Option<String> = row.get(10)?;
         let by = ResolvedBy::from_columns(row.get(11)?, row.get(12)?);
-        let transaction_id: Option<i64> = row.get(13)?;
+        let transaction_id: Option<super::ids::TransactionId> = row.get(13)?;
         let reason: Option<String> = row.get(14)?;
         match (status, at, by, transaction_id, reason) {
             ("pending", None, Some(ResolvedBy::Local), None, None) => Ok(Self::Pending),
@@ -296,7 +311,7 @@ struct PendingProposal<'a> {
 }
 
 impl<'a> PendingProposal<'a> {
-    fn load(conn: &'a Connection, company: &str, id: &str) -> Result<Self, CliError> {
+    fn load(conn: &'a Connection, company: &str, id: &ProposalId) -> Result<Self, CliError> {
         verify_resolutions(conn)?;
         let before = get(conn, company, id)?;
         if before.state != ProposalState::Pending {
@@ -410,7 +425,7 @@ pub(super) fn approve(
     conn: &Connection,
     actor: &Actor,
     company: &str,
-    id: &str,
+    id: &ProposalId,
 ) -> Result<Proposal, CliError> {
     audit::savepoint::with_audited_tx(conn, "sp_atomic_batch", |tx| {
         let grant = Granted::<Approve>::check(tx, actor)?;
@@ -428,7 +443,7 @@ pub(super) fn reject(
     conn: &Connection,
     actor: &Actor,
     company: &str,
-    id: &str,
+    id: &ProposalId,
     reason: Option<&str>,
 ) -> Result<Proposal, CliError> {
     audit::atomically(conn, || {
@@ -486,16 +501,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
         .map_err(decode_error)?;
     let payload = PostingPayload::deserialize(&payload_json).map_err(decode_error)?;
     Ok(Proposal {
-        id: row
-            .get::<_, String>(0)?
-            .parse()
-            .map_err(|error: CliError| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })?,
+        id: row.get(0)?,
         company_slug: row.get(1)?,
         state: ProposalState::from_row(row)?,
         payload,
@@ -513,7 +519,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
 ///
 /// # Errors
 /// Returns not found or a database error.
-pub fn get(conn: &Connection, company: &str, id: &str) -> Result<Proposal, CliError> {
+pub fn get(conn: &Connection, company: &str, id: &ProposalId) -> Result<Proposal, CliError> {
     conn.query_row(
         &format!("SELECT {COLUMNS} FROM txn_proposals WHERE company_slug = ?1 AND id = ?2"),
         params![company, id],
@@ -582,7 +588,7 @@ pub fn create(
 
 pub(crate) enum ProposalCreation {
     Created(Box<Proposal>),
-    Skipped(i64),
+    Skipped(crate::db::ids::TransactionId),
 }
 
 pub(crate) fn create_from_command(
@@ -709,14 +715,14 @@ fn insert_pending(
          VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8)",
         params![id.as_str(), company, json, payload.reference, total, payload.currency, identity.uri(), identity.jti()],
     )?;
-    get(conn, company, id.as_str())
+    get(conn, company, &id)
 }
 
 fn posted_reference(
     conn: &Connection,
     company: &str,
     reference: &str,
-) -> Result<Option<i64>, CliError> {
+) -> Result<Option<crate::db::ids::TransactionId>, CliError> {
     Ok(conn
         .query_row(
             "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
@@ -754,7 +760,7 @@ pub(crate) fn verify_resolutions(conn: &Connection) -> Result<(), CliError> {
          UNION SELECT company_slug, entity_id FROM audit_log WHERE entity = 'proposal'",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((row.get::<_, String>(0)?, row.get::<_, ProposalId>(1)?))
     })?;
     for row in rows {
         let (company, id) = row?;

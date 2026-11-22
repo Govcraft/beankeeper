@@ -11,7 +11,10 @@ use super::companies::{AllCompanies, Company, CompanySlug, company_exists};
 use super::connection::ReadConn;
 use super::metadata;
 use super::metadata_filter;
-use super::{EntryRow, TransactionRow};
+use super::{
+    EntryRow, TransactionRow,
+    ids::{PartnerTransactionId, TransactionId},
+};
 use crate::error::CliError;
 
 /// Check source identity before applying mutable import categorization rules.
@@ -67,7 +70,7 @@ pub struct PostTransactionParams<'a> {
     pub date: NaiveDate,
     pub entries: &'a [PostEntryParams],
     /// If set, correlate with this existing transaction ID (intercompany linking).
-    pub correlate: Option<i64>,
+    pub correlate: Option<PartnerTransactionId>,
     /// Idempotency reference -- rejects duplicate posts with the same reference per company.
     pub reference: Option<&'a str>,
     /// How to handle duplicate references.
@@ -80,7 +83,7 @@ pub struct PostTransactionParams<'a> {
 #[derive(Debug, Clone)]
 pub struct OrphanedCorrelation {
     /// The transaction that has a correlate reference.
-    pub transaction_id: i64,
+    pub transaction_id: TransactionId,
     /// The company this transaction belongs to.
     pub company_slug: String,
     /// Transaction description.
@@ -95,10 +98,10 @@ pub struct OrphanedCorrelation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostResult {
     /// A new transaction was successfully created.
-    Created(i64),
+    Created(TransactionId),
     /// A duplicate reference was found and the transaction was skipped.
     /// Contains the ID of the existing transaction.
-    Skipped(i64),
+    Skipped(TransactionId),
 }
 
 /// Posts a new transaction with its entries inside a savepoint.
@@ -221,7 +224,7 @@ fn post_transaction_inner(
         .transpose()?;
     // Check for duplicate reference before inserting.
     if let Some(ref_str) = p.reference {
-        let existing: Option<i64> = conn
+        let existing: Option<TransactionId> = conn
             .query_row(
                 "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
                 params![p.company_slug, ref_str],
@@ -416,7 +419,7 @@ fn persist_posting(
         ],
     )?;
 
-    let txn_id = conn.last_insert_rowid();
+    let txn_id = TransactionId::try_from(conn.last_insert_rowid())?;
 
     for entry in journal.entries() {
         let minor = i64::try_from(entry.amount().amount().minor_units()).map_err(invalid)?;
@@ -737,7 +740,7 @@ pub fn count_transactions(
 pub fn get_transaction(
     conn: ReadConn<'_>,
     company_slug: &str,
-    id: i64,
+    id: TransactionId,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
     let slug = resolve_read_slug(conn, company_slug)?;
     read_transaction_by(conn, &slug, id, decode_transaction)
@@ -745,7 +748,7 @@ pub fn get_transaction(
 
 pub(crate) fn get_scoped_transaction(
     company: &Company<'_>,
-    id: i64,
+    id: TransactionId,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
     read_transaction_by(company.read(), company.slug(), id, decode_transaction)
 }
@@ -754,7 +757,7 @@ pub(crate) fn get_scoped_transaction(
 pub(super) fn get_transaction_for_audit(
     conn: ReadConn<'_>,
     company_slug: &str,
-    id: i64,
+    id: TransactionId,
 ) -> Result<(TransactionRow, Vec<EntryRow>, String), CliError> {
     let slug = resolve_read_slug(conn, company_slug)?;
     let ((txn, date_text), entries) = read_transaction_by(conn, &slug, id, |row| {
@@ -790,7 +793,7 @@ fn decode_transaction(row: &rusqlite::Row<'_>) -> rusqlite::Result<TransactionRo
 fn read_transaction_by<T>(
     conn: ReadConn<'_>,
     company: &CompanySlug,
-    id: i64,
+    id: TransactionId,
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<(T, Vec<EntryRow>), CliError> {
     let company_slug = company.as_str();
@@ -823,7 +826,7 @@ fn read_transaction_by<T>(
 /// Returns `CliError::Sqlite` on database errors.
 pub fn get_entries_for_transaction(
     company: &Company<'_>,
-    txn_id: i64,
+    txn_id: TransactionId,
 ) -> Result<Vec<EntryRow>, CliError> {
     read_entries(company.read(), company.slug(), txn_id)
 }
@@ -831,7 +834,7 @@ pub fn get_entries_for_transaction(
 fn read_entries(
     conn: ReadConn<'_>,
     company: &CompanySlug,
-    txn_id: i64,
+    txn_id: TransactionId,
 ) -> Result<Vec<EntryRow>, CliError> {
     let mut stmt = conn.prepare_cached(
         "SELECT e.id, e.transaction_id, e.account_code, e.company_slug, e.direction, \
@@ -1133,7 +1136,7 @@ mod tests {
     #[test]
     fn get_missing_transaction_is_not_found() {
         let db = setup();
-        let result = get_transaction(db.read(), "acme", 999);
+        let result = get_transaction(db.read(), "acme", crate::db::ids::fixture_id(999));
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
@@ -1284,7 +1287,11 @@ mod tests {
              VALUES ('acme', 'Legacy transaction', 'BAD', '2024-01-15')",
             [],
         )?;
-        let result = get_transaction(ReadConn::new(conn), "acme", conn.last_insert_rowid());
+        let result = get_transaction(
+            ReadConn::new(conn),
+            "acme",
+            crate::db::ids::fixture_id(conn.last_insert_rowid()),
+        );
         assert!(matches!(
             result,
             Err(CliError::Sqlite(rusqlite::Error::FromSqlConversionFailure(

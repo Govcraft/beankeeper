@@ -398,7 +398,7 @@ struct BatchResult {
 #[derive(Serialize)]
 struct ImportOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<i64>,
+    id: Option<crate::db::ids::TransactionId>,
     date: String,
     description: String,
     reference: String,

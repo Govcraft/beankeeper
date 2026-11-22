@@ -133,8 +133,8 @@ struct ResolvedRequest<'a> {
 /// An outstanding (not fully cleared) entry in the reconciliation report.
 #[derive(Debug, Clone)]
 pub struct UnclearedEntry {
-    pub entry_id: i64,
-    pub transaction_id: i64,
+    pub entry_id: crate::db::ids::EntryId,
+    pub transaction_id: crate::db::ids::TransactionId,
     pub date: NaiveDate,
     pub reference: Option<String>,
     pub description: String,
@@ -189,7 +189,7 @@ impl Serialize for UnclearedEntry {
 /// reconciled after `--to` shows as `cleared` with no `reconciled_date`.
 #[derive(Debug, Clone)]
 pub struct ItemClearing {
-    pub id: i64,
+    pub id: crate::db::ids::ClearingId,
     /// Raw (always positive) amount in minor units.
     pub amount: Money,
     pub cleared_date: NaiveDate,
@@ -201,7 +201,7 @@ impl Serialize for ItemClearing {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
         struct ClearingJson<'a> {
-            id: i64,
+            id: crate::db::ids::ClearingId,
             #[serde(flatten)]
             amount: MoneyField,
             cleared_date: NaiveDate,
@@ -223,26 +223,24 @@ impl Serialize for ItemClearing {
 /// The clearings of an entry as of `to` (`None`: current state).
 fn clearings_as_of(
     company: &Company<'_>,
-    entry_id: i64,
+    entry_id: crate::db::ids::EntryId,
     to: Option<NaiveDate>,
     currency: Currency,
 ) -> Result<Vec<ItemClearing>, CliError> {
-    Ok(
-        db::clearings::list_clearings(company, entry_id.try_into()?)?
-            .into_iter()
-            .filter_map(|clearing| match to {
-                Some(cutoff) => clearing.as_of(cutoff),
-                None => Some(clearing),
-            })
-            .map(|c| ItemClearing {
-                id: c.id,
-                amount: money(c.amount.minor_units(), currency),
-                cleared_date: c.cleared_on(),
-                state: c.state(),
-                statement_ref: c.statement_ref,
-            })
-            .collect(),
-    )
+    Ok(db::clearings::list_clearings(company, entry_id)?
+        .into_iter()
+        .filter_map(|clearing| match to {
+            Some(cutoff) => clearing.as_of(cutoff),
+            None => Some(clearing),
+        })
+        .map(|c| ItemClearing {
+            id: c.id,
+            amount: money(c.amount.minor_units(), currency),
+            cleared_date: c.cleared_on(),
+            state: c.state(),
+            statement_ref: c.statement_ref,
+        })
+        .collect())
 }
 
 /// Subtotal for one `--group-by-metadata` value.
@@ -252,7 +250,7 @@ pub struct GroupTotal {
     pub count: usize,
     /// Sum of `signed_remaining` over the group's items.
     pub uncleared_total: Money,
-    pub entry_ids: Vec<i64>,
+    pub entry_ids: Vec<crate::db::ids::EntryId>,
 }
 
 impl Serialize for GroupTotal {
@@ -760,8 +758,8 @@ fn add(acc: i64, amount: i64, sign: i64) -> Result<i64, CliError> {
 
 /// One entry with its clearing aggregates as of the report date.
 struct EntryRow {
-    entry_id: i64,
-    transaction_id: i64,
+    entry_id: crate::db::ids::EntryId,
+    transaction_id: crate::db::ids::TransactionId,
     date: NaiveDate,
     description: String,
     reference: Option<String>,

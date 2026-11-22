@@ -491,7 +491,7 @@ fn call_txn_approve(db: &Db, actor: &Actor, input: inputs::TxnApprove) -> Respon
         actor,
         input.company.into_inner().as_str(),
         TxnCommand::Proposal(TxnProposalCommand::Approve {
-            id: input.id.to_string(),
+            id: input.id.into_inner(),
         }),
     )
 }
@@ -502,7 +502,7 @@ fn call_txn_reject(db: &Db, actor: &Actor, input: inputs::TxnReject) -> Response
         actor,
         input.company.into_inner().as_str(),
         TxnCommand::Proposal(TxnProposalCommand::Reject {
-            id: input.id.to_string(),
+            id: input.id.into_inner(),
             reason: input.reason,
         }),
     )
@@ -514,7 +514,7 @@ fn call_txn_reverse(db: &Db, actor: &Actor, input: inputs::TxnReverse) -> Respon
         actor,
         input.company.into_inner().as_str(),
         TxnCommand::Reverse(cli::TxnReverseArgs {
-            id: input.id.get(),
+            id: input.id,
             date: calendar_arg(input.date),
             description: input.description,
             reference: optional_text(input.reference),
@@ -536,7 +536,7 @@ fn call_txn_meta_set(db: &Db, actor: &Actor, input: inputs::TxnMetaSet) -> Respo
             values,
         } => run(
             company.into_inner().as_str(),
-            MetadataTarget::Id(id.get()),
+            MetadataTarget::Id(id),
             &values.into_vec(),
         ),
         inputs::TxnMetaSet::Reference {
@@ -561,7 +561,7 @@ fn call_txn_meta_unset(db: &Db, actor: &Actor, input: inputs::TxnMetaUnset) -> R
     match input {
         inputs::TxnMetaUnset::Id { company, id, keys } => run(
             company.into_inner().as_str(),
-            MetadataTarget::Id(id.get()),
+            MetadataTarget::Id(id),
             keys.into_vec(),
         ),
         inputs::TxnMetaUnset::Reference {
@@ -608,7 +608,7 @@ fn call_txn_show(db: &Db, actor: &Actor, input: inputs::TxnShow) -> Response {
         db,
         actor,
         input.company.into_inner().as_str(),
-        TxnCommand::Show { id: input.id.get() },
+        TxnCommand::Show { id: input.id },
     )
 }
 
@@ -919,7 +919,7 @@ fn posting(db: &Db, input: inputs::TxnPost, actor: &Actor, mode: PostingMode) ->
         credit: lines(input.credits)?,
         metadata: input.metadata,
         annotations: input.meta.into_iter().collect(),
-        correlate: input.correlate.map(crate::db::ids::TransactionId::get),
+        correlate: input.correlate,
         reference: input.reference.map(Text::into_inner),
         on_conflict: input
             .on_conflict

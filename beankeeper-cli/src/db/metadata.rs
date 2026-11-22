@@ -329,13 +329,16 @@ pub fn build_post_metadata(
 /// # Errors
 ///
 /// Returns `CliError::Validation` if the metadata is already correlated.
-pub fn with_correlate(metadata: Option<&str>, partner_id: i64) -> Result<String, CliError> {
+pub fn with_correlate(
+    metadata: Option<&str>,
+    partner_id: super::ids::PartnerTransactionId,
+) -> Result<String, CliError> {
     with_correlation(metadata.and_then(normalize), partner_id)
 }
 
 pub(super) fn with_correlation(
     mut base: Option<NormalizedMetadata>,
-    partner_id: i64,
+    partner_id: super::ids::PartnerTransactionId,
 ) -> Result<String, CliError> {
     if let Some(metadata) = base.as_mut()
         && let Some(correlate) = metadata.fields.get_mut(CORRELATE_KEY)
@@ -345,15 +348,20 @@ pub(super) fn with_correlation(
                 "metadata already contains a 'correlate' key".to_string(),
             ));
         }
-        *correlate = Value::from(partner_id);
+        *correlate = Value::from(partner_id.get());
         return Ok(Value::Object(std::mem::take(&mut metadata.fields)).to_string());
     }
-    let addition = [(CORRELATE_KEY.to_string(), Value::from(partner_id))];
+    let addition = [(CORRELATE_KEY.to_string(), Value::from(partner_id.get()))];
     insert_keys(base, &addition).map(NormalizedMetadata::into_string)
 }
 
-pub(super) fn reversal_link(original: i64) -> Result<NormalizedMetadata, CliError> {
-    insert_keys(None, &[("reverses".to_owned(), Value::from(original))])
+pub(super) fn reversal_link(
+    original: super::ids::TransactionId,
+) -> Result<NormalizedMetadata, CliError> {
+    insert_keys(
+        None,
+        &[("reverses".to_owned(), Value::from(original.get()))],
+    )
 }
 
 /// A batch of top-level transaction annotation edits. Set values are strings.
@@ -471,28 +479,36 @@ mod tests {
     #[test]
     fn with_correlate_wraps_and_splices() {
         assert_eq!(
-            with_correlate(None, 3).ok().as_deref(),
-            Some(r#"{"correlate":3}"#)
-        );
-        assert_eq!(
-            with_correlate(Some("memo text"), 3).ok().as_deref(),
-            Some(r#"{"memo":"memo text","correlate":3}"#)
-        );
-        assert_eq!(
-            with_correlate(Some(r#"{"ref":"X"}"#), 3).ok().as_deref(),
-            Some(r#"{"ref":"X","correlate":3}"#)
-        );
-        assert_eq!(
-            with_correlate(Some("{}"), 3).ok().as_deref(),
-            Some(r#"{"correlate":3}"#)
-        );
-        assert_eq!(
-            with_correlate(Some(r#"{"correlate":null}"#), 3)
+            with_correlate(None, crate::db::ids::fixture_id(3))
                 .ok()
                 .as_deref(),
             Some(r#"{"correlate":3}"#)
         );
-        assert!(with_correlate(Some(r#"{"correlate":1}"#), 3).is_err());
+        assert_eq!(
+            with_correlate(Some("memo text"), crate::db::ids::fixture_id(3))
+                .ok()
+                .as_deref(),
+            Some(r#"{"memo":"memo text","correlate":3}"#)
+        );
+        assert_eq!(
+            with_correlate(Some(r#"{"ref":"X"}"#), crate::db::ids::fixture_id(3))
+                .ok()
+                .as_deref(),
+            Some(r#"{"ref":"X","correlate":3}"#)
+        );
+        assert_eq!(
+            with_correlate(Some("{}"), crate::db::ids::fixture_id(3))
+                .ok()
+                .as_deref(),
+            Some(r#"{"correlate":3}"#)
+        );
+        assert_eq!(
+            with_correlate(Some(r#"{"correlate":null}"#), crate::db::ids::fixture_id(3))
+                .ok()
+                .as_deref(),
+            Some(r#"{"correlate":3}"#)
+        );
+        assert!(with_correlate(Some(r#"{"correlate":1}"#), crate::db::ids::fixture_id(3)).is_err());
     }
 
     #[test]

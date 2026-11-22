@@ -226,7 +226,7 @@ pub fn render_transaction_detail(
 pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
     txn: &TransactionRow,
     entries: &[EntryRow],
-    clearings: Option<&HashMap<i64, Vec<Clearing>, S>>,
+    clearings: Option<&HashMap<crate::db::ids::EntryId, Vec<Clearing>, S>>,
     use_color: bool,
 ) -> Result<String, CliError> {
     let mut lines = Vec::new();
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn budgets_use_each_rows_currency() {
         let rows = [Currency::USD, Currency::JPY, Currency::BHD].map(|currency| BudgetRow {
-            id: 1,
+            id: crate::db::ids::fixture_id(1),
             company_slug: "acme".into(),
             account_code: "5000".into(),
             currency,
@@ -913,7 +913,7 @@ mod tests {
     #[test]
     fn render_transaction_list_shows_id_and_date() {
         let rows = vec![TransactionRow {
-            id: 1,
+            id: crate::db::ids::fixture_id(1),
             company_slug: "acme".into(),
             description: "Test sale".into(),
             metadata: None,
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn render_transaction_detail_balanced() {
         let txn = TransactionRow {
-            id: 42,
+            id: crate::db::ids::fixture_id(42),
             company_slug: "acme".into(),
             description: "Cash sale".into(),
             metadata: Some("INV-001".into()),
@@ -955,8 +955,8 @@ mod tests {
         };
         let entries = vec![
             EntryRow {
-                id: 1,
-                transaction_id: 42,
+                id: crate::db::ids::fixture_id(1),
+                transaction_id: crate::db::ids::fixture_id(42),
                 account_code: "1000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Debit,
@@ -968,8 +968,8 @@ mod tests {
                 status: EntryStatus::Uncleared,
             },
             EntryRow {
-                id: 2,
-                transaction_id: 42,
+                id: crate::db::ids::fixture_id(2),
+                transaction_id: crate::db::ids::fixture_id(42),
                 account_code: "4000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Credit,
@@ -994,7 +994,7 @@ mod tests {
     #[test]
     fn render_transaction_detail_unbalanced() {
         let txn = TransactionRow {
-            id: 1,
+            id: crate::db::ids::fixture_id(1),
             company_slug: "acme".into(),
             description: "Bad".into(),
             metadata: None,
@@ -1010,8 +1010,8 @@ mod tests {
         };
         let entries = vec![
             EntryRow {
-                id: 1,
-                transaction_id: 1,
+                id: crate::db::ids::fixture_id(1),
+                transaction_id: crate::db::ids::fixture_id(1),
                 account_code: "1000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Debit,
@@ -1023,8 +1023,8 @@ mod tests {
                 status: EntryStatus::Uncleared,
             },
             EntryRow {
-                id: 2,
-                transaction_id: 1,
+                id: crate::db::ids::fixture_id(2),
+                transaction_id: crate::db::ids::fixture_id(1),
                 account_code: "4000".into(),
                 company_slug: "acme".into(),
                 direction: DebitOrCredit::Credit,

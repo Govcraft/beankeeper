@@ -7,7 +7,7 @@ use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, pars
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::db::companies::CompanySlug;
-use crate::db::ids::{EntryId, TransactionId};
+use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::error::CliError;
 use crate::operation::Operation;
 
@@ -1579,7 +1579,7 @@ EXAMPLES:\n  \
 ")]
     Show {
         /// Transaction ID.
-        id: i64,
+        id: TransactionId,
     },
 
     /// Reverse a transaction with a linked mirror posting (alias: void).
@@ -1783,7 +1783,7 @@ pub struct PostingArgs {
 
     /// Correlate with an existing transaction in another company (intercompany linking).
     #[arg(long)]
-    pub correlate: Option<i64>,
+    pub correlate: Option<PartnerTransactionId>,
 
     /// Idempotency key -- rejects duplicate posts with the same reference per company.
     #[arg(short = 'r', long)]
@@ -1911,7 +1911,7 @@ impl std::str::FromStr for TxnPageLimit {
 #[derive(Args, Debug)]
 pub struct TxnReverseArgs {
     /// Transaction ID in the selected company.
-    pub id: i64,
+    pub id: TransactionId,
     /// Reversal date (YYYY-MM-DD), on or after the original. Defaults to today.
     #[arg(long)]
     pub date: Option<CalendarDateArg>,
@@ -2039,11 +2039,13 @@ pub enum TxnProposalCommand {
         include_rejected: bool,
     },
     /// Approve a pending proposal and atomically post it.
-    Approve { id: String },
+    Approve {
+        id: crate::db::proposals::ProposalId,
+    },
     /// Reject a proposal, or withdraw your own pending proposal.
     #[command(alias = "withdraw")]
     Reject {
-        id: String,
+        id: crate::db::proposals::ProposalId,
         #[arg(long)]
         reason: Option<String>,
     },

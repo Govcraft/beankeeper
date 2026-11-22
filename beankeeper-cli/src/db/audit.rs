@@ -30,7 +30,7 @@ use super::connection::ReadConn;
 use super::metadata;
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
 use crate::confirmation::Confirmed;
-use crate::db::ids::{EntryId, TransactionId};
+use crate::db::ids::{BudgetId, ClearingId, EntryId, PartnerTransactionId, TransactionId};
 use crate::error::CliError;
 
 mod attachment;
@@ -808,7 +808,7 @@ pub fn approve_proposal(
     conn: &Connection,
     actor: &Actor,
     company: &str,
-    id: &str,
+    id: &super::proposals::ProposalId,
 ) -> Result<super::proposals::Proposal, CliError> {
     super::proposals::approve(conn, actor, company, id)
 }
@@ -821,7 +821,7 @@ pub fn reject_proposal(
     conn: &Connection,
     actor: &Actor,
     company: &str,
-    id: &str,
+    id: &super::proposals::ProposalId,
     reason: Option<&str>,
 ) -> Result<super::proposals::Proposal, CliError> {
     super::proposals::reject(conn, actor, company, id, reason)
@@ -952,7 +952,7 @@ fn snapshot<T: Serialize>(value: &T) -> String {
 fn posting_snapshot(
     conn: ReadConn<'_>,
     company: &str,
-    id: i64,
+    id: TransactionId,
     hash_version: i64,
 ) -> Result<serde_json::Value, CliError> {
     let (txn, entries, date_text) =
@@ -979,7 +979,7 @@ pub(super) fn record_creation(
     conn: &Connection,
     actor: &Actor,
     company: &str,
-    id: i64,
+    id: TransactionId,
 ) -> Result<(), CliError> {
     let posting = posting_snapshot(ReadConn::new(conn), company, id, 2)?;
     record(
@@ -1007,7 +1007,9 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
              WHERE entity = 'transaction' AND action = 'create'
          ORDER BY 1",
     )?;
-    let txns = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let txns = stmt.query_map([], |r| {
+        Ok((r.get::<_, TransactionId>(0)?, r.get::<_, String>(1)?))
+    })?;
     for txn in txns {
         let (id, company) = txn?;
         let mut creates = conn.prepare(
@@ -1150,7 +1152,7 @@ pub struct ClearOutcome {
     pub entry_id: EntryId,
     pub action: ClearAction,
     /// Id of the clearing inserted by this call, if any.
-    pub clearing_id: Option<i64>,
+    pub clearing_id: Option<ClearingId>,
     /// Amount newly cleared (or removed, for `uncleared`) by this call.
     pub amount: i64,
     /// Entry amount.
@@ -1258,7 +1260,7 @@ fn insert_clearing(
     tx: &savepoint::AuditedTx<'_>,
     req: &ClearRequest<'_>,
     amount: PositiveMinorUnits,
-) -> Result<i64, CliError> {
+) -> Result<ClearingId, CliError> {
     let state = req.status.on(req.date);
     tx.insert(
         "INSERT INTO entry_clearings \
@@ -1274,6 +1276,7 @@ fn insert_clearing(
             state.reconciled_on(),
         ],
     )
+    .and_then(TryInto::try_into)
 }
 
 /// Clears (part of) an entry, keeping `entries.status` in sync and recording
@@ -1528,8 +1531,8 @@ pub fn correlate_partner(
     conn: &Connection,
     actor: &Actor,
     new_company: &str,
-    new_txn_id: i64,
-    partner_id: i64,
+    new_txn_id: TransactionId,
+    partner_id: PartnerTransactionId,
 ) -> Result<(), CliError> {
     in_savepoint(conn, "sp_correlate", || {
         let (partner_company, partner_metadata): (String, Option<String>) = conn
@@ -1557,7 +1560,7 @@ pub fn correlate_partner(
 
         // Normalizes legacy free-text metadata to `{"memo": ...}` and splices
         // in the correlate key, so the partner's metadata stays a JSON object.
-        let updated = metadata::with_correlate(partner_metadata.as_deref(), new_txn_id)?;
+        let updated = metadata::with_correlate(partner_metadata.as_deref(), new_txn_id.into())?;
 
         conn.execute(
             "UPDATE transactions SET metadata = ?1 WHERE id = ?2",
@@ -1591,7 +1594,7 @@ pub fn correlate_partner(
 /// Inputs for an atomic, audited reversal of a transaction in one company.
 pub struct ReverseTransactionParams<'a> {
     pub company_slug: &'a str,
-    pub id: i64,
+    pub id: TransactionId,
     pub date: chrono::NaiveDate,
     pub description: Option<&'a str>,
     /// An explicit reference also permits retrying the same reversal.
@@ -1602,7 +1605,7 @@ pub struct ReverseTransactionParams<'a> {
 /// A checked reverse request and its exact original, minted by the audited path.
 pub(super) struct ReversalPosting<'a> {
     conn: &'a Connection,
-    original_id: i64,
+    original_id: TransactionId,
     params: super::transactions::PostTransactionParams<'a>,
 }
 
@@ -1615,7 +1618,7 @@ impl<'a> ReversalPosting<'a> {
         &self.params
     }
 
-    pub(super) const fn original_id(&self) -> i64 {
+    pub(super) const fn original_id(&self) -> TransactionId {
         self.original_id
     }
 }
@@ -1720,6 +1723,7 @@ fn existing_reversal(
         .filter(|v| !v.is_null())
     {
         if let (Some(id), Some(reference)) = (reversal_id.as_i64(), p.reference) {
+            let id: TransactionId = id.try_into()?;
             let (reversal, _) = get_transaction(ReadConn::new(conn), p.company_slug, id)?;
             let reverse_meta: Option<serde_json::Value> = reversal
                 .metadata
@@ -1730,7 +1734,7 @@ fn existing_reversal(
                     .as_ref()
                     .and_then(|v| v.get("reverses"))
                     .and_then(serde_json::Value::as_i64)
-                    == Some(p.id)
+                    == Some(p.id.get())
             {
                 return Ok(Some(PostResult::Skipped(id)));
             }
@@ -1864,7 +1868,7 @@ fn set_budget_month(
     )?;
 
     Ok(BudgetRow {
-        id,
+        id: id.try_into()?,
         company_slug: p.company_slug.to_string(),
         account_code: p.account_code.to_string(),
         currency,
@@ -1993,7 +1997,7 @@ pub fn delete_budget(
 
 /// A budget row captured before deletion.
 struct BudgetVictim {
-    id: i64,
+    id: BudgetId,
     month: chrono::Month,
     amount: i64,
     notes: Option<String>,
@@ -2490,7 +2494,7 @@ pub fn list_audit(
 #[derive(Debug, Clone, Copy)]
 pub enum MetadataTarget<'a> {
     /// An existing transaction ID.
-    Id(i64),
+    Id(TransactionId),
     /// An existing transaction reference.
     Reference(&'a str),
 }
@@ -2499,7 +2503,7 @@ pub enum MetadataTarget<'a> {
 #[derive(Debug, serde::Serialize)]
 pub struct MetadataResult {
     /// The selected transaction ID.
-    pub id: i64,
+    pub id: TransactionId,
     /// Whole stored object as JSON text, or absent metadata on a no-op.
     pub metadata: Option<String>,
     /// Whether metadata changed and an audit record was appended.
@@ -2526,7 +2530,7 @@ pub fn edit_metadata(
             MetadataTarget::Id(id) => ("id", id),
             MetadataTarget::Reference(reference) => ("reference", reference),
         };
-        let (id, before): (i64, Option<String>) = reader.query_row(
+        let (id, before): (TransactionId, Option<String>) = reader.query_row(
             &format!("SELECT id, metadata FROM transactions WHERE company_slug = ?1 AND {predicate} = ?2"),
             params![company, value],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -2611,7 +2615,7 @@ fn edited_metadata(
     Ok((after, changed))
 }
 
-fn reject_investment_reversal(conn: &Connection, id: i64) -> Result<(), CliError> {
+fn reject_investment_reversal(conn: &Connection, id: TransactionId) -> Result<(), CliError> {
     let investment: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM investment_lots WHERE transaction_id = ?1)
          OR EXISTS(SELECT 1 FROM lot_reliefs WHERE transaction_id = ?1)",
@@ -3176,7 +3180,14 @@ mod tests {
         let partner_id = conn.last_insert_rowid();
 
         let actor = Actor::new("tester");
-        correlate_partner(conn, &actor, "acme", 1, partner_id).expect("correlate");
+        correlate_partner(
+            conn,
+            &actor,
+            "acme",
+            fixture_txn(1),
+            crate::db::ids::fixture_id(partner_id),
+        )
+        .expect("correlate");
 
         let meta: String = conn
             .query_row(
@@ -3193,7 +3204,16 @@ mod tests {
         );
 
         // Now it really is correlated, so a second link is refused.
-        assert!(correlate_partner(conn, &actor, "acme", 1, partner_id).is_err());
+        assert!(
+            correlate_partner(
+                conn,
+                &actor,
+                "acme",
+                fixture_txn(1),
+                crate::db::ids::fixture_id(partner_id)
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -715,7 +715,7 @@ fn apply_batch(
             let PostResult::Created(id) = result else {
                 return Err(reference_conflict(&row.reference));
             };
-            (TransactionId::try_from(id)?, &mut receipt.created)
+            (id, &mut receipt.created)
         };
         items.push(StatementTransaction {
             reference: row.reference.clone(),
@@ -737,7 +737,7 @@ fn require_existing_match(
     row: &FrozenRow,
     id: TransactionId,
 ) -> Result<(), CliError> {
-    let (transaction, entries) = transactions::get_transaction(conn, &batch.company, id.get())?;
+    let (transaction, entries) = transactions::get_transaction(conn, &batch.company, id)?;
     let metadata_matches = match row.metadata.as_deref().and_then(metadata::normalize) {
         None => true,
         Some(expected) => {
