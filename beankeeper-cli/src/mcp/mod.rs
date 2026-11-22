@@ -28,8 +28,7 @@ use serde_json::json;
 use crate::capability::Capability;
 use crate::cli::Cli;
 use crate::db::{
-    Actor,
-    audit::ConfiguredActor,
+    Actor, ActorLabel,
     connection::{Db, ReadConn},
 };
 use crate::error::CliError;
@@ -41,7 +40,7 @@ pub struct LedgerServer {
     db: Arc<Mutex<Db>>,
     tool_router: ToolRouter<Self>,
     credentials: Credentials,
-    configured_actor: Option<ConfiguredActor>,
+    configured_actor: Option<ActorLabel>,
 }
 
 /// Access ceiling for the tools registered on a ledger server.
@@ -85,7 +84,7 @@ impl LedgerServer {
             db,
             access.into(),
             Credentials::Stdio(None),
-            ConfiguredActor::resolve(None),
+            ActorLabel::configured(None),
         )
     }
 
@@ -93,7 +92,7 @@ impl LedgerServer {
         db: Db,
         access: LedgerAccess,
         credentials: Credentials,
-        configured_actor: Option<ConfiguredActor>,
+        configured_actor: Option<ActorLabel>,
     ) -> Self {
         let mut tool_router = Self::tool_router();
         if matches!(access, LedgerAccess::ReadOnly) {
@@ -146,7 +145,7 @@ impl LedgerServer {
                     }
                 };
                 let actor = Actor::for_mcp(
-                    configured_actor.as_ref(),
+                    configured_actor,
                     identity,
                     client_info.as_ref().map(|info| info.name.as_str()),
                 );
@@ -838,7 +837,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         db,
         read_only.into(),
         Credentials::Stdio(cli.agent_token.clone()),
-        ConfiguredActor::resolve(cli.actor.as_deref()),
+        ActorLabel::configured(cli.actor.as_deref()),
     );
     if let Some(identity) = identity
         && identity.enforces_permissions(enforce)
@@ -926,7 +925,7 @@ mod tests {
     #[test]
     fn investment_tools_share_trade_valuation_and_actor_behavior() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
         for (code, kind) in [
@@ -934,7 +933,7 @@ mod tests {
             ("1200", beankeeper::types::AccountType::Asset),
             ("4000", beankeeper::types::AccountType::Revenue),
         ] {
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
                 crate::db::accounts::create_account(
                     grant,
                     &CreateAccountParams {
@@ -1022,10 +1021,10 @@ mod tests {
     #[test]
     fn report_inputs_cover_all_kinds_and_keep_cli_defaults() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             crate::db::accounts::create_account(
                 grant,
                 &CreateAccountParams {

@@ -17,6 +17,7 @@ use crate::db::audit::setup::books::{
 };
 pub(super) use crate::db::companies::CompanySlug;
 use crate::db::{
+    ActorLabel,
     investments::{LotId, valid_symbol},
     proposals::ProposalId,
 };
@@ -145,6 +146,14 @@ impl TextValue for PositiveQuantity {
             "pattern": "^(?=.*[1-9])[0-9]+(\\.[0-9]{1,8})?$",
             "description": "Positive quantity with up to eight decimal places."
         })
+    }
+}
+
+impl TextValue for ActorLabel {
+    const NAME: &'static str = "actor label";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "pattern": "\\S"})
     }
 }
 

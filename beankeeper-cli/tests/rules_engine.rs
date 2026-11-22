@@ -27,7 +27,7 @@ impl Ledger {
         let path = dir.path().join("rules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 companies::create_company(grant, &company.parse()?, company, None)
             })?;
             for (code, kind, tax) in [
@@ -48,7 +48,7 @@ impl Ledger {
                     Some("fallback"),
                 ),
             ] {
-                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                     accounts::create_account(
                         grant,
                         &CreateAccountParams {
@@ -481,10 +481,10 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     let path = directory.path().join("rules.db");
     let db = Db::open(&path, None)?;
     let raw = raw_ledger::open(&path, None)?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         companies::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         accounts::create_account(
             grant,
             &CreateAccountParams {
@@ -496,7 +496,7 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
             },
         )
     })?;
-    let actor = Actor::new("rules-test");
+    let actor = Actor::new("rules-test".parse()?);
     raw.execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     Granted::<Post>::with_db(&db, &actor, |grant| {
         assert!(rules::create_rule(grant, &"acme".parse()?, "coffee".parse()?, "5000", 0).is_err());

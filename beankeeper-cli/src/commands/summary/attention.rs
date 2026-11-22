@@ -371,7 +371,7 @@ mod tests {
 
     fn setup() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             db::companies::create_company(grant, &"co".parse()?, "Company", None)
         })?;
         for (code, name, kind) in [
@@ -437,7 +437,7 @@ mod tests {
                 correlate: None,
                 reference,
                 on_conflict: db::ConflictStrategy::Error,
-                actor: &Actor::new("test"),
+                actor: &Actor::new("test".parse()?),
             },
         )?;
         match result {
@@ -536,12 +536,12 @@ mod tests {
             statement: Some("statement"),
             status: db::clearings::ClearingStatus::Cleared,
         };
-        Granted::<Reconcile>::with_db(&db, &Actor::new("test"), |grant| {
+        Granted::<Reconcile>::with_db(&db, &Actor::new("test".parse()?), |grant| {
             db::audit::clear_entry(grant, &request)
         })?;
         request.date = "2024-02-02".parse()?;
         request.status = db::clearings::ClearingStatus::Reconciled;
-        Granted::<Reconcile>::with_db(&db, &Actor::new("test"), |grant| {
+        Granted::<Reconcile>::with_db(&db, &Actor::new("test".parse()?), |grant| {
             db::audit::clear_entry(grant, &request)
         })?;
         let prior = attention(&db, "2024-02-01")?;
@@ -568,7 +568,7 @@ mod tests {
             ],
             metadata: None,
         };
-        create_schedule(&db, &Actor::new("test"), &params)?;
+        create_schedule(&db, &Actor::new("test".parse()?), &params)?;
         let before = total_changes(&db)?;
         let facts = attention(&db, "2024-02-01")?;
         assert_eq!(facts["recurring_due"]["from"], "2024-02-02");
@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn recurring_uses_current_status_and_respects_once_and_window_boundaries() -> TestResult {
         let db = setup()?;
-        let actor = Actor::new("test");
+        let actor = Actor::new("test".parse()?);
         let mut params = db::schedules::CreateScheduleParams {
             description: "One time".into(),
             currency: beankeeper::types::Currency::USD,
@@ -635,7 +635,7 @@ mod tests {
             ],
             metadata: None,
         };
-        create_schedule(&db, &Actor::new("test"), &params)?;
+        create_schedule(&db, &Actor::new("test".parse()?), &params)?;
         assert_eq!(attention(&db, "2024-02-28")?["recurring_due"]["count"], 1);
         assert_eq!(attention(&db, "2024-02-29")?["recurring_due"]["count"], 0);
         assert_eq!(attention(&db, "2024-03-14")?["recurring_due"]["count"], 0);

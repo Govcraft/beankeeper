@@ -483,7 +483,7 @@ mod tests {
     fn summary_projects_known_and_unknown_money_without_the_envelope()
     -> Result<(), Box<dyn std::error::Error>> {
         let db = Db::open_in_memory()?;
-        Granted::<Admin>::with_db(&db, &db::Actor::new("summary fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &db::Actor::new("summary fixture".parse()?), |grant| {
             db::create_company(grant, &"co".parse()?, "Company", None)
         })?;
         let args = SummaryArgs {

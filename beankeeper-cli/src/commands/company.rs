@@ -147,7 +147,7 @@ mod tests {
             execute_json(&db, &CompanyCommand::List)?,
             serde_json::json!([])
         );
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             companies::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
         let delete = CompanyCommand::Delete {

@@ -170,7 +170,7 @@ fn in_process_reports_match_every_cli_report_payload() -> TestResult {
 #[test]
 fn in_process_reports_preserve_validation_and_missing_company_errors() -> TestResult {
     let db = Db::open_in_memory()?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         beankeeper_cli::db::companies::create_company(grant, &"test".parse()?, "Test", None)
     })?;
     let cli = Cli::try_parse_from(["bk", "report", "trial-balance", "--from", "invalid"])?;

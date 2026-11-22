@@ -143,7 +143,7 @@ pub fn execute_json(
     company: &CompanySlug,
     sub: &AccountCommand,
 ) -> Result<serde_json::Value, CliError> {
-    execute_json_with_actor(db, company, sub, &db::Actor::new("cli"))
+    execute_json_with_actor(db, company, sub, &db::Actor::cli_fallback())
 }
 
 /// Execute an account operation without writing to stdout.

@@ -245,6 +245,31 @@ fn stdio_and_cli_share_configured_actor_attribution() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn cli_and_mcp_return_the_same_validation_error_for_blank_actor_filters() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    for blank in ["", "  \t", "\u{2003}"] {
+        let cli = bk(&path)?
+            .args(["--json", "audit", "log", "--by-actor", blank])
+            .assert()
+            .code(3);
+        let cli: Value = serde_json::from_slice(&cli.get_output().stderr)?;
+        let mcp = client.call("audit_log", &json!({"actor": blank}))?;
+        assert_eq!(mcp["result"]["isError"], true);
+        let mcp_error = payload(&mcp)?;
+        assert_eq!(mcp_error["code"], "VALIDATION");
+        assert_eq!(mcp_error, cli["error"]);
+    }
+    Ok(())
+}
+
 fn tool_names(response: &Value) -> Result<BTreeSet<&str>, Box<dyn Error>> {
     response["result"]["tools"]
         .as_array()
@@ -1277,10 +1302,10 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
     std::fs::write(passphrase_file, "mcp-test-passphrase")?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open(path, Some(&passphrase))?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_account(
             grant,
             &CreateAccountParams {
@@ -1292,7 +1317,7 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
             },
         )
     })?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_account(
             grant,
             &CreateAccountParams {
@@ -1304,10 +1329,10 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
             },
         )
     })?;
-    Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+    Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), identity::init_root)?;
     Ok(Granted::<Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| {
             identity::issue(
                 grant,
@@ -1872,7 +1897,7 @@ fn proposal_identity(
     use beankeeper_cli::identity::{self, IssueRequest};
     Ok(Granted::<Admin>::with_db(
         db,
-        &beankeeper_cli::db::Actor::new("owner"),
+        &beankeeper_cli::db::Actor::new("owner".parse()?),
         |grant| {
             identity::issue(
                 grant,
@@ -1904,7 +1929,7 @@ fn proposal_tools_filter_grants_and_post_approved_requests_with_reviewer_identit
     let reviewer = proposal_identity(&db, "reviewer", &["ledger/read", "ledger/approve"])?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     let mut agent = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
@@ -2000,7 +2025,7 @@ fn mcp_posting_checks_spend_limits_while_proposals_use_the_approval_gate() -> Te
         .success();
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     let mut writer = identity_client(&path, &passphrase_file, requester["token"].as_str(), false)?;
@@ -2041,7 +2066,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let db = Db::open_existing(&path, Some(&passphrase))?;
     let admin = proposal_identity(&db, "owner", &["ledger/admin"])?;
     let verified = identity::verify(db.read(), admin["token"].as_str().ok_or("admin token")?)?;
-    let owner = Actor::new("owner").with_identity(verified);
+    let owner = Actor::new("owner".parse()?).with_identity(verified);
     Granted::<Admin>::with_db(&db, &owner, |grant| db::audit::set_policy(grant, true))?;
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
@@ -2101,7 +2126,7 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
     let db = Db::open_existing(&path, Some(&passphrase))?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     for (name, input, capability) in [
@@ -2168,7 +2193,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     identity_ledger(&path, &passphrase_file)?;
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
-    let issued = Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+    let issued = Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
         identity::issue(
             grant,
             &IssueRequest {
@@ -2183,7 +2208,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let token = issued["token"].as_str().ok_or("token")?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         |grant| db::audit::set_policy(grant, true),
     )?;
     let mut writer = identity_client(&path, &passphrase_file, Some(token), false)?;
@@ -2772,7 +2797,7 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
     let db = Db::open(&path, Some(&passphrase))?;
     Granted::<Admin>::with_db(
         &db,
-        &Actor::new("owner"),
+        &Actor::new("owner".parse()?),
         beankeeper_cli::identity::init_root,
     )?;
     let owner = proposal_identity(&db, "owner", &["ledger/admin"])?;

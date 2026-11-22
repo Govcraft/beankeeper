@@ -878,11 +878,12 @@ fn seed_intercompany_transactions(db: &Db, actor: &crate::db::Actor) -> Result<(
 mod tests {
     use super::*;
     use crate::db::Db;
+    use crate::db::test_support::fixture_actor;
 
     #[test]
     fn demo_data_populates_and_balances() {
         let db = Db::open_in_memory().expect("open in-memory db");
-        populate_demo_data(&db, &crate::db::Actor::new("demo")).expect("populate demo data");
+        populate_demo_data(&db, &fixture_actor("demo")).expect("populate demo data");
 
         // Verify all three companies exist
         let companies = crate::db::list_companies(db.read()).expect("list companies");
@@ -941,7 +942,7 @@ mod tests {
     #[test]
     fn demo_intercompany_correlations_are_linked() {
         let db = Db::open_in_memory().expect("open in-memory db");
-        populate_demo_data(&db, &crate::db::Actor::new("demo")).expect("populate demo data");
+        populate_demo_data(&db, &fixture_actor("demo")).expect("populate demo data");
 
         // No orphaned correlations — every intercompany pair should be fully linked
         let orphans =

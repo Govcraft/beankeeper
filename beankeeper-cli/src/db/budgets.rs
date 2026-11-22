@@ -446,6 +446,7 @@ fn build_variance_query_with_unbudgeted(account_type: Option<AccountType>) -> St
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::db::test_support::fixture_actor;
 
     use super::*;
     static TEST_COMPANY: std::sync::LazyLock<crate::db::companies::CompanySlug> =
@@ -456,7 +457,7 @@ mod tests {
     use crate::identity::{Admin, Budget, Granted};
 
     fn test_actor() -> Actor {
-        Actor::new("test")
+        fixture_actor("test")
     }
 
     // Test-local shims onto the audited mutation API, so the audited path is
@@ -499,7 +500,7 @@ mod tests {
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_company(
                 grant,
                 &"acme"
@@ -510,7 +511,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -525,7 +526,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -540,7 +541,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -555,7 +556,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {

@@ -35,9 +35,9 @@ pub use attachments::{
     store_attachment,
 };
 pub use audit::{
-    Actor, AuditLogRow, ClearAction, ClearOutcome, ClearRequest, EntryStatus, ListAuditParams,
-    clear_entry, count_audit, delete_account, delete_budget, delete_company, list_audit,
-    set_annual_budget, set_budget, set_entry_status, unclear_entry,
+    Actor, ActorLabel, AuditLogRow, BlankActorLabel, ClearAction, ClearOutcome, ClearRequest,
+    EntryStatus, ListAuditParams, clear_entry, count_audit, delete_account, delete_budget,
+    delete_company, list_audit, set_annual_budget, set_budget, set_entry_status, unclear_entry,
 };
 pub use budgets::{
     BudgetCoverage, BudgetMonths, BudgetVarianceParams, BudgetVarianceReport, ListBudgetParams,
@@ -423,13 +423,14 @@ fn push_transaction_dates<'a>(
 #[cfg(test)]
 mod tests {
     use crate::db::CreateAccountParams;
+    use crate::db::test_support::fixture_actor;
     use crate::identity::{Admin, Granted};
 
     use super::*;
 
     fn setup() -> Db {
         let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_company(
                 grant,
                 &"acme"
@@ -440,7 +441,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("company setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -455,7 +456,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -470,7 +471,7 @@ mod tests {
             )
         })
         .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
@@ -512,7 +513,7 @@ mod tests {
                 tax_category: None,
             },
         ];
-        let actor = Actor::new("test");
+        let actor = fixture_actor("test");
         let params = transactions::PostTransactionParams {
             company_slug: &"acme".parse().expect("fixture company"),
             description: "Sale",

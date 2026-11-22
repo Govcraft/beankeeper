@@ -250,7 +250,8 @@ and the verified agent URI third for `posted_by` and audit `actor`. With none of
 these available, the CLI uses the OS user or `cli` and MCP uses a sanitized
 `mcp:<client>` label or `mcp:unknown`. A configured label can be shared by
 several agents. Use `bk audit log --by-actor NAME` or MCP `audit_log` with `actor`
-to find that label, and `--agent URI` or `agent` to find a verified identity.
+to match that label exactly. Both interfaces return `VALIDATION` for a blank
+actor filter. Use `--agent URI` or `agent` to find a verified identity.
 Transaction show/list JSON, table detail and audit output include both identity
 fields. JSON envelopes include `meta.agent` only for a verified supplied token.
 Successful exports retain their standalone file format.

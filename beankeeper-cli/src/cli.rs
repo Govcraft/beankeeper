@@ -8,6 +8,7 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::db::companies::CompanySlug;
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
+use crate::db::{ActorLabel, BlankActorLabel};
 use crate::error::CliError;
 use crate::operation::Operation;
 
@@ -967,7 +968,7 @@ pub struct AuditLogArgs {
 
     /// Restrict to an exact recorded actor label.
     #[arg(long)]
-    pub by_actor: Option<String>,
+    pub by_actor: Option<ActorFilterArg>,
 
     /// Restrict to one verified agent URI.
     #[arg(long)]
@@ -2698,6 +2699,42 @@ pub enum OnConflictArg {
     Error,
     /// Skip the transaction silently on duplicate reference.
     Skip,
+}
+
+/// An actor filter decoded at the transport boundary.
+#[derive(Debug, Clone)]
+pub struct ActorFilterArg(Result<ActorLabel, BlankActorLabel>);
+
+impl ActorFilterArg {
+    pub(crate) fn resolve_optional(value: Option<&Self>) -> Result<Option<&ActorLabel>, CliError> {
+        value
+            .map(|arg| arg.0.as_ref().map_err(|error| CliError::from(*error)))
+            .transpose()
+    }
+}
+
+impl std::str::FromStr for ActorFilterArg {
+    type Err = std::convert::Infallible;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Ok(Self(raw.parse()))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ActorFilterArg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self(text.parse()))
+    }
+}
+
+impl serde::Serialize for ActorFilterArg {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.0 {
+            Ok(label) => serializer.collect_str(label),
+            Err(error) => Err(serde::ser::Error::custom(error)),
+        }
+    }
 }
 
 /// A decoded currency flag with any validation error retained for the command envelope.

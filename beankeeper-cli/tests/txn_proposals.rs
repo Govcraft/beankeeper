@@ -44,14 +44,14 @@ impl Ledger {
         let passphrase: SecretString = "proposal-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
         for company in ["acme", "other"] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 db::create_company(grant, &company.parse()?, company, None)
             })?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("5000", beankeeper::types::AccountType::Expense),
             ] {
-                Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+                Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                     db::create_account(
                         grant,
                         &CreateAccountParams {
@@ -65,7 +65,7 @@ impl Ledger {
                 })?;
             }
         }
-        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), identity::init_root)?;
         Ok(Self {
             _dir: dir,
             path,
@@ -121,7 +121,7 @@ impl Ledger {
     }
 
     fn issue(&self, grants: &[&str]) -> Result<Agent, Box<dyn Error>> {
-        let issued = Granted::<Admin>::with_db(&self.db, &Actor::new("owner"), |grant| {
+        let issued = Granted::<Admin>::with_db(&self.db, &Actor::new("owner".parse()?), |grant| {
             identity::issue(
                 grant,
                 &IssueRequest {

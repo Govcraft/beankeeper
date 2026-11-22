@@ -35,10 +35,10 @@ impl Ledger {
         std::fs::write(&passphrase_file, "test-only-passphrase")?;
         let passphrase: SecretString = "test-only-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -50,7 +50,7 @@ impl Ledger {
                 },
             )
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -176,7 +176,7 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
     let navigation = issue("ui/navigate")?["data"].clone();
     let narrow = issue("ui/navigate/panel")?["data"].clone();
     let administrator = issue("ledger/admin")?;
-    let owner = Actor::new("owner").with_identity(identity::verify(
+    let owner = Actor::new("owner".parse()?).with_identity(identity::verify(
         ledger.db.read(),
         text(&administrator["data"], "token")?,
     )?);
@@ -243,7 +243,7 @@ fn ui_tokens_preserve_scope_and_require_explicit_navigation_authority() -> TestR
         assert!(!output.status.success(), "accepted {caps}");
     }
     assert_eq!(ledger.count("agent_tokens")?, before);
-    Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner"), |grant| {
+    Granted::<Admin>::with_db(&ledger.db, &Actor::new("owner".parse()?), |grant| {
         identity::revoke(grant, identity.jti())
     })?;
     assert!(matches!(
@@ -275,7 +275,7 @@ fn unauthorized(output: &Output) -> TestResult {
 #[test]
 fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() -> TestResult {
     let ledger = Ledger::new()?;
-    Granted::<Admin>::with_db(&ledger.db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&ledger.db, &Actor::new("fixture".parse()?), |grant| {
         db::create_account(
             grant,
             &CreateAccountParams {
@@ -287,7 +287,7 @@ fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() ->
             },
         )
     })?;
-    Granted::<Admin>::with_db(&ledger.db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&ledger.db, &Actor::new("fixture".parse()?), |grant| {
         db::create_account(
             grant,
             &CreateAccountParams {
@@ -836,7 +836,7 @@ fn ttl_validation_has_exact_positive_bounds_and_encryption_is_required_for_keys(
     assert_eq!(identity::parse_ttl("30d")?.as_secs(), 30 * 86400);
     let db = Db::open_in_memory()?;
     assert!(matches!(
-        Granted::<Admin>::with_db(&db, &Actor::new("test"), identity::init_root),
+        Granted::<Admin>::with_db(&db, &Actor::new("test".parse()?), identity::init_root),
         Err(beankeeper_cli::error::CliError::Validation(_))
     ));
     assert_eq!(
@@ -969,7 +969,7 @@ fn typed_issuance_keeps_bearer_and_private_key_out_of_debug_and_audit() -> TestR
 
     let ledger = Ledger::new()?;
     let db = &ledger.db;
-    let actor = Actor::new("owner");
+    let actor = Actor::new("owner".parse()?);
     Granted::<Admin>::with_db(db, &actor, identity::init_root)?;
     let issued = Granted::<Admin>::with_db(db, &actor, |grant| {
         identity::issue_credential(

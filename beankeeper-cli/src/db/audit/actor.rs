@@ -1,33 +1,118 @@
 //! Attribution shared by the command line and MCP transports.
 
-use crate::identity::VerifiedAgent;
+use std::{fmt, str::FromStr};
 
-/// A non-blank actor label selected by the operator.
+use agent_uri::AgentUri;
+
+use crate::{error::CliError, identity::VerifiedAgent};
+
+/// A nonblank audit label, suitable for recording or for exact matching.
 #[derive(Debug, Clone)]
-pub(crate) struct ConfiguredActor(String);
+pub struct ActorLabel(Label);
 
-impl ConfiguredActor {
-    pub(crate) fn resolve(explicit: Option<&str>) -> Option<Self> {
-        non_blank(explicit)
-            .map(str::to_owned)
-            .or_else(|| environment_label("BK_ACTOR"))
-            .map(Self)
+#[derive(Debug, Clone)]
+enum Label {
+    Text(Box<str>),
+    VerifiedUri(Box<AgentUri>),
+    McpClient(McpClientName),
+    McpUnknown,
+    Cli,
+}
+
+/// An actor label contained no non-whitespace characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlankActorLabel;
+
+impl fmt::Display for BlankActorLabel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("actor label must not be blank")
+    }
+}
+
+impl std::error::Error for BlankActorLabel {}
+
+impl From<BlankActorLabel> for CliError {
+    fn from(error: BlankActorLabel) -> Self {
+        Self::Validation(error.to_string())
+    }
+}
+
+impl FromStr for ActorLabel {
+    type Err = BlankActorLabel;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if text.trim().is_empty() {
+            return Err(BlankActorLabel);
+        }
+        Ok(Self(Label::Text(text.into())))
+    }
+}
+
+impl fmt::Display for ActorLabel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl ActorLabel {
+    pub(crate) fn configured(explicit: Option<&str>) -> Option<Self> {
+        explicit
+            .and_then(|value| value.trim().parse().ok())
+            .or_else(|| Self::from_env("BK_ACTOR"))
+    }
+
+    fn from_env(variable: &str) -> Option<Self> {
+        std::env::var(variable).ok()?.trim().parse().ok()
+    }
+
+    /// Returns the exact text stored or matched by the ledger.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            Label::Text(text) => text,
+            Label::VerifiedUri(uri) => uri.as_str(),
+            Label::McpClient(name) => &name.0,
+            Label::McpUnknown => "mcp:unknown",
+            Label::Cli => "cli",
+        }
+    }
+}
+
+/// A label derived from an untrusted MCP peer name.
+#[derive(Debug, Clone)]
+struct McpClientName(Box<str>);
+
+impl McpClientName {
+    fn from_peer(raw: &str) -> Option<Self> {
+        let name: String = raw
+            .chars()
+            .take(80)
+            .map(|ch| match ch {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' => ch.to_ascii_lowercase(),
+                _ => '-',
+            })
+            .collect();
+        let name = name.trim_matches('-');
+        if name.is_empty() {
+            return None;
+        }
+        Some(Self(format!("mcp:{name}").into_boxed_str()))
     }
 }
 
 /// The principal responsible for a mutation, recorded in every audit row.
 #[derive(Debug, Clone)]
 pub struct Actor {
-    name: String,
+    label: ActorLabel,
     identity: Option<VerifiedAgent>,
 }
 
 impl Actor {
-    /// Constructs an actor with an explicit name.
+    /// Constructs an actor with a validated label.
     #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(label: ActorLabel) -> Self {
         Self {
-            name: name.into(),
+            label,
             identity: None,
         }
     }
@@ -39,38 +124,46 @@ impl Actor {
         Self::for_cli(explicit, None)
     }
 
+    pub(crate) fn cli_fallback() -> Self {
+        Self::new(ActorLabel(Label::Cli))
+    }
+
     pub(crate) fn for_cli(explicit: Option<&str>, identity: Option<VerifiedAgent>) -> Self {
-        Self::attributed(
-            ConfiguredActor::resolve(explicit).as_ref(),
-            identity,
-            || {
-                ["USER", "USERNAME"]
-                    .into_iter()
-                    .find_map(environment_label)
-                    .unwrap_or_else(|| "cli".to_owned())
-            },
-        )
+        Self::attributed(ActorLabel::configured(explicit), identity, || {
+            ["USER", "USERNAME"]
+                .into_iter()
+                .find_map(ActorLabel::from_env)
+                .unwrap_or(ActorLabel(Label::Cli))
+        })
     }
 
     pub(crate) fn for_mcp(
-        configured: Option<&ConfiguredActor>,
+        configured: Option<ActorLabel>,
         identity: Option<VerifiedAgent>,
         client_name: Option<&str>,
     ) -> Self {
-        Self::attributed(configured, identity, || mcp_label(client_name))
+        Self::attributed(configured, identity, || {
+            ActorLabel(
+                client_name
+                    .and_then(McpClientName::from_peer)
+                    .map_or(Label::McpUnknown, Label::McpClient),
+            )
+        })
     }
 
     fn attributed(
-        configured: Option<&ConfiguredActor>,
+        configured: Option<ActorLabel>,
         identity: Option<VerifiedAgent>,
-        fallback: impl FnOnce() -> String,
+        fallback: impl FnOnce() -> ActorLabel,
     ) -> Self {
-        let name = match (configured, &identity) {
-            (Some(label), _) => label.0.clone(),
-            (None, Some(agent)) => agent.uri().to_owned(),
+        let label = match (configured, &identity) {
+            (Some(label), _) => label,
+            (None, Some(agent)) => {
+                ActorLabel(Label::VerifiedUri(Box::new(agent.typed_uri().clone())))
+            }
             (None, None) => fallback(),
         };
-        Self { name, identity }
+        Self { label, identity }
     }
 
     /// Attaches an identity verified against this ledger's trust root.
@@ -98,34 +191,40 @@ impl Actor {
         self.identity.as_ref()
     }
 
+    /// Returns the actor's validated label.
+    #[must_use]
+    pub fn label(&self) -> &ActorLabel {
+        &self.label
+    }
+
     /// Returns the actor's name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.name
+        self.label().as_str()
     }
 }
 
-fn non_blank(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
-}
+#[cfg(test)]
+mod tests {
+    use super::{ActorLabel, BlankActorLabel, McpClientName};
 
-fn environment_label(variable: &str) -> Option<String> {
-    non_blank(std::env::var(variable).ok().as_deref()).map(str::to_owned)
-}
+    #[test]
+    fn actor_label_rejects_blank_text_and_preserves_exact_matching() -> Result<(), BlankActorLabel>
+    {
+        for blank in ["", " ", "\t\n", "\u{2003}"] {
+            assert_eq!(blank.parse::<ActorLabel>().err(), Some(BlankActorLabel));
+        }
+        let label = " operator name ".parse::<ActorLabel>()?;
+        assert_eq!(label.as_str(), " operator name ");
+        Ok(())
+    }
 
-fn mcp_label(name: Option<&str>) -> String {
-    let name: String = name
-        .unwrap_or_default()
-        .chars()
-        .take(80)
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let name = name.trim_matches('-');
-    format!("mcp:{}", if name.is_empty() { "unknown" } else { name })
+    #[test]
+    fn mcp_client_name_retains_only_the_bounded_sanitized_label() {
+        let raw = format!(" ./A_!{}suffix", "B".repeat(75));
+        let label = McpClientName::from_peer(&raw).map(|name| name.0);
+        let expected = format!("mcp:.-a_-{}", "b".repeat(74));
+        assert_eq!(label.as_deref(), Some(expected.as_str()));
+        assert!(McpClientName::from_peer(" /!😀- ").is_none());
+    }
 }

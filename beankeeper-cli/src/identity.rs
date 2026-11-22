@@ -40,7 +40,11 @@ impl VerifiedAgent {
     /// Canonical agent URI from the signed token.
     #[must_use]
     pub fn uri(&self) -> &str {
-        self.uri.as_str()
+        self.typed_uri().as_str()
+    }
+
+    pub(crate) fn typed_uri(&self) -> &AgentUri {
+        &self.uri
     }
 
     /// Unique identifier of the verified token.
@@ -569,7 +573,7 @@ mod capability_witness_tests {
         let directory = tempfile::tempdir()?;
         let passphrase: SecretString = "ephemeral test ledger".into();
         let ledger = Db::open(&directory.path().join("books.db"), Some(&passphrase))?;
-        let owner = Actor::new("owner");
+        let owner = Actor::new("owner".parse()?);
         Granted::<Admin>::with_db(&ledger, &owner, init_root)?;
         let capabilities = [
             "ledger/read".into(),
@@ -602,7 +606,7 @@ mod capability_witness_tests {
         let directory = tempfile::tempdir()?;
         let passphrase: secrecy::SecretString = "ephemeral test ledger".into();
         let ledger = Db::open(&directory.path().join("books.db"), Some(&passphrase))?;
-        let owner = Actor::new("owner");
+        let owner = Actor::new("owner".parse()?);
         Granted::<Admin>::with_db(&ledger, &owner, init_root)?;
         let issued = Granted::<Admin>::with_db(&ledger, &owner, |grant| {
             issue(
@@ -620,7 +624,7 @@ mod capability_witness_tests {
             .as_str()
             .ok_or_else(|| CliError::General("missing test token".into()))?;
         let identity = verify(ledger.read(), token)?;
-        let actor = Actor::new("reviewer").with_identity(identity.clone());
+        let actor = Actor::new("reviewer".parse()?).with_identity(identity.clone());
 
         assert!(Granted::<Approve>::with_db(&ledger, &actor, |_| Ok(())).is_ok());
         let foreign = Db::open_in_memory()?;

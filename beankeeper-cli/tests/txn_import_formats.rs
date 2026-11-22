@@ -24,10 +24,10 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 companies::create_company(grant, &company.parse()?, company, None)
             })?;
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 accounts::create_account(
                     grant,
                     &CreateAccountParams {
@@ -39,7 +39,7 @@ impl Ledger {
                     },
                 )
             })?;
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 accounts::create_account(
                     grant,
                     &CreateAccountParams {
@@ -51,7 +51,7 @@ impl Ledger {
                     },
                 )
             })?;
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 accounts::create_account(
                     grant,
                     &CreateAccountParams {

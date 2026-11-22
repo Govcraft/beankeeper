@@ -17,7 +17,7 @@ use serde_json::json;
 use super::LedgerServer;
 use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
 use crate::cli::Cli;
-use crate::db::audit::ConfiguredActor;
+use crate::db::ActorLabel;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::identity::VerifiedAgent;
@@ -274,7 +274,7 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
         db,
         read_only.into(),
         super::Credentials::Http,
-        ConfiguredActor::resolve(cli.actor.as_deref()),
+        ActorLabel::configured(cli.actor.as_deref()),
     );
     let authentication = Authentication {
         db: server.db.clone(),

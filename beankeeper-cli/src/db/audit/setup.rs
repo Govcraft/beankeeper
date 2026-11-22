@@ -380,7 +380,7 @@ mod tests {
     use secrecy::{ExposeSecret, SecretString};
 
     fn owner(db: &Db) -> Result<Actor, CliError> {
-        let local = Actor::new("owner");
+        let local = Actor::new("owner".parse()?);
         identity::Granted::<identity::Admin>::with_db(db, &local, identity::init_root)?;
         let credential = identity::Granted::<identity::Admin>::with_db(db, &local, |grant| {
             identity::issue_credential(
@@ -412,7 +412,7 @@ mod tests {
             begin(&plain, &owner, "setup", &public_key, ttl),
             Err(CliError::Validation(message)) if message == "setup sessions require an encrypted ledger"
         ));
-        let unnamed = Actor::new("owner");
+        let unnamed = Actor::new("owner".parse()?);
         assert!(matches!(
             begin(&db, &unnamed, "setup", &public_key, ttl),
             Err(CliError::Unauthorized(_))
@@ -426,7 +426,7 @@ mod tests {
 
         let token = setup.credential.token().expose_secret();
         let authenticated = identity::verify(db.read(), token)?;
-        let agent = Actor::new("setup agent").with_identity(authenticated);
+        let agent = Actor::new("setup agent".parse()?).with_identity(authenticated);
         let generation = setup.session.generation;
         let used = with_active_session(&db, &agent, generation, |proof| {
             assert_eq!(

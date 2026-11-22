@@ -621,7 +621,7 @@ fn restore_cannot_replace_an_enforced_destination_with_an_unenforced_snapshot() 
     let db = Db::open(&destination, None)?;
     beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
         &db,
-        &beankeeper_cli::db::Actor::new("owner"),
+        &beankeeper_cli::db::Actor::new("owner".parse()?),
         |grant| beankeeper_cli::db::audit::set_policy(grant, true),
     )?;
     drop(db);

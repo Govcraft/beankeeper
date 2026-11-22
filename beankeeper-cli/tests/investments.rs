@@ -100,7 +100,7 @@ fn fixture_with_raw() -> Result<(tempfile::TempDir, Db, rusqlite::Connection), C
 
 fn seed(db: Db) -> Result<Db, CliError> {
     for company in ["acme", "other"] {
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             companies::create_company(grant, &company.parse()?, company, None)
         })?;
         for (code, kind) in [
@@ -110,7 +110,7 @@ fn seed(db: Db) -> Result<Db, CliError> {
             ("4000", beankeeper::types::AccountType::Revenue),
             ("5000", beankeeper::types::AccountType::Expense),
         ] {
-            Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 accounts::create_account(
                     grant,
                     &CreateAccountParams {
@@ -126,7 +126,7 @@ fn seed(db: Db) -> Result<Db, CliError> {
         for symbol in ["ABC", "XYZ"] {
             create_security(
                 &db,
-                &Actor::new("investment-test"),
+                &Actor::new("investment-test".parse()?),
                 company,
                 &SecurityParams {
                     symbol: symbol.into(),
@@ -187,7 +187,7 @@ fn verify(db: &Db) -> TestResult {
 fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
     for (method, expected_basis) in [(LotSelection::Fifo, 100), (LotSelection::Lifo, 200)] {
         let db = fixture()?;
-        let actor = Actor::new("investment-test");
+        let actor = Actor::new("investment-test".parse()?);
         let older = buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
         let newer = buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
         let mut params = sale("1", 150, "2026-01-03")?;
@@ -227,7 +227,7 @@ fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
 #[test]
 fn a_sale_can_exhaust_one_lot_and_partially_relieve_another() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
     buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
     let sold = sell(&db, &actor, "acme", &sale("1.5", 300, "2026-01-03")?)?;
@@ -250,7 +250,7 @@ fn a_sale_can_exhaust_one_lot_and_partially_relieve_another() -> TestResult {
 fn same_date_lots_have_a_stable_id_tiebreaker() -> TestResult {
     for method in [LotSelection::Fifo, LotSelection::Lifo] {
         let db = fixture()?;
-        let actor = Actor::new("investment-test");
+        let actor = Actor::new("investment-test".parse()?);
         buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
         buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-01")?)?;
         let lots = investments::list_lots(
@@ -272,7 +272,7 @@ fn same_date_lots_have_a_stable_id_tiebreaker() -> TestResult {
 #[test]
 fn specific_lots_are_scoped_to_company_symbol_and_account() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
     let newer = buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
     let mut params = sale("1", 250, "2026-01-03")?;
@@ -306,7 +306,7 @@ fn specific_lots_are_scoped_to_company_symbol_and_account() -> TestResult {
 #[test]
 fn fractional_partial_sales_conserve_the_original_basis() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("0.75", 100, "2026-01-01")?)?;
     let mut costs = Vec::new();
     for day in ["2026-01-02", "2026-01-03", "2026-01-04"] {
@@ -329,7 +329,7 @@ fn fractional_partial_sales_conserve_the_original_basis() -> TestResult {
 #[test]
 fn historical_holdings_apply_only_trades_and_prices_known_at_the_cutoff() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("3", 300, "2026-01-01")?)?;
     sell(&db, &actor, "acme", &sale("1", 150, "2026-01-03")?)?;
     for (day, price) in [("2026-01-02", 120), ("2026-01-04", 250)] {
@@ -373,7 +373,7 @@ fn historical_holdings_apply_only_trades_and_prices_known_at_the_cutoff() -> Tes
 #[test]
 fn dates_across_the_four_digit_year_boundary_keep_chronological_order() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     for (day, price) in [("9999-12-31", 120), ("+10000-01-01", 250)] {
         buy(&db, &actor, "acme", &purchase("1", 100, day)?)?;
         record_price(
@@ -400,7 +400,7 @@ fn dates_across_the_four_digit_year_boundary_keep_chronological_order() -> TestR
 #[test]
 fn investment_money_stays_bound_to_security_currency() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     let mut purchase = purchase("1", 100, "2026-01-01")?;
     let before = state(&db)?;
     purchase.cost =
@@ -424,7 +424,7 @@ fn investment_money_stays_bound_to_security_currency() -> TestResult {
 #[test]
 fn oversells_and_duplicate_references_leave_no_partial_state() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     let mut bought = purchase("1", 100, "2026-01-01")?;
     bought.reference = Some("buy-1".into());
     buy(&db, &actor, "acme", &bought)?;
@@ -455,7 +455,7 @@ fn relief_or_audit_failure_rolls_back_the_entire_sale() -> TestResult {
          BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;",
     ] {
         let (_directory, db, raw) = fixture_with_raw()?;
-        let actor = Actor::new("investment-test");
+        let actor = Actor::new("investment-test".parse()?);
         buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?)?;
         buy(&db, &actor, "acme", &purchase("1", 200, "2026-01-02")?)?;
         let before = state(&db)?;
@@ -478,7 +478,7 @@ fn relief_or_audit_failure_rolls_back_the_entire_sale() -> TestResult {
 #[test]
 fn lot_creation_failure_rolls_back_the_purchase_posting() -> TestResult {
     let (_directory, db, raw) = fixture_with_raw()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     let before = state(&db)?;
     raw.execute_batch(
         "CREATE TRIGGER fail_lot BEFORE INSERT ON investment_lots
@@ -492,7 +492,7 @@ fn lot_creation_failure_rolls_back_the_purchase_posting() -> TestResult {
 #[test]
 fn aggregate_basis_overflow_rejects_reports_and_sales_without_changes() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("1", i64::MAX, "2026-01-01")?)?;
     buy(&db, &actor, "acme", &purchase("1", 1, "2026-01-02")?)?;
     let before = state(&db)?;
@@ -508,7 +508,7 @@ fn aggregate_basis_overflow_rejects_reports_and_sales_without_changes() -> TestR
 #[test]
 fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("2", 1, "2026-01-01")?)?;
     record_price(
         &db,
@@ -548,7 +548,7 @@ fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
 #[test]
 fn trades_reject_backdating_within_the_same_security_and_account() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-02")?)?;
     let before = state(&db)?;
     assert!(buy(&db, &actor, "acme", &purchase("1", 100, "2026-01-01")?).is_err());
@@ -567,7 +567,7 @@ fn trades_reject_backdating_within_the_same_security_and_account() -> TestResult
 #[test]
 fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     let before = state(&db)?;
     assert!(Currency::from_code("BAD").is_err());
     for (symbol, name) in [("bad symbol", "bad"), ("NEW", " ")] {
@@ -607,7 +607,7 @@ fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult 
 #[test]
 fn investment_records_cannot_be_updated_deleted_or_replaced() -> TestResult {
     let (_directory, db, raw) = fixture_with_raw()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-01")?)?;
     sell(&db, &actor, "acme", &sale("1", 150, "2026-01-02")?)?;
     record_price(
@@ -659,7 +659,7 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
     use beankeeper_cli::db::metadata::MetadataEdit;
 
     let db = fixture()?;
-    let actor = Actor::new("investment-test");
+    let actor = Actor::new("investment-test".parse()?);
     let bought = buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-01")?)?;
     let sold = sell(&db, &actor, "acme", &sale("1", 150, "2026-01-02")?)?;
     for id in [bought.transaction_id, sold.transaction_id] {
@@ -706,7 +706,7 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
 #[test]
 fn closed_period_blocks_purchases_and_sales_without_lot_side_effects() -> TestResult {
     let db = fixture()?;
-    let actor = Actor::new("close-test");
+    let actor = Actor::new("close-test".parse()?);
     buy(&db, &actor, "acme", &purchase("2", 200, "2026-01-01")?)?;
     Granted::<Admin>::with_db(&db, &actor, |grant| {
         audit::change_period(

@@ -409,7 +409,7 @@ mod tests {
 
     fn ledger() -> Result<(Db, SpendLimit), CliError> {
         let db = Db::open_in_memory()?;
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
         let id = agent_uri::AgentId::try_new("spender")
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn audited_revisions_and_clears_preserve_limit_integrity() -> Result<(), CliError> {
         let (db, mut limit) = ledger()?;
-        let owner = Actor::new("owner");
+        let owner = Actor::new("owner".parse()?);
         Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &limit))?;
         limit.caps = Caps::from_minor_units(None, Some(3000))?;
         Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &limit))?;
@@ -491,7 +491,7 @@ mod tests {
             .map_err(|error| CliError::General(error.to_string()))?;
         assert_eq!(legacy.agent(), limit.agent());
         assert_eq!(legacy.agent_uri(), stored);
-        let owner = Actor::new("owner");
+        let owner = Actor::new("owner".parse()?);
         Granted::<Admin>::with_db(&db, &owner, |grant| audit::set_spend_limit(grant, &legacy))?;
         assert_eq!(
             serde_json::to_value(list(db.read(), &stored, Some(&"acme".parse()?))?)
@@ -535,7 +535,7 @@ mod tests {
             ("1000", beankeeper::types::AccountType::Asset),
             ("5000", beankeeper::types::AccountType::Expense),
         ] {
-            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture"), |grant| {
+            Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
                 db::create_account(
                     grant,
                     &CreateAccountParams {

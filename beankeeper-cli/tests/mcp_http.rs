@@ -39,10 +39,10 @@ impl Ledger {
         let path = dir.path().join("books.db");
         let secret = dir.path().join("passphrase");
         let db = Db::open(&path, Some(&PASSPHRASE.into()))?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_company(grant, &"acme".parse()?, "Acme", None)
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -54,7 +54,7 @@ impl Ledger {
                 },
             )
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
             db::create_account(
                 grant,
                 &CreateAccountParams {
@@ -66,9 +66,9 @@ impl Ledger {
                 },
             )
         })?;
-        Granted::<Admin>::with_db(&db, &Actor::new("owner"), identity::init_root)?;
+        Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), identity::init_root)?;
         let issue = |name: &str, capabilities: &[String]| {
-            Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+            Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
                 identity::issue(
                     grant,
                     &IssueRequest {
@@ -84,7 +84,8 @@ impl Ledger {
         let reader = issue("http_reader", &["ledger/read".into()])?;
         let writer = issue("http_writer", &["ledger/read".into(), "ledger/post".into()])?;
         let admin = issue("http_owner", &["ledger/admin".into()])?;
-        let owner = Actor::new("owner").with_identity(identity::verify(db.read(), token(&admin)?)?);
+        let owner = Actor::new("owner".parse()?)
+            .with_identity(identity::verify(db.read(), token(&admin)?)?);
         Ok(Self {
             dir,
             path,
@@ -494,7 +495,7 @@ fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult 
     let ledger = Ledger::new()?;
     let db = ledger.db()?;
     let issue = |name: &str, capability: &str| {
-        Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
+        Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
             identity::issue(
                 grant,
                 &IssueRequest {
@@ -1040,7 +1041,7 @@ fn resolved_http_router_supports_unencrypted_snapshots_without_resolving_sources
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    Granted::<Admin>::with_db(&db, &Actor::new("fixture"), |grant| {
+    Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_company(grant, &"acme".parse()?, "Acme", None)
     })?;
     let mut cli = Cli::try_parse_from(["host", "mcp", "serve"])?;
@@ -1306,18 +1307,19 @@ fn exercise_host_tools(read_only: bool) -> TestResult {
     use beankeeper_cli::mcp::{StreamableHttpServerConfig, http_router_with_host_tools};
 
     let ledger = Ledger::new()?;
-    let navigation = Granted::<Admin>::with_db(&ledger.db()?, &Actor::new("owner"), |grant| {
-        identity::issue(
-            grant,
-            &IssueRequest {
-                name: "navigator",
-                capabilities: &["ui/navigate".into()],
-                ttl: Duration::from_secs(3600),
-                public_key: None,
-                generate_key: true,
-            },
-        )
-    })?;
+    let navigation =
+        Granted::<Admin>::with_db(&ledger.db()?, &Actor::new("owner".parse()?), |grant| {
+            identity::issue(
+                grant,
+                &IssueRequest {
+                    name: "navigator",
+                    capabilities: &["ui/navigate".into()],
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let host = TestHost {
         calls: calls.clone(),
