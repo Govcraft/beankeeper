@@ -958,7 +958,7 @@ mod tests {
 
         // No orphaned correlations — every intercompany pair should be fully linked
         let orphans =
-            crate::db::find_orphaned_correlations(db.conn(), crate::db::companies::AllCompanies)
+            crate::db::find_orphaned_correlations(db.read(), crate::db::companies::AllCompanies)
                 .expect("find orphans");
         assert!(
             orphans.is_empty(),

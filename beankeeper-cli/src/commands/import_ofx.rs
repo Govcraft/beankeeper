@@ -294,7 +294,8 @@ pub(crate) fn prepare_transaction(
 /// Post one prepared transaction, returning the outcome.
 fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> TransactionOutcome {
     // Pre-check for duplicates; an early outcome means we must not post.
-    if let Some(outcome) = check_conflict(ctx.conn, ctx.company, prepared, ctx.conflict_strategy) {
+    if let Some(outcome) = check_conflict(ctx.reader, ctx.company, prepared, ctx.conflict_strategy)
+    {
         return outcome;
     }
 
@@ -329,7 +330,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
 /// under the active strategy, or a lookup error) and `None` when posting may
 /// proceed.
 fn check_conflict(
-    conn: &rusqlite::Connection,
+    conn: ReadConn<'_>,
     company: &str,
     prepared: &PreparedTransaction,
     conflict_strategy: transactions::ConflictStrategy,

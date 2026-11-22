@@ -433,7 +433,7 @@ fn post_import(
     // A changed rule cannot change the identity or validation of a replay.
     let skip_source = ctx.format == ImportFormat::Csv
         && ctx.strategy == transactions::ConflictStrategy::Skip
-        && transactions::reference_exists(ctx.db.conn(), ctx.company, &reference)?;
+        && transactions::reference_exists(ctx.db.read(), ctx.company, &reference)?;
     if !skip_source && ctx.format == ImportFormat::Csv {
         categorize_csv(&mut prepared, ctx.rules, ctx.bank, ctx.suspense)?;
     }

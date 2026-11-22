@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::audit::{self, Actor};
 use super::companies::{AllCompanies, Company};
+use super::connection::ReadConn;
 use super::metadata;
 use super::metadata_filter;
 use super::{EntryRow, TransactionRow};
@@ -14,7 +15,7 @@ use crate::error::CliError;
 
 /// Check source identity before applying mutable import categorization rules.
 pub(crate) fn reference_exists(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     company: &str,
     reference: &str,
 ) -> Result<bool, CliError> {
@@ -309,7 +310,7 @@ pub(crate) fn build_journal(
     let mut journal = JournalEntry::new(date, request.description, currency);
     for entry in request.entries {
         let account = super::accounts::get_account(
-            super::connection::ReadConn::new(conn),
+            ReadConn::new(conn),
             request.company_slug,
             &entry.account_code,
         )
@@ -692,7 +693,7 @@ fn build_list_query(
 ///
 /// Returns [`CliError`] on database query failure.
 pub fn list_transactions(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     params: &ListTransactionParams<'_>,
 ) -> Result<Vec<TransactionRow>, CliError> {
     let (where_clause, mut param_values, mut param_idx) = build_list_query(params);
@@ -745,7 +746,7 @@ pub fn list_transactions(
 ///
 /// Returns [`CliError`] on database query failure.
 pub fn count_transactions(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     params: &ListTransactionParams<'_>,
 ) -> Result<i64, CliError> {
     let (where_clause, param_values, _) = build_list_query(params);
@@ -861,7 +862,7 @@ pub fn get_entries_for_transaction(
 ///
 /// Returns [`CliError`] on database query failure.
 pub fn find_orphaned_correlations(
-    conn: &Connection,
+    conn: ReadConn<'_>,
     _scope: AllCompanies,
 ) -> Result<Vec<OrphanedCorrelation>, CliError> {
     // NULL or non-JSON metadata means "no correlate" (issue #17); the guarded
@@ -1122,7 +1123,7 @@ mod tests {
 
         let mut lp = ListTransactionParams::for_company("acme");
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 2);
     }
 
@@ -1168,7 +1169,7 @@ mod tests {
         let mut lp = ListTransactionParams::for_company("acme");
         lp.account_filter = Some("5000");
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Expense");
     }
@@ -1188,7 +1189,7 @@ mod tests {
         lp.from_date = NaiveDate::from_ymd_opt(2024, 2, 1);
         lp.to_date = NaiveDate::from_ymd_opt(2024, 2, 28);
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Feb");
     }
@@ -1292,7 +1293,7 @@ mod tests {
         // Verify no transaction was partially committed
         let mut lp = ListTransactionParams::for_company("acme");
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 0);
     }
 
@@ -1308,7 +1309,7 @@ mod tests {
         let mut lp = ListTransactionParams::for_company("acme");
         lp.description_like = Some("AWS");
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "AWS monthly bill");
     }
@@ -1370,7 +1371,7 @@ mod tests {
         lp.value_filter = TransactionValueFilter::from_bounds(Some(Money::usd(10000)), None, None)
             .unwrap_or_else(|error| panic!("{error}"));
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Big");
     }
@@ -1386,14 +1387,14 @@ mod tests {
         lp.value_filter = TransactionValueFilter::from_bounds(None, None, Some(Money::usd(5000)))
             .unwrap_or_else(|error| panic!("{error}"));
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
 
         let mut lp2 = ListTransactionParams::for_company("acme");
         lp2.value_filter = TransactionValueFilter::from_bounds(None, None, Some(Money::usd(9999)))
             .unwrap_or_else(|error| panic!("{error}"));
         lp2.limit = 100;
-        let list2 = list_transactions(db.conn(), &lp2).unwrap_or_default();
+        let list2 = list_transactions(db.read(), &lp2).unwrap_or_default();
         assert_eq!(list2.len(), 0);
     }
 
@@ -1410,7 +1411,7 @@ mod tests {
         let mut lp = ListTransactionParams::for_company("acme");
         lp.reference_filter = Some("INV-001");
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "With ref");
     }
@@ -1432,7 +1433,7 @@ mod tests {
         let mut lp = ListTransactionParams::for_company("acme");
         lp.metadata_like = Some("AWS");
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Tagged");
     }
@@ -1462,7 +1463,7 @@ mod tests {
         lp.account_filter = Some("1000");
         lp.direction_filter = Some(DebitOrCredit::Debit);
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
 
         // Filter for transactions where account 1000 has a credit entry (none)
@@ -1470,7 +1471,7 @@ mod tests {
         lp2.account_filter = Some("1000");
         lp2.direction_filter = Some(DebitOrCredit::Credit);
         lp2.limit = 100;
-        let list2 = list_transactions(db.conn(), &lp2).unwrap_or_default();
+        let list2 = list_transactions(db.read(), &lp2).unwrap_or_default();
         assert_eq!(list2.len(), 0);
     }
 
@@ -1486,12 +1487,12 @@ mod tests {
         assert!(post_transaction(db.conn(), &p3).is_ok());
 
         let lp = ListTransactionParams::for_company("acme");
-        let count = count_transactions(db.conn(), &lp).unwrap_or(0);
+        let count = count_transactions(db.read(), &lp).unwrap_or(0);
         assert_eq!(count, 3);
 
         let mut lp2 = ListTransactionParams::for_company("acme");
         lp2.from_date = NaiveDate::from_ymd_opt(2024, 1, 2);
-        let count2 = count_transactions(db.conn(), &lp2).unwrap_or(0);
+        let count2 = count_transactions(db.read(), &lp2).unwrap_or(0);
         assert_eq!(count2, 2);
     }
 
@@ -1511,7 +1512,7 @@ mod tests {
         lp.description_like = Some("AWS");
         lp.from_date = NaiveDate::from_ymd_opt(2024, 2, 1);
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "AWS February");
     }
@@ -1545,7 +1546,7 @@ mod tests {
         let mut lp = ListTransactionParams::for_company("acme");
         lp.tax_category_filter = Some("sched-c:24b");
         lp.limit = 100;
-        let list = list_transactions(db.conn(), &lp).unwrap_or_default();
+        let list = list_transactions(db.read(), &lp).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Taxed");
     }
@@ -1578,7 +1579,7 @@ mod tests {
                 )
                 .unwrap_or_else(|e| panic!("insert failed: {e}"));
         }
-        let orphans = find_orphaned_correlations(db.conn(), AllCompanies)
+        let orphans = find_orphaned_correlations(db.read(), AllCompanies)
             .unwrap_or_else(|e| panic!("reconcile: {e}"));
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].partner_id, 42);
@@ -1616,10 +1617,10 @@ mod tests {
                 .collect();
             let mut lp = ListTransactionParams::for_company("acme");
             lp.meta_eq = &owned;
-            let list = list_transactions(db.conn(), &lp).unwrap_or_else(|e| panic!("list: {e}"));
+            let list = list_transactions(db.read(), &lp).unwrap_or_else(|e| panic!("list: {e}"));
             assert_eq!(list.len(), expected, "filters {pairs:?}");
             assert_eq!(
-                count_transactions(db.conn(), &lp).unwrap_or(-1),
+                count_transactions(db.read(), &lp).unwrap_or(-1),
                 i64::try_from(expected).unwrap_or(-1)
             );
         };
@@ -1650,7 +1651,7 @@ mod tests {
 
         // Verify only one transaction exists
         let lp = ListTransactionParams::for_company("acme");
-        let count = count_transactions(db.conn(), &lp)?;
+        let count = count_transactions(db.read(), &lp)?;
         assert_eq!(count, 1);
         Ok(())
     }

@@ -64,7 +64,7 @@ fn export_json(db: &Db) -> Result<String, CliError> {
         let scope = Company::resolve(db.conn(), &company.slug)?;
         let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
         txn_params.limit = i64::MAX;
-        let transactions = db::list_transactions(db.conn(), &txn_params)?;
+        let transactions = db::list_transactions(db.read(), &txn_params)?;
 
         let mut txn_exports = Vec::new();
         for txn in &transactions {
@@ -187,7 +187,7 @@ fn export_csv(db: &Db) -> Result<String, CliError> {
         let scope = Company::resolve(db.conn(), &company.slug)?;
         let mut txn_params = db::ListTransactionParams::for_company(scope.slug().as_str());
         txn_params.limit = i64::MAX;
-        let transactions = db::list_transactions(db.conn(), &txn_params)?;
+        let transactions = db::list_transactions(db.read(), &txn_params)?;
         for txn in &transactions {
             let entries = db::get_entries_for_transaction(&scope, txn.id)?;
             for entry in &entries {
