@@ -799,10 +799,11 @@ fn execute_period(db: &Db, actor: &Actor, company: &str, command: &PeriodCommand
 }
 
 fn audit_log(db: &Db, input: inputs::AuditLog) -> Response {
-    let agent = optional_text(input.agent);
+    let agent = input.agent.map(Text::into_inner);
     let company = input.company.map(Text::into_inner);
     let params = crate::db::ListAuditParams {
-        agent_uri: agent.as_deref(),
+        actor: input.actor.as_deref(),
+        agent_uri: agent.as_ref().map(agent_uri::AgentUri::as_str),
         company_slug: company.as_ref(),
         entity: input.entity,
         action: input.action,

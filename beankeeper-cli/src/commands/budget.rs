@@ -354,6 +354,7 @@ mod tests {
         let audit = super::super::audit::execute_json(
             &db,
             &db::ListAuditParams {
+                actor: None,
                 agent_uri: None,
                 company_slug: Some(&"acme".parse()?),
                 entity: None,
@@ -386,6 +387,7 @@ mod tests {
         let db = ledger()?;
         let actor = db::Actor::new("mcp:test-client");
         let log = db::ListAuditParams {
+            actor: None,
             agent_uri: None,
             company_slug: None,
             entity: None,

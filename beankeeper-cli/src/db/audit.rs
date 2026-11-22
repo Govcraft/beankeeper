@@ -35,7 +35,10 @@ use crate::db::ids::{
 };
 use crate::error::CliError;
 
+mod actor;
 mod attachment;
+pub use actor::Actor;
+pub(crate) use actor::ConfiguredActor;
 mod posting;
 pub(super) use posting::persist_posting;
 pub(super) mod catalog;
@@ -48,87 +51,6 @@ pub mod setup;
 pub(super) use attachment::store_attachment;
 
 pub use beankeeper::types::ClearanceStatus as EntryStatus;
-
-// ---------------------------------------------------------------------------
-// Actor -- the principal recorded against every change
-// ---------------------------------------------------------------------------
-
-/// The principal responsible for a mutation, recorded in every audit row.
-///
-/// Resolved from, in order: an explicit `--actor` flag, the `BK_ACTOR`
-/// environment variable (set by the Emergent exec-handler), the operating
-/// system user (`USER` / `USERNAME`), or the fallback `"cli"`.
-#[derive(Debug, Clone)]
-pub struct Actor {
-    name: String,
-    identity: Option<crate::identity::VerifiedAgent>,
-}
-
-impl Actor {
-    /// Constructs an actor with an explicit name.
-    #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            identity: None,
-        }
-    }
-
-    /// Resolves the effective actor from an optional explicit name, then the
-    /// environment, falling back to `"cli"`.
-    #[must_use]
-    pub fn resolve(explicit: Option<&str>) -> Self {
-        if let Some(name) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
-            return Self::new(name);
-        }
-
-        for var in ["BK_ACTOR", "USER", "USERNAME"] {
-            if let Ok(val) = std::env::var(var) {
-                let trimmed = val.trim();
-                if !trimmed.is_empty() {
-                    return Self::new(trimmed);
-                }
-            }
-        }
-
-        Self::new("cli")
-    }
-
-    /// Attaches an identity verified against this ledger's trust root.
-    #[must_use]
-    pub fn with_identity(mut self, identity: crate::identity::VerifiedAgent) -> Self {
-        self.identity = Some(identity);
-        self
-    }
-
-    /// Verified agent URI, if supplied.
-    #[must_use]
-    pub fn agent_uri(&self) -> Option<&str> {
-        self.identity
-            .as_ref()
-            .map(crate::identity::VerifiedAgent::uri)
-    }
-
-    /// Verified token identifier, if supplied.
-    #[must_use]
-    pub fn token_jti(&self) -> Option<&str> {
-        self.identity
-            .as_ref()
-            .map(crate::identity::VerifiedAgent::jti)
-    }
-
-    /// Verified signed identity attached to this operation.
-    #[must_use]
-    pub fn identity(&self) -> Option<&crate::identity::VerifiedAgent> {
-        self.identity.as_ref()
-    }
-
-    /// Returns the actor's name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Audit row classification
@@ -2531,6 +2453,7 @@ pub(super) fn change_schedule(
 
 /// Filters and pagination for [`list_audit`].
 pub struct ListAuditParams<'a> {
+    pub actor: Option<&'a str>,
     pub agent_uri: Option<&'a str>,
     pub company_slug: Option<&'a crate::db::companies::CompanySlug>,
     pub entity: Option<AuditEntity>,
@@ -2545,6 +2468,7 @@ fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::V
     let mut sql = String::from(" FROM audit_log WHERE 1 = 1");
     let mut values = Vec::new();
     for (column, value) in [
+        ("actor", params.actor),
         ("agent_uri", params.agent_uri),
         (
             "company_slug",
@@ -2774,6 +2698,7 @@ mod tests {
             &serde_json::json!({"token_jti":"token"}),
         )?;
         let filters = ListAuditParams {
+            actor: Some("test"),
             agent_uri: None,
             company_slug: Some(&"acme".parse()?),
             entity: Some(AuditEntity::Transaction),

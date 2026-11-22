@@ -103,6 +103,7 @@ impl Ledger {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("bk"));
         command
             .env_remove("BK_AGENT_TOKEN")
+            .env_remove("BK_ACTOR")
             .env_remove("BEANKEEPER_PASSPHRASE_CMD")
             .env_remove("BEANKEEPER_COMPANY")
             .arg("--db")
@@ -159,6 +160,10 @@ impl Server {
         if read_only {
             command.arg("--read-only");
         }
+        Self::spawn(command)
+    }
+
+    fn spawn(mut command: Command) -> TestResult<Self> {
         let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -378,7 +383,7 @@ fn http_authenticates_every_request_and_preserves_ledger_behavior() -> TestResul
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    assert_eq!(actor, "mcp:http-client-one");
+    assert_eq!(actor, ledger.reader["agent_uri"]);
     assert_eq!(agent, ledger.reader["agent_uri"]);
     db::audit::verify_hash_chain(db.read())?;
     db::audit::verify_creations(db.read())?;
@@ -403,6 +408,56 @@ fn http_authenticates_every_request_and_preserves_ledger_behavior() -> TestResul
         401
     );
     server.finish(&[reader, "invalid-secret-token"])
+}
+
+#[test]
+fn stateless_http_preserves_the_configured_label_and_request_agent_without_client_info()
+-> TestResult {
+    let ledger = Ledger::new()?;
+    let writer = token(&ledger.writer)?;
+    let mut command = ledger.command();
+    command.args([
+        "mcp",
+        "serve",
+        "--http",
+        "--bind",
+        "127.0.0.1:0",
+        "--actor",
+        "shared-books",
+    ]);
+    let server = Server::spawn(command)?;
+    let call = |name, arguments| {
+        // Stateless MCP sends tool calls without a clientInfo handshake.
+        server
+            .client
+            .post(&server.endpoint)
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", name)
+            .bearer_auth(writer)
+            .json(&json!({"jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":name, "arguments":arguments, "_meta":{
+                "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities":{}
+            }}}))
+            .send()
+    };
+    let result = rpc(call("txn_post", posting("stateless-sale"))?)?;
+    assert_eq!(payload(&result)?["created"], true);
+    let agent = &ledger.writer["agent_uri"];
+    for filter in [json!({"actor":"shared-books"}), json!({"agent":agent})] {
+        let result = rpc(call("audit_log", filter)?)?;
+        let rows = payload(&result)?;
+        assert_eq!(rows.as_array().map(Vec::len), Some(1));
+        assert_eq!(rows[0]["actor"], "shared-books");
+        assert_eq!(rows[0]["agent_uri"], *agent);
+        assert_eq!(rows[0]["token_jti"], ledger.writer["token_jti"]);
+    }
+    let db = ledger.db()?;
+    db::audit::verify_hash_chain(db.read())?;
+    db::audit::verify_creations(db.read())?;
+    server.finish(&[writer])
 }
 
 #[test]

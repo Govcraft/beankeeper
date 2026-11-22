@@ -29,6 +29,7 @@ use crate::capability::Capability;
 use crate::cli::Cli;
 use crate::db::{
     Actor,
+    audit::ConfiguredActor,
     connection::{Db, ReadConn},
 };
 use crate::error::CliError;
@@ -40,6 +41,7 @@ pub struct LedgerServer {
     db: Arc<Mutex<Db>>,
     tool_router: ToolRouter<Self>,
     credentials: Credentials,
+    configured_actor: Option<ConfiguredActor>,
 }
 
 /// Access ceiling for the tools registered on a ledger server.
@@ -78,10 +80,15 @@ impl LedgerServer {
     /// Read-only routers do not register mutation tools at all.
     #[must_use]
     pub fn new(db: Db, access: impl Into<LedgerAccess>) -> Self {
-        Self::with_credentials(db, access.into(), Credentials::Stdio(None))
+        Self::with_credentials(db, access.into(), Credentials::Stdio(None), None)
     }
 
-    fn with_credentials(db: Db, access: LedgerAccess, credentials: Credentials) -> Self {
+    fn with_credentials(
+        db: Db,
+        access: LedgerAccess,
+        credentials: Credentials,
+        configured_actor: Option<ConfiguredActor>,
+    ) -> Self {
         let mut tool_router = Self::tool_router();
         if matches!(access, LedgerAccess::ReadOnly) {
             for tool in tool_router.list_all() {
@@ -94,6 +101,7 @@ impl LedgerServer {
             db: Arc::new(Mutex::new(db)),
             tool_router,
             credentials,
+            configured_actor,
         }
     }
 
@@ -104,13 +112,8 @@ impl LedgerServer {
     ) -> CallToolResult {
         let operation = request.operation();
         let writes_ledger = request.writes_ledger();
-        let actor = client_actor(
-            context
-                .peer
-                .peer_info()
-                .map(|info| info.client_info.name.clone())
-                .as_deref(),
-        );
+        let client_info = context.client_info();
+        let configured_actor = self.configured_actor.clone();
         let db = self.db.clone();
         let credential = match self.call_credential(&context) {
             Ok(credential) => credential,
@@ -129,16 +132,18 @@ impl LedgerServer {
                         operation,
                     )?,
                     CallCredential::Http(identity) => {
-                        crate::identity::authorize_verified_operation(
-                            reader, &identity, operation,
-                        )?;
-                        Some(Arc::unwrap_or_clone(identity))
+                        Some(crate::identity::authorize_verified_operation(
+                            reader,
+                            Arc::unwrap_or_clone(identity),
+                            operation,
+                        )?)
                     }
                 };
-                let actor = match identity {
-                    Some(identity) => actor.with_identity(identity),
-                    None => actor,
-                };
+                let actor = Actor::for_mcp(
+                    configured_actor.as_ref(),
+                    identity,
+                    client_info.as_ref().map(|info| info.name.as_str()),
+                );
                 request.execute(&db, &actor)
             };
             if writes_ledger {
@@ -198,26 +203,6 @@ fn summary_error(company: Option<&str>, error: Option<&serde_json::Value>) -> Ca
         "meta": crate::output::json::meta(Operation::Summary, company),
         "error": error,
     }))
-}
-
-fn client_actor(name: Option<&str>) -> Actor {
-    let name: String = name
-        .unwrap_or_default()
-        .chars()
-        .take(80)
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let name = name.trim_matches('-');
-    Actor::new(format!(
-        "mcp:{}",
-        if name.is_empty() { "unknown" } else { name }
-    ))
 }
 
 #[tool_router]
@@ -750,7 +735,9 @@ impl LedgerServer {
         self.execute(Request::Verify(input), context).await
     }
 
-    #[tool(description = "List audit changes, optionally filtered by company, entity, or action.")]
+    #[tool(
+        description = "List audit changes, optionally filtered by actor, verified agent URI, company, entity, or action."
+    )]
     async fn audit_log(
         &self,
         Parameters(input): Parameters<inputs::AuditLog>,
@@ -845,6 +832,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         db,
         read_only.into(),
         Credentials::Stdio(cli.agent_token.clone()),
+        ConfiguredActor::resolve(cli.actor.as_deref()),
     );
     if let Some(identity) = identity
         && identity.enforces_permissions(enforce)
@@ -953,7 +941,7 @@ mod tests {
                 )
             })?;
         }
-        let actor = client_actor(Some("Investment Client"));
+        let actor = Actor::for_mcp(None, None, Some("Investment Client"));
         let call = |tool, mut input: Value| {
             input["company"] = json!("acme");
             let request = match tool {
@@ -1015,6 +1003,7 @@ mod tests {
 
     #[test]
     fn actor_names_are_bounded_and_sanitized() {
+        let client_actor = |name| Actor::for_mcp(None, None, name);
         assert_eq!(client_actor(None).name(), "mcp:unknown");
         assert_eq!(client_actor(Some(" /\n ")).name(), "mcp:unknown");
         assert_eq!(
@@ -1063,7 +1052,7 @@ mod tests {
             input["company"] = json!("acme");
             let input: inputs::Report = serde_json::from_value(input)
                 .map_err(|error| CliError::General(error.to_string()))?;
-            Request::Report(input).execute(&db, &client_actor(None))?;
+            Request::Report(input).execute(&db, &Actor::for_mcp(None, None, None))?;
         }
         Ok(())
     }

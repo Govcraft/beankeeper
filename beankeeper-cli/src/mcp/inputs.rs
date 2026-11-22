@@ -243,6 +243,9 @@ pub(super) struct BudgetDelete {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AuditLog {
+    /// Exact recorded actor label.
+    pub actor: Option<String>,
+    /// Verified agent URI.
     pub agent: Option<Text<AgentUri>>,
     pub company: Option<Company>,
     pub entity: Option<AuditEntityArg>,

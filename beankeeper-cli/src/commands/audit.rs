@@ -27,6 +27,7 @@ pub fn run(cli: &Cli, args: &AuditLogArgs) -> Result<(), CliError> {
 impl<'a> From<&'a AuditLogArgs> for ListAuditParams<'a> {
     fn from(args: &'a AuditLogArgs) -> Self {
         Self {
+            actor: args.by_actor.as_deref(),
             agent_uri: args.agent.as_deref(),
             company_slug: args.company.as_ref(),
             entity: args.entity,

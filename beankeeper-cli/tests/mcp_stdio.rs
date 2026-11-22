@@ -126,11 +126,15 @@ impl Client {
     }
 
     fn initialize(&mut self) -> TestResult {
+        self.initialize_as("Codex Test/Client")
+    }
+
+    fn initialize_as(&mut self, name: &str) -> TestResult {
         let response = self.request(
             "initialize",
             &json!({
                 "protocolVersion":"2025-11-25", "capabilities":{},
-                "clientInfo":{"name":"Codex Test/Client", "version":"1.0"}
+                "clientInfo":{"name":name, "version":"1.0"}
             }),
         )?;
         assert_eq!(response["result"]["serverInfo"]["name"], "beankeeper");
@@ -185,6 +189,60 @@ fn posting(reference: &str) -> Value {
         "currency":"USD", "reference":reference, "on_conflict":"skip",
         "debits":[{"account":"1000", "amount":"12.50", "memo":"bank receipt"}],
         "credits":[{"account":"4000", "amount":"12.50"}], "meta":{"invoice":"one"}})
+}
+
+#[test]
+fn stdio_and_cli_share_configured_actor_attribution() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    for (label, explicit, client_name, account) in [
+        ("operator-label", Some("  operator-label  "), "", "1010"),
+        ("env-label", None, "Other Client", "1020"),
+    ] {
+        let configured_command = || {
+            let mut command = bk(&path)?;
+            command.env("BK_ACTOR", "env-label");
+            if let Some(actor) = explicit {
+                command.args(["--actor", actor]);
+            }
+            Ok::<_, Box<dyn Error>>(command)
+        };
+        configured_command()?
+            .args([
+                "--company",
+                "acme",
+                "account",
+                "create",
+                account,
+                "Register",
+                "--type",
+                "asset",
+            ])
+            .assert()
+            .success();
+        let mut command = configured_command()?;
+        command.args(["mcp", "serve"]);
+        let mut client = Client::spawn(command)?;
+        // The stdio handshake requires a name field, which can be empty.
+        client.initialize_as(client_name)?;
+        client.success("txn_post", &posting(label))?;
+        let response = client.call("audit_log", &json!({"actor":label, "limit":1}))?;
+        assert_eq!(response["result"]["_meta"]["pagination"]["total"], 2);
+        assert_eq!(payload(&response)?[0]["actor"], label);
+        let filtered = client.success("audit_log", &json!({"actor":label}))?;
+        assert_eq!(filtered.as_array().map(Vec::len), Some(2));
+        assert_eq!(filtered[0]["entity"], "transaction");
+        assert_eq!(filtered[1]["entity"], "account");
+        assert_eq!(filtered[1]["actor"], label);
+        let cli_audit = bk(&path)?
+            .args(["--json", "audit", "log", "--by-actor", label])
+            .assert()
+            .success();
+        let cli_audit: Value = serde_json::from_slice(&cli_audit.get_output().stdout)?;
+        assert_eq!(cli_audit["data"], filtered);
+    }
+    Ok(())
 }
 
 fn tool_names(response: &Value) -> Result<BTreeSet<&str>, Box<dyn Error>> {
@@ -1286,8 +1344,8 @@ fn session_identity_is_recorded_and_live_revocation_blocks_the_next_tool_call() 
     let shown = client.success("txn_show", &json!({"company":"acme", "id":posted["id"]}))?;
     assert_eq!(shown[0]["agent_uri"], agent);
     assert_eq!(shown[0]["token_jti"], issued["token_jti"]);
-    assert_eq!(shown[0]["posted_by"], "mcp:codex-test-client");
-    let audit = client.success("audit_log", &json!({"agent":agent}))?;
+    assert_eq!(shown[0]["posted_by"], agent);
+    let audit = client.success("audit_log", &json!({"actor":agent, "agent":agent}))?;
     assert_eq!(audit.as_array().map(Vec::len), Some(1));
     assert_eq!(audit[0]["agent_uri"], agent);
     assert_eq!(audit[0]["token_jti"], issued["token_jti"]);

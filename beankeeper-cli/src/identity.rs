@@ -235,16 +235,17 @@ pub(crate) fn authorize_known_operation(
 
 pub(crate) fn authorize_verified_operation(
     conn: ReadConn<'_>,
-    identity: &VerifiedAgent,
+    identity: VerifiedAgent,
     operation: Operation,
-) -> Result<(), CliError> {
+) -> Result<VerifiedAgent, CliError> {
     let enforce = if operation.permission() == Permission::SetupOwner {
         true
     } else {
         crate::db::policy::get(conn)?.enforce
     };
     identity.check_live(conn)?;
-    require_operation_grant(identity, operation, enforce)
+    require_operation_grant(&identity, operation, enforce)?;
+    Ok(identity)
 }
 
 fn require_operation_grant(
