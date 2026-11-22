@@ -401,7 +401,7 @@ pub fn create_security(
         ));
     }
     audit::atomically(conn, || {
-        super::companies::get_company(conn, company)?;
+        super::companies::get_company(super::connection::ReadConn::new(conn), company)?;
         conn.execute(
             "INSERT INTO securities(company_slug,symbol,name,currency) VALUES (?1,?2,?3,?4)",
             params![company, p.symbol, p.name, p.currency.code()],
@@ -432,7 +432,7 @@ pub(crate) fn valid_symbol(symbol: &str) -> bool {
 /// # Errors
 /// Returns storage errors or not-found for an unknown company.
 pub fn list_securities(conn: &Connection, company: &str) -> Result<Vec<Security>, CliError> {
-    super::companies::get_company(conn, company)?;
+    super::companies::get_company(super::connection::ReadConn::new(conn), company)?;
     let mut stmt = conn.prepare(
         "SELECT symbol,name,currency FROM securities WHERE company_slug = ?1 ORDER BY symbol",
     )?;

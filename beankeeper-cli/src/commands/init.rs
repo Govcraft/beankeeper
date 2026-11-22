@@ -905,7 +905,7 @@ mod tests {
         populate_demo_data(&db, &crate::db::Actor::new("demo")).expect("populate demo data");
 
         // Verify all three companies exist
-        let companies = crate::db::list_companies(db.conn()).expect("list companies");
+        let companies = crate::db::list_companies(db.read()).expect("list companies");
         assert_eq!(companies.len(), 3);
 
         let expected_accounts = [

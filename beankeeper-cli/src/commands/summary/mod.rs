@@ -338,7 +338,7 @@ impl SummaryReport {
 }
 
 fn compute(db: &Db, company: &str, args: &SummaryArgs) -> Result<SummaryReport, CliError> {
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::get_company(db.read(), company)?;
     let periods = args.periods(chrono::Local::now().date_naive())?;
     let currency = super::report_currency::resolve_report_currency(
         db.conn(),

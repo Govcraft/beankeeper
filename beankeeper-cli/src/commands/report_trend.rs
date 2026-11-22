@@ -277,7 +277,7 @@ pub fn compute_trend(
     request: TrendRequest,
 ) -> Result<TrendReport, CliError> {
     db::audit::atomically(db.conn(), || {
-        db::companies::get_company(db.conn(), company)?;
+        db::companies::get_company(db.read(), company)?;
         let columns = period_columns(request.dates.from(), request.dates.to(), request.period)?;
         let rows = columns
             .iter()

@@ -47,7 +47,7 @@ impl<'conn> Company<'conn> {
     /// Returns [`CliError::NotFound`] if the company does not exist or
     /// [`CliError::Sqlite`] if the lookup fails.
     pub fn bind(conn: &'conn Connection, slug: CompanySlug) -> Result<Self, CliError> {
-        if company_exists(conn, slug.as_str())? {
+        if company_exists(ReadConn::new(conn), slug.as_str())? {
             Ok(Self { conn, slug })
         } else {
             Err(CliError::NotFound(format!("company '{slug}' not found")))
@@ -123,7 +123,7 @@ pub fn create_company(
     validate_slug(slug)?;
 
     audit::atomically(conn, || {
-        if company_exists(conn, slug)? {
+        if company_exists(ReadConn::new(conn), slug)? {
             return Err(CliError::Validation(format!(
                 "company '{slug}' already exists"
             )));
@@ -134,7 +134,7 @@ pub fn create_company(
             params![slug, name, description],
         )?;
 
-        let row = get_company(conn, slug)?;
+        let row = get_company(ReadConn::new(conn), slug)?;
         audit::record_insert(
             conn,
             actor,
@@ -157,7 +157,7 @@ pub fn create_company(
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn list_companies(conn: &Connection) -> Result<Vec<CompanyRow>, CliError> {
+pub fn list_companies(conn: ReadConn<'_>) -> Result<Vec<CompanyRow>, CliError> {
     let mut stmt =
         conn.prepare("SELECT slug, name, description, created_at FROM companies ORDER BY slug")?;
 
@@ -177,17 +177,19 @@ pub fn list_companies(conn: &Connection) -> Result<Vec<CompanyRow>, CliError> {
     Ok(companies)
 }
 
+pub(crate) fn get_company_on_connection(
+    conn: &Connection,
+    slug: &str,
+) -> Result<CompanyRow, CliError> {
+    get_company(ReadConn::new(conn), slug)
+}
+
 /// Fetches a single company by slug.
 ///
 /// # Errors
-///
 /// Returns `CliError::NotFound` if the company does not exist.
 /// Returns `CliError::Sqlite` on database errors.
-pub fn get_company(conn: &Connection, slug: &str) -> Result<CompanyRow, CliError> {
-    read_company(ReadConn::new(conn), slug)
-}
-
-pub(crate) fn read_company(conn: ReadConn<'_>, slug: &str) -> Result<CompanyRow, CliError> {
+pub fn get_company(conn: ReadConn<'_>, slug: &str) -> Result<CompanyRow, CliError> {
     let mut stmt =
         conn.prepare("SELECT slug, name, description, created_at FROM companies WHERE slug = ?1")?;
 
@@ -206,12 +208,19 @@ pub(crate) fn read_company(conn: ReadConn<'_>, slug: &str) -> Result<CompanyRow,
     }
 }
 
+pub(crate) fn company_exists_on_connection(
+    conn: &Connection,
+    slug: &str,
+) -> Result<bool, CliError> {
+    company_exists(ReadConn::new(conn), slug)
+}
+
 /// Returns `true` if a company with the given slug exists.
 ///
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn company_exists(conn: &Connection, slug: &str) -> Result<bool, CliError> {
+pub fn company_exists(conn: ReadConn<'_>, slug: &str) -> Result<bool, CliError> {
     let exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM companies WHERE slug = ?1",
         params![slug],
@@ -244,7 +253,7 @@ mod tests {
         assert_eq!(row.slug, "acme");
         assert_eq!(row.name, "Acme Corp");
 
-        let fetched = get_company(db.conn(), "acme");
+        let fetched = get_company(db.read(), "acme");
         assert!(fetched.is_ok());
     }
 
@@ -277,14 +286,14 @@ mod tests {
     #[test]
     fn get_missing_company_is_not_found() {
         let db = setup();
-        let result = get_company(db.conn(), "nope");
+        let result = get_company(db.read(), "nope");
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
     #[test]
     fn list_companies_empty() {
         let db = setup();
-        let list = list_companies(db.conn());
+        let list = list_companies(db.read());
         assert!(list.is_ok());
         assert_eq!(list.unwrap_or_default().len(), 0);
     }
@@ -312,7 +321,7 @@ mod tests {
             )
             .is_ok()
         );
-        let list = list_companies(db.conn()).unwrap_or_default();
+        let list = list_companies(db.read()).unwrap_or_default();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].slug, "alpha");
         assert_eq!(list[1].slug, "beta");
@@ -341,7 +350,7 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(!company_exists(db.conn(), "acme").unwrap_or(true));
+        assert!(!company_exists(db.read(), "acme").unwrap_or(true));
     }
 
     #[test]
@@ -360,7 +369,7 @@ mod tests {
     #[test]
     fn company_exists_returns_false_when_missing() {
         let db = setup();
-        assert!(!company_exists(db.conn(), "nope").unwrap_or(true));
+        assert!(!company_exists(db.read(), "nope").unwrap_or(true));
     }
 
     #[test]

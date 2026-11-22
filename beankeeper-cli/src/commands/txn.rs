@@ -29,7 +29,7 @@ pub fn run(
 ) -> Result<(), CliError> {
     let db_handle = cli.open_db()?;
     if !matches!(sub, TxnCommand::Reconcile) {
-        crate::db::companies::get_company(db_handle.conn(), company)?;
+        crate::db::companies::get_company(db_handle.read(), company)?;
     }
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
@@ -199,7 +199,7 @@ pub fn execute_json_with_pagination(
     actor: &db::Actor,
 ) -> Result<(serde_json::Value, Option<serde_json::Value>), CliError> {
     if !matches!(sub, TxnCommand::Reconcile) {
-        db::get_company(db_handle.conn(), company)?;
+        db::get_company(db_handle.read(), company)?;
     }
     let mut out = Vec::new();
     match sub {
@@ -681,7 +681,7 @@ pub(crate) fn execute_posting_json(
     actor: &db::Actor,
     mode: PostingMode,
 ) -> Result<serde_json::Value, CliError> {
-    db::get_company(db.conn(), company)?;
+    db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| match mode {
         PostingMode::Post => {
             transactions::post_from_source(db.conn(), params, transactions::PostingSource::Command)

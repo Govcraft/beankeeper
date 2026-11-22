@@ -97,7 +97,7 @@ pub(crate) fn execute_json(
     target: ClearRequestTarget<'_>,
     options: ClearOptions<'_>,
 ) -> Result<serde_json::Value, CliError> {
-    db::get_company(db_handle.conn(), company)?;
+    db::get_company(db_handle.read(), company)?;
     if let ClearRequestTarget::Batch { lines, .. } = &target {
         validate_inline_batch(lines)?;
     }

@@ -151,7 +151,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         })?;
     let company = require_company(cli)?.as_str();
     let db = cli.open_db()?;
-    crate::db::get_company(db.conn(), company)?;
+    crate::db::get_company(db.read(), company)?;
     for (code, expected) in [
         (&args.liability, beankeeper::types::AccountType::Liability),
         (

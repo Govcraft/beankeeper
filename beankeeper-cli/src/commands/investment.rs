@@ -42,7 +42,7 @@ pub fn execute_security(
     command: &SecurityCommand,
     actor: &Actor,
 ) -> Result<Value, CliError> {
-    crate::db::companies::get_company(db.conn(), company)?;
+    crate::db::companies::get_company(db.read(), company)?;
     let data = match command {
         SecurityCommand::Create {
             symbol,
@@ -93,7 +93,7 @@ pub fn execute_investment(
     command: &InvestmentCommand,
     actor: &Actor,
 ) -> Result<Value, CliError> {
-    crate::db::companies::get_company(db.conn(), company)?;
+    crate::db::companies::get_company(db.read(), company)?;
     let data = match command {
         InvestmentCommand::Buy { trade, cost } => {
             let cost =

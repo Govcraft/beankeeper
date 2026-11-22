@@ -316,7 +316,7 @@ pub fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
     )?;
     for company in stmt.query_map([], |row| row.get::<_, String>(0))? {
         let company = company?;
-        super::companies::read_company(conn, &company)?;
+        super::companies::get_company(conn, &company)?;
         get(conn, &company)?;
     }
     Ok(())
@@ -326,7 +326,7 @@ pub fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
 /// # Errors
 /// Returns database errors for inconsistent state or an unknown company.
 pub fn list(conn: ReadConn<'_>, company: &str) -> Result<Vec<PeriodLock>, CliError> {
-    super::companies::read_company(conn, company)?;
+    super::companies::get_company(conn, company)?;
     Ok(get(conn, company)?.into_iter().collect())
 }
 

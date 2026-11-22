@@ -59,7 +59,8 @@ pub fn create_account(
     audit::atomically(conn, || {
         let code = code.as_str();
         // Verify the company exists
-        if !super::companies::company_exists(conn, company_slug)? {
+        if !super::companies::company_exists(super::connection::ReadConn::new(conn), company_slug)?
+        {
             return Err(CliError::NotFound(format!(
                 "company '{company_slug}' not found"
             )));

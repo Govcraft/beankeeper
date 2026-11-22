@@ -52,7 +52,7 @@ fn compute<'a>(
     sub: &'a BudgetCommand,
     actor: &db::Actor,
 ) -> Result<Option<BudgetData<'a>>, CliError> {
-    db::companies::read_company(db.read(), company)?;
+    db::companies::get_company(db.read(), company)?;
     match sub {
         BudgetCommand::Set(args) => {
             let request = BudgetSetRequest::from_cli(args)?;
@@ -286,7 +286,7 @@ pub(crate) fn execute_set_json(
     request: &BudgetSetRequest<'_>,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::get_company(db.read(), company)?;
     let rows = set(db, company, request, actor)?;
     super::company::json_data(&output::json::render_budgets(
         &rows,

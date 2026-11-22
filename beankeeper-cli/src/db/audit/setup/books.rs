@@ -233,7 +233,7 @@ impl Serialize for BookAccount {
 pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>, CliError> {
     let conn = db.conn();
     atomically(conn, || {
-        let named = get_company(conn, company.as_str())?;
+        let named = get_company(db.read(), company.as_str())?;
         let profile = if get_schema_version(conn)? >= BOOK_PROFILE_SCHEMA_VERSION {
             find_profile(db.read(), company)?
         } else {
@@ -435,7 +435,7 @@ fn initialize_book(
     company: &CompanySlug,
     settings: BookSettings,
 ) -> Result<Value, CliError> {
-    let row = get_company(session.connection, company.as_str())?;
+    let row = get_company(ReadConn::new(session.connection), company.as_str())?;
     if find_profile(ReadConn::new(session.connection), company)?.is_some() {
         return Err(CliError::Validation(format!(
             "book '{company}' already has a setup profile"

@@ -673,7 +673,7 @@ pub fn set_spend_limit(
         let company = limit.company().as_str();
         let currency = limit.currency();
         let caps = limit.caps();
-        super::companies::get_company(conn, company)?;
+        super::companies::get_company(ReadConn::new(conn), company)?;
         let before = super::spend_limits::list(conn, uri, Some(company))?
             .into_iter()
             .find(|row| row.currency() == currency);
@@ -775,7 +775,7 @@ pub fn change_period(
 
     in_savepoint(conn, "sp_period_change", || {
         require_capability(conn, actor, crate::capability::Capability::Admin)?;
-        super::companies::get_company(conn, company)?;
+        super::companies::get_company(ReadConn::new(conn), company)?;
         let before = super::periods::get(ReadConn::new(conn), company)?;
         let previous = before.as_ref().and_then(PeriodLock::closed_through);
         let (state, action) = resolve_period_change(change, previous)?;
@@ -2146,7 +2146,7 @@ pub fn delete_company(
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     in_savepoint(conn, "sp_company_delete", || {
-        let row: CompanyRow = super::companies::get_company(conn, slug)?;
+        let row: CompanyRow = super::companies::get_company(ReadConn::new(conn), slug)?;
         let securities: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM securities WHERE company_slug = ?1)",
             [slug],
@@ -2666,7 +2666,10 @@ mod tests {
             crate::db::store_attachment(connection, &actor, &attachment)
                 .expect_err("attachment creation must fail on audit error"),
         );
-        assert!(!crate::db::company_exists(connection, "new")?);
+        assert!(!crate::db::company_exists(
+            ReadConn::new(connection),
+            "new"
+        )?);
         assert!(!crate::db::account_exists(connection, "acme", "1100")?);
         assert!(
             crate::db::list_attachments(ReadConn::new(connection), "acme", transaction_id)?

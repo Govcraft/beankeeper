@@ -294,7 +294,7 @@ pub fn build_report(
     company: &str,
     opts: &LedgerOptions<'_>,
 ) -> Result<LedgerReport, CliError> {
-    if !db::company_exists(conn, company)? {
+    if !db::companies::company_exists_on_connection(conn, company)? {
         return Err(CliError::NotFound(format!("company '{company}' not found")));
     }
 

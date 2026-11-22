@@ -250,7 +250,7 @@ pub fn compute_budget_variance(
     params: &BudgetVarianceParams<'_>,
 ) -> Result<BudgetVarianceReport, CliError> {
     let rows = super::audit::atomically(conn, || {
-        super::companies::get_company(conn, params.company_slug)?;
+        super::companies::get_company(ReadConn::new(conn), params.company_slug)?;
         load_variance_rows(conn, params)
     })?;
     let total = |select: fn(&BudgetVarianceRow) -> Money| {

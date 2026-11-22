@@ -17,7 +17,7 @@ use crate::output::json;
 /// Returns validation, persistence, or output errors.
 pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::get_company(db.read(), company)?;
     let actor = cli.principal();
     let data = match command {
         ScheduleCommand::Create(args) => {

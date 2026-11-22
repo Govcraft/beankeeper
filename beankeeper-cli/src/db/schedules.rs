@@ -176,7 +176,7 @@ pub fn create_schedule(
     params: &CreateScheduleParams,
 ) -> Result<Schedule, CliError> {
     audit::atomically(conn, || {
-        super::companies::get_company(conn, company)?;
+        super::companies::get_company(super::connection::ReadConn::new(conn), company)?;
         validate_template(params)?;
         let mut entries = params.entries.clone();
         for entry in &mut entries {

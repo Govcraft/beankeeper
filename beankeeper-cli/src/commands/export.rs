@@ -48,7 +48,7 @@ pub fn run(
 
 /// Export all data as JSON.
 fn export_json(db: &Db) -> Result<String, CliError> {
-    let companies = db::list_companies(db.conn())?;
+    let companies = db::list_companies(db.read())?;
 
     let mut company_exports = Vec::new();
 
@@ -129,7 +129,7 @@ fn export_json(db: &Db) -> Result<String, CliError> {
 /// 2. Accounts
 /// 3. Transactions with entries
 fn export_csv(db: &Db) -> Result<String, CliError> {
-    let companies = db::list_companies(db.conn())?;
+    let companies = db::list_companies(db.read())?;
 
     let mut sections = Vec::new();
 

@@ -13,7 +13,7 @@ use crate::output;
 /// Returns [`CliError`] if the subcommand fails.
 pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    crate::db::companies::get_company(db.conn(), company)?;
+    crate::db::companies::get_company(db.read(), company)?;
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
@@ -69,7 +69,7 @@ fn compute(
     sub: &AccountCommand,
     actor: &db::Actor,
 ) -> Result<AccountData, CliError> {
-    db::companies::get_company(db.conn(), company)?;
+    db::companies::get_company(db.read(), company)?;
     match sub {
         AccountCommand::Create {
             code,
