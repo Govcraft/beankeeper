@@ -391,16 +391,21 @@ fn invalid_templates_and_missing_identifiers_leave_no_state() -> TestResult {
 #[test]
 fn currency_precision_is_preserved_in_scheduled_postings() -> TestResult {
     let ledger = Ledger::new()?;
-    for (currency, debit, credit, expected) in [
-        ("JPY", "5000:50", "1000:50", 50),
-        ("BHD", "5000:1.234", "1000:1.234", 1234),
+    for (currency, debit, credit, expected, display) in [
+        ("JPY", "5000:50", "1000:50", 50, "50"),
+        ("BHD", "5000:1.234", "1000:1.234", 1234, "1.234"),
     ] {
-        ledger.create(
+        let template = ledger.create(
             "acme",
             "2026-01-01",
             (debit, credit),
             &["--currency", currency],
         )?;
+        assert_eq!(template["currency"], currency);
+        for line in template["entries"].as_array().ok_or("schedule entries")? {
+            assert_eq!(line["amount"], expected);
+            assert_eq!(line["amount_display"], display);
+        }
         let posted = ledger.run("acme", &["schedule", "run", "--through", "2026-01-01"])?;
         let id = posted[0]["transaction_id"]
             .as_i64()

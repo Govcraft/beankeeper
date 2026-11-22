@@ -1,6 +1,10 @@
 //! Pending obligations, explicit posting, and recurring transaction templates.
 
+use chrono::NaiveDate;
+use serde::Serialize;
 use serde_json::Value;
+
+use super::posting_output::PostingLineJson;
 
 use crate::cli::{Cli, OutputFormat, ScheduleCommand, resolve_format};
 use crate::db::{self, PostEntryParams, schedules};
@@ -18,12 +22,8 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
     let data = match command {
         ScheduleCommand::Create { .. } => {
             let params = create_params(command)?;
-            serde_json::to_value(schedules::create_schedule(
-                db.conn(),
-                &actor,
-                company,
-                &params,
-            )?)
+            let schedule = schedules::create_schedule(db.conn(), &actor, company, &params)?;
+            serde_json::to_value(ScheduleJson::from(&schedule))
         }
         ScheduleCommand::List { all, due_through } => {
             let rows: Vec<_> = schedules::list_schedules(db.conn(), company)?
@@ -35,7 +35,7 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
                     })
                 })
                 .collect();
-            serde_json::to_value(rows)
+            serde_json::to_value(rows.iter().map(ScheduleJson::from).collect::<Vec<_>>())
         }
         ScheduleCommand::Run {
             through,
@@ -55,11 +55,47 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
             )?)
         }
         ScheduleCommand::Cancel { id } => {
-            serde_json::to_value(schedules::cancel_schedule(db.conn(), &actor, company, id)?)
+            let schedule = schedules::cancel_schedule(db.conn(), &actor, company, id)?;
+            serde_json::to_value(ScheduleJson::from(&schedule))
         }
     }
     .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
     render(cli, company, command, &data)
+}
+
+#[derive(Serialize)]
+struct ScheduleJson<'a> {
+    id: &'a schedules::ScheduleId,
+    company_slug: &'a str,
+    description: &'a str,
+    currency: &'static str,
+    start_date: NaiveDate,
+    #[serde(serialize_with = "json::serialize_display")]
+    frequency: beankeeper::core::Frequency,
+    end_date: Option<NaiveDate>,
+    #[serde(flatten)]
+    state: schedules::ScheduleState,
+    entries: Vec<PostingLineJson<'a>>,
+    metadata: Option<&'a str>,
+    occurrence_index: u32,
+}
+
+impl<'a> From<&'a schedules::Schedule> for ScheduleJson<'a> {
+    fn from(schedule: &'a schedules::Schedule) -> Self {
+        Self {
+            id: &schedule.id,
+            company_slug: &schedule.company_slug,
+            description: &schedule.description,
+            currency: schedule.currency.code(),
+            start_date: schedule.start_date,
+            frequency: schedule.frequency,
+            end_date: schedule.end_date,
+            state: schedule.state,
+            entries: PostingLineJson::for_entries(&schedule.entries, Some(schedule.currency)),
+            metadata: schedule.metadata.as_deref(),
+            occurrence_index: schedule.occurrence_index,
+        }
+    }
 }
 
 fn create_params(command: &ScheduleCommand) -> Result<schedules::CreateScheduleParams, CliError> {

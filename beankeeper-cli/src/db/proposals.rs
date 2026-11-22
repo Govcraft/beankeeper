@@ -111,7 +111,7 @@ impl ResolvedBy {
         }
     }
 
-    pub(super) fn columns(&self) -> (Option<&str>, Option<&str>) {
+    pub(crate) fn columns(&self) -> (Option<&str>, Option<&str>) {
         match self {
             Self::Local => (None, None),
             Self::Agent { uri, jti } => (Some(uri), Some(jti)),
@@ -192,7 +192,7 @@ impl ProposalState {
         }
     }
 
-    fn resolution(&self) -> Option<&Resolution> {
+    pub(crate) fn resolution(&self) -> Option<&Resolution> {
         match self {
             Self::Pending => None,
             Self::Approved { resolution, .. }
@@ -556,13 +556,25 @@ pub fn create(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
 ) -> Result<serde_json::Value, CliError> {
-    reserve(conn, p, super::transactions::PostingSource::Proposal)
+    match reserve(conn, p, super::transactions::PostingSource::Proposal)? {
+        ProposalCreation::Created(proposal) => {
+            serde_json::to_value(proposal).map_err(|error| CliError::General(error.to_string()))
+        }
+        ProposalCreation::Skipped(transaction_id) => {
+            Ok(serde_json::json!({"status":"skipped", "transaction_id": transaction_id}))
+        }
+    }
+}
+
+pub(crate) enum ProposalCreation {
+    Created(Box<Proposal>),
+    Skipped(i64),
 }
 
 pub(crate) fn create_from_command(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
-) -> Result<serde_json::Value, CliError> {
+) -> Result<ProposalCreation, CliError> {
     reserve(conn, p, super::transactions::PostingSource::Command)
 }
 
@@ -570,7 +582,7 @@ fn reserve(
     conn: &Connection,
     p: &PostTransactionParams<'_>,
     source: super::transactions::PostingSource,
-) -> Result<serde_json::Value, CliError> {
+) -> Result<ProposalCreation, CliError> {
     audit::atomically(conn, || {
         let preflight = (source == super::transactions::PostingSource::Command)
             .then(|| super::transactions::build_journal(conn, p, source))
@@ -588,9 +600,7 @@ fn reserve(
         if let Some(reference) = p.reference {
             if let Some(id) = posted_reference(conn, p.company_slug, reference)? {
                 return match p.on_conflict {
-                    ConflictStrategy::Skip => {
-                        Ok(serde_json::json!({"status":"skipped", "transaction_id": id}))
-                    }
+                    ConflictStrategy::Skip => Ok(ProposalCreation::Skipped(id)),
                     ConflictStrategy::Error => Err(CliError::Validation(format!(
                         "transaction with reference '{reference}' already exists (id: {id})"
                     ))),
@@ -616,8 +626,8 @@ fn reserve(
             reference: p.reference.map(str::to_owned),
             on_conflict: p.on_conflict,
         };
-        let proposal = insert_pending(conn, p.company_slug, &payload, total, identity)?;
-        serde_json::to_value(proposal).map_err(|error| CliError::General(error.to_string()))
+        insert_pending(conn, p.company_slug, &payload, total, identity)
+            .map(|proposal| ProposalCreation::Created(Box::new(proposal)))
     })
 }
 

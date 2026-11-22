@@ -45,7 +45,6 @@ pub fn run(
                 )?;
                 execute_proposal(&db_handle, company, args, &cli.principal())
             })?;
-            let data = crate::output::json::with_amount_displays(data, None);
             if format == OutputFormat::Json {
                 println!(
                     "{}",
@@ -205,8 +204,7 @@ pub fn execute_json_with_pagination(
     let mut out = Vec::new();
     match sub {
         TxnCommand::Proposal(args) => {
-            return execute_proposal(db_handle, company, args, actor)
-                .map(|data| (crate::output::json::with_amount_displays(data, None), None));
+            return execute_proposal(db_handle, company, args, actor).map(|data| (data, None));
         }
         TxnCommand::Meta(sub) => {
             return super::txn_meta::execute_json(db_handle, company, sub, actor)
@@ -584,18 +582,25 @@ fn execute_proposal(
     let value = match args {
         TxnProposalCommand::Propose(args) => {
             return with_post_params(company, &PostingRequest::try_from(args)?, actor, |params| {
-                db::proposals::create_from_command(db.conn(), params)
+                super::posting_output::create_proposal_json(db.conn(), params)
             });
         }
-        TxnProposalCommand::Proposals { include_rejected } => serde_json::to_value(
-            db::proposals::list(db.conn(), company, actor, *include_rejected)?,
-        ),
-        TxnProposalCommand::Approve { id } => {
-            serde_json::to_value(db::audit::approve_proposal(db.conn(), actor, company, id)?)
+        TxnProposalCommand::Proposals { include_rejected } => {
+            let rows = db::proposals::list(db.conn(), company, actor, *include_rejected)?;
+            serde_json::to_value(
+                rows.iter()
+                    .map(super::posting_output::ProposalJson::from)
+                    .collect::<Vec<_>>(),
+            )
         }
-        TxnProposalCommand::Reject { id, reason } => serde_json::to_value(
-            db::audit::reject_proposal(db.conn(), actor, company, id, reason.as_deref())?,
-        ),
+        TxnProposalCommand::Approve { id } => {
+            let row = db::audit::approve_proposal(db.conn(), actor, company, id)?;
+            serde_json::to_value(super::posting_output::ProposalJson::from(&row))
+        }
+        TxnProposalCommand::Reject { id, reason } => {
+            let row = db::audit::reject_proposal(db.conn(), actor, company, id, reason.as_deref())?;
+            serde_json::to_value(super::posting_output::ProposalJson::from(&row))
+        }
     };
     value.map_err(|error| CliError::General(error.to_string()))
 }
@@ -682,8 +687,7 @@ pub(crate) fn execute_posting_json(
             transactions::post_from_source(db.conn(), params, transactions::PostingSource::Command)
                 .and_then(output::json::post_result_data)
         }
-        PostingMode::Propose => db::proposals::create_from_command(db.conn(), params)
-            .map(|data| output::json::with_amount_displays(data, None)),
+        PostingMode::Propose => super::posting_output::create_proposal_json(db.conn(), params),
     })
 }
 
