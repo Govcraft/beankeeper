@@ -117,7 +117,7 @@ fn state(db: &Db) -> Result<(i64, i64, i64, i64), CliError> {
 
 fn verify(db: &Db) -> TestResult {
     verification::verify_accounting(db.read())?;
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     audit::verify_creations(db.conn())
 }
 

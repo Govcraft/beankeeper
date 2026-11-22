@@ -362,7 +362,7 @@ fn http_authenticates_every_request_and_preserves_ledger_behavior() -> TestResul
     )?;
     assert_eq!(actor, "mcp:http-client-one");
     assert_eq!(agent, ledger.reader["agent_uri"]);
-    db::audit::verify_hash_chain(db.conn())?;
+    db::audit::verify_hash_chain(db.read())?;
     db::audit::verify_creations(db.conn())?;
     // A session ID alone is never a credential, on any HTTP method.
     assert_eq!(server.request("tools/list", json!({}), None)?.status(), 401);
@@ -498,7 +498,7 @@ fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult 
         |row| row.get(0),
     )?;
     assert_eq!(posted_by, approver["agent_uri"]);
-    db::audit::verify_hash_chain(db.conn())?;
+    db::audit::verify_hash_chain(db.read())?;
     db::audit::verify_creations(db.conn())?;
     server.finish(&[proposer_token, approver_token])
 }
@@ -869,7 +869,7 @@ fn verify_embedded_router(
         .conn()
         .query_row("SELECT count(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, i64::from(!read_only));
-    db::audit::verify_hash_chain(db.conn())?;
+    db::audit::verify_hash_chain(db.read())?;
     db::audit::verify_creations(db.conn())?;
     assert_eq!(
         request(Some("invalid-token"), "tools/list", json!({}))?.status(),

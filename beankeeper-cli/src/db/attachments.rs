@@ -313,7 +313,7 @@ mod tests {
                 snapshot.to_string()
             )
         );
-        audit::verify_hash_chain(db.conn())?;
+        audit::verify_hash_chain(db.read())?;
         Ok(())
     }
 

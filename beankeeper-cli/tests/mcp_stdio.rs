@@ -2883,7 +2883,7 @@ fn assert_existing_book_initializes_in_place(
     );
     assert_eq!(setup_audit_count(db)?, audit);
     assert_eq!(transaction, snapshot()?);
-    beankeeper_cli::db::audit::verify_hash_chain(db.conn())?;
+    beankeeper_cli::db::audit::verify_hash_chain(db.read())?;
     Ok(())
 }
 
@@ -2996,7 +2996,7 @@ fn exercise_setup_books(
     );
 
     assert_setup_chart_collision_rolls_back(client, db, generation)?;
-    beankeeper_cli::db::audit::verify_hash_chain(db.conn())?;
+    beankeeper_cli::db::audit::verify_hash_chain(db.read())?;
     Ok(book)
 }
 

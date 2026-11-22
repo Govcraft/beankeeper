@@ -315,7 +315,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
     let ledger = Ledger::new()?;
     ledger.run("acme", &["period", "close", "--through", "2026-01-31"])?;
     ledger.db.conn().execute_batch("DROP TRIGGER protect_audit_update; UPDATE audit_log SET actor = 'tampered' WHERE entity = 'period';")?;
-    assert!(audit::verify_hash_chain(ledger.db.conn()).is_err());
+    assert!(audit::verify_hash_chain(ledger.db.read()).is_err());
     Ok(())
 }
 

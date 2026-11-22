@@ -293,7 +293,7 @@ fn csv_categorizes_both_directions_preserves_fallback_and_isolates_companies() -
         |r| r.get(0),
     )?;
     assert_eq!(other_fallback, 3);
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     audit::verify_creations(db.conn())?;
     Ok(())
 }
@@ -431,7 +431,7 @@ fn ofx_matches_name_and_memo_applies_tax_defaults_and_preserves_references() -> 
             ("9000".into(), "debit".into(), 500, "fallback".into())
         ]
     );
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     audit::verify_creations(db.conn())?;
     Ok(())
 }
@@ -486,7 +486,7 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
         .is_err()
     );
     assert_eq!(rules::list_rules(db.conn(), "acme")?.len(), 1);
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     Ok(())
 }
 

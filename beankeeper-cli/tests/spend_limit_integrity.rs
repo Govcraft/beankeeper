@@ -36,7 +36,7 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
             verify::execute_json(&db),
             Err(CliError::Database(_))
         ));
-        audit::verify_hash_chain(db.conn())?;
+        audit::verify_hash_chain(db.read())?;
     }
     Ok(())
 }
