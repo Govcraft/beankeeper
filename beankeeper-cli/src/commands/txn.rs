@@ -9,6 +9,7 @@ use crate::cli::{
     Cli, OutputFormat, PostingArgs, TxnAttachArgs, TxnCommand, TxnImportArgs, TxnListArgs,
     TxnProposalCommand, TxnReverseArgs, resolve_format,
 };
+use crate::db::amounts::PositiveMinorUnits;
 use crate::db::companies::{AllCompanies, Company};
 use crate::db::connection::Db;
 use crate::db::transactions::TransactionValueFilter;
@@ -438,7 +439,7 @@ pub(crate) fn parse_tax_args(args: &[String]) -> Result<HashMap<String, String>,
     Ok(map)
 }
 
-/// Parse an `account_code:amount[:memo]` string into `(code, minor_units, optional_memo)`.
+/// Parse a posting line in `account_code:amount[:memo]` notation.
 ///
 /// Undecorated integers are treated as major units (e.g. `50` = 50 dollars).
 /// Decimal amounts are also major units (e.g. `50.00` = 50 dollars).
@@ -462,31 +463,36 @@ pub(crate) fn parse_entry_arg(s: &str, currency: Currency) -> Result<PostingLine
         )));
     }
 
-    let minor = parse_posting_amount(amount_str, currency)?;
+    let amount = parse_posting_amount(amount_str, currency)?;
     let memo = if parts.len() == 3 && !parts[2].is_empty() {
         Some(parts[2].to_string())
     } else {
         None
     };
 
-    Ok((code.to_string(), minor, memo))
+    Ok(PostingLine {
+        account_code: code.to_owned(),
+        amount,
+        memo,
+    })
 }
 
-fn parse_posting_amount(input: &str, currency: Currency) -> Result<i64, CliError> {
+fn parse_posting_amount(input: &str, currency: Currency) -> Result<PositiveMinorUnits, CliError> {
     let minor = parse_amount_to_minor(input.trim(), currency)?;
-    if minor <= 0 {
-        let amount = Money::from_minor(i128::from(minor), currency)
-            .amount()
-            .format_decimal(currency.minor_units());
-        return Err(CliError::Validation(format!(
+    PositiveMinorUnits::try_from(minor).map_err(|_| {
+        let amount =
+            crate::output::amounts::format_money(Money::from_minor(i128::from(minor), currency));
+        CliError::Validation(format!(
             "entry amount must be positive, got {amount} {currency}"
-        )));
-    }
-
-    Ok(minor)
+        ))
+    })
 }
 
-pub(crate) type PostingLine = (String, i64, Option<String>);
+pub(crate) struct PostingLine {
+    pub(crate) account_code: String,
+    pub(crate) amount: PositiveMinorUnits,
+    pub(crate) memo: Option<String>,
+}
 
 pub(crate) fn structured_posting_line(
     account: String,
@@ -497,8 +503,11 @@ pub(crate) fn structured_posting_line(
     if account.is_empty() {
         return Err(CliError::Usage("entry account code is empty".into()));
     }
-    let minor = parse_posting_amount(amount, currency)?;
-    Ok((account, minor, memo.filter(|memo| !memo.is_empty())))
+    Ok(PostingLine {
+        account_code: account,
+        amount: parse_posting_amount(amount, currency)?,
+        memo: memo.filter(|memo| !memo.is_empty()),
+    })
 }
 
 /// Parse an amount string to minor currency units.
@@ -720,17 +729,13 @@ fn with_post_params<T>(
         (parsed_debits, beankeeper::types::DebitOrCredit::Debit),
         (parsed_credits, beankeeper::types::DebitOrCredit::Credit),
     ] {
-        db_entries.extend(
-            lines
-                .iter()
-                .map(|(code, amount, memo)| transactions::PostEntryParams {
-                    account_code: code.clone(),
-                    direction,
-                    amount: *amount,
-                    memo: memo.clone(),
-                    tax_category: tax_map.get(code).cloned(),
-                }),
-        );
+        db_entries.extend(lines.iter().map(|line| transactions::PostEntryParams {
+            account_code: line.account_code.clone(),
+            direction,
+            amount: line.amount,
+            memo: line.memo.clone(),
+            tax_category: tax_map.get(&line.account_code).cloned(),
+        }));
     }
 
     // Store the user-supplied reference key verbatim so that it round-trips
@@ -1396,37 +1401,53 @@ mod tests {
 
     #[test]
     fn parse_entry_arg_valid() {
-        let (code, amount, memo) = parse_entry_arg("1000:50", Currency::USD)
+        let PostingLine {
+            account_code: code,
+            amount,
+            memo,
+        } = parse_entry_arg("1000:50", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
         assert_eq!(code, "1000");
-        assert_eq!(amount, 5000);
+        assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo, None);
     }
 
     #[test]
     fn parse_entry_arg_decimal() {
-        let (code, amount, memo) = parse_entry_arg("1000:50.00", Currency::USD)
+        let PostingLine {
+            account_code: code,
+            amount,
+            memo,
+        } = parse_entry_arg("1000:50.00", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
         assert_eq!(code, "1000");
-        assert_eq!(amount, 5000);
+        assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo, None);
     }
 
     #[test]
     fn parse_entry_arg_with_memo() {
-        let (code, amount, memo) = parse_entry_arg("1000:50:Net pay", Currency::USD)
+        let PostingLine {
+            account_code: code,
+            amount,
+            memo,
+        } = parse_entry_arg("1000:50:Net pay", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
         assert_eq!(code, "1000");
-        assert_eq!(amount, 5000);
+        assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo.as_deref(), Some("Net pay"));
     }
 
     #[test]
     fn parse_entry_arg_with_empty_memo() {
-        let (code, amount, memo) = parse_entry_arg("1000:50:", Currency::USD)
+        let PostingLine {
+            account_code: code,
+            amount,
+            memo,
+        } = parse_entry_arg("1000:50:", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
         assert_eq!(code, "1000");
-        assert_eq!(amount, 5000);
+        assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo, None);
     }
 

@@ -119,7 +119,7 @@ struct InputTransaction {
 struct PreparedEntry {
     account_code: String,
     direction: DebitOrCredit,
-    amount: i64,
+    amount: db::amounts::PositiveMinorUnits,
     memo: Option<String>,
     tax_category: Option<String>,
 }
@@ -162,7 +162,7 @@ fn prepare_json(
         .into_iter()
         .map(|entry| {
             Ok(PreparedEntry {
-                amount: entry.amount.minor_units(currency)?,
+                amount: entry.amount.minor_units(currency)?.try_into()?,
                 account_code: entry.account_code,
                 direction: entry.direction,
                 memo: entry.memo,
@@ -233,7 +233,8 @@ fn prepare_csv(
     };
     let amount = signed
         .checked_abs()
-        .ok_or_else(|| invalid("amount is too large"))?;
+        .ok_or_else(|| invalid("amount is too large"))?
+        .try_into()?;
     let entries = [
         (debit, DebitOrCredit::Debit),
         (credit, DebitOrCredit::Credit),

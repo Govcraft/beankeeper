@@ -3819,10 +3819,10 @@ fn assert_owner_approves_opening(
     assert_eq!(txn.reference.as_deref(), Some("opening-home-2026"));
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].account_code, "1010");
-    assert_eq!(entries[0].amount, 12_345);
+    assert_eq!(entries[0].amount.minor_units(), 12_345);
     assert_eq!(entries[0].memo.as_deref(), Some("Opening asset"));
     assert_eq!(entries[1].account_code, "3000");
-    assert_eq!(entries[1].amount, 12_345);
+    assert_eq!(entries[1].amount.minor_units(), 12_345);
     assert_eq!(
         beankeeper_cli::db::proposals::get(db.conn(), "home", proposal_id)?
             .state

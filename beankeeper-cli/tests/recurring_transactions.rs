@@ -207,8 +207,12 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
         assert_eq!(metadata["lease"], "office");
         assert_eq!(metadata["building"], "north");
         assert_eq!(entries.len(), 2);
-        assert!(entries.iter().all(|entry| entry.amount == 1250
-            && entry.status == beankeeper_cli::db::EntryStatus::Uncleared));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.amount.minor_units() == 1250
+                    && entry.status == beankeeper_cli::db::EntryStatus::Uncleared)
+        );
         let debit = entries
             .iter()
             .find(|entry| entry.direction.is_debit())
@@ -257,7 +261,7 @@ fn one_time_splits_and_default_tax_categories_post_only_once() -> TestResult {
             .iter()
             .find(|entry| entry.account_code == account)
             .ok_or("missing split")?;
-        assert_eq!(entry.amount, amount);
+        assert_eq!(entry.amount.minor_units(), amount);
         assert_eq!(entry.tax_category.as_deref(), Some(tax));
     }
     assert_eq!(
@@ -420,7 +424,11 @@ fn currency_precision_is_preserved_in_scheduled_postings() -> TestResult {
             .ok_or("missing transaction ID")?;
         let (txn, entries) = transactions::get_transaction(ledger.db()?.conn(), "acme", id)?;
         assert_eq!(txn.currency.code(), currency);
-        assert!(entries.iter().all(|entry| entry.amount == expected));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.amount.minor_units() == expected)
+        );
     }
     Ok(())
 }

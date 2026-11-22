@@ -5,6 +5,7 @@ use beankeeper::types::{Currency, DebitOrCredit, Entry, Money};
 use chrono::NaiveDate;
 use rusqlite::{Connection, OptionalExtension, params};
 
+use super::amounts::PositiveMinorUnits;
 use super::audit::{self, Actor};
 use super::companies::{AllCompanies, Company};
 use super::connection::ReadConn;
@@ -32,7 +33,7 @@ pub struct PostEntryParams {
     pub account_code: String,
     #[serde(deserialize_with = "deserialize_post_direction")]
     pub direction: DebitOrCredit,
-    pub amount: i64,
+    pub amount: PositiveMinorUnits,
     pub memo: Option<String>,
     pub tax_category: Option<String>,
 }
@@ -941,14 +942,18 @@ mod tests {
             PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
@@ -1026,7 +1031,7 @@ mod tests {
         };
         let before = count()?;
         let mut unbalanced = sample_entries();
-        unbalanced[0].amount += 1;
+        unbalanced[0].amount = (unbalanced[0].amount.minor_units() + 1).try_into()?;
         let mut two_debits = sample_entries();
         two_debits[1].direction = DebitOrCredit::Debit;
         let balanced = sample_entries();
@@ -1134,14 +1139,18 @@ mod tests {
             PostEntryParams {
                 account_code: "5000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 1000,
+                amount: 1000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 1000,
+                amount: 1000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
@@ -1256,14 +1265,18 @@ mod tests {
             PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "9999".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
@@ -1317,14 +1330,18 @@ mod tests {
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 1000,
+                amount: 1000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 1000,
+                amount: 1000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
@@ -1333,14 +1350,18 @@ mod tests {
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 50000,
+                amount: 50000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 50000,
+                amount: 50000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
@@ -1507,14 +1528,18 @@ mod tests {
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: Some("sched-c:24b".into()),
             },
             PostEntryParams {
                 account_code: "4000".into(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000,
+                amount: 5000_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },

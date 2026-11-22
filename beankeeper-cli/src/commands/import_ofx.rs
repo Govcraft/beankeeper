@@ -238,7 +238,7 @@ fn build_metadata_json(ofx_type: &str) -> String {
 pub(crate) struct PreparedTransaction {
     pub(crate) date: NaiveDate,
     pub(crate) description: String,
-    pub(crate) amount_minor: i64,
+    pub(crate) amount_minor: crate::db::amounts::PositiveMinorUnits,
     pub(crate) is_inflow: bool,
     pub(crate) reference: String,
     pub(crate) metadata: String,
@@ -265,7 +265,12 @@ pub(crate) fn prepare_transaction(
         return Ok(None);
     }
 
-    let amount_minor = ofx_amount_to_minor(amount, currency.minor_units(), fit_id)?;
+    let amount_minor = ofx_amount_to_minor(amount, currency.minor_units(), fit_id)?
+        .try_into()
+        .map_err(|error: CliError| OfxImportError::AmountConversion {
+            fit_id: fit_id.to_string(),
+            detail: error.to_string(),
+        })?;
     let is_inflow = !amount.is_sign_negative();
     let posted = txn.date_posted().as_offset_date_time();
     let date = NaiveDate::from_ymd_opt(
@@ -382,11 +387,12 @@ fn build_entries(
         (contra, ctx.account_code)
     };
 
+    let amount = prepared.amount_minor;
     Ok(vec![
         transactions::PostEntryParams {
             account_code: debit_code.to_string(),
             direction: beankeeper::types::DebitOrCredit::Debit,
-            amount: prepared.amount_minor,
+            amount,
             memo: None,
             tax_category: accounts::get_account(ctx.reader, ctx.company, debit_code)?
                 .default_tax_category,
@@ -394,7 +400,7 @@ fn build_entries(
         transactions::PostEntryParams {
             account_code: credit_code.to_string(),
             direction: beankeeper::types::DebitOrCredit::Credit,
-            amount: prepared.amount_minor,
+            amount,
             memo: None,
             tax_category: accounts::get_account(ctx.reader, ctx.company, credit_code)?
                 .default_tax_category,

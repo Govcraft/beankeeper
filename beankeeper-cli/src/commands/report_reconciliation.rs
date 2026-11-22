@@ -236,7 +236,7 @@ fn clearings_as_of(
             })
             .map(|c| ItemClearing {
                 id: c.id,
-                amount: money(c.amount, currency),
+                amount: money(c.amount.minor_units(), currency),
                 cleared_date: c.cleared_on(),
                 state: c.state(),
                 statement_ref: c.statement_ref,
@@ -294,21 +294,31 @@ pub struct ReconciliationReport {
 
 impl ReconciliationReport {
     /// `statement - cleared`, when a statement balance was supplied.
-    #[must_use]
-    pub fn difference(&self) -> Option<Money> {
-        self.statement_balance.map(|statement| {
-            // Preserve the report's signed 64-bit wire range at its endpoints.
-            let units = minor(statement)
-                .saturating_sub(minor(self.cleared_balance))
-                .clamp(i128::from(i64::MIN), i128::from(i64::MAX));
-            Money::from_minor(units, self.currency)
-        })
+    ///
+    /// # Errors
+    /// Returns validation when the difference exceeds the supported report range.
+    pub fn difference(&self) -> Result<Option<Money>, CliError> {
+        self.statement_balance
+            .map(|statement| {
+                let difference = statement
+                    .checked_sub(self.cleared_balance)
+                    .map_err(|error| CliError::Validation(error.to_string()))?;
+                i64::try_from(minor(difference)).map_err(|_| overflow())?;
+                Ok(difference)
+            })
+            .transpose()
+    }
+
+    fn check_difference(self) -> Result<Self, CliError> {
+        self.difference()?;
+        Ok(self)
     }
 
     /// Whether the cleared balance matches the statement balance.
     #[must_use]
     pub fn is_reconciled(&self) -> Option<bool> {
-        self.difference().map(|d| d.is_zero())
+        self.statement_balance
+            .map(|statement| statement == self.cleared_balance)
     }
 
     /// Number of listed items that are partially cleared.
@@ -381,14 +391,18 @@ pub(super) fn run_resolved_to(
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let conn = db.conn();
-    let company_scope = Company::resolve(conn, company)?;
-    let report = build_resolved_report(conn, &company_scope, resolved.account, resolved.request)?;
-    let report = match resolved.mode {
-        ReportMode::Bank => report,
-        ReportMode::Settlement { link_key } => {
-            settlement::apply(conn, &company_scope, report, link_key)?
-        }
-    };
+    let report = db::audit::atomically(conn, || {
+        let company_scope = Company::resolve(conn, company)?;
+        let report =
+            build_resolved_report(conn, &company_scope, resolved.account, resolved.request)?;
+        let report = match resolved.mode {
+            ReportMode::Bank => report,
+            ReportMode::Settlement { link_key } => {
+                settlement::apply(conn, &company_scope, report, link_key)?
+            }
+        };
+        report.check_difference()
+    })?;
     render(cli, company, &report, output)
 }
 
@@ -430,7 +444,7 @@ fn render(
 ) -> Result<(), CliError> {
     match output.format {
         OutputFormat::Table => {
-            writeln!(output.writer, "{}", render_table(report, output.use_color))?;
+            writeln!(output.writer, "{}", render_table(report, output.use_color)?)?;
         }
         OutputFormat::Json => {
             let meta = cli.meta(Operation::ReportReconciliation, Some(company));
@@ -521,7 +535,7 @@ pub fn compute_reconciliation(
     let conn = db.conn();
     db::audit::atomically(conn, || {
         let company = Company::resolve(conn, company)?;
-        build_typed_report(conn, &company, request)
+        build_typed_report(conn, &company, request)?.check_difference()
     })
 }
 
@@ -542,7 +556,7 @@ pub fn compute_settlement_reconciliation(
     db::audit::atomically(conn, || {
         let company = Company::resolve(conn, company)?;
         let report = build_typed_report(conn, &company, request)?;
-        settlement::apply(conn, &company, report, link_key)
+        settlement::apply(conn, &company, report, link_key)?.check_difference()
     })
 }
 
@@ -579,7 +593,7 @@ pub fn build_report(
 ) -> Result<ReconciliationReport, CliError> {
     db::audit::atomically(conn, || {
         let company = Company::resolve(conn, company)?;
-        build_cli_report(conn, &company, args)
+        build_cli_report(conn, &company, args)?.check_difference()
     })
 }
 
@@ -683,11 +697,11 @@ fn build_resolved_report(
                 metadata: metadata_for_output(r.metadata.as_deref()),
                 direction: r.direction,
                 amount: money(r.amount, currency),
-                signed_amount: money(r.amount * dsign, currency),
+                signed_amount: money(add(0, r.amount, dsign)?, currency),
                 cleared_amount: money(r.cleared_all, currency),
                 reconciled_amount: money(r.reconciled_all, currency),
                 remaining_amount: money(remaining, currency),
-                signed_remaining: money(remaining * dsign, currency),
+                signed_remaining: money(add(0, remaining, dsign)?, currency),
                 partially_cleared: r.cleared_all > 0,
                 clearings,
                 group,
@@ -950,7 +964,7 @@ fn header_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
 }
 
 /// The balances table.
-fn balances_table(r: &ReconciliationReport, use_color: bool) -> String {
+fn balances_table(r: &ReconciliationReport, difference: Option<Money>, use_color: bool) -> String {
     use comfy_table::{Cell, CellAlignment};
     let bold = anstyle::Style::new().bold();
     let mut summary = new_table();
@@ -980,7 +994,7 @@ fn balances_table(r: &ReconciliationReport, use_color: bool) -> String {
         },
         r.uncleared_total,
     );
-    if let (Some(stmt), Some(diff)) = (r.statement_balance, r.difference()) {
+    if let (Some(stmt), Some(diff)) = (r.statement_balance, difference) {
         add("Statement balance", stmt);
         add(
             if r.settlement.is_some() {
@@ -1084,14 +1098,16 @@ fn uncleared_lines(r: &ReconciliationReport, use_color: bool) -> Vec<String> {
 }
 
 /// Render the report as human-readable tables.
-#[must_use]
-pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
+///
+/// # Errors
+/// Returns validation when a difference exceeds the supported report range.
+pub fn render_table(r: &ReconciliationReport, use_color: bool) -> Result<String, CliError> {
     let green = color(anstyle::AnsiColor::Green);
     let red_bold = color(anstyle::AnsiColor::Red).bold();
 
     let mut lines = header_lines(r, use_color);
     lines.push(String::new());
-    lines.push(balances_table(r, use_color));
+    lines.push(balances_table(r, r.difference()?, use_color));
     if let Some(ok) = r.is_reconciled() {
         lines.push(if ok {
             styled("[ok] reconciled: yes", green, use_color)
@@ -1104,7 +1120,7 @@ pub fn render_table(r: &ReconciliationReport, use_color: bool) -> String {
     if let Some(details) = &r.settlement {
         lines.push(details.render_table());
     }
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 #[derive(Serialize)]
@@ -1147,9 +1163,11 @@ struct ReportJson<'a> {
     settlement: Option<&'a SettlementDetails>,
 }
 
-impl<'a> From<&'a ReconciliationReport> for ReportJson<'a> {
-    fn from(r: &'a ReconciliationReport) -> Self {
-        Self {
+impl<'a> TryFrom<&'a ReconciliationReport> for ReportJson<'a> {
+    type Error = CliError;
+
+    fn try_from(r: &'a ReconciliationReport) -> Result<Self, Self::Error> {
+        Ok(Self {
             account: AccountJson {
                 code: &r.code,
                 name: &r.name,
@@ -1172,18 +1190,20 @@ impl<'a> From<&'a ReconciliationReport> for ReportJson<'a> {
             uncleared_count: r.uncleared.len(),
             partially_cleared_count: r.partially_cleared_count(),
             statement_balance: OptionalMoneyField("statement_balance", r.statement_balance),
-            difference: OptionalMoneyField("difference", r.difference()),
+            difference: OptionalMoneyField("difference", r.difference()?),
             reconciled: r.is_reconciled(),
             uncleared_entries: &r.uncleared,
             groups: r.groups.as_deref(),
             settlement: r.settlement.as_ref(),
-        }
+        })
     }
 }
 
 impl Serialize for ReconciliationReport {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        ReportJson::from(self).serialize(serializer)
+        ReportJson::try_from(self)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
     }
 }
 
@@ -1192,10 +1212,11 @@ impl Serialize for ReconciliationReport {
 /// # Errors
 /// Returns [`CliError::General`] on serialization failure.
 pub fn render_json(r: &ReconciliationReport, meta: output::json::Meta) -> Result<String, CliError> {
+    let report = ReportJson::try_from(r)?;
     let env = output::json::Envelope {
         ok: true,
         meta,
-        data: Some(r),
+        data: Some(report),
         error: None,
     };
     serde_json::to_string_pretty(&env)
@@ -1301,7 +1322,7 @@ pub fn render_csv(r: &ReconciliationReport) -> Result<String, CliError> {
         ("uncleared_total", minor(r.uncleared_total)),
     ];
     if let (Some(stmt), Some(diff), Some(ok)) =
-        (r.statement_balance, r.difference(), r.is_reconciled())
+        (r.statement_balance, r.difference()?, r.is_reconciled())
     {
         summary.push(("statement_balance", minor(stmt)));
         summary.push(("difference", minor(diff)));

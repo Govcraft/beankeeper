@@ -207,7 +207,11 @@ fn assert_approved_details(
     assert_eq!(metadata["proposal_id"], id(proposal)?);
     assert_eq!(metadata["vendor"], "Acme");
     assert_eq!(entries.len(), 2);
-    assert!(entries.iter().all(|entry| entry.amount == 50001));
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.amount.minor_units() == 50001)
+    );
     let debit = entries
         .iter()
         .find(|entry| entry.direction.is_debit())

@@ -69,14 +69,18 @@ impl Ledger {
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 1234,
+                amount: 1234_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 1234,
+                amount: 1234_i64
+                    .try_into()
+                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
                 memo: None,
                 tax_category: None,
             },
@@ -263,7 +267,7 @@ fn clearing_audit_resolves_immutable_entry_currency() -> TestResult {
                 company_slug: "acme",
                 transaction_id: transaction_id.try_into()?,
                 entry_id: entry_id.try_into()?,
-                amount: Some(100),
+                amount: Some(100_i64.try_into()?),
                 date: "2026-01-31".parse()?,
                 statement: Some("S1"),
                 status: db::ClearingStatus::Cleared,

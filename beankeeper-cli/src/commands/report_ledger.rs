@@ -25,7 +25,7 @@
 use crate::operation::Operation;
 use std::collections::BTreeSet;
 
-use beankeeper::types::{Currency, DebitOrCredit, Money};
+use beankeeper::types::{Amount, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
@@ -381,13 +381,24 @@ fn resolve_ledger_currency(
     super::report_currency::resolve_report_currency(conn, company, explicit)
 }
 
+fn balance_overflow() -> CliError {
+    CliError::Validation("ledger balance exceeds the supported minor-unit range".into())
+}
+
+fn report_amount(value: Amount) -> Result<i64, CliError> {
+    i64::try_from(value.minor_units()).map_err(|_| balance_overflow())
+}
+
 /// Signed effect of a debit/credit pair on an account's normal-side balance.
-fn signed(debit_normal: bool, debit: i64, credit: i64) -> i64 {
-    if debit_normal {
-        debit.saturating_sub(credit)
+fn signed(debit_normal: bool, debit: i64, credit: i64) -> Result<Amount, CliError> {
+    let (positive, negative) = if debit_normal {
+        (debit, credit)
     } else {
-        credit.saturating_sub(debit)
-    }
+        (credit, debit)
+    };
+    Amount::from(positive)
+        .checked_sub(Amount::from(negative))
+        .ok_or_else(balance_overflow)
 }
 
 /// Bind `base` as `?1..?n` followed by the filter's parameters (`?n+1..`).
@@ -447,9 +458,9 @@ fn account_statement(
                 params_from_iter(with_filter_params(base(Some(f)), &filter)),
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            signed(debit_normal, dr, cr)
+            signed(debit_normal, dr, cr)?
         }
-        None => 0,
+        None => Amount::ZERO,
     };
 
     let filter = metadata_filter::sql_predicate("t.metadata", filters, 6);
@@ -486,15 +497,20 @@ fn account_statement(
     })?;
 
     let mut running = opening_balance;
-    let mut total_debits: i64 = 0;
-    let mut total_credits: i64 = 0;
+    let mut total_debits = Amount::ZERO;
+    let mut total_credits = Amount::ZERO;
     let mut entries = Vec::new();
     for line in raw {
         let mut line = line?;
-        total_debits = total_debits.saturating_add(line.debit);
-        total_credits = total_credits.saturating_add(line.credit);
-        running = running.saturating_add(signed(debit_normal, line.debit, line.credit));
-        line.balance = running;
+        total_debits = total_debits
+            .checked_add(Amount::from(line.debit))
+            .ok_or_else(balance_overflow)?;
+        total_credits = total_credits
+            .checked_add(Amount::from(line.credit))
+            .ok_or_else(balance_overflow)?;
+        let change = signed(debit_normal, line.debit, line.credit)?;
+        running = running.checked_add(change).ok_or_else(balance_overflow)?;
+        line.balance = report_amount(running)?;
         entries.push(line);
     }
 
@@ -503,11 +519,11 @@ fn account_statement(
         name: acct.name.clone(),
         account_type: acct.account_type,
         normal_balance: acct.account_type.normal_balance().code(),
-        opening_balance,
+        opening_balance: report_amount(opening_balance)?,
         entries,
-        total_debits,
-        total_credits,
-        closing_balance: running,
+        total_debits: report_amount(total_debits)?,
+        total_credits: report_amount(total_credits)?,
+        closing_balance: report_amount(running)?,
     })
 }
 
@@ -783,8 +799,8 @@ mod tests {
 
     #[test]
     fn signed_respects_normal_side() {
-        assert_eq!(signed(true, 500, 200), 300);
-        assert_eq!(signed(false, 500, 200), -300);
+        assert_eq!(signed(true, 500, 200).ok(), Some(Amount::new(300)));
+        assert_eq!(signed(false, 500, 200).ok(), Some(Amount::new(-300)));
     }
 
     #[test]

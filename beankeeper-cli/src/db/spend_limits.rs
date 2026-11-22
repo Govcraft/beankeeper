@@ -306,23 +306,20 @@ pub(crate) fn verify(conn: &Connection) -> Result<(), CliError> {
 /// Measure a balanced posting using checked integer minor-unit arithmetic.
 ///
 /// # Errors
-/// Rejects nonpositive entries, overflow and imbalance.
+/// Rejects overflow and imbalance.
 pub(crate) fn debit_total(entries: &[PostEntryParams]) -> Result<i64, CliError> {
     let mut debit = 0_i64;
     let mut credit = 0_i64;
     for entry in entries {
-        if entry.amount <= 0 {
-            return Err(CliError::Validation(
-                "entry amounts must be positive".into(),
-            ));
-        }
         let total = match entry.direction {
             beankeeper::types::DebitOrCredit::Debit => &mut debit,
             beankeeper::types::DebitOrCredit::Credit => &mut credit,
         };
-        *total = total.checked_add(entry.amount).ok_or_else(|| {
-            CliError::Validation("posting total exceeds supported minor-unit range".into())
-        })?;
+        *total = total
+            .checked_add(entry.amount.minor_units())
+            .ok_or_else(|| {
+                CliError::Validation("posting total exceeds supported minor-unit range".into())
+            })?;
     }
     if debit == 0 || debit != credit {
         return Err(CliError::Validation(

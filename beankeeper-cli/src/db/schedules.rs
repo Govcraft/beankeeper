@@ -271,17 +271,12 @@ fn validate_entries(entries: &[PostEntryParams]) -> Result<(), CliError> {
     let mut debit = 0_i64;
     let mut credit = 0_i64;
     for entry in entries {
-        if entry.amount <= 0 {
-            return Err(CliError::Validation(
-                "schedule entry amounts must be positive".into(),
-            ));
-        }
         let total = match entry.direction {
             beankeeper::types::DebitOrCredit::Debit => &mut debit,
             beankeeper::types::DebitOrCredit::Credit => &mut credit,
         };
         *total = total
-            .checked_add(entry.amount)
+            .checked_add(entry.amount.minor_units())
             .ok_or_else(|| CliError::Validation("schedule entry total overflow".into()))?;
     }
     if debit == 0 || debit != credit {

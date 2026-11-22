@@ -566,7 +566,7 @@ fn post(conn: &Connection, p: &TradePosting<'_>) -> Result<i64, CliError> {
         entries.push(PostEntryParams {
             account_code: entry.account.code().as_str().into(),
             direction: entry.direction,
-            amount: minor(money)?,
+            amount: minor(money)?.try_into()?,
             memo: None,
             tax_category: None,
         });

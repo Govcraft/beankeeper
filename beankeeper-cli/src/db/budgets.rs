@@ -538,6 +538,9 @@ mod tests {
     }
 
     fn post_expense(db: &Db, date: &str, expense_code: &str, amount: i64) {
+        let amount = amount
+            .try_into()
+            .unwrap_or_else(|error| panic!("invalid fixture amount: {error}"));
         let entries = vec![
             PostEntryParams {
                 account_code: expense_code.to_string(),
@@ -571,6 +574,9 @@ mod tests {
     }
 
     fn post_revenue(db: &Db, date: &str, amount: i64) {
+        let amount = amount
+            .try_into()
+            .unwrap_or_else(|error| panic!("invalid fixture amount: {error}"));
         let entries = vec![
             PostEntryParams {
                 account_code: "1000".to_string(),

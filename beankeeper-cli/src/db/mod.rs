@@ -1,6 +1,7 @@
 //! Database layer: connection management, schema, and CRUD operations.
 
 pub mod accounts;
+pub mod amounts;
 pub mod attachments;
 pub mod audit;
 pub mod budgets;
@@ -107,7 +108,7 @@ pub struct EntryRow {
     pub account_code: String,
     pub company_slug: String,
     pub direction: beankeeper::types::DebitOrCredit,
-    pub amount: i64,
+    pub amount: amounts::PositiveMinorUnits,
     pub memo: Option<String>,
     pub tax_category: Option<String>,
     pub status: EntryStatus,
@@ -457,6 +458,9 @@ mod tests {
     }
 
     fn post_sample_in(db: &Db, date: &str, amount: i64, currency: Currency) {
+        let amount = amount
+            .try_into()
+            .unwrap_or_else(|error| panic!("invalid fixture amount: {error}"));
         let entries = vec![
             transactions::PostEntryParams {
                 account_code: "1000".to_string(),

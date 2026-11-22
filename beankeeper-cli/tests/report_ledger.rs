@@ -406,3 +406,41 @@ fn table_output_renders_statement() -> TestResult {
     assert!(out.contains("120.00"));
     Ok(())
 }
+
+#[test]
+fn ledger_rejects_running_balance_overflow_before_rendering() -> TestResult {
+    let (_dir, db) = setup()?;
+    for (date, amount) in [("2026-01-12", "9223372036854775807"), ("2026-01-13", "1")] {
+        post(
+            &db,
+            date,
+            "Large ledger entry",
+            &format!("1000:{amount}"),
+            &format!("4000:{amount}"),
+            &["--currency", "JPY"],
+        )?;
+    }
+    let output = bk(
+        &db,
+        &[
+            "--json",
+            "--company",
+            CO,
+            "report",
+            "ledger",
+            "--account",
+            "1000",
+            "--currency",
+            "JPY",
+            "--to",
+            "2026-01-15",
+        ],
+    )?;
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(output.stdout, [] as [u8; 0]);
+    let error: Value = serde_json::from_slice(&output.stderr)?;
+    assert!(error["error"]["message"].as_str().is_some_and(|message| {
+        message.contains("ledger balance exceeds the supported minor-unit range")
+    }));
+    Ok(())
+}

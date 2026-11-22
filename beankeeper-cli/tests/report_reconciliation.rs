@@ -624,7 +624,7 @@ fn typed_bank_reconciliation_keeps_as_of_statement_and_currency_independent()
     assert_eq!(report.total_cleared_balance, bhd(60_015));
     assert_eq!(report.reconciled_balance, bhd(0));
     assert_eq!(report.uncleared_total, bhd(40_110));
-    assert_eq!(report.difference(), Some(bhd(0)));
+    assert_eq!(report.difference()?, Some(bhd(0)));
     assert_eq!(
         report
             .groups
@@ -709,4 +709,44 @@ fn typed_reconciliation_looks_up_existing_account_keys_verbatim()
         ));
     }
     Ok(())
+}
+
+#[test]
+fn reconciliation_rejects_out_of_range_statement_differences() {
+    let ledger = new_ledger();
+    ledger.co(&[
+        "txn",
+        "post",
+        "-d",
+        "Cleared expense",
+        "--date",
+        "2026-01-01",
+        "--currency",
+        "USD",
+        "--debit",
+        "5000:0.01",
+        "--credit",
+        "1000:0.01",
+    ]);
+    ledger.clear("1000", 1, "cleared");
+    for format in ["table", "json", "csv"] {
+        let report = ledger.run(&[
+            "--format",
+            format,
+            "--company",
+            CO,
+            "report",
+            "reconciliation",
+            "--account",
+            "1000",
+            "--currency",
+            "USD",
+            "--to",
+            "2026-01-31",
+            "--statement-balance",
+            "92233720368547758.07",
+        ]);
+        assert_eq!(report.code, Some(3), "{format}");
+        assert_eq!(report.stdout, "", "{format}");
+    }
 }

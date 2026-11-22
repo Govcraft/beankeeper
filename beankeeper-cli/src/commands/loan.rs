@@ -171,8 +171,11 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
     }
     let date = super::txn::posting_date(Some(&args.date))?;
     let line = |code: &str, amount: MoneyField| {
-        let minor = i64::try_from(amount.minor_units()).map_err(validation)?;
-        Ok::<_, CliError>((code.to_owned(), minor, None))
+        Ok::<_, CliError>(super::txn::PostingLine {
+            account_code: code.to_owned(),
+            amount: beankeeper::types::Amount::new(amount.minor_units()).try_into()?,
+            memo: None,
+        })
     };
     let debit = [
         (&args.liability, row.principal),

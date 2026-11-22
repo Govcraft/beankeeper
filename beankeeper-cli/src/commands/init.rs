@@ -141,13 +141,19 @@ fn post_with_metadata(
     })
 }
 
-use crate::db::transactions::PostEntryParams;
+use crate::db::{amounts::PositiveMinorUnits, transactions::PostEntryParams};
+
+fn demo_amount(amount: i64) -> PositiveMinorUnits {
+    amount
+        .try_into()
+        .unwrap_or_else(|error| panic!("invalid demo amount: {error}"))
+}
 
 fn dr(code: &str, amount: i64) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
         direction: beankeeper::types::DebitOrCredit::Debit,
-        amount,
+        amount: demo_amount(amount),
         memo: None,
         tax_category: None,
     }
@@ -157,7 +163,7 @@ fn cr(code: &str, amount: i64) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
         direction: beankeeper::types::DebitOrCredit::Credit,
-        amount,
+        amount: demo_amount(amount),
         memo: None,
         tax_category: None,
     }
@@ -167,7 +173,7 @@ fn dr_tax(code: &str, amount: i64, tax: &str) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
         direction: beankeeper::types::DebitOrCredit::Debit,
-        amount,
+        amount: demo_amount(amount),
         memo: None,
         tax_category: Some(tax.into()),
     }
@@ -177,7 +183,7 @@ fn cr_tax(code: &str, amount: i64, tax: &str) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
         direction: beankeeper::types::DebitOrCredit::Credit,
-        amount,
+        amount: demo_amount(amount),
         memo: None,
         tax_category: Some(tax.into()),
     }
@@ -187,7 +193,7 @@ fn dr_memo(code: &str, amount: i64, memo: &str) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
         direction: beankeeper::types::DebitOrCredit::Debit,
-        amount,
+        amount: demo_amount(amount),
         memo: Some(memo.into()),
         tax_category: None,
     }
