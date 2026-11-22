@@ -913,7 +913,8 @@ fn clear(db: &Db, actor: &Actor, input: inputs::ClearInput) -> Response {
                         reference: item.reference.into_inner(),
                         amount: item.amount.map(Text::into_inner),
                     })
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .try_into()?,
             },
             clear_options(date, statement.as_deref(), status),
         ),

@@ -99,9 +99,6 @@ pub(crate) fn execute_json(
     options: ClearOptions<'_>,
 ) -> Result<serde_json::Value, CliError> {
     db::get_company(db_handle.read(), company)?;
-    if let ClearRequestTarget::Batch { lines, .. } = &target {
-        validate_inline_batch(lines)?;
-    }
     let result = compute(db_handle, company, actor, target, options)?;
     match &result.items {
         ClearedItems::Single(item) => single_data(&result.settings, item),
@@ -123,7 +120,7 @@ pub(crate) enum ClearRequestTarget<'a> {
     },
     Batch {
         account: &'a str,
-        lines: Vec<BatchLine>,
+        lines: StatementBatch,
     },
 }
 
@@ -245,21 +242,6 @@ fn compute<'a>(
         })
     })?;
     Ok(Execution { settings, items })
-}
-
-fn validate_inline_batch(lines: &[BatchLine]) -> Result<(), CliError> {
-    if lines.is_empty() {
-        return Err(CliError::Validation("batch input has no lines".into()));
-    }
-    let mut references = HashSet::new();
-    for line in lines {
-        if !references.insert(&line.reference) {
-            return Err(CliError::Validation(
-                "batch references must be non-empty and unique".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn resolve_entry(
@@ -390,7 +372,7 @@ impl StatementAmount {
             .checked_mul(multiplier)
             .and_then(|value| i64::try_from(value).ok())
             .ok_or_else(|| CliError::Validation("clearing amount is too large".into()))?;
-        PositiveMinorUnits::try_from(minor).map_err(|error| CliError::Validation(error.to_string()))
+        minor.try_into()
     }
 }
 
@@ -434,6 +416,32 @@ pub(crate) struct BatchLine {
     pub amount: Option<StatementAmount>,
 }
 
+/// Nonempty statement rows with one amount per transaction reference.
+pub(crate) struct StatementBatch(Vec<BatchLine>);
+
+impl TryFrom<Vec<BatchLine>> for StatementBatch {
+    type Error = CliError;
+
+    fn try_from(lines: Vec<BatchLine>) -> Result<Self, Self::Error> {
+        if lines.is_empty() {
+            return Err(CliError::Validation("batch input has no lines".into()));
+        }
+        let mut seen = HashSet::with_capacity(lines.len());
+        for line in &lines {
+            if !seen.insert(&line.reference) {
+                return Err(at_line(
+                    line.line,
+                    line.reference.as_str(),
+                    CliError::Validation(
+                        "duplicate reference in batch; combine the amounts into one line".into(),
+                    ),
+                ));
+            }
+        }
+        Ok(Self(lines))
+    }
+}
+
 /// Parse `reference[,amount]` CSV lines. Blank lines and `#` comments are
 /// skipped, as is an optional leading `reference[,amount]` header. Duplicate
 /// references are rejected (combine their amounts into one line).
@@ -442,9 +450,8 @@ pub(crate) struct BatchLine {
 ///
 /// Returns [`CliError::Validation`] for malformed lines, an empty batch, or
 /// duplicate references.
-pub(crate) fn parse_batch(input: &str) -> Result<Vec<BatchLine>, CliError> {
+pub(crate) fn parse_batch(input: &str) -> Result<StatementBatch, CliError> {
     let mut out = Vec::new();
-    let mut seen = HashSet::new();
     let mut first = true;
     for (idx, text) in input.lines().enumerate() {
         let line = u64::try_from(idx).unwrap_or(u64::MAX).saturating_add(1);
@@ -482,11 +489,6 @@ pub(crate) fn parse_batch(input: &str) -> Result<Vec<BatchLine>, CliError> {
         let reference: TransactionReference = fields[0]
             .parse()
             .map_err(|_| CliError::Validation(format!("line {line}: missing reference")))?;
-        if !seen.insert(reference.clone()) {
-            return Err(CliError::Validation(format!(
-                "line {line}: duplicate reference '{reference}' in batch; combine the amounts into one line"
-            )));
-        }
         let amount = fields
             .get(1)
             .filter(|a| !a.is_empty())
@@ -499,10 +501,7 @@ pub(crate) fn parse_batch(input: &str) -> Result<Vec<BatchLine>, CliError> {
             amount,
         });
     }
-    if out.is_empty() {
-        return Err(CliError::Validation("batch input has no lines".into()));
-    }
-    Ok(out)
+    out.try_into()
 }
 
 /// Prefix an error message with its batch line.
@@ -523,8 +522,9 @@ fn run_batch<'a>(
     company: &CompanySlug,
     ctx: &ClearanceSettings<'_>,
     account: &'a str,
-    lines: &[BatchLine],
+    batch: &StatementBatch,
 ) -> Result<ClearedBatch<'a>, CliError> {
+    let lines = &batch.0;
     let scope = Company::bind(writer.read(), company.clone())?;
     db::get_account(&scope, account)?;
     if ctx.status == ClearanceArg::Uncleared && lines.iter().any(|l| l.amount.is_some()) {
@@ -841,7 +841,7 @@ mod tests {
             parse_batch("reference,amount\n# comment\nPOL-1,40.50\n\n  POL-2  \n\"POL,3\",1\n")
                 .unwrap_or_else(|e| panic!("parse: {e}"));
         assert_eq!(
-            lines,
+            lines.0,
             vec![
                 BatchLine {
                     line: 3,
