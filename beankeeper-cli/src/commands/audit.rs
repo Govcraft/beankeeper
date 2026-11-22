@@ -28,7 +28,7 @@ impl<'a> From<&'a AuditLogArgs> for ListAuditParams<'a> {
     fn from(args: &'a AuditLogArgs) -> Self {
         Self {
             agent_uri: args.agent.as_deref(),
-            company_slug: args.company.as_deref(),
+            company_slug: args.company.as_ref(),
             entity: args.entity,
             action: args.action,
             limit: args.limit.max(0),
@@ -54,7 +54,12 @@ fn run_log(
     match format {
         OutputFormat::Json => {
             let meta = cli
-                .meta(Operation::AuditLog, params.company_slug)
+                .meta(
+                    Operation::AuditLog,
+                    params
+                        .company_slug
+                        .map(crate::db::companies::CompanySlug::as_str),
+                )
                 .with_pagination(pagination);
             let data = audit_data(db, &rows)?;
             let rendered = serde_json::json!({ "ok": true, "meta": meta, "data": data });
@@ -70,7 +75,11 @@ fn run_log(
                     r.id,
                     csv_field(&r.changed_at),
                     csv_field(&r.actor),
-                    csv_field(r.company_slug.as_deref().unwrap_or("")),
+                    csv_field(
+                        r.company_slug
+                            .as_ref()
+                            .map_or("", crate::db::companies::CompanySlug::as_str)
+                    ),
                     csv_field(r.entity.as_str()),
                     csv_field(&r.entity_id),
                     csv_field(r.action.as_str()),
@@ -98,7 +107,9 @@ fn run_log(
                     r.entity,
                     r.action,
                     truncate(&r.entity_id, 10),
-                    r.company_slug.as_deref().unwrap_or("-"),
+                    r.company_slug
+                        .as_ref()
+                        .map_or("-", crate::db::companies::CompanySlug::as_str),
                 );
                 if let Some(uri) = &r.agent_uri {
                     println!(

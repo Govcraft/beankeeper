@@ -29,7 +29,7 @@ fn create_schedule(
     params: &CreateScheduleParams,
 ) -> Result<Schedule, CliError> {
     Granted::<Post>::with_db(db, actor, |grant| {
-        schedules::create_schedule(grant, company, params)
+        schedules::create_schedule(grant, &company.parse()?, params)
     })
 }
 
@@ -40,7 +40,7 @@ fn cancel_schedule(
     id: &ScheduleId,
 ) -> Result<Schedule, CliError> {
     Granted::<Post>::with_db(db, actor, |grant| {
-        schedules::cancel_schedule(grant, company, id)
+        schedules::cancel_schedule(grant, &company.parse()?, id)
     })
 }
 
@@ -52,10 +52,10 @@ fn run_due(
     dry_run: bool,
 ) -> Result<Vec<Occurrence>, CliError> {
     if dry_run {
-        db.read_snapshot(|reader| schedules::preview_due(reader, company, through))
+        db.read_snapshot(|reader| schedules::preview_due(reader, &company.parse()?, through))
     } else {
         Granted::<Post>::with_db(db, actor, |grant| {
-            schedules::run_due(grant, company, through, false)
+            schedules::run_due(grant, &company.parse()?, through, false)
         })
     }
 }
@@ -67,7 +67,13 @@ fn audit_count(db: &Db) -> rusqlite::Result<i64> {
 
 fn fixture() -> Result<Db, CliError> {
     let db = Db::open_in_memory()?;
-    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
@@ -76,7 +82,7 @@ fn fixture() -> Result<Db, CliError> {
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code,
                 name: code,
                 account_type: kind,
@@ -141,7 +147,13 @@ fn rejects_invalid_templates_without_state_or_audit() -> TestResult {
     for invalid in cases {
         assert!(create_schedule(&db, &actor, "acme", &invalid).is_err());
     }
-    assert!(schedules::list_schedules(db.read(), "acme")?.is_empty());
+    assert!(
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?
+        .is_empty()
+    );
     assert_eq!(audit_count(&db)?, before_audit);
     Ok(())
 }
@@ -164,7 +176,10 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
             .all(|occurrence| occurrence.transaction_id.is_none())
     );
     assert_eq!(
-        schedules::list_schedules(db.read(), "acme")?[0]
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -183,7 +198,10 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
             .iter()
             .all(|occurrence| occurrence.transaction_id.is_some())
     );
-    let completed = &schedules::list_schedules(db.read(), "acme")?[0];
+    let completed = &schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+        db.read(),
+        "acme".parse()?,
+    )?)?[0];
     assert_eq!(completed.state, ScheduleState::Completed);
     assert_eq!(completed.state.next_due(), None);
     assert!(run_due(&db, &actor, "acme", date("2027-01-01")?, false)?.is_empty());
@@ -193,7 +211,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
         audit::delete_account(
             db.conn(),
             &actor,
-            "acme",
+            &"acme".parse()?,
             "1000",
             beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
         )
@@ -218,7 +236,10 @@ fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.read(), "acme")?[0]
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -243,7 +264,10 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.read(), "acme")?[0]
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -256,9 +280,21 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
 fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("schedule-test");
-    companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
+    companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"other".parse()?,
+        "Other",
+        None,
+    )?;
     let schedule = create_schedule(&db, &actor, "acme", &template()?)?;
-    assert!(schedules::list_schedules(db.read(), "other")?.is_empty());
+    assert!(
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "other".parse()?
+        )?)?
+        .is_empty()
+    );
     assert!(cancel_schedule(&db, &actor, "other", &schedule.id).is_err());
     let posted = run_due(&db, &actor, "acme", date("2026-01-31")?, false)?;
     assert_eq!(posted.len(), 1);
@@ -281,7 +317,7 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
         audit::delete_company(
             db.conn(),
             &actor,
-            "acme",
+            &"acme".parse()?,
             beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
         )
         .is_err()
@@ -305,7 +341,10 @@ fn invalid_persisted_template_is_rejected_before_posting() -> TestResult {
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     assert_eq!(
-        schedules::list_schedules(db.read(), "acme")?[0]
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?[0]
             .state
             .next_due(),
         Some(date("2026-01-31")?)
@@ -319,7 +358,13 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("concurrent.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
@@ -328,7 +373,7 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code,
                 name: code,
                 account_type: kind,
@@ -340,8 +385,9 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
     drop(db);
 
     let snapshot = Db::open_snapshot(&path, None)?;
-    let preview = snapshot
-        .read_snapshot(|reader| schedules::preview_due(reader, "acme", date("2026-03-31")?))?;
+    let preview = snapshot.read_snapshot(|reader| {
+        schedules::preview_due(reader, &"acme".parse()?, date("2026-03-31")?)
+    })?;
     assert_eq!(preview.len(), 3);
     assert!(
         preview
@@ -404,7 +450,10 @@ fn finite_schedules_complete_at_the_supported_date_boundary() -> TestResult {
         let posted = run_due(&db, &actor, "acme", NaiveDate::MAX, false)?;
         assert_eq!(posted.len(), 1);
         assert_eq!(posted[0].date, start_date);
-        let completed = &schedules::list_schedules(db.read(), "acme")?[0];
+        let completed = &schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?,
+        )?)?[0];
         assert_eq!(completed.state, ScheduleState::Completed);
         assert_eq!(completed.state.next_due(), None);
         assert!(run_due(&db, &actor, "acme", NaiveDate::MAX, false)?.is_empty());
@@ -433,7 +482,10 @@ fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
     assert_eq!(posted.len(), DEFAULT_RUN_LIMIT);
     assert!(posted.iter().all(|row| row.transaction_id.is_some()));
     assert_eq!(
-        schedules::list_schedules(db.read(), "acme")?[0]
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "acme".parse()?
+        )?)?[0]
             .state
             .code(),
         "completed"
@@ -452,7 +504,9 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     for count in [500, 501] {
         create_schedule(&db, &actor, "acme", &daily_template(count)?)?;
     }
-    let before = serde_json::json!(schedules::list_schedules(db.read(), "acme")?);
+    let before = serde_json::json!(schedules::list_schedules(
+        &beankeeper_cli::db::companies::Company::bind(db.read(), "acme".parse()?)?
+    )?);
     db.conn().execute_batch(
         "CREATE TRIGGER reject_any_post BEFORE INSERT ON transactions
          BEGIN SELECT RAISE(ABORT, 'posting attempted before limit check'); END;",
@@ -464,7 +518,9 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
     assert!(error.to_string().contains("1000 occurrences"));
     assert!(error.to_string().contains("--allow-large-run"));
     assert_eq!(
-        serde_json::json!(schedules::list_schedules(db.read(), "acme")?),
+        serde_json::json!(schedules::list_schedules(
+            &beankeeper_cli::db::companies::Company::bind(db.read(), "acme".parse()?)?
+        )?),
         before
     );
     for table in ["transactions", "entries"] {
@@ -484,7 +540,13 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
 fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> TestResult {
     let db = fixture()?;
     let actor = Actor::new("schedule-limit-test");
-    companies::create_company(db.conn(), &Actor::new("fixture"), "other", "Other", None)?;
+    companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"other".parse()?,
+        "Other",
+        None,
+    )?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("5000", beankeeper::types::AccountType::Expense),
@@ -493,7 +555,7 @@ fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> Te
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "other",
+                company_slug: &"other".parse()?,
                 code,
                 name: code,
                 account_type: kind,
@@ -513,7 +575,10 @@ fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> Te
     let posted = run_due(&db, &actor, "acme", date("2020-01-01")?, false)?;
     assert_eq!(posted.len(), 1);
     assert_eq!(
-        schedules::list_schedules(db.read(), "other")?[0]
+        schedules::list_schedules(&beankeeper_cli::db::companies::Company::bind(
+            db.read(),
+            "other".parse()?
+        )?)?[0]
             .state
             .next_due(),
         Some(params.start_date)

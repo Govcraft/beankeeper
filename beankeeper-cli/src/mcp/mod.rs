@@ -926,7 +926,7 @@ mod tests {
         crate::db::companies::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme".parse()?,
             "Acme",
             None,
         )?;
@@ -939,7 +939,7 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme".parse()?,
                     code,
                     name: code,
                     account_type: kind,
@@ -1024,7 +1024,7 @@ mod tests {
         crate::db::companies::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme".parse()?,
             "Acme",
             None,
         )?;
@@ -1032,7 +1032,7 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,

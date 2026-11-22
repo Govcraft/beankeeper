@@ -145,7 +145,7 @@ fn run_resolved_to(
     sub: &ReportCommand,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    crate::db::companies::get_company(db.read(), company)?;
+    crate::db::companies::get_company(db.read(), &company.parse()?)?;
     if let Some(result) = super::report_compare::try_run_to(cli, db, company, sub, output) {
         return result;
     }
@@ -279,7 +279,10 @@ impl<'a> ResolvedReport<'a> {
         dates: DateWindow,
         currency: Option<&CurrencyArg>,
     ) -> Result<Self, CliError> {
-        let account = db::get_account(db.read(), company, account)?;
+        let account = db::get_account(
+            &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+            account,
+        )?;
         let currency =
             resolve_report_currency(db.conn(), company, CurrencyArg::resolve_optional(currency)?)?;
         Ok(Self::Balance(StatementWindow { dates, currency }, account))
@@ -334,7 +337,13 @@ fn run_trial_balance(
 ) -> Result<(), CliError> {
     let currency = window.currency;
     let (from, to) = (window.dates.from, Some(window.dates.to));
-    let balances = db::compute_trial_balance(db.conn(), company, account_type, from, to, currency)?;
+    let balances = db::compute_trial_balance(
+        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        account_type,
+        from,
+        to,
+        currency,
+    )?;
 
     match output.format {
         OutputFormat::Table => {
@@ -381,8 +390,13 @@ fn run_balance(
 ) -> Result<(), CliError> {
     let currency = window.currency;
     let (from, to) = (window.dates.from, Some(window.dates.to));
-    let (debit_total, credit_total) =
-        db::compute_account_balance(db.conn(), company, &account_row.code, from, to, currency)?;
+    let (debit_total, credit_total) = db::compute_account_balance(
+        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        &account_row.code,
+        from,
+        to,
+        currency,
+    )?;
 
     let balance_row = db::BalanceRow {
         code: account_row.code.clone(),
@@ -491,11 +505,10 @@ pub fn compute_income_statement(
 ) -> Result<output::statements::IncomeStatement, CliError> {
     let conn = db.conn();
     db::audit::atomically(conn, || {
-        db::companies::get_company_on_connection(conn, company)?;
+        db::companies::get_company_on_connection(conn, &company.parse()?)?;
         let load = |kind: AccountType| {
             db::compute_trial_balance(
-                conn,
-                company,
+                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
                 Some(kind),
                 Some(dates.from()),
                 Some(dates.to()),
@@ -568,9 +581,15 @@ pub fn compute_balance_sheet(
 ) -> Result<output::statements::BalanceSheet, CliError> {
     let conn = db.conn();
     db::audit::atomically(conn, || {
-        db::companies::get_company_on_connection(conn, company)?;
+        db::companies::get_company_on_connection(conn, &company.parse()?)?;
         let load = |kind: AccountType| {
-            db::compute_trial_balance(conn, company, Some(kind), None, Some(as_of), currency)
+            db::compute_trial_balance(
+                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
+                Some(kind),
+                None,
+                Some(as_of),
+                currency,
+            )
         };
         output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
             as_of,
@@ -616,7 +635,12 @@ fn run_tax_summary(
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let (from, to) = (Some(dates.from()), Some(dates.to()));
-    let rows = db::compute_tax_summary(db.conn(), company, from, to, currency)?;
+    let rows = db::compute_tax_summary(
+        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        from,
+        to,
+        currency,
+    )?;
 
     match output.format {
         OutputFormat::Table => {
@@ -688,7 +712,7 @@ fn run_budget_variance(
     let report = db::compute_budget_variance(
         db,
         &db::BudgetVarianceParams {
-            company_slug: company,
+            company_slug: &company.parse()?,
             currency,
             months,
             account_type,

@@ -1445,14 +1445,14 @@ fn resolve_accounts(
     requested: &[String],
     include_children: bool,
 ) -> Result<Vec<db::AccountRow>, CliError> {
+    let scope = db::companies::Company::resolve(conn, &company.parse()?)?;
     for code in requested {
-        db::accounts::get_account_on_connection(conn, company, code)?;
+        db::accounts::get_account(&scope, code)?;
     }
     let all = if include_children {
-        db::accounts::list_accounts_on_connection(
-            conn,
+        db::accounts::list_accounts(
+            &scope,
             &db::ListAccountParams {
-                company_slug: company,
                 type_filter: None,
                 name_filter: None,
             },
@@ -1463,7 +1463,7 @@ fn resolve_accounts(
     let all_codes: Vec<&str> = all.iter().map(|a| a.code.as_str()).collect();
     select_accounts(requested, &all_codes, include_children)?
         .iter()
-        .map(|code| db::accounts::get_account_on_connection(conn, company, code))
+        .map(|code| db::accounts::get_account(&scope, code))
         .collect()
 }
 
@@ -3346,7 +3346,7 @@ mod tests {
 
     fn account(code: &str, ty: &str) -> db::AccountRow {
         db::AccountRow {
-            company_slug: "c".to_string(),
+            company_slug: "c".parse().expect("fixture company"),
             code: code.to_string(),
             name: format!("Account {code}"),
             account_type: ty.parse().unwrap_or_else(|error| panic!("{error}")),

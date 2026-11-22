@@ -96,7 +96,7 @@ impl<'a> From<&'a Proposal> for ProposalJson<'a> {
         };
         Self {
             id: &proposal.id,
-            company_slug: &proposal.company_slug,
+            company_slug: proposal.company_slug.as_str(),
             status: proposal.state.code(),
             payload: PostingPayloadJson::from(&proposal.payload),
             reference: proposal.reference.as_deref(),
@@ -139,7 +139,7 @@ mod tests {
         let proposal = Proposal {
             payload_json: serde_json::Value::Null,
             id: "proposal_01h455vb4pex5vsknk084sn02q".parse()?,
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             state: ProposalState::Approved {
                 resolution: Resolution {
                     at: "2026-02-01T00:00:00Z".into(),

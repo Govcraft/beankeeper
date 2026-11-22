@@ -5,13 +5,13 @@ use std::fmt::Write;
 use beankeeper::types::{AccountType, Amount, Currency, Money};
 use chrono::{Month, NaiveDate};
 
-use super::connection::{Db, ReadConn};
+use super::connection::Db;
 use crate::db::{BudgetRow, BudgetVarianceRow};
 use crate::error::CliError;
 
 /// Parameters for setting a budget.
 pub struct SetBudgetParams<'a> {
-    pub company_slug: &'a str,
+    pub company_slug: &'a crate::db::companies::CompanySlug,
     pub account_code: &'a str,
     pub currency: Currency,
     pub year: i32,
@@ -22,7 +22,7 @@ pub struct SetBudgetParams<'a> {
 
 /// Parameters for setting an annual budget.
 pub struct SetAnnualBudgetParams<'a> {
-    pub company_slug: &'a str,
+    pub company_slug: &'a crate::db::companies::CompanySlug,
     pub account_code: &'a str,
     pub currency: Currency,
     pub year: i32,
@@ -32,7 +32,7 @@ pub struct SetAnnualBudgetParams<'a> {
 
 /// Company, account, currency and calendar selection for a budget deletion.
 pub struct DeleteBudgetParams<'a> {
-    pub company_slug: &'a str,
+    pub company_slug: &'a crate::db::companies::CompanySlug,
     pub account_code: &'a str,
     pub currency: Currency,
     pub year: i32,
@@ -41,7 +41,6 @@ pub struct DeleteBudgetParams<'a> {
 
 /// Parameters for listing budgets.
 pub struct ListBudgetParams<'a> {
-    pub company_slug: &'a str,
     pub year: i32,
     pub account_code: Option<&'a str>,
     pub month: Option<Month>,
@@ -53,7 +52,7 @@ pub struct ListBudgetParams<'a> {
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_budgets(
-    conn: ReadConn<'_>,
+    company: &super::companies::Company<'_>,
     params: &ListBudgetParams<'_>,
 ) -> Result<Vec<BudgetRow>, CliError> {
     let mut sql = String::from(
@@ -62,7 +61,7 @@ pub fn list_budgets(
 
     let mut param_idx = 3u32;
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new(params.company_slug.to_string()));
+    param_values.push(Box::new(company.slug()));
     param_values.push(Box::new(params.year));
 
     if let Some(code) = params.account_code {
@@ -82,7 +81,7 @@ pub fn list_budgets(
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(AsRef::as_ref).collect();
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = company.read().prepare(&sql)?;
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
         Ok(BudgetRow {
             id: row.get(0)?,
@@ -190,7 +189,7 @@ pub enum BudgetCoverage {
 /// Parameters for computing budget variance.
 pub struct BudgetVarianceParams<'a> {
     /// Company whose budgets and actuals are being compared.
-    pub company_slug: &'a str,
+    pub company_slug: &'a crate::db::companies::CompanySlug,
     /// Currency of both budgets and actuals.
     pub currency: Currency,
     /// Budget month range.
@@ -260,8 +259,8 @@ pub fn compute_budget_variance(
     params: &BudgetVarianceParams<'_>,
 ) -> Result<BudgetVarianceReport, CliError> {
     let rows = db.read_snapshot(|reader| {
-        super::companies::get_company(reader, params.company_slug)?;
-        load_variance_rows(reader, params)
+        let company = super::companies::Company::bind(reader, params.company_slug.clone())?;
+        load_variance_rows(&company, params)
     })?;
     let total = |select: fn(&BudgetVarianceRow) -> Money| {
         let amount = rows.iter().try_fold(Amount::new(0), |total, row| {
@@ -282,7 +281,7 @@ pub fn compute_budget_variance(
 }
 
 fn load_variance_rows(
-    conn: ReadConn<'_>,
+    company: &super::companies::Company<'_>,
     p: &BudgetVarianceParams<'_>,
 ) -> Result<Vec<BudgetVarianceRow>, CliError> {
     let (from_date, to_date) = p.months.dates();
@@ -292,7 +291,7 @@ fn load_variance_rows(
     };
 
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-        Box::new(p.company_slug.to_string()),
+        Box::new(company.slug()),
         Box::new(p.currency),
         Box::new(p.months.year()),
         Box::new(p.months.from().number_from_month()),
@@ -308,7 +307,7 @@ fn load_variance_rows(
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(AsRef::as_ref).collect();
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = company.read().prepare(&sql)?;
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
         let budget_amount: i64 = row.get(3)?;
         let actual_amount: i64 = row.get(4)?;
@@ -444,6 +443,9 @@ mod tests {
     use crate::db::CreateAccountParams;
 
     use super::*;
+    static TEST_COMPANY: std::sync::LazyLock<crate::db::companies::CompanySlug> =
+        std::sync::LazyLock::new(|| "acme".parse().expect("fixture company"));
+
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
     use crate::db::{Actor, Db, audit, create_account, create_company};
     use crate::identity::{Budget, Granted};
@@ -479,7 +481,7 @@ mod tests {
             audit::delete_budget(
                 grant,
                 &DeleteBudgetParams {
-                    company_slug,
+                    company_slug: &company_slug.parse()?,
                     account_code,
                     currency,
                     year,
@@ -495,7 +497,9 @@ mod tests {
         create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
             "Acme Corp",
             None,
         )
@@ -504,7 +508,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -516,7 +522,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "4000",
                 name: "Revenue",
                 account_type: beankeeper::types::AccountType::Revenue,
@@ -528,7 +536,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "5000",
                 name: "Rent Expense",
                 account_type: beankeeper::types::AccountType::Expense,
@@ -540,7 +550,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "5100",
                 name: "Supplies",
                 account_type: beankeeper::types::AccountType::Expense,
@@ -573,7 +585,7 @@ mod tests {
         ];
         let actor = test_actor();
         let params = PostTransactionParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse().expect("fixture company"),
             description: "Test expense",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
@@ -612,7 +624,7 @@ mod tests {
         ];
         let actor = test_actor();
         let params = PostTransactionParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse().expect("fixture company"),
             description: "Test revenue",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
@@ -641,7 +653,7 @@ mod tests {
         notes: Option<&'a str>,
     ) -> SetBudgetParams<'a> {
         SetBudgetParams {
-            company_slug: "acme",
+            company_slug: &TEST_COMPANY,
             account_code: account,
             currency: Currency::USD,
             year,
@@ -658,7 +670,7 @@ mod tests {
         notes: Option<&'a str>,
     ) -> SetAnnualBudgetParams<'a> {
         SetAnnualBudgetParams {
-            company_slug: "acme",
+            company_slug: &TEST_COMPANY,
             account_code: account,
             currency: Currency::USD,
             year,
@@ -675,7 +687,7 @@ mod tests {
         unbudgeted: bool,
     ) -> BudgetVarianceParams<'static> {
         BudgetVarianceParams {
-            company_slug: "acme",
+            company_slug: &TEST_COMPANY,
             currency: Currency::USD,
             months: BudgetMonths::new(year, from, to).unwrap_or_else(|error| panic!("{error}")),
             account_type,
@@ -707,9 +719,8 @@ mod tests {
         assert_eq!(row.amount, 200_000);
 
         let rows = list_budgets(
-            db.read(),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             &ListBudgetParams {
-                company_slug: "acme",
                 year: 2026,
                 account_code: Some("5000"),
                 month: Some(Month::March),
@@ -780,9 +791,8 @@ mod tests {
         set_budget(&db, &budget("5100", 2026, 1, 5000, None))?;
 
         let all = list_budgets(
-            db.read(),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             &ListBudgetParams {
-                company_slug: "acme",
                 year: 2026,
                 account_code: None,
                 month: None,
@@ -791,9 +801,8 @@ mod tests {
         assert_eq!(all.len(), 13);
 
         let rent_only = list_budgets(
-            db.read(),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             &ListBudgetParams {
-                company_slug: "acme",
                 year: 2026,
                 account_code: Some("5000"),
                 month: None,
@@ -802,9 +811,8 @@ mod tests {
         assert_eq!(rent_only.len(), 12);
 
         let jan = list_budgets(
-            db.read(),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             &ListBudgetParams {
-                company_slug: "acme",
                 year: 2026,
                 account_code: None,
                 month: Some(Month::January),
@@ -821,9 +829,8 @@ mod tests {
         let deleted = delete_budget(&db, "acme", "5000", Currency::USD, 2026, Some(3))?;
         assert_eq!(deleted, 1);
         let remaining = list_budgets(
-            db.read(),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             &ListBudgetParams {
-                company_slug: "acme",
                 year: 2026,
                 account_code: Some("5000"),
                 month: None,
@@ -840,9 +847,8 @@ mod tests {
         let deleted = delete_budget(&db, "acme", "5000", Currency::USD, 2026, None)?;
         assert_eq!(deleted, 12);
         let remaining = list_budgets(
-            db.read(),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             &ListBudgetParams {
-                company_slug: "acme",
                 year: 2026,
                 account_code: Some("5000"),
                 month: None,

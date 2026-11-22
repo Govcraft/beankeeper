@@ -27,7 +27,7 @@ const COMMIT_EVENT: &str = "setup.statement.commit.";
 #[derive(Serialize, Deserialize)]
 struct FrozenBatch {
     version: u8,
-    company: String,
+    company: CompanySlug,
     reference: String,
     generation: Generation,
     profile_revision: i64,
@@ -133,7 +133,7 @@ pub struct StatementReceipt {
     /// Identifier of the frozen preview that was approved.
     pub batch_id: StatementBatchId,
     /// Company slug to use with the returned transaction IDs.
-    pub company: String,
+    pub company: CompanySlug,
     /// Stable request reference scoped to the setup generation.
     pub reference: String,
     /// CSV or OFX/QFX statement format.
@@ -255,7 +255,7 @@ struct AuditSnapshot<T> {
 
 fn audit_snapshot<T: DeserializeOwned>(
     reader: ReadConn<'_>,
-    company: &str,
+    company: &CompanySlug,
     batch_id: StatementBatchId,
     event: &str,
 ) -> Result<Option<AuditSnapshot<T>>, CliError> {
@@ -284,7 +284,7 @@ fn audit_snapshot<T: DeserializeOwned>(
 
 fn load(
     reader: ReadConn<'_>,
-    company: &str,
+    company: &CompanySlug,
     batch_id: StatementBatchId,
 ) -> Result<StoredPreview, CliError> {
     let row = reader
@@ -322,7 +322,7 @@ fn load(
         .ok_or_else(|| corrupted(batch_id))?;
     let setup_uri = audit.agent_uri.ok_or_else(|| corrupted(batch_id))?;
     if batch.version != 1
-        || batch.company != company
+        || &batch.company != company
         || batch.generation.get() != generation
         || batch.reference != reference
         || digest(&body) != stamp.preview_sha256
@@ -344,7 +344,7 @@ fn load(
 fn record_event(
     conn: &Connection,
     actor: &Actor,
-    company: &str,
+    company: &CompanySlug,
     batch_id: StatementBatchId,
     event: &str,
     snapshot: &impl Serialize,
@@ -381,7 +381,7 @@ fn reserve(
         )
         .optional()?;
     if let Some(id) = previous {
-        let stored = load(reader, company.as_str(), id)?;
+        let stored = load(reader, company, id)?;
         if &stored.stamp.request_sha256 != request_hash {
             return Err(CliError::Validation(format!(
                 "statement reference '{reference}' belongs to a different request"
@@ -411,14 +411,7 @@ fn reserve(
         ],
         |row| row.get(0),
     )?;
-    record_event(
-        conn,
-        session.actor(),
-        company.as_str(),
-        id,
-        PREVIEW_EVENT,
-        &stamp,
-    )?;
+    record_event(conn, session.actor(), company, id, PREVIEW_EVENT, &stamp)?;
     Ok(StatementReview {
         batch_id: id,
         preview_sha256: stamp.preview_sha256,
@@ -450,7 +443,7 @@ fn freeze(
 ) -> Result<FrozenBatch, CliError> {
     let mut batch = FrozenBatch {
         version: 1,
-        company: preview.company.to_string(),
+        company: preview.company.clone(),
         reference: reference.to_string(),
         generation: preview.generation,
         profile_revision: preview.profile_revision.get(),
@@ -508,7 +501,7 @@ pub(crate) fn commit(
         let grant = Granted::<StatementApprover>::check(tx, actor)?;
         let conn = db.conn();
         let reader = ReadConn::new(conn);
-        let preview = load(reader, company.as_str(), batch_id)?;
+        let preview = load(reader, company, batch_id)?;
         if &preview.stamp.preview_sha256 != expected {
             return Err(CliError::Validation(format!(
                 "approval digest does not match statement batch #{batch_id}"
@@ -522,7 +515,7 @@ pub(crate) fn commit(
         record_event(
             conn,
             grant.actor(),
-            company.as_str(),
+            company,
             batch_id,
             COMMIT_EVENT,
             &receipt,
@@ -538,7 +531,7 @@ pub(crate) fn get_receipt(
     company: &CompanySlug,
     batch_id: StatementBatchId,
 ) -> Result<StatementReceipt, CliError> {
-    let preview = load(reader, company.as_str(), batch_id)?;
+    let preview = load(reader, company, batch_id)?;
     receipt_for(reader, &preview)?.ok_or_else(|| {
         CliError::NotFound(format!(
             "statement batch #{batch_id} has not been committed"
@@ -616,7 +609,10 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
          FROM audit_log WHERE entity = 'company' AND action = 'create' AND entity_id GLOB ?2 || '*'",
     )?;
     let rows = statement.query_map([PREVIEW_EVENT, COMMIT_EVENT], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, StatementBatchId>(1)?))
+        Ok((
+            row.get::<_, CompanySlug>(0)?,
+            row.get::<_, StatementBatchId>(1)?,
+        ))
     })?;
     for row in rows {
         let (company, id) = row?;
@@ -737,7 +733,10 @@ fn require_existing_match(
     row: &FrozenRow,
     id: TransactionId,
 ) -> Result<(), CliError> {
-    let (transaction, entries) = transactions::get_transaction(conn, &batch.company, id)?;
+    let (transaction, entries) = transactions::get_transaction(
+        &crate::db::companies::Company::bind(conn, batch.company.clone())?,
+        id,
+    )?;
     let metadata_matches = match row.metadata.as_deref().and_then(metadata::normalize) {
         None => true,
         Some(expected) => {

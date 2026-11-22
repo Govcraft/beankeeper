@@ -25,12 +25,18 @@ impl Ledger {
         let path = dir.path().join("audit.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
+            db::create_company(
+                db.conn(),
+                &Actor::new("fixture"),
+                &company.parse()?,
+                company,
+                None,
+            )?;
             db::create_account(
                 db.conn(),
                 &Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: company,
+                    company_slug: &company.parse()?,
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -41,7 +47,7 @@ impl Ledger {
                 db.conn(),
                 &Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: company,
+                    company_slug: &company.parse()?,
                     code: "4000",
                     name: "Revenue",
                     account_type: beankeeper::types::AccountType::Revenue,
@@ -88,7 +94,7 @@ impl Ledger {
         ];
         {
             let params = PostTransactionParams {
-                company_slug: company,
+                company_slug: &company.parse()?,
                 description: "Sale",
                 metadata: None,
                 currency: currency.parse()?,
@@ -272,7 +278,7 @@ fn clearing_audit_resolves_immutable_entry_currency() -> TestResult {
             db::clear_entry(
                 grant,
                 &db::ClearRequest {
-                    company_slug: "acme",
+                    company_slug: &"acme".parse()?,
                     transaction_id: transaction_id.try_into()?,
                     entry_id: entry_id.try_into()?,
                     amount: Some(100_i64.try_into()?),

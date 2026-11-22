@@ -127,7 +127,7 @@ mod tests {
         create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme".parse()?,
             "Acme",
             None,
         )?;

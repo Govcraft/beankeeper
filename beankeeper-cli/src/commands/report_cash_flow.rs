@@ -461,7 +461,7 @@ pub(super) fn compute_scoped<'a>(
 ) -> Result<CashFlowStatement, CliError> {
     let conn = db.conn();
     db::audit::atomically(conn, || {
-        db::companies::get_company_on_connection(conn, company)?;
+        db::companies::get_company_on_connection(conn, &company.parse()?)?;
         let cash_accounts = resolve_cash_accounts(conn, company, accounts)?;
         compute_for_accounts(conn, company, dates, currency, cash_accounts)
     })

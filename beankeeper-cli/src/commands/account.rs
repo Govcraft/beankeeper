@@ -1,5 +1,6 @@
 use crate::cli::{AccountCommand, Cli, CurrencyArg, OutputFormat, resolve_format};
 use crate::confirmation::confirm_deletion;
+use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::Db;
 use crate::db::{self, AccountBalanceWindow, CreateAccountParams, accounts};
 use crate::error::CliError;
@@ -11,7 +12,7 @@ use crate::output;
 /// # Errors
 ///
 /// Returns [`CliError`] if the subcommand fails.
-pub fn run(cli: &Cli, company: &str, sub: &AccountCommand) -> Result<(), CliError> {
+pub fn run(cli: &Cli, company: &CompanySlug, sub: &AccountCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
     crate::db::companies::get_company(db.read(), company)?;
     let use_color = output::should_use_color(cli.verbosity.no_color);
@@ -65,11 +66,11 @@ fn operation(sub: &AccountCommand) -> Operation {
 
 fn compute(
     db: &Db,
-    company: &str,
+    company: &CompanySlug,
     sub: &AccountCommand,
     actor: &db::Actor,
 ) -> Result<AccountData, CliError> {
-    db::companies::get_company(db.read(), company)?;
+    let scope = Company::bind(db.read(), company.clone())?;
     match sub {
         AccountCommand::Create {
             code,
@@ -100,7 +101,6 @@ fn compute(
         } => {
             let type_filter = *account_type;
             let filter = accounts::ListAccountParams {
-                company_slug: company,
                 type_filter,
                 name_filter: name.as_deref(),
             };
@@ -113,24 +113,19 @@ fn compute(
                         Some(currency) => currency,
                         None => super::report_currency::infer_company_currency(
                             conn,
-                            company,
+                            company.as_str(),
                             CliError::Validation,
                         )?,
                     };
-                    let rows = db::list_accounts_with_balances(conn, &filter, window, currency)?;
+                    let rows = db::list_accounts_with_balances(&scope, &filter, window, currency)?;
                     Ok(AccountData::Balances(rows))
                 })
             } else {
-                Ok(AccountData::Rows(accounts::list_accounts(
-                    db.read(),
-                    &filter,
-                )?))
+                Ok(AccountData::Rows(accounts::list_accounts(&scope, &filter)?))
             }
         }
         AccountCommand::Show { code } => Ok(AccountData::Rows(vec![accounts::get_account(
-            db.read(),
-            company,
-            code,
+            &scope, code,
         )?])),
         AccountCommand::Delete { .. } => Err(CliError::Usage(
             "account deletion is unavailable through MCP".into(),
@@ -144,7 +139,7 @@ fn compute(
 /// Returns validation or database errors.
 pub fn execute_json(
     db: &Db,
-    company: &str,
+    company: &CompanySlug,
     sub: &AccountCommand,
 ) -> Result<serde_json::Value, CliError> {
     execute_json_with_actor(db, company, sub, &db::Actor::new("cli"))
@@ -157,11 +152,11 @@ pub fn execute_json(
 /// Returns the same validation and database errors as the CLI.
 pub fn execute_json_with_actor(
     db: &Db,
-    company: &str,
+    company: &CompanySlug,
     sub: &AccountCommand,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
-    let meta = output::json::meta(operation(sub), Some(company));
+    let meta = output::json::meta(operation(sub), Some(company.as_str()));
     let rendered = match compute(db, company, sub, actor)? {
         AccountData::Rows(rows) => output::json::render_accounts(&rows, meta)?,
         AccountData::Balances(rows) => return output::json::account_balances_payload(&rows),
@@ -173,7 +168,7 @@ pub fn execute_json_with_actor(
 fn run_delete(
     cli: &Cli,
     db: &Db,
-    company: &str,
+    company: &CompanySlug,
     code: &str,
     force: bool,
     format: OutputFormat,
@@ -183,9 +178,15 @@ fn run_delete(
         return Ok(());
     };
     let actor = cli.principal();
-    crate::db::delete_account(db.conn(), &actor, company, code, confirmed)?;
+    crate::db::delete_account(
+        db.conn(),
+        &actor,
+        &company.as_str().parse()?,
+        code,
+        confirmed,
+    )?;
     if format == OutputFormat::Json {
-        let meta = cli.meta(Operation::AccountDelete, Some(company));
+        let meta = cli.meta(Operation::AccountDelete, Some(company.as_str()));
         let rendered = output::json::render_deleted(code, meta)?;
         println!("{rendered}");
     }
@@ -199,7 +200,7 @@ fn run_delete(
 fn render_accounts(
     rows: &[crate::db::AccountRow],
     command: Operation,
-    company: &str,
+    company: &CompanySlug,
     format: OutputFormat,
     use_color: bool,
     cli: &Cli,
@@ -210,7 +211,7 @@ fn render_accounts(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let meta = cli.meta(command, Some(company));
+            let meta = cli.meta(command, Some(company.as_str()));
             let rendered = output::json::render_accounts(rows, meta)?;
             println!("{rendered}");
         }
@@ -225,7 +226,7 @@ fn render_accounts(
 /// Render account-with-balance rows in the requested format.
 fn render_accounts_with_balances(
     rows: &[db::AccountWithBalanceRow],
-    company: &str,
+    company: &CompanySlug,
     format: OutputFormat,
     use_color: bool,
     cli: &Cli,
@@ -236,7 +237,7 @@ fn render_accounts_with_balances(
             println!("{rendered}");
         }
         OutputFormat::Json => {
-            let meta = cli.meta(Operation::AccountList, Some(company));
+            let meta = cli.meta(Operation::AccountList, Some(company.as_str()));
             let rendered = output::json::render_accounts_with_balances(rows, meta)?;
             println!("{rendered}");
         }

@@ -6,7 +6,6 @@ use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use serde::Serialize;
 
 pub use super::audit::create_rule;
-use super::connection::ReadConn;
 use crate::error::CliError;
 
 /// A categorization rule's globally unique `TypeID`.
@@ -75,7 +74,7 @@ impl fmt::Display for DescriptionPattern {
 #[derive(Debug, Clone, Serialize)]
 pub struct Rule {
     pub id: RuleId,
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub contains: DescriptionPattern,
     pub account_code: String,
     /// Higher values win; equal priorities sort by ascending rule ID.
@@ -86,7 +85,9 @@ pub struct Rule {
 ///
 /// # Errors
 /// Returns a database error if the query or stored rule data is invalid.
-pub fn list_rules(conn: ReadConn<'_>, company: &str) -> Result<Vec<Rule>, CliError> {
+pub fn list_rules(scope: &super::companies::Company<'_>) -> Result<Vec<Rule>, CliError> {
+    let conn = scope.read();
+    let company = scope.slug();
     let mut stmt = conn.prepare(
         "SELECT id, company_slug, contains, account_code, priority FROM categorization_rules
          WHERE company_slug = ?1 ORDER BY priority DESC, id ASC",
@@ -94,7 +95,7 @@ pub fn list_rules(conn: ReadConn<'_>, company: &str) -> Result<Vec<Rule>, CliErr
     let rows = stmt.query_map([company], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
+            row.get::<_, crate::db::companies::CompanySlug>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, i32>(4)?,

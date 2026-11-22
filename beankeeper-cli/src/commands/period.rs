@@ -34,10 +34,15 @@ pub fn execute(
     let change = match command {
         PeriodCommand::Close { through } => periods::PeriodChange::Close(through.parse()?),
         PeriodCommand::Reopen { reason } => periods::PeriodChange::Reopen(reason.parse()?),
-        PeriodCommand::List => return periods::list(db.read(), company),
+        PeriodCommand::List => {
+            return periods::list(&crate::db::companies::Company::bind(
+                db.read(),
+                company.parse()?,
+            )?);
+        }
     };
     let lock = Granted::<Admin>::with_db(db, actor, |grant| {
-        audit::change_period(grant, company, change)
+        audit::change_period(grant, &company.parse()?, change)
     })?;
     Ok(vec![lock])
 }

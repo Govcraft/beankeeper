@@ -22,7 +22,13 @@ impl Ledger {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("books.db");
         let db = Db::open(&path, None)?;
-        companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        companies::create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"acme".parse()?,
+            "Acme",
+            None,
+        )?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
             ("4000", beankeeper::types::AccountType::Revenue),
@@ -31,7 +37,7 @@ impl Ledger {
                 db.conn(),
                 &Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme".parse()?,
                     code,
                     name: code,
                     account_type: kind,

@@ -337,7 +337,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
 /// proceed.
 fn check_conflict(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     prepared: &PreparedTransaction,
     conflict_strategy: transactions::ConflictStrategy,
 ) -> Option<TransactionOutcome> {
@@ -389,22 +389,21 @@ fn build_entries(
     };
 
     let amount = prepared.amount_minor;
+    let scope = crate::db::companies::Company::bind(ctx.reader, ctx.company.clone())?;
     Ok(vec![
         transactions::PostEntryParams {
             account_code: debit_code.to_string(),
             direction: beankeeper::types::DebitOrCredit::Debit,
             amount,
             memo: None,
-            tax_category: accounts::get_account(ctx.reader, ctx.company, debit_code)?
-                .default_tax_category,
+            tax_category: accounts::get_account(&scope, debit_code)?.default_tax_category,
         },
         transactions::PostEntryParams {
             account_code: credit_code.to_string(),
             direction: beankeeper::types::DebitOrCredit::Credit,
             amount,
             memo: None,
-            tax_category: accounts::get_account(ctx.reader, ctx.company, credit_code)?
-                .default_tax_category,
+            tax_category: accounts::get_account(&scope, credit_code)?.default_tax_category,
         },
     ])
 }
@@ -478,7 +477,7 @@ struct StatementContext<'a> {
     rules: &'a [crate::db::rules::Rule],
     actor: &'a crate::db::Actor,
     db: &'a Db,
-    company: &'a str,
+    company: &'a crate::db::companies::CompanySlug,
     account_code: &'a str,
     suspense_code: &'a str,
     ofx_account_id: &'a str,
@@ -603,7 +602,10 @@ pub fn run_import_ofx(
 ) -> Result<(), CliError> {
     let verbose = cli.verbosity.verbose;
     let actor = cli.principal();
-    let rules = crate::db::rules::list_rules(db_handle.read(), company)?;
+    let rules = crate::db::rules::list_rules(&crate::db::companies::Company::bind(
+        db_handle.read(),
+        company.parse()?,
+    )?)?;
     let format = crate::cli::resolve_format(None, cli);
 
     let conflict_strategy = match on_conflict {
@@ -623,6 +625,7 @@ pub fn run_import_ofx(
         errors: Vec::new(),
     };
 
+    let company_slug = company.parse()?;
     for stmt in statements(&doc) {
         let currency = validate_currency(stmt.currency)?;
         let ctx = StatementContext {
@@ -630,7 +633,7 @@ pub fn run_import_ofx(
             rules: &rules,
             actor: &actor,
             db: db_handle,
-            company,
+            company: &company_slug,
             account_code,
             suspense_code,
             ofx_account_id: stmt.account_id,
@@ -655,8 +658,9 @@ fn validate_accounts(
     bank: &str,
     suspense: &str,
 ) -> Result<(), CliError> {
+    let scope = crate::db::companies::Company::bind(conn, company.parse()?)?;
     for code in [bank, suspense] {
-        if !accounts::account_exists(conn, company, code)? {
+        if !accounts::account_exists(&scope, code)? {
             return Err(OfxImportError::AccountNotFound {
                 code: code.to_string(),
             }

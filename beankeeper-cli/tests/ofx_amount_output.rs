@@ -59,7 +59,13 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("4000", beankeeper::types::AccountType::Revenue),
@@ -68,7 +74,7 @@ fn ofx_dry_run_created_skipped_and_failed_amounts_use_statement_currency() -> Te
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code,
                 name: code,
                 account_type: kind,
@@ -115,7 +121,13 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("books.db");
     let db = Db::open(&path, None)?;
-    companies::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+    companies::create_company(
+        db.conn(),
+        &Actor::new("fixture"),
+        &"acme".parse()?,
+        "Acme",
+        None,
+    )?;
     for (code, kind) in [
         ("1000", beankeeper::types::AccountType::Asset),
         ("4000", beankeeper::types::AccountType::Revenue),
@@ -124,7 +136,7 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code,
                 name: code,
                 account_type: kind,
@@ -135,7 +147,7 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
     Granted::<Admin>::with_db(&db, &Actor::new("owner"), |grant| {
         beankeeper_cli::db::audit::change_period(
             grant,
-            "acme",
+            &"acme".parse()?,
             beankeeper_cli::db::periods::PeriodChange::Close("2026-01-31".parse()?),
         )
     })?;

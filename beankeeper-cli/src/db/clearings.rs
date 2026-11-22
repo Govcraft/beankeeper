@@ -459,7 +459,7 @@ pub fn list_clearings(company: &Company<'_>, entry_id: EntryId) -> Result<Vec<Cl
          c.reconciled_date \
          FROM entries e \
          JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
-         JOIN entry_clearings c ON c.entry_id = e.id \
+         JOIN entry_clearings c ON c.entry_id = e.id AND c.company_slug = e.company_slug \
          WHERE e.id = ?1 AND e.company_slug = ?2",
     )?;
     let rows = stmt.query_map(

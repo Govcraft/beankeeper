@@ -24,7 +24,13 @@ impl Ledger {
         let path = dir.path().join("schedules.db");
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
-            companies::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
+            companies::create_company(
+                db.conn(),
+                &Actor::new("fixture"),
+                &company.parse()?,
+                company,
+                None,
+            )?;
             for (code, kind, tax) in [
                 ("1000", beankeeper::types::AccountType::Asset, None),
                 (
@@ -42,7 +48,7 @@ impl Ledger {
                     db.conn(),
                     &Actor::new("fixture"),
                     &CreateAccountParams {
-                        company_slug: company,
+                        company_slug: &company.parse()?,
                         code,
                         name: code,
                         account_type: kind,
@@ -155,9 +161,9 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
     let id = created["id"].as_str().ok_or("missing schedule ID")?;
     assert!(id.starts_with("sched_"));
     assert_eq!(ledger.count("transactions")?, 0);
-    for row in
-        db::compute_trial_balance(ledger.db()?.conn(), "acme", None, None, None, Currency::USD)?
-    {
+    let db = ledger.db()?;
+    let scope = beankeeper_cli::db::companies::Company::bind(db.read(), "acme".parse()?)?;
+    for row in db::compute_trial_balance(&scope, None, None, None, Currency::USD)? {
         assert_eq!((row.debit_total, row.credit_total), (0, 0));
     }
     let pending = ledger.run("acme", &["schedule", "list"])?;
@@ -197,8 +203,7 @@ fn monthly_pending_preview_and_posting_preserve_calendar_and_accounting() -> Tes
         let transaction_id = row["transaction_id"]
             .as_i64()
             .ok_or("missing transaction ID")?;
-        let (txn, entries) =
-            transactions::get_transaction(ledger.db()?.read(), "acme", transaction_id.try_into()?)?;
+        let (txn, entries) = transactions::get_transaction(&scope, transaction_id.try_into()?)?;
         assert_eq!(txn.date.to_string(), date);
         assert_eq!(txn.description, "Rent");
         assert_eq!(txn.posted_by.as_deref(), Some("schedule-test"));
@@ -251,7 +256,10 @@ fn one_time_splits_and_default_tax_categories_post_only_once() -> TestResult {
     let id = posted[0]["transaction_id"]
         .as_i64()
         .ok_or("missing transaction ID")?;
-    let (_, entries) = transactions::get_transaction(ledger.db()?.read(), "acme", id.try_into()?)?;
+    let (_, entries) = transactions::get_transaction(
+        &beankeeper_cli::db::companies::Company::bind(ledger.db()?.read(), "acme".parse()?)?,
+        id.try_into()?,
+    )?;
     assert_eq!(entries.len(), 3);
     for (account, amount, tax) in [
         ("5000", 825, "default-expense"),
@@ -422,8 +430,10 @@ fn currency_precision_is_preserved_in_scheduled_postings() -> TestResult {
         let id = posted[0]["transaction_id"]
             .as_i64()
             .ok_or("missing transaction ID")?;
-        let (txn, entries) =
-            transactions::get_transaction(ledger.db()?.read(), "acme", id.try_into()?)?;
+        let (txn, entries) = transactions::get_transaction(
+            &beankeeper_cli::db::companies::Company::bind(ledger.db()?.read(), "acme".parse()?)?,
+            id.try_into()?,
+        )?;
         assert_eq!(txn.currency.code(), currency);
         assert!(
             entries
@@ -500,7 +510,13 @@ fn pending_schedule_prevents_account_deletion() -> TestResult {
         .output()?;
     assert_eq!(blocked.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("schedule"));
-    assert!(accounts::get_account(ledger.db()?.read(), "acme", "5000").is_ok());
+    assert!(
+        accounts::get_account(
+            &beankeeper_cli::db::companies::Company::bind(ledger.db()?.read(), "acme".parse()?)?,
+            "5000"
+        )
+        .is_ok()
+    );
     assert_eq!(ledger.count("audit_log")?, audits);
     Ok(())
 }

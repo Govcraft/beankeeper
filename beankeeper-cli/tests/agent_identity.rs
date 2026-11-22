@@ -32,12 +32,18 @@ impl Ledger {
         std::fs::write(&passphrase_file, "test-only-passphrase")?;
         let passphrase: SecretString = "test-only-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
-        db::create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        db::create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"acme".parse()?,
+            "Acme",
+            None,
+        )?;
         db::create_account(
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -48,7 +54,7 @@ impl Ledger {
             db.conn(),
             &Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme".parse()?,
                 code: "4000",
                 name: "Revenue",
                 account_type: beankeeper::types::AccountType::Revenue,
@@ -266,7 +272,7 @@ fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() ->
         ledger.db.conn(),
         &Actor::new("fixture"),
         &CreateAccountParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             code: "2000",
             name: "Loan",
             account_type: beankeeper::types::AccountType::Liability,
@@ -277,7 +283,7 @@ fn loan_pay_preserves_verified_agent_attribution_and_rejects_invalid_tokens() ->
         ledger.db.conn(),
         &Actor::new("fixture"),
         &CreateAccountParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             code: "5000",
             name: "Interest",
             account_type: beankeeper::types::AccountType::Expense,

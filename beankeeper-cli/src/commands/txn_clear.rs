@@ -29,6 +29,7 @@ use crate::commands::txn::parse_amount_to_minor;
 use crate::db::amounts::PositiveMinorUnits;
 use crate::db::audit::{Reconciliation, with_reconciliation};
 use crate::db::clearings::SkipReason;
+use crate::db::companies::Company;
 use crate::db::connection::Db;
 use crate::db::ids::{EntryId, TransactionId};
 use crate::db::{self, Actor, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
@@ -98,7 +99,7 @@ pub(crate) fn execute_json(
     target: ClearRequestTarget<'_>,
     options: ClearOptions<'_>,
 ) -> Result<serde_json::Value, CliError> {
-    db::get_company(db_handle.read(), company)?;
+    db::get_company(db_handle.read(), &company.parse()?)?;
     if let ClearRequestTarget::Batch { lines, .. } = &target {
         validate_inline_batch(lines)?;
     }
@@ -271,9 +272,9 @@ fn resolve_entry(
         EntrySelector::Id {
             transaction_id,
             entry_id,
-        } => writer.entry(company, transaction_id, entry_id),
+        } => writer.entry(&company.parse()?, transaction_id, entry_id),
         EntrySelector::Reference { reference, account } => {
-            writer.entry_by_reference(company, reference, account)
+            writer.entry_by_reference(&company.parse()?, reference, account)
         }
     }
 }
@@ -316,13 +317,13 @@ fn apply(
 ) -> Result<ClearOutcome, CliError> {
     match ctx.status.to_clearing_status() {
         None => writer.unclear_entry(
-            company,
+            &company.parse()?,
             target.transaction_id,
             target.entry_id,
             ctx.statement,
         ),
         Some(status) => writer.clear_entry(&ClearRequest {
-            company_slug: company,
+            company_slug: &company.parse()?,
             transaction_id: target.transaction_id,
             entry_id: target.entry_id,
             amount,
@@ -440,7 +441,8 @@ fn run_batch<'a>(
     account: &'a str,
     lines: &[BatchLine],
 ) -> Result<ClearedBatch<'a>, CliError> {
-    db::get_account(writer.read(), company, account)?;
+    let scope = Company::bind(writer.read(), company.parse()?)?;
+    db::get_account(&scope, account)?;
     if ctx.status == ClearanceArg::Uncleared && lines.iter().any(|l| l.amount.is_some()) {
         return Err(CliError::Usage(
             "amounts cannot be used with --status uncleared".into(),
@@ -452,7 +454,7 @@ fn run_batch<'a>(
     for l in lines {
         let wrap = |e| at_line(l.line, &l.reference, e);
         let target = writer
-            .entry_by_reference(company, &l.reference, account)
+            .entry_by_reference(&company.parse()?, &l.reference, account)
             .map_err(wrap)?;
         let amount = l
             .amount

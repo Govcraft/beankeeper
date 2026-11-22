@@ -84,7 +84,9 @@ mod tests {
         crate::db::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
             "Acme Corp",
             None,
         )

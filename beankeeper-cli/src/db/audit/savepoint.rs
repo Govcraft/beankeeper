@@ -39,7 +39,7 @@ impl<'a> AuditedTx<'a> {
     pub(super) fn record_insert(
         &self,
         actor: &Actor,
-        company: &str,
+        company: &crate::db::companies::CompanySlug,
         creation: Creation,
         id: &str,
         data: &serde_json::Value,

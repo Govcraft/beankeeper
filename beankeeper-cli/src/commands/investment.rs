@@ -43,7 +43,7 @@ pub fn execute_security(
     command: &SecurityCommand,
     actor: &Actor,
 ) -> Result<Value, CliError> {
-    crate::db::companies::get_company(db.read(), company)?;
+    crate::db::companies::get_company(db.read(), &company.parse()?)?;
     let data = match command {
         SecurityCommand::Create {
             symbol,
@@ -53,7 +53,7 @@ pub fn execute_security(
             let security = Granted::<Post>::with_db(db, actor, |grant| {
                 investments::create_security(
                     grant,
-                    company,
+                    &company.parse()?,
                     &investments::SecurityParams {
                         symbol: symbol.clone(),
                         name: name.clone(),
@@ -63,9 +63,9 @@ pub fn execute_security(
             })?;
             serde_json::to_value(security)
         }
-        SecurityCommand::List => {
-            serde_json::to_value(investments::list_securities(db.read(), company)?)
-        }
+        SecurityCommand::List => serde_json::to_value(investments::list_securities(
+            &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+        )?),
         SecurityCommand::Price {
             symbol,
             date,
@@ -76,7 +76,7 @@ pub fn execute_security(
             let recorded = Granted::<Post>::with_db(db, actor, |grant| {
                 investments::record_price(
                     grant,
-                    company,
+                    &company.parse()?,
                     &investments::PriceParams {
                         symbol: symbol.clone(),
                         date: *date,
@@ -100,7 +100,7 @@ pub fn execute_investment(
     command: &InvestmentCommand,
     actor: &Actor,
 ) -> Result<Value, CliError> {
-    crate::db::companies::get_company(db.read(), company)?;
+    crate::db::companies::get_company(db.read(), &company.parse()?)?;
     let data = match command {
         InvestmentCommand::Buy { trade, cost } => {
             let cost =
@@ -110,7 +110,7 @@ pub fn execute_investment(
             let posted = Granted::<Post>::with_db(db, actor, |grant| {
                 investments::buy(
                     grant,
-                    company,
+                    &company.parse()?,
                     &investments::BuyParams {
                         symbol: trade.symbol.clone(),
                         quantity: trade.quantity,
@@ -136,7 +136,7 @@ pub fn execute_investment(
             let posted = Granted::<Post>::with_db(db, actor, |grant| {
                 investments::sell(
                     grant,
-                    company,
+                    &company.parse()?,
                     &investments::SellParams {
                         symbol: trade.symbol.clone(),
                         quantity: trade.quantity,
@@ -153,13 +153,16 @@ pub fn execute_investment(
             serde_json::to_value(Wire(posted))
         }
         InvestmentCommand::Lots { symbol } => {
-            let rows = investments::list_lots(db.read(), company, symbol)?;
+            let rows = investments::list_lots(
+                &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+                symbol,
+            )?;
             serde_json::to_value(rows.into_iter().map(Wire).collect::<Vec<_>>())
         }
         InvestmentCommand::Holdings { as_of } => {
             let rows = investments::holdings(
                 db,
-                company,
+                &company.parse()?,
                 as_of.unwrap_or_else(|| chrono::Local::now().date_naive()),
             )?;
             serde_json::to_value(rows.into_iter().map(Wire).collect::<Vec<_>>())
@@ -176,7 +179,11 @@ fn normalized_reference(value: Option<&str>) -> Result<Option<String>, CliError>
 }
 
 fn amount(db: &Db, company: &str, symbol: &str, value: &str) -> Result<Money, CliError> {
-    let currency = investments::get_security(db.read(), company, symbol)?.currency;
+    let currency = investments::get_security(
+        &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+        symbol,
+    )?
+    .currency;
     let minor = super::txn::parse_amount_to_minor(value, currency)?;
     Ok(Money::from_minor(i128::from(minor), currency))
 }

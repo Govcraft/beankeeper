@@ -38,7 +38,13 @@ impl Ledger {
         let passphrase: SecretString = "spend-limit-test-passphrase".into();
         let db = Db::open(&path, Some(&passphrase))?;
         for company in ["acme", "other"] {
-            db::create_company(db.conn(), &Actor::new("fixture"), company, company, None)?;
+            db::create_company(
+                db.conn(),
+                &Actor::new("fixture"),
+                &company.parse()?,
+                company,
+                None,
+            )?;
             for (code, kind) in [
                 ("1000", beankeeper::types::AccountType::Asset),
                 ("2000", beankeeper::types::AccountType::Liability),
@@ -49,7 +55,7 @@ impl Ledger {
                     db.conn(),
                     &Actor::new("fixture"),
                     &CreateAccountParams {
-                        company_slug: company,
+                        company_slug: &company.parse()?,
                         code,
                         name: code,
                         account_type: kind,

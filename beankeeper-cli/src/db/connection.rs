@@ -240,7 +240,7 @@ mod tests {
             super::super::create_company(
                 writer.conn(),
                 &super::super::Actor::new("fixture"),
-                "acme",
+                &"acme".parse()?,
                 "Acme",
                 None,
             )?;

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::audit::savepoint::AuditedTx;
 use super::audit::{self, Actor};
+use super::companies::{Company, CompanySlug};
 use super::connection::ReadConn;
 use super::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
 use crate::capability::Capability;
@@ -91,7 +92,11 @@ pub struct PostingPayload {
 impl PostingPayload {
     /// Reuse the normal posting API with the approver's verified principal.
     #[must_use]
-    pub fn params<'a>(&'a self, company: &'a str, actor: &'a Actor) -> PostTransactionParams<'a> {
+    pub fn params<'a>(
+        &'a self,
+        company: &'a super::companies::CompanySlug,
+        actor: &'a Actor,
+    ) -> PostTransactionParams<'a> {
         PostTransactionParams {
             company_slug: company,
             description: &self.description,
@@ -255,7 +260,7 @@ impl ProposalState {
 #[derive(Debug, Clone)]
 pub struct Proposal {
     pub id: ProposalId,
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub state: ProposalState,
     pub payload: PostingPayload,
     // Resolution snapshots preserve the exact original payload values, including legacy spelling.
@@ -313,7 +318,11 @@ struct PendingProposal<'a> {
 }
 
 impl<'a> PendingProposal<'a> {
-    fn load(tx: &'a AuditedTx<'a>, company: &str, id: &ProposalId) -> Result<Self, CliError> {
+    fn load(
+        tx: &'a AuditedTx<'a>,
+        company: &CompanySlug,
+        id: &ProposalId,
+    ) -> Result<Self, CliError> {
         verify_resolutions(tx.read())?;
         let before = get(tx.read(), company, id)?;
         if before.state != ProposalState::Pending {
@@ -338,9 +347,10 @@ impl<'a> PendingProposal<'a> {
             );
         metadata[super::metadata::PROPOSAL_KEY] = serde_json::json!(proposal_id);
         payload.metadata = Some(metadata.to_string());
+        let company = &self.before.company_slug;
         let posting = ApprovedPosting {
             tx,
-            company: &self.before.company_slug,
+            company,
             actor,
             payload,
         };
@@ -421,7 +431,7 @@ impl<'a> PendingProposal<'a> {
 
 pub(super) fn approve(
     grant: Granted<'_, Approve>,
-    company: &str,
+    company: &CompanySlug,
     id: &ProposalId,
 ) -> Result<Proposal, CliError> {
     grant.mutate("sp_approve_proposal", |tx, actor| {
@@ -437,7 +447,7 @@ pub(super) fn approve(
 
 pub(super) fn reject(
     grant: Granted<'_, ResolveProposal>,
-    company: &str,
+    company: &CompanySlug,
     id: &ProposalId,
     reason: Option<&str>,
 ) -> Result<Proposal, CliError> {
@@ -470,7 +480,7 @@ impl<'a> ProposalTransition<'a> {
 /// of a pending proposal, and it is consumed on the originating connection.
 pub(super) struct ApprovedPosting<'a> {
     tx: &'a audit::savepoint::AuditedTx<'a>,
-    company: &'a str,
+    company: &'a CompanySlug,
     actor: &'a Actor,
     payload: PostingPayload,
 }
@@ -514,7 +524,11 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
 ///
 /// # Errors
 /// Returns not found or a database error.
-pub fn get(conn: ReadConn<'_>, company: &str, id: &ProposalId) -> Result<Proposal, CliError> {
+pub fn get(
+    conn: ReadConn<'_>,
+    company: &CompanySlug,
+    id: &ProposalId,
+) -> Result<Proposal, CliError> {
     conn.query_row(
         &format!("SELECT {COLUMNS} FROM txn_proposals WHERE company_slug = ?1 AND id = ?2"),
         params![company, id],
@@ -530,7 +544,7 @@ pub fn get(conn: ReadConn<'_>, company: &str, id: &ProposalId) -> Result<Proposa
 /// Returns policy integrity, capability or storage errors.
 pub fn list(
     conn: &Connection,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     actor: &Actor,
     include_resolved: bool,
 ) -> Result<Vec<Proposal>, CliError> {
@@ -653,7 +667,6 @@ pub(in crate::db) fn reserve_setup_opening(
     reference: &str,
 ) -> Result<Proposal, CliError> {
     let conn = session.connection();
-    let company = company.as_str();
     if let Some(id) = posted_reference(ReadConn::new(conn), company, reference)? {
         return Err(CliError::Validation(format!(
             "transaction with reference '{reference}' already exists (id: {id})"
@@ -699,7 +712,7 @@ pub(in crate::db) fn reserve_setup_opening(
 
 fn insert_pending(
     tx: &AuditedTx<'_>,
-    company: &str,
+    company: &CompanySlug,
     payload: &PostingPayload,
     total: i64,
     identity: &crate::identity::VerifiedAgent,
@@ -711,7 +724,7 @@ fn insert_pending(
 
 fn posted_reference(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &CompanySlug,
     reference: &str,
 ) -> Result<Option<crate::db::ids::TransactionId>, CliError> {
     Ok(conn
@@ -725,7 +738,7 @@ fn posted_reference(
 
 pub(crate) fn check_reference(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &CompanySlug,
     reference: &str,
 ) -> Result<(), CliError> {
     let reserved: bool = conn.query_row(
@@ -751,7 +764,7 @@ pub(crate) fn verify_resolutions(conn: ReadConn<'_>) -> Result<(), CliError> {
          UNION SELECT company_slug, entity_id FROM audit_log WHERE entity = 'proposal'",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, ProposalId>(1)?))
+        Ok((row.get::<_, CompanySlug>(0)?, row.get::<_, ProposalId>(1)?))
     })?;
     for row in rows {
         let (company, id) = row?;
@@ -784,9 +797,9 @@ pub(crate) fn verify_resolutions(conn: ReadConn<'_>) -> Result<(), CliError> {
         } = &proposal.state
         {
             let (uri, jti) = resolution.by.columns();
-            let (transaction, _) =
-                super::transactions::get_transaction(conn, &company, *transaction_id)
-                    .map_err(|_| invalid())?;
+            let scope = Company::bind(conn, company.clone()).map_err(|_| invalid())?;
+            let (transaction, _) = super::transactions::get_transaction(&scope, *transaction_id)
+                .map_err(|_| invalid())?;
             let link = transaction
                 .metadata
                 .as_deref()

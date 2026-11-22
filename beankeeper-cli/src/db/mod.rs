@@ -56,7 +56,7 @@ use std::fmt::Write;
 
 use beankeeper::types::{Currency, Money};
 use chrono::NaiveDate;
-use rusqlite::{Connection, ToSql, params, params_from_iter};
+use rusqlite::{ToSql, params, params_from_iter};
 
 use crate::error::CliError;
 
@@ -67,7 +67,7 @@ use crate::error::CliError;
 /// A row from the `companies` table.
 #[derive(Debug, Clone)]
 pub struct CompanyRow {
-    pub slug: String,
+    pub slug: companies::CompanySlug,
     pub name: String,
     pub description: Option<String>,
     pub created_at: String,
@@ -76,7 +76,7 @@ pub struct CompanyRow {
 /// A row from the `accounts` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRow {
-    pub company_slug: String,
+    pub company_slug: companies::CompanySlug,
     pub code: String,
     pub name: String,
     pub account_type: beankeeper::types::AccountType,
@@ -88,7 +88,7 @@ pub struct AccountRow {
 #[derive(Debug, Clone)]
 pub struct TransactionRow {
     pub id: ids::TransactionId,
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub description: String,
     pub metadata: Option<String>,
     pub currency: Currency,
@@ -107,7 +107,7 @@ pub struct EntryRow {
     pub id: ids::EntryId,
     pub transaction_id: ids::TransactionId,
     pub account_code: String,
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub direction: beankeeper::types::DebitOrCredit,
     pub amount: amounts::PositiveMinorUnits,
     pub memo: Option<String>,
@@ -119,7 +119,7 @@ pub struct EntryRow {
 #[derive(Debug, Clone)]
 pub struct BudgetRow {
     pub id: ids::BudgetId,
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub account_code: String,
     pub currency: Currency,
     pub year: i32,
@@ -208,12 +208,12 @@ impl AccountBalanceWindow {
 /// # Errors
 /// Returns [`CliError::Sqlite`] on database errors, including an overflowing sum.
 pub fn list_accounts_with_balances(
-    conn: &Connection,
+    company: &companies::Company<'_>,
     filter: &ListAccountParams<'_>,
     window: AccountBalanceWindow,
     currency: Currency,
 ) -> Result<Vec<AccountWithBalanceRow>, CliError> {
-    let mut stmt = conn.prepare(
+    let mut stmt = company.read().prepare(
         "SELECT a.code, a.name, a.type, a.default_tax_category,
                 COALESCE(activity.debit_total, 0), COALESCE(activity.credit_total, 0)
          FROM accounts a
@@ -235,7 +235,7 @@ pub fn list_accounts_with_balances(
     )?;
     let rows = stmt.query_map(
         params![
-            filter.company_slug,
+            company.slug(),
             currency.code(),
             window.from,
             window.to,
@@ -265,8 +265,7 @@ pub fn list_accounts_with_balances(
 ///
 /// Returns [`CliError::Sqlite`] on database errors.
 pub fn compute_trial_balance(
-    conn: &Connection,
-    company_slug: &str,
+    company: &companies::Company<'_>,
     type_filter: Option<beankeeper::types::AccountType>,
     from_date: Option<NaiveDate>,
     to_date: Option<NaiveDate>,
@@ -281,7 +280,7 @@ pub fn compute_trial_balance(
            AND t.company_slug = e.company_slug AND t.currency = ?2",
     );
     let currency_code = currency.code();
-    let mut bindings: Vec<&dyn ToSql> = vec![&company_slug, &currency_code];
+    let mut bindings: Vec<&dyn ToSql> = vec![company.slug(), &currency_code];
     push_transaction_dates(
         &mut sql,
         &mut bindings,
@@ -299,7 +298,7 @@ pub fn compute_trial_balance(
     }
     sql.push_str(" GROUP BY a.code, a.name, a.type ORDER BY a.code");
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = company.read().prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(bindings), |row| {
         Ok(BalanceRow {
             code: row.get(0)?,
@@ -325,8 +324,7 @@ pub fn compute_trial_balance(
 ///
 /// Returns [`CliError::Sqlite`] on database errors.
 pub fn compute_account_balance(
-    conn: &Connection,
-    company_slug: &str,
+    company: &companies::Company<'_>,
     code: &str,
     from_date: Option<NaiveDate>,
     to_date: Option<NaiveDate>,
@@ -341,7 +339,7 @@ pub fn compute_account_balance(
          WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3",
     );
     let currency_code = currency.code();
-    let mut bindings: Vec<&dyn ToSql> = vec![&company_slug, &code, &currency_code];
+    let mut bindings: Vec<&dyn ToSql> = vec![company.slug(), &code, &currency_code];
     push_transaction_dates(
         &mut sql,
         &mut bindings,
@@ -349,9 +347,11 @@ pub fn compute_account_balance(
         to_date.as_ref(),
     );
 
-    Ok(conn.query_row(&sql, params_from_iter(bindings), |row| {
-        Ok((row.get(0)?, row.get(1)?))
-    })?)
+    Ok(company
+        .read()
+        .query_row(&sql, params_from_iter(bindings), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?)
 }
 
 /// Computes a tax summary in one currency, grouped by tax category.
@@ -362,8 +362,7 @@ pub fn compute_account_balance(
 ///
 /// Returns [`CliError::Sqlite`] on database errors.
 pub fn compute_tax_summary(
-    conn: &Connection,
-    company_slug: &str,
+    company: &companies::Company<'_>,
     from_date: Option<NaiveDate>,
     to_date: Option<NaiveDate>,
     currency: Currency,
@@ -377,7 +376,7 @@ pub fn compute_tax_summary(
          WHERE e.company_slug = ?1 AND e.tax_category IS NOT NULL AND t.currency = ?2",
     );
     let currency_code = currency.code();
-    let mut bindings: Vec<&dyn ToSql> = vec![&company_slug, &currency_code];
+    let mut bindings: Vec<&dyn ToSql> = vec![company.slug(), &currency_code];
     push_transaction_dates(
         &mut sql,
         &mut bindings,
@@ -386,7 +385,7 @@ pub fn compute_tax_summary(
     );
     sql.push_str(" GROUP BY e.tax_category ORDER BY e.tax_category");
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = company.read().prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(bindings), |row| {
         Ok(TaxSummaryRow {
             tax_category: row.get(0)?,
@@ -429,7 +428,9 @@ mod tests {
         create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
             "Acme Corp",
             None,
         )
@@ -438,7 +439,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -450,7 +453,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "4000",
                 name: "Revenue",
                 account_type: beankeeper::types::AccountType::Revenue,
@@ -462,7 +467,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "2000",
                 name: "Payables",
                 account_type: beankeeper::types::AccountType::Liability,
@@ -499,7 +506,7 @@ mod tests {
         ];
         let actor = Actor::new("test");
         let params = transactions::PostTransactionParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse().expect("fixture company"),
             description: "Sale",
             metadata: None,
             currency,
@@ -519,8 +526,18 @@ mod tests {
     #[test]
     fn trial_balance_empty() {
         let db = setup();
-        let balances = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::USD)
-            .unwrap_or_default();
+        let balances = compute_trial_balance(
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
+            None,
+            None,
+            None,
+            Currency::USD,
+        )
+        .unwrap_or_default();
         // All 3 accounts with zero balances
         assert_eq!(balances.len(), 3);
         for b in &balances {
@@ -534,8 +551,18 @@ mod tests {
         let db = setup();
         post_sample(&db, "2024-01-15", 5000);
 
-        let balances = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::USD)
-            .unwrap_or_default();
+        let balances = compute_trial_balance(
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
+            None,
+            None,
+            None,
+            Currency::USD,
+        )
+        .unwrap_or_default();
         assert_eq!(balances.len(), 3);
 
         let cash = balances.iter().find(|b| b.code == "1000");
@@ -557,8 +584,11 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
 
         let balances = compute_trial_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
             Some(beankeeper::types::AccountType::Asset),
             None,
             None,
@@ -576,8 +606,11 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
 
         let balances = compute_trial_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
             None,
             None,
             Some(
@@ -598,9 +631,18 @@ mod tests {
     #[test]
     fn account_balance_empty() {
         let db = setup();
-        let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None, None, Currency::USD)
-                .unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
+            "1000",
+            None,
+            None,
+            Currency::USD,
+        )
+        .unwrap_or((0, 0));
         assert_eq!(dr, 0);
         assert_eq!(cr, 0);
     }
@@ -611,9 +653,18 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample(&db, "2024-02-15", 3000);
 
-        let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None, None, Currency::USD)
-                .unwrap_or((0, 0));
+        let (dr, cr) = compute_account_balance(
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
+            "1000",
+            None,
+            None,
+            Currency::USD,
+        )
+        .unwrap_or((0, 0));
         assert_eq!(dr, 8000);
         assert_eq!(cr, 0);
     }
@@ -625,8 +676,11 @@ mod tests {
         post_sample(&db, "2024-02-15", 3000);
 
         let (dr, cr) = compute_account_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
             "1000",
             None,
             Some(
@@ -649,8 +703,11 @@ mod tests {
         post_sample(&db, "2024-03-15", 2000);
 
         let (dr, cr) = compute_account_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(
+                db.conn(),
+                &"acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
             "1000",
             Some(
                 "2024-02-01"
@@ -677,8 +734,7 @@ mod tests {
         post_sample(&db, "2024-03-15", 2000);
 
         let balances = compute_trial_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
             None,
             Some(
                 "2024-02-01"
@@ -707,7 +763,13 @@ mod tests {
         post_sample(&db, "2024-01-15", 5000);
         post_sample_in(&db, "2024-02-15", 700, Currency::MXN);
 
-        let usd = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::USD)?;
+        let usd = compute_trial_balance(
+            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            None,
+            None,
+            None,
+            Currency::USD,
+        )?;
         // Zero-balance accounts are still listed.
         assert_eq!(usd.len(), 3);
         let cash = usd
@@ -717,8 +779,7 @@ mod tests {
         assert_eq!(cash.debit_total, 5000);
 
         let mxn = compute_trial_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
             None,
             None,
             Some(
@@ -735,15 +796,26 @@ mod tests {
             .ok_or("missing cash")?;
         assert_eq!(cash.debit_total, 700);
 
-        let eur = compute_trial_balance(db.conn(), "acme", None, None, None, Currency::EUR)?;
+        let eur = compute_trial_balance(
+            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            None,
+            None,
+            None,
+            Currency::EUR,
+        )?;
         assert_eq!(eur.len(), 3);
         assert!(
             eur.iter()
                 .all(|b| b.debit_total == 0 && b.credit_total == 0)
         );
 
-        let (dr, cr) =
-            compute_account_balance(db.conn(), "acme", "1000", None, None, Currency::MXN)?;
+        let (dr, cr) = compute_account_balance(
+            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
+            "1000",
+            None,
+            None,
+            Currency::MXN,
+        )?;
         assert_eq!((dr, cr), (700, 0));
         Ok(())
     }
@@ -756,8 +828,7 @@ mod tests {
 
         // Every entry predates the window: all accounts are still listed, at zero.
         let rows = compute_trial_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
             None,
             Some(
                 "2024-06-01"
@@ -779,8 +850,7 @@ mod tests {
 
         // Same for an `--to` cutoff before any activity.
         let rows = compute_trial_balance(
-            db.conn(),
-            "acme",
+            &crate::db::companies::Company::resolve(db.conn(), &"acme".parse()?)?,
             None,
             None,
             Some(

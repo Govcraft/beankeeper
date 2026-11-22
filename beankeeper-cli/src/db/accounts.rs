@@ -5,6 +5,7 @@ use rusqlite::{Connection, params};
 
 use super::AccountRow;
 use super::audit::{self, Actor, Creation};
+use super::companies::{Company, CompanySlug};
 use super::connection::ReadConn;
 use crate::error::CliError;
 
@@ -23,7 +24,7 @@ pub fn row_to_account(row: &AccountRow) -> Result<Account, CliError> {
 /// Fields used to create an account.
 pub struct CreateAccountParams<'a> {
     /// Company that owns the account.
-    pub company_slug: &'a str,
+    pub company_slug: &'a CompanySlug,
     /// Account identifier within its company.
     pub code: &'a str,
     /// Account name.
@@ -59,15 +60,9 @@ pub fn create_account(
 
     audit::atomically(conn, || {
         let code = code.as_str();
-        // Verify the company exists
-        if !super::companies::company_exists(super::connection::ReadConn::new(conn), company_slug)?
-        {
-            return Err(CliError::NotFound(format!(
-                "company '{company_slug}' not found"
-            )));
-        }
+        let company = Company::bind(ReadConn::new(conn), company_slug.clone())?;
 
-        if account_exists(ReadConn::new(conn), company_slug, code)? {
+        if account_exists(&company, code)? {
             return Err(CliError::Validation(format!(
                 "account '{code}' already exists in company '{company_slug}'"
             )));
@@ -85,7 +80,7 @@ pub fn create_account(
             ],
         )?;
 
-        let row = get_account(ReadConn::new(conn), company_slug, code)?;
+        let row = get_account(&company, code)?;
         audit::record_insert(
             conn,
             actor,
@@ -107,8 +102,6 @@ pub fn create_account(
 
 /// Parameters for listing accounts.
 pub struct ListAccountParams<'a> {
-    /// Company slug to scope the query.
-    pub company_slug: &'a str,
     /// Optional exact account type filter.
     pub type_filter: Option<AccountType>,
     /// Optional account name substring filter (case-insensitive).
@@ -121,7 +114,7 @@ pub struct ListAccountParams<'a> {
 ///
 /// Returns [`CliError::Sqlite`] on any database error.
 pub fn list_accounts(
-    conn: ReadConn<'_>,
+    company: &Company<'_>,
     params: &ListAccountParams<'_>,
 ) -> Result<Vec<AccountRow>, CliError> {
     let mut sql = String::from(
@@ -132,7 +125,7 @@ pub fn list_accounts(
 
     let mut param_idx = 2u32;
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new(params.company_slug.to_string()));
+    param_values.push(Box::new(company.slug()));
 
     if let Some(filter) = params.type_filter {
         let _ = write!(sql, " AND type = ?{param_idx}");
@@ -151,7 +144,7 @@ pub fn list_accounts(
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(AsRef::as_ref).collect();
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = company.read().prepare(&sql)?;
     let rows = stmt.query_map(params_refs.as_slice(), decode_account)?;
 
     let mut accounts = Vec::new();
@@ -161,19 +154,12 @@ pub fn list_accounts(
     Ok(accounts)
 }
 
-pub(crate) fn list_accounts_on_connection(
-    conn: &Connection,
-    params: &ListAccountParams<'_>,
-) -> Result<Vec<AccountRow>, CliError> {
-    list_accounts(ReadConn::new(conn), params)
-}
-
 pub(crate) fn get_account_on_connection(
     conn: &Connection,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     code: &str,
 ) -> Result<AccountRow, CliError> {
-    get_account(ReadConn::new(conn), company, code)
+    get_account(&Company::bind(ReadConn::new(conn), company.clone())?, code)
 }
 
 /// Fetches a single account by company slug and code.
@@ -181,12 +167,9 @@ pub(crate) fn get_account_on_connection(
 /// # Errors
 ///
 /// Returns [`CliError::NotFound`] if the account does not exist.
-pub fn get_account(
-    conn: ReadConn<'_>,
-    company_slug: &str,
-    code: &str,
-) -> Result<AccountRow, CliError> {
-    let mut stmt = conn.prepare(
+pub fn get_account(company: &Company<'_>, code: &str) -> Result<AccountRow, CliError> {
+    let company_slug = company.slug();
+    let mut stmt = company.read().prepare(
         "SELECT company_slug, code, name, type, created_at, default_tax_category \
          FROM accounts \
          WHERE company_slug = ?1 AND code = ?2",
@@ -218,12 +201,9 @@ fn decode_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn account_exists(
-    conn: ReadConn<'_>,
-    company_slug: &str,
-    code: &str,
-) -> Result<bool, CliError> {
-    let exists: bool = conn.query_row(
+pub fn account_exists(company: &Company<'_>, code: &str) -> Result<bool, CliError> {
+    let company_slug = company.slug();
+    let exists: bool = company.read().query_row(
         "SELECT COUNT(*) > 0 FROM accounts WHERE company_slug = ?1 AND code = ?2",
         params![company_slug, code],
         |row| row.get(0),
@@ -236,9 +216,11 @@ pub fn account_exists(
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub fn list_account_codes(conn: ReadConn<'_>, company_slug: &str) -> Result<Vec<String>, CliError> {
-    let mut stmt =
-        conn.prepare("SELECT code FROM accounts WHERE company_slug = ?1 ORDER BY code")?;
+pub fn list_account_codes(company: &Company<'_>) -> Result<Vec<String>, CliError> {
+    let company_slug = company.slug();
+    let mut stmt = company
+        .read()
+        .prepare("SELECT code FROM accounts WHERE company_slug = ?1 ORDER BY code")?;
 
     let rows = stmt.query_map(params![company_slug], |row| row.get(0))?;
 
@@ -260,7 +242,9 @@ mod tests {
         create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
             "Acme Corp",
             None,
         )
@@ -275,7 +259,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -287,7 +273,16 @@ mod tests {
         assert_eq!(row.code, "1000");
         assert_eq!(row.account_type, AccountType::Asset);
 
-        let fetched = get_account(db.read(), "acme", "1000");
+        let fetched = get_account(
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("bind fixture company: {error}")),
+            "1000",
+        );
         assert!(fetched.is_ok());
     }
 
@@ -298,7 +293,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "nope",
+                company_slug: &"nope"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -316,7 +313,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -329,7 +328,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "1000",
                 name: "Cash 2",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -347,7 +348,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -361,7 +364,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "2000",
                     name: "Payables",
                     account_type: beankeeper::types::AccountType::Liability,
@@ -371,11 +376,15 @@ mod tests {
             .is_ok()
         );
         let params = ListAccountParams {
-            company_slug: "acme",
             type_filter: None,
             name_filter: None,
         };
-        let list = list_accounts(db.read(), &params).unwrap_or_default();
+        let list = list_accounts(
+            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+                .expect("bind test company"),
+            &params,
+        )
+        .unwrap_or_default();
         assert_eq!(list.len(), 2);
     }
 
@@ -387,7 +396,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -401,7 +412,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "2000",
                     name: "Payables",
                     account_type: beankeeper::types::AccountType::Liability,
@@ -411,11 +424,15 @@ mod tests {
             .is_ok()
         );
         let params = ListAccountParams {
-            company_slug: "acme",
             type_filter: Some(AccountType::Asset),
             name_filter: None,
         };
-        let list = list_accounts(db.read(), &params).unwrap_or_default();
+        let list = list_accounts(
+            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+                .expect("bind test company"),
+            &params,
+        )
+        .unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].code, "1000");
     }
@@ -423,7 +440,16 @@ mod tests {
     #[test]
     fn get_missing_account_is_not_found() {
         let db = setup();
-        let result = get_account(db.read(), "acme", "9999");
+        let result = get_account(
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("bind fixture company: {error}")),
+            "9999",
+        );
         assert!(matches!(result, Err(CliError::NotFound(_))));
     }
 
@@ -436,7 +462,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -449,13 +477,25 @@ mod tests {
             crate::db::delete_account(
                 db.conn(),
                 &actor,
-                "acme",
+                &"acme".parse().expect("fixture company"),
                 "1000",
                 crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
             )
             .is_ok()
         );
-        assert!(!account_exists(db.read(), "acme", "1000").unwrap_or(true));
+        assert!(
+            !account_exists(
+                &crate::db::companies::Company::bind(
+                    db.read(),
+                    "acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}"))
+                )
+                .unwrap_or_else(|error| panic!("bind fixture company: {error}")),
+                "1000"
+            )
+            .unwrap_or(true)
+        );
     }
 
     #[test]
@@ -465,7 +505,7 @@ mod tests {
         let result = crate::db::delete_account(
             db.conn(),
             &actor,
-            "acme",
+            &"acme".parse().expect("fixture company"),
             "9999",
             crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
         );
@@ -480,7 +520,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -494,7 +536,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "2000",
                     name: "Payables",
                     account_type: beankeeper::types::AccountType::Liability,
@@ -503,14 +547,23 @@ mod tests {
             )
             .is_ok()
         );
-        let codes = list_account_codes(db.read(), "acme").unwrap_or_default();
+        let codes = list_account_codes(
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("bind fixture company: {error}")),
+        )
+        .unwrap_or_default();
         assert_eq!(codes, vec!["1000", "2000"]);
     }
 
     #[test]
     fn row_to_account_converts_correctly() {
         let row = AccountRow {
-            company_slug: "acme".to_string(),
+            company_slug: "acme".parse().expect("fixture company"),
             code: "1000".to_string(),
             name: "Cash".to_string(),
             account_type: AccountType::Asset,
@@ -536,7 +589,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1000",
                     name: "Cash on Hand",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -550,7 +605,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "1100",
                     name: "Petty Cash",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -564,7 +621,9 @@ mod tests {
                 db.conn(),
                 &crate::db::Actor::new("fixture"),
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                     code: "2000",
                     name: "Payables",
                     account_type: beankeeper::types::AccountType::Liability,
@@ -575,19 +634,27 @@ mod tests {
         );
 
         let params = ListAccountParams {
-            company_slug: "acme",
             type_filter: None,
             name_filter: Some("Cash"),
         };
-        let list = list_accounts(db.read(), &params).unwrap_or_default();
+        let list = list_accounts(
+            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+                .expect("bind test company"),
+            &params,
+        )
+        .unwrap_or_default();
         assert_eq!(list.len(), 2);
 
         let params2 = ListAccountParams {
-            company_slug: "acme",
             type_filter: Some(AccountType::Asset),
             name_filter: Some("Petty"),
         };
-        let list2 = list_accounts(db.read(), &params2).unwrap_or_default();
+        let list2 = list_accounts(
+            &Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+                .expect("bind test company"),
+            &params2,
+        )
+        .unwrap_or_default();
         assert_eq!(list2.len(), 1);
         assert_eq!(list2[0].code, "1100");
     }

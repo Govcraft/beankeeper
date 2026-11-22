@@ -665,7 +665,10 @@ fn run(
             crate::cli::CurrencyArg::resolve_optional(req.currency)?,
         )?;
         if let Some(account) = req.kind.account() {
-            db::accounts::get_account(db.read(), company, account)?;
+            db::accounts::get_account(
+                &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+                account,
+            )?;
         }
         let context = Context {
             cli,
@@ -828,7 +831,13 @@ fn snapshot(
         _ => {}
     }
     let (from, to) = windows.bounds(prior);
-    let rows = db::compute_trial_balance(db.conn(), company, None, from, Some(to), currency)?;
+    let rows = db::compute_trial_balance(
+        &crate::db::companies::Company::resolve(db.conn(), &company.parse()?)?,
+        None,
+        from,
+        Some(to),
+        currency,
+    )?;
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
     let zero = ReportMoney::from_minor(0, currency);
@@ -1188,7 +1197,7 @@ fn explain(
     )?;
     let cash_codes = report.cash_accounts.as_deref().unwrap_or_default();
     let cash_scope = (!cash_codes.is_empty())
-        .then(|| db::companies::Company::resolve(db.conn(), company))
+        .then(|| db::companies::Company::resolve(db.conn(), &company.parse()?))
         .transpose()?;
     let zero = ReportMoney::from_minor(0, currency);
     let mut transactions = Vec::new();

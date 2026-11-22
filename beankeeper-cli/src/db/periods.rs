@@ -123,7 +123,7 @@ pub enum PeriodState {
 /// Current cutoff and last close/reopen attribution. Reopened rows remain stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodLock {
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub state: PeriodState,
     pub changed_at: String,
     pub actor: String,
@@ -162,7 +162,7 @@ impl Serialize for PeriodLock {
         }
 
         Snapshot {
-            company_slug: &self.company_slug,
+            company_slug: self.company_slug.as_str(),
             closed_through: self.closed_through(),
             changed_at: &self.changed_at,
             actor: &self.actor,
@@ -173,7 +173,7 @@ impl Serialize for PeriodLock {
 }
 
 struct StoredPeriodLock {
-    company_slug: String,
+    company_slug: crate::db::companies::CompanySlug,
     closed_through: Option<String>,
     changed_at: String,
     actor: String,
@@ -207,7 +207,7 @@ pub fn parse_date(raw: &str) -> Result<NaiveDate, CliError> {
     raw.parse::<PeriodDate>().map(PeriodDate::date)
 }
 
-fn inconsistent_history(company: &str) -> CliError {
+fn inconsistent_history(company: &super::companies::CompanySlug) -> CliError {
     CliError::Database(format!(
         "period lock for company '{company}' does not match its audit history"
     ))
@@ -218,7 +218,9 @@ fn inconsistent_history(company: &str) -> CliError {
 ///
 /// # Errors
 /// Returns a database error for missing, invalid, or unaudited state.
-pub fn get(conn: ReadConn<'_>, company: &str) -> Result<Option<PeriodLock>, CliError> {
+pub fn get(scope: &super::companies::Company<'_>) -> Result<Option<PeriodLock>, CliError> {
+    let conn = scope.read();
+    let company = scope.slug();
     let state = conn
         .query_row(
             "SELECT company_slug, closed_through, changed_at, actor, reason
@@ -263,7 +265,7 @@ pub fn get(conn: ReadConn<'_>, company: &str) -> Result<Option<PeriodLock>, CliE
 #[must_use]
 pub(super) struct OpenPeriod<'a> {
     tx: &'a super::audit::savepoint::AuditedTx<'a>,
-    company: &'a str,
+    company: &'a crate::db::companies::CompanySlug,
     date: NaiveDate,
 }
 
@@ -272,7 +274,7 @@ impl<'a> OpenPeriod<'a> {
         self,
     ) -> (
         &'a super::audit::savepoint::AuditedTx<'a>,
-        &'a str,
+        &'a crate::db::companies::CompanySlug,
         NaiveDate,
     ) {
         (self.tx, self.company, self.date)
@@ -285,7 +287,7 @@ impl<'a> OpenPeriod<'a> {
 /// Returns validation for a locked date, or database errors for inconsistent state.
 pub(super) fn check_posting<'a>(
     tx: &'a super::audit::savepoint::AuditedTx<'a>,
-    company: &'a str,
+    company: &'a crate::db::companies::CompanySlug,
     date: NaiveDate,
 ) -> Result<OpenPeriod<'a>, CliError> {
     ensure_open(tx.read(), company, date)?;
@@ -296,8 +298,13 @@ pub(super) fn check_posting<'a>(
 ///
 /// # Errors
 /// Rejects closed dates or inconsistent persisted period state.
-pub fn ensure_open(conn: ReadConn<'_>, company: &str, date: NaiveDate) -> Result<(), CliError> {
-    if let Some(cutoff) = get(conn, company)?.and_then(|lock| lock.closed_through())
+pub fn ensure_open(
+    conn: ReadConn<'_>,
+    company: &crate::db::companies::CompanySlug,
+    date: NaiveDate,
+) -> Result<(), CliError> {
+    if let Some(cutoff) = get(&crate::db::companies::Company::bind(conn, company.clone())?)?
+        .and_then(|lock| lock.closed_through())
         && date <= cutoff.date()
     {
         return Err(CliError::Validation(format!(
@@ -315,10 +322,9 @@ pub fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
         "SELECT company_slug FROM period_locks
          UNION SELECT company_slug FROM audit_log WHERE entity = 'period'",
     )?;
-    for company in stmt.query_map([], |row| row.get::<_, String>(0))? {
-        let company = company?;
-        super::companies::get_company(conn, &company)?;
-        get(conn, &company)?;
+    for slug in stmt.query_map([], |row| row.get(0))? {
+        let scope = super::companies::Company::bind(conn, slug?)?;
+        get(&scope)?;
     }
     Ok(())
 }
@@ -326,9 +332,8 @@ pub fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
 /// List the company's current state, including the last reopen if any.
 /// # Errors
 /// Returns database errors for inconsistent state or an unknown company.
-pub fn list(conn: ReadConn<'_>, company: &str) -> Result<Vec<PeriodLock>, CliError> {
-    super::companies::get_company(conn, company)?;
-    Ok(get(conn, company)?.into_iter().collect())
+pub fn list(scope: &super::companies::Company<'_>) -> Result<Vec<PeriodLock>, CliError> {
+    Ok(get(scope)?.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -366,7 +371,7 @@ mod tests {
             ),
         ] {
             let row = StoredPeriodLock {
-                company_slug: "acme".into(),
+                company_slug: "acme".parse()?,
                 closed_through: cutoff.map(str::to_owned),
                 changed_at: "at".into(),
                 actor: "owner".into(),

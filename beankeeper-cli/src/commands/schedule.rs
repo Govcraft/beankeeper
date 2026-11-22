@@ -18,26 +18,28 @@ use crate::output::json;
 /// Returns validation, persistence, or output errors.
 pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), CliError> {
     let db = cli.open_db()?;
-    db::companies::get_company(db.read(), company)?;
+    db::companies::get_company(db.read(), &company.parse()?)?;
     let actor = cli.principal();
     let data = match command {
         ScheduleCommand::Create(args) => {
             let params = create_params(args)?;
             let schedule = Granted::<Post>::with_db(&db, &actor, |grant| {
-                schedules::create_schedule(grant, company, &params)
+                schedules::create_schedule(grant, &company.parse()?, &params)
             })?;
             serde_json::to_value(ScheduleJson::from(&schedule))
         }
         ScheduleCommand::List { all, due_through } => {
-            let rows: Vec<_> = schedules::list_schedules(db.read(), company)?
-                .into_iter()
-                .filter(|row| *all || row.state.next_due().is_some())
-                .filter(|row| {
-                    due_through.is_none_or(|cutoff| {
-                        row.state.next_due().is_some_and(|date| date <= cutoff)
-                    })
-                })
-                .collect();
+            let rows: Vec<_> = schedules::list_schedules(&crate::db::companies::Company::bind(
+                db.read(),
+                company.parse()?,
+            )?)?
+            .into_iter()
+            .filter(|row| *all || row.state.next_due().is_some())
+            .filter(|row| {
+                due_through
+                    .is_none_or(|cutoff| row.state.next_due().is_some_and(|date| date <= cutoff))
+            })
+            .collect();
             serde_json::to_value(rows.iter().map(ScheduleJson::from).collect::<Vec<_>>())
         }
         ScheduleCommand::Run {
@@ -47,12 +49,14 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
         } => {
             let through = through.unwrap_or_else(|| chrono::Local::now().date_naive());
             let occurrences = if *dry_run {
-                db.read_snapshot(|reader| schedules::preview_due(reader, company, through))?
+                db.read_snapshot(|reader| {
+                    schedules::preview_due(reader, &company.parse()?, through)
+                })?
             } else {
                 Granted::<Post>::with_db(&db, &actor, |grant| {
                     schedules::run_due_with_options(
                         grant,
-                        company,
+                        &company.parse()?,
                         through,
                         schedules::RunOptions {
                             dry_run: false,
@@ -65,7 +69,7 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
         }
         ScheduleCommand::Cancel { id } => {
             let schedule = Granted::<Post>::with_db(&db, &actor, |grant| {
-                schedules::cancel_schedule(grant, company, id)
+                schedules::cancel_schedule(grant, &company.parse()?, id)
             })?;
             serde_json::to_value(ScheduleJson::from(&schedule))
         }
@@ -95,7 +99,7 @@ impl<'a> From<&'a schedules::Schedule> for ScheduleJson<'a> {
     fn from(schedule: &'a schedules::Schedule) -> Self {
         Self {
             id: &schedule.id,
-            company_slug: &schedule.company_slug,
+            company_slug: schedule.company_slug.as_str(),
             description: &schedule.description,
             currency: schedule.currency.code(),
             start_date: schedule.start_date,

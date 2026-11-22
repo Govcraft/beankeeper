@@ -282,7 +282,7 @@ pub fn build_report(
     company: &str,
     opts: &LedgerOptions<'_>,
 ) -> Result<LedgerReport, CliError> {
-    if !db::companies::company_exists_on_connection(conn, company)? {
+    if !db::companies::company_exists_on_connection(conn, &company.parse()?)? {
         return Err(CliError::NotFound(format!("company '{company}' not found")));
     }
 
@@ -305,18 +305,18 @@ fn build_report_for_request(
 ) -> Result<LedgerReport, CliError> {
     let currency = request.currency;
 
+    let scope = db::companies::Company::resolve(conn, &company.parse()?)?;
     let explicit = !request.accounts.is_empty();
     let accounts: Vec<db::AccountRow> = if explicit {
         let codes: BTreeSet<&str> = request.accounts.iter().map(String::as_str).collect();
         codes
             .into_iter()
-            .map(|code| db::accounts::get_account_on_connection(conn, company, code))
+            .map(|code| db::accounts::get_account(&scope, code))
             .collect::<Result<_, _>>()?
     } else {
-        db::accounts::list_accounts_on_connection(
-            conn,
+        db::accounts::list_accounts(
+            &scope,
             &db::ListAccountParams {
-                company_slug: company,
                 type_filter: None,
                 name_filter: None,
             },

@@ -93,7 +93,7 @@ pub(super) fn apply_once(
         conn,
         session.actor(),
         AuditChange {
-            company_slug: Some(company.as_str()),
+            company_slug: Some(company),
             entity: AuditEntity::Company,
             entity_id: &id,
             action: AuditAction::Create,

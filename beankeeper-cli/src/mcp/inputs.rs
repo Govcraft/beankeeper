@@ -1040,3 +1040,24 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod company_scope_tests {
+    use super::*;
+
+    #[test]
+    fn company_inputs_reject_invalid_slugs_before_dispatch() {
+        for slug in ["", "Acme", "-acme", "acme corp"] {
+            assert!(
+                serde_json::from_value::<CompanyShow>(serde_json::json!({"slug": slug})).is_err()
+            );
+            assert!(
+                serde_json::from_value::<CompanyScope>(serde_json::json!({"company": slug}))
+                    .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<CompanyShow>(serde_json::json!({"slug": "acme-2"})).is_ok()
+        );
+    }
+}

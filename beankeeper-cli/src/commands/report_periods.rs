@@ -569,16 +569,14 @@ pub(super) fn fetch_window_rows(
     let rows = match kind {
         MultiReportKind::IncomeStatement => {
             let mut rows = db::compute_trial_balance(
-                conn,
-                company,
+                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
                 Some(AccountType::Revenue),
                 Some(from),
                 Some(to),
                 currency,
             )?;
             rows.extend(db::compute_trial_balance(
-                conn,
-                company,
+                &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
                 Some(AccountType::Expense),
                 Some(from),
                 Some(to),
@@ -586,9 +584,13 @@ pub(super) fn fetch_window_rows(
             )?);
             rows
         }
-        MultiReportKind::TrialBalance => {
-            db::compute_trial_balance(conn, company, type_filter, Some(from), Some(to), currency)?
-        }
+        MultiReportKind::TrialBalance => db::compute_trial_balance(
+            &crate::db::companies::Company::resolve(conn, &company.parse()?)?,
+            type_filter,
+            Some(from),
+            Some(to),
+            currency,
+        )?,
     };
     Ok(rows)
 }

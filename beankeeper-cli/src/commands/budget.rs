@@ -53,7 +53,7 @@ fn compute<'a>(
     sub: &'a BudgetCommand,
     actor: &db::Actor,
 ) -> Result<Option<BudgetData<'a>>, CliError> {
-    db::companies::get_company(db.read(), company)?;
+    db::companies::get_company(db.read(), &company.parse()?)?;
     match sub {
         BudgetCommand::Set(args) => {
             let request = BudgetSetRequest::from_cli(args)?;
@@ -65,9 +65,8 @@ fn compute<'a>(
             account,
             month,
         } => db::list_budgets(
-            db.read(),
+            &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
             &db::ListBudgetParams {
-                company_slug: company,
                 year: *year,
                 account_code: account.as_deref(),
                 month: month.map(BudgetMonth::calendar_month),
@@ -92,7 +91,7 @@ fn compute<'a>(
                 db::delete_budget(
                     grant,
                     &db::budgets::DeleteBudgetParams {
-                        company_slug: company,
+                        company_slug: &company.parse()?,
                         account_code: account,
                         currency: currency.resolve()?,
                         year: *year,
@@ -183,7 +182,10 @@ fn set(
         currency,
         notes,
     } = *request;
-    if !db::account_exists(db.read(), company, account)? {
+    if !db::account_exists(
+        &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+        account,
+    )? {
         return Err(CliError::NotFound(format!(
             "account '{account}' not found in company '{company}'"
         )));
@@ -192,7 +194,7 @@ fn set(
         BudgetScope::Annual(annual) => db::set_annual_budget(
             grant,
             &db::SetAnnualBudgetParams {
-                company_slug: company,
+                company_slug: &company.parse()?,
                 account_code: account,
                 currency,
                 year,
@@ -203,7 +205,7 @@ fn set(
         BudgetScope::Monthly { month, amount } => db::set_budget(
             grant,
             &db::SetBudgetParams {
-                company_slug: company,
+                company_slug: &company.parse()?,
                 account_code: account,
                 currency,
                 year,
@@ -286,7 +288,7 @@ pub(crate) fn execute_set_json(
     request: &BudgetSetRequest<'_>,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
-    db::companies::get_company(db.read(), company)?;
+    db::companies::get_company(db.read(), &company.parse()?)?;
     let rows = set(db, company, request, actor)?;
     super::company::json_data(&output::json::render_budgets(
         &rows,
@@ -304,13 +306,13 @@ mod tests {
         db::companies::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme".parse()?,
             "Acme",
             None,
         )?;
         super::super::account::execute_json(
             &db,
-            "acme",
+            &"acme".parse()?,
             &AccountCommand::Create {
                 code: "5000".into(),
                 name: "Rent".into(),
@@ -356,7 +358,7 @@ mod tests {
             &db,
             &db::ListAuditParams {
                 agent_uri: None,
-                company_slug: Some("acme"),
+                company_slug: Some(&"acme".parse()?),
                 entity: None,
                 action: None,
                 limit: 50,

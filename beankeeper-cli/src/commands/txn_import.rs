@@ -435,7 +435,7 @@ fn post_import(
     // A changed rule cannot change the identity or validation of a replay.
     let skip_source = ctx.format == ImportFormat::Csv
         && ctx.strategy == transactions::ConflictStrategy::Skip
-        && transactions::reference_exists(ctx.db.read(), ctx.company, &reference)?;
+        && transactions::reference_exists(ctx.db.read(), &ctx.company.parse()?, &reference)?;
     if !skip_source && ctx.format == ImportFormat::Csv {
         categorize_csv(&mut prepared, ctx.rules, ctx.bank, ctx.suspense)?;
     }
@@ -451,7 +451,7 @@ fn post_import(
         })
         .collect::<Vec<_>>();
     let params = transactions::PostTransactionParams {
-        company_slug: ctx.company,
+        company_slug: &ctx.company.parse()?,
         description: &prepared.description,
         metadata: prepared
             .metadata
@@ -499,10 +499,16 @@ fn load_csv_rules(
         return Ok(Vec::new());
     }
     for code in [bank, suspense].into_iter().flatten() {
-        accounts::get_account(db.read(), company, code)
-            .map_err(|error| invalid(format!("CSV account validation: {error}")))?;
+        accounts::get_account(
+            &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+            code,
+        )
+        .map_err(|error| invalid(format!("CSV account validation: {error}")))?;
     }
-    db::rules::list_rules(db.read(), company)
+    db::rules::list_rules(&crate::db::companies::Company::bind(
+        db.read(),
+        company.parse()?,
+    )?)
 }
 
 fn categorize_csv(

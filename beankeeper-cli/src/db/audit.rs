@@ -311,7 +311,7 @@ pub struct AuditLogRow {
     pub id: i64,
     pub changed_at: String,
     pub actor: String,
-    pub company_slug: Option<String>,
+    pub company_slug: Option<crate::db::companies::CompanySlug>,
     pub entity: AuditEntity,
     pub entity_id: String,
     pub action: AuditAction,
@@ -476,7 +476,7 @@ fn in_savepoint<T>(
 
 #[derive(Clone, Copy)]
 struct AuditChange<'a> {
-    company_slug: Option<&'a str>,
+    company_slug: Option<&'a crate::db::companies::CompanySlug>,
     entity: AuditEntity,
     entity_id: &'a str,
     action: AuditAction,
@@ -509,7 +509,7 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         id,
         changed_at,
         actor: actor.name().to_string(),
-        company_slug: company_slug.map(str::to_string),
+        company_slug: company_slug.cloned(),
         entity,
         entity_id: entity_id.to_string(),
         action,
@@ -613,10 +613,10 @@ pub fn set_spend_limit(
         let conn = tx.connection();
         let reader = tx.read();
         let uri = limit.agent_uri();
-        let company = limit.company().as_str();
+        let company = limit.company();
         let currency = limit.currency();
         let caps = limit.caps();
-        super::companies::get_company(reader, company)?;
+        super::companies::get_company(reader, limit.company())?;
         let before = super::spend_limits::list(reader, uri, Some(company))?
             .into_iter()
             .find(|row| row.currency() == currency);
@@ -636,7 +636,7 @@ pub fn set_spend_limit(
             conn,
             actor,
             AuditChange {
-                company_slug: Some(limit.company().as_str()),
+                company_slug: Some(limit.company()),
                 entity: AuditEntity::SpendLimit,
                 entity_id: uri,
                 action: AuditAction::LimitSet,
@@ -657,7 +657,7 @@ pub fn set_spend_limit(
 pub fn clear_spend_limits(
     grant: grant::Granted<'_, grant::Admin>,
     uri: &str,
-    company: Option<&str>,
+    company: Option<&crate::db::companies::CompanySlug>,
 ) -> Result<usize, CliError> {
     grant.mutate("sp_spend_limit_clear", |tx, actor| {
         let conn = tx.connection();
@@ -669,7 +669,7 @@ pub fn clear_spend_limits(
                 conn,
                 actor,
                 AuditChange {
-                    company_slug: Some(limit.company().as_str()),
+                    company_slug: Some(limit.company()),
                     entity: AuditEntity::SpendLimit,
                     entity_id: uri,
                     action: AuditAction::LimitSet,
@@ -689,7 +689,7 @@ pub fn clear_spend_limits(
 /// open company, and inconsistent persisted state.
 pub fn change_period(
     grant: grant::Granted<'_, grant::Admin>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     change: super::periods::PeriodChange,
 ) -> Result<super::periods::PeriodLock, CliError> {
     use super::periods::PeriodLock;
@@ -698,7 +698,7 @@ pub fn change_period(
         let conn = tx.connection();
         let reader = tx.read();
         super::companies::get_company(reader, company)?;
-        let before = super::periods::get(reader, company)?;
+        let before = super::periods::get(&crate::db::companies::Company::bind(reader, company.clone())?)?;
         let previous = before.as_ref().and_then(PeriodLock::closed_through);
         let (state, action) = resolve_period_change(change, previous)?;
         let changed_at =
@@ -706,7 +706,7 @@ pub fn change_period(
                 row.get(0)
             })?;
         let after = PeriodLock {
-            company_slug: company.to_owned(),
+            company_slug: company.clone(),
             state,
             changed_at,
             actor: actor.name().to_owned(),
@@ -718,7 +718,7 @@ pub fn change_period(
             AuditChange {
                 company_slug: Some(company),
                 entity: AuditEntity::Period,
-                entity_id: company,
+                entity_id: company.as_str(),
                 action,
                 snapshots: (
                     before.as_ref().map(snapshot).as_deref(),
@@ -788,7 +788,7 @@ fn resolve_period_change(
 /// Rejects insufficient grants, resolved/missing proposals and invalid postings.
 pub fn approve_proposal(
     grant: grant::Granted<'_, grant::Approve>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: &super::proposals::ProposalId,
 ) -> Result<super::proposals::Proposal, CliError> {
     super::proposals::approve(grant, company, id)
@@ -800,7 +800,7 @@ pub fn approve_proposal(
 /// Returns authorization, lookup, validation or storage errors.
 pub fn reject_proposal(
     grant: grant::Granted<'_, grant::ResolveProposal>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: &super::proposals::ProposalId,
     reason: Option<&str>,
 ) -> Result<super::proposals::Proposal, CliError> {
@@ -820,7 +820,7 @@ pub(super) fn require_setup_proposal_reviewer<'a>(
 
 pub(super) fn insert_pending_proposal(
     tx: &savepoint::AuditedTx<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: &super::proposals::ProposalId,
     payload: &super::proposals::PostingPayload,
     total: i64,
@@ -933,7 +933,7 @@ pub(crate) fn record_identity(
 pub(crate) fn record_insert(
     conn: &Connection,
     actor: &Actor,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     creation: Creation,
     id: &str,
     data: &serde_json::Value,
@@ -961,12 +961,14 @@ fn snapshot<T: Serialize>(value: &T) -> String {
 /// Captures immutable posting data, excluding mutable metadata and clearings.
 fn posting_snapshot(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: TransactionId,
     hash_version: i64,
 ) -> Result<serde_json::Value, CliError> {
-    let (txn, entries, date_text) =
-        super::transactions::get_transaction_for_audit(conn, company, id)?;
+    let (txn, entries, date_text) = super::transactions::get_transaction_for_audit(
+        &crate::db::companies::Company::bind(conn, company.clone())?,
+        id,
+    )?;
     let entries: Vec<_> = entries.iter().map(|entry| serde_json::json!({
         "id": entry.id, "account_code": entry.account_code, "company_slug": entry.company_slug,
         "direction": entry.direction.code(), "amount": entry.amount,
@@ -988,7 +990,7 @@ fn posting_snapshot(
 fn record_creation(
     tx: &savepoint::AuditedTx<'_>,
     actor: &Actor,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: TransactionId,
 ) -> Result<(), CliError> {
     let posting = posting_snapshot(tx.read(), company, id, 2)?;
@@ -1018,7 +1020,10 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
          ORDER BY 1",
     )?;
     let txns = stmt.query_map([], |r| {
-        Ok((r.get::<_, TransactionId>(0)?, r.get::<_, String>(1)?))
+        Ok((
+            r.get::<_, TransactionId>(0)?,
+            r.get::<_, crate::db::companies::CompanySlug>(1)?,
+        ))
     })?;
     for txn in txns {
         let (id, company) = txn?;
@@ -1039,7 +1044,10 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
                 ))
             })?;
             let identity_matches = if hash_version == 1 {
-                let (txn, _) = super::transactions::get_transaction(conn, &company, id)?;
+                let (txn, _) = super::transactions::get_transaction(
+                    &crate::db::companies::Company::bind(conn, company.clone())?,
+                    id,
+                )?;
                 txn.agent_uri.is_none() && txn.token_jti.is_none()
             } else {
                 expected["agent_uri"] == serde_json::json!(agent)
@@ -1082,7 +1090,7 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
 /// transaction/company, or `CliError::Sqlite` on database errors.
 pub fn set_entry_status(
     grant: grant::Granted<'_, grant::Reconcile>,
-    company_slug: &str,
+    company_slug: &crate::db::companies::CompanySlug,
     transaction_id: TransactionId,
     entry_id: EntryId,
     to: EntryStatus,
@@ -1114,7 +1122,7 @@ pub fn set_entry_status(
 /// A request to clear (part of) one entry.
 #[derive(Debug, Clone, Copy)]
 pub struct ClearRequest<'a> {
-    pub company_slug: &'a str,
+    pub company_slug: &'a crate::db::companies::CompanySlug,
     pub transaction_id: TransactionId,
     pub entry_id: EntryId,
     /// Minor units; `None` clears the full remaining amount.
@@ -1191,15 +1199,16 @@ pub fn atomically<T>(
 
 /// Re-derives and stores `entries.status`, returning `(cleared, status)`.
 fn sync_entry_status(
+    tx: &savepoint::AuditedTx<'_>,
     company: &Company<'_>,
     entry_id: EntryId,
     entry_amount: PositiveMinorUnits,
 ) -> Result<(Vec<Clearing>, EntryStatus), CliError> {
     let after = list_clearings(company, entry_id)?;
     let status = derive_status(entry_amount, &after)?;
-    company.conn().execute(
+    tx.connection().execute(
         "UPDATE entries SET status = ?1 WHERE id = ?2 AND company_slug = ?3",
-        params![status.as_str(), entry_id, company.slug().as_str()],
+        params![status.as_str(), entry_id, company.slug()],
     )?;
     Ok((after, status))
 }
@@ -1224,7 +1233,7 @@ enum ClearingChangeKind {
 }
 
 struct ClearingChange<'a> {
-    company_slug: &'a str,
+    company_slug: &'a crate::db::companies::CompanySlug,
     entry_id: EntryId,
     operation: ClearingChangeKind,
     before: (EntryStatus, i64),
@@ -1316,7 +1325,7 @@ pub fn clear_entry(
 /// on database errors.
 pub fn unclear_entry(
     grant: grant::Granted<'_, grant::Reconcile>,
-    company_slug: &str,
+    company_slug: &crate::db::companies::CompanySlug,
     transaction_id: TransactionId,
     entry_id: EntryId,
     statement: Option<&str>,
@@ -1348,27 +1357,27 @@ impl Reconciliation<'_> {
 
     pub(crate) fn entry(
         &self,
-        company: &str,
+        company: &crate::db::companies::CompanySlug,
         transaction_id: TransactionId,
         entry_id: EntryId,
     ) -> Result<super::EntryTarget, CliError> {
-        let company = Company::resolve(self.tx.connection(), company)?;
+        let company = Company::bind(self.tx.read(), company.clone())?;
         get_entry_target(&company, transaction_id, entry_id)
     }
 
     pub(crate) fn entry_by_reference(
         &self,
-        company: &str,
+        company: &crate::db::companies::CompanySlug,
         reference: &str,
         account: &str,
     ) -> Result<super::EntryTarget, CliError> {
-        let company = Company::resolve(self.tx.connection(), company)?;
+        let company = Company::bind(self.tx.read(), company.clone())?;
         super::find_entry_by_reference(&company, reference, account)
     }
 
     pub(crate) fn clear_entry(&self, req: &ClearRequest<'_>) -> Result<ClearOutcome, CliError> {
         let conn = self.tx.connection();
-        let company = Company::resolve(conn, req.company_slug)?;
+        let company = Company::bind(self.tx.read(), req.company_slug.clone())?;
         let target = get_entry_target(&company, req.transaction_id, req.entry_id)?;
         let existing = list_clearings(&company, req.entry_id)?;
         let before_sum = cleared_sum(&existing)?;
@@ -1421,7 +1430,7 @@ impl Reconciliation<'_> {
             )?;
         }
 
-        let (after, status) = sync_entry_status(&company, req.entry_id, target.amount)?;
+        let (after, status) = sync_entry_status(self.tx, &company, req.entry_id, target.amount)?;
         let after_sum = cleared_sum(&after)?;
         let affected: Vec<Clearing> = after
             .into_iter()
@@ -1462,13 +1471,13 @@ impl Reconciliation<'_> {
 
     pub(crate) fn unclear_entry(
         &self,
-        company_slug: &str,
+        company_slug: &crate::db::companies::CompanySlug,
         transaction_id: TransactionId,
         entry_id: EntryId,
         statement: Option<&str>,
     ) -> Result<ClearOutcome, CliError> {
         let conn = self.tx.connection();
-        let company = Company::resolve(conn, company_slug)?;
+        let company = Company::bind(self.tx.read(), company_slug.clone())?;
         let target = get_entry_target(&company, transaction_id, entry_id)?;
         let existing = list_clearings(&company, entry_id)?;
         let before_sum = cleared_sum(&existing)?;
@@ -1498,7 +1507,7 @@ impl Reconciliation<'_> {
         for id in &ids {
             conn.execute("DELETE FROM entry_clearings WHERE id = ?1", params![id])?;
         }
-        let (after, status) = sync_entry_status(&company, entry_id, target.amount)?;
+        let (after, status) = sync_entry_status(self.tx, &company, entry_id, target.amount)?;
         let after_sum = cleared_sum(&after)?;
         record_clearing_change(
             conn,
@@ -1540,20 +1549,20 @@ impl Reconciliation<'_> {
 fn correlate_partner(
     tx: &savepoint::AuditedTx<'_>,
     actor: &Actor,
-    new_company: &str,
+    new_company: &crate::db::companies::CompanySlug,
     new_txn_id: TransactionId,
     partner_id: PartnerTransactionId,
 ) -> Result<(), CliError> {
-    let (partner_company, partner_metadata): (String, Option<String>) = tx
-        .read()
-        .query_row(
-            "SELECT company_slug, metadata FROM transactions WHERE id = ?1",
-            params![partner_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|_| CliError::NotFound(format!("transaction #{partner_id} not found")))?;
+    let (partner_company, partner_metadata): (crate::db::companies::CompanySlug, Option<String>) =
+        tx.read()
+            .query_row(
+                "SELECT company_slug, metadata FROM transactions WHERE id = ?1",
+                params![partner_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| CliError::NotFound(format!("transaction #{partner_id} not found")))?;
 
-    if partner_company == new_company {
+    if &partner_company == new_company {
         return Err(CliError::Validation(format!(
             "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'"
         )));
@@ -1581,7 +1590,7 @@ fn correlate_partner(
         tx.connection(),
         actor,
         AuditChange {
-            company_slug: Some(partner_company.as_str()),
+            company_slug: Some(&partner_company),
             entity: AuditEntity::Transaction,
             entity_id: &partner_id.to_string(),
             action: AuditAction::Correlate,
@@ -1602,7 +1611,7 @@ fn correlate_partner(
 
 /// Inputs for an atomic, audited reversal of a transaction in one company.
 pub struct ReverseTransactionParams<'a> {
-    pub company_slug: &'a str,
+    pub company_slug: &'a crate::db::companies::CompanySlug,
     pub id: TransactionId,
     pub date: chrono::NaiveDate,
     pub description: Option<&'a str>,
@@ -1649,7 +1658,8 @@ pub fn reverse_transaction(
 
     grant.mutate("sp_reverse", |tx, actor| {
         let conn = tx.connection();
-        let (original, entries) = get_transaction(ReadConn::new(conn), p.company_slug, p.id)?;
+        let company = Company::bind(tx.read(), p.company_slug.clone())?;
+        let (original, entries) = get_transaction(&company, p.id)?;
         reject_investment_reversal(conn, p.id)?;
         let mut original_metadata: serde_json::Value = original
             .metadata
@@ -1733,7 +1743,8 @@ fn existing_reversal(
     {
         if let (Some(id), Some(reference)) = (reversal_id.as_i64(), p.reference) {
             let id: TransactionId = id.try_into()?;
-            let (reversal, _) = get_transaction(ReadConn::new(conn), p.company_slug, id)?;
+            let company = Company::bind(ReadConn::new(conn), p.company_slug.clone())?;
+            let (reversal, _) = get_transaction(&company, id)?;
             let reverse_meta: Option<serde_json::Value> = reversal
                 .metadata
                 .as_deref()
@@ -1878,7 +1889,7 @@ fn set_budget_month(
 
     Ok(BudgetRow {
         id: id.try_into()?,
-        company_slug: p.company_slug.to_string(),
+        company_slug: p.company_slug.clone(),
         account_code: p.account_code.to_string(),
         currency,
         year: p.year,
@@ -2014,7 +2025,7 @@ struct BudgetVictim {
 
 fn collect_budget_victims(
     conn: ReadConn<'_>,
-    company_slug: &str,
+    company_slug: &crate::db::companies::CompanySlug,
     account_code: &str,
     currency: &str,
     year: i32,
@@ -2071,15 +2082,17 @@ fn collect_budget_victims(
 pub fn delete_account(
     conn: &Connection,
     actor: &Actor,
-    company_slug: &str,
+    company_slug: &crate::db::companies::CompanySlug,
     code: &str,
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     in_savepoint(conn, "sp_account_delete", || {
         // Reading the row first both yields the snapshot and produces the
         // `NotFound` error when the account is absent.
-        let row: AccountRow =
-            super::accounts::get_account(ReadConn::new(conn), company_slug, code)?;
+        let row: AccountRow = super::accounts::get_account(
+            &crate::db::companies::Company::bind(ReadConn::new(conn), company_slug.clone())?,
+            code,
+        )?;
 
         let schedules: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schedule_entries WHERE company_slug = ?1 AND account_code = ?2",
@@ -2159,7 +2172,7 @@ pub fn delete_account(
 pub fn delete_company(
     conn: &Connection,
     actor: &Actor,
-    slug: &str,
+    slug: &super::companies::CompanySlug,
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     in_savepoint(conn, "sp_company_delete", || {
@@ -2233,7 +2246,7 @@ pub fn delete_company(
             AuditChange {
                 company_slug: Some(slug),
                 entity: AuditEntity::Company,
-                entity_id: slug,
+                entity_id: slug.as_str(),
                 action: AuditAction::CompanyDelete,
                 snapshots: (
                     Some(&snapshot(&serde_json::json!({
@@ -2257,17 +2270,18 @@ pub fn delete_company(
 /// Returns an error if the destination account is missing or persistence fails.
 pub fn create_rule(
     grant: grant::Granted<'_, grant::Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     contains: super::rules::DescriptionPattern,
     account: &str,
     priority: i32,
 ) -> Result<super::rules::Rule, CliError> {
     grant.mutate("sp_rule_create", |tx, actor| {
         let conn = tx.connection();
-        super::accounts::get_account(ReadConn::new(conn), company, account)?;
+        let scope = Company::bind(tx.read(), company.clone())?;
+        super::accounts::get_account(&scope, account)?;
         let rule = super::rules::Rule {
             id: super::rules::RuleId::generate(),
-            company_slug: company.to_string(),
+            company_slug: company.clone(),
             contains,
             account_code: account.to_string(),
             priority,
@@ -2301,18 +2315,21 @@ pub fn create_rule(
 /// Returns authorization errors, not-found for a rule outside this company, or a database error.
 pub fn delete_rule(
     grant: grant::Granted<'_, grant::Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     id: &super::rules::RuleId,
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     grant.mutate("sp_rule_delete", |tx, actor| {
         let conn = tx.connection();
-        let rule = super::rules::list_rules(ReadConn::new(conn), company)?
-            .into_iter()
-            .find(|rule| &rule.id == id)
-            .ok_or_else(|| {
-                CliError::NotFound(format!("rule '{id}' not found in company '{company}'"))
-            })?;
+        let rule = super::rules::list_rules(&crate::db::companies::Company::bind(
+            ReadConn::new(conn),
+            company.clone(),
+        )?)?
+        .into_iter()
+        .find(|rule| &rule.id == id)
+        .ok_or_else(|| {
+            CliError::NotFound(format!("rule '{id}' not found in company '{company}'"))
+        })?;
         conn.execute(
             "DELETE FROM categorization_rules WHERE company_slug = ?1 AND id = ?2",
             params![company, id.to_string()],
@@ -2344,7 +2361,7 @@ pub(super) fn persist_schedule(
     schedule: &super::schedules::Schedule,
 ) -> Result<(), CliError> {
     let conn = tx.connection();
-    let company = schedule.company_slug.as_str();
+    let company = &schedule.company_slug;
     conn.execute(
         "INSERT INTO schedules (id, company_slug, description, currency, start_date, frequency,
          end_date, metadata, next_due, status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
@@ -2441,7 +2458,7 @@ pub(super) fn change_schedule(
 /// Filters and pagination for [`list_audit`].
 pub struct ListAuditParams<'a> {
     pub agent_uri: Option<&'a str>,
-    pub company_slug: Option<&'a str>,
+    pub company_slug: Option<&'a crate::db::companies::CompanySlug>,
     pub entity: Option<AuditEntity>,
     pub action: Option<AuditAction>,
     pub limit: i64,
@@ -2455,7 +2472,12 @@ fn audit_filter(params: &ListAuditParams<'_>) -> (String, Vec<rusqlite::types::V
     let mut values = Vec::new();
     for (column, value) in [
         ("agent_uri", params.agent_uri),
-        ("company_slug", params.company_slug),
+        (
+            "company_slug",
+            params
+                .company_slug
+                .map(crate::db::companies::CompanySlug::as_str),
+        ),
         ("entity", params.entity.map(AuditEntity::as_str)),
         ("action", params.action.map(AuditAction::as_str)),
     ] {
@@ -2528,7 +2550,7 @@ pub struct MetadataResult {
 /// in this company, authorization errors, or database errors.
 pub fn edit_metadata(
     grant: grant::Granted<'_, grant::Post>,
-    company: &str,
+    company: &crate::db::companies::CompanySlug,
     target: MetadataTarget<'_>,
     edit: &metadata::MetadataEdit,
 ) -> Result<MetadataResult, CliError> {
@@ -2644,6 +2666,9 @@ mod tests {
     use crate::db::CreateAccountParams;
 
     use super::*;
+    static TEST_COMPANY: std::sync::LazyLock<crate::db::companies::CompanySlug> =
+        std::sync::LazyLock::new(|| "acme".parse().expect("fixture company"));
+
     use crate::db::Db;
     use crate::identity::{Granted, Reconcile};
 
@@ -2662,7 +2687,7 @@ mod tests {
         record_insert(
             db.conn(),
             &actor,
-            "acme",
+            &"acme".parse()?,
             Creation::Attachment,
             "10",
             &serde_json::json!({"attachment_id":1}),
@@ -2676,7 +2701,7 @@ mod tests {
         )?;
         let filters = ListAuditParams {
             agent_uri: None,
-            company_slug: Some("acme"),
+            company_slug: Some(&"acme".parse()?),
             entity: Some(AuditEntity::Transaction),
             action: Some(AuditAction::Attach),
             limit: 10,
@@ -2756,7 +2781,7 @@ mod tests {
             );
         };
         rejected(
-            crate::db::create_company(connection, &actor, "new", "New", None)
+            crate::db::create_company(connection, &actor, &"new".parse()?, "New", None)
                 .expect_err("company creation must fail on audit error"),
         );
         rejected(
@@ -2764,7 +2789,7 @@ mod tests {
                 connection,
                 &actor,
                 &CreateAccountParams {
-                    company_slug: "acme",
+                    company_slug: &"acme".parse()?,
                     code: "1100",
                     name: "New",
                     account_type: beankeeper::types::AccountType::Asset,
@@ -2777,7 +2802,7 @@ mod tests {
         let attachment = crate::db::StoreAttachmentParams {
             transaction_id,
             entry_id: Some(crate::db::ids::EntryId::try_from(1)?),
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             uri: "attachments/test",
             document_type: beankeeper::types::DocumentType::Receipt,
             hash: None,
@@ -2792,16 +2817,18 @@ mod tests {
         })?;
         assert!(!crate::db::company_exists(
             ReadConn::new(connection),
-            "new"
+            &"new".parse()?
         )?);
         assert!(!crate::db::account_exists(
-            ReadConn::new(connection),
-            "acme",
+            &crate::db::companies::Company::bind(ReadConn::new(connection), "acme".parse()?)?,
             "1100"
         )?);
         assert!(
-            crate::db::list_attachments(ReadConn::new(connection), "acme", transaction_id)?
-                .is_empty()
+            crate::db::list_attachments(
+                &crate::db::companies::Company::bind(ReadConn::new(connection), "acme".parse()?)?,
+                transaction_id
+            )?
+            .is_empty()
         );
         assert!(connection.is_autocommit());
         Ok(())
@@ -2840,7 +2867,7 @@ mod tests {
         let prev = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             set_entry_status(
                 grant,
-                "acme",
+                &"acme".parse().expect("fixture company"),
                 fixture_txn(1),
                 fixture_entry(1),
                 EntryStatus::Cleared,
@@ -2877,7 +2904,7 @@ mod tests {
         let result = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             set_entry_status(
                 grant,
-                "acme",
+                &"acme".parse().expect("fixture company"),
                 fixture_txn(1),
                 fixture_entry(999),
                 EntryStatus::Cleared,
@@ -2901,7 +2928,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "1100",
                 name: "Unused Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -2912,7 +2941,7 @@ mod tests {
         delete_account(
             db.conn(),
             &actor,
-            "acme",
+            &"acme".parse().expect("fixture company"),
             "1100",
             crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
         )
@@ -2940,7 +2969,7 @@ mod tests {
 
     fn req<'a>(amount: Option<i64>, date: &str, stmt: Option<&'a str>) -> ClearRequest<'a> {
         ClearRequest {
-            company_slug: "acme",
+            company_slug: &TEST_COMPANY,
             transaction_id: fixture_txn(1),
             entry_id: fixture_entry(1),
             amount: amount.map(|minor| minor.try_into().expect("positive test clearing amount")),
@@ -3015,7 +3044,13 @@ mod tests {
 
         // Unclear one statement drops back to uncleared.
         let o = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
-            unclear_entry(grant, "acme", fixture_txn(1), fixture_entry(1), Some("S2"))
+            unclear_entry(
+                grant,
+                &"acme".parse().expect("fixture company"),
+                fixture_txn(1),
+                fixture_entry(1),
+                Some("S2"),
+            )
         })
         .expect("unclear");
         assert_eq!((o.amount, o.cleared_amount), (70, 30));
@@ -3065,7 +3100,8 @@ mod tests {
         r.status = ClearingStatus::Reconciled;
         let o = clear_entry_fixture(&db, &actor, &r).expect("promote S1");
         assert_eq!(o.action, ClearAction::Reconciled);
-        let company = Company::resolve(db.conn(), "acme").expect("bind clearing company");
+        let company = Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            .expect("bind clearing company");
         let rows = list_clearings(&company, fixture_entry(1)).expect("list");
         assert_eq!(rows[0].cleared_on().to_string(), "2026-01-31");
         assert_eq!(
@@ -3117,10 +3153,17 @@ mod tests {
         let db = seed();
         let actor = Actor::new("tester");
         clear_entry_fixture(&db, &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
-        crate::db::create_company(db.conn(), &actor, "other", "Other", None)
-            .expect("create company");
+        crate::db::create_company(
+            db.conn(),
+            &actor,
+            &"other".parse().expect("valid company"),
+            "Other",
+            None,
+        )
+        .expect("create company");
 
-        let company = Company::resolve(db.conn(), "acme").expect("bind clearing company");
+        let company = Company::resolve(db.conn(), &"acme".parse().expect("fixture company"))
+            .expect("bind clearing company");
         assert_eq!(
             list_clearings(&company, fixture_entry(1))
                 .expect("list own clearings")
@@ -3128,7 +3171,8 @@ mod tests {
             1
         );
 
-        let other = Company::resolve(db.conn(), "other").expect("bind other company");
+        let other = Company::resolve(db.conn(), &"other".parse().expect("fixture company"))
+            .expect("bind other company");
         assert_eq!(
             list_clearings(&other, fixture_entry(1)).expect("list foreign clearings"),
             []
@@ -3193,7 +3237,7 @@ mod tests {
             correlate_partner(
                 tx,
                 &actor,
-                "acme",
+                &TEST_COMPANY,
                 fixture_txn(1),
                 crate::db::ids::fixture_id(partner_id),
             )
@@ -3219,7 +3263,7 @@ mod tests {
             savepoint::with_audited_tx(conn, "sp_correlate_fixture", |tx| correlate_partner(
                 tx,
                 &actor,
-                "acme",
+                &TEST_COMPANY,
                 fixture_txn(1),
                 crate::db::ids::fixture_id(partner_id)
             ))
@@ -3235,7 +3279,7 @@ mod tests {
             delete_account(
                 db.conn(),
                 &actor,
-                "acme",
+                &"acme".parse().expect("fixture company"),
                 "9999",
                 crate::confirmation::Confirmed::forced(true).expect("forced confirmation")
             )

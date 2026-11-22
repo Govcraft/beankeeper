@@ -1446,7 +1446,13 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("legacy.db");
         let db = Db::open(&path, None)?;
-        create_company(db.conn(), &Actor::new("fixture"), "acme", "Acme", None)?;
+        create_company(
+            db.conn(),
+            &Actor::new("fixture"),
+            &"acme".parse()?,
+            "Acme",
+            None,
+        )?;
         db.conn()
             .execute("DROP TABLE setup_statement_batches", [])?;
         db.conn().execute(
@@ -1523,7 +1529,7 @@ mod tests {
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(&conn)?.enforce);
         assert_eq!(
-            proposals::get(ReadConn::new(&conn), "legacy", &id.parse()?)?
+            proposals::get(ReadConn::new(&conn), &"legacy".parse()?, &id.parse()?)?
                 .state
                 .reason(),
             Some("v19 review")
@@ -1552,14 +1558,14 @@ mod tests {
         crate::identity::Granted::<crate::identity::Admin>::with(&conn, &owner, |grant| {
             audit::change_period(
                 grant,
-                "legacy",
+                &"legacy".parse()?,
                 periods::PeriodChange::Close("2026-01-31".parse()?),
             )
         })?;
         assert!(
             periods::ensure_open(
                 ReadConn::new(&conn),
-                "legacy",
+                &"legacy".parse()?,
                 periods::parse_date("2026-01-31")?
             )
             .is_err()
@@ -1583,7 +1589,7 @@ mod tests {
             let grant = Granted::<ResolveProposal>::check(tx, owner)?;
             super::super::audit::reject_proposal(
                 grant,
-                "legacy",
+                &"legacy".parse()?,
                 &id.parse()?,
                 Some("v19 review"),
             )?;
@@ -1899,7 +1905,7 @@ mod tests {
                 let grant = Granted::<Post>::check(tx, &actor)?;
                 audit::edit_metadata(
                     grant,
-                    "legacy",
+                    &"legacy".parse()?,
                     audit::MetadataTarget::Id(id.try_into()?),
                     &edit,
                 )
@@ -1964,13 +1970,13 @@ mod tests {
         let actor = Actor::new("v14");
         let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
             let grant = Granted::<Post>::check(tx, &actor)?;
-            rules::create_rule(grant, "legacy", "sale".parse()?, "4000", 0)
+            rules::create_rule(grant, &"legacy".parse()?, "sale".parse()?, "4000", 0)
         })?;
         audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
             let grant = Granted::<Post>::check(tx, &actor)?;
             audit::delete_rule(
                 grant,
-                "legacy",
+                &"legacy".parse()?,
                 &rule.id,
                 crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
             )

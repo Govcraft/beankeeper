@@ -10,7 +10,6 @@ use rusqlite::types::Type;
 use sha2::{Digest, Sha256};
 
 use super::audit;
-use super::connection::ReadConn;
 use super::ids::{AttachmentId, EntryId, TransactionId};
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
@@ -21,7 +20,7 @@ pub struct AttachmentRow {
     pub id: AttachmentId,
     pub transaction_id: TransactionId,
     pub entry_id: Option<EntryId>,
-    pub company_slug: String,
+    pub company_slug: crate::db::companies::CompanySlug,
     pub uri: String,
     pub document_type: DocumentType,
     pub hash: Option<Sha256Hex>,
@@ -33,7 +32,7 @@ pub struct AttachmentRow {
 pub struct StoreAttachmentParams<'a> {
     pub transaction_id: TransactionId,
     pub entry_id: Option<EntryId>,
-    pub company_slug: &'a str,
+    pub company_slug: &'a crate::db::companies::CompanySlug,
     pub uri: &'a str,
     pub document_type: DocumentType,
     pub hash: Option<&'a Sha256Hex>,
@@ -58,10 +57,11 @@ pub fn store_attachment(
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_attachments(
-    conn: ReadConn<'_>,
-    company_slug: &str,
+    scope: &super::companies::Company<'_>,
     transaction_id: TransactionId,
 ) -> Result<Vec<AttachmentRow>, CliError> {
+    let conn = scope.read();
+    let company_slug = scope.slug();
     let mut stmt = conn.prepare(
         "SELECT id, transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename, attached_at
          FROM attachments
@@ -85,10 +85,11 @@ pub fn list_attachments(
 /// Returns `CliError::NotFound` if the attachment does not exist.
 /// Returns `CliError::Sqlite` on database errors.
 pub fn get_attachment(
-    conn: ReadConn<'_>,
-    company_slug: &str,
+    scope: &super::companies::Company<'_>,
     attachment_id: AttachmentId,
 ) -> Result<AttachmentRow, CliError> {
+    let conn = scope.read();
+    let company_slug = scope.slug();
     conn.query_row(
         "SELECT id, transaction_id, entry_id, company_slug, uri, document_type, hash, original_filename, attached_at
          FROM attachments
@@ -193,7 +194,9 @@ mod tests {
         companies::create_company(
             db.conn(),
             &crate::db::Actor::new("fixture"),
-            "acme",
+            &"acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
             "Acme Corp",
             None,
         )
@@ -202,7 +205,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "1000",
                 name: "Cash",
                 account_type: beankeeper::types::AccountType::Asset,
@@ -214,7 +219,9 @@ mod tests {
             db.conn(),
             &crate::db::Actor::new("fixture"),
             &CreateAccountParams {
-                company_slug: "acme",
+                company_slug: &"acme"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
                 code: "4000",
                 name: "Revenue",
                 account_type: beankeeper::types::AccountType::Revenue,
@@ -248,7 +255,7 @@ mod tests {
         ];
         let actor = crate::db::Actor::new("test");
         let params = transactions::PostTransactionParams {
-            company_slug: "acme",
+            company_slug: &"acme".parse().expect("fixture company"),
             description: "Sale",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
@@ -278,7 +285,7 @@ mod tests {
         let params = StoreAttachmentParams {
             transaction_id: txn_id,
             entry_id: None,
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             uri: &uri,
             document_type: DocumentType::Receipt,
             hash: Some(&hash),
@@ -289,7 +296,10 @@ mod tests {
         })?;
         assert!(att_id.get() > 0);
 
-        let attachments = list_attachments(db.read(), "acme", txn_id)?;
+        let attachments = list_attachments(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            txn_id,
+        )?;
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].uri, uri);
         assert_eq!(attachments[0].document_type, DocumentType::Receipt);
@@ -332,7 +342,7 @@ mod tests {
         let params = StoreAttachmentParams {
             transaction_id: txn_id,
             entry_id: None,
-            company_slug: "acme",
+            company_slug: &"acme".parse().expect("fixture company"),
             uri: "invoice.pdf",
             document_type: DocumentType::Invoice,
             hash: None,
@@ -343,8 +353,15 @@ mod tests {
         })
         .unwrap_or_else(|e| panic!("store failed: {e}"));
 
-        let att =
-            get_attachment(db.read(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
+        let att = get_attachment(
+            &crate::db::companies::Company::bind(
+                db.read(),
+                "acme".parse().expect("fixture company"),
+            )
+            .expect("resolve fixture company"),
+            att_id,
+        )
+        .unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.id, att_id);
         assert_eq!(att.document_type, DocumentType::Invoice);
         assert!(att.hash.is_none());
@@ -360,7 +377,7 @@ mod tests {
         let params = StoreAttachmentParams {
             transaction_id,
             entry_id: None,
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             uri: "attachments/test",
             document_type: DocumentType::Receipt,
             hash: None,
@@ -375,7 +392,13 @@ mod tests {
             Ok(())
         })?;
         assert!(crate::db::policy::get(db.conn())?.enforce);
-        assert!(list_attachments(db.read(), "acme", transaction_id)?.is_empty());
+        assert!(
+            list_attachments(
+                &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+                transaction_id
+            )?
+            .is_empty()
+        );
         assert!(db.conn().is_autocommit());
         Ok(())
     }
@@ -390,15 +413,21 @@ mod tests {
 
         db.conn()
             .execute(insert, params![txn_id, HELLO_WORLD_HASH])?;
-        let row = get_attachment(db.read(), "acme", db.conn().last_insert_rowid().try_into()?)
-            .unwrap_or_else(|e| panic!("read existing attachment: {e}"));
+        let row = get_attachment(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            db.conn().last_insert_rowid().try_into()?,
+        )
+        .unwrap_or_else(|e| panic!("read existing attachment: {e}"));
         assert_eq!(
             row.hash.as_ref().map(Sha256Hex::as_str),
             Some(HELLO_WORLD_HASH)
         );
 
         db.conn().execute(insert, params![txn_id, "aéééééé"])?;
-        let result = list_attachments(db.read(), "acme", txn_id);
+        let result = list_attachments(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            txn_id,
+        );
         assert!(matches!(
             result,
             Err(CliError::Sqlite(rusqlite::Error::FromSqlConversionFailure(6, Type::Text, error)))
@@ -411,7 +440,10 @@ mod tests {
     #[test]
     fn get_attachment_not_found() -> Result<(), CliError> {
         let db = setup();
-        let result = get_attachment(db.read(), "acme", 9999.try_into()?);
+        let result = get_attachment(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            9999.try_into()?,
+        );
         assert!(matches!(result, Err(CliError::NotFound(_))));
         Ok(())
     }
@@ -460,7 +492,7 @@ mod tests {
         let txn_id = post_sample(&db);
 
         // Get an entry ID from the posted transaction
-        let company = super::super::companies::Company::resolve(db.conn(), "acme")?;
+        let company = super::super::companies::Company::bind(db.read(), "acme".parse()?)?;
         let entries = transactions::get_entries_for_transaction(&company, txn_id)
             .unwrap_or_else(|e| panic!("get entries: {e}"));
         let entry_id = entries[0].id;
@@ -468,7 +500,7 @@ mod tests {
         let params = StoreAttachmentParams {
             transaction_id: txn_id,
             entry_id: Some(entry_id),
-            company_slug: "acme",
+            company_slug: &"acme".parse()?,
             uri: "statement.pdf",
             document_type: DocumentType::Statement,
             hash: None,
@@ -479,8 +511,11 @@ mod tests {
         })
         .unwrap_or_else(|e| panic!("store failed: {e}"));
 
-        let att =
-            get_attachment(db.read(), "acme", att_id).unwrap_or_else(|e| panic!("get failed: {e}"));
+        let att = get_attachment(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            att_id,
+        )
+        .unwrap_or_else(|e| panic!("get failed: {e}"));
         assert_eq!(att.entry_id, Some(entry_id));
         Ok(())
     }

@@ -180,7 +180,7 @@ pub(crate) fn envelope_ok<T: Serialize>(meta: Meta, data: T) -> Result<String, C
 
 #[derive(Serialize)]
 pub struct CompanyJson {
-    slug: String,
+    slug: crate::db::companies::CompanySlug,
     name: String,
     description: Option<String>,
     created_at: String,
@@ -601,7 +601,7 @@ pub fn render_orphaned_correlations(
         .iter()
         .map(|o| OrphanedCorrelationJson {
             transaction_id: o.transaction_id,
-            company: o.company_slug.clone(),
+            company: o.company_slug.to_string(),
             description: o.description.clone(),
             date: o.date,
             partner_id: o.partner_id,
@@ -1072,7 +1072,9 @@ mod tests {
     #[test]
     fn render_companies_single() {
         let rows = vec![CompanyRow {
-            slug: "acme".into(),
+            slug: "acme"
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid fixture slug: {error}")),
             name: "Acme Corp".into(),
             description: None,
             created_at: "2025-01-01T00:00:00".into(),
@@ -1087,7 +1089,7 @@ mod tests {
     #[test]
     fn render_accounts_normal_balance() {
         let rows = vec![AccountRow {
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
@@ -1105,7 +1107,7 @@ mod tests {
     #[test]
     fn render_accounts_revenue_is_credit() {
         let rows = vec![AccountRow {
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             code: "4000".into(),
             name: "Revenue".into(),
             account_type: beankeeper::types::AccountType::Revenue,
@@ -1121,7 +1123,7 @@ mod tests {
     fn render_transactions_with_entries() {
         let txns = vec![TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             description: "Sale".into(),
             metadata: None,
             currency: Currency::USD,
@@ -1142,7 +1144,7 @@ mod tests {
                     id: crate::db::ids::fixture_id(1),
                     transaction_id: crate::db::ids::fixture_id(1),
                     account_code: "1000".into(),
-                    company_slug: "acme".into(),
+                    company_slug: "acme".parse().expect("fixture company"),
                     direction: beankeeper::types::DebitOrCredit::Debit,
                     amount: 5000_i64
                         .try_into()
@@ -1155,7 +1157,7 @@ mod tests {
                     id: crate::db::ids::fixture_id(2),
                     transaction_id: crate::db::ids::fixture_id(1),
                     account_code: "4000".into(),
-                    company_slug: "acme".into(),
+                    company_slug: "acme".parse().expect("fixture company"),
                     direction: beankeeper::types::DebitOrCredit::Credit,
                     amount: 5000_i64
                         .try_into()
@@ -1179,7 +1181,7 @@ mod tests {
     fn render_transactions_missing_entries() {
         let txns = vec![TransactionRow {
             id: crate::db::ids::fixture_id(99),
-            company_slug: "acme".into(),
+            company_slug: "acme".parse().expect("fixture company"),
             description: "Orphan".into(),
             metadata: None,
             currency: Currency::USD,
