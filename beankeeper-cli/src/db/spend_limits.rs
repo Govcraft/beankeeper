@@ -410,7 +410,7 @@ mod tests {
     fn ledger() -> Result<(Db, SpendLimit), CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            db::create_company(grant, &"acme".parse()?, "Acme", None)
+            db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;

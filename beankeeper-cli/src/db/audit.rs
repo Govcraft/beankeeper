@@ -2815,7 +2815,7 @@ mod tests {
         };
         rejected(
             Granted::<Admin>::with_db(&db, &actor, |grant| {
-                crate::db::create_company(grant, &"new".parse()?, "New", None)
+                crate::db::create_company(grant, &"new".parse()?, &"New".parse()?, None)
             })
             .expect_err("company creation must fail on audit error"),
         );
@@ -3195,7 +3195,7 @@ mod tests {
             crate::db::create_company(
                 grant,
                 &"other".parse().expect("valid company"),
-                "Other",
+                &"Other".parse()?,
                 None,
             )
         })

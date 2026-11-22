@@ -22,7 +22,7 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
         let path = directory.path().join("limits.db");
         let db = Db::open(&path, None)?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            db::create_company(grant, &"acme".parse()?, "Acme", None)
+            db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         let id = agent_uri::AgentId::try_new("spender")
             .map_err(|error| CliError::Validation(error.to_string()))?;

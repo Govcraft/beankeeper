@@ -49,10 +49,10 @@ impl Ledger {
         let path = dir.path().join("loan.db");
         let db = Db::open(&path, None)?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            companies::create_company(grant, &"other".parse()?, "Other", None)
+            companies::create_company(grant, &"other".parse()?, &"Other".parse()?, None)
         })?;
         for (code, kind, tax) in [
             ("1000", beankeeper::types::AccountType::Asset, None),

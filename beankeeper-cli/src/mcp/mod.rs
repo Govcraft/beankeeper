@@ -948,7 +948,7 @@ mod tests {
     fn investment_tools_share_trade_valuation_and_actor_behavior() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            crate::db::companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         for (code, kind) in [
             ("1000", beankeeper::types::AccountType::Asset),
@@ -1044,7 +1044,7 @@ mod tests {
     fn report_inputs_cover_all_kinds_and_keep_cli_defaults() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            crate::db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            crate::db::companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
             crate::db::accounts::create_account(

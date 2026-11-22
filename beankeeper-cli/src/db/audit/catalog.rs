@@ -5,22 +5,22 @@ use rusqlite::{OptionalExtension, params};
 
 use super::{Actor, Creation, record_insert, savepoint::AuditedTx};
 use crate::db::accounts::{CreateAccountParams, account_exists, get_account};
-use crate::db::companies::{Company, CompanySlug};
+use crate::db::companies::{Company, CompanyName, CompanySlug};
 use crate::db::{AccountRow, CompanyRow};
 use crate::error::CliError;
 
-/// A company creation request carrying its validated slug to storage.
+/// A company creation request carrying its validated slug and name to storage.
 #[derive(Clone, Copy)]
 pub(in crate::db) struct CompanyCreation<'a> {
     slug: &'a CompanySlug,
-    name: &'a str,
+    name: &'a CompanyName,
     description: Option<&'a str>,
 }
 
 impl<'a> CompanyCreation<'a> {
     pub(in crate::db) const fn new(
         slug: &'a CompanySlug,
-        name: &'a str,
+        name: &'a CompanyName,
         description: Option<&'a str>,
     ) -> Self {
         Self {
@@ -28,33 +28,6 @@ impl<'a> CompanyCreation<'a> {
             name,
             description,
         }
-    }
-}
-
-/// A setup creation with a nonempty, normalized company name.
-pub(in crate::db) struct SetupCompanyCreation<'a>(CompanyCreation<'a>);
-
-impl<'a> SetupCompanyCreation<'a> {
-    pub(in crate::db) fn new(slug: &'a CompanySlug, name: &'a str) -> Result<Self, CliError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(CliError::Validation("name must not be empty".into()));
-        }
-        Ok(Self(CompanyCreation::new(slug, name, None)))
-    }
-
-    pub(in crate::db) const fn slug(&self) -> &'a CompanySlug {
-        self.0.slug
-    }
-
-    pub(in crate::db) const fn name(&self) -> &'a str {
-        self.0.name
-    }
-}
-
-impl<'a> From<SetupCompanyCreation<'a>> for CompanyCreation<'a> {
-    fn from(creation: SetupCompanyCreation<'a>) -> Self {
-        creation.0
     }
 }
 
@@ -73,7 +46,7 @@ pub(in crate::db) fn store_company(
         .query_row(
             "INSERT INTO companies (slug, name, description) VALUES (?1, ?2, ?3)
              ON CONFLICT(slug) DO NOTHING RETURNING name, description, created_at",
-            params![slug, name, description],
+            params![slug, name.as_str(), description],
             |row| {
                 Ok(CompanyRow {
                     slug: slug.clone(),

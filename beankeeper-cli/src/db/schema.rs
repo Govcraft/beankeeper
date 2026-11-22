@@ -1456,7 +1456,7 @@ mod tests {
         let path = directory.path().join("legacy.db");
         let db = Db::open(&path, None)?;
         Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-            create_company(grant, &"acme".parse()?, "Acme", None)
+            create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         db.conn()
             .execute("DROP TABLE setup_statement_batches", [])?;

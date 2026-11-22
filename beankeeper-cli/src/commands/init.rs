@@ -7,7 +7,7 @@ use tempfile::NamedTempFile;
 
 use crate::cli::Cli;
 use crate::db::connection::Db;
-use crate::db::{Actor, CreateAccountParams};
+use crate::db::{Actor, CreateAccountParams, verification::VerifiedLedger};
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::passphrase;
@@ -138,7 +138,7 @@ pub fn create_demo_ledger(
     let staged = NamedTempFile::new_in(directory.path())?;
     let db = Db::open(staged.path(), passphrase)?;
     db.in_write_batch(|| populate_demo_data(&db, actor))?;
-    super::verify::verify(&db)?;
+    VerifiedLedger::read(&db)?;
     // Close the only connection so SQLite checkpoints its WAL before publication.
     drop(db);
     super::backup::reject_sidecars(staged.path())?;
@@ -308,8 +308,9 @@ fn seed_companies(db: &Db, actor: &crate::db::Actor) -> Result<(), CliError> {
         ("personal", "Personal", "Owner personal finances"),
     ] {
         let slug = slug.parse()?;
+        let name = name.parse()?;
         Granted::<Admin>::with_db(db, actor, |grant| {
-            create_company(grant, &slug, name, Some(description))
+            create_company(grant, &slug, &name, Some(description))
         })?;
     }
     Ok(())
@@ -956,7 +957,7 @@ mod tests {
         let db = Db::open_snapshot(demo.path(), Some(&passphrase))?;
         assert_eq!(crate::db::list_companies(db.read())?.len(), 3);
         assert!(db.has_cipher_salt());
-        super::super::verify::verify(&db)?;
+        VerifiedLedger::read(&db)?;
 
         let before = std::fs::read(&path)?;
         assert!(matches!(
@@ -975,7 +976,7 @@ mod tests {
         let db = Db::open(&path, None)?;
         let company = "personal".parse()?;
         Granted::<Admin>::with_db(&db, &actor, |grant| {
-            crate::db::create_company(grant, &company, "Owner's books", None)
+            crate::db::create_company(grant, &company, &"Owner's books".parse()?, None)
         })?;
         assert!(matches!(
             create_demo_ledger(&path, None, &actor),

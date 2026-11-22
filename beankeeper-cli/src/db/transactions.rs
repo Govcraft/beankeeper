@@ -880,7 +880,7 @@ mod tests {
                 &"acme"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Acme Corp",
+                &"Acme Corp".parse()?,
                 None,
             )
         })
@@ -1249,7 +1249,7 @@ mod tests {
                 &"other"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Other",
+                &"Other".parse()?,
                 None,
             )
         })

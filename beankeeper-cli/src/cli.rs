@@ -6,7 +6,7 @@ use beankeeper::types::{AccountType, Currency, CurrencyError, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::db::companies::CompanySlug;
+use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::{ActorLabel, BlankActorLabel};
 use crate::error::CliError;
@@ -1329,7 +1329,8 @@ EXAMPLES:\n  \
         /// Company slug (lowercase alphanumeric and hyphens).
         slug: CompanySlug,
         /// Company display name.
-        name: String,
+        #[arg(value_parser = clap::value_parser!(CompanyName))]
+        name: CompanyName,
         /// Optional company description.
         #[arg(long)]
         description: Option<String>,

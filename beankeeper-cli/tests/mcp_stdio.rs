@@ -16,6 +16,9 @@ use tempfile::tempdir;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+const BLANK_COMPANY_NAMES: [&str; 2] = ["", " \t\u{2003}\n"];
+const COMPANY_NAME_ERROR: &str = "name must not be empty";
+
 fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::cargo_bin("bk")?;
     command.arg("--db").arg(path).stdin(Stdio::null());
@@ -182,6 +185,17 @@ fn assert_parameter_rejection(response: &Value, detail: &str) {
         "{response}"
     );
     assert!(text.contains(detail), "{response}");
+}
+
+fn assert_cli_rejects_company_name(command: &mut Command) -> TestResult {
+    let output = command.output()?;
+    assert_eq!(output.status.code(), Some(2));
+    let error = String::from_utf8(output.stderr)?;
+    assert!(
+        error.lines().any(|line| line.ends_with(COMPANY_NAME_ERROR)),
+        "{error}"
+    );
+    Ok(())
 }
 
 fn posting(reference: &str) -> Value {
@@ -850,6 +864,39 @@ fn tool_errors_preserve_codes_and_audited_writes_attribute_the_client() -> TestR
 }
 
 #[test]
+fn company_create_validates_and_normalizes_names_across_cli_and_mcp() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    bk(&path)?.arg("init").assert().success();
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    for name in BLANK_COMPANY_NAMES {
+        assert_cli_rejects_company_name(bk(&path)?.args(["company", "create", "cli-book", name]))?;
+        assert_parameter_rejection(
+            &client.call("company_create", &json!({"slug": "mcp-book", "name": name}))?,
+            COMPANY_NAME_ERROR,
+        );
+    }
+
+    let cli = "cli-book";
+    let mcp = "mcp-book";
+    let padded_name = " \tCompany  Name\u{2003} ";
+    bk(&path)?
+        .args(["company", "create", cli, padded_name])
+        .assert()
+        .success();
+    client.success("company_create", &json!({"slug": mcp, "name": padded_name}))?;
+    for slug in [cli, mcp] {
+        let row = client.success("company_show", &json!({"slug": slug}))?;
+        assert_eq!(row[0]["name"], "Company  Name");
+    }
+    Ok(())
+}
+
+#[test]
 fn company_tools_share_cli_results_checks_and_audit() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -1445,7 +1492,7 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open(path, Some(&passphrase))?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        db::create_company(grant, &"acme".parse()?, "Acme", None)
+        db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         db::create_account(
@@ -2982,13 +3029,7 @@ fn owner_manages_setup_session_across_cli_and_mcp() -> TestResult {
         &passphrase_path,
         generation,
     )?;
-    assert_cli_replays_setup_book_creation(
-        &path,
-        &passphrase_path,
-        setup_token,
-        generation,
-        &book,
-    )?;
+    assert_cli_setup_book_creation(&path, &passphrase_path, setup_token, generation, &db, &book)?;
 
     assert_opening_preview(
         &mut setup_client,
@@ -3362,40 +3403,45 @@ fn assert_statement_import_summary(db: &beankeeper_cli::db::Db) -> TestResult {
     Ok(())
 }
 
-fn assert_cli_replays_setup_book_creation(
+fn assert_cli_setup_book_creation(
     path: &Path,
     passphrase: &Path,
     token: &str,
     generation: i64,
+    db: &beankeeper_cli::db::Db,
     expected: &Value,
 ) -> TestResult {
-    let replay = bk(path)?
-        .arg("--passphrase-file")
-        .arg(passphrase)
-        .args([
-            "--agent-token",
-            token,
-            "--json",
-            "setup",
-            "book-create",
-            "home",
-            "Home",
-        ])
-        .args([
-            "--generation",
-            &generation.to_string(),
-            "--reference",
-            "home-book",
-        ])
-        .args([
-            "--purpose",
-            "personal",
-            "--base-currency",
-            "USD",
-            "--fiscal-year-start",
-            "01-01",
-        ])
-        .output()?;
+    let create = |slug: &str, name: &str| -> Result<Command, Box<dyn Error>> {
+        let mut command = bk(path)?;
+        command
+            .arg("--passphrase-file")
+            .arg(passphrase)
+            .args([
+                "--agent-token",
+                token,
+                "--json",
+                "setup",
+                "book-create",
+                slug,
+                name,
+            ])
+            .args([
+                "--generation",
+                &generation.to_string(),
+                "--reference",
+                &format!("{slug}-book"),
+            ])
+            .args([
+                "--purpose",
+                "personal",
+                "--base-currency",
+                "USD",
+                "--fiscal-year-start",
+                "01-01",
+            ]);
+        Ok(command)
+    };
+    let replay = create("home", "Home")?.output()?;
     assert!(
         replay.status.success(),
         "{}",
@@ -3406,6 +3452,14 @@ fn assert_cli_replays_setup_book_creation(
         expected
     );
 
+    for name in BLANK_COMPANY_NAMES {
+        assert_cli_rejects_company_name(&mut create("workshop", name)?)?;
+    }
+    create("workshop", "  Workshop\u{2003} ")?
+        .assert()
+        .success();
+    let row = beankeeper_cli::db::get_company(db.read(), &"workshop".parse()?)?;
+    assert_eq!(row.name, "Workshop");
     Ok(())
 }
 
@@ -3558,10 +3612,19 @@ fn exercise_setup_books(
 ) -> Result<Value, Box<dyn Error>> {
     let initial = json!({
         "target": setup_book_target("home", generation, "home-book"),
-        "name": "Home",
+        "name": "  Home\u{2003} ",
         "settings": {"purpose": "personal", "base_currency":"USD", "fiscal_year_start":"01-01"}
     });
+    let mut bad = initial.clone();
+    for name in BLANK_COMPANY_NAMES {
+        bad["name"] = json!(name);
+        assert_parameter_rejection(
+            &client.call("ledger_setup_book_create", &bad)?,
+            COMPANY_NAME_ERROR,
+        );
+    }
     let book = client.success("ledger_setup_book_create", &initial)?;
+    assert_eq!(book["name"], "Home");
     assert_eq!(book["profile"]["company"], "home");
     assert_eq!(book["profile"]["purpose"], "personal");
     let refusal = payload(&owner.call("company_delete", &json!({"slug":"home"}))?)?;

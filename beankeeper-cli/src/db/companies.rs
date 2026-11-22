@@ -10,6 +10,39 @@ use super::connection::ReadConn;
 use crate::error::CliError;
 use crate::identity::{Admin, Granted};
 
+/// A nonempty company display name with surrounding whitespace removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct CompanyName(Box<str>);
+
+impl CompanyName {
+    /// Returns the normalized display name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for CompanyName {
+    type Err = CliError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let name = raw.trim();
+        if name.is_empty() {
+            return Err(CliError::Validation("name must not be empty".into()));
+        }
+        Ok(Self(name.into()))
+    }
+}
+
+impl<'de> Deserialize<'de> for CompanyName {
+    fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        String::deserialize(decoder)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// A company slug validated before use in a company-scoped operation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
@@ -151,7 +184,7 @@ fn validate_slug(slug: &str) -> Result<(), CliError> {
 pub fn create_company(
     grant: Granted<'_, Admin>,
     slug: &CompanySlug,
-    name: &str,
+    name: &CompanyName,
     description: Option<&str>,
 ) -> Result<CompanyRow, CliError> {
     grant.mutate("sp_company_create", |tx, actor| {
@@ -262,14 +295,14 @@ mod tests {
         let second = setup();
         let slug: CompanySlug = "acme".parse()?;
         Granted::<Admin>::with_db(&first, &Actor::new("fixture".parse()?), |grant| {
-            create_company(grant, &slug, "First", None)
+            create_company(grant, &slug, &"First".parse()?, None)
         })?;
         assert!(matches!(
             Company::bind(second.read(), slug.clone()),
             Err(CliError::NotFound(_))
         ));
         Granted::<Admin>::with_db(&second, &Actor::new("fixture".parse()?), |grant| {
-            create_company(grant, &slug, "Second", None)
+            create_company(grant, &slug, &"Second".parse()?, None)
         })?;
         for (db, name) in [(&first, "First"), (&second, "Second")] {
             db.read_snapshot(|reader| {
@@ -291,7 +324,7 @@ mod tests {
                 &"acme"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Acme Corp",
+                &"Acme Corp".parse()?,
                 None,
             )
         });
@@ -319,7 +352,7 @@ mod tests {
                     &"acme"
                         .parse()
                         .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    "Acme Corp",
+                    &"Acme Corp".parse()?,
                     None,
                 )
             })
@@ -331,7 +364,7 @@ mod tests {
                 &"acme"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Acme 2",
+                &"Acme 2".parse()?,
                 None,
             )
         });
@@ -371,7 +404,7 @@ mod tests {
                     &"beta"
                         .parse()
                         .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    "Beta",
+                    &"Beta".parse()?,
                     None,
                 )
             })
@@ -384,7 +417,7 @@ mod tests {
                     &"alpha"
                         .parse()
                         .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    "Alpha",
+                    &"Alpha".parse()?,
                     None,
                 )
             })
@@ -407,7 +440,7 @@ mod tests {
                     &"acme"
                         .parse()
                         .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    "Acme",
+                    &"Acme".parse()?,
                     None,
                 )
             })

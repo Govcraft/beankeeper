@@ -10,14 +10,17 @@ use serde_json::{Value, json};
 
 use super::super::{
     Actor, AuditAction, AuditChange, AuditEntity,
-    catalog::{SetupCompanyCreation, store_company},
+    catalog::{CompanyCreation, store_company},
     record,
 };
 use super::{ActiveSession, Generation, requests::apply_once, with_active_setup_write};
 use crate::db::{
-    AccountRow, Db, ListAccountParams, accounts::CreateAccountParams, companies::CompanySlug,
-    connection::ReadConn, get_company, list_accounts, schema::BOOK_PROFILE_SCHEMA_VERSION,
-    schema::get_schema_version,
+    AccountRow, Db, ListAccountParams,
+    accounts::CreateAccountParams,
+    companies::{CompanyName, CompanySlug},
+    connection::ReadConn,
+    get_company, list_accounts,
+    schema::{BOOK_PROFILE_SCHEMA_VERSION, get_schema_version},
 };
 use crate::error::CliError;
 
@@ -321,7 +324,7 @@ impl ChartTemplate {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BookChange<'a> {
     Create {
-        name: &'a str,
+        name: &'a CompanyName,
         settings: BookSettings,
     },
     Initialize(BookSettings),
@@ -347,15 +350,9 @@ pub(crate) fn apply(
 ) -> Result<Value, CliError> {
     with_active_setup_write(db, actor, generation, |session| match change {
         BookChange::Create { name, settings } => {
-            let creation = SetupCompanyCreation::new(company, name)?;
-            let input = json!([
-                "book-create-v1",
-                creation.slug(),
-                creation.name(),
-                settings.request_fields()
-            ]);
+            let input = json!(["book-create-v1", company, name, settings.request_fields()]);
             apply_once(session, reference, company, &input, || {
-                create_book(session, creation, settings)
+                create_book(session, company, name, settings)
             })
         }
         BookChange::Initialize(settings) => {
@@ -413,11 +410,15 @@ pub(crate) fn apply(
 
 fn create_book(
     session: &ActiveSession<'_>,
-    creation: SetupCompanyCreation<'_>,
+    company: &CompanySlug,
+    name: &CompanyName,
     settings: BookSettings,
 ) -> Result<Value, CliError> {
-    let company = creation.slug();
-    let row = store_company(session.audited_tx(), session.actor(), creation.into())?;
+    let row = store_company(
+        session.audited_tx(),
+        session.actor(),
+        CompanyCreation::new(company, name, None),
+    )?;
     let profile = record_profile(session, company, None, settings)?;
     Ok(json!({"name": row.name, "profile": profile}))
 }

@@ -346,7 +346,7 @@ mod tests {
     fn missing_persisted_relationship_identifies_its_transaction() -> Result<(), CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            create_company(grant, &"acme".parse()?, "Acme", None)
+            create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         let row = db.conn().query_row(
             "INSERT INTO transactions (company_slug, description, metadata, date)

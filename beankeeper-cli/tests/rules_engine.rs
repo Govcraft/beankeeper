@@ -28,7 +28,7 @@ impl Ledger {
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
             Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-                companies::create_company(grant, &company.parse()?, company, None)
+                companies::create_company(grant, &company.parse()?, &company.parse()?, None)
             })?;
             for (code, kind, tax) in [
                 ("1000", beankeeper::types::AccountType::Asset, None),
@@ -482,7 +482,7 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     let db = Db::open(&path, None)?;
     let raw = raw_ledger::open(&path, None)?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        companies::create_company(grant, &"acme".parse()?, "Acme", None)
+        companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
         accounts::create_account(

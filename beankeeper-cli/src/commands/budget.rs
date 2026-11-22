@@ -305,7 +305,7 @@ mod tests {
     fn ledger() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            db::companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            db::companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         super::super::account::execute_json(
             &db,

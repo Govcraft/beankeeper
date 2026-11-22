@@ -246,11 +246,9 @@ mod tests {
 
         let result: Result<(), CliError> = db.read_snapshot(|reader| {
             assert_eq!(count(reader)?, 0);
-            Granted::<Admin>::with_db(
-                &writer,
-                &super::super::Actor::new("fixture".parse()?),
-                |grant| super::super::create_company(grant, &"acme".parse()?, "Acme", None),
-            )?;
+            Granted::<Admin>::with_db(&writer, &super::super::Actor::new("fixture".parse()?), |grant| {
+                super::super::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
+            })?;
             assert_eq!(count(reader)?, 0);
             Err(CliError::Validation("stop snapshot".into()))
         });

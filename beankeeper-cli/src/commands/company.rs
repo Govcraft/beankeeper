@@ -3,7 +3,7 @@ use crate::confirmation::confirm_deletion;
 use crate::db::connection::Db;
 use crate::db::{
     Actor, CompanyRow,
-    companies::{self, CompanySlug},
+    companies::{self, CompanyName, CompanySlug},
 };
 use crate::error::CliError;
 use crate::identity::{Admin, Granted};
@@ -74,7 +74,7 @@ pub(crate) fn create(
     db: &Db,
     actor: &Actor,
     slug: &CompanySlug,
-    name: &str,
+    name: &CompanyName,
     description: Option<&str>,
 ) -> Result<CompanyRow, CliError> {
     Granted::<Admin>::with_db(db, actor, |grant| {
@@ -140,7 +140,7 @@ mod tests {
         let db = Db::open_in_memory()?;
         let create = CompanyCommand::Create {
             slug: "acme".parse()?,
-            name: "Acme".into(),
+            name: "Acme".parse()?,
             description: None,
         };
         assert!(matches!(
@@ -152,7 +152,7 @@ mod tests {
             serde_json::json!([])
         );
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            companies::create_company(grant, &"acme".parse()?, "Acme", None)
+            companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
         })?;
         let delete = CompanyCommand::Delete {
             slug: "acme".parse()?,

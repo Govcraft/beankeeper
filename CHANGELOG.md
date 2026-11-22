@@ -11,8 +11,9 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 ### Added
 
 - MCP `company_create` uses the same audited insert as CLI and setup book
-  creation. MCP `company_delete` checks eligibility and directs the owner to
-  local confirmation. Companies with retained data keep their history.
+  creation. All creation commands and tools trim company names and require
+  a nonblank name. MCP `company_delete` checks eligibility and directs the
+  owner to local confirmation. Companies with retained data keep their history.
   ([#234](https://github.com/Govcraft/beankeeper/issues/234))
 - Trusted hosts can initialize a separate, optionally encrypted demo ledger
   through `create_demo_ledger`. The initializer refuses preexisting files.

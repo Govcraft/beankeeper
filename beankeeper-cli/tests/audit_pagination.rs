@@ -26,7 +26,7 @@ impl Ledger {
         let db = Db::open(&path, None)?;
         for company in ["acme", "other"] {
             Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-                db::create_company(grant, &company.parse()?, company, None)
+                db::create_company(grant, &company.parse()?, &company.parse()?, None)
             })?;
             Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
                 db::create_account(

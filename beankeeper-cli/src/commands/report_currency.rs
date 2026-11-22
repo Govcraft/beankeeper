@@ -89,7 +89,7 @@ mod tests {
                 &"acme"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                "Acme Corp",
+                &"Acme Corp".parse()?,
                 None,
             )
         })

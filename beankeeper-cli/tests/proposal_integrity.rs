@@ -24,7 +24,7 @@ fn pending_with_entries(
     let raw = rusqlite::Connection::open(&path)?;
     raw.pragma_update(None, "foreign_keys", true)?;
     Granted::<Admin>::with_db(&db, &Actor::new("fixture".parse()?), |grant| {
-        db::create_company(grant, &"acme".parse()?, "Acme", None)
+        db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
     })?;
     let id = "proposal".create_type_id::<V7>().to_string();
     let payload = PostingPayload {

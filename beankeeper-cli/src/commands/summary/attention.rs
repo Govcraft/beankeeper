@@ -372,7 +372,7 @@ mod tests {
     fn setup() -> Result<Db, CliError> {
         let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            db::companies::create_company(grant, &"co".parse()?, "Company", None)
+            db::companies::create_company(grant, &"co".parse()?, &"Company".parse()?, None)
         })?;
         for (code, name, kind) in [
             ("1000", "Cash", beankeeper::types::AccountType::Asset),
