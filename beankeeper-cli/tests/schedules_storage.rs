@@ -140,7 +140,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
     assert_eq!(completed.state, ScheduleState::Completed);
     assert_eq!(completed.state.next_due(), None);
     assert!(schedules::run_due(db.conn(), &actor, "acme", date("2027-01-01")?, false)?.is_empty());
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     audit::verify_creations(db.conn())?;
     assert!(
         audit::delete_account(
@@ -177,7 +177,7 @@ fn schedule_audit_failure_rolls_back_postings_and_progress() -> TestResult {
         Some(date("2026-01-31")?)
     );
     assert_eq!(audit_count(&db)?, before_audit + 1);
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     Ok(())
 }
 
@@ -201,7 +201,7 @@ fn later_post_failure_rolls_back_earlier_occurrences() -> TestResult {
             .next_due(),
         Some(date("2026-01-31")?)
     );
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     Ok(())
 }
 
@@ -239,7 +239,7 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
         )
         .is_err()
     );
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     Ok(())
 }
 
@@ -318,7 +318,7 @@ fn concurrent_runners_consume_each_occurrence_once() -> Result<(), Box<dyn std::
         .conn()
         .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))?;
     assert_eq!(count, 3);
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     audit::verify_creations(db.conn())?;
     Ok(())
 }
@@ -346,7 +346,7 @@ fn finite_schedules_complete_at_the_supported_date_boundary() -> TestResult {
         assert_eq!(completed.state, ScheduleState::Completed);
         assert_eq!(completed.state.next_due(), None);
         assert!(schedules::run_due(db.conn(), &actor, "acme", NaiveDate::MAX, false)?.is_empty());
-        audit::verify_hash_chain(db.conn())?;
+        audit::verify_hash_chain(db.read())?;
         audit::verify_creations(db.conn())?;
     }
     Ok(())
@@ -377,7 +377,7 @@ fn run_limit_allows_exactly_one_thousand_occurrences() -> TestResult {
         "completed"
     );
     assert!(schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, false)?.is_empty());
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     audit::verify_creations(db.conn())?;
     Ok(())
 }
@@ -415,7 +415,7 @@ fn run_limit_is_company_wide_and_checked_before_any_posting() -> TestResult {
         assert_eq!(count, 0);
     }
     assert_eq!(audit_count(&db)?, before_audit + 2);
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     Ok(())
 }
 
@@ -456,6 +456,6 @@ fn run_limit_counts_only_pending_due_occurrences_in_the_selected_company() -> Te
     );
     let remaining = schedules::run_due(db.conn(), &actor, "acme", date("2026-01-01")?, true)?;
     assert_eq!(remaining.len(), DEFAULT_RUN_LIMIT);
-    audit::verify_hash_chain(db.conn())?;
+    audit::verify_hash_chain(db.read())?;
     Ok(())
 }

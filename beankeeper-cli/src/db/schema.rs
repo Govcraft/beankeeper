@@ -1,5 +1,6 @@
 use rusqlite::{Connection, params};
 
+use super::connection::ReadConn;
 use super::metadata;
 use crate::error::CliError;
 
@@ -14,8 +15,12 @@ pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn get_schema_version(conn: &Connection) -> Result<i64, CliError> {
+    read_schema_version(ReadConn::new(conn))
+}
+
+pub(crate) fn read_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
     // Check whether the schema_version table exists at all.
-    let table_exists: bool = conn.query_row(
+    let table_exists: bool = reader.query_row(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
         [],
         |row| row.get(0),
@@ -25,7 +30,7 @@ pub fn get_schema_version(conn: &Connection) -> Result<i64, CliError> {
         return Ok(0);
     }
 
-    let version: i64 = conn.query_row(
+    let version: i64 = reader.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM schema_version",
         [],
         |row| row.get(0),
@@ -692,7 +697,7 @@ fn apply_v13(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'posted transaction identity is immutable'); END;
             INSERT INTO schema_version (version) VALUES (13);"
         )?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -700,7 +705,7 @@ fn apply_v13(conn: &Connection) -> Result<(), CliError> {
 /// Add bank categorization rules without changing any historical audit hash.
 fn apply_v14(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         conn.execute_batch(
             "CREATE TABLE categorization_rules (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -753,7 +758,7 @@ fn apply_v14(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
             INSERT INTO schema_version (version) VALUES (14);"
         )?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -761,7 +766,7 @@ fn apply_v14(conn: &Connection) -> Result<(), CliError> {
 /// Allow audited annotation actions while preserving historical hashes and triggers.
 fn apply_v15(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         conn.execute_batch(
             "CREATE TABLE audit_log_v15 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -804,7 +809,7 @@ fn apply_v15(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
             INSERT INTO schema_version (version) VALUES (15);"
         )?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -812,7 +817,7 @@ fn apply_v15(conn: &Connection) -> Result<(), CliError> {
 /// Store pending schedules and extend auditing without changing historical hashes.
 fn apply_v16(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         conn.execute_batch(
             "CREATE TABLE schedules (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -883,7 +888,7 @@ fn apply_v16(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
             INSERT INTO schema_version (version) VALUES (16);"
         )?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -891,7 +896,7 @@ fn apply_v16(conn: &Connection) -> Result<(), CliError> {
 /// Add append-only investment records, preserving all historical audit bytes.
 fn apply_v17(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         conn.execute_batch(
             "CREATE TABLE securities (
                 company_slug TEXT NOT NULL REFERENCES companies(slug),
@@ -967,7 +972,7 @@ fn apply_v17(conn: &Connection) -> Result<(), CliError> {
             ))?;
         }
         conn.execute("INSERT INTO schema_version (version) VALUES (17)", [])?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -1021,7 +1026,7 @@ fn extend_investment_audit(conn: &Connection) -> Result<(), CliError> {
 /// Enable explicit grants without changing historical audit hashes or snapshots.
 fn apply_v18(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         extend_policy_audit(conn)?;
         conn.execute_batch(
             "CREATE TABLE ledger_policy (
@@ -1049,7 +1054,7 @@ fn apply_v18(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'ledger policy change requires an audit record'); END;",
         )?;
         conn.execute("INSERT INTO schema_version (version) VALUES (18)", [])?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -1103,7 +1108,7 @@ fn extend_policy_audit(conn: &Connection) -> Result<(), CliError> {
 /// Add pending proposals and spend buckets, preserving the complete v18 audit chain.
 fn apply_v19(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         // Temporarily remove the trigger that references the rebuilt audit table.
         let policy_trigger: String = conn.query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'protect_policy_update'",
@@ -1179,7 +1184,7 @@ fn apply_v19(conn: &Connection) -> Result<(), CliError> {
             );
             INSERT INTO schema_version(version) VALUES (19);",
         )?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -1233,7 +1238,7 @@ fn extend_proposal_audit(conn: &Connection) -> Result<(), CliError> {
 /// Add company cutoffs without rewriting historical hashes or audit snapshots.
 fn apply_v20(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         // These triggers reference the audit table while it is being rebuilt.
         let triggers: Vec<(String, String)> = conn
             .prepare(
@@ -1302,7 +1307,7 @@ fn apply_v20(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'transaction date is in a closed period'); END;
             INSERT INTO schema_version(version) VALUES (20);",
         )?;
-        super::audit::verify_hash_chain(conn)?;
+        super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
@@ -1488,7 +1493,7 @@ mod tests {
         assert!(
             periods::check_posting(&conn, "legacy", periods::parse_date("2026-01-31")?).is_err()
         );
-        audit::verify_hash_chain(&conn)?;
+        audit::verify_hash_chain(ReadConn::new(&conn))?;
         audit::verify_creations(&conn)?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
         periods::verify(&conn)?;
@@ -1517,7 +1522,7 @@ mod tests {
             assert_eq!(count, 2);
             if corruption == "collision" {
                 super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
-                super::super::audit::verify_hash_chain(&conn)?;
+                super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
         }
         Ok(())
@@ -1541,7 +1546,7 @@ mod tests {
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(&conn)?.enforce);
         super::super::audit::set_policy(&conn, &owner, false)?;
-        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(&conn)?;
         assert_eq!(
             super::super::spend_limits::list(&conn, "unconfigured", None)?,
@@ -1568,7 +1573,7 @@ mod tests {
             if corruption == "collision" {
                 super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
                 assert!(super::super::policy::get(&conn)?.enforce);
-                super::super::audit::verify_hash_chain(&conn)?;
+                super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
             }
         }
         Ok(())
@@ -1612,7 +1617,7 @@ mod tests {
         assert!(result.is_err());
         super::super::audit::set_policy(&conn, &super::super::Actor::new("owner"), true)?;
         assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(4));
-        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(&conn)?;
         for sql in [
             "DELETE FROM audit_log",
@@ -1708,7 +1713,7 @@ mod tests {
                 .collect::<Result<_, _>>()?
         };
         assert_eq!(before, after);
-        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(&conn)?;
         for sql in [
             "DELETE FROM audit_log",
@@ -1748,7 +1753,7 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(historical, retained);
-        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(&conn)?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
@@ -1796,7 +1801,7 @@ mod tests {
                 .changed
             );
         }
-        audit::verify_hash_chain(&conn)?;
+        audit::verify_hash_chain(ReadConn::new(&conn))?;
         audit::verify_creations(&conn)?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
@@ -1865,7 +1870,7 @@ mod tests {
             crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
         )?;
         assert_eq!(&hashes(&conn)?[..2], before.as_slice());
-        audit::verify_hash_chain(&conn)?;
+        audit::verify_hash_chain(ReadConn::new(&conn))?;
         audit::verify_creations(&conn)?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
@@ -1972,7 +1977,7 @@ mod tests {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         assert_eq!(tail, (old_hash, 2));
-        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(&conn)?;
         ensure_schema(&conn)?;
         Ok(())
@@ -2018,7 +2023,7 @@ mod tests {
         apply_v12(&conn)?;
         let after: String = conn.query_row(query, [], |r| r.get(0))?;
         assert_eq!(before, after);
-        super::super::audit::verify_hash_chain(&conn)?;
+        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         let first_hash: String =
             conn.query_row("SELECT row_hash FROM audit_log WHERE id = 7", [], |r| {
                 r.get(0)

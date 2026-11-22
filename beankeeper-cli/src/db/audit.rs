@@ -25,14 +25,18 @@ use super::clearings::{
     get_entry_target, list_clearings, plan_clear, plan_unclear,
 };
 use super::companies::Company;
+use super::connection::ReadConn;
 use super::metadata;
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
 use crate::confirmation::Confirmed;
 use crate::db::ids::{EntryId, TransactionId};
 use crate::error::CliError;
 
+mod attachment;
 mod savepoint;
 pub mod setup;
+
+pub(super) use attachment::store_attachment;
 
 // ---------------------------------------------------------------------------
 // Typed clearance status -- illegal states are unrepresentable
@@ -471,18 +475,18 @@ pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Recomputes the chain in ID order and reports the first broken link.
+/// Recomputes the chain in ID order within the caller's read snapshot.
 /// The AUTOINCREMENT high-water mark also detects removal of the tail.
 ///
 /// # Errors
 /// Returns a database error for altered, missing, or unlinked audit records.
-pub fn verify_hash_chain(conn: &Connection) -> Result<(), CliError> {
-    let columns = if super::schema::get_schema_version(conn)? < 13 {
+pub fn verify_hash_chain(reader: ReadConn<'_>) -> Result<(), CliError> {
+    let columns = if super::schema::read_schema_version(reader)? < 13 {
         format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1")
     } else {
         AUDIT_COLUMNS.to_string()
     };
-    let mut stmt = conn.prepare(&format!("SELECT {columns} FROM audit_log ORDER BY id"))?;
+    let mut stmt = reader.prepare(&format!("SELECT {columns} FROM audit_log ORDER BY id"))?;
     let rows = stmt.query_map([], read_audit_row)?;
     let mut previous = GENESIS_HASH.to_string();
     let mut last_id = 0;
@@ -497,7 +501,7 @@ pub fn verify_hash_chain(conn: &Connection) -> Result<(), CliError> {
         last_id = row.id;
         previous = row.row_hash;
     }
-    let sequence: i64 = conn.query_row(
+    let sequence: i64 = reader.query_row(
         "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)",
         [],
         |r| r.get(0),
@@ -2541,7 +2545,7 @@ mod tests {
         assert_eq!(records[0].entity, AuditEntity::Transaction);
         assert_eq!(records[0].action, AuditAction::Attach);
         assert_eq!(serde_json::json!(records[0].action), "attach");
-        verify_hash_chain(db.conn())
+        verify_hash_chain(db.read())
     }
 
     #[test]

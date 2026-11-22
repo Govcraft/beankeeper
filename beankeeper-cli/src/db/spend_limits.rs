@@ -462,7 +462,7 @@ mod tests {
         );
         assert_eq!(list(db.conn(), limit.agent_uri(), None)?, Vec::new());
         verify(db.conn())?;
-        audit::verify_hash_chain(db.conn())?;
+        audit::verify_hash_chain(db.read())?;
         Ok(())
     }
 
@@ -516,7 +516,7 @@ mod tests {
             1
         );
         verify(db.conn())?;
-        audit::verify_hash_chain(db.conn())?;
+        audit::verify_hash_chain(db.read())?;
         Ok(())
     }
 

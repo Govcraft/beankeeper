@@ -464,6 +464,6 @@ mod tests {
                 .iter()
                 .all(|(_, after)| !after.contains(token))
         );
-        super::super::verify_hash_chain(db.conn())
+        super::super::verify_hash_chain(db.read())
     }
 }
