@@ -29,7 +29,7 @@ pub use crate::db::audit::setup::books::{
 };
 
 pub use crate::db::audit::setup::{
-    statement_batches::{StatementReceipt, StatementTransaction},
+    statement_batches::{StatementImportSummary, StatementReceipt, StatementTransaction},
     statements::StatementFormat,
 };
 
@@ -45,6 +45,23 @@ pub fn statement_receipt(
 ) -> Result<StatementReceipt, CliError> {
     crate::db::audit::atomically(db.conn(), || {
         statement_batches::get_receipt(db.read(), company, batch_id)
+    })
+}
+
+/// Count committed statement imports and their outcomes for one book.
+///
+/// Pending previews are excluded. Older ledger snapshots without statement
+/// import support return zero counts without migrating the database.
+/// # Errors
+/// Returns a not-found error for an unknown book or a database error if its
+/// import summary could not be read.
+pub fn statement_import_summary(
+    db: &Db,
+    company: &CompanySlug,
+) -> Result<StatementImportSummary, CliError> {
+    crate::db::audit::atomically(db.conn(), || {
+        crate::db::get_company(db.conn(), company.as_str())?;
+        statement_batches::summary(db.read(), company)
     })
 }
 

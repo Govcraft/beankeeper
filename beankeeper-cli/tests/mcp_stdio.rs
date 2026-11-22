@@ -3078,6 +3078,30 @@ fn assert_statement_collision_rolls_back(
         }),
     )?;
     assert_eq!(payload(&receipt)?["code"], "NOT_FOUND");
+    assert_statement_import_summary(db)?;
+    Ok(())
+}
+
+fn assert_statement_import_summary(db: &beankeeper_cli::db::Db) -> TestResult {
+    use beankeeper_cli::commands::setup::{StatementImportSummary, statement_import_summary};
+    use beankeeper_cli::error::CliError;
+
+    assert_eq!(
+        statement_import_summary(db, &"home".parse()?)?,
+        StatementImportSummary {
+            committed_batches: 1,
+            created_transactions: 1,
+            preexisting_matches: 1,
+        }
+    );
+    assert_eq!(
+        statement_import_summary(db, &"studio".parse()?)?,
+        StatementImportSummary::default()
+    );
+    assert!(matches!(
+        statement_import_summary(db, &"missing".parse()?),
+        Err(CliError::NotFound(_))
+    ));
     Ok(())
 }
 

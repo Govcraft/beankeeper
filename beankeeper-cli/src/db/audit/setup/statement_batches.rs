@@ -151,6 +151,61 @@ pub struct StatementReceipt {
     pub preexisting: Vec<StatementTransaction>,
 }
 
+/// Historical statement import counts for one book.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StatementImportSummary {
+    /// Statement batches with recorded approvals, including all-preexisting batches.
+    pub committed_batches: u64,
+    /// Transactions created by those statement imports.
+    pub created_transactions: u64,
+    /// Source rows that matched a transaction already on the ledger.
+    pub preexisting_matches: u64,
+}
+
+pub(crate) fn summary(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+) -> Result<StatementImportSummary, CliError> {
+    use crate::db::schema::{STATEMENT_BATCH_SCHEMA_VERSION, read_schema_version};
+
+    if read_schema_version(reader)? < STATEMENT_BATCH_SCHEMA_VERSION {
+        return Ok(StatementImportSummary::default());
+    }
+    let (summary, valid) = reader.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(json_array_length(a.after, '$.created')), 0),
+                COALESCE(SUM(json_array_length(a.after, '$.preexisting')), 0),
+                COUNT(*) = COUNT(DISTINCT b.id) AND COUNT(*) = COUNT(CASE
+                    WHEN json_type(a.after, '$.created') = 'array'
+                     AND json_type(a.after, '$.preexisting') = 'array' THEN 1 END)
+         FROM setup_statement_batches b
+         JOIN audit_log a ON a.company_slug = b.company_slug AND a.entity_id = (?2 || b.id)
+         WHERE b.company_slug = ?1 AND a.entity = 'company' AND a.action = 'create'",
+        params![company.as_str(), COMMIT_EVENT],
+        |row| {
+            let count = |index| {
+                let value = row.get::<_, i64>(index)?;
+                u64::try_from(value)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+            };
+            Ok((
+                StatementImportSummary {
+                    committed_batches: count(0)?,
+                    created_transactions: count(1)?,
+                    preexisting_matches: count(2)?,
+                },
+                row.get::<_, bool>(3)?,
+            ))
+        },
+    )?;
+    if !valid {
+        return Err(CliError::Database(format!(
+            "invalid statement import receipts for company '{company}'"
+        )));
+    }
+    Ok(summary)
+}
+
 mod hash_text {
     use beankeeper::types::Sha256Hex;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
