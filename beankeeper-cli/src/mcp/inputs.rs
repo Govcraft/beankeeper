@@ -284,7 +284,7 @@ pub(super) struct AuditLog {
     pub action: Option<AuditActionArg>,
     /// Maximum rows. Omit for 50 rows, or pass zero to get only the matching count.
     pub limit: Option<crate::db::audit::AuditPageLimit>,
-    /// Rows to skip. Use the previous page’s next_offset with the same filters.
+    /// Rows to skip. Use the previous page’s `next_offset` with the same filters.
     pub offset: Option<PageOffset>,
 }
 
@@ -648,9 +648,9 @@ pub(super) struct TrendInput {
 #[serde(deny_unknown_fields)]
 pub(super) struct TrialBalanceInput {
     pub from: Option<Date>,
-    /// Inclusive end date. Supply either to or as_of.
+    /// Inclusive end date. Supply either `to` or `as_of`.
     pub to: Option<Date>,
-    /// Alias for to. Supply only one of the two date fields.
+    /// Alias for `to`. Supply only one of the two date fields.
     pub as_of: Option<Date>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
@@ -665,9 +665,9 @@ pub(super) struct TrialBalanceInput {
 pub(super) struct BalanceInput {
     pub account: Account,
     pub from: Option<Date>,
-    /// Inclusive end date. Supply either to or as_of.
+    /// Inclusive end date. Supply either `to` or `as_of`.
     pub to: Option<Date>,
-    /// Alias for to. Supply only one of the two date fields.
+    /// Alias for `to`. Supply only one of the two date fields.
     pub as_of: Option<Date>,
     pub currency: Option<CurrencyCode>,
     pub compare: Option<Comparison>,
@@ -688,9 +688,9 @@ pub(super) struct IncomeStatementInput {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BalanceSheetInput {
-    /// Inclusive end date. Supply either to or as_of.
+    /// Inclusive end date. Supply either `to` or `as_of`.
     pub to: Option<Date>,
-    /// Alias for to. Supply only one of the two date fields.
+    /// Alias for `to`. Supply only one of the two date fields.
     pub as_of: Option<Date>,
     pub currency: Option<CurrencyCode>,
     pub compare: Option<Comparison>,
@@ -769,9 +769,9 @@ pub(super) struct ReconciliationInput {
     /// Settlement link metadata key; defaults to `applies_to`.
     pub link_key: Option<String>,
     pub account: Account,
-    /// Inclusive end date. Supply either to or as_of.
+    /// Inclusive end date. Supply either `to` or `as_of`.
     pub to: Option<Date>,
-    /// Alias for to. Supply only one of the two date fields.
+    /// Alias for `to`. Supply only one of the two date fields.
     pub as_of: Option<Date>,
     pub statement_balance: Option<Amount>,
     pub statement: Option<String>,
