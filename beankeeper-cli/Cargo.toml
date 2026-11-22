@@ -22,7 +22,7 @@ agent-uri-attestation = "0.8.2"
 anstream = "1.0.0"
 anstyle = "1.0.14"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
-beankeeper = { version = "0.8.0", path = "../beankeeper" }
+beankeeper = { version = "0.8.0", path = "../beankeeper", features = ["rusqlite"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.0", features = ["derive", "env"] }
 comfy-table = { version = "7.2.2", features = ["custom_styling"] }

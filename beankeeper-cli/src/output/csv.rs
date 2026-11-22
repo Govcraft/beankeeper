@@ -148,7 +148,7 @@ pub fn render_transactions(transactions: &[TransactionRow]) -> Result<String, Cl
             &txn.date,
             &txn.description,
             meta,
-            &txn.currency,
+            txn.currency.code(),
             reference,
         ])
         .map_err(|e| csv_err(&e))?;
@@ -330,7 +330,7 @@ pub fn render_budgets(rows: &[crate::db::BudgetRow]) -> Result<String, CliError>
         let notes = r.notes.as_deref().unwrap_or("");
         wtr.write_record([
             r.account_code.as_str(),
-            r.currency.as_str(),
+            r.currency.code(),
             year.as_str(),
             month.as_str(),
             amount.as_str(),
@@ -493,7 +493,7 @@ mod tests {
             company_slug: "acme".into(),
             description: "Sale".into(),
             metadata: Some("INV-001".into()),
-            currency: "USD".into(),
+            currency: beankeeper::types::Currency::USD,
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
@@ -512,7 +512,7 @@ mod tests {
             company_slug: "acme".into(),
             description: "Sale".into(),
             metadata: None,
-            currency: "USD".into(),
+            currency: beankeeper::types::Currency::USD,
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,

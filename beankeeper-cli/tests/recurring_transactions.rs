@@ -411,7 +411,7 @@ fn currency_precision_is_preserved_in_scheduled_postings() -> TestResult {
             .as_i64()
             .ok_or("missing transaction ID")?;
         let (txn, entries) = transactions::get_transaction(ledger.db()?.conn(), "acme", id)?;
-        assert_eq!(txn.currency, currency);
+        assert_eq!(txn.currency.code(), currency);
         assert!(entries.iter().all(|entry| entry.amount == expected));
     }
     Ok(())

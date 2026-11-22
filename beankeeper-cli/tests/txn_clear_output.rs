@@ -165,7 +165,7 @@ fn clearing_messages_use_currency_precision_and_describe_partial_states() {
 }
 
 #[test]
-fn batch_items_keep_each_currency_and_mixed_total_has_no_currency() {
+fn batch_items_keep_each_currency_and_mixed_total_is_null() {
     let dir = tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
     let db = dir.path().join("books.db");
     setup(&db);
@@ -192,6 +192,7 @@ fn batch_items_keep_each_currency_and_mixed_total_has_no_currency() {
     );
     let batch = data(&output);
     assert!(batch["currency"].is_null());
+    assert_eq!(batch.get("cleared_total"), Some(&Value::Null));
     assert_eq!(batch["cleared"][0]["currency"], "USD");
     assert_eq!(batch["cleared"][1]["currency"], "BHD");
     assert_eq!(batch["cleared"][0]["partially_cleared"], true);

@@ -207,7 +207,8 @@ pub struct TransactionJson {
     posted_by: Option<String>,
     agent_uri: Option<String>,
     token_jti: Option<String>,
-    currency: String,
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
     date: String,
     entries: Vec<EntryJson>,
 }
@@ -292,7 +293,8 @@ struct TransactionWithAttachmentsJson<'a> {
     posted_by: Option<String>,
     agent_uri: Option<String>,
     token_jti: Option<String>,
-    currency: String,
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
     date: String,
     entries: Vec<EntryJson>,
     attachments: Vec<AttachmentJson<'a>>,
@@ -411,7 +413,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                 posted_by: txn.posted_by.clone(),
                 agent_uri: txn.agent_uri.clone(),
                 token_jti: txn.token_jti.clone(),
-                currency: txn.currency.clone(),
+                currency: txn.currency,
                 date: txn.date.clone(),
                 entries,
             }
@@ -480,7 +482,7 @@ pub fn render_transactions_with_attachments<
                 posted_by: txn.posted_by.clone(),
                 agent_uri: txn.agent_uri.clone(),
                 token_jti: txn.token_jti.clone(),
-                currency: txn.currency.clone(),
+                currency: txn.currency,
                 date: txn.date.clone(),
                 entries,
                 attachments: att,
@@ -880,7 +882,8 @@ pub fn render_import_result(
 struct BudgetJson {
     id: i64,
     account_code: String,
-    currency: String,
+    #[serde(serialize_with = "serialize_display")]
+    currency: Currency,
     year: i32,
     month: i32,
     #[serde(flatten)]
@@ -894,23 +897,21 @@ struct BudgetJson {
 ///
 /// # Errors
 ///
-/// Returns [`CliError`] on invalid stored currency or serialisation failure.
+/// Returns [`CliError`] on serialisation failure.
 pub fn render_budgets(rows: &[crate::db::BudgetRow], meta: Meta) -> Result<String, CliError> {
     let json_rows = rows
         .iter()
-        .map(|row| {
-            Ok(BudgetJson {
-                id: row.id,
-                account_code: row.account_code.clone(),
-                currency: row.currency.clone(),
-                year: row.year,
-                month: row.month,
-                amount: super::amounts::MoneyField::new("amount", row.money()?),
-                notes: row.notes.clone(),
-                created_at: row.created_at.clone(),
-            })
+        .map(|row| BudgetJson {
+            id: row.id,
+            account_code: row.account_code.clone(),
+            currency: row.currency,
+            year: row.year,
+            month: row.month,
+            amount: super::amounts::MoneyField::new("amount", row.money()),
+            notes: row.notes.clone(),
+            created_at: row.created_at.clone(),
         })
-        .collect::<Result<Vec<_>, CliError>>()?;
+        .collect::<Vec<_>>();
 
     envelope_ok(meta, json_rows)
 }
@@ -1074,7 +1075,7 @@ mod tests {
             company_slug: "acme".into(),
             description: "Sale".into(),
             metadata: None,
-            currency: "USD".into(),
+            currency: Currency::USD,
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
@@ -1126,7 +1127,7 @@ mod tests {
             company_slug: "acme".into(),
             description: "Orphan".into(),
             metadata: None,
-            currency: "USD".into(),
+            currency: Currency::USD,
             date: "2025-03-15".into(),
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,

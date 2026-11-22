@@ -1017,7 +1017,7 @@ fn posting_snapshot(
     })).collect();
     let mut result = serde_json::json!({
         "id": txn.id, "company_slug": txn.company_slug, "description": txn.description,
-        "currency": txn.currency, "date": txn.date, "posted_at": txn.posted_at,
+        "currency": txn.currency.code(), "date": txn.date, "posted_at": txn.posted_at,
         "reference": txn.reference, "posted_by": txn.posted_by, "entries": entries,
     });
     if hash_version >= 2 {
@@ -1671,7 +1671,7 @@ pub fn reverse_transaction(
                 company_slug: p.company_slug,
                 description: &description,
                 metadata: None,
-                currency: &original.currency,
+                currency: original.currency.code(),
                 date: &date.to_string(),
                 entries: &entries,
                 correlate: None,
@@ -1835,10 +1835,10 @@ pub fn set_budget(
         )?;
 
         let id = conn.last_insert_rowid();
-        let created_at: String = conn.query_row(
-            "SELECT created_at FROM budgets WHERE id = ?1",
+        let (created_at, currency) = conn.query_row(
+            "SELECT created_at, currency FROM budgets WHERE id = ?1",
             params![id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
         let before = prior_amount.map(|amount| {
@@ -1869,7 +1869,7 @@ pub fn set_budget(
             id,
             company_slug: p.company_slug.to_string(),
             account_code: p.account_code.to_string(),
-            currency: p.currency.to_string(),
+            currency,
             year: p.year,
             month: p.month,
             amount: p.amount,

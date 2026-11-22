@@ -1243,6 +1243,25 @@ mod tests {
     }
 
     #[test]
+    fn transaction_reads_reject_unsupported_stored_currency() -> Result<(), CliError> {
+        let db = setup();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO transactions (company_slug, description, currency, date)
+             VALUES ('acme', 'Legacy transaction', 'BAD', '2024-01-15')",
+            [],
+        )?;
+        let result = get_transaction(conn, "acme", conn.last_insert_rowid());
+        assert!(matches!(
+            result,
+            Err(CliError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
+                ..
+            )))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn savepoint_rolls_back_on_error() {
         let db = setup();
         // This should fail because account "9999" doesn't exist (FK constraint)

@@ -708,7 +708,7 @@ fn require_existing_match(
     if transaction.reference.as_deref() != Some(row.reference.as_str())
         || transaction.date != row.date
         || transaction.description != row.description
-        || transaction.currency != batch.currency
+        || transaction.currency.code() != batch.currency
         || !metadata_matches
         || !entries_match
     {

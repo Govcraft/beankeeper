@@ -907,7 +907,7 @@ fn run_show(
     }
 
     // Determine currency minor units for formatting
-    let currency_minor_units = Currency::from_code(&txn.currency).map_or(2, |c| c.minor_units());
+    let currency_minor_units = txn.currency.minor_units();
 
     match format {
         OutputFormat::Table => {
