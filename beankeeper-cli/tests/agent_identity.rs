@@ -459,10 +459,12 @@ fn identity_metadata_preserves_pagination_and_currency_displays() -> TestResult 
             Some(token),
         )?;
         assert_eq!(page["meta"]["agent"], uri);
-        assert_eq!(
-            page["meta"]["pagination"],
-            json!({"limit":1,"offset":offset,"returned":1,"total":2,"has_more":offset == 0})
-        );
+        let mut expected =
+            json!({"limit":1,"offset":offset,"returned":1,"total":2,"has_more":offset == 0});
+        if offset == 0 {
+            expected["next_offset"] = json!(1);
+        }
+        assert_eq!(page["meta"]["pagination"], expected);
         assert_eq!(page["data"].as_array().map(Vec::len), Some(1));
         let row = &page["data"][0];
         assert_ne!(row["id"], previous_id);

@@ -210,10 +210,7 @@ fn audit_offsets_and_empty_pages_preserve_array_shape() -> TestResult {
         let value: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(value["data"].as_array().map(Vec::len), Some(returned));
         if returned > 0 {
-            assert_eq!(
-                value["data"][0]["id"],
-                expected_ids[usize::try_from(offset)?]
-            );
+            assert_eq!(value["data"][0]["id"], expected_ids[offset]);
         }
         let mut expected = json!({"limit":limit,"offset":offset,"returned":returned,"total":3,"has_more":has_more});
         if has_more && returned > 0 {
