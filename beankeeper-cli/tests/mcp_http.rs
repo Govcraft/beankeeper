@@ -518,9 +518,9 @@ fn http_resolves_the_posting_mode_of_each_request() -> TestResult {
     let tools = server.tools(Some(propose_only))?;
     assert!(tools.contains(&"txn_post".into()));
     assert!(!tools.contains(&"txn_approve".into()));
-    let proposed = payload(&server.call("txn_post", posting("queued"), Some(propose_only))?)?;
-    assert_eq!(proposed["status"], "pending");
-    assert_eq!(proposed["proposer_uri"], proposer.agent_uri.as_str());
+    let pending = payload(&server.call("txn_post", posting("queued"), Some(propose_only))?)?;
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(pending["proposer_uri"], proposer.agent_uri.as_str());
     let posted = payload(&server.call("txn_post", posting("posted"), Some(direct))?)?;
     assert_eq!(posted["created"], true);
     let transactions =

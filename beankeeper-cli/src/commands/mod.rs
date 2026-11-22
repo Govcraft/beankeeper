@@ -251,8 +251,8 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             if matches!(args.command.as_ref(), crate::cli::TxnCommand::Reconcile) {
                 txn::run_reconcile_all(cli, crate::db::companies::AllCompanies)
             } else {
-                let company = require_company(cli)?.as_str();
-                txn::run(cli, company, args.command.as_ref(), meta)
+                let company = require_company(cli)?;
+                txn::run_for_company(cli, company, args.command.as_ref(), meta)
             }
         }
 

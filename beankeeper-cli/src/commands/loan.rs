@@ -204,8 +204,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         on_conflict: args.on_conflict,
         tax: std::collections::HashMap::new(),
     };
-    let result =
-        super::txn::execute_direct_posting_json(&db, &company.parse()?, &post, &cli.principal())?;
+    let result = super::txn::execute_direct_posting_json(&db, slug, &post, &cli.principal())?;
     // On a skipped reference the existing transaction may have different terms;
     // return only its identity/status, never claim that it contains this split.
     if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {

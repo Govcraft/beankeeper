@@ -30,10 +30,23 @@ pub fn run(
     sub: &TxnCommand,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
+    if matches!(sub, TxnCommand::Reconcile) {
+        return run_reconcile_all(cli, AllCompanies);
+    }
+    run_for_company(cli, &company.parse()?, sub, meta)
+}
+
+pub(super) fn run_for_company(
+    cli: &Cli,
+    slug: &CompanySlug,
+    sub: &TxnCommand,
+    meta: Option<output::json::Meta>,
+) -> Result<(), CliError> {
     let db_handle = cli.open_db()?;
     if !matches!(sub, TxnCommand::Reconcile) {
-        crate::db::companies::get_company(db_handle.read(), &company.parse()?)?;
+        db::get_company(db_handle.read(), slug)?;
     }
+    let company = slug.as_str();
     let use_color = output::should_use_color(cli.verbosity.no_color);
     let format = resolve_format(None, cli);
 
@@ -46,7 +59,7 @@ pub fn run(
                     cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
                     super::operation(&cli.command),
                 )?;
-                execute_proposal(&db_handle, company, args, &cli.principal())
+                execute_proposal(&db_handle, slug, args, &cli.principal())
             };
             let data = if matches!(args, TxnProposalCommand::Proposals { .. }) {
                 db_handle.read_snapshot(|_| execute())?
@@ -71,7 +84,7 @@ pub fn run(
         TxnCommand::Post(args) => {
             let result = execute_posting(
                 &db_handle,
-                &company.parse()?,
+                slug,
                 &PostingRequest::try_from(args)?,
                 &cli.principal(),
             )?;
@@ -209,13 +222,18 @@ pub fn execute_json_with_pagination(
     sub: &TxnCommand,
     actor: &db::Actor,
 ) -> Result<(serde_json::Value, Option<serde_json::Value>), CliError> {
-    if !matches!(sub, TxnCommand::Reconcile) {
+    if !matches!(
+        sub,
+        TxnCommand::Reconcile | TxnCommand::Post(_) | TxnCommand::Proposal(_)
+    ) {
         db::get_company(db_handle.read(), &company.parse()?)?;
     }
     let mut out = Vec::new();
     match sub {
         TxnCommand::Proposal(args) => {
-            return execute_proposal(db_handle, company, args, actor).map(|data| (data, None));
+            let slug = company.parse()?;
+            db::get_company(db_handle.read(), &slug)?;
+            return execute_proposal(db_handle, &slug, args, actor).map(|data| (data, None));
         }
         TxnCommand::Meta(sub) => {
             return super::txn_meta::execute_json(db_handle, company, sub, actor)
@@ -601,7 +619,7 @@ pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, 
 /// Execute a proposal operation through the shared CLI/MCP implementation.
 fn execute_proposal(
     db: &Db,
-    company: &str,
+    company: &CompanySlug,
     args: &TxnProposalCommand,
     actor: &db::Actor,
 ) -> Result<serde_json::Value, CliError> {
@@ -609,13 +627,13 @@ fn execute_proposal(
         TxnProposalCommand::Propose(args) => {
             return execute_proposal_posting_json(
                 db,
-                &company.parse()?,
+                company,
                 &PostingRequest::try_from(args)?,
                 actor,
             );
         }
         TxnProposalCommand::Proposals { include_rejected } => {
-            let rows = db::proposals::list(db.read(), &company.parse()?, actor, *include_rejected)?;
+            let rows = db::proposals::list(db.read(), company, actor, *include_rejected)?;
             serde_json::to_value(
                 rows.iter()
                     .map(super::posting_output::ProposalJson::from)
@@ -624,13 +642,13 @@ fn execute_proposal(
         }
         TxnProposalCommand::Approve { id } => {
             let row = Granted::<Approve>::with_db(db, actor, |grant| {
-                db::audit::approve_proposal(grant, &company.parse()?, id)
+                db::audit::approve_proposal(grant, company, id)
             })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
         TxnProposalCommand::Reject { id, reason } => {
             let row = Granted::<ResolveProposal>::with_db(db, actor, |grant| {
-                db::audit::reject_proposal(grant, &company.parse()?, id, reason.as_deref())
+                db::audit::reject_proposal(grant, company, id, reason.as_deref())
             })?;
             serde_json::to_value(super::posting_output::ProposalJson::from(&row))
         }
