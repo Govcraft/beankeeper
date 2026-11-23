@@ -31,7 +31,7 @@ fn main() -> ExitCode {
             .company
             .as_ref()
             .map(beankeeper_cli::db::companies::CompanySlug::as_str);
-        Some(beankeeper_cli::output::json::meta(operation, company))
+        Some(cli.meta(operation, company))
     } else {
         None
     };

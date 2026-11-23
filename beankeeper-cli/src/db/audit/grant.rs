@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use super::savepoint::{AuditedTx, with_audited_tx};
+use super::savepoint::AuditedTx;
 use crate::capability::Capability;
 use crate::db::{Actor, Db};
 use crate::error::CliError;
@@ -188,7 +188,7 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>, &Actor) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        with_audited_tx(self.tx.connection(), name, |tx| {
+        AuditedTx::run(self.tx.read(), name, |tx| {
             Self::require_current(tx, self.actor)?;
             run(tx, self.actor)
         })

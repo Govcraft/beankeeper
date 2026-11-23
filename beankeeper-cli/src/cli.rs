@@ -248,10 +248,15 @@ impl Cli {
         crate::db::Actor::for_cli(self.actor.as_deref(), self.verified_agent.get().cloned())
     }
 
-    /// JSON metadata with the verified URI, if a token was supplied.
+    /// JSON metadata with the verified URI and named ledger, when present.
     #[must_use]
     pub fn meta(&self, command: Operation, company: Option<&str>) -> crate::output::json::Meta {
         let mut meta = crate::output::json::meta(command, company);
+        meta.ledger_target = self
+            .ledger_target
+            .as_ref()
+            .and_then(LedgerTarget::named)
+            .cloned();
         meta.agent = self
             .verified_agent
             .get()

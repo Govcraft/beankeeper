@@ -12,7 +12,7 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use rmcp::{RoleServer, service::RequestContext};
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde_json::json;
 
 use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
@@ -27,7 +27,7 @@ use crate::identity::VerifiedAgent;
 /// Header selecting a registered ledger for one HTTP MCP request.
 pub const LEDGER_TARGET_HEADER: &str = "beankeeper-ledger-target";
 
-/// An opened ledger paired with a bearer identity verified by that ledger.
+/// An opened ledger paired with a bearer verified by its configured authority.
 #[derive(Clone)]
 pub(super) struct AuthenticatedLedger {
     ledger: OpenedLedger,
@@ -36,7 +36,7 @@ pub(super) struct AuthenticatedLedger {
 
 impl AuthenticatedLedger {
     fn verify(ledger: OpenedLedger, token: &SecretString) -> Result<Self, CliError> {
-        let identity = crate::identity::verify(ledger.lock()?.read(), token.expose_secret())?;
+        let identity = ledger.verify(token)?;
         Ok(Self {
             ledger,
             identity: Arc::new(identity),
@@ -141,10 +141,7 @@ async fn authenticate(
         Ok(target) => target,
         Err(error) => return rejection(&error),
     };
-    let fallback = state
-        .fallback
-        .as_ref()
-        .filter(|_| target == LedgerTarget::default());
+    let fallback = state.fallback.as_ref().filter(|_| target.named().is_none());
     let token = match credential(&mut request, fallback) {
         Ok(token) => token,
         Err(error) => return rejection(&error),
@@ -326,18 +323,19 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
     let paths = cli.ledger_paths()?;
     let targets = LedgerTargets::new(Db::open_existing(&cli.db, passphrase)?);
     for (target, path) in paths {
-        targets.register(target.clone(), Db::open_existing(path, passphrase)?)?;
+        targets.register(target.clone().into(), Db::open_existing(path, passphrase)?)?;
     }
     Ok(build_router(cli, targets, config, server, paths.is_empty()))
 }
 
 /// Serve already-opened ledgers and application tools on one authenticated HTTP MCP endpoint.
 ///
-/// Keep a clone of `targets` to register ledgers after the router is running.
+/// Keep a clone of `targets` to register or detach ledgers at runtime.
 /// Clients select a ledger with [`LEDGER_TARGET_HEADER`] on each request, including
 /// discovery. A host can insert a typed [`LedgerTarget`] in axum request
 /// extensions to override header selection. With neither selector, the router
-/// uses the startup ledger. Supply a bearer issued by the selected ledger.
+/// uses the startup ledger. Supply a bearer issued by the selected ledger, or
+/// by the startup ledger for a target registered as host-owned.
 /// The CLI token fallback and application host tools are available on the
 /// startup ledger. A single MCP session can send calls to
 /// different registered ledgers with their respective credentials.

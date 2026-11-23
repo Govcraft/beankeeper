@@ -1,9 +1,10 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 
-use super::audit::savepoint::{AuditedTx, with_audited_tx, with_rolled_back_audited_tx};
+use super::audit::savepoint::{AuditedTx, with_rolled_back_audited_tx};
 use crate::error::CliError;
 
 mod read;
@@ -12,9 +13,42 @@ pub use read::{ReadConn, ReadStatement};
 /// Database connection wrapper with `SQLCipher` support.
 pub struct Db {
     conn: Connection,
+    id: ConnectionId,
+}
+
+/// Process-local identity of one open connection, including in-memory ledgers.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConnectionId(Arc<()>);
+
+impl ConnectionId {
+    pub(super) fn matches(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl Db {
+    fn from_connection(conn: Connection) -> Self {
+        Self {
+            conn,
+            id: ConnectionId::default(),
+        }
+    }
+
+    pub(crate) fn id(&self) -> &ConnectionId {
+        &self.id
+    }
+
+    pub(crate) fn file_path(&self) -> Option<PathBuf> {
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    }
+
+    pub(crate) fn close(self) -> Result<(), CliError> {
+        self.conn.close().map_err(|(_, error)| error.into())
+    }
+
     /// Open a current-version ledger read-only, without migrations or PRAGMA writes.
     ///
     /// # Errors
@@ -47,7 +81,7 @@ impl Db {
                 "not a supported beankeeper snapshot: schema version {version}; expected {expected}"
             )));
         }
-        Ok(Self { conn })
+        Ok(Self::from_connection(conn))
     }
 
     /// Opens (or creates) a database at `path`, optionally encrypting with `passphrase`.
@@ -112,7 +146,7 @@ impl Db {
             std::fs::set_permissions(path, perms).ok();
         }
 
-        Ok(Self { conn })
+        Ok(Self::from_connection(conn))
     }
 
     /// Opens an in-memory database (useful for tests).
@@ -128,7 +162,7 @@ impl Db {
 
         super::schema::ensure_schema(&conn)?;
 
-        Ok(Self { conn })
+        Ok(Self::from_connection(conn))
     }
 
     /// Connection for internal storage and corruption fixtures.
@@ -142,7 +176,7 @@ impl Db {
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        with_audited_tx(&self.conn, name, run)
+        AuditedTx::run(self.read(), name, run)
     }
 
     /// Give a sequence of authorized mutations one reserved SQLite writer.
@@ -161,7 +195,7 @@ impl Db {
         &self,
         run: impl FnOnce() -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        with_rolled_back_audited_tx(&self.conn, "sp_write_preview", |tx| {
+        with_rolled_back_audited_tx(self.read(), "sp_write_preview", |tx| {
             super::audit::reserve_ledger_writer(tx)?;
             run()
         })
@@ -193,7 +227,7 @@ impl Db {
     /// ```
     #[must_use]
     pub fn read(&self) -> ReadConn<'_> {
-        ReadConn::new(&self.conn)
+        ReadConn::for_db(self)
     }
 
     /// Run queries against one SQLite snapshot.
