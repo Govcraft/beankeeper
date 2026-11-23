@@ -124,6 +124,12 @@ impl From<AuditRowId> for ReceiptId {
     }
 }
 
+impl ReceiptId {
+    pub(crate) fn predecessor(self) -> Option<AuditRowId> {
+        NonZeroI64::new(self.get() - 1).map(AuditRowId)
+    }
+}
+
 impl From<TransactionId> for PartnerTransactionId {
     fn from(id: TransactionId) -> Self {
         Self(id.0)

@@ -41,6 +41,8 @@ macro_rules! ledger_operations {
             Export => ("export", Read, cli_only(LocalFiles)),
             Verify => ("verify", Read, tool(verify, Empty, "Verify every company in the ledger and return balance, audit-chain, and check evidence.")),
             AuditLog => ("audit.log", Read, tool(audit_log, AuditLog, "List audit changes in bounded pages, optionally filtered by actor, verified agent URI, company, entity, or action. A client_hint is unverified runtime context. Continue with _meta.pagination.next_offset and the same filters.")),
+            AuditReceipts => ("audit.receipts", Read, tool(audit_receipts, AuditReceipts, "Read a company's changes in audit order. Use the continuation with the same company and ledger until it is null, then save through as the next cursor. Typed receipt IDs can be used with audit_undo.")),
+            AuditUndo => ("audit.undo", OwnerUndo, tool(audit_undo, AuditUndo, "Immediately undo an eligible receipt by appending an audited reversal or archiving the account, retaining its history. Requires a signed ledger/admin token even when enforcement is off. Retrying the same receipt returns its existing undo.")),
             TxnProposals => ("txn.proposals", ProposalList, tool(txn_proposals, TxnProposals, "List visible pending transaction proposals. Under enforcement, proposers see their own; approvers and administrators see all. include_rejected also includes approved, rejected and withdrawn proposals.")),
             AgentLimitShow => ("agent.limit.show", Read, cli_only(LocalAdministration)),
             AgentList => ("agent.list", Read, cli_only(LocalAdministration)),

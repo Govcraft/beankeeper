@@ -15,7 +15,7 @@ use crate::{
     cli::Cli,
     commands::{
         account::{AccountRequest, AccountResponse},
-        audit::{AuditQuery, AuditResponse},
+        audit::{AuditQuery, AuditResponse, ReceiptRequest, ReceiptResponse},
         budget::{BudgetRequest, BudgetResponse},
         company::{CompanyRequest, CompanyResponse},
         investment::{InvestmentRequest, InvestmentResponse},
@@ -38,6 +38,7 @@ use crate::{
 pub enum LedgerRequest {
     Account(AccountRequest),
     AuditLog(AuditQuery),
+    AuditReceipts(ReceiptRequest),
     Budget(BudgetRequest),
     Company(CompanyRequest),
     Investment(InvestmentRequest),
@@ -56,6 +57,7 @@ pub enum LedgerRequest {
 pub enum LedgerResponse {
     Account(AccountResponse),
     AuditLog(AuditResponse),
+    AuditReceipts(ReceiptResponse),
     Budget(BudgetResponse),
     Company(CompanyResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
@@ -76,6 +78,7 @@ impl LedgerRequest {
         match self {
             Self::Account(request) => request.operation(),
             Self::AuditLog(_) => Operation::AuditLog,
+            Self::AuditReceipts(request) => request.operation(),
             Self::Budget(request) => request.operation(),
             Self::Company(request) => request.operation(),
             Self::Investment(request) => request.operation(),
@@ -137,6 +140,9 @@ impl LedgerRequest {
         match self {
             Self::Account(request) => request.execute(db, actor).map(LedgerResponse::Account),
             Self::AuditLog(request) => request.execute(db).map(LedgerResponse::AuditLog),
+            Self::AuditReceipts(request) => request
+                .execute(db, actor)
+                .map(LedgerResponse::AuditReceipts),
             Self::Budget(request) => request.execute(db, actor).map(LedgerResponse::Budget),
             Self::Company(request) => request.execute(db, actor).map(LedgerResponse::Company),
             Self::Investment(request) => {
@@ -179,6 +185,7 @@ impl LedgerResponse {
         match self {
             Self::Account(response) => response.render(cli),
             Self::AuditLog(response) => response.render(cli),
+            Self::AuditReceipts(response) => response.render(cli),
             Self::Budget(response) => response.render(cli),
             Self::Company(response) => response.render(cli),
             Self::Investment(operation, company, response) => {
