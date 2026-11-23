@@ -224,8 +224,8 @@ The bound endpoint is printed to stderr. `--bind` and `--allow-remote` require
 HTTP without TLS and does not implement a hosted tier.
 
 Every HTTP request must supply `Authorization: Bearer <agent token>` or use the
-process-level `--agent-token` / `BK_AGENT_TOKEN` fallback. Explicit headers take
-precedence, including invalid headers. Verification is mandatory even with policy
+startup ledger's process-level `--agent-token` / `BK_AGENT_TOKEN` fallback.
+Explicit headers take precedence, including invalid headers. Verification is mandatory even with policy
 enforcement off; missing, expired, revoked, malformed, or untrusted credentials
 return HTTP 401 with `{code: "UNAUTHORIZED", message}`. The HTTP 401 challenge is
 `WWW-Authenticate: Bearer`; OAuth and discovery are not implemented. With enforcement
@@ -238,6 +238,21 @@ Loopback binds validate Host headers; specific remote binds additionally accept
 the bound IP. Remote wildcard binds accept any Host. Browser Origin headers are
 rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 [identity details](../../agent-identity.md#mcp-sessions).
+
+### Select a ledger
+
+- Use repeatable `--ledger TARGET=PATH` bindings to name local database paths.
+  Names start with a lowercase ASCII letter, contain only lowercase ASCII
+  letters, digits, and hyphens, and have at most 64 characters. Each name is
+  unique. `startup` is reserved for `--db` or its existing default.
+- Use `--ledger-target TARGET` with a local command or `mcp serve` over stdio.
+  For example, `bk --ledger demo=demo.db --ledger-target demo --json verify`.
+- In HTTP mode, the server opens all named bindings with the resolved startup
+  passphrase. Send `Beankeeper-Ledger-Target: TARGET` and a bearer from that ledger
+  with each request. Reuse the MCP session ID. A missing header selects the
+  startup ledger and the token fallback applies there. Unknown targets return
+  HTTP 404 `NOT_FOUND`. Invalid or duplicate target headers return HTTP 400
+  `VALIDATION`. Multi-ledger endpoints return HTTP 405 for SSE replay requests.
 
 ### Available tools
 

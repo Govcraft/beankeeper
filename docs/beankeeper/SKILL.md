@@ -281,14 +281,15 @@ When a `bk` MCP connection is available, call its tools directly. The server run
 as `bk --db /absolute/path/books.db mcp serve` against an existing ledger. Add
 `--read-only` to omit all mutation tools. Configure secrets at startup through
 `BEANKEEPER_PASSPHRASE_CMD`, `--passphrase-file`, or a descriptor other than stdin;
-never include a passphrase in tool arguments. The database and secret are fixed
-for that server process.
+never include a passphrase in tool arguments. Stdio uses one ledger for the
+life of the process.
 
 For a shared Streamable HTTP endpoint, start `bk mcp serve --http`, optionally
 with `--bind 127.0.0.1:PORT` (default `127.0.0.1:8750`). The endpoint is `/mcp`;
 the actual bound address is printed to stderr. Every request requires a verified
 `Authorization: Bearer <agent token>`, even when ledger enforcement is off.
-`--agent-token` / `BK_AGENT_TOKEN` supplies a fallback only for absent headers.
+`--agent-token` / `BK_AGENT_TOKEN` supplies a fallback for startup ledger requests
+with no Authorization header.
 Explicit invalid credentials never fall back and return HTTP 401 `UNAUTHORIZED`.
 With enforcement on, discovery filters the current caller's grants; insufficient
 grants return `FORBIDDEN`. Credentials and policy are rechecked per call, including
@@ -296,6 +297,14 @@ expiry and revocations. `--read-only` always removes writes. Non-loopback binds
 require `--allow-remote`, which serves plaintext HTTP without TLS and is not a
 hosted-tier implementation. Browser Origin headers are rejected. Prefer per-request
 tokens for multiple agents; do not put credentials in tool arguments or URLs.
+
+If the operator configured another ledger, send `Beankeeper-Ledger-Target: NAME`
+and that ledger's bearer on each HTTP discovery or tool call. The same MCP
+session can address multiple ledgers. Target selection is request-scoped and
+defaults to `startup`. In the CLI or stdio, use `--ledger NAME=PATH` with
+`--ledger-target NAME` to address the same ledger. A company slug selects a
+company inside whichever ledger the request uses. See the
+[named ledger command reference](references/commands.md#select-a-ledger).
 
 Rust host applications can merge `beankeeper_cli::mcp::http_router(&cli, read_only,
 config)?` beside their own axum routes. It already mounts `/mcp` and retains the

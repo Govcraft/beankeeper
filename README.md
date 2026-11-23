@@ -628,9 +628,10 @@ configuration locations and environment substitution. The token is issued by
 this ledger, not an OAuth provider; OAuth discovery is not implemented.
 
 Prefer per-request headers when agents share a server. A process-level
-`--agent-token` or `BK_AGENT_TOKEN` is a fallback only when the Authorization header
-is absent. An invalid or malformed explicit header never falls back. Missing,
-expired, revoked, and untrusted tokens return HTTP 401 with `UNAUTHORIZED`.
+`--agent-token` or `BK_AGENT_TOKEN` is a fallback for startup ledger requests
+with no Authorization header. An invalid or malformed explicit header never
+falls back. Missing, expired, revoked, and untrusted tokens return HTTP 401
+with `UNAUTHORIZED`.
 When `bk policy set --enforce on` is active, tool discovery reflects the requesting
 token's grants and calls without the required capability return `FORBIDDEN`.
 Policy and credentials are rechecked for every call; MCP session IDs confer no
@@ -668,6 +669,24 @@ Hosts can add application tools with `http_router_with_host_tools` and a
 current request's verified grants, revocations, and read-only ceiling. Navigation
 uses an explicit `ui/navigate` grant on a separate UI-scoped token. See the
 [host tool API and example](docs/mcp-host-tools.md).
+
+### Select a ledger by name
+
+Bind an existing ledger to a name with `--ledger TARGET=PATH`. To use it in a
+local command or a stdio MCP process, select it with `--ledger-target TARGET`.
+
+```sh
+bk --ledger demo=/absolute/path/demo.db --ledger-target demo --json company list
+bk --db /absolute/path/books.db --ledger demo=/absolute/path/demo.db mcp serve --http
+```
+
+On HTTP, send `Beankeeper-Ledger-Target: demo` and a bearer issued by the demo
+ledger with each request to it. Omitting the header selects the startup ledger
+at `--db`. An existing MCP session can switch ledgers request by request. The
+CLI HTTP server opens all configured ledgers with its resolved startup
+passphrase. Hosts with per-ledger keys can pass already-opened databases to
+`LedgerTargets` and register them while clients are connected. See the
+[multi-ledger host guide](docs/mcp-host-tools.md#dispatch-to-another-ledger).
 
 ## Demo Mode
 
