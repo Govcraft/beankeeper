@@ -203,3 +203,37 @@ the v4 tuple. That field is `null` or the ordered JSON array
 order independently of JSON object serialization. Migration checks the chain
 before and after the atomic rebuild, retaining v1 through v4 rows and hashes.
 `bk verify` checks mixed chains and includes v5 hints in their integrity check.
+
+## Schema v26 receipts and owner undo
+
+Embedded hosts can call `db::audit::receipts::list_receipts` with a company,
+an exclusive `AuditCursor`, and a positive `ReceiptPageLimit`. Process receipts
+in ascending order with `continue_receipts` on the same ledger. Use the
+page's `through()` value as the next starting cursor after consuming the entire
+range. Each range captures one committed audit head. Later writes appear
+in the next range.
+
+A reversal or approved proposal and its explicitly linked posting creation
+appear in a single receipt in that company. The later action anchors the
+receipt. An intercompany correlation stays in its own company's audit range.
+The receipt includes the recorded actor, timestamp, optional verified identity
+or unverified hint, and decoded before and after snapshots. It exposes source
+references and undo links when the audit event records them.
+
+Call `undo_receipt` with a `Granted<OwnerUndo>`, the company, and the
+receipt ID. The grant requires a live signed `ledger/admin` credential, even
+with enforcement off. A retry returns the original `UndoOutcome` and does not
+append another audit event. The error codes are `UNDO_UNSUPPORTED` for a
+change with no undo and `UNDO_INELIGIBLE` when current ledger state prevents it.
+
+Posting undo adds a balanced mirror dated the later of today and the original
+posting date, subject to the period lock and existing reversal eligibility.
+An account creation undo archives the account. Existing rules and entries
+keep their references, and archived accounts remain in historical reports.
+Matching for automatic categorization skips rules that target archived accounts.
+Only audited reversals can post to those accounts.
+
+The migration initializes existing accounts as active and preserves audit
+IDs, hashes, and attribution. The `account_archives` verification check
+compares archive state to the corresponding audit history. Desktop owns the
+last-seen cursor and receipt presentation.

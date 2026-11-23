@@ -6,6 +6,16 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.36.0] - Unreleased
+
+### Added
+
+- Embedded hosts can page through company audit receipts and undo a posting or
+  account creation with a verified owner grant. Posting undo appends a linked
+  reversal. Account undo archives the account and retains its history. Schema
+  v26 preserves existing audit hashes and migrates accounts as active.
+  ([#249](https://github.com/Govcraft/beankeeper/issues/249))
+
 ## [0.35.0] - Unreleased
 
 ### Added
