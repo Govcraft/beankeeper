@@ -19,6 +19,28 @@ type TestResult = Result<(), Box<dyn Error>>;
 const BLANK_COMPANY_NAMES: [&str; 2] = ["", " \t\u{2003}\n"];
 const COMPANY_NAME_ERROR: &str = "name must not be empty";
 
+#[test]
+fn named_stdio_tools_identify_their_ledger() -> TestResult {
+    use beankeeper_cli::mcp::LEDGER_TARGET_META_KEY;
+
+    let directory = tempdir()?;
+    let demo = directory.path().join("demo.db");
+    seed(&demo)?;
+    let mut command = bk(&directory.path().join("startup.db"))?;
+    command
+        .arg("--ledger")
+        .arg(format!("demo={}", demo.display()))
+        .args(["--ledger-target", "demo", "mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    assert_eq!(listed["result"]["_meta"][LEDGER_TARGET_META_KEY], "demo");
+    let result = client.call("company_list", &json!({}))?;
+    assert_eq!(result["result"]["_meta"][LEDGER_TARGET_META_KEY], "demo");
+    assert_eq!(payload(&result)?[0]["slug"], "acme");
+    Ok(())
+}
+
 fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::cargo_bin("bk")?;
     command.arg("--db").arg(path).stdin(Stdio::null());
