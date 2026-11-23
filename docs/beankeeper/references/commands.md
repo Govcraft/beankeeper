@@ -285,6 +285,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `rule_list` | `company`. Return active rules in evaluation order |
 | `rule_match` | `company` and `description`. Preview the winning rule |
 | `rule_create`, `rule_amend` | `company`, `contains`, `account`, optional `priority`. Amend also takes the active `id` |
+| `rule_undo` | `company` and created rule `id`. Deactivate the rule and return its undo receipt. Requires signed `ledger/admin` |
 | `rule_delete` | `company` and active `id`. Record the last rule version in the audit trail |
 | `bookkeeping_policy_show`, `bookkeeping_policy_set` | `company`. Set also takes a `policy` object with `kind` and `value` |
 | `inform_preference_show`, `inform_preference_set` | `company`. Set also takes a `preference` |
@@ -1610,8 +1611,10 @@ Rules apply to dry runs. JSON journal batches remain explicit and ignore rules.
 Generated CSV references are computed before categorization, so adding or
 removing rules does not duplicate existing transactions. Previously posted
 transactions remain unchanged. Updates are atomic with audit snapshots
-(`--entity rule`, actions `create`, `rule-supersede` and `rule-delete`).
-An account cannot be deleted while an active rule references it.
+(`--entity rule`, actions `create`, `rule_supersede`, `rule_deactivate`, and
+`rule_delete`). Use `bk --company COMPANY rule undo RULE_ID` to deactivate an
+original rule with a signed `ledger/admin` credential. The rule record and its
+account reference are retained. See the [JSON response](json-api.md#rule-undo).
 
 | MCP tool | Arguments |
 |---|---|
@@ -1619,6 +1622,7 @@ An account cannot be deleted while an active rule references it.
 | `rule_create` | `company`, `contains`, `account`, optional integer `priority` |
 | `rule_amend` | `company`, `id`, `contains`, `account`, optional integer `priority` |
 | `rule_match` | `company`, `description` |
+| `rule_undo` | `company`, created rule `id` |
 | `rule_delete` | `company`, `id` |
 
 ## Standing bookkeeping and inform preferences

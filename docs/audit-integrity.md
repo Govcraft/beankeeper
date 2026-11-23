@@ -257,3 +257,17 @@ after snapshots commit to the changed setting or both versions of an amended
 rule, including its lineage. Migration preserves existing audit rows, hashes,
 and receipt links. Verification reads each row with its recorded hash version,
 so v6 and v7 rows verify in the same chain.
+
+## Schema v28 rule creation undo
+
+An owner can undo the creation of a current categorization rule through
+`bk rule undo`, MCP `rule_undo`, or the Rust `undo_rule_creation` API. The
+`rule_deactivate` audit event is the rule's inactive state. It links to the
+original creation through `undo_of`, and the original rule row stays in the
+ledger. Rule listing, matching, amendments, and legacy deletion operate on
+current rules. A retained rule still references its original account.
+
+Schema v28 extends the accepted audit actions and keeps the v7 hash payload.
+The migration retains existing rows, hashes, and receipt links. Verification
+checks that each deactivation references the same company's creation and that
+the rule row is still present.
