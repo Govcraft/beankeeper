@@ -144,10 +144,12 @@ to undo it. An owner with `ledger/reverse` can run `bk txn reverse ID` or call
 the original. Use `bk audit log --by-actor` or `audit_log` with `actor` to find
 both actions.
 
-Beankeeper Desktop can read grouped audit receipts and undo posting or account
-creation through the Rust API. Undo creates a linked reversal or archives the
-account. Archived accounts retain their balances and history. New postings and
-categorization use active accounts. [Audit receipts and owner undo](docs/audit-integrity.md#schema-v26-receipts-and-owner-undo)
+Ask what changed using `bk --company acme --json audit receipts` or MCP
+`audit_receipts`. The result groups related events and includes a saved cursor
+and an optional Desktop detail path. To undo an eligible change, use
+`bk --company acme audit undo RECEIPT` or MCP `audit_undo` with the owner's
+signed `ledger/admin` token. Undo immediately appends a linked reversal or
+archives the account while retaining its history. [Audit receipts and owner undo](docs/beankeeper/references/json-api.md#audit-receipts)
 
 To opt one credential into sign-off, issue it with `--write-mode propose-only`.
 The same posting command or tool then returns a pending proposal with a
@@ -535,6 +537,7 @@ mutation tools are absent and cannot be called.
 | `inform_preference_show`, `inform_preference_set` | Read or save how often the owner hears about completed changes |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
+| `audit_receipts`, `audit_undo` | Read grouped changes and undo an eligible receipt under the owner's signed grant |
 
 MCP discovery publishes input schemas and read-only hints from the ledger
 operation catalog. Capability enforcement can restrict discovery further. Company-scoped tools require a `company` argument. `report` takes a `kind`

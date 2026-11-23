@@ -8,6 +8,7 @@ use super::{input_values::Text, inputs};
 use crate::{
     commands::{
         account::AccountRequest,
+        audit::ReceiptRequest,
         budget::{BudgetRequest, BudgetSetInput},
         company::CompanyRequest,
         investment::InvestmentRequest,
@@ -90,6 +91,7 @@ convert! {
     inform_preference_set(InformPreferenceSet) => Standing(input => StandingRequest::SetInform(input.company.into_inner(), input.preference)),
     period_close(PeriodClose) => Period(input => input.into()),
     period_list(CompanyScope) => Period(input => PeriodRequest::List(input.company.into_inner())),
+    audit_undo(AuditUndo) => AuditReceipts(input => ReceiptRequest::Undo(input.company.into_inner(), input.receipt)),
 }
 
 try_convert! {
@@ -138,6 +140,9 @@ try_convert! {
         ).try_into()?, ExplicitDeleteCall.into(),
     )),
     audit_log(AuditLog) => AuditLog(input => input.try_into()?),
+    audit_receipts(AuditReceipts) => AuditReceipts(input => ReceiptRequest::List(
+        (input.company.into_inner(), input.cursor, input.continuation, input.limit).try_into()?,
+    )),
 }
 
 pub(super) const fn verify(_: inputs::Empty) -> LedgerRequest {
@@ -175,6 +180,7 @@ pub(super) fn response(
         LedgerResponse::AuditLog(response) => {
             (encode(response.data())?, Some(response.pagination()))
         }
+        LedgerResponse::AuditReceipts(response) => (encode(response)?, None),
         LedgerResponse::Budget(response) => (encode(response)?, None),
         LedgerResponse::Company(response) => (encode(response)?, None),
         LedgerResponse::Investment(_, _, response) => (encode(response)?, None),

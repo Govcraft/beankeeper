@@ -88,7 +88,7 @@ status and recheck. See the [verify payload](references/json-api.md#verify).
 - **Audit trail**: Posts, imports, and reversals store a poster (`posted_by`) and a `create` record. Supported mutations record an actor, timestamp, and before/after snapshots atomically. The CLI and MCP use `--actor`, then `BK_ACTOR`, then the verified agent URI for the label. `bk audit log --by-actor NAME` filters by exact label and `--agent URI` filters by verified identity. `bk audit log --action create` lists creations. JSON audit rows include `prev_hash` and `row_hash`.
 - **Unverified runtime hints**: `bk --json audit log` and MCP `audit_log` include a nullable `client_hint`. When present, describe the runtime as unverified. Use `agent_uri` for verified identity. The hint stores only known environment marker names and carries no permissions.
 - **Verification**: `bk verify` and MCP `verify` return the checks and evidence from one ledger snapshot. Legacy audit rows retain their IDs and timestamps after migration, and legacy posters stay unknown. See [audit integrity](../audit-integrity.md).
-- **Archived accounts**. Desktop receipt undo can archive an account. Its row and past entries remain available for reporting and reversals. Choose an active account for new postings and categorization. Use the `account_archive` audit action to inspect the recorded change.
+- **Archived accounts**. Receipt undo can archive an account. Its row and past entries remain available for reporting and reversals. Choose an active account for new postings and categorization. Use the `account_archive` audit action to inspect the recorded change.
 - **Idempotency**: `--reference KEY` is trimmed, stored verbatim, and unique per company. Empty references are rejected. Use `--on-conflict skip` for safe retry of duplicate posts; Only `error` and `skip` are accepted; use `txn meta set/unset` to annotate existing postings.
 
 For detailed accounting concepts and account types, see [`references/accounting.md`](references/accounting.md).
@@ -124,6 +124,23 @@ posted transaction. The owner needs `ledger/reverse` when enforcement is on.
 This immediately appends an audited reversal linked to the original. Use
 `bk audit log --by-actor ACTOR` or the MCP `audit_log` filter `actor` to find the
 post or its undo.
+
+When the owner asks what changed, run `bk --company acme --json audit receipts`
+or call `audit_receipts` with `company`. Pass the saved `cursor` for that ledger
+and company, or omit it on the first read. Copy the returned `continuation`
+into the next call until it is null, then save `through` as the next cursor.
+Describe who changed what in plain words and use the typed amounts and
+currencies for any chart. Offer the `desktop_path` on the matching Desktop
+listener when its address is known.
+
+When the owner asks to undo a receipt, run
+`bk --company acme --json audit undo RECEIPT` or call `audit_undo` with
+`company` and the numeric `receipt` ID. Use the owner's signed `ledger/admin`
+credential even if enforcement is off. Undo acts immediately. It reverses an
+eligible posting or archives an opened account, recording a new linked receipt.
+Report the result and its `undo_receipt`. A repeat returns the same result.
+If the ledger returns `UNDO_UNSUPPORTED` or `UNDO_INELIGIBLE`, explain the
+reason supplied by the ledger. [Receipt commands and results](references/json-api.md#audit-receipts)
 
 If the owner issued your credential with `--write-mode propose-only`, the same
 post operation returns `status: "pending"` and a proposal ID. Tell the owner
@@ -472,6 +489,8 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk report trend` | Show revenue, spending or net worth across periods |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
+| `bk audit receipts` | Read a company's grouped changes from a cursor |
+| `bk audit undo RECEIPT` | Undo an eligible change under the owner's signed grant |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export accounting data as JSON or CSV |
 | `bk backup --output PATH` | Save and verify a full database snapshot, preserving encryption |

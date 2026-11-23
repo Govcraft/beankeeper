@@ -116,6 +116,18 @@ pub enum UndoOutcome {
     },
 }
 
+impl UndoOutcome {
+    /// The audit receipt that records the reversal or archive.
+    #[must_use]
+    pub const fn receipt(&self) -> ReceiptId {
+        match *self {
+            Self::Reversed { undo_receipt, .. } | Self::Archived { undo_receipt, .. } => {
+                undo_receipt
+            }
+        }
+    }
+}
+
 /// A categorization rule creation reversed by an owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RuleUndoOutcome {

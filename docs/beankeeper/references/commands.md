@@ -301,6 +301,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `investment_lots` | `company`, `symbol`; inspect original/remaining quantity and cost basis |
 | `investment_holdings` | `company`, optional `as_of` (default today); value positions at the latest price on or before the cutoff without posting |
 | `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`, `offset`; rows include `prev_hash` and `row_hash` |
+| `audit_receipts` | `company`, optional `cursor` or `continuation`, and optional `limit` |
+| `audit_undo` | `company` and numeric `receipt`. Applies immediately with a signed `ledger/admin` token |
 
 `txn_post.debits` and `.credits` contain `{account, amount, memo?}` objects.
 `amount` is a decimal string in major units. `meta` is a string-to-string map;
@@ -469,8 +471,8 @@ Read-only mode removes `company_create`, `company_delete`, `account_create`, `tx
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
 `ledger_setup_account_add`, `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
 `ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
-`rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set` and
-`inform_preference_set` from the router.
+`rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
+`inform_preference_set` and `audit_undo` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
@@ -1701,6 +1703,19 @@ Continue with `--offset`; the total uses the same agent/company/entity/action fi
 Audit JSON also includes parsed `before_display` and `after_display` snapshots
 with decimal monetary companions; original snapshot strings and hashes remain
 unchanged. See [amount conventions](json-api.md#amount-conventions).
+
+### `bk audit receipts` and `bk audit undo`
+
+```sh
+bk --company acme --json audit receipts --cursor 40 --limit 10
+bk --company acme --json audit receipts --continuation "$next"
+bk --company acme --json audit undo 52
+```
+
+Set `next` to the `continuation` from the previous page. Save `through` as
+the next cursor once `continuation` is null. Undo requires a signed
+`ledger/admin` token and records a linked reversal or archive immediately.
+[Receipt paging, result fields, and error codes](json-api.md#audit-receipts)
 
 ## Agent spend limits
 

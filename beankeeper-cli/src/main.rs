@@ -11,14 +11,28 @@ fn main() -> ExitCode {
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => {
-            let Some(currency) = error
-                .source()
-                .and_then(|cause| cause.downcast_ref::<CurrencyError>())
-            else {
+            let Some(source) = error.source() else {
                 error.exit();
             };
-            let validation = CliError::Validation(currency.to_string());
+            let currency = source
+                .downcast_ref::<CurrencyError>()
+                .map(|error| CliError::Validation(error.to_string()));
+            let cli_error = source.downcast_ref::<CliError>();
+            if currency.is_none() && cli_error.is_none() {
+                error.exit();
+            }
             let (json_mode, meta) = parse_error_metadata(&args);
+            let validation = if meta
+                .as_ref()
+                .is_some_and(|meta| is_receipt_operation(meta.command))
+            {
+                cli_error.or(currency.as_ref())
+            } else {
+                currency.as_ref()
+            };
+            let Some(validation) = validation else {
+                error.exit();
+            };
             validation.report(json_mode, meta);
             return ExitCode::from(validation.exit_code());
         }
@@ -27,10 +41,12 @@ fn main() -> ExitCode {
 
     let meta = if json_mode {
         let operation = commands::operation(&cli.command);
-        let company = cli
-            .company
-            .as_ref()
-            .map(beankeeper_cli::db::companies::CompanySlug::as_str);
+        let company = if is_receipt_operation(operation) {
+            beankeeper_cli::cli::require_company(&cli).ok()
+        } else {
+            cli.company.as_ref()
+        }
+        .map(beankeeper_cli::db::companies::CompanySlug::as_str);
         Some(cli.meta(operation, company))
     } else {
         None
@@ -44,6 +60,10 @@ fn main() -> ExitCode {
             ExitCode::from(e.exit_code())
         }
     }
+}
+
+fn is_receipt_operation(operation: Operation) -> bool {
+    matches!(operation, Operation::AuditReceipts | Operation::AuditUndo)
 }
 
 // Clap stops at an invalid value before returning matches. On that error path,
@@ -91,7 +111,16 @@ fn parse_error_metadata(args: &[OsString]) -> (bool, Option<json::Meta>) {
         suffix
             .and_then(|suffix| format!("{path}.{suffix}").parse::<Operation>().ok())
             .or_else(|| path.parse::<Operation>().ok())
-            .map(|operation| json::meta(operation, raw("company")))
+            .map(|operation| {
+                let company = raw("company").or_else(|| {
+                    matches
+                        .try_get_one::<OsString>("company")
+                        .ok()
+                        .flatten()
+                        .and_then(|value| value.to_str())
+                });
+                json::meta(operation, company)
+            })
     } else {
         None
     };

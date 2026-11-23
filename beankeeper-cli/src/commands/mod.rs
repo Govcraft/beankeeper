@@ -127,6 +127,8 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Report(args) => report_operation(&args.command),
         Command::Audit(args) => match &args.command {
             AuditCommand::Log(_) => Operation::AuditLog,
+            AuditCommand::Receipts(_) => Operation::AuditReceipts,
+            AuditCommand::Undo(_) => Operation::AuditUndo,
         },
     }
 }
@@ -277,6 +279,12 @@ fn dispatch_ledger(
         )),
         Command::Audit(args) => match &args.command {
             AuditCommand::Log(args) => Some(LedgerRequest::AuditLog(args.try_into()?)),
+            AuditCommand::Receipts(args) => Some(LedgerRequest::AuditReceipts(
+                audit::ReceiptRequest::List((require_company(cli)?, args).try_into()?),
+            )),
+            AuditCommand::Undo(args) => Some(LedgerRequest::AuditReceipts(
+                audit::ReceiptRequest::Undo(require_company(cli)?.clone(), args.receipt),
+            )),
         },
         Command::Agent(_)
         | Command::Backup { .. }

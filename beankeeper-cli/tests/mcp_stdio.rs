@@ -1,5 +1,8 @@
 //! Exercise the real MCP server over its newline-delimited stdio transport.
 
+#[path = "mcp_stdio/audit_receipts.rs"]
+mod audit_receipts;
+
 use beankeeper_cli::db::CreateAccountParams;
 use beankeeper_cli::identity::{Admin, Granted};
 use std::collections::BTreeSet;
@@ -787,6 +790,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_reconcile",
     "verify",
     "audit_log",
+    "audit_receipts",
+    "audit_undo",
 ];
 
 #[test]
@@ -1436,7 +1441,9 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 23);
+    assert_eq!(names.len(), 24);
+    assert!(names.contains("audit_receipts"));
+    assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
@@ -2846,7 +2853,9 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 23);
+    assert_eq!(names.len(), 24);
+    assert!(names.contains("audit_receipts"));
+    assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
@@ -3012,7 +3021,9 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 23);
+    assert_eq!(names.len(), 24);
+    assert!(names.contains("audit_receipts"));
+    assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));

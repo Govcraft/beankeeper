@@ -1,5 +1,8 @@
 //! `bk audit` command: inspect the append-only audit trail.
 
+mod receipts;
+pub use receipts::{ReceiptRequest, ReceiptResponse};
+
 use crate::operation::Operation;
 use beankeeper::types::Currency;
 use rusqlite::OptionalExtension as _;

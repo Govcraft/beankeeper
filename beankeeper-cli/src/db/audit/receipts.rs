@@ -1,9 +1,10 @@
 //! Company-scoped audit receipts and immediate owner undo.
 
-use std::{fmt, num::NonZeroU8, str::FromStr};
+use std::{borrow::Cow, fmt, num::NonZeroU8, str::FromStr};
 
 use rusqlite::{OptionalExtension, params};
-use serde::{Deserialize, Serialize};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{AuditAction, audit_columns, read_audit_row};
 use crate::db::Db;
@@ -64,6 +65,30 @@ impl From<AuditCursor> for i64 {
     }
 }
 
+impl From<ReceiptId> for AuditCursor {
+    fn from(id: ReceiptId) -> Self {
+        Self(Some(id.into()))
+    }
+}
+
+impl AuditCursor {
+    /// The exclusive cursor immediately before a receipt ID.
+    #[must_use]
+    pub fn before(receipt: ReceiptId) -> Self {
+        Self(receipt.predecessor())
+    }
+}
+
+impl JsonSchema for AuditCursor {
+    fn schema_name() -> Cow<'static, str> {
+        "AuditCursor".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "format": "int64", "minimum": 0, "default": i64::from(Self::default())})
+    }
+}
+
 impl fmt::Display for AuditCursor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         i64::from(*self).fmt(formatter)
@@ -88,12 +113,37 @@ impl TryFrom<u8> for ReceiptPageLimit {
         NonZeroU8::new(value)
             .filter(|value| value.get() <= super::AuditPageLimit::MAX)
             .map(Self)
-            .ok_or_else(|| {
-                CliError::Validation(format!(
-                    "receipt page limit must be between 1 and {}",
-                    super::AuditPageLimit::MAX
-                ))
-            })
+            .ok_or_else(Self::invalid)
+    }
+}
+
+impl ReceiptPageLimit {
+    fn invalid() -> CliError {
+        CliError::Validation(format!(
+            "receipt page limit must be between 1 and {}",
+            super::AuditPageLimit::MAX
+        ))
+    }
+}
+
+impl FromStr for ReceiptPageLimit {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<u8>().map_err(|_| Self::invalid())?.try_into()
+    }
+}
+
+impl JsonSchema for ReceiptPageLimit {
+    fn schema_name() -> Cow<'static, str> {
+        "ReceiptPageLimit".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "integer", "minimum": 1, "maximum": super::AuditPageLimit::MAX,
+            "default": u8::from(Self::default())
+        })
     }
 }
 
@@ -107,14 +157,92 @@ impl From<ReceiptPageLimit> for u8 {
 #[derive(Debug, Clone)]
 pub struct ReceiptContinuation {
     company: CompanySlug,
-    after: AuditCursor,
+    last: ReceiptId,
     through: AuditCursor,
 }
 
+impl ReceiptContinuation {
+    /// The company for which this continuation was issued.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        &self.company
+    }
+
+    /// The exclusive cursor for the next page.
+    #[must_use]
+    pub fn after(&self) -> AuditCursor {
+        self.last.into()
+    }
+}
+
+impl TryFrom<(CompanySlug, ReceiptId, AuditCursor)> for ReceiptContinuation {
+    type Error = CliError;
+
+    fn try_from(
+        (company, last, through): (CompanySlug, ReceiptId, AuditCursor),
+    ) -> Result<Self, Self::Error> {
+        if AuditCursor::from(last) >= through {
+            return Err(CliError::Validation(
+                "receipt continuation must advance within its audit range".into(),
+            ));
+        }
+        Ok(Self {
+            company,
+            last,
+            through,
+        })
+    }
+}
+
+impl FromStr for ReceiptContinuation {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut parts = value.split(':');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(company), Some(last), Some(through), None) => {
+                (company.parse()?, last.parse()?, through.parse()?).try_into()
+            }
+            _ => Err(CliError::Validation("invalid receipt continuation".into())),
+        }
+    }
+}
+
+impl fmt::Display for ReceiptContinuation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}:{}", self.company, self.last, self.through)
+    }
+}
+
+impl Serialize for ReceiptContinuation {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReceiptContinuation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for ReceiptContinuation {
+    fn schema_name() -> Cow<'static, str> {
+        "ReceiptContinuation".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "description": "Copy the continuation from the previous receipt page."})
+    }
+}
+
 /// One page in an ascending, bounded receipt range.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ReceiptPage {
     receipts: Vec<AuditReceipt>,
+    after: AuditCursor,
     through: AuditCursor,
     continuation: Option<ReceiptContinuation>,
 }
@@ -124,6 +252,20 @@ impl ReceiptPage {
     #[must_use]
     pub fn receipts(&self) -> &[AuditReceipt] {
         &self.receipts
+    }
+
+    /// The exclusive lower bound of this page.
+    #[must_use]
+    pub const fn after(&self) -> AuditCursor {
+        self.after
+    }
+
+    /// The last cursor covered by this page, without including later pages.
+    #[must_use]
+    pub fn page_through(&self) -> AuditCursor {
+        self.continuation
+            .as_ref()
+            .map_or(self.through, ReceiptContinuation::after)
     }
 
     /// The fixed upper bound. Save this as the next range's cursor when the
@@ -137,6 +279,80 @@ impl ReceiptPage {
     #[must_use]
     pub const fn continuation(&self) -> Option<&ReceiptContinuation> {
         self.continuation.as_ref()
+    }
+}
+
+#[derive(Debug)]
+enum ReceiptStart {
+    At(CompanySlug, AuditCursor),
+    Continue(ReceiptContinuation),
+}
+
+/// A company-scoped request to start or continue a bounded receipt range.
+#[derive(Debug)]
+pub struct ReceiptQuery {
+    start: ReceiptStart,
+    limit: ReceiptPageLimit,
+}
+
+impl
+    TryFrom<(
+        CompanySlug,
+        Option<AuditCursor>,
+        Option<ReceiptContinuation>,
+        Option<ReceiptPageLimit>,
+    )> for ReceiptQuery
+{
+    type Error = CliError;
+
+    fn try_from(
+        (company, cursor, continuation, limit): (
+            CompanySlug,
+            Option<AuditCursor>,
+            Option<ReceiptContinuation>,
+            Option<ReceiptPageLimit>,
+        ),
+    ) -> Result<Self, Self::Error> {
+        let start = match (cursor, continuation) {
+            (Some(_), Some(_)) => {
+                return Err(CliError::Validation(
+                    "choose either a receipt cursor or a continuation".into(),
+                ));
+            }
+            (None, Some(next)) if next.company() != &company => {
+                return Err(CliError::Validation(
+                    "receipt continuation belongs to a different company".into(),
+                ));
+            }
+            (None, Some(next)) => ReceiptStart::Continue(next),
+            (cursor, None) => ReceiptStart::At(company, cursor.unwrap_or_default()),
+        };
+        Ok(Self {
+            start,
+            limit: limit.unwrap_or_default(),
+        })
+    }
+}
+
+impl ReceiptQuery {
+    /// The company whose receipt history is requested.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        match &self.start {
+            ReceiptStart::At(company, _) => company,
+            ReceiptStart::Continue(next) => next.company(),
+        }
+    }
+
+    /// Read the requested page in a consistent ledger snapshot.
+    ///
+    /// # Errors
+    /// Returns scope, invalid cursor or database errors.
+    pub fn read(&self, db: &Db) -> Result<ReceiptPage, CliError> {
+        match &self.start {
+            ReceiptStart::At(company, cursor) => list_receipts(db, company, *cursor, self.limit),
+            ReceiptStart::Continue(next) => continue_receipts(db, next, self.limit),
+        }
     }
 }
 
@@ -216,7 +432,7 @@ pub fn continue_receipts(
                 "receipt continuation is ahead of the ledger's audit head".into(),
             ));
         }
-        read_page(reader, &next.company, next.after, next.through, limit)
+        read_page(reader, &next.company, next.after(), next.through, limit)
     })
 }
 
@@ -265,7 +481,7 @@ fn read_page(
                 .last()
                 .map(|receipt: &AuditReceipt| ReceiptContinuation {
                     company: company.clone(),
-                    after: AuditCursor(Some(receipt.id.into())),
+                    last: receipt.id,
                     through,
                 });
             break;
@@ -288,6 +504,7 @@ fn read_page(
     }
     Ok(ReceiptPage {
         receipts,
+        after,
         through,
         continuation,
     })

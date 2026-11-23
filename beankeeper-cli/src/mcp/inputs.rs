@@ -18,6 +18,7 @@ use crate::commands::{
     reference::TransactionReference, report_periods::CompareArg, txn_clear::StatementAmount,
     txn_import::CsvMapping,
 };
+use crate::db::audit::receipts::{AuditCursor, ReceiptContinuation, ReceiptId, ReceiptPageLimit};
 use crate::db::audit::setup::{
     Generation,
     books::{
@@ -292,6 +293,25 @@ pub(crate) struct AuditLog {
     pub limit: Option<AuditPageLimit>,
     /// Rows to skip. Use the previous page’s `next_offset` with the same filters.
     pub offset: Option<AuditPageOffset>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AuditReceipts {
+    pub company: Company,
+    /// Exclusive cursor saved after consuming an entire range.
+    pub cursor: Option<AuditCursor>,
+    /// Use instead of cursor when continuing an open range.
+    pub continuation: Option<ReceiptContinuation>,
+    pub limit: Option<ReceiptPageLimit>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AuditUndo {
+    pub company: Company,
+    /// Receipt ID returned by `audit_receipts`.
+    pub receipt: ReceiptId,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

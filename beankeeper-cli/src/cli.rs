@@ -6,6 +6,7 @@ use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::db::audit::receipts::{AuditCursor, ReceiptContinuation, ReceiptId, ReceiptPageLimit};
 use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
@@ -1073,11 +1074,43 @@ pub struct AuditArgs {
     pub command: AuditCommand,
 }
 
-/// Subcommands for inspecting the audit trail.
+/// Subcommands for inspecting and undoing ledger changes.
 #[derive(Subcommand, Debug)]
 pub enum AuditCommand {
     /// List recorded changes, most recent first.
     Log(AuditLogArgs),
+    /// Read company changes from a saved cursor or continue an open receipt range.
+    Receipts(AuditReceiptsArgs),
+    /// Undo a receipt immediately with a signed ledger/admin token.
+    Undo(AuditUndoArgs),
+}
+
+/// Company and paging for typed audit receipts.
+#[derive(Args, Debug)]
+pub struct AuditReceiptsArgs {
+    /// Company slug.
+    #[arg(long)]
+    pub company: Option<CompanySlug>,
+    /// Exclusive cursor from a completed range. Omit to start from the beginning.
+    #[arg(long, allow_negative_numbers = true)]
+    pub cursor: Option<AuditCursor>,
+    /// Continuation returned by the previous page. Use instead of --cursor.
+    #[arg(long)]
+    pub continuation: Option<ReceiptContinuation>,
+    /// Maximum receipts per page (1 to 100).
+    #[arg(long, allow_negative_numbers = true)]
+    pub limit: Option<ReceiptPageLimit>,
+}
+
+/// Scope and identifier for immediate owner undo.
+#[derive(Args, Debug)]
+pub struct AuditUndoArgs {
+    /// Company slug.
+    #[arg(long)]
+    pub company: Option<CompanySlug>,
+    /// ID from audit receipts.
+    #[arg(allow_negative_numbers = true)]
+    pub receipt: ReceiptId,
 }
 
 /// Filters and pagination for one audit history page.
@@ -2913,6 +2946,11 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Txn(args) => args.company.as_ref(),
         Command::Budget(args) => args.company.as_ref(),
         Command::Report(args) => args.company.as_ref(),
+        Command::Audit(args) => match &args.command {
+            AuditCommand::Receipts(args) => args.company.as_ref(),
+            AuditCommand::Undo(args) => args.company.as_ref(),
+            AuditCommand::Log(_) => None,
+        },
         _ => None,
     };
 
