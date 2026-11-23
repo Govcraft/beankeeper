@@ -94,7 +94,7 @@ fn run_limit(
                     .as_ref()
                     .or(cli.company.as_ref())
                     .ok_or_else(|| CliError::Usage("agent limit set requires --company".into()))?;
-                let currency = currency.resolve()?;
+                let currency = *currency;
                 let parse = |value: &String| super::txn::parse_amount_to_minor(value, currency);
                 let caps = spend_limits::Caps::from_minor_units(
                     max_post.as_ref().map(parse).transpose()?,

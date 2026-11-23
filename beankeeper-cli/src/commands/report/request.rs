@@ -4,7 +4,7 @@ use beankeeper::types::{AccountType, Currency};
 use chrono::{Month, NaiveDate};
 
 use super::{AccountSelector, ChartRequest, DateRange, DateWindow, ReportRequest};
-use crate::cli::{BudgetVarianceArgs, CalendarDateArg, CurrencyArg, ReportCommand, ReportMonth};
+use crate::cli::{BudgetVarianceArgs, CalendarDateArg, ReportCommand, ReportMonth};
 use crate::commands::{
     report_aging::AgingRequest,
     report_dates::resolve_date,
@@ -20,6 +20,7 @@ use crate::db::{
 };
 use crate::error::CliError;
 use crate::operation::Operation;
+use crate::request::CurrencySetting;
 
 /// A comparison and its optional account-level explanation.
 #[derive(Debug)]
@@ -106,7 +107,7 @@ impl
     TryFrom<(
         Option<&CalendarDateArg>,
         Option<&CalendarDateArg>,
-        Option<&CurrencyArg>,
+        Option<Currency>,
     )> for ReportScope
 {
     type Error = CliError;
@@ -115,13 +116,13 @@ impl
         (from, to, currency): (
             Option<&CalendarDateArg>,
             Option<&CalendarDateArg>,
-            Option<&CurrencyArg>,
+            Option<Currency>,
         ),
     ) -> Result<Self, Self::Error> {
         Self::try_from((
             from.map(|date| resolve_date("--from", date)).transpose()?,
             to.map(|date| resolve_date("--to", date)).transpose()?,
-            CurrencyArg::resolve_optional(currency)?,
+            currency,
         ))
     }
 }
@@ -183,33 +184,6 @@ impl TryFrom<&BudgetVarianceArgs> for VarianceMonths {
 impl From<VarianceMonths> for BudgetMonths {
     fn from(months: VarianceMonths) -> Self {
         months.0
-    }
-}
-
-/// Configured budget variance currency, with ledger inference when unset.
-#[derive(Default)]
-pub(crate) enum VarianceCurrency {
-    #[default]
-    Configured,
-    Explicit(Currency),
-}
-
-impl From<Option<Currency>> for VarianceCurrency {
-    fn from(value: Option<Currency>) -> Self {
-        value.map_or_else(Self::default, Self::Explicit)
-    }
-}
-
-impl TryFrom<VarianceCurrency> for Option<Currency> {
-    type Error = CliError;
-
-    fn try_from(value: VarianceCurrency) -> Result<Self, Self::Error> {
-        match value {
-            VarianceCurrency::Configured => {
-                CurrencyArg::resolve_optional(CurrencyArg::configured().as_ref())
-            }
-            VarianceCurrency::Explicit(currency) => Ok(Some(currency)),
-        }
     }
 }
 
@@ -349,8 +323,7 @@ impl TryFrom<&TaxArgs> for TaxSelection {
     type Error = CliError;
 
     fn try_from(args: &TaxArgs) -> Result<Self, Self::Error> {
-        let scope =
-            ReportScope::try_from((args.from.as_ref(), args.to.as_ref(), args.currency.as_ref()))?;
+        let scope = ReportScope::try_from((args.from.as_ref(), args.to.as_ref(), args.currency))?;
         Ok(Self(scope.try_into()?, scope.into()))
     }
 }
@@ -360,7 +333,7 @@ impl TryFrom<&ReportCommand> for ReportQuery {
 
     fn try_from(command: &ReportCommand) -> Result<Self, Self::Error> {
         let scope = |from: &Option<_>, to: &Option<_>, currency: &Option<_>| {
-            ReportScope::try_from((from.as_ref(), to.as_ref(), currency.as_ref()))
+            ReportScope::try_from((from.as_ref(), to.as_ref(), *currency))
         };
         let account = |value: &Option<String>| value.clone().map(AccountSelector::from);
         let accounts =
@@ -466,10 +439,7 @@ impl TryFrom<&BudgetVarianceArgs> for ReportQuery {
         Ok(Self::BudgetVariance {
             months: VarianceMonths::try_from(args)?.into(),
             account_type: args.account_type,
-            currency: VarianceCurrency::from(CurrencyArg::resolve_optional(
-                args.currency.as_ref(),
-            )?)
-            .try_into()?,
+            currency: CurrencySetting::from(args.currency).try_into()?,
             coverage: BudgetCoverage::from(args.include_unbudgeted),
         })
     }

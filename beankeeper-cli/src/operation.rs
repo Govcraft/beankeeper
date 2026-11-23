@@ -174,8 +174,16 @@ macro_rules! operations {
 }
 
 impl Operation {
+    /// The primary capability associated with this operation.
+    ///
+    /// # Errors
+    /// Returns a usage error for transport operations with no ledger capability.
+    pub fn primary_capability(self) -> Result<Capability, CliError> {
+        self.permission().primary()
+    }
+
     pub(crate) fn is_read_only(self) -> bool {
-        self.permission().primary().ok() == Some(Capability::Read)
+        self.primary_capability().ok() == Some(Capability::Read)
     }
 
     pub(crate) const fn writes_ledger(self) -> bool {

@@ -64,7 +64,7 @@ pub struct CashFlowArgs {
     /// Currency code. Defaults to the company's only transaction currency
     /// (USD when there are no transactions).
     #[arg(long)]
-    pub currency: Option<crate::cli::CurrencyArg>,
+    pub currency: Option<Currency>,
     /// Compare the full range with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
     #[arg(long)]
     pub compare: Option<super::report_periods::CompareArg>,
@@ -358,13 +358,10 @@ pub fn run(
         let dates = DateRange::resolve(
             args.from.as_ref(),
             args.to.as_ref(),
-            super::report_dates::Today::default().into(),
+            crate::request::LocalDate::default().into(),
         )?;
-        let currency = super::report_currency::resolve_report_currency(
-            reader,
-            company,
-            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
-        )?;
+        let currency =
+            super::report_currency::resolve_report_currency(reader, company, args.currency)?;
         compute_scoped(
             reader,
             &scope,

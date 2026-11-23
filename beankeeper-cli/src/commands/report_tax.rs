@@ -34,7 +34,7 @@ pub struct TaxArgs {
     pub to: Option<crate::cli::CalendarDateArg>,
     /// Currency; required for companies with transactions in multiple currencies.
     #[arg(long)]
-    pub currency: Option<crate::cli::CurrencyArg>,
+    pub currency: Option<Currency>,
     /// Report format (also accepts the global --format or --json options).
     #[arg(long, value_enum)]
     pub output_format: Option<OutputFormat>,

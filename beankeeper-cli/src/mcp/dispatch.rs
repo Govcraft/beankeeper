@@ -95,7 +95,7 @@ try_convert! {
             input.with_balances,
             input.from.map(|date| date.into_inner().date()),
             input.to.map(|date| date.into_inner().date()),
-            input.currency.map(|value| value.into_inner().into()),
+            input.currency,
         ).try_into()?,
     }),
     txn_post(TxnPost) => Transaction(input => input.try_into()?),
@@ -111,7 +111,7 @@ try_convert! {
         month: input.month.map(super::input_values::Month::into_inner),
         amount: input.amount.map(Text::into_inner),
         annual: input.annual.map(Text::into_inner),
-        currency: input.currency.map(|currency| currency.into_inner().into()),
+        currency: input.currency,
         notes: input.notes,
     }.try_into()?)),
     budget_delete(BudgetDelete) => Budget(input => BudgetRequest::Delete(
@@ -119,7 +119,7 @@ try_convert! {
         (
             input.account.into_inner(), input.year,
             input.month.map(super::input_values::Month::into_inner),
-            input.currency.map(|currency| currency.into_inner().into()),
+            input.currency,
         ).try_into()?, ExplicitDeleteCall.into(),
     )),
     audit_log(AuditLog) => AuditLog(input => input.try_into()?),

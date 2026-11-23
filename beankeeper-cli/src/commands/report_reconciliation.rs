@@ -30,7 +30,6 @@ use rusqlite::types::Type;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use super::report::{AccountSelector, ChartRequest, ReportPresentation};
-use super::report_dates::Today;
 use super::txn::MajorAmount;
 use crate::cli::{Cli, OutputFormat, ReconciliationMode};
 
@@ -450,7 +449,9 @@ impl TryFrom<ReconciliationOptions> for ReconciliationSelection {
     fn try_from(options: ReconciliationOptions) -> Result<Self, Self::Error> {
         Ok(Self {
             account: options.account,
-            as_of: options.as_of.unwrap_or_else(|| Today::default().into()),
+            as_of: options
+                .as_of
+                .unwrap_or_else(|| crate::request::LocalDate::default().into()),
             balance: options.statement_balance,
             statement: (options.mode, options.statement, options.link_key).try_into()?,
             filters: metadata_filter::parse_filters(&options.filters)?,
@@ -481,7 +482,7 @@ impl TryFrom<&crate::cli::ReconciliationCommandArgs> for ReconciliationSelection
             link_key: command.link_key.clone(),
             filters: command.filter_metadata.clone(),
             group: command.group_by_metadata.clone(),
-            currency: crate::cli::CurrencyArg::resolve_optional(command.currency.as_ref())?,
+            currency: command.currency,
         }
         .try_into()
     }

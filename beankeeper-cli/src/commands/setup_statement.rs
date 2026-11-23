@@ -2,11 +2,11 @@
 
 use std::{fs::File, io};
 
-use beankeeper::types::AccountCode;
+use beankeeper::types::{AccountCode, Currency};
 use clap::Args;
 
 use super::txn_import::CsvMapping;
-use crate::cli::{CurrencyArg, InputSource};
+use crate::cli::InputSource;
 use crate::db::{
     audit::setup::{
         Generation,
@@ -38,7 +38,7 @@ pub struct StatementPreviewArgs {
     suspense: AccountCode,
     /// Currency of the statement.
     #[arg(long)]
-    currency: CurrencyArg,
+    currency: Currency,
     /// Source statement format. Use ofx for OFX or QFX files.
     #[arg(long, value_enum)]
     statement_format: StatementFormat,
@@ -50,7 +50,7 @@ impl TryFrom<&StatementPreviewArgs> for StatementRequest {
     type Error = CliError;
 
     fn try_from(args: &StatementPreviewArgs) -> Result<Self, Self::Error> {
-        let currency = args.currency.resolve()?;
+        let currency = args.currency;
         let content = match &args.file {
             InputSource::Stdin => StatementContent::read(io::stdin().lock())?,
             InputSource::Path(path) => StatementContent::read(File::open(path)?)?,

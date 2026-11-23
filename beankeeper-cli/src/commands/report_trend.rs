@@ -53,7 +53,7 @@ pub struct TrendArgs {
     pub period: Option<PeriodArg>,
     /// Transaction currency. Required for companies with multiple currencies.
     #[arg(long)]
-    pub currency: Option<crate::cli::CurrencyArg>,
+    pub currency: Option<Currency>,
     /// Compare the full range with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
     #[arg(long)]
     pub compare: Option<super::report_periods::CompareArg>,

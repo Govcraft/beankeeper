@@ -28,7 +28,7 @@ pub(crate) use request::{Comparison, ReportQuery, ReportScope};
 pub use super::report_dates::DateRange;
 use super::report_dates::DateWindow;
 use request::ComparisonWindow;
-pub(crate) use request::{ReportWindow, VarianceCurrency, VarianceMonths};
+pub(crate) use request::{ReportWindow, VarianceMonths};
 
 /// Account selector accepting historical ledger account keys from the CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]

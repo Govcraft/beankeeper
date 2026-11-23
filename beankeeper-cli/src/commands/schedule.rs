@@ -47,7 +47,7 @@ pub fn run(cli: &Cli, company: &str, command: &ScheduleCommand) -> Result<(), Cl
             dry_run,
             allow_large_run,
         } => {
-            let through = through.unwrap_or_else(|| chrono::Local::now().date_naive());
+            let through = through.into();
             let occurrences = if *dry_run {
                 db.read_snapshot(|reader| {
                     schedules::preview_due(reader, &company.parse()?, through)
@@ -126,7 +126,7 @@ fn create_params(args: &ScheduleCreateArgs) -> Result<schedules::CreateScheduleP
         meta,
         tax,
     } = args;
-    let currency = currency.clone().unwrap_or_default().try_into()?;
+    let currency = crate::request::CurrencySetting::from(*currency).try_into()?;
     let tax = super::txn::parse_tax_args(tax)?;
     let mut entries = Vec::new();
     for (args, direction) in [

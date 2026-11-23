@@ -1,95 +1,68 @@
-//! Decoded currency selections and the environment default shared by adapters.
+//! Resolve the process currency setting at the request boundary.
 
-use beankeeper::types::{Currency, CurrencyError};
+use std::ffi::OsString;
+
+use beankeeper::types::Currency;
 
 use crate::error::CliError;
 
-/// A decoded currency flag with any validation error retained for the command envelope.
-#[derive(Debug, Clone)]
-pub struct CurrencyArg(Result<Currency, CurrencyError>);
+/// Currency selection at the boundary, before any environment text is decoded.
+/// The resulting request carries only `Currency`.
+pub(crate) struct CurrencySetting(Source);
 
-impl CurrencyArg {
-    pub(crate) fn configured() -> Option<Self> {
-        std::env::var("BEANKEEPER_CURRENCY")
-            .ok()
-            .map(|value| Self::decode(&value))
-    }
-
-    pub(crate) fn decode(raw: &str) -> Self {
-        Self(parse_currency(raw))
-    }
-
-    pub(crate) fn resolve_optional(value: Option<&Self>) -> Result<Option<Currency>, CliError> {
-        value.map(Self::resolve).transpose()
-    }
-
-    /// Returns the validated currency.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliError::Validation`] for an unsupported currency code.
-    pub fn resolve(&self) -> Result<Currency, CliError> {
-        self.0
-            .as_ref()
-            .copied()
-            .map_err(|error| CliError::Validation(error.to_string()))
-    }
+enum Source {
+    Explicit(Currency),
+    Environment {
+        value: Option<OsString>,
+        fallback: Currency,
+    },
 }
 
-impl Default for CurrencyArg {
+impl Default for CurrencySetting {
     fn default() -> Self {
-        Self::configured().unwrap_or_else(|| Currency::USD.into())
+        Self(Source::Environment {
+            value: std::env::var_os("BEANKEEPER_CURRENCY"),
+            fallback: Currency::USD,
+        })
     }
 }
 
-impl TryFrom<CurrencyArg> for Currency {
+impl From<Option<Currency>> for CurrencySetting {
+    fn from(currency: Option<Currency>) -> Self {
+        currency.map_or_else(Self::default, |currency| Self(Source::Explicit(currency)))
+    }
+}
+
+impl TryFrom<CurrencySetting> for Option<Currency> {
     type Error = CliError;
 
-    fn try_from(value: CurrencyArg) -> Result<Self, Self::Error> {
-        value
-            .0
-            .map_err(|error| CliError::Validation(error.to_string()))
-    }
-}
-
-impl From<Currency> for CurrencyArg {
-    fn from(currency: Currency) -> Self {
-        Self(Ok(currency))
-    }
-}
-
-impl std::str::FromStr for CurrencyArg {
-    type Err = std::convert::Infallible;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        Ok(Self::decode(raw))
-    }
-}
-
-impl serde::Serialize for CurrencyArg {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match &self.0 {
-            Ok(currency) => serializer.collect_str(currency),
-            Err(error) => Err(serde::ser::Error::custom(error)),
+    fn try_from(setting: CurrencySetting) -> Result<Self, Self::Error> {
+        match setting.0 {
+            Source::Explicit(currency) => Ok(Some(currency)),
+            Source::Environment { value, .. } => value
+                .map(|raw| {
+                    let raw = raw.into_string().map_err(|_| {
+                        CliError::Validation("BEANKEEPER_CURRENCY must be valid UTF-8".into())
+                    })?;
+                    raw.parse().map_err(|error| {
+                        CliError::Validation(format!("BEANKEEPER_CURRENCY: {error}"))
+                    })
+                })
+                .transpose(),
         }
     }
 }
 
-impl<'de> serde::Deserialize<'de> for CurrencyArg {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let code = <String as serde::Deserialize>::deserialize(deserializer)?;
-        parse_currency(&code)
-            .map(Self::from)
-            .map_err(serde::de::Error::custom)
-    }
-}
+impl TryFrom<CurrencySetting> for Currency {
+    type Error = CliError;
 
-/// Parse a currency flag or its environment default.
-pub(crate) fn parse_currency(raw: &str) -> Result<Currency, CurrencyError> {
-    let raw = raw.trim();
-    if raw.bytes().any(|byte| byte.is_ascii_lowercase()) {
-        raw.to_ascii_uppercase().parse()
-    } else {
-        raw.parse()
+    fn try_from(setting: CurrencySetting) -> Result<Self, Self::Error> {
+        let fallback = match setting.0 {
+            Source::Explicit(currency)
+            | Source::Environment {
+                fallback: currency, ..
+            } => currency,
+        };
+        Ok(Option::<Self>::try_from(setting)?.unwrap_or(fallback))
     }
 }

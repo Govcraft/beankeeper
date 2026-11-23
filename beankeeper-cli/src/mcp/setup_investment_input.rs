@@ -48,7 +48,7 @@ impl TryFrom<inputs::SecurityCreate> for InvestmentRequest {
             SecurityParams {
                 symbol: input.symbol.into_inner(),
                 name: input.name.parse()?,
-                currency: QuotationCurrency::from(input.currency.map(Text::into_inner)).into(),
+                currency: QuotationCurrency::from(input.currency).into(),
             },
         ))
     }
@@ -219,7 +219,7 @@ impl TryFrom<inputs::LedgerSetupOpeningPreview> for OpeningRequest {
     type Error = CliError;
 
     fn try_from(input: inputs::LedgerSetupOpeningPreview) -> Result<Self, Self::Error> {
-        let currency = input.currency.into_inner();
+        let currency = input.currency;
         let lines = |side: NonEmpty<inputs::Line>| {
             side.map(|line| {
                 MajorPostingLine::from((

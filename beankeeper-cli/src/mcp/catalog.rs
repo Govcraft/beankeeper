@@ -56,8 +56,12 @@ where
         let input = Parameters::<Input>::from_context_part(&mut context);
         let handle = handle.clone();
         Box::pin(async move {
-            let Parameters(input) = input?;
-            let result = handle(context.service.clone(), input, context.request_context).await;
+            let result = match input {
+                Ok(Parameters(input)) => {
+                    handle(context.service.clone(), input, context.request_context).await
+                }
+                Err(error) => super::tool_error(&CliError::Validation(error.message.into_owned())),
+            };
             Ok(CallToolResponse::from(result))
         })
     })

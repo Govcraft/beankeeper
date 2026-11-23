@@ -6,21 +6,7 @@ use serde::Serialize;
 use crate::cli::CalendarDateArg;
 use crate::error::CliError;
 
-/// The local calendar day captured when a report request is decoded.
-#[derive(Clone, Copy)]
-pub(super) struct Today(NaiveDate);
-
-impl Default for Today {
-    fn default() -> Self {
-        Self(chrono::Local::now().date_naive())
-    }
-}
-
-impl From<Today> for NaiveDate {
-    fn from(value: Today) -> Self {
-        value.0
-    }
-}
+use crate::request::LocalDate;
 
 /// Effective dates, resolved once at the report boundary.
 #[derive(Debug, Clone, Copy)]
@@ -57,7 +43,7 @@ impl TryFrom<(Option<NaiveDate>, Option<NaiveDate>)> for DateWindow {
     type Error = CliError;
 
     fn try_from((from, to): (Option<NaiveDate>, Option<NaiveDate>)) -> Result<Self, Self::Error> {
-        let to = to.unwrap_or_else(|| Today::default().into());
+        let to = to.unwrap_or_else(|| LocalDate::default().into());
         if let Some(from) = from
             && from > to
         {

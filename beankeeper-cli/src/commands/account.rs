@@ -4,7 +4,7 @@ use beankeeper::types::{AccountCode, AccountType, Currency};
 use chrono::NaiveDate;
 use serde::{Serialize, Serializer};
 
-use crate::cli::{AccountCommand, Cli, CurrencyArg, OutputFormat, resolve_format};
+use crate::cli::{AccountCommand, Cli, OutputFormat, resolve_format};
 use crate::confirmation::{Confirmed, confirm_deletion};
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::{self, AccountBalanceWindow, Db, accounts};
@@ -19,14 +19,7 @@ pub enum AccountTotals {
     WithBalances(AccountBalanceWindow, Option<Currency>),
 }
 
-impl
-    TryFrom<(
-        bool,
-        Option<NaiveDate>,
-        Option<NaiveDate>,
-        Option<CurrencyArg>,
-    )> for AccountTotals
-{
+impl TryFrom<(bool, Option<NaiveDate>, Option<NaiveDate>, Option<Currency>)> for AccountTotals {
     type Error = CliError;
 
     fn try_from(
@@ -34,13 +27,13 @@ impl
             bool,
             Option<NaiveDate>,
             Option<NaiveDate>,
-            Option<CurrencyArg>,
+            Option<Currency>,
         ),
     ) -> Result<Self, Self::Error> {
         if with_balances {
             Ok(Self::WithBalances(
                 AccountBalanceWindow::new(from, to)?,
-                currency.map(Currency::try_from).transpose()?,
+                currency,
             ))
         } else {
             Ok(Self::Catalog)
@@ -276,7 +269,7 @@ impl TryFrom<AccountCliInput<'_>> for Option<AccountRequest> {
                 company,
                 account_type: *account_type,
                 name: name.clone(),
-                totals: (*with_balances, *from, *to, currency.clone()).try_into()?,
+                totals: (*with_balances, *from, *to, *currency).try_into()?,
             },
             AccountCommand::Show { code } => {
                 let code = lookup_code(code)?;

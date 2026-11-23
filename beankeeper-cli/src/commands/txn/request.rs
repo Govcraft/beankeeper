@@ -208,24 +208,18 @@ impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
 }
 
 /// The calendar date of a posting or clearing.
-#[derive(Clone, Copy, Debug)]
-pub struct PostingDate(NaiveDate);
-
-impl Default for PostingDate {
-    fn default() -> Self {
-        Self(chrono::Local::now().date_naive())
-    }
-}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PostingDate(crate::request::LocalDate);
 
 impl From<NaiveDate> for PostingDate {
     fn from(date: NaiveDate) -> Self {
-        Self(date)
+        Self(date.into())
     }
 }
 
 impl From<PostingDate> for NaiveDate {
     fn from(date: PostingDate) -> Self {
-        date.0
+        date.0.into()
     }
 }
 
@@ -304,11 +298,7 @@ impl TryFrom<&TxnListArgs> for ListRequest {
             limit: args.limit.unwrap_or_default(),
             offset: args.offset.map(Into::into).unwrap_or_default(),
             description: args.description.clone(),
-            currency: args
-                .currency
-                .as_ref()
-                .map(crate::cli::CurrencyArg::resolve)
-                .transpose()?,
+            currency: args.currency,
             amounts: [
                 args.amount_gt.as_deref().map(str::parse).transpose()?,
                 args.amount_lt.as_deref().map(str::parse).transpose()?,

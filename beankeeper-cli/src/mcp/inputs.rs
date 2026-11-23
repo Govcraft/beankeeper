@@ -40,7 +40,6 @@ use crate::error::CliError;
 
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
-type CurrencyCode = Text<Currency>;
 type Date = Text<CalendarDate>;
 type Amount = Text<DecimalAmount>;
 type Reference = Text<TransactionReference>;
@@ -146,7 +145,8 @@ pub(crate) struct AccountList {
     pub from: Option<Date>,
     pub to: Option<Date>,
     /// Currency of balance totals. Required when the company uses multiple currencies.
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -173,7 +173,8 @@ pub(crate) struct TxnList {
     /// Exact entry amount in major units.
     pub amount_eq: Option<Amount>,
     /// Currency code. Required with an amount filter if the company uses multiple currencies.
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub reference: Option<Reference>,
     pub metadata: Option<String>,
     #[serde(default)]
@@ -258,7 +259,8 @@ pub(crate) struct BudgetSet {
     pub month: Option<Month>,
     pub amount: Option<Amount>,
     pub annual: Option<Amount>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub notes: Option<String>,
 }
 
@@ -269,7 +271,8 @@ pub(crate) struct BudgetDelete {
     pub account: Account,
     pub year: i32,
     pub month: Option<Month>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -307,7 +310,8 @@ pub(crate) struct LedgerSetupStatementPreview {
     /// Contra account used when no categorization rule matches.
     suspense: Account,
     /// Currency of the statement. For OFX it must match the embedded currency.
-    currency: CurrencyCode,
+    #[schemars(with = "Text<Currency>")]
+    currency: Currency,
     /// CSV or OFX. QFX is accepted as OFX.
     format: StatementFormat,
     /// The statement contents.
@@ -324,7 +328,7 @@ impl TryFrom<LedgerSetupStatementPreview> for crate::commands::setup::SetupReque
             company: input.company.into_inner(),
             generation: input.generation,
             accounts: (input.bank.into_inner(), input.suspense.into_inner()).try_into()?,
-            currency: input.currency.into_inner(),
+            currency: input.currency,
             source: StatementSource::try_from((input.format, input.content, input.csv))?,
         };
         Ok(Self::StatementPreview(
@@ -378,7 +382,8 @@ pub(crate) struct SetupTarget {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SetupSettings {
     pub purpose: BookPurpose,
-    pub base_currency: CurrencyCode,
+    #[schemars(with = "Text<Currency>")]
+    pub base_currency: Currency,
     pub fiscal_year_start: Text<FiscalYearStart>,
 }
 
@@ -386,7 +391,7 @@ impl From<SetupSettings> for BookSettings {
     fn from(settings: SetupSettings) -> Self {
         Self {
             purpose: settings.purpose,
-            base_currency: settings.base_currency.into_inner(),
+            base_currency: settings.base_currency,
             fiscal_year_start: settings.fiscal_year_start.into_inner(),
         }
     }
@@ -447,7 +452,8 @@ pub(crate) struct LedgerSetupOpeningPreview {
     pub company: Company,
     pub generation: Generation,
     pub date: Date,
-    pub currency: CurrencyCode,
+    #[schemars(with = "Text<Currency>")]
+    pub currency: Currency,
     pub description: Option<String>,
     pub debits: NonEmpty<Line>,
     pub credits: NonEmpty<Line>,
@@ -469,7 +475,8 @@ pub(crate) struct TxnPost {
     pub company: Company,
     pub description: String,
     pub metadata: Option<String>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub date: Option<Date>,
     pub correlate: Option<PartnerTransactionId>,
     pub reference: Option<Reference>,
@@ -631,7 +638,8 @@ pub(crate) struct TrendInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
     pub period: Option<PeriodArg>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
@@ -659,7 +667,8 @@ pub(crate) struct TrialBalanceInput {
     pub to: Option<Date>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub period: Option<PeriodArg>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
@@ -674,7 +683,8 @@ pub(crate) struct BalanceInput {
     /// Inclusive end date. Supply either `to` or `as_of`.
     #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
@@ -684,7 +694,8 @@ pub(crate) struct BalanceInput {
 pub(crate) struct IncomeStatementInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub period: Option<PeriodArg>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
@@ -697,7 +708,8 @@ pub(crate) struct BalanceSheetInput {
     /// Inclusive end date. Supply either `to` or `as_of`.
     #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
@@ -707,7 +719,8 @@ pub(crate) struct BalanceSheetInput {
 pub(crate) struct TaxPeriodInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -715,7 +728,8 @@ pub(crate) struct TaxPeriodInput {
 pub(crate) struct Vendor1099Input {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     /// Nonnegative decimal in major currency units; defaults to "600".
     pub threshold: Option<Amount>,
 }
@@ -727,7 +741,8 @@ pub(crate) struct LedgerInput {
     pub account: Vec<Account>,
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     #[serde(default)]
     pub filter_metadata: Vec<String>,
 }
@@ -741,7 +756,8 @@ pub(crate) struct BudgetVarianceInput {
     pub to: Option<Month>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     #[serde(default)]
     pub include_unbudgeted: bool,
 }
@@ -755,7 +771,8 @@ pub(crate) struct AgingInput {
     pub as_of: Option<Date>,
     pub buckets: Option<String>,
     pub group_by_metadata: Option<String>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub method: Option<AgingMethodArg>,
     pub link_key: Option<String>,
     #[serde(default)]
@@ -783,7 +800,8 @@ pub(crate) struct ReconciliationInput {
     #[serde(default)]
     pub filter_metadata: Vec<String>,
     pub group_by_metadata: Option<String>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -793,7 +811,8 @@ pub(crate) struct CashFlowInput {
     pub to: Option<Date>,
     #[serde(default)]
     pub cash_account: Vec<Account>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
@@ -819,7 +838,8 @@ pub(crate) struct SecurityCreate {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
     pub name: String,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -962,7 +982,8 @@ pub(crate) struct SummaryOptions {
     /// Last date in the comparison period. Requires `compare_from`.
     pub compare_to: Option<Date>,
     /// Required when the company uses multiple currencies.
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     /// Cash asset accounts. Defaults to named cash/bank/checking/savings accounts.
     #[serde(default)]
     pub cash_account: Vec<Account>,

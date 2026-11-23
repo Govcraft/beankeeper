@@ -4,7 +4,7 @@ mod attention;
 mod model;
 
 use super::report::{AccountSelector, ChartRequest};
-use super::report_dates::{DateRange, Today, resolve_date};
+use super::report_dates::{DateRange, resolve_date};
 use crate::operation::Operation;
 use std::io::Write;
 
@@ -14,7 +14,7 @@ use clap::Args;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::cli::{Cli, CurrencyArg, OutputFormat, resolve_format};
+use crate::cli::{Cli, OutputFormat, resolve_format};
 use crate::db::{
     self, Actor, BalanceRow,
     companies::{Company, CompanySlug},
@@ -42,7 +42,7 @@ pub struct SummaryArgs {
     pub compare_to: Option<crate::cli::CalendarDateArg>,
     /// Currency code; required when the company's currencies are ambiguous.
     #[arg(long)]
-    pub currency: Option<crate::cli::CurrencyArg>,
+    pub currency: Option<Currency>,
     /// Cash asset account (repeatable). Defaults to cash/bank/checking/savings names.
     #[arg(long = "cash-account")]
     pub cash_account: Vec<String>,
@@ -215,7 +215,7 @@ impl SummaryRequest {
     ) -> Result<Self, CliError> {
         Ok(Self {
             company,
-            periods: dates.periods(Today::default().into())?,
+            periods: dates.periods(crate::request::LocalDate::default().into())?,
             currency,
             accounts,
             chart,
@@ -244,7 +244,7 @@ impl TryFrom<(&CompanySlug, &SummaryArgs, ChartRequest)> for SummaryRequest {
         Self::new(
             company.clone(),
             SummaryDates::try_from(args)?,
-            CurrencyArg::resolve_optional(args.currency.as_ref())?,
+            args.currency,
             SummaryAccounts {
                 cash: accounts(&args.cash_account),
                 receivables: accounts(&args.receivable_account),
@@ -628,7 +628,7 @@ mod tests {
         })?;
         let args = SummaryArgs {
             to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
-            currency: Some(Currency::BHD.into()),
+            currency: Some(Currency::BHD),
             ..SummaryArgs::default()
         };
         let report = compute(

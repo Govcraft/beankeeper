@@ -6,7 +6,7 @@ use beankeeper::{
     core::PositiveQuantity,
     types::{AccountCode, Currency, Money, NonNegativeMoney, PositiveMoney},
 };
-use chrono::{Local, NaiveDate};
+use chrono::NaiveDate;
 use serde::{Serialize, Serializer};
 
 use crate::cli::{
@@ -58,18 +58,12 @@ impl From<QuotationCurrency> for Currency {
 }
 
 /// Date at which an investment position is valued.
-#[derive(Clone, Copy)]
-pub struct ValuationDate(NaiveDate);
-
-impl Default for ValuationDate {
-    fn default() -> Self {
-        Self(Local::now().date_naive())
-    }
-}
+#[derive(Clone, Copy, Default)]
+pub struct ValuationDate(crate::request::LocalDate);
 
 impl From<Option<NaiveDate>> for ValuationDate {
     fn from(date: Option<NaiveDate>) -> Self {
-        date.map_or_else(Self::default, Self)
+        date.map_or_else(Self::default, |date| Self(date.into()))
     }
 }
 
@@ -348,7 +342,7 @@ impl InvestmentRequest {
                 investments::list_lots(&scope, symbol.as_ref()).map(InvestmentResponse::Lots)
             }
             Self::Holdings(company, date) => {
-                investments::holdings(db, &company, date.0).map(InvestmentResponse::Holdings)
+                investments::holdings(db, &company, date.0.into()).map(InvestmentResponse::Holdings)
             }
         }
     }

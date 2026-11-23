@@ -4,9 +4,7 @@ use beankeeper::types::{AccountCode, Currency};
 use chrono::Month;
 use serde::{Serialize, Serializer};
 
-use crate::cli::{
-    BudgetCommand, BudgetMonth, BudgetSetArgs, Cli, CurrencyArg, OutputFormat, resolve_format,
-};
+use crate::cli::{BudgetCommand, BudgetMonth, BudgetSetArgs, Cli, OutputFormat, resolve_format};
 use crate::commands::txn::MajorAmount;
 use crate::confirmation::{Confirmed, confirm_deletion};
 use crate::db::{
@@ -17,6 +15,7 @@ use crate::error::CliError;
 use crate::identity::{Budget, Granted};
 use crate::operation::Operation;
 use crate::output;
+use crate::request::CurrencySetting;
 
 /// A budget amount is either for one calendar month or for an entire year.
 enum BudgetScope {
@@ -71,7 +70,7 @@ pub struct BudgetSetInput {
     pub month: Option<Month>,
     pub amount: Option<MajorAmount>,
     pub annual: Option<MajorAmount>,
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
     pub notes: Option<String>,
 }
 
@@ -79,7 +78,7 @@ impl TryFrom<BudgetSetInput> for BudgetSetRequest {
     type Error = CliError;
 
     fn try_from(input: BudgetSetInput) -> Result<Self, Self::Error> {
-        let currency = input.currency.unwrap_or_default().try_into()?;
+        let currency = CurrencySetting::from(input.currency).try_into()?;
         Ok(Self {
             account: input.account,
             year: input.year,
@@ -100,7 +99,7 @@ impl TryFrom<&BudgetSetArgs> for BudgetSetRequest {
             month: args.month.map(BudgetMonth::calendar_month),
             amount: args.amount.as_deref().map(str::parse).transpose()?,
             annual: args.annual.as_deref().map(str::parse).transpose()?,
-            currency: args.currency.clone(),
+            currency: args.currency,
             notes: args.notes.clone(),
         }
         .try_into()
@@ -115,17 +114,17 @@ pub struct BudgetDeleteTarget {
     currency: Currency,
 }
 
-impl TryFrom<(AccountCode, i32, Option<Month>, Option<CurrencyArg>)> for BudgetDeleteTarget {
+impl TryFrom<(AccountCode, i32, Option<Month>, Option<Currency>)> for BudgetDeleteTarget {
     type Error = CliError;
 
     fn try_from(
-        (account, year, month, currency): (AccountCode, i32, Option<Month>, Option<CurrencyArg>),
+        (account, year, month, currency): (AccountCode, i32, Option<Month>, Option<Currency>),
     ) -> Result<Self, Self::Error> {
         Ok(Self {
             account,
             year,
             month,
-            currency: currency.unwrap_or_default().try_into()?,
+            currency: CurrencySetting::from(currency).try_into()?,
         })
     }
 }
@@ -248,7 +247,7 @@ impl TryFrom<BudgetCliInput<'_>> for Option<BudgetRequest> {
                         account_code(account)?,
                         *year,
                         month.map(BudgetMonth::calendar_month),
-                        currency.clone(),
+                        *currency,
                     )
                         .try_into()?,
                     confirmed,

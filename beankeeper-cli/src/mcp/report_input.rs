@@ -12,8 +12,7 @@ use crate::cli::{ActorFilterArg, ReconciliationMode};
 use crate::commands::{
     audit::AuditQuery,
     report::{
-        AccountSelector, ChartRequest, ReportQuery, ReportRequest, ReportScope, VarianceCurrency,
-        VarianceMonths,
+        AccountSelector, ChartRequest, ReportQuery, ReportRequest, ReportScope, VarianceMonths,
     },
     report_aging::{AgingRequest, AgingSelection, MatchMethod},
     report_periods::PeriodArg,
@@ -89,11 +88,7 @@ impl TryFrom<TaxPeriodInput> for ReportScope {
     type Error = CliError;
 
     fn try_from(input: TaxPeriodInput) -> Result<Self, Self::Error> {
-        Self::try_from((
-            date(input.from),
-            date(input.to),
-            input.currency.map(Text::into_inner),
-        ))
+        Self::try_from((date(input.from), date(input.to), input.currency))
     }
 }
 
@@ -101,8 +96,8 @@ impl TryFrom<ReportOptions> for ReportQuery {
     type Error = CliError;
 
     fn try_from(options: ReportOptions) -> Result<Self, Self::Error> {
-        let scope = |from, to, currency: Option<Text<beankeeper::types::Currency>>| {
-            ReportScope::try_from((date(from), date(to), currency.map(Text::into_inner)))
+        let scope = |from, to, currency: Option<beankeeper::types::Currency>| {
+            ReportScope::try_from((date(from), date(to), currency))
         };
         Ok(match options {
             ReportOptions::TrialBalance(input) => Self::TrialBalance {
@@ -212,7 +207,7 @@ impl TryFrom<BudgetVarianceInput> for ReportQuery {
             ))?
             .into(),
             account_type: input.account_type,
-            currency: VarianceCurrency::from(input.currency.map(Text::into_inner)).try_into()?,
+            currency: crate::request::CurrencySetting::from(input.currency).try_into()?,
             coverage: input.include_unbudgeted.into(),
         })
     }
@@ -228,7 +223,7 @@ impl TryFrom<AgingInput> for AgingRequest {
             as_of: date(input.as_of),
             buckets: input.buckets,
             group_by: input.group_by_metadata,
-            currency: input.currency.map(Text::into_inner),
+            currency: input.currency,
             method: input.method.map(Into::into).unwrap_or_default(),
             link_key: input.link_key,
             detail: input.detail,
@@ -254,7 +249,7 @@ impl TryFrom<ReconciliationInput> for ReconciliationSelection {
             link_key: input.link_key,
             filters: input.filter_metadata,
             group: input.group_by_metadata,
-            currency: input.currency.map(Text::into_inner),
+            currency: input.currency,
         }
         .try_into()
     }
@@ -273,7 +268,7 @@ impl TryFrom<FinancialSummary> for SummaryRequest {
                 date(options.compare_from),
                 date(options.compare_to),
             ])?,
-            options.currency.map(Text::into_inner),
+            options.currency,
             SummaryAccounts {
                 cash: accounts(options.cash_account),
                 receivables: accounts(options.receivable_account),

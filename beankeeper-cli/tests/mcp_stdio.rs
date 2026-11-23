@@ -658,8 +658,7 @@ fn cli_mutations_have_mcp_tools_or_documented_exclusions() -> TestResult {
     for path in cli_leaf_paths(&Cli::command(), "bk") {
         let name = path.trim_start_matches("bk ").replace(' ', ".");
         let operation = name.parse::<Operation>()?;
-        if operation == Operation::McpServe || Capability::for_operation(&name)? == Capability::Read
-        {
+        if operation == Operation::McpServe || operation.primary_capability()? == Capability::Read {
             continue;
         }
         if !tool_operations.contains(&operation) {
@@ -1891,6 +1890,59 @@ fn metadata_tools_share_cli_rules_and_audit_the_mcp_actor() -> TestResult {
 }
 
 #[test]
+fn invalid_currency_fails_at_both_parse_boundaries_with_validation_code() -> TestResult {
+    use beankeeper::types::CurrencyError;
+    use beankeeper_cli::cli::Cli;
+    use clap::Parser as _;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    let args = [
+        "--company",
+        "acme",
+        "txn",
+        "post",
+        "--description",
+        "Invalid",
+        "--debit",
+        "1000:1",
+        "--credit",
+        "4000:1",
+        "--currency",
+        "XXX",
+        "--format=json",
+    ];
+    let parse_error = Cli::try_parse_from(std::iter::once("bk").chain(args))
+        .expect_err("invalid currency must fail in clap");
+    assert!(matches!(
+        parse_error.source().and_then(|cause| cause.downcast_ref::<CurrencyError>()),
+        Some(CurrencyError::UnknownCode { code }) if code == "XXX"
+    ));
+    let cli = bk(&path)?.args(args).assert().code(3);
+    let cli: Value = serde_json::from_slice(&cli.get_output().stderr)?;
+    assert_eq!(cli["error"]["code"], "VALIDATION");
+    assert_eq!(cli["meta"]["command"], "txn.post");
+    assert_eq!(cli["meta"]["company"], "acme");
+    let detail = cli["error"]["message"]
+        .as_str()
+        .ok_or("CLI error message")?;
+    assert_eq!(detail, "unknown currency code: XXX");
+    assert!(!path.exists());
+
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let mut input = posting("invalid-currency");
+    input["currency"] = json!("XXX");
+    let mcp = client.call("txn_post", &input)?;
+    assert_parameter_rejection(&mcp, detail);
+    assert_eq!(payload(&mcp)?["code"], cli["error"]["code"]);
+    Ok(())
+}
+
+#[test]
 fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -1906,7 +1958,7 @@ fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
     bad_currency["currency"] = json!("XXX");
     for (input, detail) in [
         (empty_debits, "non-empty array"),
-        (bad_currency, "invalid currency"),
+        (bad_currency, "unknown currency code: XXX"),
     ] {
         let response = client.call("txn_post", &input)?;
         assert_parameter_rejection(&response, detail);
@@ -2598,7 +2650,8 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     assert!(!names.contains("period_reopen"));
     for name in names {
         assert_eq!(
-            beankeeper_cli::capability::Capability::for_operation(name)?,
+            name.parse::<beankeeper_cli::operation::Operation>()?
+                .primary_capability()?,
             beankeeper_cli::capability::Capability::Read
         );
     }
@@ -5254,7 +5307,7 @@ fn generated_operations_cover_cli_paths_mcp_schemas_and_permissions() -> TestRes
                 .is_some(),
             "{operation:?} has no clap path {path}"
         );
-        let permission = Capability::for_operation(operation.name());
+        let permission = operation.primary_capability();
         match operation.exposure() {
             Exposure::Both(name) | Exposure::McpOnly(name, _) => {
                 assert!(expected.insert(name), "duplicate registered tool {name}");
@@ -5268,7 +5321,7 @@ fn generated_operations_cover_cli_paths_mcp_schemas_and_permissions() -> TestRes
             }
             Exposure::Grouped(group) => {
                 assert!(matches!(group.exposure(), Exposure::McpOnly(_, _)));
-                assert_eq!(permission?, Capability::for_operation(group.name())?);
+                assert_eq!(permission?, group.primary_capability()?);
             }
             Exposure::CliOnly(CliOnlyReason::Transport) => assert!(permission.is_err()),
             Exposure::CliOnly(_) => {

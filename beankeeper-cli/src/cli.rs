@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use beankeeper::types::{AccountType, DebitOrCredit};
+use beankeeper::types::{AccountType, Currency, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -14,7 +14,7 @@ use crate::error::CliError;
 use crate::identity::WriteMode;
 use crate::ledger_target::{LedgerPath, LedgerPaths, LedgerTarget};
 use crate::operation::Operation;
-pub use crate::request::CurrencyArg;
+use crate::request::LocalDate;
 
 /// Double-entry accounting on the command line.
 #[derive(Parser, Debug)]
@@ -347,7 +347,7 @@ pub enum AgentLimitCommand {
         #[arg(long)]
         company: Option<CompanySlug>,
         #[arg(long)]
-        currency: CurrencyArg,
+        currency: Currency,
         #[arg(long)]
         max_post: Option<String>,
         #[arg(long)]
@@ -775,7 +775,7 @@ pub struct ScheduleCreateArgs {
     pub credit: Vec<String>,
     /// Currency code for all entries.
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
     /// Metadata copied to each posting.
     #[arg(short = 'm', long)]
     pub metadata: Option<String>,
@@ -803,9 +803,8 @@ pub enum ScheduleCommand {
     },
     /// Post due occurrences atomically (at most 1000 by default). Safe to retry.
     Run {
-        /// Inclusive cutoff date (default: today in local time).
-        #[arg(long)]
-        through: Option<chrono::NaiveDate>,
+        #[command(flatten)]
+        through: ScheduleThrough,
         /// Preview due occurrences without posting or advancing templates.
         #[arg(long)]
         dry_run: bool,
@@ -818,6 +817,48 @@ pub enum ScheduleCommand {
         /// Schedule `TypeID` returned by create/list.
         id: crate::db::schedules::ScheduleId,
     },
+}
+
+/// Inclusive cutoff for a schedule run.
+#[derive(Debug)]
+pub struct ScheduleThrough(LocalDate);
+
+#[derive(Args)]
+struct ScheduleThroughArg {
+    /// Inclusive cutoff date (default: today in local time).
+    #[arg(long)]
+    through: Option<LocalDate>,
+}
+
+impl FromArgMatches for ScheduleThrough {
+    fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
+        let args = ScheduleThroughArg::from_arg_matches(matches)?;
+        Ok(Self(args.through.unwrap_or_default()))
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), clap::Error> {
+        let args = ScheduleThroughArg::from_arg_matches(matches)?;
+        if let Some(date) = args.through {
+            self.0 = date;
+        }
+        Ok(())
+    }
+}
+
+impl Args for ScheduleThrough {
+    fn augment_args(command: clap::Command) -> clap::Command {
+        ScheduleThroughArg::augment_args(command)
+    }
+
+    fn augment_args_for_update(command: clap::Command) -> clap::Command {
+        ScheduleThroughArg::augment_args_for_update(command)
+    }
+}
+
+impl From<&ScheduleThrough> for chrono::NaiveDate {
+    fn from(through: &ScheduleThrough) -> Self {
+        through.0.into()
+    }
 }
 
 impl ScheduleCommand {
@@ -861,7 +902,7 @@ pub struct LoanCalculationArgs {
     pub months: u32,
     /// Currency used to interpret and display amounts.
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
 }
 
 /// Stateless monthly loan operations. No persistent loan records are created.
@@ -1178,7 +1219,7 @@ EXAMPLES:\n  \
 
         /// Currency code.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
 
         /// Skip confirmation prompt.
         #[arg(long)]
@@ -1212,7 +1253,7 @@ pub struct BudgetSetArgs {
 
     /// Currency code (default: USD or `BEANKEEPER_CURRENCY`).
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
 
     /// Optional note for the budget line.
     #[arg(long)]
@@ -1245,7 +1286,7 @@ pub struct BudgetVarianceArgs {
     /// Currency code. When omitted, inferred from the company's
     /// transactions (required if they use more than one currency).
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
 
     /// Include accounts with actuals but no budget.
     #[arg(long)]
@@ -1463,7 +1504,7 @@ EXAMPLES:\n  \
 
         /// Currency for balance totals. Required when the company uses multiple currencies.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
     },
 
     /// Show account details.
@@ -1790,7 +1831,7 @@ pub struct PostingArgs {
 
     /// Currency code.
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
 
     /// Transaction date (YYYY-MM-DD). Defaults to today.
     #[arg(long)]
@@ -1855,7 +1896,7 @@ pub struct TxnListArgs {
 
     /// Filter by currency code. Required for amount filters when the company has multiple currencies.
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
 
     /// Filter by idempotency reference key.
     #[arg(long)]
@@ -2134,7 +2175,7 @@ EXAMPLES:\n  \
         /// are included. Required when the company has transactions in more
         /// than one currency; otherwise inferred.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
         /// One column per period, plus a Total column. Defaults to year-to-date.
         #[arg(long, value_enum)]
         period: Option<crate::commands::report_periods::PeriodArg>,
@@ -2177,7 +2218,7 @@ EXAMPLES:\n  \
         /// are included. Required when the company has transactions in more
         /// than one currency; otherwise inferred.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
         /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
         #[arg(long)]
         compare: Option<crate::commands::report_periods::CompareArg>,
@@ -2208,7 +2249,7 @@ EXAMPLES:\n  \
         /// are included. Required when the company has transactions in more
         /// than one currency; otherwise inferred.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
         /// One column per period, plus a Total column. Defaults to year-to-date.
         #[arg(long, value_enum)]
         period: Option<crate::commands::report_periods::PeriodArg>,
@@ -2240,7 +2281,7 @@ EXAMPLES:\n  \
         /// are included. Required when the company has transactions in more
         /// than one currency; otherwise inferred.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
         /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
         #[arg(long)]
         compare: Option<crate::commands::report_periods::CompareArg>,
@@ -2270,7 +2311,7 @@ EXAMPLES:\n  \
         /// are included. Required when the company has transactions in more
         /// than one currency; otherwise inferred.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
     },
 
     /// Summarise Schedule C tags, including unmapped and untagged activity.
@@ -2307,7 +2348,7 @@ EXAMPLES:\n  \
 
         /// Currency code. Defaults to the company's only transaction currency.
         #[arg(long)]
-        currency: Option<CurrencyArg>,
+        currency: Option<Currency>,
 
         /// Only include entries whose transaction metadata has KEY equal to
         /// VALUE (same rule as `txn list`). Repeatable; AND-ed. The opening
@@ -2477,7 +2518,7 @@ pub struct AgingCommandArgs {
 
     /// Currency code. Defaults to the company's single transaction currency.
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
 
     /// How settlements are matched to charges.
     #[arg(long, value_enum)]
@@ -2550,7 +2591,7 @@ pub struct ReconciliationCommandArgs {
     /// Currency code. Defaults to the company's single transaction
     /// currency (USD when there are no transactions).
     #[arg(long)]
-    pub currency: Option<CurrencyArg>,
+    pub currency: Option<Currency>,
 }
 
 /// Output format for general commands.

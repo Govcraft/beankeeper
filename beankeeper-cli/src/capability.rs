@@ -1,7 +1,5 @@
 //! Shared CLI and MCP capability requirements. Unknown operations fail closed.
 
-use crate::error::CliError;
-
 /// Explicit grants beneath the ledger or UI identity path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
@@ -52,22 +50,12 @@ impl Capability {
             Self::Navigate => "ui/navigate",
         }
     }
-
-    /// Classify a CLI command name or MCP tool name with the same policy.
-    ///
-    /// # Errors
-    /// Returns a usage error for an operation without an explicit mapping.
-    pub fn for_operation(operation: &str) -> Result<Self, CliError> {
-        operation
-            .parse::<crate::operation::Operation>()?
-            .permission()
-            .primary()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{error::CliError, operation::Operation};
     use clap::CommandFactory;
 
     #[test]
@@ -82,13 +70,13 @@ mod tests {
                 if child.has_subcommands() {
                     visit(child, &name)?;
                 } else if name != "mcp.serve" {
-                    Capability::for_operation(&name)?;
+                    name.parse::<Operation>()?.primary_capability()?;
                 }
             }
             Ok(())
         }
         visit(&crate::cli::Cli::command(), "")?;
-        assert!(Capability::for_operation("unknown.mutation").is_err());
+        assert!("unknown.mutation".parse::<Operation>().is_err());
         for (operation, expected) in [
             ("txn_post", Capability::Post),
             ("txn_meta_set", Capability::Post),
@@ -101,7 +89,10 @@ mod tests {
             ("report.1099", Capability::Read),
             ("report", Capability::Read),
         ] {
-            assert_eq!(Capability::for_operation(operation)?, expected);
+            assert_eq!(
+                operation.parse::<Operation>()?.primary_capability()?,
+                expected
+            );
         }
         Ok(())
     }

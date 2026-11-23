@@ -416,7 +416,7 @@ impl TryFrom<&PostingArgs> for PostingRequest {
     type Error = CliError;
 
     fn try_from(args: &PostingArgs) -> Result<Self, Self::Error> {
-        let currency = args.currency.clone().unwrap_or_default().try_into()?;
+        let currency = crate::request::CurrencySetting::from(args.currency).try_into()?;
         Self::try_from(PostingDraft {
             description: args.description.clone(),
             currency,

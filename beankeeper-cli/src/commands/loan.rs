@@ -66,7 +66,7 @@ fn checked_money(amount: Amount, currency: Currency) -> Result<Money, CliError> 
 }
 
 fn calculate(args: &LoanCalculationArgs) -> Result<(Currency, ScheduleData), CliError> {
-    let currency = args.currency.clone().unwrap_or_default().try_into()?;
+    let currency = crate::request::CurrencySetting::from(args.currency).try_into()?;
     let principal = super::txn::parse_amount_to_minor(&args.principal, currency)?;
     let principal = Amount::new(i128::from(principal));
     let rate: AnnualRate = args.rate.parse().map_err(validation)?;

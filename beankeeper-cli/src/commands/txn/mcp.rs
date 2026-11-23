@@ -8,7 +8,7 @@ use super::{
     ListRequest, PostingDraft, PostingLine, PostingRequest, ReverseRequest, TxnRequest,
     parse_tax_args,
 };
-use crate::cli::{self, CurrencyArg};
+use crate::cli;
 use crate::db::{
     companies::CompanySlug,
     metadata::{self, MetadataEdit},
@@ -20,6 +20,7 @@ use crate::mcp::{
     input_values::{CalendarDate, Text},
     inputs,
 };
+use crate::request::CurrencySetting;
 
 impl TryFrom<inputs::TxnPost> for TxnRequest {
     type Error = CliError;
@@ -41,11 +42,7 @@ impl TryFrom<inputs::TxnPost> for (CompanySlug, PostingRequest) {
     type Error = CliError;
 
     fn try_from(input: inputs::TxnPost) -> Result<Self, Self::Error> {
-        let currency = input
-            .currency
-            .map(|currency| CurrencyArg::from(currency.into_inner()))
-            .unwrap_or_default()
-            .try_into()?;
+        let currency = CurrencySetting::from(input.currency).try_into()?;
         let lines = |items: crate::mcp::input_values::NonEmpty<inputs::Line>| {
             items
                 .into_vec()
@@ -146,7 +143,7 @@ impl TryFrom<inputs::TxnList> for TxnRequest {
                     .transpose()?
                     .unwrap_or_default(),
                 description: input.description,
-                currency: input.currency.map(Text::into_inner),
+                currency: input.currency,
                 amounts: [input.amount_gt, input.amount_lt, input.amount_eq]
                     .map(|amount| amount.map(Text::into_inner))
                     .into(),

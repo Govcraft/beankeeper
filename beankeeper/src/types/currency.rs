@@ -147,11 +147,17 @@ impl fmt::Display for Currency {
     }
 }
 
+// Human-facing parsing accepts whitespace and ASCII case differences.
 impl FromStr for Currency {
     type Err = CurrencyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_code(s)
+        let code = s.trim();
+        if code.bytes().any(|byte| byte.is_ascii_lowercase()) {
+            Self::from_code(&code.to_ascii_uppercase())
+        } else {
+            Self::from_code(code)
+        }
     }
 }
 

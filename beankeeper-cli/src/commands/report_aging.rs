@@ -59,7 +59,6 @@
 //! Unapplied credit cannot be attributed to a charge and is not shown.
 
 use super::report::{AccountSelector, ChartRequest, ReportOutput, ReportPresentation};
-use super::report_dates::Today;
 use crate::db::companies::Company;
 use crate::db::ids::TransactionId;
 use crate::operation::Operation;
@@ -1752,7 +1751,9 @@ impl TryFrom<AgingSelection> for AgingRequest {
     fn try_from(selection: AgingSelection) -> Result<Self, Self::Error> {
         Ok(Self {
             accounts: (selection.accounts, selection.include_children).try_into()?,
-            as_of: selection.as_of.unwrap_or_else(|| Today::default().into()),
+            as_of: selection
+                .as_of
+                .unwrap_or_else(|| crate::request::LocalDate::default().into()),
             currency: selection.currency,
             buckets: selection
                 .buckets
@@ -1785,7 +1786,7 @@ impl TryFrom<&crate::cli::AgingCommandArgs> for AgingRequest {
                 .transpose()?,
             buckets: args.buckets.clone(),
             group_by: args.group_by_metadata.clone(),
-            currency: crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
+            currency: args.currency,
             method: args.method.map(Into::into).unwrap_or_default(),
             link_key: args.link_key.clone(),
             detail: args.detail,

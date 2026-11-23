@@ -133,6 +133,34 @@ fn validation_error(output: &Output, expected: &str) -> TestResult {
     Ok(())
 }
 
+#[test]
+fn csv_import_uses_the_configured_currency_default() -> TestResult {
+    let ledger = Ledger::new()?;
+    let file = ledger.dir.path().join("bahrain.csv");
+    std::fs::write(&file, "date,description,amount\n2026-03-15,Deposit,1.234\n")?;
+
+    let import = || -> Result<Command, Box<dyn Error>> {
+        let mut command = ledger.command()?;
+        command
+            .args(["txn", "import", "--file"])
+            .arg(&file)
+            .args(BANK_FLAGS);
+        Ok(command)
+    };
+    let invalid = import()?.env("BEANKEEPER_CURRENCY", "XXX").output()?;
+    validation_error(&invalid, "BEANKEEPER_CURRENCY: unknown currency code: XXX")?;
+    assert_eq!(ledger.count("transactions")?, 0);
+
+    let configured = import()?.env("BEANKEEPER_CURRENCY", " bhd ").output()?;
+    assert_eq!(success(&configured)?["imported"], 1);
+    let db = Db::open_existing(&ledger.path, None)?;
+    let currency: beankeeper::types::Currency =
+        db.read()
+            .query_row("SELECT currency FROM transactions", [], |row| row.get(0))?;
+    assert_eq!(currency, beankeeper::types::Currency::BHD);
+    Ok(())
+}
+
 fn journal(reference: Option<&str>) -> Value {
     json!({
         "date": "2026-03-15", "description": "Split receipt", "reference": reference,
