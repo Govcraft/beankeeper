@@ -6,6 +6,8 @@ use agent_uri::AgentUri;
 
 use crate::{db::metadata::TransactionSource, error::CliError, identity::VerifiedAgent};
 
+use super::client_hint::ClientHint;
+
 /// A nonblank audit label, suitable for recording or for exact matching.
 #[derive(Debug, Clone)]
 pub struct ActorLabel(Label);
@@ -106,7 +108,13 @@ impl McpClientName {
 #[derive(Debug, Clone)]
 pub struct Actor {
     label: ActorLabel,
-    identity: Option<VerifiedAgent>,
+    attribution: Attribution,
+}
+
+#[derive(Debug, Clone)]
+enum Attribution {
+    Verified(Box<VerifiedAgent>),
+    Unverified(Option<ClientHint>),
 }
 
 impl Actor {
@@ -126,7 +134,7 @@ impl Actor {
     pub fn new(label: ActorLabel) -> Self {
         Self {
             label,
-            identity: None,
+            attribution: Attribution::Unverified(None),
         }
     }
 
@@ -176,32 +184,55 @@ impl Actor {
             }
             (None, None) => fallback(),
         };
-        Self { label, identity }
+        let attribution = match identity {
+            Some(agent) => Attribution::Verified(Box::new(agent)),
+            None => Attribution::Unverified(ClientHint::from_process().cloned()),
+        };
+        Self { label, attribution }
     }
 
     /// Attaches an identity verified against this ledger's trust root.
     #[must_use]
     pub fn with_identity(mut self, identity: VerifiedAgent) -> Self {
-        self.identity = Some(identity);
+        self.attribution = Attribution::Verified(Box::new(identity));
         self
     }
 
     /// Verified agent URI, if supplied.
     #[must_use]
     pub fn agent_uri(&self) -> Option<&str> {
-        self.identity.as_ref().map(VerifiedAgent::uri)
+        self.identity().map(VerifiedAgent::uri)
     }
 
     /// Verified token identifier, if supplied.
     #[must_use]
     pub fn token_jti(&self) -> Option<&str> {
-        self.identity.as_ref().map(VerifiedAgent::jti)
+        self.identity().map(VerifiedAgent::jti)
     }
 
     /// Verified signed identity attached to this operation.
     #[must_use]
     pub fn identity(&self) -> Option<&VerifiedAgent> {
-        self.identity.as_ref()
+        match &self.attribution {
+            Attribution::Verified(agent) => Some(agent),
+            Attribution::Unverified(_) => None,
+        }
+    }
+
+    pub(super) const fn client_hint(&self) -> Option<&ClientHint> {
+        match &self.attribution {
+            Attribution::Verified(_) => None,
+            Attribution::Unverified(hint) => hint.as_ref(),
+        }
+    }
+
+    pub(crate) fn unverified_hint_notice(&self) -> Option<String> {
+        let hint = self.client_hint()?;
+        Some(format!(
+            "[warn] Audit actor: {}. Client hint: {} (unverified). Pass --agent-token for verified attribution or --actor to name the actor.",
+            self.label(),
+            hint.runtime(),
+        ))
     }
 
     /// Returns the actor's validated label.

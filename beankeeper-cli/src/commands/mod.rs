@@ -168,6 +168,35 @@ fn report_operation(command: &ReportCommand) -> Operation {
 ///
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+    dispatch_command(cli, meta)?;
+    if !cli.verbosity.quiet
+        && can_append_audit(&cli.command)
+        && let Some(notice) = cli.principal().unverified_hint_notice()
+    {
+        audit::show_hint_notice(&notice);
+    }
+    Ok(())
+}
+
+fn can_append_audit(command: &Command) -> bool {
+    match command {
+        Command::Init { demo, .. } => *demo,
+        Command::Txn(args) if matches!(args.command.as_ref(), TxnCommand::Import(args) if args.dry_run) => {
+            false
+        }
+        Command::Schedule(args)
+            if matches!(
+                args.command,
+                crate::cli::ScheduleCommand::Run { dry_run: true, .. }
+            ) =>
+        {
+            false
+        }
+        _ => operation(command).writes_ledger(),
+    }
+}
+
+fn dispatch_command(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     crate::output::chart::validate_request(cli)?;
     if !matches!(
         cli.command,

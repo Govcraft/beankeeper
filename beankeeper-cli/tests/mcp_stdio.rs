@@ -28,6 +28,14 @@ fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
         "BEANKEEPER_CURRENCY",
         "BK_ACTOR",
         "BK_AGENT_TOKEN",
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+        "CODEX_SANDBOX",
+        "GEMINI_CLI",
+        "CURSOR_AGENT",
+        "AI_AGENT",
     ] {
         command.env_remove(name);
     }
@@ -256,6 +264,99 @@ fn stdio_and_cli_share_configured_actor_attribution() -> TestResult {
         let cli_audit: Value = serde_json::from_slice(&cli_audit.get_output().stdout)?;
         assert_eq!(cli_audit["data"], filtered);
     }
+    Ok(())
+}
+
+#[test]
+fn cli_and_mcp_audit_show_the_same_unverified_runtime_hint() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let secret = "session-secret-that-must-never-be-stored";
+    let with_markers = || -> Result<Command, Box<dyn Error>> {
+        let mut command = bk(&path)?;
+        command
+            .env("BK_ACTOR", "configured-operator")
+            .env("AI_AGENT", secret)
+            .env("CLAUDECODE", secret)
+            .env("CLAUDE_CODE_ENTRYPOINT", secret);
+        Ok(command)
+    };
+    let created = with_markers()?
+        .args(["--json", "company", "create", "cli-hint", "CLI Hint"])
+        .assert()
+        .success();
+    let notice = String::from_utf8_lossy(&created.get_output().stderr);
+    assert!(notice.contains("Client hint: claude-code (unverified)"));
+    assert!(!notice.contains(secret));
+    with_markers()?
+        .args(["--quiet", "company", "create", "quiet-hint", "Quiet Hint"])
+        .assert()
+        .success()
+        .stderr("");
+
+    let mut command = with_markers()?;
+    command.args(["--quiet", "mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    client.success(
+        "company_create",
+        &json!({"slug":"mcp-hint", "name":"MCP Hint"}),
+    )?;
+    let mcp = client.success("audit_log", &json!({"actor":"configured-operator"}))?;
+    let cli = with_markers()?
+        .args([
+            "--json",
+            "audit",
+            "log",
+            "--by-actor",
+            "configured-operator",
+        ])
+        .assert()
+        .success();
+    assert!(!String::from_utf8_lossy(&cli.get_output().stderr).contains("Client hint:"));
+    let rendered = String::from_utf8_lossy(&cli.get_output().stdout);
+    assert!(!rendered.contains(secret));
+    let cli: Value = serde_json::from_str(&rendered)?;
+    assert_eq!(cli["data"], mcp);
+    let rows = mcp.as_array().ok_or("missing audit rows")?;
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        assert_eq!(row["actor"], "configured-operator");
+        assert!(row["agent_uri"].is_null());
+        assert!(row["token_jti"].is_null());
+        assert_eq!(row["hash_version"], 5);
+        assert_eq!(
+            row["client_hint"],
+            json!({
+                "verified": false, "source": "env", "runtime": "claude-code",
+                "markers": ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]
+            })
+        );
+    }
+    let raw = rusqlite::Connection::open(&path)?;
+    let stored: String = raw.query_row(
+        "SELECT group_concat(client_hint) FROM audit_log WHERE actor = 'configured-operator'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(!stored.contains(secret));
+    bk(&path)?.arg("verify").assert().success();
+    assert!(
+        raw.execute(
+            "UPDATE audit_log SET client_hint = NULL WHERE company_slug = 'cli-hint'",
+            [],
+        )
+        .is_err()
+    );
+    raw.execute_batch(
+        "DROP TRIGGER protect_audit_update;
+         UPDATE audit_log SET client_hint = NULL WHERE company_slug = 'cli-hint';",
+    )?;
+    let verify = bk(&path)?.arg("verify").assert().code(4);
+    assert!(
+        String::from_utf8_lossy(&verify.get_output().stderr).contains("audit hash chain broken")
+    );
     Ok(())
 }
 
@@ -1679,6 +1780,7 @@ fn session_identity_is_recorded_and_live_revocation_blocks_the_next_tool_call() 
         .arg("--passphrase-file")
         .arg(&passphrase_file)
         .env("BK_AGENT_TOKEN", token)
+        .env("CODEX_THREAD_ID", "test-session")
         .args(["mcp", "serve"]);
     let mut client = Client::spawn(command)?;
     client.initialize()?;
@@ -1692,6 +1794,7 @@ fn session_identity_is_recorded_and_live_revocation_blocks_the_next_tool_call() 
     assert_eq!(audit.as_array().map(Vec::len), Some(1));
     assert_eq!(audit[0]["agent_uri"], agent);
     assert_eq!(audit[0]["token_jti"], issued["token_jti"]);
+    assert!(audit[0]["client_hint"].is_null());
     bk(&path)?
         .arg("--passphrase-file")
         .arg(&passphrase_file)
@@ -3148,15 +3251,22 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
 
     let temp = tempdir()?;
     let path = temp.path().join("legacy.db");
+    let current_path = temp.path().join("current.db");
     seed(&path)?;
     let connection = rusqlite::Connection::open(&path)?;
+    connection.execute(
+        "INSERT INTO accounts(company_slug, code, name, type)
+         VALUES ('acme', 'CASH', 'Legacy Cash', 'asset')",
+        [],
+    )?;
+    // Use a real current schema for the typed and MCP comparisons. Only the
+    // read-only setup commands see the fixture with its version rolled back.
+    connection.execute("VACUUM INTO ?1", [current_path.to_string_lossy().as_ref()])?;
     connection.execute_batch(
         "DROP TABLE setup_requests;
          DROP TABLE setup_book_profiles;
          DROP TABLE setup_statement_batches;
-         DELETE FROM schema_version WHERE version >= 22;
-         INSERT INTO accounts(company_slug, code, name, type)
-           VALUES ('acme', 'CASH', 'Legacy Cash', 'asset');",
+         DELETE FROM schema_version WHERE version >= 22;",
     )?;
     let read = bk(&path)?
         .args(["--json", "setup", "book-show", "acme"])
@@ -3191,7 +3301,7 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
     assert_eq!(version, 21);
     drop(connection);
 
-    let db = Db::open_existing(&path, None)?;
+    let db = Db::open_existing(&current_path, None)?;
     let company = "acme".parse()?;
     let typed = book_facts(&db, &company)?;
     assert!(
@@ -3206,7 +3316,7 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
     assert_eq!(typed_legacy.account_type, AccountType::Asset);
     assert_eq!(serde_json::to_value(typed)?, facts["data"]);
 
-    let mut server = bk(&path)?;
+    let mut server = bk(&current_path)?;
     server.args(["mcp", "serve", "--read-only"]);
     let mut client = Client::spawn(server)?;
     client.initialize()?;

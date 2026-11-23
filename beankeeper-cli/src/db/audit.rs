@@ -39,6 +39,10 @@ use crate::error::CliError;
 mod actor;
 mod attachment;
 pub use actor::{Actor, ActorLabel, BlankActorLabel};
+mod client_hint;
+pub use client_hint::{AgentRuntime, ClientHint, EnvSnapshot, UnknownAgentRuntime};
+mod hash_version;
+pub use hash_version::{HashVersion, UnsupportedHashVersion};
 mod posting;
 pub(super) use posting::persist_posting;
 pub(super) mod catalog;
@@ -249,7 +253,16 @@ pub struct AuditLogRow {
     pub row_hash: String,
     pub agent_uri: Option<String>,
     pub token_jti: Option<String>,
-    pub hash_version: i64,
+    pub hash_version: HashVersion,
+    client_hint: Option<ClientHint>,
+}
+
+impl AuditLogRow {
+    /// Unverified process context, when a runtime marker was detected.
+    #[must_use]
+    pub const fn client_hint(&self) -> Option<&ClientHint> {
+        self.client_hint.as_ref()
+    }
 }
 
 /// The predecessor of the first row in a version 1 audit chain.
@@ -260,12 +273,7 @@ pub(super) const GENESIS_HASH: &str =
 /// Snapshots are hashed as their stored UTF-8 strings, without reformatting JSON.
 fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
     let mut fields = vec![
-        serde_json::json!(match row.hash_version {
-            1 => "beankeeper.audit.v1",
-            2 => "beankeeper.audit.v2",
-            3 => "beankeeper.audit.v3",
-            _ => "beankeeper.audit.v4",
-        }),
+        serde_json::json!(row.hash_version.domain()),
         serde_json::json!(row.id),
         serde_json::json!(row.changed_at),
         serde_json::json!(row.actor),
@@ -276,18 +284,14 @@ fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
         serde_json::json!(row.before),
         serde_json::json!(row.after),
     ];
-    match row.hash_version {
-        1 if row.agent_uri.is_none() && row.token_jti.is_none() => {}
-        2..=4 => {
-            fields.push(serde_json::json!(row.agent_uri));
-            fields.push(serde_json::json!(row.token_jti));
-        }
-        _ => {
-            return Err(CliError::Database(format!(
-                "invalid audit hash version at row #{}",
-                row.id
-            )));
-        }
+    if row.hash_version.includes_identity() {
+        fields.push(serde_json::json!(row.agent_uri));
+        fields.push(serde_json::json!(row.token_jti));
+    }
+    if row.hash_version == HashVersion::V5 {
+        fields.push(serde_json::json!(
+            row.client_hint().map(ClientHint::hash_fields)
+        ));
     }
     let canonical = serde_json::to_vec(&fields)
         .map_err(|e| CliError::Database(format!("cannot encode audit row: {e}")))?;
@@ -312,7 +316,8 @@ fn read_v1_audit_row(row: &rusqlite::Row<'_>, id: i64) -> rusqlite::Result<Audit
         row_hash: row.get(10)?,
         agent_uri: None,
         token_jti: None,
-        hash_version: 1,
+        hash_version: HashVersion::V1,
+        client_hint: None,
     })
 }
 
@@ -325,12 +330,44 @@ fn read_audit_row_with_id(row: &rusqlite::Row<'_>, id: i64) -> rusqlite::Result<
     result.agent_uri = row.get(11)?;
     result.token_jti = row.get(12)?;
     result.hash_version = row.get(13)?;
+    result.client_hint = row.get(14)?;
+    let has_identity = result.agent_uri.is_some();
+    if has_identity != result.token_jti.is_some()
+        || (has_identity && !result.hash_version.includes_identity())
+        || (result.client_hint.is_some()
+            && (has_identity || result.hash_version != HashVersion::V5))
+    {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            14,
+            rusqlite::types::Type::Text,
+            Box::new(InvalidAuditAttribution),
+        ));
+    }
     Ok(result)
 }
+
+#[derive(Debug)]
+struct InvalidAuditAttribution;
+
+impl std::fmt::Display for InvalidAuditAttribution {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("invalid audit attribution for this hash version")
+    }
+}
+
+impl std::error::Error for InvalidAuditAttribution {}
 
 const AUDIT_V1_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash";
 
 const AUDIT_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash, agent_uri, token_jti, hash_version";
+
+fn audit_columns(schema: i64) -> String {
+    match schema {
+        super::schema::CLIENT_HINT_SCHEMA_VERSION.. => format!("{AUDIT_COLUMNS}, client_hint"),
+        13.. => format!("{AUDIT_COLUMNS}, NULL"),
+        _ => format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1, NULL"),
+    }
+}
 
 /// Called only by the v12 migration, before append-only triggers are installed.
 pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
@@ -407,11 +444,7 @@ pub(super) fn verify_hash_chain_at(
     reader: ReadConn<'_>,
     version: i64,
 ) -> Result<VerifiedAuditChain, CliError> {
-    let columns = if version < 13 {
-        format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1")
-    } else {
-        AUDIT_COLUMNS.to_string()
-    };
+    let columns = audit_columns(version);
     let mut stmt = reader.prepare(&format!("SELECT {columns} FROM audit_log ORDER BY id"))?;
     let mut rows = stmt.query([])?;
     let mut head: Option<AuditHead> = None;
@@ -501,6 +534,8 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         )
         .optional()?
         .unwrap_or_else(|| GENESIS_HASH.to_string());
+    let version = HashVersion::for_schema(super::schema::get_schema_version(ReadConn::new(conn))?);
+    let has_client_hint_column = version == HashVersion::V5;
     let row = AuditLogRow {
         id,
         changed_at,
@@ -515,28 +550,47 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         row_hash: String::new(),
         agent_uri: actor.agent_uri().map(str::to_owned),
         token_jti: actor.token_jti().map(str::to_owned),
-        hash_version: match super::schema::get_schema_version(ReadConn::new(conn))? {
-            20.. => 4,
-            18.. => 3,
-            _ => 2,
+        hash_version: version,
+        client_hint: if has_client_hint_column {
+            actor.client_hint().cloned()
+        } else {
+            None
         },
     };
     let hash = row_hash(&row)?;
+    let version = i64::from(row.hash_version);
+    let bindings = params![
+        row.id,
+        row.changed_at,
+        row.actor,
+        company_slug,
+        entity.as_str(),
+        entity_id,
+        action.as_str(),
+        snapshots.0,
+        snapshots.1,
+        row.prev_hash,
+        hash,
+        row.agent_uri,
+        row.token_jti,
+        version,
+    ];
+    let (column, placeholder) = if has_client_hint_column {
+        (", client_hint", ", ?15")
+    } else {
+        ("", "")
+    };
     conn.execute(
-        "INSERT INTO audit_log \
-         (id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash, agent_uri, token_jti, hash_version) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        params![
-            row.id, row.changed_at,
-            row.actor,
-            company_slug,
-            entity.as_str(),
-            entity_id,
-            action.as_str(),
-            snapshots.0,
-            snapshots.1,
-            row.prev_hash, hash, row.agent_uri, row.token_jti, row.hash_version,
-        ],
+        &format!(
+            "INSERT INTO audit_log ({AUDIT_COLUMNS}{column})
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14{placeholder})",
+        ),
+        rusqlite::params_from_iter(
+            bindings
+                .iter()
+                .copied()
+                .chain(has_client_hint_column.then_some(&row.client_hint as &dyn rusqlite::ToSql)),
+        ),
     )?;
     Ok(())
 }
@@ -980,7 +1034,7 @@ fn posting_snapshot(
     conn: ReadConn<'_>,
     company: &crate::db::companies::CompanySlug,
     id: TransactionId,
-    hash_version: i64,
+    hash_version: HashVersion,
 ) -> Result<serde_json::Value, CliError> {
     let (txn, entries, date_text) = super::transactions::get_transaction_for_audit(
         &crate::db::companies::Company::bind(conn, company.clone())?,
@@ -996,7 +1050,7 @@ fn posting_snapshot(
         "currency": txn.currency.code(), "date": date_text, "posted_at": txn.posted_at,
         "reference": txn.reference, "posted_by": txn.posted_by, "entries": entries,
     });
-    if hash_version >= 2 {
+    if hash_version.includes_identity() {
         result["agent_uri"] = serde_json::json!(txn.agent_uri);
         result["token_jti"] = serde_json::json!(txn.token_jti);
     }
@@ -1010,7 +1064,7 @@ fn record_creation(
     company: &crate::db::companies::CompanySlug,
     id: TransactionId,
 ) -> Result<(), CliError> {
-    let posting = posting_snapshot(tx.read(), company, id, 2)?;
+    let posting = posting_snapshot(tx.read(), company, id, HashVersion::V2)?;
     record(
         tx.connection(),
         actor,
@@ -1052,7 +1106,7 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
         let valid = if let Some(row) = rows.next()? {
             let actor: String = row.get(0)?;
             let after: String = row.get(1)?;
-            let hash_version: i64 = row.get(2)?;
+            let hash_version: HashVersion = row.get(2)?;
             let agent: Option<String> = row.get(3)?;
             let jti: Option<String> = row.get(4)?;
             let expected = posting_snapshot(conn, &company, id, hash_version).map_err(|e| {
@@ -1060,7 +1114,7 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
                     "transaction #{id} missing for creation audit record: {e}"
                 ))
             })?;
-            let identity_matches = if hash_version == 1 {
+            let identity_matches = if hash_version == HashVersion::V1 {
                 let (txn, _) = super::transactions::get_transaction(
                     &crate::db::companies::Company::bind(conn, company.clone())?,
                     id,
@@ -2686,7 +2740,8 @@ pub fn list_audit(
     params: &ListAuditParams<'_>,
 ) -> Result<Vec<AuditLogRow>, CliError> {
     let (filter, mut values) = audit_filter(params);
-    let sql = format!("SELECT {AUDIT_COLUMNS}{filter} ORDER BY id DESC LIMIT ? OFFSET ?");
+    let columns = audit_columns(super::schema::get_schema_version(conn)?);
+    let sql = format!("SELECT {columns}{filter} ORDER BY id DESC LIMIT ? OFFSET ?");
     values.push(rusqlite::types::Value::Integer(i64::from(
         params.limit.get(),
     )));

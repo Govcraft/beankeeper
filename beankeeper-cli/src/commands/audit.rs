@@ -12,6 +12,12 @@ use crate::db::{Db, ListAuditParams, count_audit, list_audit};
 use crate::error::CliError;
 use crate::output;
 
+pub(crate) fn show_hint_notice(notice: &str) {
+    use std::io::Write as _;
+
+    let _ = writeln!(std::io::stderr().lock(), "{notice}");
+}
+
 /// Execute `bk audit log`.
 ///
 /// # Errors
@@ -70,10 +76,12 @@ fn run_log(
             println!("{json}");
         }
         OutputFormat::Csv => {
-            println!("id,changed_at,actor,company,entity,entity_id,action,agent_uri,token_jti");
+            println!(
+                "id,changed_at,actor,company,entity,entity_id,action,agent_uri,token_jti,unverified_client_runtime"
+            );
             for r in &rows {
                 println!(
-                    "{},{},{},{},{},{},{},{},{}",
+                    "{},{},{},{},{},{},{},{},{},{}",
                     r.id,
                     csv_field(&r.changed_at),
                     csv_field(&r.actor),
@@ -87,6 +95,9 @@ fn run_log(
                     csv_field(r.action.as_str()),
                     csv_field(r.agent_uri.as_deref().unwrap_or("")),
                     csv_field(r.token_jti.as_deref().unwrap_or("")),
+                    r.client_hint()
+                        .map(|hint| hint.runtime().to_string())
+                        .unwrap_or_default(),
                 );
             }
         }
@@ -118,6 +129,9 @@ fn run_log(
                         "  Agent: {uri}  Token: {}",
                         r.token_jti.as_deref().unwrap_or("unknown")
                     );
+                }
+                if let Some(hint) = r.client_hint() {
+                    println!("  Client hint: {} (unverified)", hint.runtime());
                 }
             }
             if !cli.verbosity.quiet {
@@ -211,6 +225,7 @@ fn audit_data(
                 "actor": r.actor,
                 "agent_uri": r.agent_uri,
                 "token_jti": r.token_jti,
+                "client_hint": r.client_hint(),
                 "hash_version": r.hash_version,
                 "company_slug": r.company_slug,
                 "entity": r.entity,

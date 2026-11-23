@@ -5,9 +5,10 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = 24;
+pub(crate) const CURRENT_VERSION: i64 = CLIENT_HINT_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
+pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -141,6 +142,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < 24 {
         apply_v24(conn)?;
+    }
+    if version < CLIENT_HINT_SCHEMA_VERSION {
+        apply_v25(conn)?;
     }
 
     debug_assert_eq!(
@@ -1253,7 +1257,7 @@ fn apply_v20(conn: &Connection) -> Result<(), CliError> {
         for (name, _) in &triggers {
             conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
         }
-        rebuild_v4_audit(conn, false)?;
+        rebuild_audit(conn, AuditTable::Periods)?;
         for (_, sql) in &triggers {
             conn.execute_batch(sql)?;
         }
@@ -1389,6 +1393,15 @@ fn apply_v23(conn: &Connection) -> Result<(), CliError> {
 
 /// Admit the demo event without changing existing audit rows or their hashes.
 fn apply_v24(conn: &Connection) -> Result<(), CliError> {
+    migrate_audit(conn, AuditTable::Demo, 24)
+}
+
+/// Add unverified client hints without rewriting historical hashes.
+fn apply_v25(conn: &Connection) -> Result<(), CliError> {
+    migrate_audit(conn, AuditTable::ClientHints, CLIENT_HINT_SCHEMA_VERSION)
+}
+
+fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
         let triggers = [
@@ -1407,25 +1420,45 @@ fn apply_v24(conn: &Connection) -> Result<(), CliError> {
             definitions.push(definition);
             conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
         }
-        rebuild_v4_audit(conn, true)?;
+        rebuild_audit(conn, table)?;
         for definition in definitions {
             conn.execute_batch(&definition)?;
         }
-        conn.execute("INSERT INTO schema_version(version) VALUES (24)", [])?;
+        conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
 }
 
-fn rebuild_v4_audit(conn: &Connection, include_demo: bool) -> Result<(), CliError> {
-    let (entity, action) = if include_demo {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuditTable {
+    Periods,
+    Demo,
+    ClientHints,
+}
+
+fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+    let (entity, action) = if table == AuditTable::Periods {
+        (String::new(), String::new())
+    } else {
         use super::audit::{AuditAction, AuditEntity};
         (
             format!(",'{}'", AuditEntity::Demo),
             format!(",'{}'", AuditAction::DemoSeed),
         )
+    };
+    let (hash_version, version_suffix, column, check, select_suffix) = if table
+        == AuditTable::ClientHints
+    {
+        (
+            5,
+            ",5",
+            "client_hint TEXT,",
+            ", CHECK(client_hint IS NULL OR (hash_version = 5 AND agent_uri IS NULL AND json_valid(client_hint)))",
+            ", NULL",
+        )
     } else {
-        (String::new(), String::new())
+        (4, "", "", "", "")
     };
     conn.execute_batch(&format!(
         "CREATE TABLE audit_log_rebuild (
@@ -1442,11 +1475,13 @@ fn rebuild_v4_audit(conn: &Connection, include_demo: bool) -> Result<(), CliErro
                 row_hash TEXT NOT NULL CHECK(length(row_hash) = 64),
                 agent_uri TEXT,
                 token_jti TEXT,
-                hash_version INTEGER NOT NULL DEFAULT 4 CHECK(hash_version IN (1,2,3,4)),
+                hash_version INTEGER NOT NULL DEFAULT {hash_version} CHECK(hash_version IN (1,2,3,4{version_suffix})),
+                {column}
                 CHECK((agent_uri IS NULL) = (token_jti IS NULL)),
                 CHECK(hash_version != 1 OR agent_uri IS NULL)
+                {check}
             );
-            INSERT INTO audit_log_rebuild SELECT * FROM audit_log ORDER BY id;
+            INSERT INTO audit_log_rebuild SELECT *{select_suffix} FROM audit_log ORDER BY id;
             DROP TRIGGER protect_audit_insert;
             DROP TRIGGER protect_audit_update;
             DROP TRIGGER protect_audit_delete;
@@ -1465,7 +1500,7 @@ fn rebuild_v4_audit(conn: &Connection, include_demo: bool) -> Result<(), CliErro
               OR COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)
                  IS NOT COALESCE((SELECT MAX(id) FROM audit_log), 0)
               OR NEW.prev_hash IS NOT COALESCE((SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1), printf('%064d', 0))
-              OR NEW.hash_version != 4
+              OR NEW.hash_version != {hash_version}
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
         "
     ))?;
@@ -1621,7 +1656,7 @@ mod tests {
         audit::verify_creations(ReadConn::new(&conn))?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
         periods::verify(ReadConn::new(&conn))?;
-        assert_eq!(history(&conn)?.last().map(|row| row.0), Some(4));
+        assert_eq!(history(&conn)?.last().map(|row| row.0), Some(5));
         ensure_schema(&conn)?;
         Ok(())
     }
@@ -1748,6 +1783,61 @@ mod tests {
     }
 
     #[test]
+    fn v25_preserves_all_earlier_hash_versions_and_requires_v5_appends() -> Result<(), CliError> {
+        use super::super::{Actor, audit};
+
+        let conn = v17_connection()?;
+        let owner = Actor::new("owner".parse()?);
+        let append = |id| {
+            audit::record_identity(
+                &conn,
+                &owner,
+                audit::IdentityEvent::TokenRevoked,
+                id,
+                &serde_json::json!({}),
+            )
+        };
+        apply_v18(&conn)?;
+        append("v3")?;
+        apply_v19(&conn)?;
+        apply_v20(&conn)?;
+        append("v4")?;
+        apply_v21(&conn)?;
+        apply_v22(&conn)?;
+        apply_v23(&conn)?;
+        apply_v24(&conn)?;
+
+        let history = || -> Result<Vec<(i64, String, String)>, CliError> {
+            Ok(conn
+                .prepare("SELECT hash_version, prev_hash, row_hash FROM audit_log ORDER BY id")?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?)
+        };
+        let before = history()?;
+        assert_eq!(
+            before.iter().map(|row| row.0).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        ensure_schema(&conn)?;
+        assert_eq!(history()?, before);
+        assert!(
+            conn.execute(
+                "INSERT INTO audit_log(id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
+                 SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 4
+                 FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+            )
+            .is_err()
+        );
+        append("v5")?;
+        let mixed = history()?;
+        assert_eq!(&mixed[..before.len()], before);
+        assert_eq!(mixed.last().map(|row| row.0), Some(5));
+        assert_eq!(audit::verify_hash_chain(ReadConn::new(&conn))?.length(), 5);
+        Ok(())
+    }
+
+    #[test]
     fn v18_preserves_mixed_history_and_blocks_old_writers() -> Result<(), CliError> {
         let conn = v17_connection()?;
         let hashes = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
@@ -1772,7 +1862,7 @@ mod tests {
             &super::super::Actor::new("owner".parse()?),
             |grant| super::super::audit::set_policy(grant, true),
         )?;
-        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(4));
+        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(5));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(ReadConn::new(&conn))?;
         for sql in [

@@ -76,6 +76,12 @@ token; HTTP accepts a bearer token per request and always requires verification.
 Both recheck every call. Invalid, expired or revoked supplied tokens return
 `UNAUTHORIZED` (exit 6 for CLI, HTTP 401 at the HTTP boundary).
 
+With enforcement off, writes without a token can record an unverified client
+hint from known runtime environment markers. The hint records only allowlisted
+marker names and leaves the actor label independent. See it in `bk audit log`
+and MCP `audit_log`. Use `--quiet` to suppress the stderr notice on CLI
+commands or when launching a stdio MCP server.
+
 Enforcement defaults to off. CLI 0.24.0 adds `bk policy show` and
 `bk policy set --enforce on|off`. Bootstrap by issuing a token with
 `ledger/read,ledger/admin`, saving it, then enabling as a named actor. Once on,
