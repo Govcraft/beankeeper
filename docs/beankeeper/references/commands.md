@@ -461,7 +461,9 @@ Read-only mode removes `company_create`, `company_delete`, `account_create`, `tx
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
 `ledger_setup_account_add`, `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
-`ledger_setup_statement_preview`, and `ledger_setup_statement_commit` from the router.
+`ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
+`rule_create`, `rule_amend`, `rule_delete`, `bookkeeping_policy_set` and
+`inform_preference_set` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
@@ -485,7 +487,6 @@ When `txn post` or `txn_post` omits currency, the posting uses
 | `bk agent limit set`, `bk agent limit clear`, `bk policy set` | Owner-managed authorization policy and limits. |
 | `bk account delete` | Permanent catalog deletion uses local confirmation. |
 | `bk txn import`, `bk txn attach` | The CLI works with local files. The bounded, reviewed statement import path has separate setup MCP tools. |
-| `bk rule create`, `bk rule delete` | Rule management is deferred until the MCP rule contract is available. |
 | `bk schedule create`, `bk schedule cancel`, `bk schedule run` | Recurring template management and execution are deferred until the MCP scheduling contract is available. |
 | `bk loan pay` | The dedicated loan-terms input and payment calculation are deferred. Agents can already post a balanced payment through `txn_post`. |
 
@@ -501,7 +502,7 @@ for Claude Desktop and Codex examples without plaintext secrets.
 |---|---|
 | `bk export` | The CLI supports writing a full ledger export to a local file. |
 | `bk agent list`, `bk agent limit show`, `bk policy show` | Owner-managed credential and authorization settings use the local CLI. |
-| `bk rule list`, `bk schedule list`, `bk loan schedule` | These operations predate a corresponding MCP input contract. |
+| `bk schedule list`, `bk loan schedule` | These operations predate a corresponding MCP input contract. |
 
 ## Period close and locking
 
@@ -1568,7 +1569,9 @@ OFX/QFX bank imports. Supply `--company` or `BEANKEEPER_COMPANY`.
 bk --company acme rule create --contains Starbucks --account 5000 --priority 10
 bk --company acme rule list --json
 bk --company acme rule list --format csv
-bk --company acme rule delete <RULE_ID> --force
+bk --company acme rule match --description 'Starbucks 102' --json
+bk --company acme rule amend "$RULE_ID" --contains Starbucks --account 5100 --priority 10
+bk --company acme rule delete "$RULE_ID" --force
 ```
 
 - `create --contains TEXT --account CODE [--priority INTEGER]`: stores a rule
@@ -1577,10 +1580,16 @@ bk --company acme rule delete <RULE_ID> --force
   this company. Priority defaults to `0`; negative values are supported.
 - `list`: returns rules in evaluation order, highest priority first, then
   ascending rule ID. JSON `data` is an array of `{id, company_slug, contains,
-  account_code, priority}` objects; `create` returns a one-element array.
+  account_code, priority}` objects. `create` and `amend` return a one-element
+  array. Amended rules also carry `supersedes` with the prior rule ID.
+- `amend ID --contains TEXT --account CODE [--priority INTEGER]` supersedes an
+  active rule with the full replacement terms, including the default priority
+  when omitted. Use the returned ID for subsequent changes.
+- `match --description TEXT` checks the same rule order without posting. JSON
+  returns `{"outcome":"match","rule":{...}}` or `{"outcome":"no_match"}`.
 - `delete ID [--force]`: removes only this company's rule. Prompts on interactive
-  stdin unless forced. JSON `data` is `{deleted: ID}`. Delete and recreate a rule
-  to revise its mapping. Unknown IDs return `NOT_FOUND` (exit 5).
+  stdin unless forced. JSON `data` is `{deleted: ID}`. Unknown or inactive IDs
+  return `NOT_FOUND` (exit 5).
 
 Matching lowercases the entire imported description and finds a literal
 substring; `%`, `_`, and regex characters are ordinary text. CSV uses its mapped
@@ -1594,10 +1603,45 @@ Account tax defaults are inherited by the actual selected entries.
 Rules apply to dry runs. JSON journal batches remain explicit and ignore rules.
 Generated CSV references are computed before categorization, so adding or
 removing rules does not duplicate existing transactions. Previously posted
-transactions remain unchanged. Creation and deletion are atomic with audit
-snapshots (`--entity rule`, `--action create` / `--action rule-delete`). An
-account cannot be deleted while a rule references it. No rule MCP tools are
-exposed; use these CLI commands to manage rules.
+transactions remain unchanged. Updates are atomic with audit snapshots
+(`--entity rule`, actions `create`, `rule-supersede` and `rule-delete`).
+An account cannot be deleted while an active rule references it.
+
+| MCP tool | Arguments |
+|---|---|
+| `rule_list` | `company` |
+| `rule_create` | `company`, `contains`, `account`, optional integer `priority` |
+| `rule_amend` | `company`, `id`, `contains`, `account`, optional integer `priority` |
+| `rule_match` | `company`, `description` |
+| `rule_delete` | `company`, `id` |
+
+## Standing bookkeeping and inform preferences
+
+Use `bk --company COMPANY bookkeeping-policy show` to read both instructions.
+Use `bk --company COMPANY bookkeeping-policy set sales-tax VALUE` or
+`bk --company COMPANY bookkeeping-policy set processor-fees VALUE` to set one.
+
+| Policy kind | Values |
+|---|---|
+| `sales-tax` | `unset`, `track-liability`, `marketplace-remitted`, `not-applicable` |
+| `processor-fees` | `unset`, `separate-expense`, `net-from-revenue` |
+
+Use `bk --company COMPANY inform-preference show` or
+`bk --company COMPANY inform-preference set VALUE`. Values are `per-change`
+(the default), `daily-digest` and `weekly-digest`.
+
+| MCP tool | Arguments | Result |
+|---|---|---|
+| `bookkeeping_policy_show` | `company` | `{sales_tax, processor_fees}` |
+| `bookkeeping_policy_set` | `company`, `policy` with `{kind, value}` | `{sales_tax, processor_fees}` |
+| `inform_preference_show` | `company` | `{preference}` |
+| `inform_preference_set` | `company`, `preference` | `{preference}` |
+
+Setting changes take effect immediately and audit both values under
+`bookkeeping_policy` or `inform_preference`. Restore an earlier value with the
+same set operation. Repeating a configured value leaves the audit history
+unchanged. These settings record the owner's instructions for the agent and
+leave posted transactions and capability enforcement intact.
 
 ## Audit
 
@@ -1750,7 +1794,7 @@ off; afterward all ledger commands require tokens and policy changes require
 | Required capability | Commands |
 | --- | --- |
 | `ledger/read` | List/show, report, export, verify, audit log, agent list, policy show, loan schedule |
-| `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/delete |
+| `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/amend/delete, bookkeeping-policy set, inform-preference set |
 | `ledger/propose` | txn propose, list/withdraw owned proposals |
 | `ledger/approve` | List all proposals, txn approve/reject |
 | `ledger/reverse` | txn reverse |
