@@ -5,10 +5,11 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = CLIENT_HINT_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = RECEIPT_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
+pub(crate) const RECEIPT_SCHEMA_VERSION: i64 = 26;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -145,6 +146,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < CLIENT_HINT_SCHEMA_VERSION {
         apply_v25(conn)?;
+    }
+    if version < RECEIPT_SCHEMA_VERSION {
+        apply_v26(conn)?;
     }
 
     debug_assert_eq!(
@@ -1401,6 +1405,48 @@ fn apply_v25(conn: &Connection) -> Result<(), CliError> {
     migrate_audit(conn, AuditTable::ClientHints, CLIENT_HINT_SCHEMA_VERSION)
 }
 
+fn apply_v26(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        migrate_audit(conn, AuditTable::Receipts, RECEIPT_SCHEMA_VERSION)?;
+        conn.execute_batch(
+            "ALTER TABLE accounts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
+                 CHECK (archived IN (0, 1));
+             CREATE INDEX idx_receipt_company ON audit_log(company_slug, id);
+             CREATE UNIQUE INDEX idx_receipt_undo ON audit_log(company_slug,
+                 json_extract(CASE WHEN json_valid(after) THEN after END, '$.undo_of'))
+                 WHERE action IN ('reverse', 'account_archive');
+             CREATE INDEX idx_receipt_posting ON audit_log(company_slug,
+                 json_extract(CASE WHEN json_valid(after) THEN after END,
+                     CASE action WHEN 'reverse' THEN '$.reversed_by' ELSE '$.transaction_id' END))
+                 WHERE action IN ('reverse', 'proposal_approve');
+             CREATE VIEW audit_receipt_postings AS
+                 SELECT id, company_slug, json_extract(CASE WHEN json_valid(after) THEN after END,
+                     CASE action WHEN 'reverse' THEN '$.reversed_by' ELSE '$.transaction_id' END)
+                     AS posting_id
+                 FROM audit_log WHERE action IN ('reverse', 'proposal_approve');
+             CREATE TRIGGER protect_archived_account_delete BEFORE DELETE ON accounts
+                 WHEN OLD.archived = 1
+                 BEGIN SELECT RAISE(ABORT, 'archived accounts are retained'); END;
+             CREATE TRIGGER protect_archived_account_insert BEFORE INSERT ON accounts
+                 WHEN NEW.archived <> 0 OR EXISTS (
+                     SELECT 1 FROM accounts WHERE company_slug = NEW.company_slug
+                         AND code = NEW.code AND archived = 1
+                 )
+                 BEGIN SELECT RAISE(ABORT, 'new accounts must be active'); END;
+             CREATE TRIGGER protect_account_archive BEFORE UPDATE OF archived ON accounts
+                 WHEN OLD.archived <> 0 OR NEW.archived <> 1 OR NOT EXISTS (
+                     SELECT 1 FROM audit_log
+                     WHERE id = (SELECT MAX(id) FROM audit_log)
+                       AND company_slug = OLD.company_slug AND entity_id = OLD.code
+                       AND entity = 'account' AND action = 'account_archive'
+                       AND agent_uri IS NOT NULL
+                 )
+                 BEGIN SELECT RAISE(ABORT, 'account archive requires an owner undo audit record'); END;",
+        )?;
+        Ok(())
+    })
+}
+
 fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
@@ -1435,10 +1481,11 @@ enum AuditTable {
     Periods,
     Demo,
     ClientHints,
+    Receipts,
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
-    let (entity, action) = if table == AuditTable::Periods {
+    let (entity, mut action) = if table == AuditTable::Periods {
         (String::new(), String::new())
     } else {
         use super::audit::{AuditAction, AuditEntity};
@@ -1447,15 +1494,24 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
             format!(",'{}'", AuditAction::DemoSeed),
         )
     };
-    let (hash_version, version_suffix, column, check, select_suffix) = if table
-        == AuditTable::ClientHints
-    {
+    if table == AuditTable::Receipts {
+        use std::fmt::Write as _;
+        let _ = write!(action, ",'{}'", super::audit::AuditAction::AccountArchive);
+    }
+    let (hash_version, version_suffix, column, check, select_suffix) = if matches!(
+        table,
+        AuditTable::ClientHints | AuditTable::Receipts
+    ) {
         (
             5,
             ",5",
             "client_hint TEXT,",
             ", CHECK(client_hint IS NULL OR (hash_version = 5 AND agent_uri IS NULL AND json_valid(client_hint)))",
-            ", NULL",
+            if table == AuditTable::ClientHints {
+                ", NULL"
+            } else {
+                ""
+            },
         )
     } else {
         (4, "", "", "", "")
@@ -1818,7 +1874,7 @@ mod tests {
             before.iter().map(|row| row.0).collect::<Vec<_>>(),
             [1, 2, 3, 4]
         );
-        ensure_schema(&conn)?;
+        apply_v25(&conn)?;
         assert_eq!(history()?, before);
         assert!(
             conn.execute(
@@ -1834,6 +1890,27 @@ mod tests {
         assert_eq!(&mixed[..before.len()], before);
         assert_eq!(mixed.last().map(|row| row.0), Some(5));
         assert_eq!(audit::verify_hash_chain(ReadConn::new(&conn))?.length(), 5);
+        with_admin_fixture(&conn, &owner, |grant| {
+            crate::db::create_account(
+                grant,
+                &crate::db::CreateAccountParams {
+                    company_slug: &"legacy".parse()?,
+                    code: "1000",
+                    name: "Cash",
+                    account_type: beankeeper::types::AccountType::Asset,
+                    default_tax_category: None,
+                },
+            )
+        })?;
+        let v25 = history()?;
+        apply_v26(&conn)?;
+        assert_eq!(history()?, v25);
+        let company = crate::db::companies::Company::bind(ReadConn::new(&conn), "legacy".parse()?)?;
+        assert_eq!(
+            crate::db::accounts::account_status(&company, "1000")?,
+            crate::db::accounts::AccountStatus::Active
+        );
+        audit::receipts::verify_archives(ReadConn::new(&conn))?;
         Ok(())
     }
 

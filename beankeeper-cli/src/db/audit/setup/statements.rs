@@ -332,7 +332,7 @@ pub(crate) fn prepare_in_session(
         ));
     }
     let suspense = StatementAccount::load(&scope, suspense_code)?;
-    let rules = rules::list_rules(&scope)?;
+    let rules = rules::list_active_rules(&scope)?;
     let sources = request.source.decode(request)?;
     if sources.is_empty() {
         return Err(CliError::Validation(
@@ -403,7 +403,7 @@ struct StatementAccount {
 
 impl StatementAccount {
     fn load(company: &crate::db::companies::Company<'_>, code: &str) -> Result<Self, CliError> {
-        let row = accounts::get_account(company, code)?;
+        let row = accounts::get_active_account(company, code)?;
         Ok(Self {
             account: accounts::row_to_account(&row)?,
             tax_category: row.default_tax_category,

@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use crate::capability::Capability;
 use crate::db::Actor;
 pub use crate::db::audit::grant::{
-    Admin, Approve, Budget, Granted, Post, Propose, Reconcile, ResolveProposal, Reverse,
+    Admin, Approve, Budget, Granted, OwnerUndo, Post, Propose, Reconcile, ResolveProposal, Reverse,
 };
 pub(crate) use crate::db::audit::grant::{SetupOwner, StatementApprover};
 pub use crate::db::audit::identity_write::{

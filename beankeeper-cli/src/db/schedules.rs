@@ -183,7 +183,7 @@ pub fn create_schedule(
         validate_template(params)?;
         let mut entries = params.entries.clone();
         for entry in &mut entries {
-            let account = super::accounts::get_account(&scope, &entry.account_code)?;
+            let account = super::accounts::get_active_account(&scope, &entry.account_code)?;
             super::accounts::row_to_account(&account)?;
             if entry.tax_category.is_none() {
                 entry.tax_category = account.default_tax_category;
@@ -507,7 +507,7 @@ fn execute_schedule(
     validate_entries(&before.entries)?;
     let scope = super::companies::Company::bind(reader, before.company_slug.clone())?;
     for entry in &before.entries {
-        let account = super::accounts::get_account(&scope, &entry.account_code)?;
+        let account = super::accounts::get_active_account(&scope, &entry.account_code)?;
         super::accounts::row_to_account(&account)?;
     }
     let mut after = before.clone();

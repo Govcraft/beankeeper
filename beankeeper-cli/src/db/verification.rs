@@ -68,6 +68,7 @@ enum Check {
     SpendLimits,
     Accounting,
     CreationSnapshots,
+    AccountArchives,
     TransactionLinks,
     StatementBatches,
     ForeignKeys,
@@ -86,6 +87,7 @@ impl Check {
             Self::SpendLimits => "spend_limits",
             Self::Accounting => "accounting",
             Self::CreationSnapshots => "creation_snapshots",
+            Self::AccountArchives => "account_archives",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::ForeignKeys => "foreign_keys",
@@ -151,6 +153,9 @@ impl VerifiedLedger {
         Check::SpendLimits.record(spend_limits::verify(reader), &mut checks)?;
         let companies = Check::Accounting.record(verify_accounting(reader), &mut checks)?;
         Check::CreationSnapshots.record(audit::verify_creations(reader), &mut checks)?;
+        if schema_version >= schema::RECEIPT_SCHEMA_VERSION {
+            Check::AccountArchives.record(audit::receipts::verify_archives(reader), &mut checks)?;
+        }
         Check::TransactionLinks.record(verify_links(reader), &mut checks)?;
         if schema_version >= schema::STATEMENT_BATCH_SCHEMA_VERSION {
             Check::StatementBatches

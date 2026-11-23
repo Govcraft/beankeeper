@@ -49,6 +49,7 @@ pub(super) mod catalog;
 pub(crate) mod grant;
 pub(crate) mod identity_write;
 pub(super) mod investment;
+pub mod receipts;
 pub(super) mod savepoint;
 pub mod setup;
 
@@ -174,6 +175,7 @@ audit_labels! {
         BudgetSet => "budget_set" | "budget-set",
         BudgetDelete => "budget_delete" | "budget-delete",
         AccountDelete => "account_delete" | "account-delete",
+        AccountArchive => "account_archive" | "account-archive",
         CompanyDelete => "company_delete" | "company-delete",
         DemoSeed => "demo_seed" | "demo-seed",
         KeyInit => "key_init" | "key-init",
@@ -1694,6 +1696,7 @@ pub struct ReverseTransactionParams<'a> {
 pub(super) struct ReversalPosting<'a> {
     tx: &'a savepoint::AuditedTx<'a>,
     original_id: TransactionId,
+    undo_of: Option<receipts::ReceiptId>,
     params: super::transactions::PostTransactionParams<'a>,
 }
 
@@ -1708,6 +1711,10 @@ impl<'a> ReversalPosting<'a> {
 
     pub(super) const fn original_id(&self) -> TransactionId {
         self.original_id
+    }
+
+    pub(super) const fn is_owner_undo(&self) -> bool {
+        self.undo_of.is_some()
     }
 }
 
@@ -1725,80 +1732,99 @@ pub fn reverse_transaction(
     grant: grant::Granted<'_, grant::Reverse>,
     p: &ReverseTransactionParams<'_>,
 ) -> Result<super::transactions::PostResult, CliError> {
+    grant.mutate("sp_reverse", |tx, actor| {
+        reverse_in_scope(tx, actor, p, None)
+    })
+}
+
+fn reverse_in_scope(
+    tx: &savepoint::AuditedTx<'_>,
+    actor: &Actor,
+    p: &ReverseTransactionParams<'_>,
+    undo_of: Option<receipts::ReceiptId>,
+) -> Result<super::transactions::PostResult, CliError> {
     use super::transactions::{PostResult, PostTransactionParams, get_transaction};
 
-    grant.mutate("sp_reverse", |tx, actor| {
-        let conn = tx.connection();
-        let company = Company::bind(tx.read(), p.company_slug.clone())?;
-        let (original, entries) = get_transaction(&company, p.id)?;
-        reject_investment_reversal(conn, p.id)?;
-        let mut original_metadata: serde_json::Value = original
-            .metadata
-            .as_deref()
-            .and_then(metadata::normalize)
-            .map_or_else(
-                || serde_json::json!({}),
-                metadata::NormalizedMetadata::into_value,
-            );
-        if let Some(result) = existing_reversal(conn, p, &original_metadata)? {
-            return Ok(result);
-        }
-        validate_reversal(conn, p, original.date)?;
-        let description = p.description.map_or_else(
-            || format!("Reversal of #{}: {}", p.id, original.description),
-            str::to_string,
+    let conn = tx.connection();
+    let company = Company::bind(tx.read(), p.company_slug.clone())?;
+    let (original, entries) = get_transaction(&company, p.id)?;
+    reject_investment_reversal(conn, p.id)?;
+    let mut original_metadata: serde_json::Value = original
+        .metadata
+        .as_deref()
+        .and_then(metadata::normalize)
+        .map_or_else(
+            || serde_json::json!({}),
+            metadata::NormalizedMetadata::into_value,
         );
-        let entries = reversal_entries(&entries);
-        let reference = p
-            .reference
-            .map_or_else(|| format!("reversal-of-{}", p.id), str::to_string);
-        let result = super::transactions::post_reversal(ReversalPosting {
-            tx,
-            original_id: p.id,
-            params: PostTransactionParams {
-                company_slug: p.company_slug,
-                description: &description,
-                metadata: None,
-                currency: original.currency,
-                date: p.date,
-                entries: &entries,
-                correlate: None,
-                reference: Some(&reference),
-                on_conflict: super::transactions::ConflictStrategy::Error,
-                actor,
-            },
-        })?;
-        let PostResult::Created(reversal_id) = result else {
-            return Err(CliError::General(
-                "reversal was unexpectedly skipped".into(),
-            ));
-        };
-        original_metadata["reversed_by"] = serde_json::json!(reversal_id);
-        let updated = original_metadata.to_string();
-        conn.execute(
-            "UPDATE transactions SET metadata = ?1 WHERE id = ?2 AND company_slug = ?3",
-            params![updated, p.id, p.company_slug],
-        )?;
-        record(
-            conn,
+    if let Some(result) = existing_reversal(conn, p, &original_metadata)? {
+        return Ok(result);
+    }
+    let date = undo_of.map_or(p.date, |_| p.date.max(original.date));
+    validate_reversal(conn, p.id, date, original.date)?;
+    let description = p.description.map_or_else(
+        || format!("Reversal of #{}: {}", p.id, original.description),
+        str::to_string,
+    );
+    let entries = reversal_entries(&entries);
+    // Receipt undo is keyed by its immutable audit link. It consumes no
+    // transaction reference that could collide with a user-chosen one.
+    let reference = undo_of.is_none().then(|| {
+        p.reference
+            .map_or_else(|| format!("reversal-of-{}", p.id), str::to_string)
+    });
+    let result = super::transactions::post_reversal(ReversalPosting {
+        tx,
+        original_id: p.id,
+        undo_of,
+        params: PostTransactionParams {
+            company_slug: p.company_slug,
+            description: &description,
+            metadata: None,
+            currency: original.currency,
+            date,
+            entries: &entries,
+            correlate: None,
+            reference: reference.as_deref(),
+            on_conflict: super::transactions::ConflictStrategy::Error,
             actor,
-            AuditChange {
-                company_slug: Some(p.company_slug),
-                entity: AuditEntity::Transaction,
-                entity_id: &p.id.to_string(),
-                action: AuditAction::Reverse,
-                snapshots: (
-                    Some(&snapshot(
-                        &serde_json::json!({"metadata": original.metadata}),
-                    )),
-                    Some(&snapshot(
-                        &serde_json::json!({"metadata": updated, "reversed_by": reversal_id, "reference": reference}),
-                    )),
-                ),
-            },
-        )?;
-        Ok(result)
-    })
+        },
+    })?;
+    let PostResult::Created(reversal_id) = result else {
+        return Err(CliError::General(
+            "reversal was unexpectedly skipped".into(),
+        ));
+    };
+    original_metadata["reversed_by"] = serde_json::json!(reversal_id);
+    let updated = original_metadata.to_string();
+    conn.execute(
+        "UPDATE transactions SET metadata = ?1 WHERE id = ?2 AND company_slug = ?3",
+        params![updated, p.id, p.company_slug],
+    )?;
+    let mut after = serde_json::json!({
+        "metadata": updated, "reversed_by": reversal_id, "reference": reference
+    });
+    if let Some(undo_of) = undo_of {
+        after["undo_of"] = serde_json::json!(undo_of);
+        after["source_reference"] = serde_json::json!(original.reference);
+    }
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: Some(p.company_slug),
+            entity: AuditEntity::Transaction,
+            entity_id: &p.id.to_string(),
+            action: AuditAction::Reverse,
+            snapshots: (
+                Some(&snapshot(
+                    &serde_json::json!({"metadata": original.metadata}),
+                )),
+                Some(&snapshot(&after)),
+            ),
+        },
+    )?;
+    Ok(result)
 }
 
 /// Only a matching explicit reference can reuse the existing linked reversal.
@@ -1841,10 +1867,11 @@ fn existing_reversal(
 /// Check dates and individual clearings, including partial reconciliations.
 fn validate_reversal(
     conn: &Connection,
-    p: &ReverseTransactionParams<'_>,
+    id: TransactionId,
+    date: chrono::NaiveDate,
     original_date: chrono::NaiveDate,
 ) -> Result<(), CliError> {
-    if p.date < original_date {
+    if date < original_date {
         return Err(CliError::Validation(
             "reversal date must be on or after the original transaction date".into(),
         ));
@@ -1852,13 +1879,12 @@ fn validate_reversal(
     let reconciled: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM entries e LEFT JOIN entry_clearings c ON c.entry_id = e.id \
              WHERE e.transaction_id = ?1 AND (e.status = 'reconciled' OR c.status = 'reconciled'))",
-        params![p.id],
+        params![id],
         |row| row.get(0),
     )?;
     if reconciled {
         return Err(CliError::Validation(format!(
-            "transaction #{} has reconciled clearings and cannot be reversed",
-            p.id
+            "transaction #{id} has reconciled clearings and cannot be reversed"
         )));
     }
     Ok(())
@@ -2161,10 +2187,8 @@ pub fn delete_account(
         let reader = tx.read();
         // Reading the row first both yields the snapshot and produces the
         // `NotFound` error when the account is absent.
-        let row: AccountRow = super::accounts::get_account(
-            &crate::db::companies::Company::bind(reader, company_slug.clone())?,
-            code,
-        )?;
+        let scope = Company::bind(reader, company_slug.clone())?;
+        let row: AccountRow = super::accounts::get_active_account(&scope, code)?;
 
         let schedules: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schedule_entries WHERE company_slug = ?1 AND account_code = ?2",
@@ -2363,7 +2387,7 @@ pub fn create_rule(
     grant.mutate("sp_rule_create", |tx, actor| {
         let conn = tx.connection();
         let scope = Company::bind(tx.read(), company.clone())?;
-        super::accounts::get_account(&scope, account)?;
+        super::accounts::get_active_account(&scope, account)?;
         let rule = super::rules::Rule {
             id: super::rules::RuleId::generate(),
             company_slug: company.clone(),

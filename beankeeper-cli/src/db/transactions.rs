@@ -169,6 +169,12 @@ pub(crate) enum PostingSource {
     Proposal,
 }
 
+#[derive(Clone, Copy)]
+enum PostingAccounts {
+    Active,
+    Reversal,
+}
+
 pub(crate) fn post_from_source(
     grant: Granted<'_, Post>,
     params: &PostTransactionParams<'_>,
@@ -264,20 +270,25 @@ fn post_with_source(
     if !matches!(
         posting,
         Posting::Approved(_) | Posting::ApprovedStatement(_)
-    ) {
+    ) && !matches!(posting, Posting::Reversal(reversal) if reversal.is_owner_undo())
+    {
         super::spend_limits::check(reader, p)?;
     }
 
-    let journal = match prepared {
-        Some(journal) => {
-            if journal.currency() != p.currency {
-                return Err(CliError::Validation(
-                    "posting currency does not match the journal".into(),
-                ));
-            }
-            journal
+    let journal = if let Some(journal) = prepared {
+        if journal.currency() != p.currency {
+            return Err(CliError::Validation(
+                "posting currency does not match the journal".into(),
+            ));
         }
-        None => build_journal(reader, p, source)?,
+        journal
+    } else {
+        let accounts = match posting {
+            // Only the sealed mirror of an existing posting can use archived accounts.
+            Posting::Reversal(_) => PostingAccounts::Reversal,
+            _ => PostingAccounts::Active,
+        };
+        build_journal_with_accounts(reader, p, source, accounts)?
     };
     let period = super::periods::check_posting(tx, p.company_slug, journal.date())?;
     let validated = ValidatedPosting {
@@ -330,18 +341,31 @@ pub(crate) fn build_journal(
     request: &PostTransactionParams<'_>,
     source: PostingSource,
 ) -> Result<Transaction, CliError> {
+    build_journal_with_accounts(conn, request, source, PostingAccounts::Active)
+}
+
+fn build_journal_with_accounts(
+    conn: ReadConn<'_>,
+    request: &PostTransactionParams<'_>,
+    source: PostingSource,
+    accounts: PostingAccounts,
+) -> Result<Transaction, CliError> {
     let currency = request.currency;
     let company = Company::bind(conn, request.company_slug.clone())?;
     let mut journal = JournalEntry::new(request.date, request.description, currency);
     for entry in request.entries {
-        let account = super::accounts::get_account(&company, &entry.account_code).map_err(
-            |error| match (source, error) {
-                (PostingSource::Storage, CliError::NotFound(message)) => {
-                    CliError::Validation(message)
-                }
-                (_, error) => error,
-            },
-        )?;
+        let account = match accounts {
+            PostingAccounts::Active => {
+                super::accounts::get_active_account(&company, &entry.account_code)
+            }
+            PostingAccounts::Reversal => {
+                super::accounts::get_account(&company, &entry.account_code)
+            }
+        }
+        .map_err(|error| match (source, error) {
+            (PostingSource::Storage, CliError::NotFound(message)) => CliError::Validation(message),
+            (_, error) => error,
+        })?;
         let default_tax = if matches!(source, PostingSource::Command | PostingSource::Import) {
             account.default_tax_category.as_deref()
         } else {

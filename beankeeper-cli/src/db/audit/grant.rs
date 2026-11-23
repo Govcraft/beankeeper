@@ -85,6 +85,14 @@ impl sealed::GrantKind for Reverse {
     const REQUIRED: Capability = Capability::Reverse;
 }
 
+/// Signed owner administration authority for undoing an audit receipt.
+pub enum OwnerUndo {}
+
+impl sealed::GrantKind for OwnerUndo {
+    const REQUIRED: Capability = Capability::Admin;
+    const EXPLICIT: bool = true;
+}
+
 /// Authority to set and delete ledger budgets.
 pub enum Budget {}
 
