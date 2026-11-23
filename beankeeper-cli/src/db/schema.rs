@@ -1,3 +1,5 @@
+use std::fmt;
+
 use rusqlite::{Connection, params};
 
 use super::connection::ReadConn;
@@ -11,6 +13,31 @@ pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
 pub(crate) const RECEIPT_SCHEMA_VERSION: i64 = 26;
 pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: i64 = 27;
+
+/// A ledger schema version supported by this Beankeeper build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaVersion(i64);
+
+impl From<SchemaVersion> for i64 {
+    fn from(version: SchemaVersion) -> Self {
+        version.0
+    }
+}
+
+impl fmt::Display for SchemaVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Returns the schema version expected by [`Db::open_snapshot`](super::Db::open_snapshot).
+///
+/// This is a property of the linked build and requires no database connection.
+/// Use [`get_schema_version`] to read the version stored in an open ledger.
+#[must_use]
+pub const fn current_schema_version() -> SchemaVersion {
+    SchemaVersion(CURRENT_VERSION)
+}
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.

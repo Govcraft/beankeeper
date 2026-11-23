@@ -51,6 +51,8 @@ impl Db {
 
     /// Open a current-version ledger read-only, without migrations or PRAGMA writes.
     ///
+    /// Use [`super::current_schema_version`] to obtain the expected version.
+    ///
     /// # Errors
     /// Returns a database error for an invalid, unsupported, or unreadable snapshot.
     pub fn open_snapshot(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
