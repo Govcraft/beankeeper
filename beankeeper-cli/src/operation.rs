@@ -13,6 +13,7 @@ pub(crate) enum Permission {
     ProposalReject,
     SetupStatus,
     SetupOwner,
+    OwnerUndo,
     Transport,
 }
 
@@ -22,7 +23,7 @@ impl Permission {
             Self::Capability(capability) => Ok(capability),
             Self::Posting => Ok(Capability::Post),
             Self::ProposalList | Self::SetupStatus => Ok(Capability::Read),
-            Self::SetupOwner => Ok(Capability::Admin),
+            Self::SetupOwner | Self::OwnerUndo => Ok(Capability::Admin),
             Self::ProposalReject => Ok(Capability::Propose),
             Self::Transport => Err(CliError::Usage(
                 "operation has no capability mapping".into(),
@@ -46,6 +47,9 @@ macro_rules! permission {
     };
     (SetupOwner) => {
         Permission::SetupOwner
+    };
+    (OwnerUndo) => {
+        Permission::OwnerUndo
     };
     (Transport) => {
         Permission::Transport

@@ -862,7 +862,7 @@ pub(crate) struct RuleMatch {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RuleDelete {
+pub(crate) struct RuleIdInput {
     pub company: Company,
     pub id: Text<RuleId>,
 }

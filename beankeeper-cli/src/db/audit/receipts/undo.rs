@@ -9,11 +9,13 @@ use super::{ReceiptEvent, ReceiptId, ReceiptTarget, posting_creation};
 use crate::db::audit::{
     AuditAction, AuditChange, AuditEntity, AuditLinks, ReversalBlock, ReverseTransactionParams,
     audit_columns, read_audit_row, record_with_links, reverse_in_scope, savepoint::AuditedTx,
+    snapshot,
 };
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::ReadConn;
 use crate::db::ids::TransactionId;
 use crate::db::periods::ClosedPostingPeriod;
+use crate::db::rules::{self, RuleActivation, RuleId};
 use crate::db::transactions::PostResult;
 use crate::db::{Actor, accounts};
 use crate::error::CliError;
@@ -62,6 +64,8 @@ pub enum UndoIneligibility {
     NewerAccountCreation(AccountCode),
     /// There is no active account with this code.
     AccountNotActive(AccountCode),
+    /// The original rule was removed or superseded.
+    RuleNotCurrent(RuleId),
 }
 
 impl fmt::Display for UndoIneligibility {
@@ -75,6 +79,7 @@ impl fmt::Display for UndoIneligibility {
             Self::AccountNotActive(code) => {
                 write!(formatter, "account '{code}' is no longer active")
             }
+            Self::RuleNotCurrent(id) => write!(formatter, "rule '{id}' is no longer current"),
         }
     }
 }
@@ -111,9 +116,63 @@ pub enum UndoOutcome {
     },
 }
 
+/// A categorization rule creation reversed by an owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleUndoOutcome {
+    rule: RuleId,
+    undo_receipt: ReceiptId,
+}
+
+impl RuleUndoOutcome {
+    /// The retained rule that was deactivated.
+    #[must_use]
+    pub const fn rule(&self) -> &RuleId {
+        &self.rule
+    }
+
+    /// The audit receipt that records the deactivation.
+    #[must_use]
+    pub const fn undo_receipt(&self) -> ReceiptId {
+        self.undo_receipt
+    }
+}
+
 enum UndoTarget {
     Posting(TransactionId),
     Account(AccountCode),
+}
+
+// Provenance checked before a rule can be deactivated.
+struct RuleCreation {
+    rule: RuleId,
+    receipt: ReceiptId,
+}
+
+impl TryFrom<(RuleId, ReceiptId, AuditAction)> for RuleCreation {
+    type Error = ReceiptUndoError;
+
+    fn try_from(
+        (rule, receipt, action): (RuleId, ReceiptId, AuditAction),
+    ) -> Result<Self, Self::Error> {
+        match action {
+            AuditAction::Create => Ok(Self { rule, receipt }),
+            _ => Err(ReceiptUndoError::Unsupported(receipt)),
+        }
+    }
+}
+
+impl RuleCreation {
+    fn recorded_deactivation(self, event: &ReceiptEvent) -> Result<RuleUndoOutcome, CliError> {
+        match (event.target(), event.action()) {
+            (ReceiptTarget::Rule(rule), AuditAction::RuleDeactivate) if *rule == self.rule => {
+                Ok(RuleUndoOutcome {
+                    rule: self.rule,
+                    undo_receipt: event.id().into(),
+                })
+            }
+            _ => Err(invalid_stored_target("expected rule deactivation")),
+        }
+    }
 }
 
 /// Undo a receipt immediately within the live, reserved owner write scope.
@@ -197,14 +256,13 @@ fn invalid_stored_target(error: impl fmt::Display) -> CliError {
     CliError::Database(format!("invalid target in audit receipt: {error}"))
 }
 
-fn recorded_outcome(
+fn recorded_undo_event(
     reader: ReadConn<'_>,
     company: &CompanySlug,
     receipt: ReceiptId,
-    target: &UndoTarget,
-) -> Result<Option<UndoOutcome>, CliError> {
+) -> Result<Option<ReceiptEvent>, CliError> {
     let columns = audit_columns(crate::db::schema::CURRENT_VERSION);
-    let event = reader
+    reader
         .query_row(
             &format!(
                 "SELECT {columns} FROM audit_log
@@ -215,7 +273,16 @@ fn recorded_outcome(
         )
         .optional()?
         .map(ReceiptEvent::try_from)
-        .transpose()?;
+        .transpose()
+}
+
+fn recorded_outcome(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    receipt: ReceiptId,
+    target: &UndoTarget,
+) -> Result<Option<UndoOutcome>, CliError> {
+    let event = recorded_undo_event(reader, company, receipt)?;
     let Some(event) = event else { return Ok(None) };
     let undo_receipt = ReceiptId::from(event.id());
     match (target, event.target(), event.action()) {
@@ -243,6 +310,70 @@ fn recorded_outcome(
         })),
         _ => Err(invalid_stored_target("undo outcome does not match receipt")),
     }
+}
+
+/// Undo a rule creation using the rule ID returned to the caller on creation.
+///
+/// # Errors
+/// Returns not-found for unknown rules, a named undo error for amendments or
+/// removed rules, or an authorization or storage error.
+pub fn undo_rule_creation(
+    grant: Granted<'_, OwnerUndo>,
+    company: &CompanySlug,
+    id: RuleId,
+) -> Result<RuleUndoOutcome, CliError> {
+    grant.mutate("sp_owner_undo_rule", |tx, actor| {
+        let scope = Company::bind(tx.read(), company.clone())?;
+        let (receipt, action): (ReceiptId, AuditAction) = tx
+            .read()
+            .query_row(
+                "SELECT id, action FROM audit_log WHERE company_slug = ?1 AND entity = 'rule'
+                 AND entity_id = ?2 AND action IN ('create', 'rule_supersede')",
+                params![company, id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CliError::NotFound(format!("rule '{id}' not found in company '{company}'"))
+            })?;
+        let creation = RuleCreation::try_from((id, receipt, action))?;
+        if let Some(event) = recorded_undo_event(tx.read(), company, receipt)? {
+            return creation.recorded_deactivation(&event);
+        }
+        append_rule_deactivation(tx, actor, &scope, creation)
+    })
+}
+
+fn append_rule_deactivation(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    scope: &Company<'_>,
+    RuleCreation { rule: id, receipt }: RuleCreation,
+) -> Result<RuleUndoOutcome, CliError> {
+    let rule = rules::get_rule(scope, &id).map_err(|error| match error {
+        CliError::NotFound(_) => ineligible(receipt, UndoIneligibility::RuleNotCurrent(id.clone())),
+        other => other,
+    })?;
+    let conn = tx.connection();
+    record_with_links(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: Some(scope.slug()),
+            entity: AuditEntity::Rule,
+            entity_id: &rule.id().to_string(),
+            action: AuditAction::RuleDeactivate,
+            snapshots: (
+                Some(&snapshot(&RuleActivation::Active)),
+                Some(&snapshot(&RuleActivation::Deactivated)),
+            ),
+        },
+        AuditLinks::Undo(receipt),
+    )?;
+    Ok(RuleUndoOutcome {
+        rule: id,
+        undo_receipt: conn.last_insert_rowid().try_into()?,
+    })
 }
 
 fn reverse_posting(
@@ -324,7 +455,7 @@ fn archive_account(
                 Some(&json!({ "archived": true, "undo_of": receipt }).to_string()),
             ),
         },
-        AuditLinks::Archive(receipt),
+        AuditLinks::Undo(receipt),
     )?;
     conn.execute(
         "UPDATE accounts SET archived = 1 WHERE company_slug = ?1 AND code = ?2",

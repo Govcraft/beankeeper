@@ -440,6 +440,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk rule list` | List categorization rules in evaluation order |
 | `bk rule amend` | Supersede an active rule and retain both versions in the audit trail |
 | `bk rule match` | Preview which active rule matches a candidate description |
+| `bk rule undo` | Deactivate a newly created rule and return its linked undo receipt |
 | `bk bookkeeping-policy show/set` | Read or save sales-tax and processor-fee instructions |
 | `bk inform-preference show/set` | Read or save how often the owner hears about completed changes |
 | `bk rule delete` | Remove a mapping without changing existing postings |
@@ -672,6 +673,7 @@ bk --company acme rule create --contains Starbucks --account 5000 --priority 10
 bk --company acme rule list --json
 bk --company acme rule match --description 'Starbucks 102' --json
 bk --company acme rule amend "$RULE_ID" --contains Starbucks --account 5100 --priority 10
+bk --company acme rule undo "$CREATED_RULE_ID"
 bk --company acme rule delete "$RULE_ID" --force
 ```
 
@@ -686,14 +688,19 @@ an error. JSON journal imports retain their explicit entries.
 
 Use the current rule ID to amend it with complete replacement terms. An
 amendment creates a new ID and saves both versions under `rule_supersede`.
-To undo, amend the replacement using the earlier terms from the audit trail.
-Removals retain the last version in the audit trail. Use `rule match` for a
-read-only `match` or `no_match` result before posting. Existing transactions
-and generated import references stay intact. Accounts referenced by active
-rules must be kept until those rules are amended or removed.
+To undo an amendment, amend the replacement using the earlier terms from the
+audit trail. To undo a creation, pass the created rule ID to `rule undo` or
+MCP `rule_undo` with a signed `ledger/admin` credential. Undo takes effect
+immediately and appends a `rule_deactivate` event. Tell the owner that the rule
+will no longer categorize new imports and give them the undo receipt ID.
+When Desktop's `changes_since` returns that receipt and a `desktop_url`, offer
+the optional detail link by appending `#receipt-<undo_receipt>` to the URL.
+Existing transactions and generated import references stay intact. A retained
+deactivated rule still references its original account.
 
-Use `rule_create`, `rule_list`, `rule_amend`, `rule_match` and `rule_delete`
-when calling MCP. Results match the CLI JSON data.
+Use `rule_create`, `rule_list`, `rule_amend`, `rule_undo`, `rule_match` and
+`rule_delete` when calling MCP. Results match the CLI JSON data. Use
+`rule_match` for a read-only `match` or `no_match` result before posting.
 
 ### Save standing instructions and the inform preference
 

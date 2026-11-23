@@ -236,9 +236,22 @@ impl TryFrom<StoredRule> for Rule {
     }
 }
 
+/// A rule's activation state in a creation reversal.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RuleActivation {
+    Active,
+    Deactivated,
+}
+
+// The immutable audit event is the source of truth for deactivation.
+const CURRENT_RULE: &str = "NOT EXISTS (SELECT 1 FROM audit_log event
+    WHERE event.company_slug = r.company_slug AND event.entity = 'rule'
+      AND event.entity_id = r.id AND event.action = 'rule_deactivate')";
+
 const RULE_COLUMNS: &str = "id, company_slug, contains, account_code, priority, supersedes";
 
-/// Load a company's rules in deterministic evaluation order.
+/// Load a company's rules that have not been deactivated, in evaluation order.
 ///
 /// # Errors
 /// Returns a database error if the query or stored rule data is invalid.
@@ -261,21 +274,31 @@ pub fn list_active_rules(scope: &Company<'_>) -> Result<Vec<Rule>, CliError> {
 fn read_rules(scope: &Company<'_>, filter: &str) -> Result<Vec<Rule>, CliError> {
     let mut stmt = scope.read().prepare(&format!(
         "SELECT {RULE_COLUMNS} FROM categorization_rules r
-         WHERE company_slug = ?1{filter} ORDER BY priority DESC, id ASC"
+         WHERE company_slug = ?1 AND {CURRENT_RULE}{filter} ORDER BY priority DESC, id ASC"
     ))?;
     let rows = stmt.query_map([scope.slug()], StoredRule::read)?;
     rows.map(|row| row?.try_into()).collect()
 }
 
 pub(super) fn get_rule(scope: &Company<'_>, id: &RuleId) -> Result<Rule, CliError> {
-    scope.read().query_row(
-        &format!("SELECT {RULE_COLUMNS} FROM categorization_rules WHERE company_slug = ?1 AND id = ?2"),
-        params![scope.slug(), id.to_string()],
-        StoredRule::read,
-    )
-    .optional()?
-    .ok_or_else(|| CliError::NotFound(format!("rule '{id}' not found in company '{}'", scope.slug())))?
-    .try_into()
+    scope
+        .read()
+        .query_row(
+            &format!(
+                "SELECT {RULE_COLUMNS} FROM categorization_rules r
+                  WHERE company_slug = ?1 AND id = ?2 AND {CURRENT_RULE}"
+            ),
+            params![scope.slug(), id.to_string()],
+            StoredRule::read,
+        )
+        .optional()?
+        .ok_or_else(|| {
+            CliError::NotFound(format!(
+                "rule '{id}' not found in company '{}'",
+                scope.slug()
+            ))
+        })?
+        .try_into()
 }
 
 /// The read-only outcome of checking a candidate transaction description.

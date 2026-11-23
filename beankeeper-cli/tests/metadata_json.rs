@@ -340,6 +340,7 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
              DROP TABLE ledger_policy;
              DROP TABLE schedule_entries;
              DROP TABLE schedules;
+             DROP TRIGGER protect_rule_deactivation;
              DROP TABLE categorization_rules;
              DROP TRIGGER protect_transaction_identity;
              DROP TABLE agent_revocations;

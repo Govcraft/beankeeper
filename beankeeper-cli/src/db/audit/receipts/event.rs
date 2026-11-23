@@ -12,6 +12,7 @@ use crate::db::amounts::PositiveMinorUnits;
 use crate::db::audit::{ActorLabel, AuditAction, AuditEntity, AuditLogRow, ClientHint};
 use crate::db::ids::{AuditRowId, EntryId, ReceiptId, TransactionId};
 use crate::db::proposals::ProposalId;
+use crate::db::rules::{RuleActivation, RuleId};
 use crate::error::CliError;
 
 /// The audited target. Other audit kinds retain their exact historical key.
@@ -20,6 +21,8 @@ use crate::error::CliError;
 pub enum ReceiptTarget {
     /// Account identified by its company-local code.
     Account(AccountCode),
+    /// A categorization rule.
+    Rule(RuleId),
     /// Immutable posting.
     Transaction(TransactionId),
     /// A posting proposal.
@@ -41,6 +44,7 @@ impl TryFrom<(AuditEntity, &str)> for ReceiptTarget {
     fn try_from((entity, id): (AuditEntity, &str)) -> Result<Self, Self::Error> {
         match entity {
             AuditEntity::Account => id.parse().map(Self::Account).map_err(invalid_stored_value),
+            AuditEntity::Rule => id.parse().map(Self::Rule).map_err(invalid_stored_value),
             AuditEntity::Transaction => id
                 .parse()
                 .map(Self::Transaction)
@@ -145,6 +149,10 @@ pub enum ReceiptChange {
     },
     /// The account went from active to archived.
     AccountArchived,
+    /// An original categorization rule was created.
+    RuleCreated,
+    /// The rule was deactivated by an owner undo.
+    RuleDeactivated,
     /// The posting did not exist and was recorded.
     PostingCreated {
         /// Recorded posting.
@@ -371,6 +379,17 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
             }
             Ok((ReceiptChange::AccountArchived, None))
         }
+        (Entity::Rule, Action::Create) => {
+            decode.absent("before", row.before.as_deref())?;
+            decode.validate_other("after", row.after.as_deref())?;
+            Ok((ReceiptChange::RuleCreated, None))
+        }
+        (Entity::Rule, Action::RuleDeactivate) => match (decode.before()?, decode.after()?) {
+            (RuleActivation::Active, RuleActivation::Deactivated) => {
+                Ok((ReceiptChange::RuleDeactivated, None))
+            }
+            _ => Err(decode.invalid("rule deactivation", "expected active to deactivated")),
+        },
         (Entity::Transaction, Action::Create) => {
             decode.absent("before", row.before.as_deref())?;
             let after: PostingSnapshot = decode.after()?;

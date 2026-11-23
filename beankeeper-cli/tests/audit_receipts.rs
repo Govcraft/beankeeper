@@ -1,5 +1,8 @@
 //! The public receipt API, exercised with independent ledger connections.
 
+#[path = "support/raw_ledger.rs"]
+mod raw_ledger;
+
 use std::{error::Error, path::Path, process::Command, time::Duration};
 
 use assert_cmd::cargo::CommandCargoExt as _;
@@ -10,11 +13,11 @@ use beankeeper_cli::{
         self, Actor, CreateAccountParams, Db, PostEntryParams, PostResult, PostTransactionParams,
         accounts::{AccountStatus, account_status},
         audit::{
-            AuditAction, AuditEntity, ReversalBlock, ReverseTransactionParams,
+            AuditAction, ReversalBlock, ReverseTransactionParams,
             receipts::{
                 AuditCursor, ReceiptChange, ReceiptId, ReceiptPage, ReceiptPageLimit,
                 ReceiptTarget, ReceiptUndoError, UndoIneligibility, UndoOutcome, continue_receipts,
-                list_receipts, undo_receipt,
+                list_receipts, undo_receipt, undo_rule_creation,
             },
             reverse_transaction,
         },
@@ -230,7 +233,7 @@ fn paging_keeps_a_reversal_whole_and_picks_up_later_writes_in_the_next_range() -
     Ok(())
 }
 
-fn check_code(result: Result<UndoOutcome, CliError>, expected: ErrorCode) -> TestResult {
+fn check_code<T>(result: Result<T, CliError>, expected: ErrorCode) -> TestResult {
     assert_eq!(result.err().ok_or("undo should fail")?.code(), expected);
     Ok(())
 }
@@ -263,14 +266,10 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
         books.undo(
             &owner,
             &books.company,
-            id_of(ReceiptTarget::Other {
-                entity: AuditEntity::Rule,
-                key: rule.id().to_string().into(),
-            })?,
+            id_of(ReceiptTarget::Rule(rule.id().clone()))?,
         ),
         ErrorCode::UndoUnsupported,
     )?;
-
     let archived = books.undo(&owner, &books.company, account_receipt)?;
     let UndoOutcome::Archived {
         ref account,
@@ -399,6 +398,101 @@ fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
         .arg("--passphrase-file")
         .arg(path.with_extension("passphrase"));
     Ok(command)
+}
+
+#[test]
+fn rule_receipts_distinguish_creations_from_amendments_and_undo() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("books.db");
+    let books = Books::open(&path)?;
+    Granted::<Admin>::with_db(&books.db, &books.local, identity::init_root)?;
+    let owner = books.credential("owner", Capability::Admin)?;
+    let account: beankeeper::types::AccountCode = "5000".parse()?;
+    let create = |pattern: &str| -> Result<rules::Rule, CliError> {
+        Granted::<Post>::with_db(&books.db, &books.local, |grant| {
+            rules::create_rule(
+                grant,
+                &books.company,
+                (pattern.parse()?, account.clone(), None).into(),
+            )
+        })
+    };
+    let original = create("tea")?;
+    let superseded = create("coffee")?;
+    let amendment = Granted::<Post>::with_db(&books.db, &books.local, |grant| {
+        rules::amend_rule(
+            grant,
+            &books.company,
+            superseded.id(),
+            ("coffee shop".parse()?, account, None).into(),
+        )
+    })?;
+    let page = books.receipts()?;
+    let receipt_for = |rule: &rules::Rule| {
+        page.receipts()
+            .iter()
+            .find(|receipt| receipt.change().target() == &ReceiptTarget::Rule(rule.id().clone()))
+            .ok_or("missing rule receipt")
+    };
+    let creation = receipt_for(&original)?;
+    assert!(matches!(
+        creation.change().summary(),
+        ReceiptChange::RuleCreated
+    ));
+    let undo_rule = |rule: &rules::Rule| {
+        Granted::<OwnerUndo>::with_db(&books.db, &owner, |grant| {
+            undo_rule_creation(grant, &books.company, rule.id().clone())
+        })
+    };
+    check_code(undo_rule(&superseded), ErrorCode::UndoIneligible)?;
+    check_code(undo_rule(&amendment), ErrorCode::UndoUnsupported)?;
+
+    let raw = raw_ledger::open(&path, Some(TEST_PASSPHRASE))?;
+    raw.execute_batch(
+        "CREATE TRIGGER fail_rule_deactivation BEFORE INSERT ON audit_log
+         WHEN NEW.action = 'rule_deactivate'
+         BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;",
+    )?;
+    assert!(undo_rule(&original).is_err());
+    assert_eq!(books.receipts()?.through(), page.through());
+    assert!(
+        rules::list_active_rules(&Company::bind(books.db.read(), books.company.clone())?)?
+            .contains(&original)
+    );
+    raw.execute_batch("DROP TRIGGER fail_rule_deactivation")?;
+
+    let undo = undo_rule(&original)?;
+    assert_eq!(undo.rule(), original.id());
+    assert_eq!(undo_rule(&original)?, undo);
+    for sql in [
+        "DELETE FROM categorization_rules WHERE id = ?1",
+        "UPDATE categorization_rules SET contains = 'changed' WHERE id = ?1",
+        "INSERT OR REPLACE INTO categorization_rules (id, company_slug, contains, account_code)
+         VALUES (?1, 'acme', 'changed', '5000')",
+    ] {
+        assert!(raw.execute(sql, [original.id().to_string()]).is_err());
+    }
+    let changes = list_receipts(
+        &books.db,
+        &books.company,
+        page.through(),
+        ReceiptPageLimit::default(),
+    )?;
+    assert_eq!(changes.receipts().len(), 1);
+    let event = &changes.receipts()[0];
+    assert_eq!(event.id(), undo.undo_receipt());
+    assert_eq!(event.change().undo_of(), Some(creation.id()));
+    assert!(matches!(
+        event.change().summary(),
+        ReceiptChange::RuleDeactivated
+    ));
+    assert_owner_attribution(event.change(), &owner);
+    assert_eq!(
+        rules::list_active_rules(&Company::bind(books.db.read(), books.company.clone())?)?,
+        [amendment]
+    );
+    verify_ledger(&path)?;
+    Ok(())
 }
 
 #[test]

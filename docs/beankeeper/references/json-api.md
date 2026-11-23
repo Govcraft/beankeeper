@@ -1072,7 +1072,7 @@ object. Example excerpt from a ledger with one company and one posting:
 
 ```json
 {
-  "schema_version": 27,
+  "schema_version": 28,
   "status": "healthy",
   "companies": [{
     "company": "acme",
@@ -1371,11 +1371,32 @@ success data. Nothing in the batch is committed. The success `errors` count
 is therefore always zero. See [commands.md](commands.md#bk-txn-import) for the
 JSON input schema, exact major-unit amounts, column mappings, and hash references.
 
+### `rule undo`
+
+`bk --company COMPANY rule undo RULE_ID --json` and MCP
+`rule_undo` with `{"company":"acme","id":"rule_01h455vb4pex5vsknk084sn02q"}`
+return the same data. Both require a signed `ledger/admin` credential.
+
+```json
+{
+  "rule": "rule_01h455vb4pex5vsknk084sn02q",
+  "undo_receipt": 43
+}
+```
+
+The rule stops matching future imports. The `rule_deactivate` event uses the
+original rule ID as its `entity_id` and links to its creation through `undo_of`.
+Its snapshots decode to `"active"` and `"deactivated"`. A retry returns the
+same undo receipt. A superseded or deleted original returns `UNDO_INELIGIBLE`.
+An ID created by an amendment returns `UNDO_UNSUPPORTED`. An unknown ID or
+an ID belonging to another company returns `NOT_FOUND`.
+
 ### `audit log`
 
 `data` is an array of recorded changes, most recent first. `before`/`after`
 are JSON strings (snapshots of the relevant fields) or `null`; `company_slug`
-may be `null` for cross-company changes.
+may be `null` for cross-company changes. Owner undo rows include an `undo_of`
+field containing the original receipt ID.
 
 CLI JSON and MCP `audit_log` rows include a nullable `client_hint`. When known
 environment markers are present on a write without a verified identity, the

@@ -529,7 +529,7 @@ mutation tools are absent and cannot be called.
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `ledger_setup_book_show` | Read a book's current profile, fiscal year, base currency, and named accounts |
 | `report` | Run CLI reports |
-| `rule_list`, `rule_create`, `rule_amend`, `rule_delete` | Read and manage company categorization rules with audit history |
+| `rule_list`, `rule_create`, `rule_amend`, `rule_undo`, `rule_delete` | Read and manage company categorization rules with audit history |
 | `rule_match` | Preview the winning rule for a candidate description |
 | `bookkeeping_policy_show`, `bookkeeping_policy_set` | Read or save standing sales-tax and processor-fee instructions |
 | `inform_preference_show`, `inform_preference_set` | Read or save how often the owner hears about completed changes |
@@ -1070,7 +1070,13 @@ audit trail records both versions under `rule-supersede`. An explicit delete
 removes the rule from future matching and records its last version.
 `rule match` previews the winning rule or returns `no_match` without posting.
 
-Agents can call `rule_list`, `rule_create`, `rule_amend`, `rule_match` and
+Use `bk --company COMPANY rule undo RULE_ID` or MCP `rule_undo` with a signed
+`ledger/admin` credential to undo a creation in one step. The rule stops
+matching immediately. The original rule and the linked undo receipt stay in
+the ledger, and a retry returns the same receipt. For an amendment, restore
+the earlier terms with another `rule amend` or `rule_amend` call.
+
+Agents can also call `rule_list`, `rule_create`, `rule_amend`, `rule_match` and
 `rule_delete` over MCP. The same operations are available in the CLI.
 
 ### Standing bookkeeping and inform preferences

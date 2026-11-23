@@ -274,7 +274,9 @@ impl serde::Serialize for AuditEntry {
         use serde::ser::SerializeStruct;
 
         let row = &self.row;
-        let mut output = serializer.serialize_struct("AuditEntry", 17)?;
+        let undo_of = row.undo_of();
+        let mut output =
+            serializer.serialize_struct("AuditEntry", 17 + usize::from(undo_of.is_some()))?;
         output.serialize_field("id", &row.id)?;
         output.serialize_field("changed_at", &row.changed_at)?;
         output.serialize_field("actor", &row.actor)?;
@@ -286,6 +288,9 @@ impl serde::Serialize for AuditEntry {
         output.serialize_field("entity", &row.entity)?;
         output.serialize_field("entity_id", &row.entity_id)?;
         output.serialize_field("action", &row.action)?;
+        if let Some(receipt) = undo_of {
+            output.serialize_field("undo_of", &receipt)?;
+        }
         output.serialize_field("before", &row.before)?;
         output.serialize_field("after", &row.after)?;
         output.serialize_field("before_display", &self.before_display)?;
