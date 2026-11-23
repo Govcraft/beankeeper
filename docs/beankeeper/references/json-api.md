@@ -58,6 +58,8 @@ The `companies` array contains the exported companies with their accounts and tr
 | `VALIDATION` | Business rule violation (unbalanced entry, invalid account type) |
 | `DATABASE` | SQLite or I/O error |
 | `NOT_FOUND` | Entity does not exist |
+| `UNDO_UNSUPPORTED` | The receipt's action has no undo operation (exit 3) |
+| `UNDO_INELIGIBLE` | Current ledger state blocks the receipt's undo (exit 3) |
 | `UNAUTHORIZED` | Missing required, invalid, expired, revoked or untrusted agent token (exit 6) |
 | `FORBIDDEN` | Verified token lacks the required capability (exit 7) |
 | `GENERAL` | Other error |
@@ -1448,6 +1450,76 @@ derived `status` and total `cleared_amount`; `after` also carries `op`
 (`clear`, `reconcile` or `unclear`) and `clearings`, the affected clearing rows
 (for `unclear`, the removed ones), each with `id`, `amount`, `cleared_date`,
 `reconciled_date` (`null` unless reconciled), `statement` and `status`.
+
+### `audit receipts`
+
+CLI JSON `data` and MCP `audit_receipts` structured content have the same
+shape. Provide `company` and optionally `cursor` (an exclusive nonnegative
+audit ID, default 0) and `limit` (1 to 100, default 50).
+
+```json
+{
+  "company": "acme",
+  "after": 40,
+  "through": 65,
+  "continuation": "acme:52:65",
+  "desktop_path": "/changes?company=acme&after=40&through=52",
+  "receipts": [
+    {
+      "id": 52,
+      "change": {
+        "id": 52,
+        "changed_at": "2026-11-23T15:00:00Z",
+        "actor": "bookkeeper",
+        "attribution": {"kind": "unverified", "client_hint": null},
+        "target": {"kind": "account", "id": "5000"},
+        "action": "create",
+        "summary": {
+          "kind": "account_created",
+          "after": {"name": "Supplies", "type": "expense", "default_tax_category": null}
+        },
+        "source_reference": null,
+        "related_posting": null,
+        "undo_of": null
+      },
+      "posting": null
+    }
+  ]
+}
+```
+
+The receipt array contains records in ascending audit order. Each includes a
+positive numeric `id`, a primary `change`, and a nullable `posting` with the
+linked posting event for a reversal or approved proposal. Events include the
+actor, attribution, timestamp, typed target, action and change summary, plus
+nullable `source_reference`, `related_posting`, and `undo_of` fields. Posting
+summaries carry a currency and amounts as integer minor units.
+
+While `continuation` is present, pass it unchanged as MCP `continuation` or
+CLI `--continuation` with the same company and ledger. Leave `cursor` out on
+these calls. `through` is the audit head captured for the first page. Once
+`continuation` is null, save `through` as the cursor for a later read, even
+when the page is empty. `desktop_path` is relative to the optional Desktop
+listener serving the same books. Desktop displays up to 50 receipts per view.
+
+### `audit undo`
+
+Pass the positive receipt ID to `bk --company acme --json audit undo 52`, or
+call MCP `audit_undo` with `{"company":"acme","receipt":52}`. Both require a
+signed `ledger/admin` token regardless of the ledger's enforcement setting.
+The write applies immediately, and retries for the same receipt return the
+original result.
+
+Both success outcomes include `company`, `undo_receipt`, and the relative
+`desktop_path` to the new audit receipt:
+
+- `kind: "reversed"` includes `transaction` (original ID) and `reversal` (new ID).
+- `kind: "archived"` includes the archived `account` code.
+
+Expect `NOT_FOUND` for a receipt missing from the selected company,
+`UNDO_UNSUPPORTED` when the change has no undo, and `UNDO_INELIGIBLE` when
+current state blocks an otherwise supported undo. CLI writes the error
+envelope to stderr. MCP uses `isError: true` and structured `{code, message}`.
 
 ## Parsing Tips for Agents
 
