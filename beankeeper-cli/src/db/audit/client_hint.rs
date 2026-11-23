@@ -1,4 +1,4 @@
-use std::{ffi::OsString, fmt, str::FromStr};
+use std::{ffi::OsString, fmt, str::FromStr, sync::OnceLock};
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
@@ -81,7 +81,7 @@ impl FromStr for AgentRuntime {
 pub struct EnvSnapshot(Vec<&'static str>);
 
 impl EnvSnapshot {
-    pub(super) fn capture() -> Self {
+    fn capture() -> Self {
         std::env::vars_os().map(|(name, _)| name).collect()
     }
 }
@@ -114,6 +114,12 @@ struct DetectedRuntime {
 }
 
 impl ClientHint {
+    pub(super) fn from_process() -> Option<&'static Self> {
+        static HINT: OnceLock<Option<ClientHint>> = OnceLock::new();
+        HINT.get_or_init(|| Self::detect(&EnvSnapshot::capture()))
+            .as_ref()
+    }
+
     /// Detects a runtime from a snapshot of environment names.
     #[must_use]
     pub fn detect(snapshot: &EnvSnapshot) -> Option<Self> {

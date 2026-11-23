@@ -6,7 +6,7 @@ use agent_uri::AgentUri;
 
 use crate::{db::metadata::TransactionSource, error::CliError, identity::VerifiedAgent};
 
-use super::client_hint::{ClientHint, EnvSnapshot};
+use super::client_hint::ClientHint;
 
 /// A nonblank audit label, suitable for recording or for exact matching.
 #[derive(Debug, Clone)]
@@ -186,7 +186,7 @@ impl Actor {
         };
         let attribution = match identity {
             Some(agent) => Attribution::Verified(Box::new(agent)),
-            None => Attribution::Unverified(ClientHint::detect(&EnvSnapshot::capture())),
+            None => Attribution::Unverified(ClientHint::from_process().cloned()),
         };
         Self { label, attribution }
     }
