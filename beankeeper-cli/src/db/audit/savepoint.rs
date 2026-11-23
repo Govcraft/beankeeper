@@ -8,32 +8,45 @@ use crate::db::connection::ReadConn;
 use crate::error::CliError;
 
 pub(in crate::db) struct AuditedTx<'a> {
-    connection: &'a Connection,
+    reader: ReadConn<'a>,
     name: &'static str,
     active: bool,
 }
 
 impl<'a> AuditedTx<'a> {
-    fn begin(connection: &'a Connection, name: &'static str) -> Result<Self, CliError> {
-        connection.execute_batch(&format!("SAVEPOINT {name}"))?;
+    fn begin(reader: ReadConn<'a>, name: &'static str) -> Result<Self, CliError> {
+        reader
+            .connection()
+            .execute_batch(&format!("SAVEPOINT {name}"))?;
         Ok(Self {
-            connection,
+            reader,
             name,
             active: true,
         })
     }
 
+    pub(in crate::db) fn run<T>(
+        reader: ReadConn<'a>,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        let transaction = Self::begin(reader, name)?;
+        let value = run(&transaction)?;
+        transaction.commit()?;
+        Ok(value)
+    }
+
     pub(super) const fn connection(&self) -> &'a Connection {
-        self.connection
+        self.reader.connection()
     }
 
     pub(in crate::db) const fn read(&self) -> ReadConn<'_> {
-        ReadConn::new(self.connection)
+        self.reader
     }
 
     pub(super) fn insert(&self, sql: &str, params: impl Params) -> Result<i64, CliError> {
-        self.connection.execute(sql, params)?;
-        Ok(self.connection.last_insert_rowid())
+        self.connection().execute(sql, params)?;
+        Ok(self.connection().last_insert_rowid())
     }
 
     pub(super) fn record_insert(
@@ -44,19 +57,19 @@ impl<'a> AuditedTx<'a> {
         id: &str,
         data: &serde_json::Value,
     ) -> Result<(), CliError> {
-        super::record_insert(self.connection, actor, company, creation, id, data)
+        super::record_insert(self.connection(), actor, company, creation, id, data)
     }
 
     fn rollback(mut self) -> Result<(), CliError> {
         let name = self.name;
-        self.connection
+        self.connection()
             .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))?;
         self.active = false;
         Ok(())
     }
 
     fn commit(mut self) -> Result<(), CliError> {
-        self.connection
+        self.connection()
             .execute_batch(&format!("RELEASE {}", self.name))?;
         self.active = false;
         Ok(())
@@ -69,7 +82,7 @@ impl Drop for AuditedTx<'_> {
             let name = self.name;
             // Keep the originating error (including an unwind) authoritative.
             let _ = self
-                .connection
+                .connection()
                 .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
         }
     }
@@ -80,18 +93,15 @@ pub(in crate::db) fn with_audited_tx<T>(
     name: &'static str,
     run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    let transaction = AuditedTx::begin(connection, name)?;
-    let value = run(&transaction)?;
-    transaction.commit()?;
-    Ok(value)
+    AuditedTx::run(ReadConn::new(connection), name, run)
 }
 
 pub(in crate::db) fn with_rolled_back_audited_tx<T>(
-    connection: &Connection,
+    reader: ReadConn<'_>,
     name: &'static str,
     run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    let transaction = AuditedTx::begin(connection, name)?;
+    let transaction = AuditedTx::begin(reader, name)?;
     let value = run(&transaction)?;
     transaction.rollback()?;
     Ok(value)

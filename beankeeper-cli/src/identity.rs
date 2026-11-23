@@ -27,7 +27,10 @@ use crate::db::connection::ReadConn;
 use crate::error::CliError;
 use crate::operation::{Operation, Permission};
 
+mod delegation;
 mod write_mode;
+use delegation::DelegatedTrust;
+pub(crate) use delegation::StartupAuthority;
 use write_mode::IssuanceGrants;
 pub use write_mode::WriteMode;
 
@@ -42,6 +45,7 @@ pub struct VerifiedAgent {
     agent_key: String,
     issuer_key: String,
     expires_at: DateTime<Utc>,
+    delegation: Option<DelegatedTrust>,
 }
 
 impl VerifiedAgent {
@@ -103,7 +107,10 @@ impl VerifiedAgent {
     }
 
     pub(crate) fn enforces_permissions(&self, ledger_enforced: bool) -> bool {
-        ledger_enforced || self.is_setup_credential() || self.write_mode.restricts_capabilities()
+        ledger_enforced
+            || self.delegation.is_some()
+            || self.is_setup_credential()
+            || self.write_mode.restricts_capabilities()
     }
 
     /// Whether the verified identity holds the requested ledger or UI grant.
@@ -117,6 +124,13 @@ impl VerifiedAgent {
 
 impl VerifiedAgent {
     pub(crate) fn check_live(&self, conn: ReadConn<'_>) -> Result<(), CliError> {
+        match &self.delegation {
+            Some(authority) => authority.check_live(self, conn),
+            None => self.check_registry(conn),
+        }
+    }
+
+    fn check_registry(&self, conn: ReadConn<'_>) -> Result<(), CliError> {
         if self.expires_at <= Utc::now() {
             return Err(unauthorized());
         }
@@ -368,6 +382,7 @@ fn verify_required(
         agent_key: claims.agent_key,
         issuer_key: key,
         expires_at: claims.exp,
+        delegation: None,
     })
 }
 

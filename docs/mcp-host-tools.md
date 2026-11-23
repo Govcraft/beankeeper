@@ -68,35 +68,52 @@ dispatch, so do not cache it as authority for later requests.
 Use `http_router_with_ledger_targets` to serve built-in tools against multiple
 opened ledgers on the same MCP endpoint. Construct `LedgerTargets::new(startup)`
 with the primary `Db` and pass a clone to the router factory. Keep the original
-to register additional ledgers as they become available, even after clients
-initialize a session.
+to register and detach ledgers while clients are connected.
 
 ```rust
-use beankeeper_cli::{db::Db, mcp::{LedgerTargets, http_router_with_ledger_targets}};
+use beankeeper_cli::{db::Db, mcp::{LedgerTargets, NamedLedgerTarget, http_router_with_ledger_targets}};
 
 let startup = Db::open_existing(books_path, Some(&books_key))?;
 let targets = LedgerTargets::new(startup);
 let router = http_router_with_ledger_targets(&cli, targets.clone(), false, config, host)?;
 
-// The host can do this later, using a separately initialized demo ledger.
+// Open a separate ledger using its own passphrase.
 let demo = Db::open_existing(demo_path, Some(&demo_key))?;
-targets.register("demo".parse()?, demo)?;
+let demo_target: NamedLedgerTarget = "demo".parse()?;
+targets.register_host_owned(demo_target.clone().into(), demo)?;
+
+// Later, from an async host task:
+let detached = targets.detach(&demo_target).await?;
+let released_path = detached.path();
 ```
 
-Send `Beankeeper-Ledger-Target: demo` with the demo ledger's bearer on each
+Send `Beankeeper-Ledger-Target: demo` with the startup ledger's bearer on each
 `tools/list` or `tools/call` request that targets it. Reuse the existing
 `Mcp-Session-Id`. Trusted axum middleware can instead insert a typed
 `LedgerTarget` into the request extensions, which takes precedence over the
 header. With neither selector, the request uses `LedgerTarget::default()`
 (`startup`).
 
-Each ledger has its own trust root and registry. For a newly initialized
-encrypted demo ledger, initialize its root and issue its grants before serving
-it. Beankeeper verifies the selected ledger's bearer and rechecks its live
-revocations, grant requirements, and policy in the same snapshot or write
-transaction that executes the tool. Direct grants use the ordinary posting path,
-and signed propose-only grants queue a proposal. Audit entries carry the
-verified caller's attribution. The read-only ceiling applies to every target.
+`register_host_owned` requires the typed `HostOwnedTarget` marker, constructed
+from a `NamedLedgerTarget`. The startup registry verifies and rechecks the
+bearer's trust root, expiry, and revocation. Only the signed grants travel to
+the selected connection. Its policy is checked within the read snapshot or
+audited write transaction. Direct grants post normally, propose-only grants
+return a pending proposal, and audit entries carry the startup caller's URI
+and token ID. The read-only ceiling applies to every target.
+
+Use `register` for a ledger that should authenticate with its own trust root
+and bearer. Both registration methods label named tool calls and discovery in
+MCP result metadata at `_meta["beankeeper/ledgerTarget"]`. Hosts can deserialize
+the value as `NamedLedgerTarget`. The structured result and pagination keep
+their existing shapes.
+
+`detach` accepts only a `NamedLedgerTarget`. It stops new requests to that name
+with `NOT_FOUND`, waits for requests already admitted, and closes the connection
+before returning `DetachedLedger`. Existing sessions can continue using other
+targets. A name is single-use for the endpoint's lifetime, so a replacement
+ledger needs a fresh name. If removing a file, first release any other host
+connections to it and use the file path on the detach proof.
 
 Use startup credentials and select the startup ledger for application host tools.
 The configured token fallback also applies there. Multi-ledger endpoints disable

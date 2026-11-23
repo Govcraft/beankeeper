@@ -694,6 +694,12 @@ passphrase. Hosts with per-ledger keys can pass already-opened databases to
 `LedgerTargets` and register them while clients are connected. See the
 [multi-ledger host guide](docs/mcp-host-tools.md#dispatch-to-another-ledger).
 
+An embedded host can register separate books as a `HostOwnedTarget`. The agent
+uses the same startup bearer and MCP session, with its signed grants, posting
+mode, and audit identity. Hosts can detach a named target and wait for active
+calls to finish before removing its file. Named MCP tool results carry
+`_meta["beankeeper/ledgerTarget"]`, and CLI JSON carries `meta.ledger_target`.
+
 ## Demo Mode
 
 Create sample books for three companies and explore the walkthrough below:

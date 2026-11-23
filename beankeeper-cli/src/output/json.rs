@@ -23,6 +23,7 @@ use crate::db::{
     EntryRow, EntryStatus, PostResult, TransactionRow,
 };
 use crate::error::{CliError, ErrorCode};
+use crate::ledger_target::NamedLedgerTarget;
 use crate::operation::Operation;
 
 use super::amounts::MoneyField;
@@ -46,6 +47,9 @@ pub struct Meta {
     pub agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company: Option<String>,
+    /// The selected ledger when the command used a named target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ledger_target: Option<NamedLedgerTarget>,
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pagination: Option<Pagination>,
@@ -158,6 +162,7 @@ pub fn meta(command: Operation, company: Option<&str>) -> Meta {
         command,
         agent: None,
         company: company.map(str::to_string),
+        ledger_target: None,
         timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         pagination: None,
         currency: None,
@@ -171,6 +176,7 @@ pub fn meta_with_timestamp(command: Operation, company: Option<&str>, timestamp:
         command,
         agent: None,
         company: company.map(str::to_string),
+        ledger_target: None,
         timestamp,
         pagination: None,
         currency: None,

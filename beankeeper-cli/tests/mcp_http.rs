@@ -15,6 +15,9 @@ use secrecy::SecretString;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
+#[path = "support/mcp_host_owned.rs"]
+mod host_owned;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const PASSPHRASE: &str = "http-test-passphrase";
 
@@ -1520,10 +1523,9 @@ fn cli_selects_a_named_ledger_and_rejects_unknown_targets() -> TestResult {
         "{}",
         String::from_utf8_lossy(&selected.stderr)
     );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&selected.stdout)?["data"][0]["slug"],
-        "acme"
-    );
+    let result = serde_json::from_slice::<Value>(&selected.stdout)?;
+    assert_eq!(result["data"][0]["slug"], "acme");
+    assert_eq!(result["meta"]["ledger_target"], "demo");
     let unknown = run("missing")?;
     assert_eq!(unknown.status.code(), Some(5));
     assert_eq!(

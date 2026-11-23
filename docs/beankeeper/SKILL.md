@@ -309,6 +309,12 @@ defaults to `startup`. In the CLI or stdio, use `--ledger NAME=PATH` with
 company inside whichever ledger the request uses. See the
 [named ledger command reference](references/commands.md#select-a-ledger).
 
+For a host-owned ledger such as separate demo books, use the startup bearer
+and the name supplied by the host on the existing HTTP session. Use the
+`_meta["beankeeper/ledgerTarget"]` marker on MCP results or `meta.ledger_target`
+in CLI JSON when telling the owner which books were read or changed. A detached
+target returns `NOT_FOUND`. Check the intended books before retrying.
+
 Rust host applications can merge `beankeeper_cli::mcp::http_router(&cli, read_only,
 config)?` beside their own axum routes. It already mounts `/mcp` and retains the
 same authentication and capability rules. The host supplies

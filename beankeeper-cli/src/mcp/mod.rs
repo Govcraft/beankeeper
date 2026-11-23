@@ -20,12 +20,15 @@ pub use http::{
 };
 /// Transport options for the HTTP router factories, including host rules and cancellation.
 pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
-pub use targets::LedgerTargets;
+pub use targets::{DetachedLedger, HostOwnedTarget, LEDGER_TARGET_META_KEY, LedgerTargets};
 
 use crate::operation::Operation;
 
-use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::handler::server::{router::tool::ToolRouter, tool::ToolCallContext};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ServerCapabilities,
+    ServerConfig,
+};
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt, tool_handler};
 use secrecy::{ExposeSecret, SecretString};
@@ -37,7 +40,7 @@ use crate::db::{
     connection::{Db, ReadConn},
 };
 use crate::error::CliError;
-pub use crate::ledger_target::LedgerTarget;
+pub use crate::ledger_target::{LedgerTarget, NamedLedgerTarget};
 use crate::request::LedgerRequest;
 use targets::OpenedLedger;
 
@@ -214,6 +217,16 @@ impl LedgerServer {
             )),
         }
     }
+
+    fn result_target<'a>(
+        &'a self,
+        context: &'a RequestContext<RoleServer>,
+    ) -> Option<&'a NamedLedgerTarget> {
+        match &self.backend {
+            Backend::Stdio { ledger, .. } => ledger.named(),
+            Backend::Http => http::authenticated_ledger(context).ok()?.ledger().named(),
+        }
+    }
 }
 
 fn tool_error(error: &CliError) -> CallToolResult {
@@ -262,6 +275,22 @@ impl LedgerServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for LedgerServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        let target = self.result_target(&context).cloned();
+        let mut response = self
+            .tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await?;
+        if let CallToolResponse::Complete(result) = &mut response {
+            targets::mark_result(target.as_ref(), &mut result.meta);
+        }
+        Ok(response)
+    }
+
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
@@ -295,10 +324,12 @@ impl ServerHandler for LedgerServer {
             .map_err(|_| rmcp::ErrorData::internal_error("tool discovery failed", None))?
             .map_err(|error| http::protocol_error(&error))?;
         }
-        Ok(rmcp::model::ListToolsResult {
+        let mut result = rmcp::model::ListToolsResult {
             tools,
             ..Default::default()
-        })
+        };
+        targets::mark_result(self.result_target(&context), &mut result.meta);
+        Ok(result)
     }
 
     fn get_info(&self) -> ServerConfig {

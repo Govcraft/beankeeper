@@ -2,6 +2,8 @@
 
 use rusqlite::{CachedStatement, Connection, MappedRows, Params, Result, Row, Rows, Statement};
 
+use super::{ConnectionId, Db};
+
 /// A query-only borrow of a ledger connection.
 ///
 /// Queries share the caller's snapshot. This handle exposes no write or
@@ -18,11 +20,30 @@ use rusqlite::{CachedStatement, Connection, MappedRows, Params, Result, Row, Row
 #[derive(Clone, Copy)]
 pub struct ReadConn<'a> {
     connection: &'a Connection,
+    id: Option<&'a ConnectionId>,
 }
 
 impl<'a> ReadConn<'a> {
     pub(in crate::db) const fn new(connection: &'a Connection) -> Self {
-        Self { connection }
+        Self {
+            connection,
+            id: None,
+        }
+    }
+
+    pub(super) const fn for_db(db: &'a Db) -> Self {
+        Self {
+            connection: &db.conn,
+            id: Some(&db.id),
+        }
+    }
+
+    pub(in crate::db) const fn connection(self) -> &'a Connection {
+        self.connection
+    }
+
+    pub(crate) fn belongs_to(self, id: &ConnectionId) -> bool {
+        self.id.is_some_and(|current| current.matches(id))
     }
 
     /// Prepares one query returning rows.

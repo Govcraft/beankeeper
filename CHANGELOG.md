@@ -6,6 +6,16 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.35.0] - Unreleased
+
+### Added
+
+- Embedded MCP hosts can register separate books that accept the startup
+  ledger's verified bearer and keep its signed grants, posting mode, and audit
+  identity. Hosts can detach named ledgers after active requests drain. Named
+  results identify their ledger in MCP metadata and CLI JSON.
+  ([#252](https://github.com/Govcraft/beankeeper/issues/252))
+
 ## [0.34.0] - Unreleased
 
 ### Added
