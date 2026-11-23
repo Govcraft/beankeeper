@@ -1,5 +1,8 @@
 //! Exercise the real MCP server over its newline-delimited stdio transport.
 
+#[path = "mcp_stdio/audit_receipts.rs"]
+mod audit_receipts;
+
 use beankeeper_cli::db::CreateAccountParams;
 use beankeeper_cli::identity::{Admin, Granted};
 use std::collections::BTreeSet;
