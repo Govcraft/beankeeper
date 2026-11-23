@@ -6,6 +6,15 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.34.0] - Unreleased
+
+### Added
+
+- Embedded hosts can attest a local owner and read a typed financial summary
+  on enforced books. The read provides attributed access data to the host's
+  audit sink and works with a read-only ledger snapshot.
+  ([#260](https://github.com/Govcraft/beankeeper/issues/260))
+
 ## [0.33.0] - Unreleased
 
 ### Added

@@ -4,10 +4,18 @@ use std::error::Error;
 use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
+use beankeeper::types::Currency;
 use beankeeper_cli::{
     cli::{Cli, Command as BkCommand},
-    commands::summary::{SummaryArgs, SummaryRequest},
-    db::{Actor, connection::Db},
+    commands::{
+        report::DateRange,
+        summary::{
+            OwnerSummaryReader, SummaryAccounts, SummaryArgs, SummaryRequest, SummaryWindow,
+        },
+    },
+    db::{Actor, companies::CompanySlug, connection::Db},
+    error::CliError,
+    operation::Operation,
     request::{LedgerRequest, LedgerResponse},
 };
 use clap::Parser;
@@ -275,6 +283,70 @@ fn read_only_snapshot_matches_cli_and_summary_adds_no_audit_or_ledger_rows() -> 
     assert_eq!(actual, expected);
     assert_eq!(total_changes()?, changes);
     ledger.ok(&["verify"])?;
+    Ok(())
+}
+
+#[test]
+fn owner_reads_enforced_snapshot_with_access_attribution_and_without_an_agent_token() -> TestResult
+{
+    let ledger = Ledger::new()?;
+    ledger.post("2024-03-01", "1000:12.34", "4000:12.34", "USD")?;
+    ledger.ok(&["policy", "set", "--enforce", "on"])?;
+    let db = Db::open_snapshot(&ledger.dir.path().join("books.db"), None)?;
+
+    let company: CompanySlug = "co".parse()?;
+    let current = DateRange::new("2024-03-01".parse()?, "2024-03-31".parse()?)?;
+    let previous = DateRange::new("2024-02-01".parse()?, "2024-02-29".parse()?)?;
+    let dates = (SummaryWindow::Exact(current), Some(previous)).into();
+    let request = || -> Result<_, Box<dyn Error>> {
+        let accounts = SummaryAccounts::from([vec!["1000".parse()?], vec![], vec![]]);
+        Ok(SummaryRequest::try_from((
+            company.clone(),
+            dates,
+            Some(Currency::USD),
+            accounts,
+        ))?)
+    };
+    let actor = Actor::new("Desktop owner".parse()?);
+    assert!(matches!(
+        LedgerRequest::Summary(request()?).execute(&db, &actor),
+        Err(CliError::Unauthorized(_))
+    ));
+    let cli = ledger.run(&["summary", "--json"])?;
+    assert!(!cli.status.success());
+    let denied: Value = serde_json::from_slice(&cli.stderr)?;
+    assert_eq!(denied["error"]["code"], "UNAUTHORIZED");
+
+    let owner = OwnerSummaryReader::from_authenticated_owner(&db, actor.label().clone());
+    let mut recorded = None;
+    let summary = owner.summary(request()?, |read| {
+        recorded = Some((
+            read.operation(),
+            read.actor().as_str().to_owned(),
+            read.company().clone(),
+        ));
+    })?;
+    assert_eq!(
+        recorded,
+        Some((Operation::Summary, "Desktop owner".into(), company))
+    );
+    assert_eq!(
+        summary.period_windows(),
+        [
+            (current.from(), current.to()),
+            (previous.from(), previous.to())
+        ]
+    );
+    assert!(
+        summary
+            .highlights()
+            .iter()
+            .any(|line| line.contains("12.34"))
+    );
+    let changes: i64 = db
+        .read()
+        .query_row("SELECT total_changes()", [], |row| row.get(0))?;
+    assert_eq!(changes, 0);
     Ok(())
 }
 
