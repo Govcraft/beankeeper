@@ -330,6 +330,10 @@ ignores CLI passphrase sources and `BEANKEEPER_PASSPHRASE_CMD`; it needs no file
 descriptor bridge or plaintext secret file on any platform. MCP authentication
 and capability checks remain the same.
 
+Use `beankeeper_cli::db::current_schema_version()` to get the linked build's
+expected snapshot schema version without opening a ledger. Convert it with
+`i64::from` to compare it with the stored version from `get_schema_version`.
+
 Embedded hosts can compose their own tools with `http_router_with_host_tools`
 and `HostToolHandler`. Each host tool declares a required grant and read-only
 effect; discovery and dispatch require the current bearer's grant even with

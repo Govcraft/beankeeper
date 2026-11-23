@@ -6,6 +6,14 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.39.0] - Unreleased
+
+### Added
+
+- Embedded Rust hosts can read the linked build's expected ledger schema
+  version without opening a database.
+  ([#250](https://github.com/Govcraft/beankeeper/issues/250))
+
 ## [0.38.0] - Unreleased
 
 ### Added

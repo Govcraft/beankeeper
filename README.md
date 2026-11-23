@@ -681,6 +681,11 @@ keeps the same MCP authentication. It works across platforms without a file
 descriptor bridge or plaintext passphrase file. Drop the secret after opening
 both connections. See its Rustdoc for an example.
 
+Rust hosts can call `beankeeper_cli::db::current_schema_version()` before
+opening a ledger to get the schema version that `Db::open_snapshot` expects.
+Convert the result with `i64::from` to compare it with `get_schema_version`,
+which reads the version stored in an open ledger.
+
 Hosts can add application tools with `http_router_with_host_tools` and a
 `HostToolHandler`. Beankeeper filters their discovery and dispatch using the
 current request's verified grants, revocations, and read-only ceiling. Navigation
