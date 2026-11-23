@@ -85,9 +85,12 @@ fn seed_automation(db: &Db, actor: &Actor) -> Result<(), CliError> {
         rules::create_rule(
             grant,
             &"acme-consulting".parse()?,
-            "office supplies".parse()?,
-            "5200",
-            10,
+            (
+                "office supplies".parse()?,
+                "5200".parse().map_err(beankeeper::error::BeanError::from)?,
+                Some(10.into()),
+            )
+                .into(),
         )
     })?;
     // Pending templates are separate from postings. Preview March explicitly.

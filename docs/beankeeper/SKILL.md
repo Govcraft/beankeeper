@@ -434,6 +434,10 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk policy show/set` | Inspect or change capability enforcement |
 | `bk rule create` | Persist a company-scoped description-to-account mapping |
 | `bk rule list` | List categorization rules in evaluation order |
+| `bk rule amend` | Supersede an active rule and retain both versions in the audit trail |
+| `bk rule match` | Preview which active rule matches a candidate description |
+| `bk bookkeeping-policy show/set` | Read or save sales-tax and processor-fee instructions |
+| `bk inform-preference show/set` | Read or save how often the owner hears about completed changes |
 | `bk rule delete` | Remove a mapping without changing existing postings |
 | `bk txn clear` | Clear entries (in full or in part) against a statement, by id, by reference, or in an atomic batch; mark reconciled |
 | `bk txn attach` | Link documents (receipts, invoices) to transactions |
@@ -662,7 +666,9 @@ See [commands.md](references/commands.md) for the full import contract.
 ```bash
 bk --company acme rule create --contains Starbucks --account 5000 --priority 10
 bk --company acme rule list --json
-bk --company acme rule delete <RULE_ID> --force
+bk --company acme rule match --description 'Starbucks 102' --json
+bk --company acme rule amend "$RULE_ID" --contains Starbucks --account 5100 --priority 10
+bk --company acme rule delete "$RULE_ID" --force
 ```
 
 Rules automatically apply to future CSV and OFX/QFX imports, including dry runs.
@@ -674,12 +680,37 @@ suspense side. They apply to both inflows and outflows; unmatched rows retain
 `--suspense`. Account tax defaults apply. A rule targeting the import bank is
 an error. JSON journal imports retain their explicit entries.
 
-Creating/deleting rules never changes posted transactions. CSV references are
-computed before rule selection, preserving duplicate detection across rule
-changes. Delete and recreate a rule to change its mapping. Creation/deletion
-are audited under entity `rule`, with actions `create` and `rule_delete` in JSON.
-Accounts referenced by rules cannot be deleted until those rules are removed.
-Rule management is available via CLI; MCP tools remain unchanged.
+Use the current rule ID to amend it with complete replacement terms. An
+amendment creates a new ID and saves both versions under `rule_supersede`.
+To undo, amend the replacement using the earlier terms from the audit trail.
+Removals retain the last version in the audit trail. Use `rule match` for a
+read-only `match` or `no_match` result before posting. Existing transactions
+and generated import references stay intact. Accounts referenced by active
+rules must be kept until those rules are amended or removed.
+
+Use `rule_create`, `rule_list`, `rule_amend`, `rule_match` and `rule_delete`
+when calling MCP. Results match the CLI JSON data.
+
+### Save standing instructions and the inform preference
+
+Read current settings with `bookkeeping_policy_show` and `inform_preference_show`
+or with the corresponding CLI `show` commands. Save the owner's stated
+preferences directly. Use `bookkeeping_policy_set` with
+`{"company":"acme","policy":{"kind":"sales-tax","value":"track-liability"}}`
+or `inform_preference_set` with
+`{"company":"acme","preference":"daily-digest"}`.
+
+```bash
+bk --company acme bookkeeping-policy set sales-tax=track-liability
+bk --company acme bookkeeping-policy set processor-fees=separate-expense
+bk --company acme inform-preference set daily-digest
+```
+
+Tell the owner what changed and offer to restore the previous setting with one
+audited set. Use `unset` for an unconfigured bookkeeping instruction.
+`per-change` is the default inform preference. The preference guides when to
+report completed changes. Use the [accepted values and payloads](references/commands.md#standing-bookkeeping-and-inform-preferences)
+when translating the owner's answer to a setting.
 
 ### Generate reports
 

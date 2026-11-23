@@ -120,7 +120,7 @@ setting the same value again is a no-op. `policy show` returns JSON data with
 | Required grant | Commands and corresponding MCP tools |
 | --- | --- |
 | `ledger/read` | List/show commands, reports, export, verify, audit log, agent list, agent limit show, policy show, period list, loan schedule, list owned proposals |
-| `ledger/post` | txn post/import/attach, txn meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/delete |
+| `ledger/post` | txn post/import/attach, txn meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/amend/delete, bookkeeping-policy set, inform-preference set |
 | `ledger/propose` | txn propose, list owned proposals, withdraw owned pending proposals |
 | `ledger/approve` | List all proposals, txn approve, txn reject |
 | `ledger/reverse` | txn reverse |

@@ -29,6 +29,7 @@ pub mod rule;
 pub mod schedule;
 pub mod setup;
 mod setup_statement;
+pub mod standing;
 pub(crate) mod statement_source;
 pub mod summary;
 pub mod txn;
@@ -64,11 +65,9 @@ pub fn operation(cmd: &Command) -> Operation {
             crate::cli::LoanCommand::Schedule(_) => Operation::LoanSchedule,
             crate::cli::LoanCommand::Pay(_) => Operation::LoanPay,
         },
-        Command::Rule(args) => match &args.command {
-            crate::cli::RuleCommand::Create { .. } => Operation::RuleCreate,
-            crate::cli::RuleCommand::List => Operation::RuleList,
-            crate::cli::RuleCommand::Delete { .. } => Operation::RuleDelete,
-        },
+        Command::Rule(args) => args.command.operation(),
+        Command::BookkeepingPolicy(command) => command.operation(),
+        Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
         Command::Mcp(_) => Operation::McpServe,
         Command::Policy(sub) => match sub {
@@ -213,22 +212,7 @@ fn dispatch_ledger(
     use crate::request::LedgerRequest;
 
     let request = match &cli.command {
-        Command::Setup(command) => {
-            let request = setup::SetupRequest::try_from(command)?;
-            let response = if request.reads_compatible_snapshot() {
-                let db = setup::open_setup_snapshot(cli)?;
-                LedgerRequest::Setup(request)
-                    .execute_with_actor(&db, |_| {
-                        cli.verify_agent(&db)?;
-                        Ok(cli.principal())
-                    })?
-                    .0
-            } else {
-                let db = cli.open_db()?;
-                LedgerRequest::Setup(request).execute(&db, &cli.principal())?
-            };
-            return response.render(cli, meta).map(|()| true);
-        }
+        Command::Setup(command) => return dispatch_setup(cli, meta, command).map(|()| true),
         Command::Summary(args) => Some(LedgerRequest::Summary(
             (require_company(cli)?, args, chart).try_into()?,
         )),
@@ -268,6 +252,19 @@ fn dispatch_ledger(
                 )?))
             }
         },
+        Command::Rule(args) => {
+            return execute_confirmable(cli, meta, "aborted", || {
+                let request: Option<rule::RuleRequest> =
+                    rule::RuleCliInput(require_company(cli)?, &args.command).try_into()?;
+                Ok(request.map(LedgerRequest::Rule))
+            });
+        }
+        Command::BookkeepingPolicy(command) => Some(LedgerRequest::Standing(
+            (require_company(cli)?, command).into(),
+        )),
+        Command::InformPreference(command) => Some(LedgerRequest::Standing(
+            (require_company(cli)?, command).into(),
+        )),
         Command::Budget(args) => {
             return execute_confirmable(cli, meta, "aborted", || {
                 let request: Option<budget::BudgetRequest> =
@@ -290,7 +287,6 @@ fn dispatch_ledger(
         | Command::Mcp(_)
         | Command::Policy(_)
         | Command::Restore { .. }
-        | Command::Rule(_)
         | Command::Schedule(_) => None,
     };
     if let Some(request) = request {
@@ -301,6 +297,29 @@ fn dispatch_ledger(
     } else {
         Ok(false)
     }
+}
+
+fn dispatch_setup(
+    cli: &Cli,
+    meta: Option<Meta>,
+    command: &setup::SetupCommand,
+) -> Result<(), CliError> {
+    use crate::request::LedgerRequest;
+
+    let request = setup::SetupRequest::try_from(command)?;
+    let response = if request.reads_compatible_snapshot() {
+        let db = setup::open_setup_snapshot(cli)?;
+        LedgerRequest::Setup(request)
+            .execute_with_actor(&db, |_| {
+                cli.verify_agent(&db)?;
+                Ok(cli.principal())
+            })?
+            .0
+    } else {
+        let db = cli.open_db()?;
+        LedgerRequest::Setup(request).execute(&db, &cli.principal())?
+    };
+    response.render(cli, meta)
 }
 
 fn execute_confirmable(
@@ -343,10 +362,6 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             schedule::run(cli, company, &args.command)
         }
         Command::Loan(args) => loan::run(cli, &args.command),
-        Command::Rule(args) => {
-            let company = require_company(cli)?.as_str();
-            rule::run(cli, company, &args.command)
-        }
         Command::Key(crate::cli::KeyCommand::Init) => agent::run_key(cli),
         Command::Agent(command) => agent::run(cli, command),
         Command::Policy(command) => policy::run(cli, command),
@@ -385,6 +400,9 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Company(_)
         | Command::Account(_)
         | Command::Budget(_)
+        | Command::Rule(_)
+        | Command::BookkeepingPolicy(_)
+        | Command::InformPreference(_)
         | Command::Report(_)
         | Command::Audit(_) => Err(CliError::General(
             "ledger request was not dispatched".into(),

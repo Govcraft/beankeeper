@@ -527,6 +527,10 @@ mutation tools are absent and cannot be called.
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `ledger_setup_book_show` | Read a book's current profile, fiscal year, base currency, and named accounts |
 | `report` | Run CLI reports |
+| `rule_list`, `rule_create`, `rule_amend`, `rule_delete` | Read and manage company categorization rules with audit history |
+| `rule_match` | Preview the winning rule for a candidate description |
+| `bookkeeping_policy_show`, `bookkeeping_policy_set` | Read or save standing sales-tax and processor-fee instructions |
+| `inform_preference_show`, `inform_preference_set` | Read or save how often the owner hears about completed changes |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
 
@@ -1033,11 +1037,13 @@ to future CSV and OFX/QFX imports:
 ```sh
 bk --company personal rule create --contains Starbucks --account 5000 --priority 10
 bk --company personal rule list --json
+bk --company personal rule match --description 'STARBUCKS 102'
+bk --company personal rule amend "$RULE_ID" --contains Starbucks --account 5100 --priority 10
 bk --company personal txn import --file checking.ofx --account 1000 --suspense 9000
 bk --company personal rule delete rule_01h455vb4pex5vsknk084sn02q --force
 ```
 
-Use the rule ID returned by `create` or `list` when deleting a rule. Rules belong
+Use the active rule ID returned by `create`, `amend` or `list` when changing a rule. Rules belong
 to one company and select an existing account in that company. Matching trims
 the pattern, lowercases it and the imported description using Unicode lowercase,
 then checks for a literal substring. `%` and `_` have no special meaning. CSV
@@ -1050,14 +1056,34 @@ which remains required. Destination account tax defaults apply. A rule selecting
 the import's bank account is rejected. JSON journal batches keep their explicit
 entries.
 
-Rules apply during `--dry-run` too. Creating or deleting rules does not change
-existing postings or their references. CSV generated references are calculated
-before rule selection, so rule changes do not duplicate previously imported
-rows. To change a mapping, delete its rule and create a replacement. These
-operations are audited (`--entity rule`, actions `create` and `rule-delete`).
-Delete referencing rules before deleting an account. Rule commands support
-table, JSON and CSV output; they are available through the CLI, with no new MCP
-tools.
+Rules apply during `--dry-run` too. Changes affect future imports and keep
+existing postings and references intact. Amend with a full replacement
+pattern, account and optional priority. The replacement gets a new ID and the
+audit trail records both versions under `rule-supersede`. An explicit delete
+removes the rule from future matching and records its last version.
+`rule match` previews the winning rule or returns `no_match` without posting.
+
+Agents can call `rule_list`, `rule_create`, `rule_amend`, `rule_match` and
+`rule_delete` over MCP. The same operations are available in the CLI.
+
+### Standing bookkeeping and inform preferences
+
+```sh
+bk --company personal bookkeeping-policy show
+bk --company personal bookkeeping-policy set sales-tax=track-liability
+bk --company personal bookkeeping-policy set processor-fees=separate-expense
+bk --company personal inform-preference show
+bk --company personal inform-preference set daily-digest
+```
+
+Agents can use `bookkeeping_policy_show`, `bookkeeping_policy_set`,
+`inform_preference_show` and `inform_preference_set` over MCP. These settings
+record company-specific instructions for the agent. Posting logic and capability
+enforcement continue to follow the existing ledger rules. The inform preference
+defaults to `per-change` and also supports `daily-digest` and `weekly-digest`.
+The agent saves changes directly, tells the owner what changed, and can restore
+prior values with the same set operation. Use `unset` to clear a bookkeeping
+instruction. See the [full CLI and MCP contract](docs/beankeeper/references/commands.md#standing-bookkeeping-and-inform-preferences).
 
 ### OFX / QFX Bank Statement Import
 

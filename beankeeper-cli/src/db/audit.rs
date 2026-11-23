@@ -46,6 +46,8 @@ pub use hash_version::{HashVersion, UnsupportedHashVersion};
 mod posting;
 pub(super) use posting::persist_posting;
 pub(super) mod catalog;
+mod standing;
+pub use standing::{set_bookkeeping_policy, set_inform_preference};
 pub(crate) mod grant;
 pub(crate) mod identity_write;
 pub(super) mod investment;
@@ -143,6 +145,8 @@ audit_labels! {
         Price => "price",
         Schedule => "schedule",
         Rule => "rule",
+        BookkeepingPolicy => "bookkeeping_policy" | "bookkeeping-policy",
+        InformPreference => "inform_preference" | "inform-preference",
         Entry => "entry",
         Transaction => "transaction",
         Budget => "budget",
@@ -169,6 +173,9 @@ audit_labels! {
         MetadataSet => "metadata_set" | "metadata-set",
         MetadataUnset => "metadata_unset" | "metadata-unset",
         RuleDelete => "rule_delete" | "rule-delete",
+        RuleSupersede => "rule_supersede" | "rule-supersede",
+        BookkeepingPolicySet => "bookkeeping_policy_set" | "bookkeeping-policy-set",
+        InformPreferenceSet => "inform_preference_set" | "inform-preference-set",
         Create => "create",
         StatusChange => "status_change" | "status-change",
         Correlate => "correlate",
@@ -277,6 +284,7 @@ pub(super) const GENESIS_HASH: &str =
 
 /// Versioned, ordered JSON tuple: field boundaries and nulls are unambiguous.
 /// Snapshots are hashed as their stored UTF-8 strings, without reformatting JSON.
+/// V7 commits to standing settings and rule lineage through those snapshots.
 fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
     let mut fields = vec![
         serde_json::json!(row.hash_version.domain()),
@@ -2428,7 +2436,8 @@ impl<'tx> EmptyCompany<'tx> {
                 EXISTS(SELECT 1 FROM period_locks WHERE company_slug = ?1),
                 EXISTS(SELECT 1 FROM categorization_rules WHERE company_slug = ?1),
                 EXISTS(SELECT 1 FROM setup_book_profiles WHERE company_slug = ?1)
-                    OR EXISTS(SELECT 1 FROM setup_statement_batches WHERE company_slug = ?1)",
+                    OR EXISTS(SELECT 1 FROM setup_statement_batches WHERE company_slug = ?1),
+                EXISTS(SELECT 1 FROM standing_settings WHERE company_slug = ?1)",
             [slug],
             |row| {
                 Ok([
@@ -2438,6 +2447,7 @@ impl<'tx> EmptyCompany<'tx> {
                     (row.get(3)?, "period locks"),
                     (row.get(4)?, "categorization rules"),
                     (row.get(5)?, "setup records"),
+                    (row.get(6)?, "standing settings"),
                 ])
             },
         )?;
@@ -2483,43 +2493,82 @@ impl<'tx> EmptyCompany<'tx> {
 /// Returns an error if the destination account is missing or persistence fails.
 pub fn create_rule(
     grant: grant::Granted<'_, grant::Post>,
-    company: &crate::db::companies::CompanySlug,
-    contains: super::rules::DescriptionPattern,
-    account: &str,
-    priority: i32,
+    company: &super::companies::CompanySlug,
+    terms: super::rules::RuleTerms,
 ) -> Result<super::rules::Rule, CliError> {
-    grant.mutate("sp_rule_create", |tx, actor| {
+    write_rule(grant, company, terms, None)
+}
+
+/// Replace an active rule with a new ID and retain both versions in the audit trail.
+///
+/// # Errors
+/// Returns an error if the active rule or destination account is missing, or persistence fails.
+pub fn amend_rule(
+    grant: grant::Granted<'_, grant::Post>,
+    company: &super::companies::CompanySlug,
+    id: &super::rules::RuleId,
+    terms: super::rules::RuleTerms,
+) -> Result<super::rules::Rule, CliError> {
+    write_rule(grant, company, terms, Some(id))
+}
+
+fn write_rule(
+    grant: grant::Granted<'_, grant::Post>,
+    company: &super::companies::CompanySlug,
+    terms: super::rules::RuleTerms,
+    supersedes: Option<&super::rules::RuleId>,
+) -> Result<super::rules::Rule, CliError> {
+    use super::rules::{Rule, get_rule};
+
+    grant.mutate("sp_rule_write", |tx, actor| {
         let conn = tx.connection();
         let scope = Company::bind(tx.read(), company.clone())?;
-        super::accounts::get_active_account(&scope, account)?;
-        let rule = super::rules::Rule {
-            id: super::rules::RuleId::generate(),
-            company_slug: company.clone(),
-            contains,
-            account_code: account.to_string(),
-            priority,
-        };
+        let previous = supersedes.map(|id| get_rule(&scope, id)).transpose()?;
+        let rule = Rule::new(&scope, terms, supersedes.cloned())?;
+        let id = rule.id().to_string();
         conn.execute(
-            "INSERT INTO categorization_rules (id, company_slug, contains, account_code, priority)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO categorization_rules (id, company_slug, contains, account_code, priority, supersedes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
-                rule.id.to_string(),
+                &id,
                 company,
-                rule.contains.to_string(),
-                account,
-                priority
+                rule.contains().to_string(),
+                rule.account_code().as_str(),
+                i32::from(rule.priority()),
+                supersedes.map(ToString::to_string),
             ],
         )?;
-        record_insert(
-            conn,
-            actor,
-            company,
-            Creation::Rule,
-            &rule.id.to_string(),
-            &serde_json::json!(&rule),
-        )?;
+        if let Some(previous) = previous {
+            let previous_id = previous.id().to_string();
+            retire_rule(conn, company, &previous_id)?;
+            record(
+                conn,
+                actor,
+                AuditChange {
+                    company_slug: Some(company),
+                    entity: AuditEntity::Rule,
+                    entity_id: &id,
+                    action: AuditAction::RuleSupersede,
+                    snapshots: (Some(&snapshot(&previous)), Some(&snapshot(&rule))),
+                },
+            )?;
+        } else {
+            record_insert(conn, actor, company, Creation::Rule, &id, &serde_json::json!(&rule))?;
+        }
         Ok(rule)
     })
+}
+
+fn retire_rule(
+    conn: &Connection,
+    company: &super::companies::CompanySlug,
+    id: &str,
+) -> Result<(), CliError> {
+    conn.execute(
+        "DELETE FROM categorization_rules WHERE company_slug = ?1 AND id = ?2",
+        params![company, id],
+    )?;
+    Ok(())
 }
 
 /// Delete one company's rule, recording its complete before snapshot.
@@ -2528,34 +2577,25 @@ pub fn create_rule(
 /// Returns authorization errors, not-found for a rule outside this company, or a database error.
 pub fn delete_rule(
     grant: grant::Granted<'_, grant::Post>,
-    company: &crate::db::companies::CompanySlug,
+    company: &super::companies::CompanySlug,
     id: &super::rules::RuleId,
     _confirmed: Confirmed,
 ) -> Result<(), CliError> {
     grant.mutate("sp_rule_delete", |tx, actor| {
         let conn = tx.connection();
-        let rule = super::rules::list_rules(&crate::db::companies::Company::bind(
-            ReadConn::new(conn),
-            company.clone(),
-        )?)?
-        .into_iter()
-        .find(|rule| &rule.id == id)
-        .ok_or_else(|| {
-            CliError::NotFound(format!("rule '{id}' not found in company '{company}'"))
-        })?;
-        conn.execute(
-            "DELETE FROM categorization_rules WHERE company_slug = ?1 AND id = ?2",
-            params![company, id.to_string()],
-        )?;
+        let scope = Company::bind(tx.read(), company.clone())?;
+        let rule = super::rules::get_rule(&scope, id)?;
+        let id = id.to_string();
+        retire_rule(conn, company, &id)?;
         record(
             conn,
             actor,
             AuditChange {
                 company_slug: Some(company),
                 entity: AuditEntity::Rule,
-                entity_id: &id.to_string(),
+                entity_id: &id,
                 action: AuditAction::RuleDelete,
-                snapshots: (Some(&snapshot(&serde_json::json!(&rule))), None),
+                snapshots: (Some(&snapshot(&rule)), None),
             },
         )
     })

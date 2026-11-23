@@ -18,6 +18,8 @@ pub enum HashVersion {
     V5,
     /// Adds the nullable undo and related posting links.
     V6,
+    /// Introduces standing settings and rule supersession in audit snapshots.
+    V7,
 }
 
 impl HashVersion {
@@ -29,6 +31,7 @@ impl HashVersion {
             Self::V4 => "beankeeper.audit.v4",
             Self::V5 => "beankeeper.audit.v5",
             Self::V6 => "beankeeper.audit.v6",
+            Self::V7 => "beankeeper.audit.v7",
         }
     }
 
@@ -37,15 +40,16 @@ impl HashVersion {
     }
 
     pub(super) const fn includes_client_hint(self) -> bool {
-        matches!(self, Self::V5 | Self::V6)
+        matches!(self, Self::V5 | Self::V6 | Self::V7)
     }
 
     pub(super) const fn includes_receipt_links(self) -> bool {
-        matches!(self, Self::V6)
+        matches!(self, Self::V6 | Self::V7)
     }
 
     pub(super) const fn for_schema(version: i64) -> Self {
         match version {
+            super::super::schema::STANDING_SETTINGS_SCHEMA_VERSION.. => Self::V7,
             super::super::schema::RECEIPT_SCHEMA_VERSION.. => Self::V6,
             super::super::schema::CLIENT_HINT_SCHEMA_VERSION.. => Self::V5,
             20.. => Self::V4,
@@ -78,6 +82,7 @@ impl TryFrom<i64> for HashVersion {
             4 => Ok(Self::V4),
             5 => Ok(Self::V5),
             6 => Ok(Self::V6),
+            7 => Ok(Self::V7),
             _ => Err(UnsupportedHashVersion(version)),
         }
     }

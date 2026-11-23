@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 
 use assert_cmd::prelude::*;
 use beankeeper_cli::cli::Cli;
-use beankeeper_cli::db::Db;
+use beankeeper_cli::db::{Db, get_schema_version};
 use beankeeper_cli::{commands, error::CliError};
 use clap::Parser as _;
 use secrecy::SecretString;
@@ -178,7 +178,7 @@ fn round_trip(encrypted: bool) -> TestResult {
     let snapshot = success(&snapshot_output)?;
     assert_eq!(snapshot["meta"]["command"], "backup");
     assert_eq!(snapshot["data"]["encrypted"], encrypted);
-    assert_eq!(snapshot["data"]["schema_version"], 26);
+    assert_eq!(snapshot["data"]["schema_version"], 27);
     assert!(snapshot["data"]["bytes"].as_u64().ok_or("missing bytes")? > 0);
     assert_eq!(
         std::fs::read(&backup)?.starts_with(b"SQLite format 3\0"),
@@ -303,9 +303,9 @@ fn invalid_inputs_never_publish_or_replace_a_destination() -> TestResult {
     drop(conn);
     let forged = dir.path().join("forged.db");
     let conn = rusqlite::Connection::open(&forged)?;
-    conn.execute_batch(
-        "CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (26)",
-    )?;
+    conn.execute_batch("CREATE TABLE schema_version (version INTEGER)")?;
+    let current = get_schema_version(Db::open_in_memory()?.read())?;
+    conn.execute("INSERT INTO schema_version VALUES (?1)", [current])?;
     drop(conn);
     let mut truncated = std::fs::read(&valid)?;
     truncated.truncate(truncated.len() / 2);
@@ -555,7 +555,7 @@ fn restore_rejects_unsupported_schema_without_migration_or_modifying_input() -> 
     let dir = tempdir()?;
     let source = dir.path().join("source.db");
     let destination = dir.path().join("destination.db");
-    let current = beankeeper_cli::db::get_schema_version(Db::open_in_memory()?.read())?;
+    let current = get_schema_version(Db::open_in_memory()?.read())?;
     for version in [current - 1, current + 1] {
         let conn = rusqlite::Connection::open(&source)?;
         conn.execute_batch(

@@ -347,7 +347,7 @@ fn cli_and_mcp_audit_show_the_same_unverified_runtime_hint() -> TestResult {
         assert_eq!(row["actor"], "configured-operator");
         assert!(row["agent_uri"].is_null());
         assert!(row["token_jti"].is_null());
-        assert_eq!(row["hash_version"], 6);
+        assert_eq!(row["hash_version"], 7);
         assert_eq!(
             row["client_hint"],
             json!({
@@ -770,6 +770,15 @@ const LEDGER_TOOLS: &[&str] = &[
     "ledger_setup_statement_preview",
     "ledger_setup_statement_commit",
     "ledger_setup_statement_receipt",
+    "rule_list",
+    "rule_match",
+    "rule_create",
+    "rule_amend",
+    "rule_delete",
+    "bookkeeping_policy_show",
+    "bookkeeping_policy_set",
+    "inform_preference_show",
+    "inform_preference_set",
     "budget_list",
     "budget_set",
     "budget_delete",
@@ -1426,7 +1435,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 19);
+    assert_eq!(names.len(), 23);
     assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
@@ -1434,6 +1443,14 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(names.contains("period_list"));
     assert!(!names.contains("period_close"));
     assert!(!names.contains("period_reopen"));
+    for name in [
+        "rule_list",
+        "rule_match",
+        "bookkeeping_policy_show",
+        "inform_preference_show",
+    ] {
+        assert!(names.contains(name));
+    }
     for name in [
         "company_create",
         "company_delete",
@@ -1465,6 +1482,11 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "ledger_setup_opening_reserve",
         "ledger_setup_statement_preview",
         "ledger_setup_statement_commit",
+        "rule_create",
+        "rule_amend",
+        "rule_delete",
+        "bookkeeping_policy_set",
+        "inform_preference_set",
     ] {
         assert!(!names.contains(name));
     }
@@ -2662,7 +2684,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 19);
+    assert_eq!(names.len(), 23);
     assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
@@ -2828,7 +2850,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 19);
+    assert_eq!(names.len(), 23);
     assert!(names.contains("ledger_setup_status"));
     assert!(names.contains("ledger_setup_statement_receipt"));
     assert!(names.contains("ledger_setup_book_show"));
@@ -5369,6 +5391,226 @@ mod catalog_payload_parity {
             .stdout
             .clone();
         Ok(serde_json::from_slice::<Value>(&output)?["data"].clone())
+    }
+
+    #[test]
+    fn categorization_rules_share_cli_and_mcp_state_and_results() -> TestResult {
+        let dir = tempdir()?;
+        let path = dir.path().join("rules.db");
+        let mut client = standing_client(&path)?;
+
+        let run = |args: &[&str]| cli(&path, &[&["--company", "acme", "rule"][..], args].concat());
+        let created = run(&["create", "--contains", " CAFÉ ", "--account", "4000"])?;
+        let id = created[0]["id"].as_str().ok_or("missing rule ID")?;
+        assert_eq!(created[0]["priority"], 0);
+        assert_eq!(created[0]["contains"], "café");
+        assert_eq!(
+            client.success("rule_list", &json!({"company":"acme"}))?,
+            created
+        );
+
+        let candidate = json!({"company":"acme", "description":"CAFÉ vendor"});
+        let matched = client.success("rule_match", &candidate)?;
+        assert_eq!(matched, run(&["match", "--description", "CAFÉ vendor"])?);
+        assert_eq!(matched, json!({"outcome":"match", "rule": created[0]}));
+        assert_eq!(
+            client.success(
+                "rule_match",
+                &json!({"company":"other", "description":"CAFÉ vendor"})
+            )?,
+            json!({"outcome":"no_match"})
+        );
+
+        let replacement = json!({"company":"acme", "id":id, "contains":"coffee", "account":"1000", "priority":-4});
+        let wrong_company =
+            json!({"company":"other", "id":id, "contains":"coffee", "account":"1000"});
+        let rejected = client.call("rule_amend", &wrong_company)?;
+        assert_eq!(payload(&rejected)?["code"], "NOT_FOUND");
+        let amended = client.success("rule_amend", &replacement)?;
+        let new_id = amended[0]["id"]
+            .as_str()
+            .ok_or("missing replacement rule ID")?;
+        assert_ne!(id, new_id);
+        assert_eq!(amended[0]["supersedes"], id);
+        assert_eq!(amended, run(&["list"])?);
+        assert_eq!(
+            client.success("rule_match", &candidate)?,
+            json!({"outcome":"no_match"})
+        );
+        assert_eq!(
+            payload(&client.call("rule_amend", &replacement)?)?["code"],
+            "NOT_FOUND"
+        );
+
+        let restored = run(&["amend", new_id, "--contains", "café", "--account", "4000"])?;
+        let restored_id = restored[0]["id"]
+            .as_str()
+            .ok_or("missing restored rule ID")?;
+        assert_eq!(restored[0]["supersedes"], new_id);
+        assert_eq!(
+            client.success("rule_match", &candidate)?["rule"],
+            restored[0]
+        );
+
+        assert_eq!(
+            client.success("rule_delete", &json!({"company":"acme", "id":restored_id}))?,
+            json!({"deleted":restored_id})
+        );
+
+        let history = client.success(
+            "audit_log",
+            &json!({"company":"acme","action":"rule_supersede"}),
+        )?;
+        let change = &history[0];
+        assert_eq!(decode_snapshot(&change["before"])?, amended[0]);
+        assert_eq!(decode_snapshot(&change["after"])?, restored[0]);
+        assert_eq!(decode_snapshot(&history[1]["before"])?, created[0]);
+        assert_eq!(decode_snapshot(&history[1]["after"])?, amended[0]);
+        client.success("verify", &json!({}))?;
+        Ok(())
+    }
+
+    #[test]
+    fn standing_settings_share_typed_values_and_audited_amendments() -> TestResult {
+        let dir = tempdir()?;
+        let path = dir.path().join("settings.db");
+        let mut client = standing_client(&path)?;
+
+        let company = json!({"company":"acme"});
+        let run = |args: &[&str]| cli(&path, &[&["--company", "acme"][..], args].concat());
+        let default_policies = json!({"sales_tax":"unset", "processor_fees":"unset"});
+        assert_eq!(
+            client.success("bookkeeping_policy_show", &company)?,
+            default_policies
+        );
+        assert_eq!(run(&["bookkeeping-policy", "show"])?, default_policies);
+        assert_eq!(
+            client.success("inform_preference_show", &company)?,
+            json!({"preference":"per-change"})
+        );
+
+        let tax = run(&["bookkeeping-policy", "set", "sales-tax=track-liability"])?;
+        assert_eq!(
+            tax,
+            json!({"sales_tax":"track-liability", "processor_fees":"unset"})
+        );
+        let fees = json!({"company":"acme", "policy":{"kind":"processor-fees","value":"separate-expense"}});
+        let policies = client.success("bookkeeping_policy_set", &fees)?;
+        assert_eq!(
+            policies,
+            json!({"sales_tax":"track-liability","processor_fees":"separate-expense"})
+        );
+        assert_eq!(run(&["bookkeeping-policy", "show"])?, policies);
+        assert_eq!(client.success("bookkeeping_policy_set", &fees)?, policies);
+        let cleared = client.success(
+            "bookkeeping_policy_set",
+            &json!({"company":"acme", "policy":{"kind":"sales-tax","value":"unset"}}),
+        )?;
+        assert_eq!(
+            cleared,
+            json!({"sales_tax":"unset","processor_fees":"separate-expense"})
+        );
+
+        let inform = client.success(
+            "inform_preference_set",
+            &json!({"company":"acme","preference":"daily-digest"}),
+        )?;
+        assert_eq!(inform, run(&["inform-preference", "show"])?);
+        assert_eq!(
+            run(&["inform-preference", "set", "weekly-digest"])?,
+            json!({"preference":"weekly-digest"})
+        );
+        assert_eq!(
+            client.success("inform_preference_show", &company)?,
+            json!({"preference":"weekly-digest"})
+        );
+        let other = json!({"company":"other"});
+        assert_eq!(
+            client.success("bookkeeping_policy_show", &other)?,
+            default_policies
+        );
+        assert_eq!(
+            client.success("inform_preference_show", &other)?,
+            json!({"preference":"per-change"})
+        );
+
+        let audit = client.success(
+            "audit_log",
+            &json!({"company":"acme","entity":"bookkeeping_policy"}),
+        )?;
+        assert_eq!(audit.as_array().map(Vec::len), Some(3));
+        assert_eq!(
+            decode_snapshot(&audit[0]["before"])?,
+            json!({"kind":"sales-tax","value":"track-liability"})
+        );
+        assert_eq!(
+            decode_snapshot(&audit[0]["after"])?,
+            json!({"kind":"sales-tax","value":"unset"})
+        );
+        assert_eq!(audit[0]["hash_version"], 7);
+        let audit = client.success(
+            "audit_log",
+            &json!({"company":"acme","entity":"inform_preference"}),
+        )?;
+        assert_eq!(audit.as_array().map(Vec::len), Some(2));
+        assert_eq!(decode_snapshot(&audit[0]["before"])?, "daily-digest");
+        assert_eq!(decode_snapshot(&audit[0]["after"])?, "weekly-digest");
+        assert_eq!(decode_snapshot(&audit[1]["before"])?, "per-change");
+        client.success("verify", &json!({}))?;
+        Ok(())
+    }
+
+    #[test]
+    fn rule_and_standing_inputs_are_validated_at_the_mcp_boundary() -> TestResult {
+        let dir = tempdir()?;
+        let path = dir.path().join("settings.db");
+        let mut client = standing_client(&path)?;
+
+        for inputs in [
+            json!({"company":"acme", "contains":" ", "account":"4000"}),
+            json!({"company":"acme", "contains":"coffee", "account":"bad"}),
+            json!({"company":"acme", "contains":"coffee", "account":"4000", "priority": 2_147_483_648_i64}),
+        ] {
+            let response = client.call("rule_create", &inputs)?;
+            assert_eq!(payload(&response)?["code"], "VALIDATION");
+        }
+        let other = client.success(
+            "rule_create",
+            &json!({"company":"acme", "contains":"tea", "account":"4000"}),
+        )?;
+        assert_eq!(other[0]["priority"], 0);
+
+        let invalid = client.call(
+            "bookkeeping_policy_set",
+            &json!({"company":"acme", "policy":{"kind":"sales-tax","value":"separate-expense"}}),
+        )?;
+        assert_eq!(payload(&invalid)?["code"], "VALIDATION");
+        let invalid = client.call(
+            "inform_preference_set",
+            &json!({"company":"acme","preference":"never"}),
+        )?;
+        assert_eq!(payload(&invalid)?["code"], "VALIDATION");
+
+        Ok(())
+    }
+
+    fn standing_client(path: &Path) -> Result<Client, Box<dyn Error>> {
+        seed(path)?;
+        bk(path)?
+            .args(["company", "create", "other", "Other"])
+            .assert()
+            .success();
+        let mut command = bk(path)?;
+        command.args(["mcp", "serve"]);
+        let mut client = Client::spawn(command)?;
+        client.initialize()?;
+        Ok(client)
+    }
+
+    fn decode_snapshot(value: &Value) -> Result<Value, Box<dyn Error>> {
+        Ok(serde_json::from_str(
+            value.as_str().ok_or("missing audit snapshot")?,
+        )?)
     }
 
     fn without_row_timestamps(mut rows: Value) -> Value {

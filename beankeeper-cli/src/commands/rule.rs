@@ -1,120 +1,226 @@
-//! Manage bank import categorization rules.
+//! Shared ledger operations for bank import categorization rules.
+
+use serde::Serialize;
 
 use crate::cli::{Cli, OutputFormat, RuleCommand, resolve_format};
-use crate::confirmation::confirm_deletion;
-use crate::db::{audit, companies, rules};
+use crate::confirmation::{CliDeletion, Confirmed};
+use crate::db::{
+    Actor, Db, audit,
+    companies::{Company, CompanySlug},
+    rules::{self, Rule, RuleId, RuleMatch, RuleTerms},
+};
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
 use crate::operation::Operation;
 use crate::output::json;
 
-/// Execute a company-scoped rule command.
-///
-/// # Errors
-/// Returns validation, storage, or output errors.
-pub fn run(cli: &Cli, company: &str, command: &RuleCommand) -> Result<(), CliError> {
-    let db = cli.open_db()?;
-    companies::get_company(db.read(), &company.parse()?)?;
-    let actor = cli.principal();
-    let (name, rows) = match command {
-        RuleCommand::Create {
-            contains,
-            account,
-            priority,
-        } => (
-            Operation::RuleCreate,
-            vec![Granted::<Post>::with_db(&db, &actor, |grant| {
-                rules::create_rule(
-                    grant,
-                    &company.parse()?,
-                    contains.clone(),
-                    account,
-                    *priority,
-                )
-            })?],
-        ),
-        RuleCommand::List => (
-            Operation::RuleList,
-            rules::list_rules(&crate::db::companies::Company::bind(
-                db.read(),
-                company.parse()?,
-            )?)?,
-        ),
-        RuleCommand::Delete { id, force } => {
-            let Some(confirmed) = confirm_deletion(*force, &format!("rule {id}"))? else {
-                eprintln!("aborted");
-                return Ok(());
-            };
-            Granted::<Post>::with_db(&db, &actor, |grant| {
-                audit::delete_rule(grant, &company.parse()?, id, confirmed)
-            })?;
-            return render_deleted(cli, company, id);
+impl RuleCommand {
+    pub(crate) const fn operation(&self) -> Operation {
+        match self {
+            Self::Create(_) => Operation::RuleCreate,
+            Self::Amend { .. } => Operation::RuleAmend,
+            Self::List => Operation::RuleList,
+            Self::Match { .. } => Operation::RuleMatch,
+            Self::Delete { .. } => Operation::RuleDelete,
         }
-    };
-    if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {
-        return Ok(());
     }
-    match resolve_format(None, cli) {
-        OutputFormat::Json => println!(
-            "{}",
-            json::envelope_ok(cli.meta(name, Some(company)), &rows)?
-        ),
-        OutputFormat::Csv => {
-            let mut writer = csv::Writer::from_writer(std::io::stdout());
+}
+
+/// A validated, company-scoped rule operation.
+pub enum RuleRequest {
+    Create(CompanySlug, RuleTerms),
+    Amend(CompanySlug, RuleId, RuleTerms),
+    List(CompanySlug),
+    Match(CompanySlug, String),
+    Delete(CompanySlug, RuleId, Confirmed),
+}
+
+pub(super) struct RuleCliInput<'a>(pub &'a CompanySlug, pub &'a RuleCommand);
+
+impl TryFrom<RuleCliInput<'_>> for Option<RuleRequest> {
+    type Error = CliError;
+
+    fn try_from(RuleCliInput(company, command): RuleCliInput<'_>) -> Result<Self, Self::Error> {
+        let company = company.clone();
+        Ok(match command {
+            RuleCommand::Create(terms) => Some(RuleRequest::Create(company, terms.into())),
+            RuleCommand::Amend { id, terms } => {
+                Some(RuleRequest::Amend(company, id.clone(), terms.into()))
+            }
+            RuleCommand::List => Some(RuleRequest::List(company)),
+            RuleCommand::Match { description } => {
+                Some(RuleRequest::Match(company, description.clone()))
+            }
+            RuleCommand::Delete { id, force } => Option::<Confirmed>::try_from(CliDeletion {
+                force: *force,
+                target: &format!("rule {id}"),
+            })?
+            .map(|confirmed| RuleRequest::Delete(company, id.clone(), confirmed)),
+        })
+    }
+}
+
+impl RuleRequest {
+    /// The operation used by the capability policy.
+    #[must_use]
+    pub fn operation(&self) -> Operation {
+        match self {
+            Self::Create(..) => Operation::RuleCreate,
+            Self::Amend(..) => Operation::RuleAmend,
+            Self::List(_) => Operation::RuleList,
+            Self::Match(..) => Operation::RuleMatch,
+            Self::Delete(..) => Operation::RuleDelete,
+        }
+    }
+
+    pub(crate) fn company(&self) -> &CompanySlug {
+        match self {
+            Self::Create(company, _)
+            | Self::Amend(company, ..)
+            | Self::List(company)
+            | Self::Match(company, _)
+            | Self::Delete(company, ..) => company,
+        }
+    }
+
+    pub(crate) fn execute(self, db: &Db, actor: &Actor) -> Result<RuleResponse, CliError> {
+        match self {
+            Self::Create(company, terms) => {
+                let rule = Granted::<Post>::with_db(db, actor, |grant| {
+                    rules::create_rule(grant, &company, terms)
+                })?;
+                Ok(RuleResponse::Rules(vec![rule]))
+            }
+            Self::Amend(company, id, terms) => {
+                let rule = Granted::<Post>::with_db(db, actor, |grant| {
+                    rules::amend_rule(grant, &company, &id, terms)
+                })?;
+                Ok(RuleResponse::Rules(vec![rule]))
+            }
+            Self::List(company) => Ok(RuleResponse::Rules(rules::list_rules(&Company::bind(
+                db.read(),
+                company,
+            )?)?)),
+            Self::Match(company, description) => {
+                let active = rules::list_active_rules(&Company::bind(db.read(), company)?)?;
+                Ok(RuleResponse::Match(
+                    rules::matching_rule(&active, &description).into(),
+                ))
+            }
+            Self::Delete(company, id, confirmed) => {
+                Granted::<Post>::with_db(db, actor, |grant| {
+                    audit::delete_rule(grant, &company, &id, confirmed)
+                })?;
+                Ok(RuleResponse::Deleted { deleted: id })
+            }
+        }
+    }
+}
+
+/// Rule data returned to the CLI, MCP, and embedded hosts.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RuleResponse {
+    Rules(Vec<Rule>),
+    Match(RuleMatch),
+    Deleted { deleted: RuleId },
+}
+
+impl RuleResponse {
+    pub(crate) fn render(
+        &self,
+        cli: &Cli,
+        operation: Operation,
+        company: &CompanySlug,
+    ) -> Result<(), CliError> {
+        let format = resolve_format(None, cli);
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                json::envelope_ok(cli.meta(operation, Some(company.as_str())), self)?
+            );
+            return Ok(());
+        }
+        if cli.verbosity.quiet {
+            return Ok(());
+        }
+        let columns = ["id", "contains", "account_code", "priority"];
+        match self {
+            Self::Rules(rules) => render_rows(format, &columns, rules.iter().map(rule_row)),
+            Self::Match(RuleMatch::Match { rule }) if format == OutputFormat::Table => {
+                println!(
+                    "Matched rule {}. Use account {}.",
+                    rule.id(),
+                    rule.account_code()
+                );
+                Ok(())
+            }
+            Self::Match(RuleMatch::NoMatch) if format == OutputFormat::Table => {
+                println!("No active rule matched this description.");
+                Ok(())
+            }
+            Self::Match(outcome) => {
+                let row = match outcome {
+                    RuleMatch::Match { rule } => {
+                        let [id, contains, account, priority] = rule_row(rule);
+                        ["match".into(), id, contains, account, priority]
+                    }
+                    RuleMatch::NoMatch => [
+                        "no_match".into(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                    ],
+                };
+                let [id, contains, account, priority] = columns;
+                render_rows(format, &["outcome", id, contains, account, priority], [row])
+            }
+            Self::Deleted { deleted } if format == OutputFormat::Table => {
+                println!("Deleted rule {deleted}");
+                Ok(())
+            }
+            Self::Deleted { deleted } => render_rows(format, &["deleted"], [[deleted.to_string()]]),
+        }
+    }
+}
+
+fn rule_row(rule: &Rule) -> [String; 4] {
+    [
+        rule.id().to_string(),
+        rule.contains().to_string(),
+        rule.account_code().to_string(),
+        rule.priority().to_string(),
+    ]
+}
+
+pub(super) fn render_rows<const N: usize>(
+    format: OutputFormat,
+    columns: &[&str; N],
+    rows: impl IntoIterator<Item = [String; N]>,
+) -> Result<(), CliError> {
+    if format == OutputFormat::Csv {
+        let mut writer = csv::Writer::from_writer(std::io::stdout());
+        writer
+            .write_record(columns)
+            .map_err(|error| csv_error(&error))?;
+        for row in rows {
             writer
-                .write_record(["id", "contains", "account_code", "priority"])
-                .map_err(|e| CliError::General(e.to_string()))?;
-            for row in &rows {
-                writer
-                    .write_record([
-                        row.id.to_string(),
-                        row.contains.to_string(),
-                        row.account_code.clone(),
-                        row.priority.to_string(),
-                    ])
-                    .map_err(|e| CliError::General(e.to_string()))?;
-            }
-            writer.flush()?;
+                .write_record(row)
+                .map_err(|error| csv_error(&error))?;
         }
-        OutputFormat::Table => {
-            let mut table = comfy_table::Table::new();
-            table.set_header(["ID", "Contains", "Account", "Priority"]);
-            for row in &rows {
-                table.add_row([
-                    row.id.to_string(),
-                    row.contains.to_string(),
-                    row.account_code.clone(),
-                    row.priority.to_string(),
-                ]);
-            }
-            println!("{table}");
+        writer.flush()?;
+    } else {
+        let mut table = comfy_table::Table::new();
+        table.set_header(columns);
+        for row in rows {
+            table.add_row(row);
         }
+        println!("{table}");
     }
     Ok(())
 }
 
-fn render_deleted(cli: &Cli, company: &str, id: &rules::RuleId) -> Result<(), CliError> {
-    if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {
-        return Ok(());
-    }
-    match resolve_format(None, cli) {
-        OutputFormat::Json => println!(
-            "{}",
-            json::envelope_ok(
-                cli.meta(Operation::RuleDelete, Some(company)),
-                serde_json::json!({"deleted": id})
-            )?
-        ),
-        OutputFormat::Csv => {
-            let mut writer = csv::Writer::from_writer(std::io::stdout());
-            for record in [vec!["deleted".to_string()], vec![id.to_string()]] {
-                writer
-                    .write_record(record)
-                    .map_err(|e| CliError::General(e.to_string()))?;
-            }
-            writer.flush()?;
-        }
-        OutputFormat::Table => println!("Deleted rule {id}"),
-    }
-    Ok(())
+fn csv_error(error: &csv::Error) -> CliError {
+    CliError::General(error.to_string())
 }

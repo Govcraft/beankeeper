@@ -6,6 +6,16 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.37.0] - Unreleased
+
+### Added
+
+- Create, list, supersede, remove, and preview company categorization rules from
+  either CLI or MCP. Amendments preserve both rule versions in the audit trail.
+- Save and amend standing sales-tax, processor-fee, and inform preferences from
+  either interface. Schema v27 adds audit hash version 7 and preserves earlier
+  hashes. ([#253](https://github.com/Govcraft/beankeeper/issues/253))
+
 ## [0.36.0] - Unreleased
 
 ### Added
