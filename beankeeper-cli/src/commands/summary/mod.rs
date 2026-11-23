@@ -2,13 +2,18 @@
 
 mod attention;
 mod model;
+mod owner;
+mod window;
+
+pub use owner::{OwnerSummaryRead, OwnerSummaryReader};
+pub use window::SummaryWindow;
 
 use super::report::{AccountSelector, ChartRequest};
 use super::report_dates::{DateRange, resolve_date};
 use crate::operation::Operation;
 use std::io::Write;
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{AccountCode, Currency, Money};
 use chrono::{Datelike, Days, NaiveDate};
 use clap::Args;
 use serde::Serialize;
@@ -88,20 +93,40 @@ pub(crate) use model::Comparison;
 
 /// Date selection with an ordered, optional pair of comparison dates.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct SummaryDates {
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
+pub struct SummaryDates {
+    current: SummaryWindow,
     comparison: Option<DateRange>,
 }
 
+/// Error validating the supplied summary dates.
 #[derive(Debug)]
-pub(crate) enum SummaryDatesError {
+pub enum SummaryDatesError {
+    /// Only one endpoint of the comparison was supplied.
     IncompleteComparison,
+    /// The supplied range starts after it ends.
     InvalidRange(CliError),
 }
 
 impl SummaryDatesError {
     const INCOMPLETE_COMPARISON: &str = "provide both comparison dates";
+}
+
+impl std::fmt::Display for SummaryDatesError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IncompleteComparison => formatter.write_str(Self::INCOMPLETE_COMPARISON),
+            Self::InvalidRange(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SummaryDatesError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::IncompleteComparison => None,
+            Self::InvalidRange(error) => Some(error),
+        }
+    }
 }
 
 impl From<SummaryDatesError> for CliError {
@@ -128,24 +153,28 @@ impl TryFrom<[Option<NaiveDate>; 4]> for SummaryDates {
             (None, None) => None,
             _ => return Err(SummaryDatesError::IncompleteComparison),
         };
-        Ok(Self {
-            from,
-            to,
+        let current =
+            SummaryWindow::try_from((from, to)).map_err(SummaryDatesError::InvalidRange)?;
+        Ok((current, comparison).into())
+    }
+}
+
+impl From<(SummaryWindow, Option<DateRange>)> for SummaryDates {
+    fn from((current, comparison): (SummaryWindow, Option<DateRange>)) -> Self {
+        Self {
+            current,
             comparison,
-        })
+        }
     }
 }
 
 impl SummaryDates {
     fn periods(self, today: NaiveDate) -> Result<Periods, CliError> {
-        let end = self.to.unwrap_or(today);
-        let month_start = end.with_day(1).ok_or_else(date_error)?;
-        let start = self.from.unwrap_or(month_start);
-        let current = Period::from(DateRange::new(start, end)?);
+        let current = self.current.period(today)?;
         let prior = match self.comparison {
             Some(range) => range.into(),
-            None if self.from.is_none() => {
-                let to = month_start.pred_opt().ok_or_else(date_error)?;
+            None if self.current.start().is_none() => {
+                let to = current.from.pred_opt().ok_or_else(date_error)?;
                 Period {
                     from: to.with_day(1).ok_or_else(date_error)?,
                     to,
@@ -199,10 +228,25 @@ pub struct SummaryRequest {
     chart: ChartRequest,
 }
 
-pub(crate) struct SummaryAccounts {
-    pub cash: Vec<AccountSelector>,
-    pub receivables: Vec<AccountSelector>,
-    pub payables: Vec<AccountSelector>,
+/// Optional exact account selections, grouped by their role in the summary.
+#[derive(Default)]
+pub struct SummaryAccounts {
+    pub(crate) cash: Vec<AccountSelector>,
+    pub(crate) receivables: Vec<AccountSelector>,
+    pub(crate) payables: Vec<AccountSelector>,
+}
+
+impl From<[Vec<AccountCode>; 3]> for SummaryAccounts {
+    /// Accepts cash, receivable and payable account codes, in that order.
+    fn from([cash, receivables, payables]: [Vec<AccountCode>; 3]) -> Self {
+        let selectors =
+            |codes: Vec<AccountCode>| codes.into_iter().map(AccountSelector::from).collect();
+        Self {
+            cash: selectors(cash),
+            receivables: selectors(receivables),
+            payables: selectors(payables),
+        }
+    }
 }
 
 impl SummaryRequest {
@@ -223,6 +267,21 @@ impl SummaryRequest {
     }
 }
 
+impl TryFrom<(CompanySlug, SummaryDates, Option<Currency>, SummaryAccounts)> for SummaryRequest {
+    type Error = CliError;
+
+    fn try_from(
+        (company, dates, currency, accounts): (
+            CompanySlug,
+            SummaryDates,
+            Option<Currency>,
+            SummaryAccounts,
+        ),
+    ) -> Result<Self, Self::Error> {
+        Self::new(company, dates, currency, accounts, ChartRequest::default())
+    }
+}
+
 impl TryFrom<(&CompanySlug, &SummaryArgs, (bool, bool))> for SummaryRequest {
     type Error = CliError;
 
@@ -239,8 +298,13 @@ impl TryFrom<(&CompanySlug, &SummaryArgs, ChartRequest)> for SummaryRequest {
     fn try_from(
         (company, args, chart): (&CompanySlug, &SummaryArgs, ChartRequest),
     ) -> Result<Self, Self::Error> {
-        let accounts =
-            |items: &[String]| items.iter().cloned().map(AccountSelector::from).collect();
+        let accounts = |items: &[String]| {
+            items
+                .iter()
+                .cloned()
+                .map(AccountSelector::from)
+                .collect::<Vec<_>>()
+        };
         Self::new(
             company.clone(),
             SummaryDates::try_from(args)?,
@@ -597,9 +661,11 @@ pub fn run(cli: &Cli, company: &str, args: &SummaryArgs) -> Result<(), CliError>
     let chart = ChartRequest::try_from((cli.output.chart, cli.output.chart_all))?;
     chart.validate_cli(cli)?;
     let company = company.parse()?;
-    SummaryRequest::try_from((&company, args, chart))?
-        .execute(&cli.open_db()?)?
-        .render(cli)
+    let request = SummaryRequest::try_from((&company, args, chart))?;
+    let db = cli.open_db()?;
+    crate::request::LedgerRequest::Summary(request)
+        .execute(&db, &cli.principal())?
+        .render(cli, None)
 }
 
 #[cfg(test)]
