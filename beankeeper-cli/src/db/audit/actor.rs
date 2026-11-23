@@ -4,7 +4,7 @@ use std::{fmt, str::FromStr};
 
 use agent_uri::AgentUri;
 
-use crate::{error::CliError, identity::VerifiedAgent};
+use crate::{db::metadata::TransactionSource, error::CliError, identity::VerifiedAgent};
 
 /// A nonblank audit label, suitable for recording or for exact matching.
 #[derive(Debug, Clone)]
@@ -17,6 +17,7 @@ enum Label {
     McpClient(McpClientName),
     McpUnknown,
     Cli,
+    Demo,
 }
 
 /// An actor label contained no non-whitespace characters.
@@ -74,6 +75,7 @@ impl ActorLabel {
             Label::McpClient(name) => &name.0,
             Label::McpUnknown => "mcp:unknown",
             Label::Cli => "cli",
+            Label::Demo => TransactionSource::Demo.as_str(),
         }
     }
 }
@@ -108,6 +110,17 @@ pub struct Actor {
 }
 
 impl Actor {
+    pub(crate) fn demo() -> Self {
+        Self::new(ActorLabel(Label::Demo))
+    }
+
+    pub(in crate::db) fn transaction_source(&self) -> Option<TransactionSource> {
+        match self.label.0 {
+            Label::Demo => Some(TransactionSource::Demo),
+            _ => None,
+        }
+    }
+
     /// Constructs an actor with a validated label.
     #[must_use]
     pub fn new(label: ActorLabel) -> Self {
@@ -206,7 +219,20 @@ impl Actor {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActorLabel, BlankActorLabel, McpClientName};
+    use super::{Actor, ActorLabel, BlankActorLabel, McpClientName, TransactionSource};
+
+    #[test]
+    fn only_the_demo_constructor_sets_demo_provenance() -> Result<(), BlankActorLabel> {
+        let demo = Actor::demo();
+        let configured = Actor::new(demo.name().parse()?);
+
+        assert_eq!(demo.name(), "demo");
+        assert_eq!(demo.name(), configured.name());
+        assert_eq!(demo.transaction_source(), Some(TransactionSource::Demo));
+        assert_eq!(configured.transaction_source(), None);
+        assert!(demo.identity().is_none());
+        Ok(())
+    }
 
     #[test]
     fn actor_label_rejects_blank_text_and_preserves_exact_matching() -> Result<(), BlankActorLabel>

@@ -6,6 +6,15 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.30.1] - Unreleased
+
+### Fixed
+
+- Demo books credit generated activity to `demo` and record the initializer's
+  actor on company creation and one `demo_seed` audit event. Generated postings
+  carry the reserved `beankeeper_source` metadata key. Schema v24 preserves
+  existing audit rows and hashes. ([#243](https://github.com/Govcraft/beankeeper/issues/243))
+
 ## [0.30.0] - Unreleased
 
 ### Added

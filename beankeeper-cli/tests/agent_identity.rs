@@ -1053,7 +1053,8 @@ fn token_preflight_reads_a_one_shot_passphrase_descriptor_only_once() -> TestRes
 }
 
 #[test]
-fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestResult {
+fn demo_keeps_os_user_on_company_creation_and_init_rejects_tokens_before_overwriting() -> TestResult
+{
     let ledger = Ledger::new()?;
     let issued = ledger.issue()?;
     let rejected = ledger
@@ -1068,8 +1069,10 @@ fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestR
         .arg("--db")
         .arg(&path)
         .env_remove("BK_AGENT_TOKEN")
+        .env_remove("BK_ACTOR")
         .env_remove("BEANKEEPER_PASSPHRASE_CMD")
-        .args(["--actor", "demo-host", "init", "--demo"])
+        .env("USER", "demo-host")
+        .args(["init", "--demo"])
         .output()?;
     assert!(
         output.status.success(),
@@ -1078,7 +1081,7 @@ fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestR
     );
     let db = Db::open_existing(&path, None)?;
     let wrong: i64 = db.read().query_row(
-        "SELECT COUNT(*) FROM transactions WHERE posted_by IS NOT 'demo-host'",
+        "SELECT COUNT(*) FROM transactions WHERE posted_by IS NOT 'demo'",
         [],
         |r| r.get(0),
     )?;
@@ -1093,7 +1096,7 @@ fn demo_honors_named_actor_and_init_rejects_tokens_before_overwriting() -> TestR
             (SELECT COUNT(*) FROM accounts acc WHERE (
                 SELECT COUNT(*) FROM audit_log a WHERE a.company_slug = acc.company_slug
                 AND a.entity = 'account' AND a.entity_id = acc.code
-                AND a.action = 'create' AND a.actor = 'demo-host'
+                AND a.action = 'create' AND a.actor = 'demo'
             ) = 1)",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),

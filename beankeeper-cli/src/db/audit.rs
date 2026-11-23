@@ -143,6 +143,7 @@ audit_labels! {
         Budget => "budget",
         Account => "account",
         Company => "company",
+        Demo => "demo",
         Key => "key",
         Agent => "agent",
     }
@@ -170,6 +171,7 @@ audit_labels! {
         BudgetDelete => "budget_delete" | "budget-delete",
         AccountDelete => "account_delete" | "account-delete",
         CompanyDelete => "company_delete" | "company-delete",
+        DemoSeed => "demo_seed" | "demo-seed",
         KeyInit => "key_init" | "key-init",
         TokenIssue => "token_issue" | "token-issue",
         TokenRevoke => "token_revoke" | "token-revoke",
@@ -537,6 +539,27 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         ],
     )?;
     Ok(())
+}
+
+/// Records the initializer's completion as a single ledger-wide event.
+pub(crate) fn record_demo_seed(
+    grant: crate::identity::Granted<'_, crate::identity::Admin>,
+) -> Result<(), CliError> {
+    grant.mutate("sp_demo_seed", |tx, actor| {
+        let source = metadata::TransactionSource::Demo;
+        let after = serde_json::json!({ "message": "Generated the built-in demo data" });
+        record(
+            tx.connection(),
+            actor,
+            AuditChange {
+                company_slug: None,
+                entity: AuditEntity::Demo,
+                entity_id: source.as_str(),
+                action: AuditAction::DemoSeed,
+                snapshots: (None, Some(&after.to_string())),
+            },
+        )
+    })
 }
 
 /// Change ledger policy using a single administrator grant.

@@ -1072,7 +1072,7 @@ object. Example excerpt from a ledger with one company and one posting:
 
 ```json
 {
-  "schema_version": 23,
+  "schema_version": 24,
   "status": "healthy",
   "companies": [{
     "company": "acme",

@@ -293,6 +293,10 @@ fn post_with_source(
         Posting::Approved(_) => p.metadata.and_then(metadata::normalize),
         Posting::Reversal(reversal) => Some(metadata::reversal_link(reversal.original_id())?),
     };
+    let metadata = match p.actor.transaction_source() {
+        Some(source) => Some(metadata::with_transaction_source(metadata, source)?),
+        None => metadata,
+    };
     let effective_metadata = match p.correlate {
         None => metadata.map(metadata::NormalizedMetadata::into_string),
         Some(partner_id) => Some(metadata::with_correlation(metadata, partner_id)?),

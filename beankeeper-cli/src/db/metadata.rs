@@ -28,6 +28,8 @@
 //! `$.correlate` is present and not `null`. [`has_correlate`] is the Rust
 //! form; [`SQL_CORRELATE_EXPR`] is the SQL form. Both must agree.
 
+use std::{fmt, str::FromStr};
+
 use serde_json::{Map, Value};
 
 use crate::error::CliError;
@@ -40,6 +42,59 @@ pub const CORRELATE_KEY: &str = "correlate";
 
 /// The approval link is assigned only by proposal resolution.
 pub(crate) const PROPOSAL_KEY: &str = "proposal_id";
+
+/// Provenance assigned by Beankeeper when it generates a transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransactionSource {
+    Demo,
+}
+
+impl TransactionSource {
+    const KEY: &str = "beankeeper_source";
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Demo => "demo",
+        }
+    }
+
+    fn validate_annotation_key(key: &str) -> Result<(), CliError> {
+        if key == Self::KEY {
+            return Err(CliError::Validation(format!(
+                "metadata key '{key}' is reserved for transaction provenance"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for TransactionSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.pad(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UnknownTransactionSource;
+
+impl fmt::Display for UnknownTransactionSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("unknown transaction source")
+    }
+}
+
+impl std::error::Error for UnknownTransactionSource {}
+
+impl FromStr for TransactionSource {
+    type Err = UnknownTransactionSource;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            label if label == Self::Demo.as_str() => Ok(Self::Demo),
+            _ => Err(UnknownTransactionSource),
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinkKey {
@@ -63,6 +118,7 @@ impl LinkKey {
     }
 
     fn validate_post_key(key: &str) -> Result<(), CliError> {
+        TransactionSource::validate_annotation_key(key)?;
         match Self::classify(key) {
             // Settlement intent is collected when a payment is posted. It does
             // not grant authority over the linked transaction.
@@ -364,6 +420,19 @@ pub(super) fn reversal_link(
     )
 }
 
+pub(super) fn with_transaction_source(
+    base: Option<NormalizedMetadata>,
+    source: TransactionSource,
+) -> Result<NormalizedMetadata, CliError> {
+    insert_keys(
+        base,
+        &[(
+            TransactionSource::KEY.to_owned(),
+            Value::String(source.to_string()),
+        )],
+    )
+}
+
 /// A batch of top-level transaction annotation edits. Set values are strings.
 #[derive(Debug, Clone)]
 pub enum MetadataEdit {
@@ -395,6 +464,7 @@ impl MetadataEdit {
                     "metadata keys must be non-empty and must not contain '\"'".into(),
                 ));
             }
+            TransactionSource::validate_annotation_key(key)?;
             if LinkKey::classify(key).is_some() {
                 return Err(reserved_link_error(key));
             }
@@ -411,6 +481,23 @@ impl MetadataEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demo_source_is_closed_and_reserved() -> Result<(), UnknownTransactionSource> {
+        let demo = TransactionSource::Demo;
+        assert_eq!(demo.to_string().parse::<TransactionSource>()?, demo);
+        assert!("manual".parse::<TransactionSource>().is_err());
+        let key = TransactionSource::KEY.to_owned();
+        let raw = serde_json::json!({&key: demo.to_string()}).to_string();
+        assert!(UserAnnotations::parse(Some(&raw)).is_err());
+        assert!(
+            MetadataEdit::Set(vec![(key.clone(), demo.to_string())])
+                .validate()
+                .is_err()
+        );
+        assert!(MetadataEdit::Unset(vec![key]).validate().is_err());
+        Ok(())
+    }
 
     fn norm(s: &str) -> Option<String> {
         normalize(s).map(NormalizedMetadata::into_string)
