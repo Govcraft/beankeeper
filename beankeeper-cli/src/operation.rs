@@ -117,6 +117,21 @@ impl serde::Serialize for Operation {
     }
 }
 
+impl Operation {
+    pub(crate) const fn writes_ledger(self) -> bool {
+        !matches!(
+            self.permission(),
+            Permission::Capability(Capability::Read)
+                | Permission::ProposalList
+                | Permission::SetupStatus
+                | Permission::Transport
+        ) && !matches!(
+            self,
+            Self::LedgerSetupOpeningPreview | Self::TxnReconcile | Self::Backup | Self::Restore
+        )
+    }
+}
+
 operations! {
     Summary => ("summary", Read),
     LedgerSetupStatus => ("ledger.setup.status", SetupStatus),

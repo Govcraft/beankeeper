@@ -105,6 +105,6 @@ fn existing_databases_still_receive_schema_migrations() -> TestResult {
         connection.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
             row.get(0)
         })?;
-    assert_eq!(version, 24);
+    assert_eq!(version, 25);
     Ok(())
 }

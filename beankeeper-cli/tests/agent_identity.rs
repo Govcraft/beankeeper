@@ -102,9 +102,14 @@ impl Ledger {
     fn run(&self, args: &[&str], token: Option<&str>) -> Result<Value, Box<dyn Error>> {
         let mut cmd = self.command()?;
         if let Some(token) = token {
-            cmd.args(["--agent-token", token]);
+            cmd.args(["--agent-token", token])
+                .env("CLAUDECODE", "fixture-session-value");
         }
-        success(&cmd.args(args).output()?)
+        let output = cmd.args(args).output()?;
+        if token.is_some() {
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Client hint:"));
+        }
+        success(&output)
     }
 
     fn issue(&self) -> Result<Value, Box<dyn Error>> {
@@ -802,7 +807,8 @@ fn posts_imports_reversals_and_mutations_all_record_verified_claims() -> TestRes
         assert_eq!(row["agent_uri"], issued["agent_uri"]);
         assert_eq!(row["token_jti"], issued["token_jti"]);
         assert_eq!(row["actor"], "host-process");
-        assert_eq!(row["hash_version"], 4);
+        assert_eq!(row["hash_version"], 5);
+        assert!(row["client_hint"].is_null());
     }
     for action in [
         "create",

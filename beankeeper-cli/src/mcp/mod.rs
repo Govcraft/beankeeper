@@ -46,6 +46,7 @@ pub struct LedgerServer {
     tool_router: ToolRouter<Self>,
     backend: Backend,
     configured_actor: Option<ActorLabel>,
+    show_client_hint_notice: bool,
 }
 
 /// Access ceiling for the tools registered on a ledger server.
@@ -147,6 +148,7 @@ impl LedgerServer {
             tool_router,
             backend,
             configured_actor,
+            show_client_hint_notice: false,
         }
     }
 
@@ -156,7 +158,8 @@ impl LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         let operation = request.operation();
-        let writes_ledger = request.writes_ledger();
+        let writes_ledger = operation.writes_ledger();
+        let show_client_hint_notice = writes_ledger && self.show_client_hint_notice;
         let client_info = context.client_info();
         let configured_actor = self.configured_actor.clone();
         let call = match self.ledger_call(&context) {
@@ -173,7 +176,13 @@ impl LedgerServer {
                     identity,
                     client_info.as_ref().map(|info| info.name.as_str()),
                 );
-                request.execute(&db, &actor)
+                let response = request.execute(&db, &actor)?;
+                let notice = if show_client_hint_notice {
+                    actor.unverified_hint_notice()
+                } else {
+                    None
+                };
+                Ok((response, notice))
             };
             if writes_ledger {
                 db.in_write_batch(|| execute(db.read()))
@@ -183,7 +192,10 @@ impl LedgerServer {
         })
         .await;
         match result {
-            Ok(Ok((data, pagination))) => {
+            Ok(Ok(((data, pagination), notice))) => {
+                if let Some(notice) = notice {
+                    crate::commands::audit::show_hint_notice(&notice);
+                }
                 let mut result = CallToolResult::structured(data);
                 if let Some(pagination) = pagination {
                     result.meta = Some(rmcp::model::MetaObject(serde_json::Map::from_iter([(
@@ -791,7 +803,7 @@ Use only one of as_of and to. For date-range reports without as_of, use from and
     }
 
     #[tool(
-        description = "List audit changes in bounded pages, optionally filtered by actor, verified agent URI, company, entity, or action. Continue with _meta.pagination.next_offset and the same filters."
+        description = "List audit changes in bounded pages, optionally filtered by actor, verified agent URI, company, entity, or action. A client_hint is unverified runtime context. Continue with _meta.pagination.next_offset and the same filters."
     )]
     async fn audit_log(
         &self,
@@ -889,6 +901,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         },
         ActorLabel::configured(cli.actor.as_deref()),
     );
+    server.show_client_hint_notice = !cli.verbosity.quiet;
     if let Some(identity) = identity
         && identity.enforces_permissions(enforce)
     {
