@@ -992,6 +992,11 @@ pub enum RuleCommand {
         #[arg(long)]
         description: String,
     },
+    /// Undo a rule creation immediately with a signed owner credential.
+    Undo {
+        /// ID returned when the rule was created.
+        id: RuleId,
+    },
     /// Delete a rule. Existing postings remain unchanged.
     Delete {
         /// Active rule ID returned by create, amend or list.

@@ -247,9 +247,12 @@ pub(crate) fn authorize_known_operation(
         return authorize(conn, token, required);
     }
     permission.primary()?;
-    if permission == Permission::SetupOwner {
+    if matches!(permission, Permission::SetupOwner | Permission::OwnerUndo) {
         let token = token.ok_or_else(|| {
-            CliError::Unauthorized("setup lifecycle requires a ledger/admin token".into())
+            CliError::Unauthorized(format!(
+                "{} requires a ledger/admin token",
+                operation.name()
+            ))
         })?;
         return verify_required(conn, token, Some(Capability::Admin)).map(Some);
     }
@@ -274,11 +277,10 @@ pub(crate) fn authorize_verified_operation(
     identity: VerifiedAgent,
     operation: Operation,
 ) -> Result<VerifiedAgent, CliError> {
-    let enforce = if operation.permission() == Permission::SetupOwner {
-        true
-    } else {
-        crate::db::policy::get(conn)?.enforce
-    };
+    let enforce = matches!(
+        operation.permission(),
+        Permission::SetupOwner | Permission::OwnerUndo
+    ) || crate::db::policy::get(conn)?.enforce;
     identity.check_live(conn)?;
     require_operation_grant(&identity, operation, enforce)?;
     Ok(identity)
@@ -296,7 +298,7 @@ fn require_operation_grant(
         permission.primary()?
     };
     let enforce = ledger_enforced
-        || permission == Permission::SetupOwner
+        || matches!(permission, Permission::SetupOwner | Permission::OwnerUndo)
         || matches!(
             permission,
             Permission::Capability(Capability::Navigate | Capability::Setup)

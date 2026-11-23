@@ -5,12 +5,13 @@ use serde::Serialize;
 use crate::cli::{Cli, OutputFormat, RuleCommand, resolve_format};
 use crate::confirmation::{CliDeletion, Confirmed};
 use crate::db::{
-    Actor, Db, audit,
+    Actor, Db,
+    audit::{self, receipts::RuleUndoOutcome},
     companies::{Company, CompanySlug},
     rules::{self, Rule, RuleId, RuleMatch, RuleTerms},
 };
 use crate::error::CliError;
-use crate::identity::{Granted, Post};
+use crate::identity::{Granted, OwnerUndo, Post};
 use crate::operation::Operation;
 use crate::output::json;
 
@@ -21,6 +22,7 @@ impl RuleCommand {
             Self::Amend { .. } => Operation::RuleAmend,
             Self::List => Operation::RuleList,
             Self::Match { .. } => Operation::RuleMatch,
+            Self::Undo { .. } => Operation::RuleUndo,
             Self::Delete { .. } => Operation::RuleDelete,
         }
     }
@@ -32,6 +34,7 @@ pub enum RuleRequest {
     Amend(CompanySlug, RuleId, RuleTerms),
     List(CompanySlug),
     Match(CompanySlug, String),
+    Undo(CompanySlug, RuleId),
     Delete(CompanySlug, RuleId, Confirmed),
 }
 
@@ -51,6 +54,7 @@ impl TryFrom<RuleCliInput<'_>> for Option<RuleRequest> {
             RuleCommand::Match { description } => {
                 Some(RuleRequest::Match(company, description.clone()))
             }
+            RuleCommand::Undo { id } => Some(RuleRequest::Undo(company, id.clone())),
             RuleCommand::Delete { id, force } => Option::<Confirmed>::try_from(CliDeletion {
                 force: *force,
                 target: &format!("rule {id}"),
@@ -69,6 +73,7 @@ impl RuleRequest {
             Self::Amend(..) => Operation::RuleAmend,
             Self::List(_) => Operation::RuleList,
             Self::Match(..) => Operation::RuleMatch,
+            Self::Undo(..) => Operation::RuleUndo,
             Self::Delete(..) => Operation::RuleDelete,
         }
     }
@@ -79,6 +84,7 @@ impl RuleRequest {
             | Self::Amend(company, ..)
             | Self::List(company)
             | Self::Match(company, _)
+            | Self::Undo(company, _)
             | Self::Delete(company, ..) => company,
         }
     }
@@ -107,6 +113,12 @@ impl RuleRequest {
                     rules::matching_rule(&active, &description).into(),
                 ))
             }
+            Self::Undo(company, id) => {
+                let outcome = Granted::<OwnerUndo>::with_db(db, actor, |grant| {
+                    audit::receipts::undo_rule_creation(grant, &company, id)
+                })?;
+                Ok(RuleResponse::Undone(outcome))
+            }
             Self::Delete(company, id, confirmed) => {
                 Granted::<Post>::with_db(db, actor, |grant| {
                     audit::delete_rule(grant, &company, &id, confirmed)
@@ -123,6 +135,7 @@ impl RuleRequest {
 pub enum RuleResponse {
     Rules(Vec<Rule>),
     Match(RuleMatch),
+    Undone(RuleUndoOutcome),
     Deleted { deleted: RuleId },
 }
 
@@ -176,6 +189,22 @@ impl RuleResponse {
                 let [id, contains, account, priority] = columns;
                 render_rows(format, &["outcome", id, contains, account, priority], [row])
             }
+            Self::Undone(outcome) if format == OutputFormat::Table => {
+                println!(
+                    "Rule {} will no longer categorize future imports. Undo receipt #{}.",
+                    outcome.rule(),
+                    outcome.undo_receipt()
+                );
+                Ok(())
+            }
+            Self::Undone(outcome) => render_rows(
+                format,
+                &["rule", "undo_receipt"],
+                [[
+                    outcome.rule().to_string(),
+                    outcome.undo_receipt().to_string(),
+                ]],
+            ),
             Self::Deleted { deleted } if format == OutputFormat::Table => {
                 println!("Deleted rule {deleted}");
                 Ok(())

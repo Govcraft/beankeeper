@@ -774,6 +774,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "rule_match",
     "rule_create",
     "rule_amend",
+    "rule_undo",
     "rule_delete",
     "bookkeeping_policy_show",
     "bookkeeping_policy_set",
@@ -1484,6 +1485,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "ledger_setup_statement_commit",
         "rule_create",
         "rule_amend",
+        "rule_undo",
         "rule_delete",
         "bookkeeping_policy_set",
         "inform_preference_set",
@@ -2431,6 +2433,166 @@ fn proposal_identity(
             )
         },
     )?)
+}
+
+#[test]
+fn rule_creation_undo_is_owner_only_and_identical_via_cli_and_mcp() -> TestResult {
+    use beankeeper_cli::db::{self, Actor, Db};
+
+    let dir = tempdir()?;
+    let path = dir.path().join("rules.db");
+    let passphrase_file = dir.path().join("passphrase");
+    let read_only = identity_ledger(&path, &passphrase_file)?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let ledger = Db::open_existing(&path, Some(&passphrase))?;
+    Granted::<Admin>::with_db(&ledger, &Actor::new("fixture".parse()?), |grant| {
+        db::create_company(grant, &"other".parse()?, &"Other".parse()?, None)
+    })?;
+    Granted::<Admin>::with_db(&ledger, &Actor::new("fixture".parse()?), |grant| {
+        db::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "9000",
+                name: "Suspense",
+                account_type: beankeeper::types::AccountType::Expense,
+                default_tax_category: None,
+            },
+        )
+    })?;
+    let owner = proposal_identity(&ledger, "owner", &["ledger/admin", "ledger/read"])?;
+    let bookkeeper = proposal_identity(&ledger, "bookkeeper", &["ledger/post", "ledger/read"])?;
+    let token = owner["token"].as_str().ok_or("missing owner token")?;
+    let mut agent = identity_client(&path, &passphrase_file, bookkeeper["token"].as_str(), false)?;
+    let mut owner_client = identity_client(&path, &passphrase_file, Some(token), false)?;
+    let mut reader = identity_client(&path, &passphrase_file, read_only["token"].as_str(), false)?;
+    let cli = |token: Option<&str>| -> Result<Command, Box<dyn Error>> {
+        let mut command = bk(&path)?;
+        command.arg("--passphrase-file").arg(&passphrase_file);
+        command.args(["--json", "--company", "acme"]);
+        if let Some(token) = token {
+            command.args(["--agent-token", token]);
+        }
+        Ok(command)
+    };
+
+    for (pattern, mcp_first) in [("coffee", true), ("tea", false)] {
+        let rules = agent.success(
+            "rule_create",
+            &json!({"company":"acme", "contains":pattern, "account":"4000"}),
+        )?;
+        let id = rules[0]["id"].as_str().ok_or("missing rule ID")?;
+        let args = json!({"company":"acme", "id":id});
+        let candidate = json!({"company":"acme", "description":pattern});
+        assert_eq!(reader.success("rule_match", &candidate)?["rule"]["id"], id);
+        assert_eq!(
+            payload(&agent.call("rule_undo", &args)?)?["code"],
+            "FORBIDDEN"
+        );
+        cli(None)?.args(["rule", "undo", id]).assert().code(6);
+        let wrong_company = json!({"company":"other", "id":id});
+        assert_eq!(
+            payload(&owner_client.call("rule_undo", &wrong_company)?)?["code"],
+            "NOT_FOUND"
+        );
+        let run_cli = || -> Result<Value, Box<dyn Error>> {
+            let output = cli(Some(token))?.args(["rule", "undo", id]).output()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(serde_json::from_slice::<Value>(&output.stdout)?["data"].clone())
+        };
+        let (first, retry) = if mcp_first {
+            (owner_client.success("rule_undo", &args)?, run_cli()?)
+        } else {
+            (run_cli()?, owner_client.success("rule_undo", &args)?)
+        };
+        assert_eq!(first, retry);
+        assert_eq!(first["rule"], id);
+        assert_eq!(
+            reader.success("rule_match", &candidate)?,
+            json!({"outcome":"no_match"})
+        );
+        assert_eq!(
+            reader.success("rule_list", &json!({"company":"acme"}))?,
+            json!([])
+        );
+
+        assert_rule_undo_audit(
+            &mut reader,
+            id,
+            &first["undo_receipt"],
+            &owner["agent_uri"],
+            &bookkeeper["agent_uri"],
+        )?;
+    }
+
+    assert_rule_undo_import(
+        &mut cli(bookkeeper["token"].as_str())?,
+        &dir.path().join("bank.csv"),
+        &ledger,
+    )?;
+    reader.success("verify", &json!({}))?;
+    Ok(())
+}
+
+fn assert_rule_undo_audit(
+    reader: &mut Client,
+    id: &str,
+    receipt: &Value,
+    owner_uri: &Value,
+    bookkeeper_uri: &Value,
+) -> TestResult {
+    let events = reader.success("audit_log", &json!({"company":"acme", "entity":"rule"}))?;
+    let events: Vec<_> = events
+        .as_array()
+        .ok_or("missing audit events")?
+        .iter()
+        .filter(|event| event["entity_id"] == id)
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(&events[0]["id"], receipt);
+    assert_eq!(events[0]["undo_of"], events[1]["id"]);
+    assert_eq!(events[0]["action"], "rule_deactivate");
+    assert_eq!(&events[0]["agent_uri"], owner_uri);
+    assert_eq!(
+        serde_json::from_str::<Value>(events[0]["after"].as_str().ok_or("missing after")?)?,
+        "deactivated"
+    );
+    assert_eq!(events[1]["action"], "create");
+    assert_eq!(&events[1]["agent_uri"], bookkeeper_uri);
+
+    Ok(())
+}
+
+fn assert_rule_undo_import(
+    command: &mut Command,
+    bank: &Path,
+    ledger: &beankeeper_cli::db::Db,
+) -> TestResult {
+    std::fs::write(
+        bank,
+        "date,description,amount\n2026-03-15,Coffee,-1\n2026-03-16,Tea,-2\n",
+    )?;
+    let output = command
+        .args(["txn", "import", "--file"])
+        .arg(bank)
+        .args(["--account", "1000", "--suspense", "9000"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fallback_count: i64 = ledger.read().query_row(
+        "SELECT COUNT(*) FROM entries WHERE company_slug = 'acme' AND account_code = '9000'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(fallback_count, 2);
+    Ok(())
 }
 
 #[test]

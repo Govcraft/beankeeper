@@ -172,6 +172,7 @@ audit_labels! {
         ScheduleCancel => "schedule_cancel" | "schedule-cancel",
         MetadataSet => "metadata_set" | "metadata-set",
         MetadataUnset => "metadata_unset" | "metadata-unset",
+        RuleDeactivate => "rule_deactivate" | "rule-deactivate",
         RuleDelete => "rule_delete" | "rule-delete",
         RuleSupersede => "rule_supersede" | "rule-supersede",
         BookkeepingPolicySet => "bookkeeping_policy_set" | "bookkeeping-policy-set",
@@ -275,6 +276,12 @@ impl AuditLogRow {
     #[must_use]
     pub const fn client_hint(&self) -> Option<&ClientHint> {
         self.client_hint.as_ref()
+    }
+
+    /// The original receipt referenced by an owner undo.
+    #[must_use]
+    pub const fn undo_of(&self) -> Option<receipts::ReceiptId> {
+        self.undo_of
     }
 }
 
@@ -539,7 +546,7 @@ enum AuditLinks {
     None,
     Posting(TransactionId),
     Reversal(TransactionId, Option<receipts::ReceiptId>),
-    Archive(receipts::ReceiptId),
+    Undo(receipts::ReceiptId),
 }
 
 impl AuditLinks {
@@ -548,7 +555,7 @@ impl AuditLinks {
             Self::None => (None, None),
             Self::Posting(posting) => (None, Some(posting)),
             Self::Reversal(posting, undo_of) => (undo_of, Some(posting)),
-            Self::Archive(undo_of) => (Some(undo_of), None),
+            Self::Undo(undo_of) => (Some(undo_of), None),
         }
     }
 }
@@ -2320,7 +2327,7 @@ pub fn delete_account(
         )?;
         if rules > 0 {
             return Err(CliError::Validation(format!(
-                "account {code} cannot be deleted: {rules} categorization rules reference it; delete the rules first"
+                "account {code} cannot be deleted: {rules} retained categorization rules reference it"
             )));
         }
 

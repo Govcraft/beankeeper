@@ -25,7 +25,10 @@ pub(in crate::db) use links::{backfill_legacy_links, seal_legacy_links};
 pub(super) use links::{verify_legacy_links, verify_links};
 pub(super) use undo::UndoPostingDate;
 pub(in crate::db) use undo::verify_archives;
-pub use undo::{ReceiptUndoError, UndoIneligibility, UndoOutcome, undo_receipt};
+pub use undo::{
+    ReceiptUndoError, RuleUndoOutcome, UndoIneligibility, UndoOutcome, undo_receipt,
+    undo_rule_creation,
+};
 
 /// An exclusive position in the ledger's audit order. Zero starts at the beginning.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

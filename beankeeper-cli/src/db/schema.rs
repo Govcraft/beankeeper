@@ -7,12 +7,13 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = STANDING_SETTINGS_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = RULE_UNDO_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
 pub(crate) const RECEIPT_SCHEMA_VERSION: i64 = 26;
 pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: i64 = 27;
+const RULE_UNDO_SCHEMA_VERSION: i64 = 28;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +181,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < STANDING_SETTINGS_SCHEMA_VERSION {
         apply_v27(conn)?;
+    }
+    if version < RULE_UNDO_SCHEMA_VERSION {
+        apply_v28(conn)?;
     }
 
     debug_assert_eq!(
@@ -1510,6 +1514,42 @@ fn apply_v27(conn: &Connection) -> Result<(), CliError> {
     )
 }
 
+/// Add owner rule reversals without changing the audit hash payload.
+fn apply_v28(conn: &Connection) -> Result<(), CliError> {
+    migrate_audit(conn, AuditTable::RuleUndo, RULE_UNDO_SCHEMA_VERSION)
+}
+
+fn install_rule_undo_guards(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "CREATE TRIGGER protect_rule_deactivation BEFORE INSERT ON audit_log
+         WHEN NEW.action = 'rule_deactivate' AND (
+             NOT EXISTS (SELECT 1 FROM audit_log original
+                 WHERE original.id = NEW.undo_of AND original.entity = 'rule'
+                   AND original.action = 'create' AND original.company_slug = NEW.company_slug
+                   AND original.entity_id = NEW.entity_id)
+             OR NOT EXISTS (SELECT 1 FROM categorization_rules rule
+                 WHERE rule.company_slug = NEW.company_slug AND rule.id = NEW.entity_id
+                   AND rule.supersedes IS NULL)
+         ) BEGIN SELECT RAISE(ABORT, 'rule deactivation requires an original creation'); END;
+         CREATE TRIGGER protect_deactivated_rule_insert BEFORE INSERT ON categorization_rules
+         WHEN EXISTS (SELECT 1 FROM audit_log event
+             WHERE event.entity = 'rule' AND event.entity_id = NEW.id
+               AND event.action = 'rule_deactivate')
+         BEGIN SELECT RAISE(ABORT, 'deactivated rules cannot be replaced'); END;
+         CREATE TRIGGER protect_deactivated_rule_update BEFORE UPDATE ON categorization_rules
+         WHEN EXISTS (SELECT 1 FROM audit_log event
+             WHERE event.company_slug = OLD.company_slug AND event.entity = 'rule'
+               AND event.entity_id = OLD.id AND event.action = 'rule_deactivate')
+         BEGIN SELECT RAISE(ABORT, 'deactivated rules are immutable'); END;
+         CREATE TRIGGER protect_deactivated_rule_delete BEFORE DELETE ON categorization_rules
+         WHEN EXISTS (SELECT 1 FROM audit_log event
+             WHERE event.company_slug = OLD.company_slug AND event.entity = 'rule'
+               AND event.entity_id = OLD.id AND event.action = 'rule_deactivate')
+         BEGIN SELECT RAISE(ABORT, 'deactivated rules cannot be deleted'); END;",
+    )?;
+    Ok(())
+}
+
 fn create_standing_settings(conn: &Connection) -> Result<(), CliError> {
     conn.execute_batch(
         "ALTER TABLE categorization_rules ADD COLUMN supersedes TEXT CHECK(supersedes IS NULL OR supersedes != id);
@@ -1538,9 +1578,11 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             "protect_period_insert",
             "protect_period_update",
         ];
-        if table == AuditTable::StandingSettings {
+        if matches!(table, AuditTable::StandingSettings | AuditTable::RuleUndo) {
             triggers.push("protect_account_archive");
             conn.execute_batch("DROP VIEW audit_receipt_postings")?;
+        }
+        if table == AuditTable::StandingSettings {
             create_standing_settings(conn)?;
         }
         let mut definitions = Vec::with_capacity(triggers.len());
@@ -1557,8 +1599,11 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         for definition in definitions {
             conn.execute_batch(&definition)?;
         }
-        if table == AuditTable::StandingSettings {
+        if matches!(table, AuditTable::StandingSettings | AuditTable::RuleUndo) {
             install_receipt_read_paths(conn)?;
+        }
+        if table == AuditTable::RuleUndo {
+            install_rule_undo_guards(conn)?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
         if table == AuditTable::Receipts {
@@ -1576,6 +1621,7 @@ enum AuditTable {
     ClientHints,
     Receipts,
     StandingSettings,
+    RuleUndo,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1590,7 +1636,10 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             format!(",'{}'", AuditAction::DemoSeed),
         )
     };
-    if matches!(table, AuditTable::Receipts | AuditTable::StandingSettings) {
+    if matches!(
+        table,
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo
+    ) {
         let _ = write!(entity, ",'{}'", AuditEntity::Audit);
         let _ = write!(
             action,
@@ -1599,7 +1648,7 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::ReceiptLinkMigration
         );
     }
-    if table == AuditTable::StandingSettings {
+    if matches!(table, AuditTable::StandingSettings | AuditTable::RuleUndo) {
         let _ = write!(
             entity,
             ",'{}','{}'",
@@ -1614,13 +1663,25 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::InformPreferenceSet
         );
     }
+    if table == AuditTable::RuleUndo {
+        let _ = write!(action, ",'{}'", AuditAction::RuleDeactivate);
+    }
     (entity, action)
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
+    let (undo_action, rule_check) = if table == AuditTable::RuleUndo {
+        (
+            ",'rule_deactivate'",
+            ", CHECK(action <> 'rule_deactivate' OR (
+                   entity = 'rule' AND undo_of IS NOT NULL AND hash_version >= 7))",
+        )
+    } else {
+        ("", "")
+    };
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -1632,16 +1693,16 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
                 "client_hint TEXT,
                  undo_of INTEGER REFERENCES audit_log_rebuild(id),
                  related_posting INTEGER REFERENCES transactions(id),",
-                ", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
+                format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
-                       AND undo_of < id AND action IN ('reverse', 'account_archive')
+                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action})
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
                    CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
                        AND related_posting > 0 AND company_slug IS NOT NULL
                        AND action IN ('reverse', 'proposal_approve', 'correlate'))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL)))",
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}"),
                 select_suffix,
             )
         }
@@ -1649,10 +1710,10 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
             5,
             ",5",
             "client_hint TEXT,",
-            ", CHECK(client_hint IS NULL OR (hash_version = 5 AND agent_uri IS NULL AND json_valid(client_hint)))",
+            ", CHECK(client_hint IS NULL OR (hash_version = 5 AND agent_uri IS NULL AND json_valid(client_hint)))".to_owned(),
             ", NULL",
         ),
-        _ => (4, "", "", "", ""),
+        _ => (4, "", "", String::new(), ""),
     };
     conn.execute_batch(&format!(
         "CREATE TABLE audit_log_rebuild (
@@ -2200,7 +2261,7 @@ mod tests {
         )?;
         // A failure during the audit table rebuild must undo the new rule column and settings table.
         conn.execute_batch("CREATE TABLE audit_log_rebuild (collision TEXT)")?;
-        assert!(ensure_schema(&conn).is_err());
+        assert!(apply_v27(&conn).is_err());
         assert_eq!(
             get_schema_version(ReadConn::new(&conn))?,
             RECEIPT_SCHEMA_VERSION
@@ -2213,7 +2274,7 @@ mod tests {
         assert!(conn.prepare("SELECT * FROM audit_receipt_postings").is_ok());
         conn.execute_batch("DROP TABLE audit_log_rebuild")?;
 
-        ensure_schema(&conn)?;
+        apply_v27(&conn)?;
         assert_eq!(
             get_schema_version(ReadConn::new(&conn))?,
             STANDING_SETTINGS_SCHEMA_VERSION
@@ -2263,6 +2324,53 @@ mod tests {
             audit::verify_hash_chain(reader)?.length(),
             old_chain.length() + 1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn v28_preserves_existing_rule_rows_and_their_audit_hashes() -> Result<(), CliError> {
+        use super::super::{Actor, audit, companies::Company, rules};
+        use crate::identity::Post;
+
+        let conn = v17_connection()?;
+        for migration in [
+            apply_v18, apply_v19, apply_v20, apply_v21, apply_v22, apply_v23, apply_v24, apply_v25,
+            apply_v26, apply_v27,
+        ] {
+            migration(&conn)?;
+        }
+        let actor = Actor::new("bookkeeper".parse()?);
+        let company = "legacy".parse()?;
+        let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
+            audit::create_rule(
+                Granted::<Post>::check(tx, &actor)?,
+                &company,
+                (
+                    "retail".parse()?,
+                    "4000".parse().map_err(beankeeper::error::BeanError::from)?,
+                    None,
+                )
+                    .into(),
+            )
+        })?;
+        let reader = ReadConn::new(&conn);
+        let rule_hash = || -> Result<String, CliError> {
+            Ok(conn.query_row(
+                "SELECT row_hash FROM audit_log WHERE entity = 'rule' AND entity_id = ?1",
+                [rule.id().to_string()],
+                |row| row.get(0),
+            )?)
+        };
+        let before = audit::verify_hash_chain(reader)?.length();
+        let hash = rule_hash()?;
+        apply_v28(&conn)?;
+        assert_eq!(before, audit::verify_hash_chain(reader)?.length());
+        assert_eq!(hash, rule_hash()?);
+        assert_eq!(
+            rules::list_active_rules(&Company::bind(reader, company)?)?,
+            [rule]
+        );
+        assert_eq!(get_schema_version(reader)?, RULE_UNDO_SCHEMA_VERSION);
         Ok(())
     }
 

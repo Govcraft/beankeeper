@@ -178,7 +178,7 @@ fn round_trip(encrypted: bool) -> TestResult {
     let snapshot = success(&snapshot_output)?;
     assert_eq!(snapshot["meta"]["command"], "backup");
     assert_eq!(snapshot["data"]["encrypted"], encrypted);
-    assert_eq!(snapshot["data"]["schema_version"], 27);
+    assert_eq!(snapshot["data"]["schema_version"], 28);
     assert!(snapshot["data"]["bytes"].as_u64().ok_or("missing bytes")? > 0);
     assert_eq!(
         std::fs::read(&backup)?.starts_with(b"SQLite format 3\0"),
