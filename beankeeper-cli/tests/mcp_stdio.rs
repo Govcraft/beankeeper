@@ -3251,15 +3251,22 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
 
     let temp = tempdir()?;
     let path = temp.path().join("legacy.db");
+    let current_path = temp.path().join("current.db");
     seed(&path)?;
     let connection = rusqlite::Connection::open(&path)?;
+    connection.execute(
+        "INSERT INTO accounts(company_slug, code, name, type)
+         VALUES ('acme', 'CASH', 'Legacy Cash', 'asset')",
+        [],
+    )?;
+    // Use a real current schema for the typed and MCP comparisons. Only the
+    // read-only setup commands see the fixture with its version rolled back.
+    connection.execute("VACUUM INTO ?1", [current_path.to_string_lossy().as_ref()])?;
     connection.execute_batch(
         "DROP TABLE setup_requests;
          DROP TABLE setup_book_profiles;
          DROP TABLE setup_statement_batches;
-         DELETE FROM schema_version WHERE version >= 22;
-         INSERT INTO accounts(company_slug, code, name, type)
-           VALUES ('acme', 'CASH', 'Legacy Cash', 'asset');",
+         DELETE FROM schema_version WHERE version >= 22;",
     )?;
     let read = bk(&path)?
         .args(["--json", "setup", "book-show", "acme"])
@@ -3294,7 +3301,7 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
     assert_eq!(version, 21);
     drop(connection);
 
-    let db = Db::open_existing(&path, None)?;
+    let db = Db::open_existing(&current_path, None)?;
     let company = "acme".parse()?;
     let typed = book_facts(&db, &company)?;
     assert!(
@@ -3309,7 +3316,7 @@ fn setup_book_show_reads_previous_schema_without_migration() -> TestResult {
     assert_eq!(typed_legacy.account_type, AccountType::Asset);
     assert_eq!(serde_json::to_value(typed)?, facts["data"]);
 
-    let mut server = bk(&path)?;
+    let mut server = bk(&current_path)?;
     server.args(["mcp", "serve", "--read-only"]);
     let mut client = Client::spawn(server)?;
     client.initialize()?;

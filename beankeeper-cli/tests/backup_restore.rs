@@ -555,7 +555,7 @@ fn restore_rejects_unsupported_schema_without_migration_or_modifying_input() -> 
     let dir = tempdir()?;
     let source = dir.path().join("source.db");
     let destination = dir.path().join("destination.db");
-    for version in [23, 25] {
+    for version in [24, 26] {
         let conn = rusqlite::Connection::open(&source)?;
         conn.execute_batch(
             "DROP TABLE IF EXISTS schema_version; CREATE TABLE schema_version (version INTEGER)",
