@@ -1166,22 +1166,6 @@ fn apply_v19(conn: &Connection) -> Result<(), CliError> {
               OR NEW.transaction_id IS NOT NULL OR NEW.reason IS NOT NULL
               OR EXISTS(SELECT 1 FROM txn_proposals WHERE id = NEW.id)
             BEGIN SELECT RAISE(ABORT, 'proposals must start pending and cannot be replaced'); END;
-            CREATE TRIGGER protect_proposal_resolution BEFORE UPDATE ON txn_proposals
-            WHEN NOT EXISTS (
-                SELECT 1 FROM audit_log
-                WHERE id = (SELECT MAX(id) FROM audit_log) AND entity = 'proposal'
-                  AND company_slug = NEW.company_slug AND entity_id = NEW.id
-                  AND action = CASE WHEN NEW.status = 'approved' THEN 'proposal_approve' ELSE 'proposal_reject' END
-                  AND json_extract(before, '$.status') = OLD.status
-                  AND json_extract(after, '$.id') = NEW.id
-                  AND json_extract(after, '$.status') = NEW.status
-                  AND json_extract(after, '$.resolved_at') IS NEW.resolved_at
-                  AND json_extract(after, '$.resolved_by_uri') IS NEW.resolved_by_uri
-                  AND json_extract(after, '$.resolved_by_jti') IS NEW.resolved_by_jti
-                  AND json_extract(after, '$.transaction_id') IS NEW.transaction_id
-                  AND json_extract(after, '$.reason') IS NEW.reason
-            )
-            BEGIN SELECT RAISE(ABORT, 'proposal resolution requires an audit snapshot'); END;
             CREATE TRIGGER protect_proposal_delete BEFORE DELETE ON txn_proposals
             BEGIN SELECT RAISE(ABORT, 'proposals cannot be deleted'); END;
             CREATE TABLE agent_spend_limits (
@@ -1195,9 +1179,45 @@ fn apply_v19(conn: &Connection) -> Result<(), CliError> {
             );
             INSERT INTO schema_version(version) VALUES (19);",
         )?;
+        install_proposal_resolution_trigger(conn, ProposalAuditLink::Snapshot)?;
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
+}
+
+#[derive(Clone, Copy)]
+enum ProposalAuditLink {
+    Snapshot,
+    Column,
+}
+
+fn install_proposal_resolution_trigger(
+    conn: &Connection,
+    link: ProposalAuditLink,
+) -> Result<(), CliError> {
+    let posting_link = match link {
+        ProposalAuditLink::Snapshot => "json_extract(after, '$.transaction_id')",
+        ProposalAuditLink::Column => "related_posting",
+    };
+    conn.execute_batch(&format!(
+        "CREATE TRIGGER protect_proposal_resolution BEFORE UPDATE ON txn_proposals
+         WHEN NOT EXISTS (
+             SELECT 1 FROM audit_log
+             WHERE id = (SELECT MAX(id) FROM audit_log) AND entity = 'proposal'
+               AND company_slug = NEW.company_slug AND entity_id = NEW.id
+               AND action = CASE WHEN NEW.status = 'approved' THEN 'proposal_approve' ELSE 'proposal_reject' END
+               AND json_extract(before, '$.status') = OLD.status
+               AND json_extract(after, '$.id') = NEW.id
+               AND json_extract(after, '$.status') = NEW.status
+               AND json_extract(after, '$.resolved_at') IS NEW.resolved_at
+               AND json_extract(after, '$.resolved_by_uri') IS NEW.resolved_by_uri
+               AND json_extract(after, '$.resolved_by_jti') IS NEW.resolved_by_jti
+               AND {posting_link} IS NEW.transaction_id
+               AND json_extract(after, '$.reason') IS NEW.reason
+         )
+         BEGIN SELECT RAISE(ABORT, 'proposal resolution requires an audit snapshot'); END;"
+    ))?;
+    Ok(())
 }
 
 fn extend_proposal_audit(conn: &Connection) -> Result<(), CliError> {
@@ -1412,17 +1432,11 @@ fn apply_v26(conn: &Connection) -> Result<(), CliError> {
             "ALTER TABLE accounts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
                  CHECK (archived IN (0, 1));
              CREATE INDEX idx_receipt_company ON audit_log(company_slug, id);
-             CREATE UNIQUE INDEX idx_receipt_undo ON audit_log(company_slug,
-                 json_extract(CASE WHEN json_valid(after) THEN after END, '$.undo_of'))
-                 WHERE action IN ('reverse', 'account_archive');
-             CREATE INDEX idx_receipt_posting ON audit_log(company_slug,
-                 json_extract(CASE WHEN json_valid(after) THEN after END,
-                     CASE action WHEN 'reverse' THEN '$.reversed_by' ELSE '$.transaction_id' END))
+             CREATE UNIQUE INDEX idx_receipt_undo ON audit_log(undo_of) WHERE undo_of IS NOT NULL;
+             CREATE INDEX idx_receipt_posting ON audit_log(company_slug, related_posting)
                  WHERE action IN ('reverse', 'proposal_approve');
              CREATE VIEW audit_receipt_postings AS
-                 SELECT id, company_slug, json_extract(CASE WHEN json_valid(after) THEN after END,
-                     CASE action WHEN 'reverse' THEN '$.reversed_by' ELSE '$.transaction_id' END)
-                     AS posting_id
+                 SELECT id, company_slug, related_posting AS posting_id
                  FROM audit_log WHERE action IN ('reverse', 'proposal_approve');
              CREATE TRIGGER protect_archived_account_delete BEFORE DELETE ON accounts
                  WHEN OLD.archived = 1
@@ -1439,10 +1453,12 @@ fn apply_v26(conn: &Connection) -> Result<(), CliError> {
                      WHERE id = (SELECT MAX(id) FROM audit_log)
                        AND company_slug = OLD.company_slug AND entity_id = OLD.code
                        AND entity = 'account' AND action = 'account_archive'
-                       AND agent_uri IS NOT NULL
+                       AND agent_uri IS NOT NULL AND undo_of IS NOT NULL
                  )
                  BEGIN SELECT RAISE(ABORT, 'account archive requires an owner undo audit record'); END;",
         )?;
+        conn.execute_batch("DROP TRIGGER protect_proposal_resolution;")?;
+        install_proposal_resolution_trigger(conn, ProposalAuditLink::Column)?;
         Ok(())
     })
 }
@@ -1471,6 +1487,9 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             conn.execute_batch(&definition)?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
+        if table == AuditTable::Receipts {
+            super::audit::receipts::seal_legacy_links(conn)?;
+        }
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
@@ -1485,7 +1504,7 @@ enum AuditTable {
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
-    let (entity, mut action) = if table == AuditTable::Periods {
+    let (mut entity, mut action) = if table == AuditTable::Periods {
         (String::new(), String::new())
     } else {
         use super::audit::{AuditAction, AuditEntity};
@@ -1494,27 +1513,44 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
             format!(",'{}'", AuditAction::DemoSeed),
         )
     };
-    if table == AuditTable::Receipts {
-        use std::fmt::Write as _;
-        let _ = write!(action, ",'{}'", super::audit::AuditAction::AccountArchive);
-    }
-    let (hash_version, version_suffix, column, check, select_suffix) = if matches!(
-        table,
-        AuditTable::ClientHints | AuditTable::Receipts
-    ) {
-        (
+    let (hash_version, version_suffix, column, check, select_suffix) = match table {
+        AuditTable::Receipts => {
+            use super::audit::{AuditAction, AuditEntity};
+            use std::fmt::Write as _;
+            let _ = write!(entity, ",'{}'", AuditEntity::Audit);
+            let _ = write!(
+                action,
+                ",'{}','{}'",
+                AuditAction::AccountArchive,
+                AuditAction::ReceiptLinkMigration
+            );
+            (
+                6,
+                ",5,6",
+                "client_hint TEXT,
+                 undo_of INTEGER REFERENCES audit_log_rebuild(id),
+                 related_posting INTEGER REFERENCES transactions(id),",
+                ", CHECK(client_hint IS NULL OR (hash_version IN (5, 6) AND agent_uri IS NULL AND json_valid(client_hint))),
+                   CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
+                       AND undo_of < id AND action IN ('reverse', 'account_archive')
+                       AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
+                   CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
+                       AND related_posting > 0 AND company_slug IS NOT NULL
+                       AND action IN ('reverse', 'proposal_approve', 'correlate'))),
+                   CHECK(hash_version < 6 OR (
+                       (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL)))",
+                ", NULL, NULL",
+            )
+        }
+        AuditTable::ClientHints => (
             5,
             ",5",
             "client_hint TEXT,",
             ", CHECK(client_hint IS NULL OR (hash_version = 5 AND agent_uri IS NULL AND json_valid(client_hint)))",
-            if table == AuditTable::ClientHints {
-                ", NULL"
-            } else {
-                ""
-            },
-        )
-    } else {
-        (4, "", "", "", "")
+            ", NULL",
+        ),
+        _ => (4, "", "", "", ""),
     };
     conn.execute_batch(&format!(
         "CREATE TABLE audit_log_rebuild (
@@ -1537,8 +1573,13 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
                 CHECK(hash_version != 1 OR agent_uri IS NULL)
                 {check}
             );
-            INSERT INTO audit_log_rebuild SELECT *{select_suffix} FROM audit_log ORDER BY id;
-            DROP TRIGGER protect_audit_insert;
+            INSERT INTO audit_log_rebuild SELECT *{select_suffix} FROM audit_log ORDER BY id;"
+    ))?;
+    if table == AuditTable::Receipts {
+        super::audit::receipts::backfill_legacy_links(conn)?;
+    }
+    conn.execute_batch(&format!(
+        "DROP TRIGGER protect_audit_insert;
             DROP TRIGGER protect_audit_update;
             DROP TRIGGER protect_audit_delete;
             DROP TABLE audit_log;
@@ -1712,7 +1753,7 @@ mod tests {
         audit::verify_creations(ReadConn::new(&conn))?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
         periods::verify(ReadConn::new(&conn))?;
-        assert_eq!(history(&conn)?.last().map(|row| row.0), Some(5));
+        assert_eq!(history(&conn)?.last().map(|row| row.0), Some(6));
         ensure_schema(&conn)?;
         Ok(())
     }
@@ -1915,6 +1956,102 @@ mod tests {
     }
 
     #[test]
+    fn v26_commits_backfilled_receipt_links_without_rehashing_history() -> Result<(), CliError> {
+        use sha2::{Digest, Sha256};
+
+        let conn = v17_connection()?;
+        for migration in [
+            apply_v18, apply_v19, apply_v20, apply_v21, apply_v22, apply_v23, apply_v24, apply_v25,
+        ] {
+            migration(&conn)?;
+        }
+        conn.execute_batch(
+            "INSERT INTO companies (slug, name) VALUES ('other', 'Other');
+             INSERT INTO transactions (company_slug, description, currency, date) VALUES
+               ('legacy', 'Second posting', 'USD', '2026-01-02'),
+               ('other', 'Intercompany posting', 'USD', '2026-01-02');",
+        )?;
+
+        let previous: (i64, String) = conn.query_row(
+            "SELECT id, row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut history = Vec::new();
+        let mut previous = previous;
+        for (entity, target, action, key, posting) in [
+            ("transaction", "1", "reverse", "reversed_by", 2),
+            (
+                "proposal",
+                "legacy-proposal",
+                "proposal_approve",
+                "transaction_id",
+                2,
+            ),
+            ("transaction", "1", "correlate", "correlated_with", 3),
+        ] {
+            let id = previous.0 + 1;
+            let after = serde_json::json!({ (key): posting }).to_string();
+            let canonical = serde_json::json!([
+                "beankeeper.audit.v5",
+                id,
+                "2026-01-02 00:00:00",
+                "legacy-writer",
+                "legacy",
+                entity,
+                target,
+                action,
+                null,
+                after,
+                null,
+                null,
+                null
+            ])
+            .to_string();
+            let mut hash = Sha256::new();
+            hash.update(previous.1.as_bytes());
+            hash.update(canonical.as_bytes());
+            let hash = format!("{:x}", hash.finalize());
+            conn.execute(
+                "INSERT INTO audit_log(id, changed_at, actor, company_slug, entity, entity_id,
+                    action, after, prev_hash, row_hash, hash_version)
+                 VALUES (?1, '2026-01-02 00:00:00', 'legacy-writer', 'legacy', ?2, ?3,
+                    ?4, ?5, ?6, ?7, 5)",
+                params![id, entity, target, action, after, previous.1, hash],
+            )?;
+            history.push((id, after, hash.clone(), posting));
+            previous = (id, hash);
+        }
+
+        apply_v26(&conn)?;
+        for (id, after, hash, posting) in history {
+            let persisted: (String, String, i64) = conn.query_row(
+                "SELECT after, row_hash, related_posting FROM audit_log WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(persisted, (after, hash, posting));
+        }
+        let reader = ReadConn::new(&conn);
+        assert_eq!(crate::db::audit::verify_hash_chain(reader)?.length(), 6);
+        let tail: (i64, String) = conn.query_row(
+            "SELECT hash_version, action FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(tail, (6, "receipt_link_migration".into()));
+
+        conn.execute_batch(
+            "DROP TRIGGER protect_audit_update;
+             UPDATE audit_log SET related_posting = 1 WHERE action = 'reverse';",
+        )?;
+        let error = crate::db::audit::verify_hash_chain(reader)
+            .expect_err("changing a legacy typed link must invalidate the commitment");
+        assert!(error.to_string().contains("receipt links"));
+        Ok(())
+    }
+
+    #[test]
     fn v18_preserves_mixed_history_and_blocks_old_writers() -> Result<(), CliError> {
         let conn = v17_connection()?;
         let hashes = |conn: &Connection| -> Result<Vec<(i64, String, String)>, CliError> {
@@ -1939,7 +2076,7 @@ mod tests {
             &super::super::Actor::new("owner".parse()?),
             |grant| super::super::audit::set_policy(grant, true),
         )?;
-        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(5));
+        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(6));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(ReadConn::new(&conn))?;
         for sql in [

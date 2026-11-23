@@ -347,7 +347,7 @@ fn cli_and_mcp_audit_show_the_same_unverified_runtime_hint() -> TestResult {
         assert_eq!(row["actor"], "configured-operator");
         assert!(row["agent_uri"].is_null());
         assert!(row["token_jti"].is_null());
-        assert_eq!(row["hash_version"], 5);
+        assert_eq!(row["hash_version"], 6);
         assert_eq!(
             row["client_hint"],
             json!({

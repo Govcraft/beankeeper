@@ -118,6 +118,12 @@ impl From<ReceiptId> for AuditRowId {
     }
 }
 
+impl From<AuditRowId> for ReceiptId {
+    fn from(id: AuditRowId) -> Self {
+        Self(id.0)
+    }
+}
+
 impl From<TransactionId> for PartnerTransactionId {
     fn from(id: TransactionId) -> Self {
         Self(id.0)

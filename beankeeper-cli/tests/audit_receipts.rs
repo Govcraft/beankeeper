@@ -10,10 +10,11 @@ use beankeeper_cli::{
         self, Actor, CreateAccountParams, Db, PostEntryParams, PostResult, PostTransactionParams,
         accounts::{AccountStatus, account_status},
         audit::{
-            AuditAction, AuditEntity, ReverseTransactionParams,
+            AuditAction, AuditEntity, ReversalBlock, ReverseTransactionParams,
             receipts::{
-                AuditCursor, ReceiptId, ReceiptPage, ReceiptPageLimit, UndoOutcome,
-                continue_receipts, list_receipts, undo_receipt,
+                AuditCursor, ReceiptChange, ReceiptId, ReceiptPage, ReceiptPageLimit,
+                ReceiptTarget, ReceiptUndoError, UndoIneligibility, UndoOutcome, continue_receipts,
+                list_receipts, undo_receipt,
             },
             reverse_transaction,
         },
@@ -24,6 +25,7 @@ use beankeeper_cli::{
     error::{CliError, ErrorCode},
     identity::{self, Admin, Granted, IssueRequest, OwnerUndo, Post, Reverse},
 };
+use mti::prelude::MagicTypeId;
 use secrecy::{ExposeSecret as _, SecretString};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -177,10 +179,19 @@ fn paging_keeps_a_reversal_whole_and_picks_up_later_writes_in_the_next_range() -
     let first = list_receipts(&books.db, &books.company, previous, limit)?;
     assert_eq!(first.receipts().len(), 1);
     let posted = &first.receipts()[0];
-    assert_eq!(posted.change().entity_id, original.to_string());
-    assert_eq!(posted.change().actor, "bookkeeper");
-    assert!(posted.change().agent_uri.is_none());
-    assert!(posted.change().before.is_none());
+    assert_eq!(
+        posted.change().target(),
+        &ReceiptTarget::Transaction(original)
+    );
+    assert_eq!(posted.change().actor().as_str(), "bookkeeper");
+    assert!(posted.change().agent_uri().is_none());
+    let ReceiptChange::PostingCreated { after } = posted.change().summary() else {
+        return Err("expected a posting summary".into());
+    };
+    assert_eq!(after.currency, Currency::USD);
+    assert_eq!(after.entries[0].amount.minor_units(), 1200);
+    assert_eq!(after.entries[0].direction, DebitOrCredit::Debit);
+    assert_eq!(posted.change().changed_at().offset(), &chrono::Utc);
     assert_eq!(posted.source_reference(), Some("ORIGINAL"));
 
     let later = books.post(&writer, "LATER")?;
@@ -191,21 +202,24 @@ fn paging_keeps_a_reversal_whole_and_picks_up_later_writes_in_the_next_range() -
     assert_eq!(last.receipts().len(), 1);
     let reversed = &last.receipts()[0];
     assert!(reversed.id() > posted.id());
-    assert_eq!(reversed.change().action, AuditAction::Reverse);
-    assert_eq!(reversed.change().related_posting, Some(mirror));
+    assert_eq!(reversed.change().action(), AuditAction::Reverse);
+    assert_eq!(reversed.change().related_posting(), Some(mirror));
     assert_eq!(reversed.source_reference(), Some("MIRROR"));
     let creation = reversed.posting().ok_or("missing mirror creation")?;
-    assert_eq!(creation.entity_id, mirror.to_string());
-    assert!(creation.id < reversed.change().id);
-    assert_eq!(creation.action, AuditAction::Create);
-    assert!(reversed.change().before.is_some());
+    assert_eq!(creation.target(), &ReceiptTarget::Transaction(mirror));
+    assert!(creation.id() < reversed.change().id());
+    assert_eq!(creation.action(), AuditAction::Create);
+    assert!(matches!(
+        reversed.change().summary(),
+        ReceiptChange::PostingReversed
+    ));
 
     let following = list_receipts(&books.db, &books.company, last.through(), limit)?;
     assert!(following.continuation().is_none());
     assert_eq!(following.receipts().len(), 1);
     assert_eq!(
-        following.receipts()[0].change().entity_id,
-        later.to_string()
+        following.receipts()[0].change().target(),
+        &ReceiptTarget::Transaction(later)
     );
     let empty = list_receipts(&books.db, &books.company, following.through(), limit)?;
     assert!(empty.receipts().is_empty());
@@ -234,23 +248,24 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
     })?;
     let transaction = books.post(&books.db, "ORDER-1")?;
     let page = books.receipts()?;
-    let id_of = |entity: AuditEntity, entity_id: &str| {
+    let id_of = |target: ReceiptTarget| {
         page.receipts()
             .iter()
-            .find(|receipt| {
-                receipt.change().entity == entity && receipt.change().entity_id == entity_id
-            })
+            .find(|receipt| receipt.change().target() == &target)
             .map(beankeeper_cli::db::audit::receipts::AuditReceipt::id)
             .ok_or("missing receipt")
     };
-    let account_receipt = id_of(AuditEntity::Account, "5000")?;
-    let posting_receipt = id_of(AuditEntity::Transaction, &transaction.to_string())?;
+    let account_receipt = id_of(ReceiptTarget::Account("5000".parse()?))?;
+    let posting_receipt = id_of(ReceiptTarget::Transaction(transaction))?;
     assert_owner_required(&books, &owner, &agent, account_receipt)?;
     check_code(
         books.undo(
             &owner,
             &books.company,
-            id_of(AuditEntity::Rule, &rule.id.to_string())?,
+            id_of(ReceiptTarget::Other {
+                entity: AuditEntity::Rule,
+                key: rule.id.to_string().into(),
+            })?,
         ),
         ErrorCode::UndoUnsupported,
     )?;
@@ -298,20 +313,18 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
     assert_eq!(outcomes.receipts().len(), 2);
     let archive = &outcomes.receipts()[0];
     assert_eq!(archive.id(), archive_change);
-    assert_eq!(archive.change().undo_of, Some(account_receipt));
-    assert_eq!(archive.change().action, AuditAction::AccountArchive);
+    assert_eq!(archive.change().undo_of(), Some(account_receipt));
+    assert_eq!(archive.change().action(), AuditAction::AccountArchive);
     let reverse = &outcomes.receipts()[1];
     assert_eq!(reverse.id(), reverse_change);
-    assert_eq!(reverse.change().undo_of, Some(posting_receipt));
+    assert_eq!(reverse.change().undo_of(), Some(posting_receipt));
     assert_eq!(reverse.source_reference(), Some("ORDER-1"));
     assert_eq!(
-        reverse.posting().ok_or("missing mirror event")?.entity_id,
-        reversal.to_string()
+        reverse.posting().ok_or("missing mirror event")?.target(),
+        &ReceiptTarget::Transaction(reversal)
     );
     for outcome in outcomes.receipts() {
-        assert_eq!(outcome.change().actor, "desktop");
-        assert_eq!(outcome.change().agent_uri.as_deref(), owner.agent_uri());
-        assert_eq!(outcome.change().token_jti.as_deref(), owner.token_jti());
+        assert_owner_attribution(outcome.change(), &owner);
     }
     verify_ledger(&path)?;
 
@@ -324,6 +337,19 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
         ErrorCode::Unauthorized,
     )?;
     Ok(())
+}
+
+fn assert_owner_attribution(event: &db::audit::receipts::ReceiptEvent, owner: &Actor) {
+    assert_eq!(event.actor().as_str(), "desktop");
+    assert_eq!(
+        event.agent_uri().map(agent_uri::AgentUri::as_str),
+        owner.agent_uri()
+    );
+    assert_eq!(
+        event.token_jti().map(MagicTypeId::as_str),
+        owner.token_jti()
+    );
+    assert!(event.client_hint().is_none());
 }
 
 fn assert_archived_account(books: &Books, transaction: TransactionId) -> TestResult {
@@ -400,10 +426,13 @@ fn owner_undo_respects_period_locks_and_reconciled_clearings() -> TestResult {
     };
     invoke_period(PeriodChange::Close("2099-12-31".parse()?))?;
     let locked = books.receipts()?.through();
-    check_code(
+    assert!(matches!(
         books.undo(&owner, &books.company, find("CLOSED")?),
-        ErrorCode::UndoIneligible,
-    )?;
+        Err(CliError::ReceiptUndo(ReceiptUndoError::Ineligible {
+            reason: UndoIneligibility::PeriodLocked(_),
+            ..
+        }))
+    ));
     assert_eq!(books.receipts()?.through(), locked);
     invoke_period(PeriodChange::Reopen("Reopening fixture".parse()?))?;
 
@@ -431,10 +460,13 @@ fn owner_undo_respects_period_locks_and_reconciled_clearings() -> TestResult {
         String::from_utf8_lossy(&clear.stderr)
     );
     let reconciled = books.receipts()?.through();
-    check_code(
+    assert!(matches!(
         books.undo(&owner, &books.company, find("RECONCILED")?),
-        ErrorCode::UndoIneligible,
-    )?;
+        Err(CliError::ReceiptUndo(ReceiptUndoError::Ineligible {
+            reason: UndoIneligibility::ReversalBlocked(ReversalBlock::Reconciled(_)),
+            ..
+        }))
+    ));
     assert_eq!(books.receipts()?.through(), reconciled);
     Ok(())
 }

@@ -151,6 +151,7 @@ audit_labels! {
         Demo => "demo",
         Key => "key",
         Agent => "agent",
+        Audit => "audit",
     }
 }
 
@@ -182,6 +183,7 @@ audit_labels! {
         TokenIssue => "token_issue" | "token-issue",
         TokenRevoke => "token_revoke" | "token-revoke",
         Attach => "attach",
+        ReceiptLinkMigration => "receipt_link_migration",
     }
 }
 
@@ -257,6 +259,8 @@ pub struct AuditLogRow {
     pub token_jti: Option<String>,
     pub hash_version: HashVersion,
     client_hint: Option<ClientHint>,
+    undo_of: Option<receipts::ReceiptId>,
+    related_posting: Option<TransactionId>,
 }
 
 impl AuditLogRow {
@@ -290,10 +294,14 @@ fn row_hash(row: &AuditLogRow) -> Result<String, CliError> {
         fields.push(serde_json::json!(row.agent_uri));
         fields.push(serde_json::json!(row.token_jti));
     }
-    if row.hash_version == HashVersion::V5 {
+    if row.hash_version.includes_client_hint() {
         fields.push(serde_json::json!(
             row.client_hint().map(ClientHint::hash_fields)
         ));
+    }
+    if row.hash_version.includes_receipt_links() {
+        fields.push(serde_json::json!(row.undo_of));
+        fields.push(serde_json::json!(row.related_posting));
     }
     let canonical = serde_json::to_vec(&fields)
         .map_err(|e| CliError::Database(format!("cannot encode audit row: {e}")))?;
@@ -320,6 +328,8 @@ fn read_v1_audit_row(row: &rusqlite::Row<'_>, id: i64) -> rusqlite::Result<Audit
         token_jti: None,
         hash_version: HashVersion::V1,
         client_hint: None,
+        undo_of: None,
+        related_posting: None,
     })
 }
 
@@ -333,11 +343,13 @@ fn read_audit_row_with_id(row: &rusqlite::Row<'_>, id: i64) -> rusqlite::Result<
     result.token_jti = row.get(12)?;
     result.hash_version = row.get(13)?;
     result.client_hint = row.get(14)?;
+    result.undo_of = row.get(15)?;
+    result.related_posting = row.get(16)?;
     let has_identity = result.agent_uri.is_some();
     if has_identity != result.token_jti.is_some()
         || (has_identity && !result.hash_version.includes_identity())
         || (result.client_hint.is_some()
-            && (has_identity || result.hash_version != HashVersion::V5))
+            && (has_identity || !result.hash_version.includes_client_hint()))
     {
         return Err(rusqlite::Error::FromSqlConversionFailure(
             14,
@@ -365,9 +377,14 @@ const AUDIT_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity
 
 fn audit_columns(schema: i64) -> String {
     match schema {
-        super::schema::CLIENT_HINT_SCHEMA_VERSION.. => format!("{AUDIT_COLUMNS}, client_hint"),
-        13.. => format!("{AUDIT_COLUMNS}, NULL"),
-        _ => format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1, NULL"),
+        super::schema::RECEIPT_SCHEMA_VERSION.. => {
+            format!("{AUDIT_COLUMNS}, client_hint, undo_of, related_posting")
+        }
+        super::schema::CLIENT_HINT_SCHEMA_VERSION.. => {
+            format!("{AUDIT_COLUMNS}, client_hint, NULL, NULL")
+        }
+        13.. => format!("{AUDIT_COLUMNS}, NULL, NULL, NULL"),
+        _ => format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1, NULL, NULL, NULL"),
     }
 }
 
@@ -487,6 +504,10 @@ pub(super) fn verify_hash_chain_at(
             "audit hash chain tail missing after row #{last_id} (expected row #{sequence})"
         )));
     }
+    if version >= super::schema::RECEIPT_SCHEMA_VERSION {
+        receipts::verify_legacy_links(reader)?;
+        receipts::verify_links(reader)?;
+    }
     Ok(VerifiedAuditChain(head))
 }
 
@@ -506,6 +527,25 @@ fn in_savepoint<T>(
 }
 
 #[derive(Clone, Copy)]
+enum AuditLinks {
+    None,
+    Posting(TransactionId),
+    Reversal(TransactionId, Option<receipts::ReceiptId>),
+    Archive(receipts::ReceiptId),
+}
+
+impl AuditLinks {
+    const fn columns(self) -> (Option<receipts::ReceiptId>, Option<TransactionId>) {
+        match self {
+            Self::None => (None, None),
+            Self::Posting(posting) => (None, Some(posting)),
+            Self::Reversal(posting, undo_of) => (undo_of, Some(posting)),
+            Self::Archive(undo_of) => (Some(undo_of), None),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct AuditChange<'a> {
     company_slug: Option<&'a crate::db::companies::CompanySlug>,
     entity: AuditEntity,
@@ -517,6 +557,15 @@ struct AuditChange<'a> {
 /// Appends one immutable row to `audit_log`. Private: callers reach it only
 /// through the audited mutation functions below, never directly.
 fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(), CliError> {
+    record_with_links(conn, actor, change, AuditLinks::None)
+}
+
+fn record_with_links(
+    conn: &Connection,
+    actor: &Actor,
+    change: AuditChange<'_>,
+    links: AuditLinks,
+) -> Result<(), CliError> {
     let AuditChange {
         company_slug,
         entity,
@@ -537,7 +586,9 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         .optional()?
         .unwrap_or_else(|| GENESIS_HASH.to_string());
     let version = HashVersion::for_schema(super::schema::get_schema_version(ReadConn::new(conn))?);
-    let has_client_hint_column = version == HashVersion::V5;
+    let has_client_hint_column = version.includes_client_hint();
+    let has_link_columns = version.includes_receipt_links();
+    let (undo_of, related_posting) = links.columns();
     let row = AuditLogRow {
         id,
         changed_at,
@@ -553,6 +604,8 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         agent_uri: actor.agent_uri().map(str::to_owned),
         token_jti: actor.token_jti().map(str::to_owned),
         hash_version: version,
+        undo_of,
+        related_posting,
         client_hint: if has_client_hint_column {
             actor.client_hint().cloned()
         } else {
@@ -577,11 +630,12 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
         row.token_jti,
         version,
     ];
-    let (column, placeholder) = if has_client_hint_column {
-        (", client_hint", ", ?15")
-    } else {
-        ("", "")
+    let (column, placeholder) = match (has_client_hint_column, has_link_columns) {
+        (true, true) => (", client_hint, undo_of, related_posting", ", ?15, ?16, ?17"),
+        (true, false) => (", client_hint", ", ?15"),
+        _ => ("", ""),
     };
+    let links: [&dyn rusqlite::ToSql; 2] = [&row.undo_of, &row.related_posting];
     conn.execute(
         &format!(
             "INSERT INTO audit_log ({AUDIT_COLUMNS}{column})
@@ -591,7 +645,8 @@ fn record(conn: &Connection, actor: &Actor, change: AuditChange<'_>) -> Result<(
             bindings
                 .iter()
                 .copied()
-                .chain(has_client_hint_column.then_some(&row.client_hint as &dyn rusqlite::ToSql)),
+                .chain(has_client_hint_column.then_some(&row.client_hint as &dyn rusqlite::ToSql))
+                .chain(links.into_iter().take(if has_link_columns { 2 } else { 0 })),
         ),
     )?;
     Ok(())
@@ -936,7 +991,7 @@ pub(super) fn record_proposal_resolution(
     let snapshot_error = |error: serde_json::Error| CliError::Database(error.to_string());
     let before_snapshot = before.audit_snapshot().map_err(snapshot_error)?;
     let after_snapshot = after.audit_snapshot().map_err(snapshot_error)?;
-    record(
+    record_with_links(
         conn,
         actor,
         AuditChange {
@@ -949,6 +1004,7 @@ pub(super) fn record_proposal_resolution(
                 Some(&snapshot(&after_snapshot)),
             ),
         },
+        transaction_id.map_or(AuditLinks::None, AuditLinks::Posting),
     )?;
     let (uri, jti) = resolution.by.columns();
     let updated = conn.execute(
@@ -1659,7 +1715,7 @@ fn correlate_partner(
         params![updated, partner_id],
     )?;
 
-    record(
+    record_with_links(
         tx.connection(),
         actor,
         AuditChange {
@@ -1677,10 +1733,52 @@ fn correlate_partner(
                 }))),
             ),
         },
+        AuditLinks::Posting(new_txn_id),
     )?;
 
     Ok(())
 }
+
+/// A ledger condition that prevents reversal of an existing posting.
+#[derive(Debug)]
+pub enum ReversalBlock {
+    /// The original posting is missing from the requested company.
+    PostingMissing {
+        transaction: TransactionId,
+        company: super::companies::CompanySlug,
+    },
+    /// An audited reversal already exists.
+    AlreadyReversed {
+        transaction: TransactionId,
+        reversal: TransactionId,
+    },
+    /// An original entry or clearing is reconciled.
+    Reconciled(TransactionId),
+    /// The posting changed the investment lot ledger.
+    InvestmentTrade,
+}
+
+impl std::fmt::Display for ReversalBlock {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PostingMissing { transaction, company } => {
+                write!(formatter, "transaction {transaction} not found in company '{company}'")
+            }
+            Self::AlreadyReversed { transaction, reversal } => {
+                write!(formatter, "transaction #{transaction} is already reversed by #{reversal}")
+            }
+            Self::Reconciled(transaction) => write!(
+                formatter,
+                "transaction #{transaction} has reconciled clearings and cannot be reversed"
+            ),
+            Self::InvestmentTrade => formatter.write_str(
+                "investment trades cannot use txn reverse: a monetary reversal would not restore lot quantities; trade corrections are not supported yet",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReversalBlock {}
 
 /// Inputs for an atomic, audited reversal of a transaction in one company.
 pub struct ReverseTransactionParams<'a> {
@@ -1733,7 +1831,13 @@ pub fn reverse_transaction(
     p: &ReverseTransactionParams<'_>,
 ) -> Result<super::transactions::PostResult, CliError> {
     grant.mutate("sp_reverse", |tx, actor| {
-        reverse_in_scope(tx, actor, p, None)
+        reverse_in_scope(tx, actor, p, None).map_err(|error| match error {
+            CliError::ReversalBlocked(block @ ReversalBlock::PostingMissing { .. }) => {
+                CliError::NotFound(block.to_string())
+            }
+            CliError::ReversalBlocked(block) => CliError::Validation(block.to_string()),
+            error => error,
+        })
     })
 }
 
@@ -1743,11 +1847,16 @@ fn reverse_in_scope(
     p: &ReverseTransactionParams<'_>,
     undo_of: Option<receipts::ReceiptId>,
 ) -> Result<super::transactions::PostResult, CliError> {
-    use super::transactions::{PostResult, PostTransactionParams, get_transaction};
+    use super::transactions::{PostResult, PostTransactionParams, find_transaction};
 
     let conn = tx.connection();
     let company = Company::bind(tx.read(), p.company_slug.clone())?;
-    let (original, entries) = get_transaction(&company, p.id)?;
+    let (original, entries) = find_transaction(&company, p.id)?.ok_or_else(|| {
+        CliError::ReversalBlocked(ReversalBlock::PostingMissing {
+            transaction: p.id,
+            company: p.company_slug.clone(),
+        })
+    })?;
     reject_investment_reversal(conn, p.id)?;
     let mut original_metadata: serde_json::Value = original
         .metadata
@@ -1757,10 +1866,12 @@ fn reverse_in_scope(
             || serde_json::json!({}),
             metadata::NormalizedMetadata::into_value,
         );
-    if let Some(result) = existing_reversal(conn, p, &original_metadata)? {
+    if let Some(result) = existing_reversal(&company, p)? {
         return Ok(result);
     }
-    let date = undo_of.map_or(p.date, |_| p.date.max(original.date));
+    let date = undo_of.map_or(p.date, |_| {
+        receipts::UndoPostingDate::from((p.date, original.date)).into()
+    });
     validate_reversal(conn, p.id, date, original.date)?;
     let description = p.description.map_or_else(
         || format!("Reversal of #{}: {}", p.id, original.description),
@@ -1808,7 +1919,7 @@ fn reverse_in_scope(
         after["undo_of"] = serde_json::json!(undo_of);
         after["source_reference"] = serde_json::json!(original.reference);
     }
-    record(
+    record_with_links(
         conn,
         actor,
         AuditChange {
@@ -1823,45 +1934,40 @@ fn reverse_in_scope(
                 Some(&snapshot(&after)),
             ),
         },
+        AuditLinks::Reversal(reversal_id, undo_of),
     )?;
     Ok(result)
 }
 
 /// Only a matching explicit reference can reuse the existing linked reversal.
 fn existing_reversal(
-    conn: &Connection,
+    company: &Company<'_>,
     p: &ReverseTransactionParams<'_>,
-    original_metadata: &serde_json::Value,
 ) -> Result<Option<super::transactions::PostResult>, CliError> {
-    use super::transactions::{PostResult, get_transaction};
-    if let Some(reversal_id) = original_metadata
-        .get("reversed_by")
-        .filter(|v| !v.is_null())
-    {
-        if let (Some(id), Some(reference)) = (reversal_id.as_i64(), p.reference) {
-            let id: TransactionId = id.try_into()?;
-            let company = Company::bind(ReadConn::new(conn), p.company_slug.clone())?;
-            let (reversal, _) = get_transaction(&company, id)?;
-            let reverse_meta: Option<serde_json::Value> = reversal
-                .metadata
-                .as_deref()
-                .and_then(|raw| serde_json::from_str(raw).ok());
-            if reversal.reference.as_deref() == Some(reference)
-                && reverse_meta
-                    .as_ref()
-                    .and_then(|v| v.get("reverses"))
-                    .and_then(serde_json::Value::as_i64)
-                    == Some(p.id.get())
-            {
-                return Ok(Some(PostResult::Skipped(id)));
-            }
+    use super::transactions::PostResult;
+    let reversal: Option<TransactionId> = company
+        .read()
+        .query_row(
+            "SELECT related_posting FROM audit_log WHERE company_slug = ?1
+           AND entity = 'transaction' AND action = 'reverse'
+           AND entity_id = CAST(?2 AS TEXT) ORDER BY id DESC LIMIT 1",
+            params![company.slug(), p.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(reversal) = reversal else {
+        return Ok(None);
+    };
+    if let Some(reference) = p.reference {
+        let (posted, _) = super::transactions::get_transaction(company, reversal)?;
+        if posted.reference.as_deref() == Some(reference) {
+            return Ok(Some(PostResult::Skipped(reversal)));
         }
-        return Err(CliError::Validation(format!(
-            "transaction #{} is already reversed by #{reversal_id}",
-            p.id
-        )));
     }
-    Ok(None)
+    Err(CliError::ReversalBlocked(ReversalBlock::AlreadyReversed {
+        transaction: p.id,
+        reversal,
+    }))
 }
 
 /// Check dates and individual clearings, including partial reconciliations.
@@ -1883,9 +1989,7 @@ fn validate_reversal(
         |row| row.get(0),
     )?;
     if reconciled {
-        return Err(CliError::Validation(format!(
-            "transaction #{id} has reconciled clearings and cannot be reversed"
-        )));
+        return Err(CliError::ReversalBlocked(ReversalBlock::Reconciled(id)));
     }
     Ok(())
 }
@@ -2917,9 +3021,7 @@ fn reject_investment_reversal(conn: &Connection, id: TransactionId) -> Result<()
         |row| row.get(0),
     )?;
     if investment {
-        return Err(CliError::Validation(
-            "investment trades cannot use txn reverse: a monetary reversal would not restore lot quantities; trade corrections are not supported yet".into(),
-        ));
+        return Err(CliError::ReversalBlocked(ReversalBlock::InvestmentTrade));
     }
     Ok(())
 }
@@ -2979,6 +3081,57 @@ mod tests {
         assert_eq!(records[0].action, AuditAction::Attach);
         assert_eq!(serde_json::json!(records[0].action), "attach");
         verify_hash_chain(db.read()).map(|_| ())
+    }
+
+    #[test]
+    fn receipt_snapshot_errors_and_hashes_cover_typed_links() -> Result<(), CliError> {
+        let db = seed();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO transactions (company_slug, description, currency, date)
+             VALUES (?1, 'Linked posting', 'USD', '2026-01-02')",
+            [&*TEST_COMPANY],
+        )?;
+        let linked: TransactionId = conn.last_insert_rowid().try_into()?;
+        let actor = fixture_actor("bookkeeper");
+        record_with_links(
+            conn,
+            &actor,
+            AuditChange {
+                company_slug: Some(&TEST_COMPANY),
+                entity: AuditEntity::Transaction,
+                entity_id: "1",
+                action: AuditAction::Reverse,
+                snapshots: (Some("{}"), Some("{invalid")),
+            },
+            AuditLinks::Reversal(linked, None),
+        )?;
+        verify_hash_chain(db.read())?;
+        let receipts = receipts::list_receipts(
+            &db,
+            &TEST_COMPANY,
+            receipts::AuditCursor::default(),
+            receipts::ReceiptPageLimit::default(),
+        );
+        assert!(
+            matches!(receipts, Err(CliError::Database(message)) if message.contains("invalid after snapshot"))
+        );
+
+        assert!(
+            conn.execute("UPDATE audit_log SET related_posting = 1", [])
+                .is_err()
+        );
+        conn.execute_batch("DROP TRIGGER protect_audit_update;")?;
+        assert!(
+            conn.execute("UPDATE audit_log SET related_posting = 999", [])
+                .is_err()
+        );
+        conn.execute("UPDATE audit_log SET related_posting = 1", [])?;
+        assert!(matches!(
+            verify_hash_chain(db.read()),
+            Err(CliError::Database(message)) if message.contains("audit hash chain broken")
+        ));
+        Ok(())
     }
 
     #[test]
@@ -3502,7 +3655,6 @@ mod tests {
         )
         .expect("insert partner");
         let partner_id = conn.last_insert_rowid();
-
         let actor = fixture_actor("tester");
         savepoint::with_audited_tx(conn, "sp_correlate_fixture", |tx| {
             correlate_partner(

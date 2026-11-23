@@ -5,14 +5,15 @@ use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{ReceiptEvent, ReceiptId, posting_creation};
+use super::{ReceiptEvent, ReceiptId, ReceiptTarget, posting_creation};
 use crate::db::audit::{
-    AuditAction, AuditChange, AuditEntity, ReverseTransactionParams, audit_columns, read_audit_row,
-    record, reverse_in_scope, savepoint::AuditedTx,
+    AuditAction, AuditChange, AuditEntity, AuditLinks, ReversalBlock, ReverseTransactionParams,
+    audit_columns, read_audit_row, record_with_links, reverse_in_scope, savepoint::AuditedTx,
 };
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::ReadConn;
 use crate::db::ids::TransactionId;
+use crate::db::periods::ClosedPostingPeriod;
 use crate::db::transactions::PostResult;
 use crate::db::{Actor, accounts};
 use crate::error::CliError;
@@ -25,7 +26,10 @@ pub enum ReceiptUndoError {
     /// This kind of change has no supported undo.
     Unsupported(ReceiptId),
     /// The affected ledger state no longer allows a safe undo.
-    Ineligible { receipt: ReceiptId, reason: String },
+    Ineligible {
+        receipt: ReceiptId,
+        reason: UndoIneligibility,
+    },
 }
 
 impl fmt::Display for ReceiptUndoError {
@@ -44,6 +48,49 @@ impl std::error::Error for ReceiptUndoError {}
 impl From<ReceiptUndoError> for CliError {
     fn from(error: ReceiptUndoError) -> Self {
         Self::ReceiptUndo(error)
+    }
+}
+
+/// A current ledger condition that prevents immediate receipt undo.
+#[derive(Debug)]
+pub enum UndoIneligibility {
+    /// The mirror would land in a closed posting period.
+    PeriodLocked(ClosedPostingPeriod),
+    /// The posting itself cannot be reversed.
+    ReversalBlocked(ReversalBlock),
+    /// A newer audit event created an account with this code.
+    NewerAccountCreation(AccountCode),
+    /// There is no active account with this code.
+    AccountNotActive(AccountCode),
+}
+
+impl fmt::Display for UndoIneligibility {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PeriodLocked(error) => error.fmt(formatter),
+            Self::ReversalBlocked(error) => error.fmt(formatter),
+            Self::NewerAccountCreation(code) => {
+                write!(formatter, "account '{code}' has a newer creation")
+            }
+            Self::AccountNotActive(code) => {
+                write!(formatter, "account '{code}' is no longer active")
+            }
+        }
+    }
+}
+
+/// A mirror cannot be dated earlier than the posting it reverses.
+pub(in crate::db::audit) struct UndoPostingDate(chrono::NaiveDate);
+
+impl From<(chrono::NaiveDate, chrono::NaiveDate)> for UndoPostingDate {
+    fn from((requested, original): (chrono::NaiveDate, chrono::NaiveDate)) -> Self {
+        Self(requested.max(original))
+    }
+}
+
+impl From<UndoPostingDate> for chrono::NaiveDate {
+    fn from(date: UndoPostingDate) -> Self {
+        date.0
     }
 }
 
@@ -118,20 +165,19 @@ fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget,
                 scope.slug()
             ))
         })?;
-    match (event.entity, event.action) {
-        (AuditEntity::Account, AuditAction::Create) => {
-            Ok(UndoTarget::Account(account_code(&event.entity_id)?))
+    match (event.target(), event.action()) {
+        (ReceiptTarget::Account(code), AuditAction::Create) => {
+            Ok(UndoTarget::Account(code.clone()))
         }
-        (AuditEntity::Proposal, AuditAction::ProposalApprove) => {
-            if let Some(id) = event.related_posting
-                && posting_creation(reader, scope.slug(), id, event.id)?.is_some()
+        (ReceiptTarget::Proposal(_), AuditAction::ProposalApprove) => {
+            if let Some(id) = event.related_posting()
+                && posting_creation(reader, scope.slug(), id, event.id())?.is_some()
             {
                 return Ok(UndoTarget::Posting(id));
             }
             Err(ReceiptUndoError::Unsupported(receipt).into())
         }
-        (AuditEntity::Transaction, AuditAction::Create) => {
-            let id: TransactionId = event.entity_id.parse().map_err(invalid_stored_target)?;
+        (ReceiptTarget::Transaction(id), AuditAction::Create) => {
             let grouped = reader.query_row(
                 "SELECT EXISTS(SELECT 1 FROM audit_receipt_postings
                  WHERE company_slug = ?1 AND posting_id = ?2 AND id > ?3)",
@@ -141,14 +187,10 @@ fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget,
             if grouped {
                 return Err(ReceiptUndoError::Unsupported(receipt).into());
             }
-            Ok(UndoTarget::Posting(id))
+            Ok(UndoTarget::Posting(*id))
         }
         _ => Err(ReceiptUndoError::Unsupported(receipt).into()),
     }
-}
-
-fn account_code(value: &str) -> Result<AccountCode, CliError> {
-    AccountCode::new(value).map_err(invalid_stored_target)
 }
 
 fn invalid_stored_target(error: impl fmt::Display) -> CliError {
@@ -166,8 +208,7 @@ fn recorded_outcome(
         .query_row(
             &format!(
                 "SELECT {columns} FROM audit_log
-         WHERE company_slug = ?1 AND action IN ('reverse', 'account_archive')
-           AND json_extract(CASE WHEN json_valid(after) THEN after END, '$.undo_of') = ?2"
+         WHERE company_slug = ?1 AND undo_of = ?2"
             ),
             params![company, receipt],
             read_audit_row,
@@ -176,13 +217,15 @@ fn recorded_outcome(
         .map(ReceiptEvent::try_from)
         .transpose()?;
     let Some(event) = event else { return Ok(None) };
-    let undo_receipt = event.id.get().try_into()?;
-    match (target, event.entity, event.action) {
-        (UndoTarget::Posting(transaction), AuditEntity::Transaction, AuditAction::Reverse)
-            if event.entity_id == transaction.to_string() =>
-        {
+    let undo_receipt = ReceiptId::from(event.id());
+    match (target, event.target(), event.action()) {
+        (
+            UndoTarget::Posting(transaction),
+            ReceiptTarget::Transaction(recorded),
+            AuditAction::Reverse,
+        ) if recorded == transaction => {
             let reversal = event
-                .related_posting
+                .related_posting()
                 .ok_or_else(|| invalid_stored_target("missing reversal"))?;
             Ok(Some(UndoOutcome::Reversed {
                 transaction: *transaction,
@@ -190,14 +233,14 @@ fn recorded_outcome(
                 undo_receipt,
             }))
         }
-        (UndoTarget::Account(account), AuditEntity::Account, AuditAction::AccountArchive)
-            if event.entity_id == account.as_str() =>
-        {
-            Ok(Some(UndoOutcome::Archived {
-                account: account.clone(),
-                undo_receipt,
-            }))
-        }
+        (
+            UndoTarget::Account(account),
+            ReceiptTarget::Account(recorded),
+            AuditAction::AccountArchive,
+        ) if recorded == account => Ok(Some(UndoOutcome::Archived {
+            account: account.clone(),
+            undo_receipt,
+        })),
         _ => Err(invalid_stored_target("undo outcome does not match receipt")),
     }
 }
@@ -226,10 +269,13 @@ fn reverse_posting(
         Ok(PostResult::Skipped(_)) => Err(invalid_stored_target(
             "owner reversal was unexpectedly skipped",
         )),
-        Err(CliError::Validation(reason) | CliError::NotFound(reason)) => {
-            Err(ineligible(receipt, reason))
+        Err(CliError::PeriodLocked(error)) => {
+            Err(ineligible(receipt, UndoIneligibility::PeriodLocked(error)))
         }
-        Err(CliError::Bean(error)) => Err(ineligible(receipt, error.to_string())),
+        Err(CliError::ReversalBlocked(error)) => Err(ineligible(
+            receipt,
+            UndoIneligibility::ReversalBlocked(error),
+        )),
         Err(error) => Err(error),
     }
 }
@@ -241,51 +287,53 @@ fn archive_account(
     receipt: ReceiptId,
     code: &AccountCode,
 ) -> Result<(), CliError> {
-    let code = code.as_str();
     let company = scope.slug();
     let latest_creation: Option<ReceiptId> = tx
         .read()
         .query_row(
             "SELECT id FROM audit_log WHERE company_slug = ?1 AND entity = 'account'
          AND entity_id = ?2 AND action = 'create' ORDER BY id DESC LIMIT 1",
-            params![company, code],
+            params![company, code.as_str()],
             |row| row.get(0),
         )
         .optional()?;
-    if latest_creation != Some(receipt) {
+    if latest_creation.is_some_and(|latest| latest > receipt) {
         return Err(ineligible(
             receipt,
-            format!("account '{code}' has a newer creation"),
+            UndoIneligibility::NewerAccountCreation(code.clone()),
         ));
     }
-    accounts::require_active(scope, code).map_err(|error| match error {
-        CliError::NotFound(reason) | CliError::Validation(reason) => ineligible(receipt, reason),
-        _ => error,
-    })?;
+    if accounts::find_status(scope, code.as_str())? != Some(accounts::AccountStatus::Active) {
+        return Err(ineligible(
+            receipt,
+            UndoIneligibility::AccountNotActive(code.clone()),
+        ));
+    }
 
     let conn = tx.connection();
-    record(
+    record_with_links(
         conn,
         actor,
         AuditChange {
             company_slug: Some(company),
             entity: AuditEntity::Account,
-            entity_id: code,
+            entity_id: code.as_str(),
             action: AuditAction::AccountArchive,
             snapshots: (
                 Some(&json!({ "archived": false }).to_string()),
                 Some(&json!({ "archived": true, "undo_of": receipt }).to_string()),
             ),
         },
+        AuditLinks::Archive(receipt),
     )?;
     conn.execute(
         "UPDATE accounts SET archived = 1 WHERE company_slug = ?1 AND code = ?2",
-        params![company, code],
+        params![company, code.as_str()],
     )?;
     Ok(())
 }
 
-fn ineligible(receipt: ReceiptId, reason: String) -> CliError {
+fn ineligible(receipt: ReceiptId, reason: UndoIneligibility) -> CliError {
     ReceiptUndoError::Ineligible { receipt, reason }.into()
 }
 
@@ -305,7 +353,7 @@ pub(in crate::db) fn verify_archives(reader: ReadConn<'_>) -> Result<(), CliErro
                  a.code IS NULL OR event.agent_uri IS NULL
                  OR NOT EXISTS (
                      SELECT 1 FROM audit_log original
-                     WHERE original.id = json_extract(event.after, '$.undo_of')
+                     WHERE original.id = event.undo_of
                        AND original.id < event.id AND original.company_slug = event.company_slug
                        AND original.entity = 'account' AND original.entity_id = event.entity_id
                        AND original.action = 'create'

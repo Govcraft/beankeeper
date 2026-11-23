@@ -295,7 +295,7 @@ fn verify_reports_first_modified_hash_link_for_each_canonical_field() -> TestRes
         "company_slug = NULL",
         "entity = 'budget'",
         "entity_id = 'other'",
-        "action = 'correlate'",
+        "action = 'metadata_set'",
         "before = '{}'",
         "after = '{}'",
         "prev_hash = row_hash",

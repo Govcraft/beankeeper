@@ -267,10 +267,11 @@ fn post_with_source(
     {
         super::proposals::check_reference(reader, p.company_slug, reference)?;
     }
+    let owner_undo = matches!(posting, Posting::Reversal(reversal) if reversal.is_owner_undo());
     if !matches!(
         posting,
         Posting::Approved(_) | Posting::ApprovedStatement(_)
-    ) && !matches!(posting, Posting::Reversal(reversal) if reversal.is_owner_undo())
+    ) && !owner_undo
     {
         super::spend_limits::check(reader, p)?;
     }
@@ -290,7 +291,14 @@ fn post_with_source(
         };
         build_journal_with_accounts(reader, p, source, accounts)?
     };
-    let period = super::periods::check_posting(tx, p.company_slug, journal.date())?;
+    let period =
+        super::periods::check_posting(tx, p.company_slug, journal.date()).map_err(|error| {
+            if owner_undo {
+                error
+            } else {
+                super::periods::ClosedPostingPeriod::public_error(error)
+            }
+        })?;
     let validated = ValidatedPosting {
         journal,
         period,
@@ -735,7 +743,21 @@ pub fn get_transaction(
     company: &Company<'_>,
     id: TransactionId,
 ) -> Result<(TransactionRow, Vec<EntryRow>), CliError> {
+    find_transaction(company, id)?.ok_or_else(|| missing_transaction(company, id))
+}
+
+pub(super) fn find_transaction(
+    company: &Company<'_>,
+    id: TransactionId,
+) -> Result<Option<(TransactionRow, Vec<EntryRow>)>, CliError> {
     read_transaction_by(company.read(), company.slug(), id, decode_transaction)
+}
+
+fn missing_transaction(company: &Company<'_>, id: TransactionId) -> CliError {
+    CliError::NotFound(format!(
+        "transaction {id} not found in company '{}'",
+        company.slug()
+    ))
 }
 
 /// Read the exact stored date alongside the typed row when checking audit bytes.
@@ -746,7 +768,8 @@ pub(super) fn get_transaction_for_audit(
     let ((txn, date_text), entries) =
         read_transaction_by(company.read(), company.slug(), id, |row| {
             Ok((decode_transaction(row)?, row.get(5)?))
-        })?;
+        })?
+        .ok_or_else(|| missing_transaction(company, id))?;
     Ok((txn, entries, date_text))
 }
 
@@ -771,7 +794,7 @@ fn read_transaction_by<T>(
     company: &CompanySlug,
     id: TransactionId,
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
-) -> Result<(T, Vec<EntryRow>), CliError> {
+) -> Result<Option<(T, Vec<EntryRow>)>, CliError> {
     let company_slug = company.as_str();
     let mut stmt = conn.prepare(
         "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti \
@@ -781,18 +804,12 @@ fn read_transaction_by<T>(
 
     let mut rows = stmt.query_map(params![company_slug, id], decode)?;
 
-    let txn = match rows.next() {
-        Some(row) => row?,
-        None => {
-            return Err(CliError::NotFound(format!(
-                "transaction {id} not found in company '{company_slug}'"
-            )));
-        }
+    let Some(row) = rows.next() else {
+        return Ok(None);
     };
-
+    let txn = row?;
     let entries = read_entries(conn, company, id)?;
-
-    Ok((txn, entries))
+    Ok(Some((txn, entries)))
 }
 
 /// Fetches the entries for a transaction in this company.

@@ -4,9 +4,8 @@ use std::{fmt, num::NonZeroU8, str::FromStr};
 
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use super::{AuditAction, AuditEntity, AuditLogRow, ClientHint, audit_columns, read_audit_row};
+use super::{AuditAction, audit_columns, read_audit_row};
 use crate::db::Db;
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::ReadConn;
@@ -15,9 +14,18 @@ use crate::error::CliError;
 
 pub use crate::db::ids::ReceiptId;
 
+mod event;
+mod links;
+pub use event::{
+    AccountSnapshot, PostingEntrySnapshot, PostingSnapshot, ProposalSnapshot, ProposalStatus,
+    ReceiptChange, ReceiptEvent, ReceiptTarget,
+};
 mod undo;
+pub(in crate::db) use links::{backfill_legacy_links, seal_legacy_links};
+pub(super) use links::{verify_legacy_links, verify_links};
+pub(super) use undo::UndoPostingDate;
 pub(in crate::db) use undo::verify_archives;
-pub use undo::{ReceiptUndoError, UndoOutcome, undo_receipt};
+pub use undo::{ReceiptUndoError, UndoIneligibility, UndoOutcome, undo_receipt};
 
 /// An exclusive position in the ledger's audit order. Zero starts at the beginning.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -160,94 +168,12 @@ impl AuditReceipt {
     /// Reference recorded on the primary change or its linked posting.
     #[must_use]
     pub fn source_reference(&self) -> Option<&str> {
-        self.change.source_reference.as_deref().or_else(|| {
+        self.change.source_reference().or_else(|| {
             self.posting
                 .as_ref()
-                .and_then(|event| event.source_reference.as_deref())
+                .and_then(ReceiptEvent::source_reference)
         })
     }
-}
-
-/// One immutable event as recorded in the audit trail.
-/// Snapshots are decoded JSON values. Historical text is returned as a string.
-#[derive(Debug, Serialize)]
-pub struct ReceiptEvent {
-    pub id: AuditRowId,
-    pub changed_at: String,
-    pub actor: String,
-    pub agent_uri: Option<String>,
-    pub token_jti: Option<String>,
-    pub client_hint: Option<ClientHint>,
-    pub entity: AuditEntity,
-    pub entity_id: String,
-    pub action: AuditAction,
-    pub before: Option<Value>,
-    pub after: Option<Value>,
-    pub source_reference: Option<String>,
-    pub related_posting: Option<TransactionId>,
-    pub undo_of: Option<ReceiptId>,
-}
-
-impl TryFrom<AuditLogRow> for ReceiptEvent {
-    type Error = CliError;
-
-    fn try_from(row: AuditLogRow) -> Result<Self, CliError> {
-        let before = row.before.map(decode_snapshot);
-        let after = row.after.map(decode_snapshot);
-        let source_reference = after
-            .iter()
-            .chain(before.iter())
-            .find_map(|snapshot| {
-                snapshot
-                    .get("source_reference")
-                    .and_then(Value::as_str)
-                    .or_else(|| snapshot.get("reference").and_then(Value::as_str))
-            })
-            .map(str::to_owned);
-        let relation = match row.action {
-            AuditAction::Reverse => Some("reversed_by"),
-            AuditAction::ProposalApprove => Some("transaction_id"),
-            AuditAction::Correlate => Some("correlated_with"),
-            _ => None,
-        };
-        let related_posting = relation
-            .and_then(|field| after.as_ref()?.get(field)?.as_i64())
-            .map(TransactionId::try_from)
-            .transpose()?;
-        let undo_of = if matches!(
-            row.action,
-            AuditAction::Reverse | AuditAction::AccountArchive
-        ) {
-            after
-                .as_ref()
-                .and_then(|value| value.get("undo_of"))
-                .and_then(Value::as_i64)
-                .map(ReceiptId::try_from)
-                .transpose()?
-        } else {
-            None
-        };
-        Ok(Self {
-            id: row.id.try_into()?,
-            changed_at: row.changed_at,
-            actor: row.actor,
-            agent_uri: row.agent_uri,
-            token_jti: row.token_jti,
-            client_hint: row.client_hint,
-            entity: row.entity,
-            entity_id: row.entity_id,
-            action: row.action,
-            before,
-            after,
-            source_reference,
-            related_posting,
-            undo_of,
-        })
-    }
-}
-
-fn decode_snapshot(text: String) -> Value {
-    serde_json::from_str(&text).unwrap_or(Value::String(text))
 }
 
 /// Start a receipt range for one company, capturing the committed audit head.
@@ -341,12 +267,12 @@ fn read_page(
                 });
             break;
         }
-        let id = row.id.try_into()?;
         let change = ReceiptEvent::try_from(row)?;
-        let posting = match change.action {
+        let id = ReceiptId::from(change.id());
+        let posting = match change.action() {
             AuditAction::Reverse | AuditAction::ProposalApprove => change
-                .related_posting
-                .map(|posting| posting_creation(reader, company, posting, change.id))
+                .related_posting()
+                .map(|posting| posting_creation(reader, company, posting, change.id()))
                 .transpose()?
                 .flatten(),
             _ => None,
@@ -376,9 +302,9 @@ fn posting_creation(
             &format!(
                 "SELECT {columns} FROM audit_log
                   WHERE company_slug = ?1 AND entity = 'transaction' AND action = 'create'
-                    AND entity_id = ?2 AND id < ?3 ORDER BY id DESC LIMIT 1"
+                    AND entity_id = CAST(?2 AS TEXT) AND id < ?3 ORDER BY id DESC LIMIT 1"
             ),
-            params![company, posting.to_string(), before],
+            params![company, posting, before],
             read_audit_row,
         )
         .optional()?

@@ -181,23 +181,35 @@ pub enum AccountStatus {
 /// # Errors
 /// Returns a not-found or storage error.
 pub fn account_status(company: &Company<'_>, code: &str) -> Result<AccountStatus, CliError> {
+    find_status(company, code)?.ok_or_else(|| {
+        CliError::NotFound(format!(
+            "account '{code}' not found in company '{}'",
+            company.slug()
+        ))
+    })
+}
+
+pub(super) fn find_status(
+    company: &Company<'_>,
+    code: &str,
+) -> Result<Option<AccountStatus>, CliError> {
     use rusqlite::OptionalExtension as _;
-    let archived: Option<bool> = company
+    Ok(company
         .read()
         .query_row(
             "SELECT archived FROM accounts WHERE company_slug = ?1 AND code = ?2",
             params![company.slug(), code],
-            |row| row.get(0),
+            |row| {
+                row.get::<_, bool>(0).map(|archived| {
+                    if archived {
+                        AccountStatus::Archived
+                    } else {
+                        AccountStatus::Active
+                    }
+                })
+            },
         )
-        .optional()?;
-    match archived {
-        Some(true) => Ok(AccountStatus::Archived),
-        Some(false) => Ok(AccountStatus::Active),
-        None => Err(CliError::NotFound(format!(
-            "account '{code}' not found in company '{}'",
-            company.slug()
-        ))),
-    }
+        .optional()?)
 }
 
 pub(crate) fn require_active(company: &Company<'_>, code: &str) -> Result<(), CliError> {
