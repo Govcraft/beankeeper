@@ -537,6 +537,7 @@ mutation tools are absent and cannot be called.
 | `inform_preference_show`, `inform_preference_set` | Read or save how often the owner hears about completed changes |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
+| `audit_receipts`, `audit_undo` | Read grouped changes and undo an eligible receipt under the owner's signed grant |
 
 MCP discovery publishes input schemas and read-only hints from the ledger
 operation catalog. Capability enforcement can restrict discovery further. Company-scoped tools require a `company` argument. `report` takes a `kind`
