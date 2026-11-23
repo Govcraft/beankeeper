@@ -116,6 +116,21 @@ impl From<IssuanceGrants> for Vec<String> {
 }
 
 impl IssuanceGrants {
+    pub(super) fn for_regular_issuance(
+        mode: WriteMode,
+        requested: &[String],
+    ) -> Result<Self, CliError> {
+        if requested
+            .iter()
+            .any(|grant| grant == Capability::Setup.path())
+        {
+            return Err(CliError::Usage(
+                "issue setup credentials through `bk setup begin`".into(),
+            ));
+        }
+        Self::try_from((mode, requested))
+    }
+
     pub(super) const fn mode(&self) -> WriteMode {
         self.mode
     }

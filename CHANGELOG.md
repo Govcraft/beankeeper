@@ -6,6 +6,15 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.38.0] - Unreleased
+
+### Added
+
+- Embedded hosts can stage a private replacement credential, then register it
+  and revoke the exact prior token in one owner-attributed transaction. Token
+  status by ID lets a host recover after interruption.
+  ([#256](https://github.com/Govcraft/beankeeper/issues/256))
+
 ## [0.37.0] - Unreleased
 
 ### Added
