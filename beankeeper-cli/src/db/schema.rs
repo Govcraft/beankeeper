@@ -1895,8 +1895,8 @@ mod tests {
                 grant,
                 &crate::db::CreateAccountParams {
                     company_slug: &"legacy".parse()?,
-                    code: "1000",
-                    name: "Cash",
+                    code: "1200",
+                    name: "New cash account",
                     account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None,
                 },
@@ -1907,7 +1907,7 @@ mod tests {
         assert_eq!(history()?, v25);
         let company = crate::db::companies::Company::bind(ReadConn::new(&conn), "legacy".parse()?)?;
         assert_eq!(
-            crate::db::accounts::account_status(&company, "1000")?,
+            crate::db::accounts::account_status(&company, "1200")?,
             crate::db::accounts::AccountStatus::Active
         );
         audit::receipts::verify_archives(ReadConn::new(&conn))?;
@@ -1951,7 +1951,8 @@ mod tests {
             assert!(conn.execute(sql, []).is_err(), "unprotected: {sql}");
         }
         let indexes: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'audit_log'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'audit_log'
+               AND name IN ('idx_audit_entity', 'idx_audit_company_time', 'idx_audit_action', 'idx_audit_agent')",
             [],
             |row| row.get(0),
         )?;

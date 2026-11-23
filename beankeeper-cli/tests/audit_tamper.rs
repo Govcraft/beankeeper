@@ -630,8 +630,7 @@ fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestR
     ledger.post_in(&"acme".parse()?, Currency::JPY, "sale-jpy")?;
     ledger.post_in(&other, Currency::USD, "other-sale")?;
 
-    let model = success(&ledger.verify()?)?;
-    let data = &model["data"];
+    let data = &success(&ledger.verify()?)?["data"];
     let counts = &data["row_counts"];
     let audit_count = ledger.count("audit_log")?;
     assert_eq!(
@@ -676,6 +675,7 @@ fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestR
         "spend_limits",
         "accounting",
         "creation_snapshots",
+        "account_archives",
         "transaction_links",
         "statement_batches",
         "foreign_keys",
