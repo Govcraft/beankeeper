@@ -21,16 +21,19 @@ pub use crate::db::audit::grant::{
 };
 pub(crate) use crate::db::audit::grant::{SetupOwner, StatementApprover};
 pub use crate::db::audit::identity_write::{
-    init_root, issue, issue_credential, issue_credential_with_mode, revoke,
+    commit_rotation, init_root, issue, issue_credential, issue_credential_with_mode,
+    prepare_rotation, revoke,
 };
 use crate::db::connection::ReadConn;
 use crate::error::CliError;
 use crate::operation::{Operation, Permission};
 
 mod delegation;
+mod rotation;
 mod write_mode;
 use delegation::DelegatedTrust;
 pub(crate) use delegation::StartupAuthority;
+pub use rotation::{CredentialStatus, PreparedRotation, TokenId, credential_status};
 use write_mode::IssuanceGrants;
 pub use write_mode::WriteMode;
 
@@ -487,7 +490,7 @@ pub(crate) fn prepare_credential(
     request: &IssueRequest<'_>,
     write_mode: WriteMode,
 ) -> Result<IssuedCredential, CliError> {
-    let grants = IssuanceGrants::try_from((write_mode, request.capabilities))?;
+    let grants = IssuanceGrants::for_regular_issuance(write_mode, request.capabilities)?;
     if request.public_key.is_some() == request.generate_key {
         return Err(CliError::Usage(
             "supply --public-key BASE64 or --generate-key".into(),
@@ -551,7 +554,7 @@ fn prepare_credential_for_agent(
         SigningKey::from_bytes(seed).map_err(|_| CliError::Database("invalid root key".into()))?;
     let uri = AgentUri::parse(&format!("agent://{root}/{scope}/{agent_id}"))
         .map_err(|e| CliError::Validation(e.to_string()))?;
-    let token_jti = "token".create_type_id::<V7>();
+    let token_jti = TokenId::PREFIX.create_type_id::<V7>();
     let claims = AttestationClaims::builder()
         .jti(token_jti.to_string())
         .agent_uri(uri.to_string())

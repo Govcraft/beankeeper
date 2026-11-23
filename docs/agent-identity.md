@@ -93,6 +93,30 @@ the default is `8h`. Issue output includes `agent_uri`, `token_jti`, `agent_key`
 The agent private key and complete token are never stored in the registry or
 audit snapshots. Store that seed securely if future signing is needed.
 
+## Rotate a managed credential in an embedded host
+
+The Rust `beankeeper_cli::identity` API lets a host replace a managed bearer
+under a live, verified owner credential with `ledger/admin`. Use a separate
+owner credential so it remains available while the managed credential changes.
+
+1. Parse the managed token's registry ID as a `TokenId` and call
+   `prepare_rotation` inside `Granted::<Admin>::with_db`. This signs the
+   replacement without changing the ledger.
+2. Durably stage `replacement_id()` and `token()` in private host storage.
+   Stage `generated_private_key()` too if you requested one and need it.
+3. In a fresh `Granted::<Admin>::with_db` call, pass the prepared rotation to
+   `commit_rotation`. Success commits registration, revocation of the prior
+   ID, and both audit entries together. The revocation entry includes the
+   replacement ID. Publish the staged credential after the call succeeds.
+4. After interruption, call `credential_status` with the staged ID on the
+   reopened ledger. If `Registered`, verify the staged bearer before publishing
+   it. If `Unregistered`, discard the stage and start a new rotation if still
+   needed. If `Revoked`, the rotation committed and the replacement was later
+   revoked. Registry status is independent of expiration.
+
+The ledger records the token IDs and public claims. The staged bearer and
+private key stay in the host's private storage.
+
 ## Enable capability enforcement
 
 Initialize the encrypted ledger and root, then issue the tokens you will need

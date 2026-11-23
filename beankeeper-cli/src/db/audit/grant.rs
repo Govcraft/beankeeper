@@ -212,3 +212,16 @@ impl<'a> Granted<'a, SetupOwner> {
         self.tx
     }
 }
+
+impl Granted<'_, Admin> {
+    pub(super) fn mutate_verified<T>(
+        self,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>, &Actor) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        AuditedTx::run(self.tx.read(), name, |tx| {
+            crate::identity::require_live_capability(tx.read(), self.actor, Capability::Admin)?;
+            run(tx, self.actor)
+        })
+    }
+}

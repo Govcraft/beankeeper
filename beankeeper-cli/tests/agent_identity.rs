@@ -7,14 +7,19 @@ use beankeeper_cli::db::CreateAccountParams;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 use agent_uri::AgentUri;
 use agent_uri_attestation::{AttestationClaims, Denylist, Issuer, SigningKey, Verifier};
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::db::{self, Actor, Db};
-use beankeeper_cli::identity::{self, Admin, Granted};
+use beankeeper_cli::identity::{
+    self, Admin, CredentialStatus, Granted, IssueRequest, IssuedCredential, PreparedRotation,
+    TokenId, WriteMode,
+};
 use chrono::Utc;
-use secrecy::SecretString;
+use mti::prelude::*;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -1026,6 +1031,304 @@ fn ttl_validation_has_exact_positive_bounds_and_encryption_is_required_for_keys(
                 .get::<_, i64>(0))?,
         0
     );
+    Ok(())
+}
+
+fn issue_for_rotation(
+    ledger: &Ledger,
+    name: &str,
+    capability: &str,
+) -> Result<IssuedCredential, Box<dyn Error>> {
+    let bootstrap = Actor::new("host-process".parse()?);
+    Ok(Granted::<Admin>::with_db(
+        &ledger.db,
+        &bootstrap,
+        |grant| {
+            identity::issue_credential(
+                grant,
+                &IssueRequest {
+                    name,
+                    capabilities: &[capability.into()],
+                    ttl: Duration::from_mins(15),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        },
+    )?)
+}
+
+fn prepare_for_rotation(
+    ledger: &Ledger,
+    actor: &Actor,
+    prior: TokenId,
+) -> Result<PreparedRotation, beankeeper_cli::error::CliError> {
+    Granted::<Admin>::with_db(&ledger.db, actor, |grant| {
+        identity::prepare_rotation(
+            grant,
+            prior,
+            &IssueRequest {
+                name: "managed",
+                capabilities: &["ledger/read".into(), "ledger/post".into()],
+                ttl: Duration::from_mins(15),
+                public_key: None,
+                generate_key: true,
+            },
+            WriteMode::Direct,
+        )
+    })
+}
+
+fn verified_actor(ledger: &Ledger, credential: &IssuedCredential) -> Result<Actor, Box<dyn Error>> {
+    let identity = identity::verify(ledger.db.read(), credential.token().expose_secret())?;
+    Ok(Actor::new("host-process".parse()?).with_identity(identity))
+}
+
+#[test]
+fn rotation_stages_private_material_and_recovers_by_id_after_commit() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.run(&["key", "init"], None)?;
+    let owner = issue_for_rotation(&ledger, "owner", "ledger/admin")?;
+    let prior = issue_for_rotation(&ledger, "managed", "ledger/read")?;
+    let prior_id = TokenId::try_from(prior.token_jti.clone())?;
+    assert!(prior.agent_uri.as_str().parse::<TokenId>().is_err());
+    assert!(TokenId::try_from("key".create_type_id::<V7>()).is_err());
+    let actor = verified_actor(&ledger, &owner)?;
+    let sibling = "token".create_type_id::<V7>();
+    ledger.raw()?.execute(
+        "INSERT INTO agent_tokens (jti, agent_uri, agent_key, capabilities, issued_at, expires_at)
+         SELECT ?1, agent_uri, agent_key, capabilities, issued_at, expires_at
+         FROM agent_tokens WHERE jti = ?2",
+        [sibling.as_str(), prior_id.as_str()],
+    )?;
+    let sibling = TokenId::try_from(sibling)?;
+    ledger.run(&["policy", "set", "--enforce", "on"], None)?;
+    let audit_count = ledger.count("audit_log")?;
+    let prepared = prepare_for_rotation(&ledger, &actor, prior_id.clone())?;
+    let competing = prepare_for_rotation(&ledger, &actor, prior_id.clone())?;
+    let staged_id = prepared.replacement_id().to_string();
+    let staged_bearer = prepared.token().clone();
+    let staged_key = prepared
+        .generated_private_key()
+        .ok_or("missing private key")?
+        .clone();
+    assert!(!format!("{prepared:?}").contains(staged_bearer.expose_secret()));
+    assert!(!format!("{prepared:?}").contains(staged_key.expose_secret()));
+    assert_eq!(ledger.count("audit_log")?, audit_count);
+    assert_eq!(
+        identity::credential_status(ledger.db.read(), prepared.replacement_id())?,
+        CredentialStatus::Unregistered
+    );
+    assert!(identity::verify(ledger.db.read(), staged_bearer.expose_secret()).is_err());
+    identity::verify(ledger.db.read(), prior.token().expose_secret())?;
+
+    Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
+        identity::commit_rotation(grant, &prepared)
+    })?;
+    assert!(matches!(
+        Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
+            identity::commit_rotation(grant, &competing)
+        }),
+        Err(beankeeper_cli::error::CliError::Validation(_))
+    ));
+    drop(prepared);
+    let reopened = Db::open_snapshot(&ledger.path, Some(&"test-only-passphrase".into()))?;
+    assert_eq!(
+        identity::credential_status(reopened.read(), &staged_id.parse()?)?,
+        CredentialStatus::Registered
+    );
+    assert_eq!(
+        identity::credential_status(reopened.read(), &prior_id)?,
+        CredentialStatus::Revoked
+    );
+    assert_eq!(
+        identity::credential_status(reopened.read(), &sibling)?,
+        CredentialStatus::Registered
+    );
+    assert_eq!(
+        identity::credential_status(reopened.read(), competing.replacement_id())?,
+        CredentialStatus::Unregistered
+    );
+    assert!(identity::verify(reopened.read(), prior.token().expose_secret()).is_err());
+    let replacement = identity::verify(reopened.read(), staged_bearer.expose_secret())?;
+    assert_eq!(replacement.jti(), staged_id);
+    assert!(replacement.allows_operation("txn.post")?);
+    assert_eq!(ledger.count("audit_log")?, audit_count + 2);
+    db::audit::verify_hash_chain(reopened.read())?;
+    assert_rotation_audit(
+        &reopened,
+        &owner,
+        &prior_id,
+        &staged_id,
+        &staged_bearer,
+        &staged_key,
+    )
+}
+
+fn assert_rotation_audit(
+    db: &Db,
+    owner: &IssuedCredential,
+    prior_id: &TokenId,
+    replacement_id: &str,
+    bearer: &SecretString,
+    key: &SecretString,
+) -> TestResult {
+    for (id, action) in [
+        (prior_id.as_str(), "token_revoke"),
+        (replacement_id, "token_issue"),
+    ] {
+        let (actor, uri, token, snapshot): (String, String, String, String) = db.read().query_row(
+            "SELECT actor, agent_uri, token_jti, after FROM audit_log
+                 WHERE entity_id = ?1 AND action = ?2",
+            [id, action],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(actor, "host-process");
+        assert_eq!(uri, owner.agent_uri.as_str());
+        assert_eq!(token, owner.token_jti.as_str());
+        assert!(!snapshot.contains(bearer.expose_secret()));
+        assert!(!snapshot.contains(key.expose_secret()));
+        if action == "token_revoke" {
+            let data: Value = serde_json::from_str(&snapshot)?;
+            assert_eq!(data["replacement_token_jti"], replacement_id);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rotation_rolls_back_issuance_when_revocation_audit_fails() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.run(&["key", "init"], None)?;
+    let owner = issue_for_rotation(&ledger, "owner", "ledger/admin")?;
+    let prior = issue_for_rotation(&ledger, "managed", "ledger/read")?;
+    let actor = verified_actor(&ledger, &owner)?;
+    let prepared = prepare_for_rotation(&ledger, &actor, prior.token_jti.clone().try_into()?)?;
+    let audit_count = ledger.count("audit_log")?;
+    let raw = ledger.raw()?;
+    raw.execute_batch(
+        "CREATE TRIGGER reject_rotation_revoke BEFORE INSERT ON audit_log
+         WHEN NEW.action = 'token_revoke'
+         BEGIN SELECT RAISE(ABORT, 'test revocation audit failure'); END",
+    )?;
+    let commit = || {
+        Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
+            identity::commit_rotation(grant, &prepared)
+        })
+    };
+    assert!(matches!(
+        commit(),
+        Err(beankeeper_cli::error::CliError::Sqlite(_))
+    ));
+    assert_eq!(ledger.count("audit_log")?, audit_count);
+    assert_eq!(ledger.count("agent_revocations")?, 0);
+    assert_eq!(
+        identity::credential_status(ledger.db.read(), prepared.replacement_id())?,
+        CredentialStatus::Unregistered
+    );
+    identity::verify(ledger.db.read(), prior.token().expose_secret())?;
+    db::audit::verify_hash_chain(ledger.db.read())?;
+
+    raw.execute_batch("DROP TRIGGER reject_rotation_revoke")?;
+    commit()?;
+    assert_eq!(ledger.count("audit_log")?, audit_count + 2);
+    Ok(())
+}
+
+#[test]
+fn rotation_requires_current_verified_admin_even_without_enforcement() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.run(&["key", "init"], None)?;
+    let admin = issue_for_rotation(&ledger, "owner", "ledger/admin")?;
+    let prior = issue_for_rotation(&ledger, "managed", "ledger/read")?;
+    let unnamed = Actor::new("host-process".parse()?);
+    let reader = verified_actor(&ledger, &prior)?;
+    let owner = verified_actor(&ledger, &admin)?;
+    let prior_id = TokenId::try_from(prior.token_jti.clone())?;
+    let prepared = prepare_for_rotation(&ledger, &owner, prior_id.clone())?;
+    let commit = |actor| {
+        Granted::<Admin>::with_db(&ledger.db, actor, |grant| {
+            identity::commit_rotation(grant, &prepared)
+        })
+    };
+    for (actor, code) in [(&unnamed, "UNAUTHORIZED"), (&reader, "FORBIDDEN")] {
+        assert_eq!(
+            prepare_for_rotation(&ledger, actor, prior_id.clone())
+                .err()
+                .ok_or("prepared without admin")?
+                .error_code(),
+            code
+        );
+        assert_eq!(
+            commit(actor)
+                .err()
+                .ok_or("committed without admin")?
+                .error_code(),
+            code
+        );
+    }
+    Granted::<Admin>::with_db(&ledger.db, &unnamed, |grant| {
+        identity::revoke(grant, admin.token_jti.as_str())
+    })?;
+    assert!(matches!(
+        commit(&owner),
+        Err(beankeeper_cli::error::CliError::Unauthorized(_))
+    ));
+    assert_eq!(
+        identity::credential_status(ledger.db.read(), prepared.replacement_id())?,
+        CredentialStatus::Unregistered
+    );
+    identity::verify(ledger.db.read(), prior.token().expose_secret())?;
+    Ok(())
+}
+
+#[test]
+fn rotation_rejects_foreign_or_expired_replacements_and_missing_prior_ids() -> TestResult {
+    use beankeeper_cli::error::CliError;
+
+    let ledger = Ledger::new()?;
+    ledger.run(&["key", "init"], None)?;
+    let owner = issue_for_rotation(&ledger, "owner", "ledger/admin")?;
+    let actor = verified_actor(&ledger, &owner)?;
+    let prior = issue_for_rotation(&ledger, "managed", "ledger/read")?;
+    let prior_id = TokenId::try_from(prior.token_jti.clone())?;
+    let foreign = Ledger::new()?;
+    foreign.run(&["key", "init"], None)?;
+    let foreign_owner = issue_for_rotation(&foreign, "owner", "ledger/admin")?;
+    let foreign_actor = verified_actor(&foreign, &foreign_owner)?;
+    let foreign_prepared = prepare_for_rotation(&foreign, &foreign_actor, prior_id.clone())?;
+
+    let expired = Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
+        identity::prepare_rotation(
+            grant,
+            prior_id,
+            &IssueRequest {
+                name: "managed",
+                capabilities: &["ledger/read".into()],
+                ttl: Duration::ZERO,
+                public_key: None,
+                generate_key: true,
+            },
+            WriteMode::Direct,
+        )
+    })?;
+    let missing = TokenId::try_from("token".create_type_id::<V7>())?;
+    let missing_prior = prepare_for_rotation(&ledger, &actor, missing)?;
+    let audit_count = ledger.count("audit_log")?;
+    let commit = |prepared| {
+        Granted::<Admin>::with_db(&ledger.db, &actor, |grant| {
+            identity::commit_rotation(grant, prepared)
+        })
+    };
+    assert!(matches!(
+        commit(&foreign_prepared),
+        Err(CliError::Validation(_))
+    ));
+    assert!(matches!(commit(&expired), Err(CliError::Validation(_))));
+    assert!(matches!(commit(&missing_prior), Err(CliError::NotFound(_))));
+    assert_eq!(ledger.count("audit_log")?, audit_count);
+    assert_eq!(ledger.count("agent_revocations")?, 0);
+    identity::verify(ledger.db.read(), prior.token().expose_secret())?;
     Ok(())
 }
 
