@@ -147,23 +147,34 @@ class ReleasePreflightTests(unittest.TestCase):
         self.run_check("--metadata-only")
 
     def test_feature_note_needs_no_version_bump(self):
-        original_manifest = self.manifest.read_bytes()
+        base_manifest = self.root / "base Cargo.toml"
+        shutil.copyfile(self.manifest, base_manifest)
         self.changelog.write_text(
             "## [Unreleased]\n\n### Added\n\n- A new feature.\n\n"
-            "## [0.21.0] - 2026-11-19\n"
+            "## [0.20.0] - 2026-11-19\n"
         )
         self.run_check("--metadata-only")
-        self.assertEqual(self.manifest.read_bytes(), original_manifest)
+        self.run_check("--metadata-only", "--base-manifest", base_manifest)
+
+    def test_release_pr_checks_dated_section_and_reports_proposed_tag(self):
+        base_manifest = self.root / "base Cargo.toml"
+        shutil.copyfile(self.manifest, base_manifest)
+        self.write_version("0.22.0")
+        self.binary.unlink()
+        args = ("--metadata-only", "--base-manifest", base_manifest)
+        for heading in ("## [0.21.0] - 2026-11-20", "## [0.22.0] - Unreleased"):
+            with self.subTest(heading=heading):
+                self.changelog.write_text(f"## [Unreleased]\n\n{heading}\n")
+                self.run_check(*args, error="needs a dated section headed ## [0.22.0]")
+        self.changelog.write_text("## [Unreleased]\n\n## [0.22.0] - 2026-11-20\n")
+        result = self.run_check(*args)
+        self.assertIn("Release metadata OK: bk 0.22.0 (beankeeper-cli-v0.22.0)", result.stdout)
 
     def test_metadata_only_requires_unreleased_heading(self):
         for heading in ("", "Mentions ## [Unreleased]", "### [Unreleased]", "## [Unreleased] extra"):
             with self.subTest(heading=heading):
                 self.changelog.write_text(f"{heading}\n## [0.21.0] - 2026-11-19\n")
                 self.run_check("--metadata-only", error="needs a section headed ## [Unreleased]")
-
-    def test_metadata_only_still_rejects_changelog_mismatch(self):
-        self.changelog.write_text("## [0.10.0]\n")
-        self.run_check("--metadata-only", error="needs a section headed ## [0.21.0]")
 
     def test_metadata_only_still_rejects_tag_mismatch(self):
         self.run_check("--metadata-only", "--tag", "wrong", error="must equal")
@@ -173,6 +184,10 @@ class ReleasePreflightTests(unittest.TestCase):
             (("--unknown",), "unknown option"),
             (("--tag",), "--tag requires a tag name"),
             (("--tag", ""), "--tag requires a tag name"),
+            (("--base-manifest",), "--base-manifest requires a path"),
+            (("--base-manifest", self.manifest), "--base-manifest requires --metadata-only"),
+            (("--metadata-only", "--base-manifest", self.manifest, "--tag", "beankeeper-cli-v0.21.0"),
+             "--base-manifest requires --metadata-only without --tag"),
             (("one", "two"), "provide only one binary path"),
             (("--metadata-only", self.binary), "cannot be combined"),
         ):

@@ -22,7 +22,7 @@ release preparation.
 
 ## Agent / contributor convention
 
-Feature and docs PRs add user-visible notes only under `## [Unreleased]`, grouped
+Add one line for each PR's user-visible change under `## [Unreleased]`, grouped
 by Added, Changed, and Fixed. Leave `[package].version` in both
 `beankeeper-cli/Cargo.toml` and `beankeeper/Cargo.toml` unchanged. Do not change
 `Cargo.lock` solely for a version bump or bump the version in
@@ -34,15 +34,14 @@ Keep the version assigned on `main`; do not resolve conflicts by inventing a new
 version or another numbered Unreleased section. Existing numbered sections dated
 `Unreleased` are historical records and remain until curated during release prep.
 
-PR and `main` CI run `scripts/check-release.sh --metadata-only`. This requires a
-stable CLI manifest version, a matching numbered changelog heading, and a
-`## [Unreleased]` heading. New work belongs in Unreleased even when the manifest's
-numbered section describes an earlier release or an already-assigned version.
+PR and `main` CI require `## [Unreleased]`. On PRs, CI compares the CLI manifest
+version with the base branch. A version change invokes release validation. CI
+reports the prospective `beankeeper-cli-vX.Y.Z` tag and requires a matching dated
+section. The tag workflow validates the actual tag after it is pushed.
 
 ## Prepare and confirm the release commit
 
-Prepare a release from merged `main` in a clean checkout. In one release-prep
-commit:
+The PM prepares a release PR from merged `main` in a clean checkout:
 
 1. Curate the notes under `## [Unreleased]` into the intended release contents.
 2. Choose the next CLI version using Semantic Versioning and bump it **once** in
@@ -54,7 +53,9 @@ commit:
    and intended release date. Keep an empty `## [Unreleased]` above it for the
    next development cycle. Curate any older provisional notes included in the
    release without duplicating them, and remove provisional catch-up wording.
-4. Merge the release-prep commit and confirm its checks pass before tagging.
+4. Run `scripts/check-release.sh --metadata-only --tag beankeeper-cli-vX.Y.Z`
+   with the intended tag. Merge the release PR once its checks pass, then
+   confirm the checks on the merged commit before tagging.
 
 Do not create a release tag from an undated section or one dated `Unreleased`.
 After release prep has merged, confirm the intended commit:
@@ -103,10 +104,10 @@ crates.io credentials. Building and fetching beforehand may download dependencie
 The packaging tests run offline and require `cargo fetch --locked` first.
 It checks version agreement, not source provenance: the clean tree, fresh build,
 and exact commit confirmation above are still required. It does not require the
-proposed tag to exist yet. `--metadata-only` skips the executable check so CI can
-check the manifest, its numbered heading, and the Unreleased heading on every PR
-and push to `main` without a build. Without `--tag`, this mode permits the existing
-numbered section to retain its historical `Unreleased` date.
+proposed tag to exist yet. `--metadata-only` skips the executable check. With no
+tag or base manifest, it checks the CLI manifest version and the `## [Unreleased]`
+heading. PR CI supplies `--base-manifest` so a CLI version change also checks the
+prospective tag and dated section without a build.
 
 ## Tag and push
 

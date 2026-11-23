@@ -21,13 +21,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Include the base parent of the PR merge commit for version comparison.
+          fetch-depth: 2
       - uses: dtolnay/rust-toolchain@stable
       - name: Fetch dependencies for offline packaging tests
         run: cargo fetch --locked
       - name: Test offline release preflight
         run: python3 -B -m unittest discover -s scripts/tests -v
-      - name: Check CLI version has a changelog section
-        run: scripts/check-release.sh --metadata-only
+      - name: Check changelog and release metadata
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            base_manifest="$RUNNER_TEMP/beankeeper-cli-base.toml"
+            git show "${BASE_SHA}:beankeeper-cli/Cargo.toml" > "$base_manifest"
+            scripts/check-release.sh --metadata-only --base-manifest "$base_manifest"
+          else
+            scripts/check-release.sh --metadata-only
+          fi
 
   quality:
     name: Quality (${{ matrix.os }})
