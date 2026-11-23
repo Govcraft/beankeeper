@@ -1004,41 +1004,6 @@ pub(crate) struct FinancialSummary {
     pub options: SummaryOptions,
 }
 
-/// Keep parameter failures available to the summary's named error envelope.
-pub(crate) struct FinancialSummaryInput(pub Result<FinancialSummary, SummaryDecodeError>);
-
-pub(crate) struct SummaryDecodeError {
-    pub company: Option<String>,
-    pub cause: serde_json::Error,
-}
-
-impl<'de> Deserialize<'de> for FinancialSummaryInput {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Value::deserialize(deserializer)?;
-        Ok(Self(FinancialSummary::deserialize(&wire).map_err(
-            |cause| {
-                SummaryDecodeError {
-                    company: wire
-                        .get("company")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    cause,
-                }
-            },
-        )))
-    }
-}
-
-impl JsonSchema for FinancialSummaryInput {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        FinancialSummary::schema_name()
-    }
-
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        FinancialSummary::json_schema(generator)
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SummaryOptions {

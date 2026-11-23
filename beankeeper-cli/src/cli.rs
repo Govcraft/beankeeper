@@ -17,6 +17,7 @@ use crate::error::CliError;
 use crate::identity::WriteMode;
 use crate::ledger_target::{LedgerPath, LedgerPaths, LedgerTarget};
 use crate::operation::Operation;
+pub use crate::request::CalendarDateArg;
 use crate::request::LocalDate;
 
 /// Double-entry accounting on the command line.
@@ -1831,78 +1832,6 @@ EXAMPLES:\n  \
     Clear(TxnClearArgs),
 }
 
-/// Parsed calendar date that retains the CLI validation error envelope.
-#[derive(Clone, Debug, schemars::JsonSchema)]
-#[schemars(transparent)]
-pub struct CalendarDateArg(
-    #[schemars(with = "String")] Result<chrono::NaiveDate, Box<InvalidCalendarDate>>,
-);
-
-#[derive(Clone, Debug)]
-struct InvalidCalendarDate {
-    value: String,
-    error: chrono::ParseError,
-}
-
-impl std::str::FromStr for CalendarDateArg {
-    type Err = std::convert::Infallible;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        Ok(Self::decode(raw))
-    }
-}
-
-impl serde::Serialize for CalendarDateArg {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match &self.0 {
-            Ok(date) => serde::Serialize::serialize(date, serializer),
-            Err(invalid) => serializer.serialize_str(&invalid.value),
-        }
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for CalendarDateArg {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw: String = serde::Deserialize::deserialize(deserializer)?;
-        Ok(Self::decode(&raw))
-    }
-}
-
-impl From<chrono::NaiveDate> for CalendarDateArg {
-    fn from(date: chrono::NaiveDate) -> Self {
-        Self(Ok(date))
-    }
-}
-
-impl CalendarDateArg {
-    pub(crate) fn decode(value: &str) -> Self {
-        Self(
-            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|error| {
-                Box::new(InvalidCalendarDate {
-                    value: value.to_owned(),
-                    error,
-                })
-            }),
-        )
-    }
-
-    pub(crate) fn resolve(
-        &self,
-        describe: impl FnOnce(&str, chrono::ParseError) -> CliError,
-    ) -> Result<chrono::NaiveDate, CliError> {
-        self.0
-            .as_ref()
-            .copied()
-            .map_err(|invalid| describe(&invalid.value, invalid.error))
-    }
-
-    pub(crate) fn posting_date(&self) -> Result<chrono::NaiveDate, CliError> {
-        self.resolve(|value, error| {
-            CliError::Validation(format!("invalid date '{value}': {error}"))
-        })
-    }
-}
-
 /// Arguments accepted by `bk txn post`.
 #[derive(Args, Debug)]
 pub struct PostingArgs {
@@ -2878,37 +2807,32 @@ pub enum OnConflictArg {
 
 /// An actor filter decoded at the transport boundary.
 #[derive(Debug, Clone)]
-pub struct ActorFilterArg(Result<ActorLabel, BlankActorLabel>);
+pub struct ActorFilterArg(ActorLabel);
 
-impl ActorFilterArg {
-    pub(crate) fn resolve_optional(value: Option<&Self>) -> Result<Option<&ActorLabel>, CliError> {
-        value
-            .map(|arg| arg.0.as_ref().map_err(|error| CliError::from(*error)))
-            .transpose()
+impl std::str::FromStr for ActorFilterArg {
+    type Err = BlankActorLabel;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        raw.parse().map(Self)
     }
 }
 
-impl std::str::FromStr for ActorFilterArg {
-    type Err = std::convert::Infallible;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        Ok(Self(raw.parse()))
+impl From<ActorFilterArg> for ActorLabel {
+    fn from(filter: ActorFilterArg) -> Self {
+        filter.0
     }
 }
 
 impl<'de> serde::Deserialize<'de> for ActorFilterArg {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(Self(text.parse()))
+        text.parse().map_err(serde::de::Error::custom)
     }
 }
 
 impl serde::Serialize for ActorFilterArg {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match &self.0 {
-            Ok(label) => serializer.collect_str(label),
-            Err(error) => Err(serde::ser::Error::custom(error)),
-        }
+        serializer.collect_str(&self.0)
     }
 }
 

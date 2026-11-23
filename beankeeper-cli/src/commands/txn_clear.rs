@@ -90,12 +90,7 @@ impl TryFrom<&TxnClearArgs> for ClearanceRequest {
     fn try_from(args: &TxnClearArgs) -> Result<Self, Self::Error> {
         let target = ClearRequestTarget::try_from(args)?;
         let options = ClearOptions {
-            date: args
-                .date
-                .as_ref()
-                .map(parse_date)
-                .transpose()?
-                .map(Into::into),
+            date: args.date.map(Into::into),
             statement: args.statement.clone(),
             status: args.status,
         };
@@ -279,12 +274,6 @@ impl ClearanceSettings {
     fn reconciled_date(&self) -> Option<NaiveDate> {
         (self.status == ClearanceArg::Reconciled).then_some(self.date)
     }
-}
-
-fn parse_date(date: &crate::cli::CalendarDateArg) -> Result<NaiveDate, CliError> {
-    date.resolve(|value, _| {
-        CliError::Validation(format!("invalid --date '{value}': expected YYYY-MM-DD"))
-    })
 }
 
 /// Exact, nonzero statement amount before the entry's currency determines scale.
@@ -874,7 +863,7 @@ mod tests {
             amount: i64::MAX.try_into()?,
             currency: Currency::BHD,
             reference: None,
-            date: parse_date(&crate::cli::CalendarDateArg::decode("2026-11-07"))?,
+            date: "2026-11-07".parse::<crate::cli::CalendarDateArg>()?.into(),
             direction: DebitOrCredit::Credit,
         };
         let statement: StatementAmount = "-0.001".parse()?;
@@ -889,14 +878,5 @@ mod tests {
             assert!(invalid.parse::<StatementAmount>().is_err(), "{invalid}");
         }
         Ok(())
-    }
-
-    #[test]
-    fn date_validation() {
-        assert_eq!(
-            parse_date(&crate::cli::CalendarDateArg::decode("2026-03-31")).ok(),
-            NaiveDate::from_ymd_opt(2026, 3, 31)
-        );
-        assert!(parse_date(&crate::cli::CalendarDateArg::decode("31/03/2026")).is_err());
     }
 }

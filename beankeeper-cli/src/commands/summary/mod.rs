@@ -9,8 +9,9 @@ pub use owner::{OwnerSummaryRead, OwnerSummaryReader};
 pub use window::SummaryWindow;
 
 use super::report::{AccountSelector, ChartRequest};
-use super::report_dates::{DateRange, resolve_date};
+use super::report_dates::DateRange;
 use crate::operation::Operation;
+use crate::request::LocalDate;
 use std::io::Write;
 
 use beankeeper::types::{AccountCode, Currency, Money};
@@ -169,8 +170,8 @@ impl From<(SummaryWindow, Option<DateRange>)> for SummaryDates {
 }
 
 impl SummaryDates {
-    fn periods(self, today: NaiveDate) -> Result<Periods, CliError> {
-        let current = self.current.period(today)?;
+    fn periods(self, today: LocalDate) -> Result<Periods, CliError> {
+        let current = self.current.period(today.into())?;
         let prior = match self.comparison {
             Some(range) => range.into(),
             None if self.current.start().is_none() => {
@@ -197,18 +198,23 @@ impl SummaryDates {
     }
 }
 
+impl TryFrom<SummaryDates> for Periods {
+    type Error = CliError;
+
+    fn try_from(dates: SummaryDates) -> Result<Self, Self::Error> {
+        dates.periods(LocalDate::from(None))
+    }
+}
+
 impl TryFrom<&SummaryArgs> for SummaryDates {
     type Error = CliError;
 
     fn try_from(args: &SummaryArgs) -> Result<Self, Self::Error> {
-        let optional = |flag, value: Option<&crate::cli::CalendarDateArg>| {
-            value.map(|value| resolve_date(flag, value)).transpose()
-        };
         Self::try_from([
-            optional("--from", args.from.as_ref())?,
-            optional("--to", args.to.as_ref())?,
-            optional("--from", args.compare_from.as_ref())?,
-            optional("--to", args.compare_to.as_ref())?,
+            args.from.map(Into::into),
+            args.to.map(Into::into),
+            args.compare_from.map(Into::into),
+            args.compare_to.map(Into::into),
         ])
         .map_err(|error| match error {
             SummaryDatesError::IncompleteComparison => {
@@ -259,7 +265,7 @@ impl SummaryRequest {
     ) -> Result<Self, CliError> {
         Ok(Self {
             company,
-            periods: dates.periods(crate::request::LocalDate::default().into())?,
+            periods: dates.try_into()?,
             currency,
             accounts,
             chart,
@@ -676,23 +682,23 @@ mod tests {
     #[test]
     fn periods_handle_month_edges_leap_years_and_explicit_intervals() -> Result<(), CliError> {
         let today = NaiveDate::from_ymd_opt(2024, 3, 15).ok_or_else(date_error)?;
-        let p = SummaryDates::default().periods(today)?;
+        let p = SummaryDates::default().periods(today.into())?;
         assert_eq!(p.current.from.to_string(), "2024-03-01");
         assert_eq!(p.prior.from.to_string(), "2024-02-01");
         assert_eq!(p.prior.to.to_string(), "2024-02-29");
         let args = SummaryArgs {
-            from: Some(crate::cli::CalendarDateArg::decode("2024-03-10")),
-            to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
+            from: Some("2024-03-10".parse()?),
+            to: Some("2024-03-15".parse()?),
             ..SummaryArgs::default()
         };
-        let p = SummaryDates::try_from(&args)?.periods(today)?;
+        let p = SummaryDates::try_from(&args)?.periods(today.into())?;
         assert_eq!(p.prior.from.to_string(), "2024-03-04");
         assert_eq!(p.prior.to.to_string(), "2024-03-09");
         let p = SummaryDates::try_from(&SummaryArgs {
-            to: Some(crate::cli::CalendarDateArg::decode("2025-01-01")),
+            to: Some("2025-01-01".parse()?),
             ..SummaryArgs::default()
         })?
-        .periods(today)?;
+        .periods(today.into())?;
         assert_eq!(p.prior.from.to_string(), "2024-12-01");
         assert_eq!(p.prior.to.to_string(), "2024-12-31");
         Ok(())
@@ -708,7 +714,7 @@ mod tests {
             db::create_company(grant, &company, &"Company".parse()?, None)
         })?;
         let args = SummaryArgs {
-            to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
+            to: Some("2024-03-15".parse()?),
             currency: Some(Currency::USD),
             ..SummaryArgs::default()
         };
@@ -738,7 +744,7 @@ mod tests {
             db::create_company(grant, &"co".parse()?, &"Company".parse()?, None)
         })?;
         let args = SummaryArgs {
-            to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
+            to: Some("2024-03-15".parse()?),
             currency: Some(Currency::BHD),
             ..SummaryArgs::default()
         };

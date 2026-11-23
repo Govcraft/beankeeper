@@ -170,7 +170,6 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
             )));
         }
     }
-    let date = args.date.posting_date()?;
     let line = |code: &str, amount: MoneyField| {
         Ok::<_, CliError>(super::txn::PostingLine {
             account_code: super::txn::account_code(code)?,
@@ -198,7 +197,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         metadata: None,
         annotations: Vec::new(),
         currency,
-        date: date.into(),
+        date: args.date.into(),
         correlate: None,
         reference: Some(reference),
         on_conflict: args.on_conflict.into(),

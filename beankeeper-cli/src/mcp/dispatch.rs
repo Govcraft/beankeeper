@@ -91,6 +91,7 @@ convert! {
     inform_preference_set(InformPreferenceSet) => Standing(input => StandingRequest::SetInform(input.company.into_inner(), input.preference)),
     period_close(PeriodClose) => Period(input => input.into()),
     period_list(CompanyScope) => Period(input => PeriodRequest::List(input.company.into_inner())),
+    audit_log(AuditLog) => AuditLog(input => input.into()),
     audit_undo(AuditUndo) => AuditReceipts(input => ReceiptRequest::Undo(input.company.into_inner(), input.receipt)),
 }
 
@@ -139,7 +140,6 @@ try_convert! {
             input.currency,
         ).try_into()?, ExplicitDeleteCall.into(),
     )),
-    audit_log(AuditLog) => AuditLog(input => input.try_into()?),
     audit_receipts(AuditReceipts) => AuditReceipts(input => ReceiptRequest::List(
         (input.company.into_inner(), input.cursor, input.continuation, input.limit).try_into()?,
     )),

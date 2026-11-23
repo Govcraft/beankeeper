@@ -19,7 +19,8 @@ use clap::ValueEnum;
 use serde::Serialize;
 
 use super::report::{ReportOutput, ReportPresentation};
-use super::report_dates::{DateRange, resolve_date};
+use super::report_dates::DateRange;
+use crate::request::CalendarDateArg;
 
 use crate::cli::{Command, OutputFormat, ReportCommand};
 use crate::db;
@@ -128,11 +129,8 @@ impl std::str::FromStr for CompareArg {
                     )
                 })?;
                 Ok(Self::Custom(ComparisonRange::new(
-                    resolve_date(
-                        "--compare start",
-                        &crate::cli::CalendarDateArg::decode(from),
-                    )?,
-                    resolve_date("--compare end", &crate::cli::CalendarDateArg::decode(to))?,
+                    from.parse::<CalendarDateArg>()?.into(),
+                    to.parse::<CalendarDateArg>()?.into(),
                 )?))
             }
         }

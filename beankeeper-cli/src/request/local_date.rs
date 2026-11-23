@@ -28,6 +28,13 @@ impl From<NaiveDate> for LocalDate {
     }
 }
 
+impl From<Option<NaiveDate>> for LocalDate {
+    /// Use the supplied date or sample the local date when it is omitted.
+    fn from(date: Option<NaiveDate>) -> Self {
+        date.map(Self::from).unwrap_or_default()
+    }
+}
+
 impl From<LocalDate> for NaiveDate {
     fn from(date: LocalDate) -> Self {
         date.0

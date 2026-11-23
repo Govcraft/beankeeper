@@ -355,11 +355,11 @@ pub fn run(
     let mut output = ReportOutput::new(format, use_color, &mut stdout);
     let report = db.read_snapshot(|reader| {
         let scope = Company::bind(reader, company.parse()?)?;
-        let dates = DateRange::resolve(
-            args.from.as_ref(),
-            args.to.as_ref(),
-            crate::request::LocalDate::default().into(),
-        )?;
+        let dates = super::report_dates::DateWindow::try_from((
+            args.from.map(Into::into),
+            args.to.map(Into::into),
+        ))?
+        .try_into()?;
         let currency =
             super::report_currency::resolve_report_currency(reader, company, args.currency)?;
         compute_scoped(

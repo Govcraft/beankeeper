@@ -481,6 +481,9 @@ fn demo_provenance_matches_between_cli_and_mcp() -> TestResult {
 
 #[test]
 fn cli_and_mcp_return_the_same_validation_error_for_blank_actor_filters() -> TestResult {
+    use beankeeper_cli::{cli::Cli, db::BlankActorLabel};
+    use clap::Parser as _;
+
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
     seed(&path)?;
@@ -490,6 +493,13 @@ fn cli_and_mcp_return_the_same_validation_error_for_blank_actor_filters() -> Tes
     client.initialize()?;
 
     for blank in ["", "  \t", "\u{2003}"] {
+        let parse_error = Cli::try_parse_from(["bk", "audit", "log", "--by-actor", blank])
+            .expect_err("blank actor must fail in clap");
+        assert!(
+            parse_error
+                .source()
+                .is_some_and(<dyn Error>::is::<BlankActorLabel>)
+        );
         let cli = bk(&path)?
             .args(["--json", "audit", "log", "--by-actor", blank])
             .assert()
@@ -499,7 +509,9 @@ fn cli_and_mcp_return_the_same_validation_error_for_blank_actor_filters() -> Tes
         assert_eq!(mcp["result"]["isError"], true);
         let mcp_error = payload(&mcp)?;
         assert_eq!(mcp_error["code"], "VALIDATION");
-        assert_eq!(mcp_error, cli["error"]);
+        assert_eq!(mcp_error["code"], cli["error"]["code"]);
+        assert_parameter_rejection(&mcp, "actor label must not be blank");
+        assert_eq!(cli["error"]["message"], "actor label must not be blank");
     }
     Ok(())
 }
@@ -1996,6 +2008,80 @@ fn invalid_currency_fails_at_both_parse_boundaries_with_validation_code() -> Tes
 }
 
 #[test]
+fn cli_and_mcp_reject_invalid_calendar_dates_at_the_parameter_boundary() -> TestResult {
+    use beankeeper_cli::{cli::Cli, request::CalendarDateError};
+    use clap::Parser as _;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    let invalid = ["2026-02-29", "2024-02-29T00:00:00Z"];
+    for date in invalid {
+        let args = [
+            "--company",
+            "acme",
+            "report",
+            "trial-balance",
+            "--from",
+            date,
+            "--period",
+            "month",
+            "--format=json",
+        ];
+        let parse_error = Cli::try_parse_from(std::iter::once("bk").chain(args))
+            .expect_err("invalid date must fail in clap");
+        assert!(
+            parse_error
+                .source()
+                .is_some_and(<dyn Error>::is::<CalendarDateError>)
+        );
+        let cli = bk(&path)?.args(args).assert().code(3);
+        let output: Value = serde_json::from_slice(&cli.get_output().stderr)?;
+        assert_eq!(output["error"]["code"], "VALIDATION");
+        assert_eq!(output["meta"]["command"], "report.trial-balance.periods");
+        assert_eq!(output["meta"]["company"], "acme");
+        assert!(!path.exists());
+    }
+
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    for date in invalid.into_iter().chain(["2024-2-29"]) {
+        let response = client.call(
+            "report",
+            &json!({"company":"acme", "kind":"trial-balance", "from":date, "period":"month"}),
+        )?;
+        assert_parameter_rejection(&response, "expected YYYY-MM-DD");
+        assert_eq!(payload(&response)?["code"], "VALIDATION");
+    }
+
+    let compare = "2026-02-29..2026-03-31";
+    let cli = bk(&path)?
+        .args([
+            "--json",
+            "--company",
+            "acme",
+            "report",
+            "trial-balance",
+            "--compare",
+            compare,
+        ])
+        .assert()
+        .code(3);
+    let output: Value = serde_json::from_slice(&cli.get_output().stderr)?;
+    assert_eq!(output["error"]["code"], "VALIDATION");
+    assert_eq!(output["meta"]["command"], "report.trial-balance.compare");
+    let response = client.call(
+        "report",
+        &json!({"company":"acme", "kind":"trial-balance", "compare":compare}),
+    )?;
+    assert_parameter_rejection(&response, "expected YYYY-MM-DD");
+    assert_eq!(payload(&response)?["code"], "VALIDATION");
+    Ok(())
+}
+
+#[test]
 fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -3145,6 +3231,13 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
         .remove("timestamp");
     assert_eq!(actual, expected);
     assert_eq!(actual["data"]["comparison"]["series"][0]["current"], 1234);
+
+    let today = chrono::Local::now().date_naive().to_string();
+    let with_default = client.success("financial_summary", &json!({"company":"acme"}))?;
+    let with_explicit_end =
+        client.success("financial_summary", &json!({"company":"acme", "to":today}))?;
+    assert_eq!(with_default["data"], with_explicit_end["data"]);
+
     for (company, to, code) in [
         ("acme", "bad", "VALIDATION"),
         ("missing", "2024-03-31", "NOT_FOUND"),
@@ -5478,6 +5571,21 @@ fn report_queries_produce_the_same_data_over_cli_and_stdio() -> TestResult {
             "{kind}: {flags:?}"
         );
     }
+
+    let today = chrono::Local::now().date_naive().to_string();
+    for (kind, args, end_key) in [
+        ("cash-flow", json!({}), "to"),
+        ("aging", json!({"account": ["1000"]}), "as_of"),
+        ("reconciliation", json!({"account": "1000"}), "to"),
+    ] {
+        let mut args = args;
+        args["company"] = json!("acme");
+        args["kind"] = json!(kind);
+        let with_default = mcp.success("report", &args)?;
+        args[end_key] = json!(today);
+        assert_eq!(with_default, mcp.success("report", &args)?, "{kind}");
+    }
+
     let invalid = mcp.call(
         "report",
         &json!({"company":"acme","kind":"trial-balance","period":"month","compare":"previous"}),

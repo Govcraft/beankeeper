@@ -22,7 +22,7 @@ use crate::db::{
     proposals::ProposalId,
     rules::{DescriptionPattern, RuleId},
 };
-use crate::error::CliError;
+use crate::{error::CliError, request::CalendarDateArg};
 
 pub(crate) trait TextValue: fmt::Display + FromStr {
     const NAME: &'static str;
@@ -194,11 +194,11 @@ impl TextValue for SecuritySymbol {
 
 /// A date-only wire value with a resolved calendar date.
 #[derive(Debug)]
-pub(crate) struct CalendarDate(NaiveDate);
+pub(crate) struct CalendarDate(CalendarDateArg);
 
 impl CalendarDate {
     pub(crate) fn date(&self) -> NaiveDate {
-        self.0
+        self.0.into()
     }
 }
 
@@ -220,9 +220,7 @@ impl FromStr for CalendarDate {
         {
             return Err(CliError::Validation("expected YYYY-MM-DD".into()));
         }
-        NaiveDate::parse_from_str(input, "%Y-%m-%d")
-            .map(Self)
-            .map_err(|error| CliError::Validation(format!("expected YYYY-MM-DD: {error}")))
+        input.parse().map(Self).map_err(Into::into)
     }
 }
 

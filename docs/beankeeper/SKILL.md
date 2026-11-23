@@ -1077,6 +1077,10 @@ All errors return a non-zero exit code and, in JSON mode, a structured error:
 | 5 | Not found |
 | 6 | Unauthorized agent token |
 
+Supply real `YYYY-MM-DD` dates for report, summary and posting inputs in CLI
+and MCP. When the date defaults to today, Beankeeper uses the local date. An
+invalid date or a blank audit actor filter returns `VALIDATION`.
+
 Validate before posting: ensure account codes exist (`bk account list`), amounts are positive, and total debits equal total credits. The CLI enforces balance at post time and will reject unbalanced entries.
 
 ## Reference Files

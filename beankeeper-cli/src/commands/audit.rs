@@ -9,7 +9,7 @@ use rusqlite::OptionalExtension as _;
 use serde_json::Value;
 
 use super::audit_snapshot::{embedded_currency, project_snapshot};
-use crate::cli::{ActorFilterArg, AuditLogArgs, Cli, OutputFormat, resolve_format};
+use crate::cli::{AuditLogArgs, Cli, OutputFormat, resolve_format};
 use crate::db::audit::{AuditAction, AuditEntity, AuditPageLimit, AuditPageOffset};
 use crate::db::companies::CompanySlug;
 use crate::db::connection::ReadConn;
@@ -35,19 +35,17 @@ pub struct AuditQuery {
     pub(crate) offset: AuditPageOffset,
 }
 
-impl TryFrom<&AuditLogArgs> for AuditQuery {
-    type Error = CliError;
-
-    fn try_from(args: &AuditLogArgs) -> Result<Self, Self::Error> {
-        Ok(Self {
-            actor: ActorFilterArg::resolve_optional(args.by_actor.as_ref())?.cloned(),
+impl From<&AuditLogArgs> for AuditQuery {
+    fn from(args: &AuditLogArgs) -> Self {
+        Self {
+            actor: args.by_actor.clone().map(Into::into),
             agent: args.agent.clone(),
             company: args.company.clone(),
             entity: args.entity,
             action: args.action,
             limit: args.limit.unwrap_or_default(),
             offset: args.offset.unwrap_or_default(),
-        })
+        }
     }
 }
 
@@ -210,9 +208,7 @@ impl AuditResponse {
 /// # Errors
 /// Returns validation, database or rendering errors.
 pub fn run(cli: &Cli, args: &AuditLogArgs) -> Result<(), CliError> {
-    AuditQuery::try_from(args)?
-        .execute(&cli.open_db()?)?
-        .render(cli)
+    AuditQuery::from(args).execute(&cli.open_db()?)?.render(cli)
 }
 
 /// Minimal CSV field escaping: quote when the value contains a comma, quote, or

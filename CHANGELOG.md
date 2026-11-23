@@ -8,6 +8,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Changed
 
+- CLI and MCP reject invalid calendar dates and blank audit actor filters at input parsing with `VALIDATION`, and share typed local-day report defaults. ([#255](https://github.com/Govcraft/beankeeper/issues/255))
 - Regular PRs can record a change under Unreleased without a version bump. Release PRs still require a matching dated section for the proposed CLI tag. ([#268](https://github.com/Govcraft/beankeeper/issues/268))
 - Owners can undo categorization rule creation through the CLI or MCP. The rule and an audit receipt remain on record. ([#267](https://github.com/Govcraft/beankeeper/issues/267))
 - Read grouped audit receipts and undo eligible changes immediately from the CLI or MCP with the owner's signed grant. ([#262](https://github.com/Govcraft/beankeeper/issues/262))

@@ -278,7 +278,7 @@ fn dispatch_ledger(
             (require_company(cli)?, &args.command, chart).try_into()?,
         )),
         Command::Audit(args) => match &args.command {
-            AuditCommand::Log(args) => Some(LedgerRequest::AuditLog(args.try_into()?)),
+            AuditCommand::Log(args) => Some(LedgerRequest::AuditLog(args.into())),
             AuditCommand::Receipts(args) => Some(LedgerRequest::AuditReceipts(
                 audit::ReceiptRequest::List((require_company(cli)?, args).try_into()?),
             )),

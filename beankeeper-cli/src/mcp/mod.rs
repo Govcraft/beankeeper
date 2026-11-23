@@ -244,19 +244,9 @@ fn summary_error(company: Option<&str>, error: Option<&serde_json::Value>) -> Ca
 impl LedgerServer {
     async fn execute_summary(
         &self,
-        input: inputs::FinancialSummaryInput,
+        input: inputs::FinancialSummary,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let input = match input.0 {
-            Ok(input) => input,
-            Err(error) => {
-                let validation = CliError::Validation(error.cause.to_string());
-                return summary_error(
-                    error.company.as_deref(),
-                    tool_error(&validation).structured_content.as_ref(),
-                );
-            }
-        };
         let company = input.company.to_string();
         let result = self
             .execute(
