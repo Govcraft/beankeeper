@@ -24,9 +24,10 @@ use beankeeper_cli::{
     error::{CliError, ErrorCode},
     identity::{self, Admin, Granted, IssueRequest, OwnerUndo, Post, Reverse},
 };
-use secrecy::ExposeSecret as _;
+use secrecy::{ExposeSecret as _, SecretString};
 
 type TestResult = Result<(), Box<dyn Error>>;
+const TEST_PASSPHRASE: &str = "receipt-test-passphrase";
 
 struct Books {
     db: Db,
@@ -36,8 +37,10 @@ struct Books {
 
 impl Books {
     fn open(path: &Path) -> Result<Self, CliError> {
+        std::fs::write(path.with_extension("passphrase"), TEST_PASSPHRASE)?;
+        let passphrase = SecretString::from(TEST_PASSPHRASE);
         let books = Self {
-            db: Db::open(path, None)?,
+            db: Db::open(path, Some(&passphrase))?,
             company: "acme".parse()?,
             local: Actor::new("bookkeeper".parse()?),
         };
@@ -149,7 +152,8 @@ fn paging_keeps_a_reversal_whole_and_picks_up_later_writes_in_the_next_range() -
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("books.db");
     let books = Books::open(&path)?;
-    let writer = Db::open_existing(&path, None)?;
+    let passphrase = SecretString::from(TEST_PASSPHRASE);
+    let writer = Db::open_existing(&path, Some(&passphrase))?;
     let previous = books.receipts()?.through();
     let original = books.post(&writer, "ORIGINAL")?;
     let PostResult::Created(mirror) =
@@ -224,7 +228,7 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
     let books = Books::open(&path)?;
     Granted::<Admin>::with_db(&books.db, &books.local, identity::init_root)?;
     let owner = books.credential("owner", Capability::Admin)?;
-    let agent = books.credential("reverse-agent", Capability::Reverse)?;
+    let agent = books.credential("reversal", Capability::Reverse)?;
     let rule = Granted::<Post>::with_db(&books.db, &books.local, |grant| {
         rules::create_rule(grant, &books.company, "supplies".parse()?, "5000", 10)
     })?;
@@ -346,12 +350,7 @@ fn assert_archived_account(books: &Books, transaction: TransactionId) -> TestRes
 }
 
 fn verify_ledger(path: &Path) -> TestResult {
-    let output = Command::cargo_bin("bk")?
-        .env_remove("BEANKEEPER_PASSPHRASE_CMD")
-        .arg("--db")
-        .arg(path)
-        .args(["verify", "--json"])
-        .output()?;
+    let output = bk(path)?.args(["verify", "--json"]).output()?;
     assert!(
         output.status.success(),
         "{}",
@@ -361,6 +360,17 @@ fn verify_ledger(path: &Path) -> TestResult {
     assert_eq!(checked["data"]["status"], "healthy");
 
     Ok(())
+}
+
+fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
+    let mut command = Command::cargo_bin("bk")?;
+    command
+        .env_remove("BK_AGENT_TOKEN")
+        .arg("--db")
+        .arg(path)
+        .arg("--passphrase-file")
+        .arg(path.with_extension("passphrase"));
+    Ok(command)
 }
 
 #[test]
@@ -397,10 +407,7 @@ fn owner_undo_respects_period_locks_and_reconciled_clearings() -> TestResult {
     assert_eq!(books.receipts()?.through(), locked);
     invoke_period(PeriodChange::Reopen("Reopening fixture".parse()?))?;
 
-    let clear = Command::cargo_bin("bk")?
-        .env_remove("BEANKEEPER_PASSPHRASE_CMD")
-        .arg("--db")
-        .arg(&path)
+    let clear = bk(&path)?
         .args([
             "--company",
             "acme",
