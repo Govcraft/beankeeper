@@ -469,7 +469,7 @@ Read-only mode removes `company_create`, `company_delete`, `account_create`, `tx
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
 `ledger_setup_account_add`, `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
 `ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
-`rule_create`, `rule_amend`, `rule_delete`, `bookkeeping_policy_set` and
+`rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set` and
 `inform_preference_set` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.

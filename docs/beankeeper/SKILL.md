@@ -440,6 +440,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk rule list` | List categorization rules in evaluation order |
 | `bk rule amend` | Supersede an active rule and retain both versions in the audit trail |
 | `bk rule match` | Preview which active rule matches a candidate description |
+| `bk rule undo` | Deactivate a newly created rule and return its linked undo receipt |
 | `bk bookkeeping-policy show/set` | Read or save sales-tax and processor-fee instructions |
 | `bk inform-preference show/set` | Read or save how often the owner hears about completed changes |
 | `bk rule delete` | Remove a mapping without changing existing postings |
