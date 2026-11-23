@@ -17,9 +17,9 @@ impl<T: Display> Serialize for Text<'_, T> {
     }
 }
 
-impl Serialize for Wire<Price> {
+impl Serialize for Wire<&Price> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let row = &self.0;
+        let row = self.0;
         let mut fields = serializer.serialize_map(Some(6))?;
         fields.serialize_entry("currency", row.currency.code())?;
         fields.serialize_entry("id", &row.id)?;
@@ -30,9 +30,9 @@ impl Serialize for Wire<Price> {
     }
 }
 
-impl Serialize for Wire<Lot> {
+impl Serialize for Wire<&Lot> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let row = &self.0;
+        let row = self.0;
         let mut fields = serializer.serialize_map(Some(12))?;
         fields.serialize_entry("currency", row.currency.code())?;
         fields.serialize_entry("id", &row.id)?;
@@ -60,9 +60,9 @@ impl Serialize for Wire<&Relief> {
     }
 }
 
-impl Serialize for Wire<Trade> {
+impl Serialize for Wire<&Trade> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let row = &self.0;
+        let row = self.0;
         let mut fields = serializer.serialize_map(Some(11))?;
         fields.serialize_entry("currency", row.currency.code())?;
         fields.serialize_entry("transaction_id", &row.transaction_id)?;
@@ -77,7 +77,7 @@ impl Serialize for Wire<Trade> {
     }
 }
 
-impl Serialize for Wire<Holding> {
+impl Serialize for Wire<&Holding> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
         struct HoldingFields<'a> {
@@ -96,7 +96,7 @@ impl Serialize for Wire<Holding> {
             unrealized_gain: OptionalMoneyField,
         }
 
-        let row = &self.0;
+        let row = self.0;
         HoldingFields {
             symbol: &row.symbol,
             asset: &row.asset,
@@ -140,7 +140,7 @@ mod tests {
             "market_value":null, "unrealized_gain":null,
         });
         assert_eq!(serde_json::to_value(&row)?, before);
-        let value = serde_json::to_value(Wire(row.clone()))?;
+        let value = serde_json::to_value(Wire(&row))?;
         assert_eq!(value["cost_basis_display"], "1.234");
         for key in [
             "latest_price_display",
@@ -153,7 +153,7 @@ mod tests {
         row.price_date = chrono::NaiveDate::from_ymd_opt(2026, 9, 30);
         row.market_value = Some(NonNegativeMoney::new(bhd(1_000))?);
         row.unrealized_gain = Some(bhd(-234));
-        let value = serde_json::to_value(Wire(row))?;
+        let value = serde_json::to_value(Wire(&row))?;
         assert_eq!(value["latest_price_display"], "8.100");
         assert_eq!(value["price_date"], "2026-09-30");
         assert_eq!(value["market_value_display"], "1.000");

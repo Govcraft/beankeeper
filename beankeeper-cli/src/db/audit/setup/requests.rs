@@ -4,6 +4,7 @@ use std::{fmt, str::FromStr};
 
 use beankeeper::types::Sha256Hex;
 use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -13,7 +14,8 @@ use crate::db::companies::CompanySlug;
 use crate::error::CliError;
 
 #[derive(Debug, Clone)]
-pub(crate) struct SetupReference(Box<str>);
+/// A stable, nonempty request reference within a setup generation.
+pub struct SetupReference(Box<str>);
 
 impl SetupReference {
     pub(super) fn as_str(&self) -> &str {
@@ -41,13 +43,13 @@ impl FromStr for SetupReference {
     }
 }
 
-pub(super) fn apply_once(
+pub(super) fn apply_once<T: Serialize + DeserializeOwned>(
     session: &ActiveSession<'_>,
     reference: &SetupReference,
     company: &CompanySlug,
     input: &Value,
-    apply: impl FnOnce() -> Result<Value, CliError>,
-) -> Result<Value, CliError> {
+    apply: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
     let conn = session.tx.connection();
     let fingerprint = digest(input.to_string());
     let receipt: Option<(String, String)> = conn
@@ -70,7 +72,8 @@ pub(super) fn apply_once(
     }
 
     let outcome = apply()?;
-    let outcome_json = outcome.to_string();
+    let outcome_json =
+        serde_json::to_string(&outcome).map_err(|error| CliError::General(error.to_string()))?;
     let generation = session.session.generation;
     conn.execute(
         "INSERT INTO setup_requests (reference, generation, fingerprint, outcome)
@@ -101,6 +104,17 @@ pub(super) fn apply_once(
         },
     )?;
     Ok(outcome)
+}
+
+pub(super) fn deserialize_parsed<'de, D, T>(decoder: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: FromStr,
+    T::Err: fmt::Display,
+{
+    String::deserialize(decoder)?
+        .parse()
+        .map_err(serde::de::Error::custom)
 }
 
 pub(super) fn digest(value: impl AsRef<[u8]>) -> Sha256Hex {

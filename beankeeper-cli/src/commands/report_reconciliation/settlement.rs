@@ -248,11 +248,7 @@ pub(super) fn resolve_link_key<'a>(
             "--mode settlement requires a non-empty --statement".into(),
         ));
     }
-    let link_key = link_key.unwrap_or(report_aging::DEFAULT_LINK_KEY).trim();
-    if link_key.is_empty() {
-        return Err(CliError::Usage("--link-key must not be empty".into()));
-    }
-    Ok(link_key)
+    super::SettlementLinkKey::try_from(link_key).map(|key| key.0)
 }
 
 pub(super) fn apply(

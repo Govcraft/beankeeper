@@ -470,6 +470,11 @@ further restrict discovery: stdio filters at startup and HTTP per request.
 `audit_log` accepts `actor` for the exact recorded label and `agent` for the
 verified agent URI. Supply both to match both fields.
 
+MCP tool discovery uses the same operation permissions as execution. Each
+advertised tool includes the schema for its input and a `readOnlyHint`.
+When `txn post` or `txn_post` omits currency, the posting uses
+`BEANKEEPER_CURRENCY` if set and USD otherwise.
+
 ### Intentional CLI-only mutations
 
 | CLI command | Reason |
@@ -489,6 +494,14 @@ Results match the CLI JSON `data` payload. JSON text content is always included;
 protocol. Tool errors set `isError: true` with `{code, message}`. See
 [README client configurations](../../../README.md#connect-an-ai-assistant-through-mcp)
 for Claude Desktop and Codex examples without plaintext secrets.
+
+### Intentional CLI-only reads
+
+| CLI command | Reason |
+|---|---|
+| `bk export` | The CLI supports writing a full ledger export to a local file. |
+| `bk agent list`, `bk agent limit show`, `bk policy show` | Owner-managed credential and authorization settings use the local CLI. |
+| `bk rule list`, `bk schedule list`, `bk loan schedule` | These operations predate a corresponding MCP input contract. |
 
 ## Period close and locking
 

@@ -1,0 +1,181 @@
+//! Transport-independent ledger requests and their typed results.
+//!
+//! This library owns the open ledger and its audited storage. CLI, MCP, and
+//! embedded hosts can feed validated requests directly to the same executor.
+
+mod collection;
+mod currency;
+mod local_date;
+
+pub use collection::{EmptyCollection, NonEmpty};
+pub(crate) use currency::CurrencySetting;
+pub use local_date::LocalDate;
+
+use crate::{
+    cli::Cli,
+    commands::{
+        account::{AccountRequest, AccountResponse},
+        audit::{AuditQuery, AuditResponse},
+        budget::{BudgetRequest, BudgetResponse},
+        company::{CompanyRequest, CompanyResponse},
+        investment::{InvestmentRequest, InvestmentResponse},
+        period::{PeriodRequest, PeriodResponse},
+        report::{ReportRequest, ReportResponse},
+        setup::{SetupRequest, SetupResponse},
+        summary::{SummaryRequest, SummaryResponse},
+        txn::{TxnRequest, TxnResponse},
+    },
+    db::{Actor, Db, companies::CompanySlug, connection::ReadConn, verification::VerifiedLedger},
+    error::CliError,
+    operation::Operation,
+    output::json::Meta,
+};
+
+/// A validated operation against an open ledger.
+#[non_exhaustive]
+pub enum LedgerRequest {
+    Account(AccountRequest),
+    AuditLog(AuditQuery),
+    Budget(BudgetRequest),
+    Company(CompanyRequest),
+    Investment(InvestmentRequest),
+    Period(PeriodRequest),
+    Report(ReportRequest),
+    Setup(SetupRequest),
+    Summary(SummaryRequest),
+    Transaction(TxnRequest),
+    Verify,
+}
+
+/// The result of a ledger operation, before transport formatting.
+#[non_exhaustive]
+pub enum LedgerResponse {
+    Account(AccountResponse),
+    AuditLog(AuditResponse),
+    Budget(BudgetResponse),
+    Company(CompanyResponse),
+    Investment(Operation, CompanySlug, InvestmentResponse),
+    Period(Operation, CompanySlug, PeriodResponse),
+    Report(ReportResponse),
+    Setup(Operation, Option<CompanySlug>, SetupResponse),
+    Summary(SummaryResponse),
+    Transaction(TxnResponse),
+    Verify(VerifiedLedger),
+}
+
+impl LedgerRequest {
+    /// The operation used for authorization and discovery.
+    #[must_use]
+    pub fn operation(&self) -> Operation {
+        match self {
+            Self::Account(request) => request.operation(),
+            Self::AuditLog(_) => Operation::AuditLog,
+            Self::Budget(request) => request.operation(),
+            Self::Company(request) => request.operation(),
+            Self::Investment(request) => request.operation(),
+            Self::Period(request) => request.operation(),
+            Self::Report(request) => request.operation(),
+            Self::Setup(request) => request.operation(),
+            Self::Summary(_) => Operation::Summary,
+            Self::Transaction(request) => request.operation(),
+            Self::Verify => Operation::Verify,
+        }
+    }
+
+    /// Execute in one authorized read snapshot or write batch.
+    ///
+    /// # Errors
+    /// Returns authorization, ledger-state, or storage errors.
+    pub fn execute(self, db: &Db, actor: &Actor) -> Result<LedgerResponse, CliError> {
+        self.execute_with_actor(db, |_| Ok(actor.clone()))
+            .map(|(response, _)| response)
+    }
+
+    pub(crate) fn execute_with_actor(
+        self,
+        db: &Db,
+        resolve_actor: impl for<'snapshot> FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
+    ) -> Result<(LedgerResponse, Actor), CliError> {
+        if self.operation().writes_ledger() {
+            db.in_write_batch(|| self.execute_in_snapshot(db, db.read(), resolve_actor))
+        } else {
+            db.read_snapshot(|reader| self.execute_in_snapshot(db, reader, resolve_actor))
+        }
+    }
+
+    fn execute_in_snapshot<'snapshot>(
+        self,
+        db: &Db,
+        reader: ReadConn<'snapshot>,
+        resolve_actor: impl FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
+    ) -> Result<(LedgerResponse, Actor), CliError> {
+        let operation = self.operation();
+        let actor = resolve_actor(reader)?;
+        if let Some(identity) = actor.identity() {
+            crate::identity::authorize_verified_operation(reader, identity.clone(), operation)?;
+        } else {
+            crate::identity::authorize_known_operation(reader, None, operation)?;
+        }
+        let response = self.execute_authorized(db, &actor, operation)?;
+        Ok((response, actor))
+    }
+
+    fn execute_authorized(
+        self,
+        db: &Db,
+        actor: &Actor,
+        operation: Operation,
+    ) -> Result<LedgerResponse, CliError> {
+        match self {
+            Self::Account(request) => request.execute(db, actor).map(LedgerResponse::Account),
+            Self::AuditLog(request) => request.execute(db).map(LedgerResponse::AuditLog),
+            Self::Budget(request) => request.execute(db, actor).map(LedgerResponse::Budget),
+            Self::Company(request) => request.execute(db, actor).map(LedgerResponse::Company),
+            Self::Investment(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Investment(operation, company, response))
+            }
+            Self::Period(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Period(operation, company, response))
+            }
+            Self::Report(request) => request.execute(db).map(LedgerResponse::Report),
+            Self::Setup(request) => {
+                let company = request.render_company().cloned();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Setup(operation, company, response))
+            }
+            Self::Summary(request) => request.execute(db).map(LedgerResponse::Summary),
+            Self::Transaction(request) => {
+                request.execute(db, actor).map(LedgerResponse::Transaction)
+            }
+            Self::Verify => VerifiedLedger::read(db).map(LedgerResponse::Verify),
+        }
+    }
+}
+
+impl LedgerResponse {
+    pub(crate) fn render(&self, cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+        match self {
+            Self::Account(response) => response.render(cli),
+            Self::AuditLog(response) => response.render(cli),
+            Self::Budget(response) => response.render(cli),
+            Self::Company(response) => response.render(cli),
+            Self::Investment(operation, company, response) => {
+                response.render(cli, *operation, company.as_str())
+            }
+            Self::Period(operation, company, response) => {
+                response.render(cli, *operation, company.as_str())
+            }
+            Self::Report(response) => response.render(cli),
+            Self::Setup(operation, company, response) => {
+                response.render(cli, *operation, company.as_ref().map(CompanySlug::as_str))
+            }
+            Self::Summary(response) => response.render(cli),
+            Self::Transaction(response) => response.render(cli, meta),
+            Self::Verify(response) => crate::commands::verify::render(response, cli),
+        }
+    }
+}

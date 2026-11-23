@@ -1,29 +1,33 @@
-use crate::operation::Operation;
+mod mcp;
+mod request;
+mod response;
+
+pub use request::{ListRequest, PostingDate, ReverseRequest, TxnRequest};
+pub use response::TxnResponse;
+
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::Path;
+use std::str::FromStr;
 
-use beankeeper::types::{Currency, DocumentType, Money};
+use beankeeper::core::TransactionError;
+use beankeeper::types::{AccountCode, Amount, Currency, DocumentType, Money, MoneyError};
 
-use crate::cli::{
-    Cli, OutputFormat, PostingArgs, TxnAttachArgs, TxnCommand, TxnImportArgs, TxnListArgs,
-    TxnProposalCommand, TxnReverseArgs, resolve_format,
-};
+use crate::cli::{Cli, PostingArgs, TxnAttachArgs, TxnCommand, TxnImportArgs};
 use crate::db::amounts::PositiveMinorUnits;
 use crate::db::audit::grant::PostingGrant;
 use crate::db::companies::{AllCompanies, Company, CompanySlug};
 use crate::db::connection::Db;
-use crate::db::transactions::TransactionValueFilter;
 use crate::db::{self, attachments, proposals, transactions};
 use crate::error::CliError;
-use crate::identity::{Approve, Granted, Post, Propose, ResolveProposal, Reverse};
+use crate::identity::{Granted, Post, Propose};
+use crate::operation::Operation;
 use crate::output;
+use crate::request::LedgerRequest;
 
-/// Run a `bk txn` subcommand.
+/// Run a transaction command.
 ///
 /// # Errors
-///
-/// Returns [`CliError`] if the subcommand fails.
+/// Returns a command failure when it cannot be executed or rendered.
 pub fn run(
     cli: &Cli,
     company: &str,
@@ -38,266 +42,23 @@ pub fn run(
 
 pub(super) fn run_for_company(
     cli: &Cli,
-    slug: &CompanySlug,
+    company: &CompanySlug,
     sub: &TxnCommand,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
-    let db_handle = cli.open_db()?;
-    if !matches!(sub, TxnCommand::Reconcile) {
-        db::get_company(db_handle.read(), slug)?;
-    }
-    let company = slug.as_str();
-    let use_color = output::should_use_color(cli.verbosity.no_color);
-    let format = resolve_format(None, cli);
-
+    let db = cli.open_db()?;
     match sub {
-        TxnCommand::Proposal(args) => {
-            let execute = || {
-                use secrecy::ExposeSecret;
-                crate::identity::authorize_known_operation(
-                    db_handle.read(),
-                    cli.agent_token.as_ref().map(ExposeSecret::expose_secret),
-                    super::operation(&cli.command),
-                )?;
-                execute_proposal(&db_handle, slug, args, &cli.principal())
-            };
-            let data = if matches!(args, TxnProposalCommand::Proposals { .. }) {
-                db_handle.read_snapshot(|_| execute())?
-            } else {
-                db_handle.in_write_batch(execute)?
-            };
-            if format == OutputFormat::Json {
-                println!(
-                    "{}",
-                    serde_json::json!({"ok":true, "meta":cli.meta(super::operation(&cli.command), Some(company)), "data":data})
-                );
-            } else {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&data)
-                        .map_err(|error| CliError::General(error.to_string()))?
-                );
-            }
-            Ok(())
+        TxnCommand::Import(args) => {
+            db::get_company(db.read(), company)?;
+            run_import(cli, &db, company.as_str(), args)
         }
-        TxnCommand::Meta(sub) => super::txn_meta::run(cli, &db_handle, company, sub),
-        TxnCommand::Post(args) => {
-            let result = execute_posting(
-                &db_handle,
-                slug,
-                &PostingRequest::try_from(args)?,
-                &cli.principal(),
-            )?;
-            print_posting_outcome(cli, company, result)
+        TxnCommand::Attach(args) => {
+            db::get_company(db.read(), company)?;
+            run_attach(cli, &db, company.as_str(), args)
         }
-        TxnCommand::List(args) => run_list_or_count(
-            cli,
-            &db_handle,
-            company,
-            args,
-            (format, use_color),
-            &mut std::io::stdout(),
-        ),
-        TxnCommand::Show { id } => run_show(
-            &db_handle,
-            company,
-            *id,
-            (format, use_color),
-            &mut std::io::stdout(),
-            cli.meta(Operation::TxnShow, Some(company)),
-        ),
-        TxnCommand::Reverse(args) => run_reverse(cli, &db_handle, company, args),
-        TxnCommand::Clear(args) => super::txn_clear::run(cli, &db_handle, company, args, meta),
-        TxnCommand::Import(args) => run_import(cli, &db_handle, company, args),
-        TxnCommand::Attach(args) => run_attach(cli, &db_handle, company, args),
-        TxnCommand::Reconcile => render_reconcile(
-            &db_handle,
-            AllCompanies,
-            format,
-            use_color,
-            &mut std::io::stdout(),
-            cli.meta(Operation::TxnReconcile, None),
-        ),
-    }
-}
-
-/// Execute an atomic reversal and report its new or existing transaction ID.
-fn run_reverse(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    args: &TxnReverseArgs,
-) -> Result<(), CliError> {
-    let id = args.id;
-    let format = resolve_format(None, cli);
-    let actor = cli.principal();
-    let result = execute_reverse(db_handle, company, args, &actor)?;
-    if format == OutputFormat::Json {
-        println!(
-            "{}",
-            output::json::render_post_result(
-                result,
-                cli.meta(Operation::TxnReverse, Some(company))
-            )?
-        );
-    }
-    if !cli.verbosity.quiet {
-        match result {
-            transactions::PostResult::Created(reversal_id) => {
-                eprintln!("[ok] transaction #{id} reversed by #{reversal_id}");
-            }
-            transactions::PostResult::Skipped(reversal_id) => {
-                eprintln!("[skipped] transaction #{id} already reversed by #{reversal_id}");
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Execute an atomic reversal with an explicit audit actor.
-fn execute_reverse(
-    db_handle: &Db,
-    company: &str,
-    args: &TxnReverseArgs,
-    actor: &db::Actor,
-) -> Result<transactions::PostResult, CliError> {
-    let TxnReverseArgs {
-        id,
-        date,
-        description,
-        reference,
-    } = args;
-    let date = resolve_posting_date(date.as_ref())?;
-    let reference = reference
-        .as_deref()
-        .map(str::parse::<super::reference::TransactionReference>)
-        .transpose()?;
-    Granted::<Reverse>::with_db(db_handle, actor, |grant| {
-        db::audit::reverse_transaction(
-            grant,
-            &db::audit::ReverseTransactionParams {
-                company_slug: &company.parse()?,
-                id: *id,
-                date,
-                description: description.as_deref(),
-                reference: reference
-                    .as_ref()
-                    .map(super::reference::TransactionReference::as_str),
-            },
-        )
-    })
-}
-
-/// Execute a supported transaction operation without writing to stdout.
-///
-/// The returned value is exactly the data payload of the CLI JSON envelope.
-/// Mutations use the explicitly supplied audit actor.
-///
-/// # Errors
-///
-/// Returns the same validation, lookup and database errors as the CLI. Import
-/// and attachment operations are intentionally unavailable through this API.
-pub fn execute_json(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    sub: &TxnCommand,
-    actor: &db::Actor,
-) -> Result<serde_json::Value, CliError> {
-    execute_json_with_pagination(cli, db_handle, company, sub, actor).map(|(data, _)| data)
-}
-
-/// Execute a transaction operation and retain its optional pagination metadata.
-///
-/// MCP callers can attach the pagination to their result metadata while keeping
-/// the transaction data array unchanged.
-///
-/// # Errors
-///
-/// Returns the same errors as [`execute_json`].
-pub fn execute_json_with_pagination(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    sub: &TxnCommand,
-    actor: &db::Actor,
-) -> Result<(serde_json::Value, Option<serde_json::Value>), CliError> {
-    if !matches!(
-        sub,
-        TxnCommand::Reconcile | TxnCommand::Post(_) | TxnCommand::Proposal(_)
-    ) {
-        db::get_company(db_handle.read(), &company.parse()?)?;
-    }
-    let mut out = Vec::new();
-    match sub {
-        TxnCommand::Proposal(args) => {
-            let slug = company.parse()?;
-            db::get_company(db_handle.read(), &slug)?;
-            return execute_proposal(db_handle, &slug, args, actor).map(|data| (data, None));
-        }
-        TxnCommand::Meta(sub) => {
-            return super::txn_meta::execute_json(db_handle, company, sub, actor)
-                .map(|data| (data, None));
-        }
-        TxnCommand::Post(args) => {
-            let result = execute_posting(
-                db_handle,
-                &company.parse()?,
-                &PostingRequest::try_from(args)?,
-                actor,
-            )?;
-            return result.into_data().map(|data| (data, None));
-        }
-        TxnCommand::List(args) => run_list_or_count(
-            cli,
-            db_handle,
-            company,
-            args,
-            (OutputFormat::Json, false),
-            &mut out,
-        )?,
-        TxnCommand::Show { id } => {
-            run_show(
-                db_handle,
-                company,
-                *id,
-                (OutputFormat::Json, false),
-                &mut out,
-                cli.meta(Operation::TxnShow, Some(company)),
-            )?;
-        }
-        TxnCommand::Reconcile => {
-            return execute_reconcile_json(db_handle).map(|data| (data, None));
-        }
-        TxnCommand::Clear(args) => {
-            return super::txn_clear::execute_cli_json(db_handle, company, args, actor)
-                .map(|data| (data, None));
-        }
-        TxnCommand::Reverse(args) => {
-            let result = execute_reverse(db_handle, company, args, actor)?;
-            let meta = cli.meta(Operation::TxnReverse, Some(company));
-            out = output::json::render_post_result(result, meta)?.into_bytes();
-        }
-        TxnCommand::Import(_) | TxnCommand::Attach(_) => {
-            return Err(CliError::Usage(
-                "transaction operation is not available over MCP".into(),
-            ));
-        }
-    }
-    let envelope: serde_json::Value = serde_json::from_slice(&out)
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))?;
-    Ok((
-        envelope["data"].clone(),
-        envelope["meta"].get("pagination").cloned(),
-    ))
-}
-
-pub(crate) fn execute_reconcile_json(db_handle: &Db) -> Result<serde_json::Value, CliError> {
-    let orphans = transactions::find_orphaned_correlations(db_handle.read(), AllCompanies)?;
-    if orphans.is_empty() {
-        Ok(serde_json::Value::Array(Vec::new()))
-    } else {
-        Err(orphaned_correlations(orphans.len()))
+        _ => LedgerRequest::Transaction(TxnRequest::try_from((Some(company), sub))?)
+            .execute(&db, &cli.principal())?
+            .render(cli, meta),
     }
 }
 
@@ -357,100 +118,6 @@ fn run_import(
     }
 }
 
-/// Build `ListTransactionParams` from CLI args and dispatch to list or count.
-fn run_list_or_count(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    args: &TxnListArgs,
-    presentation: (OutputFormat, bool),
-    out: &mut dyn Write,
-) -> Result<(), CliError> {
-    let (format, use_color) = presentation;
-    let TxnListArgs {
-        account,
-        from,
-        to,
-        limit,
-        offset,
-        description,
-        amount_gt,
-        amount_lt,
-        amount_eq,
-        currency,
-        reference,
-        metadata,
-        meta,
-        tax_category,
-        direction,
-        count,
-    } = args;
-
-    let meta_eq = db::metadata_filter::parse_filters(meta)?;
-    let mut lp = transactions::ListTransactionParams {
-        account_filter: account.as_deref(),
-        from_date: *from,
-        to_date: *to,
-        limit: limit.sql_limit(),
-        offset: i64::from(*offset),
-        description_like: description.as_deref(),
-        reference_filter: reference.as_deref(),
-        metadata_like: metadata.as_deref(),
-        meta_eq: &meta_eq,
-        tax_category_filter: tax_category.as_deref(),
-        direction_filter: *direction,
-        ..Default::default()
-    };
-
-    db_handle.read_snapshot(|reader| {
-        let scope = Company::bind(reader, company.parse()?)?;
-        lp.value_filter = list_value_filter(
-            db_handle.read(),
-            company,
-            currency
-                .as_ref()
-                .map(crate::cli::CurrencyArg::resolve)
-                .transpose()?,
-            [
-                amount_gt.as_deref(),
-                amount_lt.as_deref(),
-                amount_eq.as_deref(),
-            ],
-        )?;
-
-        if *count {
-            run_count(cli, &scope, &lp, format, out)
-        } else {
-            run_list(cli, &scope, &lp, format, use_color, out)
-        }
-    })
-}
-
-fn list_value_filter(
-    conn: crate::db::connection::ReadConn<'_>,
-    company: &str,
-    currency: Option<Currency>,
-    [gt, lt, eq]: [Option<&str>; 3],
-) -> Result<Option<TransactionValueFilter>, CliError> {
-    if gt.is_none() && lt.is_none() && eq.is_none() {
-        return Ok(currency.map(TransactionValueFilter::by_currency));
-    }
-
-    let currency = match currency {
-        Some(explicit) => explicit,
-        None => super::report_currency::infer_company_currency(conn, company, CliError::Usage)?,
-    };
-    let parse = |s| {
-        parse_amount_to_minor(s, currency)
-            .map(|minor| Money::from_minor(i128::from(minor), currency))
-    };
-    TransactionValueFilter::from_bounds(
-        gt.map(parse).transpose()?,
-        lt.map(parse).transpose()?,
-        eq.map(parse).transpose()?,
-    )
-}
-
 /// Parse `--tax` flag arguments into a map of `account_code` -> `tax_category`.
 ///
 /// Each argument should be `account_code=category`.
@@ -481,216 +148,276 @@ pub(crate) fn parse_tax_args(args: &[String]) -> Result<HashMap<String, String>,
 /// The amount is converted to minor units based on the currency's decimal places.
 /// An optional third segment after a second colon is treated as a memo.
 pub(crate) fn parse_entry_arg(s: &str, currency: Currency) -> Result<PostingLine, CliError> {
-    let parts: Vec<&str> = s.splitn(3, ':').collect();
-
-    if parts.len() < 2 {
-        return Err(CliError::Usage(format!(
-            "invalid entry format '{s}': expected 'account_code:amount' or 'account_code:amount:memo'"
-        )));
-    }
-
-    let code = parts[0];
-    let amount_str = parts[1];
-
-    if code.is_empty() {
-        return Err(CliError::Usage(format!(
-            "invalid entry format '{s}': account code is empty"
-        )));
-    }
-
-    let amount = parse_posting_amount(amount_str, currency)?;
-    let memo = if parts.len() == 3 && !parts[2].is_empty() {
-        Some(parts[2].to_string())
-    } else {
-        None
-    };
-
-    Ok(PostingLine {
-        account_code: code.to_owned(),
-        amount,
-        memo,
-    })
+    (s.parse::<MajorPostingLine>()?, currency).try_into()
 }
 
-fn parse_posting_amount(input: &str, currency: Currency) -> Result<PositiveMinorUnits, CliError> {
-    let minor = parse_amount_to_minor(input.trim(), currency)?;
-    PositiveMinorUnits::try_from(minor).map_err(|_| {
-        let amount =
-            crate::output::amounts::format_money(Money::from_minor(i128::from(minor), currency));
-        CliError::Validation(format!(
-            "entry amount must be positive, got {amount} {currency}"
-        ))
-    })
+/// An account and decimal line before applying the journal's currency.
+pub struct MajorPostingLine {
+    account_code: AccountCode,
+    amount: MajorAmount,
+    memo: Option<String>,
+}
+
+impl From<(AccountCode, MajorAmount, Option<String>)> for MajorPostingLine {
+    fn from((account_code, amount, memo): (AccountCode, MajorAmount, Option<String>)) -> Self {
+        Self {
+            account_code,
+            amount,
+            memo,
+        }
+    }
+}
+
+impl std::str::FromStr for MajorPostingLine {
+    type Err = CliError;
+
+    fn from_str(line: &str) -> Result<Self, Self::Err> {
+        let (code, rest) = line.split_once(':').ok_or_else(|| {
+            CliError::Usage(format!(
+                "invalid entry format '{line}': expected 'account_code:amount' or 'account_code:amount:memo'"
+            ))
+        })?;
+        if code.is_empty() {
+            return Err(CliError::Usage(format!(
+                "invalid entry format '{line}': account code is empty"
+            )));
+        }
+        let (amount, memo) = rest.split_once(':').map_or((rest, None), |(amount, memo)| {
+            (amount, Some(memo.to_owned()))
+        });
+        let amount = amount.trim().parse()?;
+        Ok(Self::from((account_code(code)?, amount, memo)))
+    }
+}
+
+pub(crate) fn account_code(raw: &str) -> Result<AccountCode, CliError> {
+    raw.parse()
+        .map_err(|error: beankeeper::types::AccountCodeError| {
+            CliError::Validation(error.to_string())
+        })
 }
 
 pub(crate) struct PostingLine {
-    pub(crate) account_code: String,
+    pub(crate) account_code: AccountCode,
     pub(crate) amount: PositiveMinorUnits,
     pub(crate) memo: Option<String>,
 }
 
-pub(crate) fn structured_posting_line(
-    account: String,
-    amount: &str,
-    memo: Option<String>,
-    currency: Currency,
-) -> Result<PostingLine, CliError> {
-    if account.is_empty() {
-        return Err(CliError::Usage("entry account code is empty".into()));
+impl TryFrom<(AccountCode, MajorAmount, Option<String>, Currency)> for PostingLine {
+    type Error = CliError;
+
+    fn try_from(
+        (account_code, amount, memo, currency): (
+            AccountCode,
+            MajorAmount,
+            Option<String>,
+            Currency,
+        ),
+    ) -> Result<Self, Self::Error> {
+        (
+            MajorPostingLine::from((account_code, amount, memo)),
+            currency,
+        )
+            .try_into()
     }
-    Ok(PostingLine {
-        account_code: account,
-        amount: parse_posting_amount(amount, currency)?,
-        memo: memo.filter(|memo| !memo.is_empty()),
-    })
 }
 
-/// Parse an amount string to minor currency units.
-///
-/// The input is always interpreted as major units:
-/// - `50` -> 50 dollars -> 5000 cents (for USD, 2 minor units)
-/// - `50.00` -> 50 dollars -> 5000 cents
-/// - `0.50` -> 0.50 dollars -> 50 cents
-/// - `-12.34` -> -1234 cents (an optional leading `-` or `+` applies to the
-///   whole amount, fractional part included)
-///
-/// Both the whole and fractional parts must be plain ASCII digits; the whole
-/// part must be present (`.5` is rejected, `0.5` is fine).
-pub(crate) fn parse_amount_to_minor(s: &str, currency: Currency) -> Result<i64, CliError> {
-    let minor_units = currency.minor_units();
-    let multiplier = 10i64.pow(u32::from(minor_units));
+impl TryFrom<(MajorPostingLine, Currency)> for PostingLine {
+    type Error = CliError;
 
-    let (negative, unsigned) = match s.as_bytes().first() {
-        Some(b'-') => (true, &s[1..]),
-        Some(b'+') => (false, &s[1..]),
-        _ => (false, s),
-    };
-    let (whole_str, frac_str) = match unsigned.split_once('.') {
-        Some((w, f)) => (w, Some(f)),
-        None => (unsigned, None),
-    };
-
-    let all_digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
-    if whole_str.is_empty() || !all_digits(whole_str) {
-        return Err(CliError::Usage(format!(
-            "invalid amount '{s}': not a valid number"
-        )));
+    fn try_from((line, currency): (MajorPostingLine, Currency)) -> Result<Self, Self::Error> {
+        let MajorPostingLine {
+            account_code,
+            amount,
+            memo,
+        } = line;
+        let minor = amount.minor_units(currency)?;
+        let amount = PositiveMinorUnits::try_from(minor).map_err(|_| {
+            let amount = crate::output::amounts::format_money(Money::from_minor(
+                i128::from(minor),
+                currency,
+            ));
+            CliError::Validation(format!(
+                "entry amount must be positive, got {amount} {currency}"
+            ))
+        })?;
+        Ok(Self {
+            account_code,
+            amount,
+            memo: memo.filter(|memo| !memo.is_empty()),
+        })
     }
-    let whole: i64 = whole_str
-        .parse()
-        .map_err(|_| CliError::Validation(format!("amount '{s}' is too large")))?;
-
-    let frac: i64 = match frac_str {
-        None => 0,
-        Some(f) => {
-            if !all_digits(f) {
-                return Err(CliError::Usage(format!(
-                    "invalid amount '{s}': cannot parse fractional part"
-                )));
-            }
-            if f.len() > usize::from(minor_units) {
-                return Err(CliError::Validation(format!(
-                    "amount '{s}' has too many decimal places for {currency} \
-                     (max {minor_units})"
-                )));
-            }
-            // Pad fractional part to minor_units digits ("5" -> "50" for USD).
-            let padded = format!("{f:0<width$}", width = usize::from(minor_units));
-            if padded.is_empty() {
-                0
-            } else {
-                padded.parse().map_err(|_| {
-                    CliError::Usage(format!(
-                        "invalid amount '{s}': cannot parse fractional part"
-                    ))
-                })?
-            }
-        }
-    };
-
-    let magnitude = whole
-        .checked_mul(multiplier)
-        .and_then(|w| w.checked_add(frac))
-        .ok_or_else(|| CliError::Validation(format!("amount '{s}' is too large")))?;
-
-    Ok(if negative { -magnitude } else { magnitude })
 }
 
-/// Execute a proposal operation through the shared CLI/MCP implementation.
-fn execute_proposal(
-    db: &Db,
-    company: &CompanySlug,
-    args: &TxnProposalCommand,
-    actor: &db::Actor,
-) -> Result<serde_json::Value, CliError> {
-    let value = match args {
-        TxnProposalCommand::Propose(args) => {
-            return execute_proposal_posting_json(
-                db,
-                company,
-                &PostingRequest::try_from(args)?,
-                actor,
-            );
-        }
-        TxnProposalCommand::Proposals { include_rejected } => {
-            let rows = db::proposals::list(db.read(), company, actor, *include_rejected)?;
-            serde_json::to_value(
-                rows.iter()
-                    .map(super::posting_output::ProposalJson::from)
-                    .collect::<Vec<_>>(),
-            )
-        }
-        TxnProposalCommand::Approve { id } => {
-            let row = Granted::<Approve>::with_db(db, actor, |grant| {
-                db::audit::approve_proposal(grant, company, id)
-            })?;
-            serde_json::to_value(super::posting_output::ProposalJson::from(&row))
-        }
-        TxnProposalCommand::Reject { id, reason } => {
-            let row = Granted::<ResolveProposal>::with_db(db, actor, |grant| {
-                db::audit::reject_proposal(grant, company, id, reason.as_deref())
-            })?;
-            serde_json::to_value(super::posting_output::ProposalJson::from(&row))
-        }
-    };
-    value.map_err(|error| CliError::General(error.to_string()))
+/// A parsed decimal in major currency units, before applying currency scale.
+#[derive(Clone, Debug)]
+pub struct MajorAmount {
+    source: Box<str>,
+    negative: bool,
+    whole: i64,
+    fractional_digits: usize,
+    fraction: i64,
+    nonzero: bool,
 }
 
-pub(crate) enum PostingOutcome {
+impl FromStr for MajorAmount {
+    type Err = CliError;
+
+    fn from_str(source: &str) -> Result<Self, Self::Err> {
+        let negative = source.starts_with('-');
+        let unsigned = source.strip_prefix(['+', '-']).unwrap_or(source);
+        let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+        let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+        if whole.is_empty() || !digits(whole) {
+            return Err(CliError::Usage(format!(
+                "invalid amount '{source}': not a valid number"
+            )));
+        }
+        if !digits(fraction) {
+            return Err(CliError::Usage(format!(
+                "invalid amount '{source}': cannot parse fractional part"
+            )));
+        }
+        let whole = whole
+            .parse()
+            .map_err(|_| CliError::Validation(format!("amount '{source}' is too large")))?;
+        // More than 18 digits exceeds every supported currency's precision.
+        // Retain the original length for the currency-specific diagnostic.
+        let value = fraction
+            .bytes()
+            .take(18)
+            .fold(0_i64, |value, digit| value * 10 + i64::from(digit - b'0'));
+        Ok(Self {
+            source: source.into(),
+            negative,
+            whole,
+            fractional_digits: fraction.len(),
+            fraction: value,
+            nonzero: whole != 0 || fraction.bytes().any(|digit| digit != b'0'),
+        })
+    }
+}
+
+impl From<u32> for MajorAmount {
+    fn from(value: u32) -> Self {
+        Self {
+            source: value.to_string().into_boxed_str(),
+            negative: false,
+            whole: i64::from(value),
+            fractional_digits: 0,
+            fraction: 0,
+            nonzero: value != 0,
+        }
+    }
+}
+
+impl std::fmt::Display for MajorAmount {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.source)
+    }
+}
+
+impl MajorAmount {
+    /// Compare the parsed value to zero independent of currency scale.
+    #[must_use]
+    pub fn sign(&self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        if !self.nonzero {
+            Ordering::Equal
+        } else if self.negative {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    }
+
+    /// Scale the amount for the supplied currency.
+    ///
+    /// # Errors
+    /// Rejects values beyond the currency's precision or the ledger's minor-unit range.
+    pub fn minor_units(&self, currency: Currency) -> Result<i64, CliError> {
+        let scale = currency.minor_units();
+        let places = u8::try_from(self.fractional_digits)
+            .ok()
+            .and_then(|digits| scale.checked_sub(digits))
+            .ok_or_else(|| {
+                CliError::Validation(format!(
+                    "amount '{self}' has too many decimal places for {currency} (max {scale})"
+                ))
+            })?;
+        let fraction_scale = u32::from(places);
+        let magnitude = self
+            .whole
+            .checked_mul(10_i64.pow(u32::from(scale)))
+            .and_then(|whole| whole.checked_add(self.fraction * 10_i64.pow(fraction_scale)))
+            .ok_or_else(|| CliError::Validation(format!("amount '{self}' is too large")))?;
+        Ok(if self.negative { -magnitude } else { magnitude })
+    }
+}
+
+/// Parse a major-unit value and scale it to the selected currency.
+pub(crate) fn parse_amount_to_minor(raw: &str, currency: Currency) -> Result<i64, CliError> {
+    raw.parse::<MajorAmount>()?.minor_units(currency)
+}
+
+pub(super) enum PostingOutcome {
     Posted(transactions::PostResult),
     Proposed(proposals::ProposalCreation),
 }
 
-impl PostingOutcome {
-    pub(crate) fn into_data(self) -> Result<serde_json::Value, CliError> {
-        match self {
-            Self::Posted(result) => output::json::post_result_data(result),
-            Self::Proposed(result) => super::posting_output::proposal_creation_data(result),
-        }
-    }
+/// A decoded posting with positive lines and equal debit and credit totals.
+pub struct PostingRequest(PostingDraft);
+
+pub(crate) struct PostingDraft {
+    pub(crate) description: String,
+    pub(crate) currency: Currency,
+    pub(crate) date: PostingDate,
+    pub(crate) debit: Vec<PostingLine>,
+    pub(crate) credit: Vec<PostingLine>,
+    pub(crate) metadata: Option<String>,
+    pub(crate) annotations: Vec<(String, String)>,
+    pub(crate) correlate: Option<crate::db::ids::PartnerTransactionId>,
+    pub(crate) reference: Option<super::reference::TransactionReference>,
+    pub(crate) on_conflict: transactions::ConflictStrategy,
+    pub(crate) tax: HashMap<String, String>,
 }
 
-/// Shared request after each transport has decoded its posting inputs.
-pub(crate) struct PostingRequest {
-    pub description: String,
-    pub currency: Currency,
-    pub date: chrono::NaiveDate,
-    pub debit: Vec<PostingLine>,
-    pub credit: Vec<PostingLine>,
-    pub metadata: Option<String>,
-    pub annotations: Vec<(String, String)>,
-    pub correlate: Option<crate::db::ids::PartnerTransactionId>,
-    pub reference: Option<super::reference::TransactionReference>,
-    pub on_conflict: crate::cli::OnConflictArg,
-    pub tax: HashMap<String, String>,
+impl TryFrom<PostingDraft> for PostingRequest {
+    type Error = CliError;
+
+    fn try_from(draft: PostingDraft) -> Result<Self, Self::Error> {
+        let error = |error| transactions::command_posting_error(error, draft.currency);
+        match (draft.debit.as_slice(), draft.credit.as_slice()) {
+            ([], []) => return Err(error(TransactionError::NoEntries)),
+            ([_], []) | ([], [_]) => return Err(error(TransactionError::SingleEntry)),
+            _ => {}
+        }
+        let total = |lines: &[PostingLine]| {
+            lines
+                .iter()
+                .try_fold(Amount::ZERO, |total, line| {
+                    total.checked_add(line.amount.into())
+                })
+                .ok_or_else(|| error(TransactionError::Money(MoneyError::Overflow)))
+        };
+        let total_debits = total(&draft.debit)?;
+        let total_credits = total(&draft.credit)?;
+        if total_debits != total_credits {
+            return Err(error(TransactionError::Unbalanced {
+                total_debits,
+                total_credits,
+            }));
+        }
+        Ok(Self(draft))
+    }
 }
 
 impl TryFrom<&PostingArgs> for PostingRequest {
     type Error = CliError;
 
     fn try_from(args: &PostingArgs) -> Result<Self, Self::Error> {
-        let currency = args.currency.resolve()?;
-        Ok(Self {
+        let currency = crate::request::CurrencySetting::from(args.currency).try_into()?;
+        Self::try_from(PostingDraft {
             description: args.description.clone(),
             currency,
             date: resolve_posting_date(args.date.as_ref())?,
@@ -705,7 +432,7 @@ impl TryFrom<&PostingArgs> for PostingRequest {
                 .map(str::parse)
                 .transpose()
                 .map_err(|error| CliError::Validation(format!("invalid reference: {error}")))?,
-            on_conflict: args.on_conflict,
+            on_conflict: args.on_conflict.map(Into::into).unwrap_or_default(),
             tax: parse_tax_args(&args.tax)?,
         })
     }
@@ -713,14 +440,15 @@ impl TryFrom<&PostingArgs> for PostingRequest {
 
 fn resolve_posting_date(
     date: Option<&crate::cli::CalendarDateArg>,
-) -> Result<chrono::NaiveDate, CliError> {
-    date.map_or_else(
-        || Ok(chrono::Local::now().date_naive()),
-        crate::cli::CalendarDateArg::posting_date,
-    )
+) -> Result<PostingDate, CliError> {
+    Ok(date
+        .map(crate::cli::CalendarDateArg::posting_date)
+        .transpose()?
+        .map(Into::into)
+        .unwrap_or_default())
 }
 
-pub(crate) fn execute_posting(
+fn execute_posting(
     db: &Db,
     company: &CompanySlug,
     request: &PostingRequest,
@@ -740,34 +468,32 @@ pub(crate) fn execute_posting(
     })
 }
 
-pub(crate) fn execute_proposal_posting_json(
+fn execute_proposal_posting(
     db: &Db,
     company: &CompanySlug,
     request: &PostingRequest,
     actor: &db::Actor,
-) -> Result<serde_json::Value, CliError> {
+) -> Result<proposals::ProposalCreation, CliError> {
     db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| {
         Granted::<Propose>::with_db(db, actor, |grant| {
             proposals::create_from_command(grant, params)
         })
     })
-    .and_then(super::posting_output::proposal_creation_data)
 }
 
-pub(super) fn execute_direct_posting_json(
+pub(super) fn execute_direct_posting(
     db: &Db,
     company: &CompanySlug,
     request: &PostingRequest,
     actor: &db::Actor,
-) -> Result<serde_json::Value, CliError> {
+) -> Result<transactions::PostResult, CliError> {
     db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| {
         Granted::<Post>::with_db(db, actor, |grant| {
             transactions::post_from_source(grant, params, transactions::PostingSource::Command)
         })
     })
-    .and_then(output::json::post_result_data)
 }
 
 fn with_post_params<T>(
@@ -776,7 +502,7 @@ fn with_post_params<T>(
     actor: &db::Actor,
     action: impl FnOnce(&transactions::PostTransactionParams<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    let PostingRequest {
+    let PostingDraft {
         description,
         currency,
         date,
@@ -788,7 +514,7 @@ fn with_post_params<T>(
         reference,
         on_conflict,
         tax: tax_map,
-    } = request;
+    } = &request.0;
     let currency = *currency;
     let metadata = db::metadata::build_post_metadata(metadata.as_deref(), annotations)?;
     let metadata = metadata.as_deref();
@@ -799,11 +525,11 @@ fn with_post_params<T>(
         (parsed_credits, beankeeper::types::DebitOrCredit::Credit),
     ] {
         db_entries.extend(lines.iter().map(|line| transactions::PostEntryParams {
-            account_code: line.account_code.clone(),
+            account_code: line.account_code.as_str().to_owned(),
             direction,
             amount: line.amount,
             memo: line.memo.clone(),
-            tax_category: tax_map.get(&line.account_code).cloned(),
+            tax_category: tax_map.get(line.account_code.as_str()).cloned(),
         }));
     }
 
@@ -816,13 +542,13 @@ fn with_post_params<T>(
         description,
         metadata,
         currency,
-        date: *date,
+        date: (*date).into(),
         entries: &db_entries,
         correlate: *correlate,
         reference: reference
             .as_ref()
             .map(super::reference::TransactionReference::as_str),
-        on_conflict: conflict_strategy(*on_conflict),
+        on_conflict: *on_conflict,
         actor,
     };
 
@@ -834,29 +560,13 @@ fn parse_entries(args: &[String], currency: Currency) -> Result<Vec<PostingLine>
         .collect()
 }
 
-/// Map the `--on-conflict` flag to the storage strategy.
-fn conflict_strategy(arg: crate::cli::OnConflictArg) -> transactions::ConflictStrategy {
-    match arg {
-        crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
-        crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
+impl From<crate::cli::OnConflictArg> for transactions::ConflictStrategy {
+    fn from(argument: crate::cli::OnConflictArg) -> Self {
+        match argument {
+            crate::cli::OnConflictArg::Error => Self::Error,
+            crate::cli::OnConflictArg::Skip => Self::Skip,
+        }
     }
-}
-
-/// Report a posted (or skipped) transaction: JSON on stdout, status on stderr.
-fn print_posting_outcome(
-    cli: &Cli,
-    company: &str,
-    outcome: PostingOutcome,
-) -> Result<(), CliError> {
-    if !cli.verbosity.quiet {
-        describe_posting(&outcome);
-    }
-    if resolve_format(None, cli) == OutputFormat::Json {
-        let meta = cli.meta(Operation::TxnPost, Some(company));
-        let rendered = output::json::envelope_ok(meta, outcome.into_data()?)?;
-        println!("{rendered}");
-    }
-    Ok(())
 }
 
 fn describe_posting(outcome: &PostingOutcome) {
@@ -872,158 +582,6 @@ fn describe_posting(outcome: &PostingOutcome) {
             eprintln!("[skipped] duplicate reference; transaction already exists (id: {id})");
         }
     }
-}
-
-/// Execute the `txn list` subcommand.
-fn run_list(
-    cli: &Cli,
-    company: &Company<'_>,
-    params: &transactions::ListTransactionParams<'_>,
-    format: OutputFormat,
-    use_color: bool,
-    out: &mut dyn Write,
-) -> Result<(), CliError> {
-    let rows = transactions::list_transactions(company, params)?;
-    let total = transactions::count_transactions(company, params)?;
-    let pagination = output::json::Pagination::new(params.limit, params.offset, rows.len(), total);
-
-    match format {
-        OutputFormat::Table => {
-            let rendered = output::table::render_transaction_list(&rows, use_color);
-            writeln!(out, "{rendered}")?;
-        }
-        OutputFormat::Json => {
-            // For JSON, include entries for each transaction
-            let mut entries_map: HashMap<crate::db::ids::TransactionId, Vec<db::EntryRow>> =
-                HashMap::new();
-            for txn in &rows {
-                let entries = transactions::get_entries_for_transaction(company, txn.id)?;
-                entries_map.insert(txn.id, entries);
-            }
-            let meta = cli
-                .meta(Operation::TxnList, Some(company.slug().as_str()))
-                .with_pagination(pagination.clone());
-            let rendered = output::json::render_transactions(&rows, &entries_map, meta)?;
-            writeln!(out, "{rendered}")?;
-        }
-        OutputFormat::Csv => {
-            let rendered = output::csv::render_transactions(&rows)?;
-            write!(out, "{rendered}")?;
-        }
-    }
-
-    if !cli.verbosity.quiet {
-        let count = rows.len();
-        if format == OutputFormat::Table && pagination.has_more {
-            eprintln!("showing {count} of {total} transactions (use --limit/--offset)");
-        } else {
-            eprintln!(
-                "{count} {noun}",
-                noun = if count == 1 {
-                    "transaction"
-                } else {
-                    "transactions"
-                }
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// Execute the `txn list --count` subcommand.
-fn run_count(
-    cli: &Cli,
-    company: &Company<'_>,
-    params: &transactions::ListTransactionParams<'_>,
-    format: OutputFormat,
-    out: &mut dyn Write,
-) -> Result<(), CliError> {
-    let count = transactions::count_transactions(company, params)?;
-
-    match format {
-        OutputFormat::Json => {
-            let meta = cli.meta(Operation::TxnList, Some(company.slug().as_str()));
-            let rendered = output::json::render_count(count, meta)?;
-            writeln!(out, "{rendered}")?;
-        }
-        OutputFormat::Table | OutputFormat::Csv => {
-            writeln!(out, "{count}")?;
-        }
-    }
-
-    if !cli.verbosity.quiet {
-        eprintln!(
-            "{count} {noun}",
-            noun = if count == 1 {
-                "transaction"
-            } else {
-                "transactions"
-            }
-        );
-    }
-
-    Ok(())
-}
-
-/// Execute the `txn show` subcommand.
-fn run_show(
-    db_handle: &Db,
-    company: &str,
-    id: crate::db::ids::TransactionId,
-    display: (OutputFormat, bool),
-    out: &mut dyn Write,
-    meta: output::json::Meta,
-) -> Result<(), CliError> {
-    let (format, use_color) = display;
-    let company_scope = Company::bind(db_handle.read(), company.parse()?)?;
-    let (txn, entries) = transactions::get_transaction(&company_scope, id)?;
-    let att_rows = attachments::list_attachments(&company_scope, id)?;
-    let mut clearings: HashMap<crate::db::ids::EntryId, Vec<db::clearings::Clearing>> =
-        HashMap::new();
-    for e in &entries {
-        clearings.insert(e.id, db::clearings::list_clearings(&company_scope, e.id)?);
-    }
-
-    // Determine currency minor units for formatting
-
-    match format {
-        OutputFormat::Table => {
-            let rendered = output::table::render_transaction_detail_with_clearings(
-                &txn,
-                &entries,
-                Some(&clearings),
-                use_color,
-            )?;
-            writeln!(out, "{rendered}")?;
-            if !att_rows.is_empty() {
-                let att_rendered = output::table::render_attachments(&att_rows, use_color);
-                writeln!(out, "{att_rendered}")?;
-            }
-        }
-        OutputFormat::Json => {
-            let mut entries_map: HashMap<crate::db::ids::TransactionId, Vec<db::EntryRow>> =
-                HashMap::new();
-            entries_map.insert(txn.id, entries);
-            let mut att_map: HashMap<crate::db::ids::TransactionId, Vec<db::AttachmentRow>> =
-                HashMap::new();
-            att_map.insert(txn.id, att_rows);
-            let rendered = output::json::render_transactions_with_attachments(
-                &[txn],
-                &entries_map,
-                &att_map,
-                &clearings,
-                meta,
-            )?;
-            writeln!(out, "{rendered}")?;
-        }
-        OutputFormat::Csv => {
-            let rendered = output::csv::render_transactions(&[txn])?;
-            write!(out, "{rendered}")?;
-        }
-    }
-
-    Ok(())
 }
 
 /// Execute the `txn attach` subcommand.
@@ -1100,60 +658,11 @@ fn run_attach(
 
     Ok(())
 }
-pub(super) fn run_reconcile_all(cli: &Cli, scope: AllCompanies) -> Result<(), CliError> {
-    let db_handle = cli.open_db()?;
-    render_reconcile(
-        &db_handle,
-        scope,
-        resolve_format(None, cli),
-        output::should_use_color(cli.verbosity.no_color),
-        &mut std::io::stdout(),
-        cli.meta(Operation::TxnReconcile, None),
-    )
-}
-
-fn render_reconcile(
-    db_handle: &Db,
-    scope: AllCompanies,
-    format: OutputFormat,
-    use_color: bool,
-    out: &mut dyn Write,
-    meta: output::json::Meta,
-) -> Result<(), CliError> {
-    let orphans = transactions::find_orphaned_correlations(db_handle.read(), scope)?;
-
-    if orphans.is_empty() {
-        match format {
-            OutputFormat::Json => {
-                let rendered = output::json::render_orphaned_correlations(&[], meta)?;
-                writeln!(out, "{rendered}")?;
-            }
-            OutputFormat::Csv => {
-                writeln!(out, "transaction_id,company,description,date,partner_id")?;
-            }
-            OutputFormat::Table => eprintln!("[ok] no orphaned correlations found"),
-        }
-        return Ok(());
-    }
-
-    match format {
-        OutputFormat::Table => {
-            let rendered = output::table::render_orphaned_correlations(&orphans, use_color);
-            writeln!(out, "{rendered}")?;
-            eprintln!("[!!] {} orphaned correlation(s) found", orphans.len());
-        }
-        OutputFormat::Json => {
-            let rendered = output::json::render_orphaned_correlations(&orphans, meta)?;
-            writeln!(out, "{rendered}")?;
-        }
-        OutputFormat::Csv => {
-            let rendered = output::csv::render_orphaned_correlations(&orphans)?;
-            write!(out, "{rendered}")?;
-        }
-    }
-
-    // Exit code 3 (validation error) when orphans found — useful in pipelines.
-    Err(orphaned_correlations(orphans.len()))
+pub(super) fn run_reconcile_all(cli: &Cli, _scope: AllCompanies) -> Result<(), CliError> {
+    let db = cli.open_db()?;
+    LedgerRequest::Transaction(TxnRequest::Reconcile)
+        .execute(&db, &cli.principal())?
+        .render(cli, None)
 }
 
 fn orphaned_correlations(count: usize) -> CliError {
@@ -1210,13 +719,10 @@ mod tests {
         let crate::cli::Command::Txn(txn) = &cli.command else {
             panic!("expected transaction command");
         };
-        execute_json(
-            &cli,
-            db,
-            "acme",
-            txn.command.as_ref(),
-            &db::Actor::new("mcp:test".parse()?),
-        )
+        let company = "acme".parse()?;
+        let response = TxnRequest::try_from((Some(&company), txn.command.as_ref()))?
+            .execute(db, &db::Actor::new("mcp:test".parse()?))?;
+        serde_json::to_value(response).map_err(|error| CliError::General(error.to_string()))
     }
 
     #[test]
@@ -1343,7 +849,7 @@ mod tests {
     #[test]
     fn shared_clear_batch_is_atomic_and_accepts_memory_input() -> Result<(), CliError> {
         use super::super::txn_clear::{
-            ClearOptions, ClearRequestTarget, execute_json, parse_batch,
+            ClearOptions, ClearRequestTarget, ClearanceRequest, parse_batch,
         };
 
         let db = fixture()?;
@@ -1368,20 +874,21 @@ mod tests {
         }
         let actor = db::Actor::new("mcp:batch-test".parse()?);
         let run_batch = |input| {
-            execute_json(
-                &db,
-                &"acme".parse()?,
-                &actor,
+            let request = ClearanceRequest::try_from((
                 ClearRequestTarget::Batch {
-                    account: "1000",
+                    account: "1000"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("fixture account: {error}")),
                     lines: parse_batch(input)?,
                 },
                 ClearOptions {
-                    date: chrono::NaiveDate::from_ymd_opt(2026, 3, 2),
-                    statement: Some("batch-statement"),
-                    status: crate::cli::ClearanceArg::Cleared,
+                    date: chrono::NaiveDate::from_ymd_opt(2026, 3, 2).map(Into::into),
+                    statement: Some("batch-statement".into()),
+                    status: Some(crate::cli::ClearanceArg::Cleared),
                 },
-            )
+            ))?;
+            let result = request.execute(&db, &"acme".parse()?, &actor)?;
+            serde_json::to_value(result).map_err(|error| CliError::General(error.to_string()))
         };
         assert!(run_batch("batch-a,5\nbatch-b,11").is_err());
         let cleared: i64 =
@@ -1488,7 +995,7 @@ mod tests {
             memo,
         } = parse_entry_arg("1000:50", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
-        assert_eq!(code, "1000");
+        assert_eq!(code.as_str(), "1000");
         assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo, None);
     }
@@ -1501,7 +1008,7 @@ mod tests {
             memo,
         } = parse_entry_arg("1000:50.00", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
-        assert_eq!(code, "1000");
+        assert_eq!(code.as_str(), "1000");
         assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo, None);
     }
@@ -1514,7 +1021,7 @@ mod tests {
             memo,
         } = parse_entry_arg("1000:50:Net pay", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
-        assert_eq!(code, "1000");
+        assert_eq!(code.as_str(), "1000");
         assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo.as_deref(), Some("Net pay"));
     }
@@ -1527,7 +1034,7 @@ mod tests {
             memo,
         } = parse_entry_arg("1000:50:", Currency::USD)
             .unwrap_or_else(|e| panic!("parse failed: {e}"));
-        assert_eq!(code, "1000");
+        assert_eq!(code.as_str(), "1000");
         assert_eq!(amount.minor_units(), 5000);
         assert_eq!(memo, None);
     }

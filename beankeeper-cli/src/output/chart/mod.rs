@@ -13,7 +13,6 @@ pub(crate) use source::{
 use beankeeper::types::{Amount, Currency, Money, MoneyError};
 use serde::Serialize;
 
-use crate::cli::{Cli, Command, ReportCommand};
 use crate::error::CliError;
 use crate::output::amounts::format_money;
 
@@ -221,47 +220,13 @@ fn compact(
     Ok((rows, count))
 }
 
-pub(crate) fn validate_request(cli: &Cli) -> Result<(), CliError> {
-    if !cli.output.chart {
-        return if cli.output.chart_all {
-            Err(CliError::Usage("--chart-all requires --chart".into()))
-        } else {
-            Ok(())
-        };
-    }
-    if !cli.is_json() {
-        return Err(CliError::Usage(
-            "--chart requires --json or --format json".into(),
-        ));
-    }
-    match &cli.command {
-        Command::Summary(_) => Ok(()),
-        Command::Report(args) => match &args.command {
-            ReportCommand::Trend(_)
-            | ReportCommand::CashFlow(_)
-            | ReportCommand::IncomeStatement { .. }
-            | ReportCommand::TrialBalance { period: Some(_), .. }
-            | ReportCommand::TrialBalance { compare: Some(_), .. } => Ok(()),
-            _ => Err(CliError::Usage("--chart supports summary, trend, cash-flow, income-statement and period/comparison trial-balance reports".into())),
-        },
-        _ => Err(CliError::Usage("--chart supports summary and financial reports".into())),
-    }
-}
-
-pub(crate) fn requested(
-    cli: &Cli,
-    project: impl FnOnce() -> Result<Chart, CliError>,
-) -> Result<Option<Chart>, CliError> {
-    cli.output.chart.then(project).transpose()
-}
-
 /// Attach an already computed chart to the existing report data at serialization.
 #[derive(Serialize)]
-pub(crate) struct WithChart<T> {
+pub(crate) struct WithChart<T, C = Chart> {
     #[serde(flatten)]
     pub(crate) report: T,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) chart: Option<Chart>,
+    pub(crate) chart: Option<C>,
 }
 
 #[cfg(test)]

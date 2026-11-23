@@ -47,8 +47,35 @@ pub fn create_account(
     grant: Granted<'_, Admin>,
     params: &CreateAccountParams<'_>,
 ) -> Result<AccountRow, CliError> {
+    let code = AccountCode::new(params.code).map_err(|error| {
+        CliError::Validation(format!("invalid account code '{}': {error}", params.code))
+    })?;
+    create_validated_account(
+        grant,
+        &ValidatedAccountCreation {
+            company_slug: params.company_slug,
+            code: &code,
+            name: params.name,
+            account_type: params.account_type,
+            default_tax_category: params.default_tax_category,
+        },
+    )
+}
+
+pub(crate) struct ValidatedAccountCreation<'a> {
+    pub(crate) company_slug: &'a CompanySlug,
+    pub(crate) code: &'a AccountCode,
+    pub(crate) name: &'a str,
+    pub(crate) account_type: AccountType,
+    pub(crate) default_tax_category: Option<&'a str>,
+}
+
+pub(crate) fn create_validated_account(
+    grant: Granted<'_, Admin>,
+    params: &ValidatedAccountCreation<'_>,
+) -> Result<AccountRow, CliError> {
     grant.mutate("sp_account_create", |tx, actor| {
-        audit::catalog::store_account(tx, actor, params)
+        audit::catalog::store_validated_account(tx, actor, params)
     })
 }
 

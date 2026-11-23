@@ -281,7 +281,7 @@ fn transaction_list_validates_pagination_inputs() -> TestResult {
     assert!(matches!(
         cli.command,
         BkCommand::Txn(args) if matches!(*args.command, TxnCommand::List(beankeeper_cli::cli::TxnListArgs {
-            limit: beankeeper_cli::cli::TxnPageLimit::All,
+            limit: Some(beankeeper_cli::cli::TxnPageLimit::All),
             ..
         }))
     ));

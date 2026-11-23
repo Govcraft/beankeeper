@@ -16,10 +16,9 @@
 //! clearings) live in [`crate::db::clearings`]; every change is audited by
 //! [`crate::db::audit`].
 
-use crate::operation::Operation;
 use std::{collections::HashSet, fmt, num::NonZeroU64, str::FromStr};
 
-use beankeeper::types::{Currency, DebitOrCredit, Money};
+use beankeeper::types::{AccountCode, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
 use serde::Serialize;
 
@@ -37,146 +36,140 @@ use crate::identity::{Granted, Reconcile};
 use crate::output;
 use crate::output::amounts::{MoneyField, OptionalMoneyField, format_money_grouped};
 
-/// Execute `bk txn clear`.
-///
-/// # Errors
-///
-/// Returns [`CliError`] for invalid arguments, unknown or ambiguous entries,
-/// over-clearing, or database failures. A failing batch changes nothing.
-pub fn run(
-    cli: &Cli,
-    db_handle: &Db,
-    company: &str,
-    args: &TxnClearArgs,
-    meta: Option<output::json::Meta>,
-) -> Result<(), CliError> {
-    let target = resolve_target(args)?;
-    let options = cli_options(args)?;
-    let actor = cli.principal();
-    let result = compute(db_handle, &company.parse()?, &actor, target, options)?;
-    let format = resolve_format(None, cli);
-    let meta = meta.unwrap_or_else(|| cli.meta(Operation::TxnClear, Some(company)));
-    match &result.items {
-        ClearedItems::Single(item) => render_single(cli, &result.settings, item, format, meta),
-        ClearedItems::Batch(batch) => render_batch(cli, &result.settings, batch, format, meta),
+/// A clearing with a single valid selection and normalized options.
+pub struct ClearanceRequest {
+    target: ClearRequestTarget,
+    settings: ClearanceSettings,
+}
+
+impl TryFrom<(ClearRequestTarget, ClearOptions)> for ClearanceRequest {
+    type Error = CliError;
+
+    fn try_from(
+        (target, options): (ClearRequestTarget, ClearOptions),
+    ) -> Result<Self, Self::Error> {
+        let status = options.status.unwrap_or_default();
+        if status == ClearanceArg::Uncleared {
+            match &target {
+                ClearRequestTarget::Entry {
+                    amount: Some(_), ..
+                } => {
+                    return Err(CliError::Usage(
+                        "--amount cannot be used with --status uncleared".into(),
+                    ));
+                }
+                ClearRequestTarget::Batch { lines, .. }
+                    if lines.0.iter().any(|line| line.amount.is_some()) =>
+                {
+                    return Err(CliError::Usage(
+                        "amounts cannot be used with --status uncleared".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(Self {
+            target,
+            settings: ClearanceSettings {
+                date: options.date.unwrap_or_default().into(),
+                statement: options
+                    .statement
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|statement| !statement.is_empty())
+                    .map(str::to_owned),
+                status,
+            },
+        })
     }
 }
 
-pub(super) fn execute_cli_json(
-    db: &Db,
-    company: &str,
-    args: &TxnClearArgs,
-    actor: &Actor,
-) -> Result<serde_json::Value, CliError> {
-    if args.from_file.is_some() {
-        return Err(CliError::Usage(
-            "MCP batch input must be supplied directly".into(),
-        ));
-    }
-    execute_json(
-        db,
-        &company.parse()?,
-        actor,
-        resolve_target(args)?,
-        cli_options(args)?,
-    )
-}
+impl TryFrom<&TxnClearArgs> for ClearanceRequest {
+    type Error = CliError;
 
-fn cli_options(args: &TxnClearArgs) -> Result<ClearOptions<'_>, CliError> {
-    Ok(ClearOptions {
-        date: args.date.as_ref().map(parse_date).transpose()?,
-        statement: args.statement.as_deref(),
-        status: args.status,
-    })
-}
-
-/// Clear entries from an already decoded target and options.
-pub(crate) fn execute_json(
-    db_handle: &Db,
-    company: &CompanySlug,
-    actor: &Actor,
-    target: ClearRequestTarget<'_>,
-    options: ClearOptions<'_>,
-) -> Result<serde_json::Value, CliError> {
-    db::get_company(db_handle.read(), company)?;
-    let result = compute(db_handle, company, actor, target, options)?;
-    match &result.items {
-        ClearedItems::Single(item) => single_data(&result.settings, item),
-        ClearedItems::Batch(batch) => batch_data(&result.settings, batch),
+    fn try_from(args: &TxnClearArgs) -> Result<Self, Self::Error> {
+        let target = ClearRequestTarget::try_from(args)?;
+        let options = ClearOptions {
+            date: args
+                .date
+                .as_ref()
+                .map(parse_date)
+                .transpose()?
+                .map(Into::into),
+            statement: args.statement.clone(),
+            status: args.status,
+        };
+        Self::try_from((target, options))
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ClearOptions<'a> {
-    pub date: Option<NaiveDate>,
-    pub statement: Option<&'a str>,
-    pub status: ClearanceArg,
+pub(crate) struct ClearOptions {
+    pub date: Option<super::txn::PostingDate>,
+    pub statement: Option<String>,
+    pub status: Option<ClearanceArg>,
 }
 
-pub(crate) enum ClearRequestTarget<'a> {
+pub(crate) enum ClearRequestTarget {
     Entry {
-        selector: EntrySelector<'a>,
+        selector: EntrySelector,
         amount: Option<StatementAmount>,
     },
     Batch {
-        account: &'a str,
+        account: AccountCode,
         lines: StatementBatch,
     },
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum EntrySelector<'a> {
+pub(crate) enum EntrySelector {
     Id {
         transaction_id: TransactionId,
         entry_id: EntryId,
     },
     Reference {
-        reference: &'a str,
-        account: &'a str,
+        reference: TransactionReference,
+        account: AccountCode,
     },
 }
 
-fn resolve_target(args: &TxnClearArgs) -> Result<ClearRequestTarget<'_>, CliError> {
-    let amount = args.amount.as_deref().map(str::parse).transpose()?;
-    match (
-        args.transaction_id,
-        args.entry,
-        args.reference.as_deref(),
-        args.account.as_deref(),
-        args.from_file.as_ref(),
-    ) {
-        (Some(transaction_id), Some(entry_id), None, None, None) => {
-            Ok(ClearRequestTarget::Entry { selector: EntrySelector::Id { transaction_id, entry_id }, amount })
+impl TryFrom<&TxnClearArgs> for ClearRequestTarget {
+    type Error = CliError;
+
+    fn try_from(args: &TxnClearArgs) -> Result<Self, Self::Error> {
+        let amount = args.amount.as_deref().map(str::parse).transpose()?;
+        match (
+            args.transaction_id,
+            args.entry,
+            args.reference.as_deref(),
+            args.account.as_deref(),
+            args.from_file.as_ref(),
+        ) {
+            (Some(transaction_id), Some(entry_id), None, None, None) => {
+                Ok(Self::Entry { selector: EntrySelector::Id { transaction_id, entry_id }, amount })
+            }
+            (None, None, Some(reference), Some(account), None) => {
+                Ok(Self::Entry { selector: EntrySelector::Reference {
+                    reference: reference.parse()?,
+                    account: super::txn::account_code(account)?,
+                }, amount })
+            }
+            (None, None, None, Some(account), Some(source)) if amount.is_none() => {
+                Ok(Self::Batch {
+                    account: super::txn::account_code(account)?,
+                    lines: parse_batch(&source.read_text()?)?,
+                })
+            }
+            _ => Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into())),
         }
-        (None, None, Some(reference), Some(account), None) => {
-            Ok(ClearRequestTarget::Entry { selector: EntrySelector::Reference { reference, account }, amount })
-        }
-        (None, None, None, Some(account), Some(source)) if amount.is_none() => {
-            Ok(ClearRequestTarget::Batch { account, lines: parse_batch(&source.read_text()?)? })
-        }
-        _ => Err(CliError::Usage("specify <TRANSACTION_ID> --entry <ID>, --reference <REF> --account <CODE>, or a batch with --account <CODE>".into())),
     }
 }
 
-fn validate_amount_status(
-    amount: Option<StatementAmount>,
-    status: ClearanceArg,
-) -> Result<(), CliError> {
-    if status == ClearanceArg::Uncleared && amount.is_some() {
-        return Err(CliError::Usage(
-            "--amount cannot be used with --status uncleared".into(),
-        ));
-    }
-    Ok(())
-}
-
-enum ClearedItems<'a> {
+enum ClearedItems {
     Single(Item),
-    Batch(ClearedBatch<'a>),
+    Batch(ClearedBatch),
 }
 
-struct ClearedBatch<'a> {
-    account: &'a str,
+struct ClearedBatch {
+    account: AccountCode,
     items: Vec<Item>,
     total: Option<Money>,
 }
@@ -205,71 +198,83 @@ fn batch_total_overflow() -> CliError {
     CliError::Validation("cleared total exceeds the supported minor-unit range".into())
 }
 
-struct Execution<'a> {
-    settings: ClearanceSettings<'a>,
-    items: ClearedItems<'a>,
+/// A completed single or batch clearance.
+pub struct ClearanceResponse {
+    settings: ClearanceSettings,
+    items: ClearedItems,
 }
 
-fn compute<'a>(
-    db_handle: &Db,
-    company: &CompanySlug,
-    actor: &Actor,
-    selection: ClearRequestTarget<'a>,
-    options: ClearOptions<'a>,
-) -> Result<Execution<'a>, CliError> {
-    let date = options
-        .date
-        .unwrap_or_else(|| chrono::Local::now().date_naive());
-    let statement = options.statement.map(str::trim).filter(|s| !s.is_empty());
-    let status = options.status;
-    let settings = ClearanceSettings {
-        date,
-        statement,
-        status,
-    };
-    let items = Granted::<Reconcile>::with_db(db_handle, actor, |grant| {
-        with_reconciliation(grant, |writer| match selection {
-            ClearRequestTarget::Entry { selector, amount } => {
-                validate_amount_status(amount, status)?;
-                let target = resolve_entry(writer, company, selector)?;
-                let amount = amount.map(|amount| amount.for_entry(&target)).transpose()?;
-                let outcome = apply(writer, company, &settings, &target, amount)?;
-                Ok(ClearedItems::Single(Item::new(None, &target, &outcome)))
-            }
-            ClearRequestTarget::Batch { account, lines } => {
-                run_batch(writer, company, &settings, account, &lines).map(ClearedItems::Batch)
-            }
-        })
-    })?;
-    Ok(Execution { settings, items })
+impl ClearanceRequest {
+    pub(super) fn execute(
+        self,
+        db_handle: &Db,
+        company: &CompanySlug,
+        actor: &Actor,
+    ) -> Result<ClearanceResponse, CliError> {
+        db::get_company(db_handle.read(), company)?;
+        let Self { target, settings } = self;
+        let items = Granted::<Reconcile>::with_db(db_handle, actor, |grant| {
+            with_reconciliation(grant, |writer| match target {
+                ClearRequestTarget::Entry { selector, amount } => {
+                    let target = resolve_entry(writer, company, &selector)?;
+                    let amount = amount.map(|amount| amount.for_entry(&target)).transpose()?;
+                    let outcome = apply(writer, company, &settings, &target, amount)?;
+                    Ok(ClearedItems::Single(Item::new(None, &target, &outcome)))
+                }
+                ClearRequestTarget::Batch { account, lines } => {
+                    run_batch(writer, company, &settings, account, &lines).map(ClearedItems::Batch)
+                }
+            })
+        })?;
+        Ok(ClearanceResponse { settings, items })
+    }
+}
+
+impl Serialize for ClearanceResponse {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.items {
+            ClearedItems::Single(item) => single_data(&self.settings, item).serialize(serializer),
+            ClearedItems::Batch(batch) => batch_data(&self.settings, batch).serialize(serializer),
+        }
+    }
+}
+
+impl ClearanceResponse {
+    pub(super) fn render(&self, cli: &Cli, meta: output::json::Meta) -> Result<(), CliError> {
+        let format = resolve_format(None, cli);
+        match &self.items {
+            ClearedItems::Single(item) => render_single(cli, &self.settings, item, format, meta),
+            ClearedItems::Batch(batch) => render_batch(cli, &self.settings, batch, format, meta),
+        }
+    }
 }
 
 fn resolve_entry(
     writer: &Reconciliation<'_>,
     company: &CompanySlug,
-    selector: EntrySelector<'_>,
+    selector: &EntrySelector,
 ) -> Result<EntryTarget, CliError> {
     match selector {
         EntrySelector::Id {
             transaction_id,
             entry_id,
-        } => writer.entry(company, transaction_id, entry_id),
+        } => writer.entry(company, *transaction_id, *entry_id),
         EntrySelector::Reference { reference, account } => {
-            writer.entry_by_reference(company, reference, account)
+            writer.entry_by_reference(company, reference.as_str(), account.as_str())
         }
     }
 }
 
 /// Shared settings for every entry in one invocation.
-struct ClearanceSettings<'a> {
+struct ClearanceSettings {
     /// `--date`: the cleared date of new clearings and, with
     /// `--status reconciled`, the reconciled date.
     date: NaiveDate,
-    statement: Option<&'a str>,
+    statement: Option<String>,
     status: ClearanceArg,
 }
 
-impl ClearanceSettings<'_> {
+impl ClearanceSettings {
     /// The reconciled date this invocation sets, if any.
     fn reconciled_date(&self) -> Option<NaiveDate> {
         (self.status == ClearanceArg::Reconciled).then_some(self.date)
@@ -379,7 +384,7 @@ impl StatementAmount {
 fn apply(
     writer: &Reconciliation<'_>,
     company: &CompanySlug,
-    ctx: &ClearanceSettings<'_>,
+    ctx: &ClearanceSettings,
     target: &EntryTarget,
     amount: Option<PositiveMinorUnits>,
 ) -> Result<ClearOutcome, CliError> {
@@ -388,7 +393,7 @@ fn apply(
             company,
             target.transaction_id,
             target.entry_id,
-            ctx.statement,
+            ctx.statement.as_deref(),
         ),
         Some(status) => writer.clear_entry(&ClearRequest {
             company_slug: company,
@@ -396,7 +401,7 @@ fn apply(
             entry_id: target.entry_id,
             amount,
             date: ctx.date,
-            statement: ctx.statement,
+            statement: ctx.statement.as_deref(),
             status,
         }),
     }
@@ -517,28 +522,23 @@ fn at_line(line: u64, reference: &str, e: CliError) -> CliError {
     }
 }
 
-fn run_batch<'a>(
+fn run_batch(
     writer: &Reconciliation<'_>,
     company: &CompanySlug,
-    ctx: &ClearanceSettings<'_>,
-    account: &'a str,
+    ctx: &ClearanceSettings,
+    account: AccountCode,
     batch: &StatementBatch,
-) -> Result<ClearedBatch<'a>, CliError> {
+) -> Result<ClearedBatch, CliError> {
     let lines = &batch.0;
     let scope = Company::bind(writer.read(), company.clone())?;
-    db::get_account(&scope, account)?;
-    if ctx.status == ClearanceArg::Uncleared && lines.iter().any(|l| l.amount.is_some()) {
-        return Err(CliError::Usage(
-            "amounts cannot be used with --status uncleared".into(),
-        ));
-    }
+    db::get_account(&scope, account.as_str())?;
 
     // Resolve and validate everything first, then apply atomically.
     let mut resolved = Vec::with_capacity(lines.len());
     for l in lines {
         let wrap = |e| at_line(l.line, l.reference.as_str(), e);
         let target = writer
-            .entry_by_reference(company, l.reference.as_str(), account)
+            .entry_by_reference(company, l.reference.as_str(), account.as_str())
             .map_err(wrap)?;
         let amount = l
             .amount
@@ -655,7 +655,7 @@ const CSV_HEADER: [&str; 12] = [
     "skip_reason",
 ];
 
-fn to_csv(ctx: &ClearanceSettings<'_>, items: &[Item]) -> Result<String, CliError> {
+fn to_csv(ctx: &ClearanceSettings, items: &[Item]) -> Result<String, CliError> {
     let csv_err = |e: csv::Error| CliError::General(format!("CSV serialization failed: {e}"));
     let mut wtr = csv::Writer::from_writer(Vec::new());
     wtr.write_record(CSV_HEADER).map_err(csv_err)?;
@@ -671,7 +671,7 @@ fn to_csv(ctx: &ClearanceSettings<'_>, items: &[Item]) -> Result<String, CliErro
             i.remaining_amount.minor_units().to_string(),
             i.entry_status.to_string(),
             ctx.date.to_string(),
-            ctx.statement.unwrap_or_default().to_string(),
+            ctx.statement.as_deref().unwrap_or_default().to_string(),
             i.skip_reason
                 .map(SkipReason::as_str)
                 .unwrap_or_default()
@@ -705,7 +705,7 @@ fn describe(i: &Item) -> String {
     }
 }
 
-fn single_data(ctx: &ClearanceSettings<'_>, item: &Item) -> Result<serde_json::Value, CliError> {
+fn single_data<'a>(ctx: &'a ClearanceSettings, item: &'a Item) -> impl Serialize + 'a {
     #[derive(Serialize)]
     struct Single<'a> {
         #[serde(flatten)]
@@ -718,27 +718,25 @@ fn single_data(ctx: &ClearanceSettings<'_>, item: &Item) -> Result<serde_json::V
         statement: Option<&'a str>,
     }
 
-    let data = Single {
+    Single {
         item,
         status: ctx.status.as_str(),
         cleared_date: ctx.date,
         reconciled_date: ctx.reconciled_date(),
-        statement: ctx.statement,
-    };
-    serde_json::to_value(data)
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+        statement: ctx.statement.as_deref(),
+    }
 }
 
 fn render_single(
     cli: &Cli,
-    ctx: &ClearanceSettings<'_>,
+    ctx: &ClearanceSettings,
     item: &Item,
     format: OutputFormat,
     meta: output::json::Meta,
 ) -> Result<(), CliError> {
     match format {
         OutputFormat::Json => {
-            let data = single_data(ctx, item)?;
+            let data = single_data(ctx, item);
             println!("{}", to_json(data, meta)?);
         }
         OutputFormat::Csv => print!("{}", to_csv(ctx, std::slice::from_ref(item))?),
@@ -750,10 +748,7 @@ fn render_single(
     Ok(())
 }
 
-fn batch_data(
-    ctx: &ClearanceSettings<'_>,
-    batch: &ClearedBatch<'_>,
-) -> Result<serde_json::Value, CliError> {
+fn batch_data<'a>(ctx: &'a ClearanceSettings, batch: &'a ClearedBatch) -> impl Serialize + 'a {
     #[derive(Serialize)]
     struct Batch<'a> {
         account: &'a str,
@@ -777,12 +772,12 @@ fn batch_data(
 
     let (skipped, cleared): (Vec<&Item>, Vec<&Item>) =
         batch.items.iter().partition(|i| i.skipped());
-    let data = Batch {
-        account: batch.account,
+    Batch {
+        account: batch.account.as_str(),
         status: ctx.status.as_str(),
         cleared_date: ctx.date,
         reconciled_date: ctx.reconciled_date(),
-        statement: ctx.statement,
+        statement: ctx.statement.as_deref(),
         count: batch.items.len(),
         cleared_count: cleared.len(),
         skipped_count: skipped.len(),
@@ -790,22 +785,20 @@ fn batch_data(
         currency: batch.total.as_ref().map(Money::currency),
         cleared,
         skipped,
-    };
-    serde_json::to_value(data)
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+    }
 }
 
 fn render_batch(
     cli: &Cli,
-    ctx: &ClearanceSettings<'_>,
-    batch: &ClearedBatch<'_>,
+    ctx: &ClearanceSettings,
+    batch: &ClearedBatch,
     format: OutputFormat,
     meta: output::json::Meta,
 ) -> Result<(), CliError> {
     let items = &batch.items;
     match format {
         OutputFormat::Json => {
-            let data = batch_data(ctx, batch)?;
+            let data = batch_data(ctx, batch);
             println!("{}", to_json(data, meta)?);
             finish(cli, items);
             return Ok(());

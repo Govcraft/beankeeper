@@ -1,5 +1,7 @@
 //! Canonical command identities and authorization requirements.
 
+pub(crate) mod catalog;
+
 use crate::capability::Capability;
 use crate::error::CliError;
 
@@ -53,8 +55,73 @@ macro_rules! permission {
     };
 }
 
+/// Why an operation currently has a CLI path only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliOnlyReason {
+    /// Reads or writes a file selected by the local caller.
+    LocalFiles,
+    /// Establishes local ledger or key trust.
+    LocalBootstrap,
+    /// Owner-side configuration of ledger access.
+    LocalAdministration,
+    /// The command predates an MCP contract.
+    PendingParity,
+    /// Hosts the transport itself.
+    Transport,
+}
+
+/// Why a tool has a distinct entry in the MCP catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpOnlyReason {
+    /// One tool accepts the report kinds that are separate CLI subcommands.
+    ReportKinds,
+}
+
+/// How a ledger operation is exposed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exposure {
+    /// A CLI path and an individual MCP tool.
+    Both(&'static str),
+    /// A CLI report path and the shared MCP report tool.
+    Grouped(Operation),
+    /// An MCP-only operation with an explicit reason.
+    McpOnly(&'static str, McpOnlyReason),
+    /// A CLI path only, with an explicit reason.
+    CliOnly(CliOnlyReason),
+}
+
+macro_rules! exposure {
+    (tool($name:ident, $input:ident, $description:literal)) => {
+        Exposure::Both(stringify!($name))
+    };
+    (tool_at($path:literal, $name:ident, $input:ident, $description:literal)) => {
+        exposure!(tool($name, $input, $description))
+    };
+    (mcp_only($reason:ident, $name:ident, $input:ident, $description:literal)) => {
+        Exposure::McpOnly(stringify!($name), McpOnlyReason::$reason)
+    };
+    (grouped($group:ident, $path:literal)) => {
+        Exposure::Grouped(Operation::$group)
+    };
+    (cli_only($reason:ident)) => {
+        Exposure::CliOnly(CliOnlyReason::$reason)
+    };
+}
+
+macro_rules! cli_path {
+    ($name:literal, tool_at($path:literal, $tool:ident, $input:ident, $description:literal)) => {
+        $path
+    };
+    ($name:literal, grouped($group:ident, $path:literal)) => {
+        $path
+    };
+    ($name:literal, $exposure:ident($($details:tt)*)) => {
+        $name
+    };
+}
+
 macro_rules! operations {
-    ($($operation:ident => ($name:literal, $permission:ident)),+ $(,)?) => {
+    ($($operation:ident => ($name:literal, $permission:ident, $exposure:ident($($details:tt)*))),+ $(,)?) => {
         /// A recognized ledger command or MCP tool.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[non_exhaustive]
@@ -63,6 +130,21 @@ macro_rules! operations {
         }
 
         impl Operation {
+            /// Every operation known to the request catalog.
+            pub const ALL: &'static [Self] = &[$(Self::$operation),+];
+
+            /// Canonical CLI subcommand path, with components separated by dots.
+            #[must_use]
+            pub const fn cli_path(self) -> &'static str {
+                match self { $(Self::$operation => cli_path!($name, $exposure($($details)*))),+ }
+            }
+
+            /// Which transports expose this operation.
+            #[must_use]
+            pub const fn exposure(self) -> Exposure {
+                match self { $(Self::$operation => exposure!($exposure($($details)*))),+ }
+            }
+
             /// The command name emitted in JSON metadata.
             #[must_use]
             pub const fn name(self) -> &'static str {
@@ -78,46 +160,32 @@ macro_rules! operations {
             type Err = CliError;
 
             fn from_str(raw: &str) -> Result<Self, Self::Err> {
-                let normalized;
-                let name = if raw.contains('_') {
-                    normalized = raw.replace('_', ".");
-                    normalized.as_str()
-                } else {
-                    raw
-                };
-                match name {
+                match raw {
                     $($name => Ok(Self::$operation),)+
-                    "financial.summary" => Ok(Self::Summary),
-                    "setup.status" => Ok(Self::LedgerSetupStatus),
-                    "setup.book-show" => Ok(Self::LedgerSetupBookShow),
-                    "setup.statement-preview" => Ok(Self::LedgerSetupStatementPreview),
-                    "setup.statement-commit" => Ok(Self::LedgerSetupStatementCommit),
-                    "setup.statement-receipt" => Ok(Self::LedgerSetupStatementReceipt),
-                    "setup.begin" => Ok(Self::LedgerSetupBegin),
-                    "setup.finish" => Ok(Self::LedgerSetupFinish),
-                    "setup.revoke" => Ok(Self::LedgerSetupRevoke),
-                    "setup.book-create" => Ok(Self::LedgerSetupBookCreate),
-                    "setup.book-initialize" => Ok(Self::LedgerSetupBookInitialize),
-                    "setup.book-update" => Ok(Self::LedgerSetupBookUpdate),
-                    "setup.chart-apply" => Ok(Self::LedgerSetupChartApply),
-                    "setup.account-add" => Ok(Self::LedgerSetupAccountAdd),
-                    "setup.opening-preview" => Ok(Self::LedgerSetupOpeningPreview),
-                    "setup.opening-reserve" => Ok(Self::LedgerSetupOpeningReserve),
-                    "report.1099-nec" => Ok(Self::ReportVendor1099),
-                    _ => Err(CliError::Usage("operation has no capability mapping".into())),
+                    path => Self::ALL
+                        .iter()
+                        .copied()
+                        .find(|operation| operation.cli_path() == path)
+                        .map_or_else(|| crate::mcp::catalog::operation_for_tool(path), Ok),
                 }
             }
         }
     };
 }
 
-impl serde::Serialize for Operation {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.name())
-    }
-}
-
 impl Operation {
+    /// The primary capability associated with this operation.
+    ///
+    /// # Errors
+    /// Returns a usage error for transport operations with no ledger capability.
+    pub fn primary_capability(self) -> Result<Capability, CliError> {
+        self.permission().primary()
+    }
+
+    pub(crate) fn is_read_only(self) -> bool {
+        self.primary_capability().ok() == Some(Capability::Read)
+    }
+
     pub(crate) const fn writes_ledger(self) -> bool {
         !matches!(
             self.permission(),
@@ -132,99 +200,10 @@ impl Operation {
     }
 }
 
-operations! {
-    Summary => ("summary", Read),
-    LedgerSetupStatus => ("ledger.setup.status", SetupStatus),
-    LedgerSetupBookShow => ("ledger.setup.book.show", SetupStatus),
-    LedgerSetupStatementPreview => ("ledger.setup.statement.preview", Setup),
-    LedgerSetupStatementCommit => ("ledger.setup.statement.commit", Approve),
-    LedgerSetupStatementReceipt => ("ledger.setup.statement.receipt", Read),
-    LedgerSetupBegin => ("ledger.setup.begin", SetupOwner),
-    LedgerSetupFinish => ("ledger.setup.finish", SetupOwner),
-    LedgerSetupRevoke => ("ledger.setup.revoke", SetupOwner),
-    LedgerSetupBookCreate => ("ledger.setup.book.create", Setup),
-    LedgerSetupBookInitialize => ("ledger.setup.book.initialize", Setup),
-    LedgerSetupBookUpdate => ("ledger.setup.book.update", Setup),
-    LedgerSetupChartApply => ("ledger.setup.chart.apply", Setup),
-    LedgerSetupAccountAdd => ("ledger.setup.account.add", Setup),
-    LedgerSetupOpeningPreview => ("ledger.setup.opening.preview", Setup),
-    LedgerSetupOpeningReserve => ("ledger.setup.opening.reserve", Setup),
-    PeriodList => ("period.list", Read),
-    CompanyList => ("company.list", Read),
-    CompanyShow => ("company.show", Read),
-    AccountList => ("account.list", Read),
-    AccountShow => ("account.show", Read),
-    TxnList => ("txn.list", Read),
-    TxnShow => ("txn.show", Read),
-    SecurityList => ("security.list", Read),
-    InvestmentLots => ("investment.lots", Read),
-    InvestmentHoldings => ("investment.holdings", Read),
-    ScheduleList => ("schedule.list", Read),
-    RuleList => ("rule.list", Read),
-    BudgetList => ("budget.list", Read),
-    LoanSchedule => ("loan.schedule", Read),
-    Export => ("export", Read),
-    Verify => ("verify", Read),
-    AuditLog => ("audit.log", Read),
-    TxnProposals => ("txn.proposals", ProposalList),
-    AgentLimitShow => ("agent.limit.show", Read),
-    AgentList => ("agent.list", Read),
-    PolicyShow => ("policy.show", Read),
-    Report => ("report", Read),
-    ReportAging => ("report.aging", Read),
-    ReportBalance => ("report.balance", Read),
-    ReportBalanceSheet => ("report.balance-sheet", Read),
-    ReportBudgetVariance => ("report.budget-variance", Read),
-    ReportCashFlow => ("report.cash-flow", Read),
-    ReportIncomeStatement => ("report.income-statement", Read),
-    ReportIncomeStatementCompare => ("report.income-statement.compare", Read),
-    ReportIncomeStatementPeriods => ("report.income-statement.periods", Read),
-    ReportLedger => ("report.ledger", Read),
-    ReportReconciliation => ("report.reconciliation", Read),
-    ReportScheduleC => ("report.schedule-c", Read),
-    ReportVendor1099 => ("report.1099", Read),
-    ReportTaxSummary => ("report.tax-summary", Read),
-    ReportTrend => ("report.trend", Read),
-    ReportTrialBalance => ("report.trial-balance", Read),
-    ReportTrialBalanceCompare => ("report.trial-balance.compare", Read),
-    ReportTrialBalancePeriods => ("report.trial-balance.periods", Read),
-    TxnPost => ("txn.post", Posting),
-    TxnImport => ("txn.import", Post),
-    TxnAttach => ("txn.attach", Post),
-    TxnMetaSet => ("txn.meta.set", Post),
-    TxnMetaUnset => ("txn.meta.unset", Post),
-    InvestmentBuy => ("investment.buy", Post),
-    InvestmentSell => ("investment.sell", Post),
-    SecurityCreate => ("security.create", Post),
-    SecurityPrice => ("security.price", Post),
-    LoanPay => ("loan.pay", Post),
-    ScheduleCreate => ("schedule.create", Post),
-    ScheduleCancel => ("schedule.cancel", Post),
-    ScheduleRun => ("schedule.run", Post),
-    RuleCreate => ("rule.create", Post),
-    RuleDelete => ("rule.delete", Post),
-    TxnPropose => ("txn.propose", Propose),
-    TxnReject => ("txn.reject", ProposalReject),
-    TxnApprove => ("txn.approve", Approve),
-    TxnReverse => ("txn.reverse", Reverse),
-    TxnClear => ("txn.clear", Reconcile),
-    TxnReconcile => ("txn.reconcile", Reconcile),
-    BudgetSet => ("budget.set", Budget),
-    BudgetDelete => ("budget.delete", Budget),
-    PeriodClose => ("period.close", Admin),
-    PeriodReopen => ("period.reopen", Admin),
-    CompanyCreate => ("company.create", Admin),
-    CompanyDelete => ("company.delete", Admin),
-    AccountCreate => ("account.create", Admin),
-    AccountDelete => ("account.delete", Admin),
-    KeyInit => ("key.init", Admin),
-    AgentIssue => ("agent.issue", Admin),
-    AgentRevoke => ("agent.revoke", Admin),
-    PolicySet => ("policy.set", Admin),
-    Init => ("init", Admin),
-    Backup => ("backup", Admin),
-    Restore => ("restore", Admin),
-    AgentLimitSet => ("agent.limit.set", Admin),
-    AgentLimitClear => ("agent.limit.clear", Admin),
-    McpServe => ("mcp.serve", Transport),
+impl serde::Serialize for Operation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
 }
+
+catalog::ledger_operations!(operations);

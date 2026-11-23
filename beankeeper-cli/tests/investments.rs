@@ -129,8 +129,8 @@ fn seed(db: Db) -> Result<Db, CliError> {
                 &Actor::new("investment-test".parse()?),
                 company,
                 &SecurityParams {
-                    symbol: symbol.into(),
-                    name: format!("{symbol} shares"),
+                    symbol: symbol.parse()?,
+                    name: format!("{symbol} shares").parse()?,
                     currency: Currency::USD,
                 },
             )?;
@@ -570,21 +570,8 @@ fn invalid_inputs_and_duplicate_prices_do_not_add_audit_records() -> TestResult 
     let actor = Actor::new("investment-test".parse()?);
     let before = state(&db)?;
     assert!(Currency::from_code("BAD").is_err());
-    for (symbol, name) in [("bad symbol", "bad"), ("NEW", " ")] {
-        assert!(
-            create_security(
-                &db,
-                &actor,
-                "acme",
-                &SecurityParams {
-                    symbol: symbol.into(),
-                    name: name.into(),
-                    currency: Currency::USD,
-                }
-            )
-            .is_err()
-        );
-    }
+    assert!("bad symbol".parse::<investments::SecuritySymbol>().is_err());
+    assert!(" ".parse::<investments::SecurityName>().is_err());
     let mut params = purchase("1", 100, "2026-01-01")?;
     params.asset = "5000".into();
     assert!(buy(&db, &actor, "acme", &params).is_err());
@@ -726,6 +713,6 @@ fn closed_period_blocks_purchases_and_sales_without_lot_side_effects() -> TestRe
         Err(CliError::Validation(_))
     ));
     assert_eq!(state(&db)?, before);
-    beankeeper_cli::commands::verify::execute_json(&db)?;
+    beankeeper_cli::db::verification::VerifiedLedger::read(&db)?;
     Ok(())
 }

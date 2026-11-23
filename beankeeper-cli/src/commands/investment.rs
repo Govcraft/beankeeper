@@ -1,281 +1,533 @@
-//! Security master, exact investment trades, and holdings reports.
+//! Typed security master, investment trades, and holdings operations.
 
-use crate::operation::Operation;
-use beankeeper::types::{Money, NonNegativeMoney, PositiveMoney};
-use serde_json::Value;
+use std::{cmp::Ordering, fmt, str::FromStr};
 
-use crate::cli::{Cli, InvestmentCommand, OutputFormat, SecurityCommand, resolve_format};
-use crate::db::{Actor, Db, investments};
+use beankeeper::{
+    core::PositiveQuantity,
+    types::{AccountCode, Currency, Money, NonNegativeMoney, PositiveMoney},
+};
+use chrono::NaiveDate;
+use serde::{Serialize, Serializer};
+
+use crate::cli::{
+    Cli, InvestmentCommand, OutputFormat, SecurityCommand, TradeArgs, resolve_format,
+};
+use crate::db::{
+    Actor, Db,
+    companies::{Company, CompanySlug},
+    investments::{
+        self, BuyParams, Holding, Lot, LotSelection, Price, PriceParams, Security, SecurityParams,
+        SellParams, Trade,
+    },
+};
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
-use crate::output::json;
+use crate::operation::Operation;
+use crate::output::{amounts::format_money, json};
+
+use super::{
+    reference::TransactionReference,
+    txn::{MajorAmount, account_code},
+};
+
+pub use crate::db::investments::{SecurityName, SecuritySymbol};
 
 mod wire;
 use wire::Wire;
 
-pub(super) fn run_security(
-    cli: &Cli,
-    company: &str,
-    command: &SecurityCommand,
-) -> Result<(), CliError> {
-    let db = cli.open_db()?;
-    let data = execute_security(&db, company, command, &cli.principal())?;
-    render(cli, company, command.operation(), &data)
+/// Quotation currency for a new security.
+#[derive(Clone, Copy)]
+pub struct QuotationCurrency(Currency);
+
+impl Default for QuotationCurrency {
+    fn default() -> Self {
+        Self(Currency::USD)
+    }
 }
 
-pub(super) fn run_investment(
-    cli: &Cli,
-    company: &str,
-    command: &InvestmentCommand,
-) -> Result<(), CliError> {
-    let db = cli.open_db()?;
-    let data = execute_investment(&db, company, command, &cli.principal())?;
-    render(cli, company, command.operation(), &data)
+impl From<Option<Currency>> for QuotationCurrency {
+    fn from(currency: Option<Currency>) -> Self {
+        currency.map_or_else(Self::default, Self)
+    }
 }
 
-/// Execute a security operation using the same behavior for CLI and MCP.
-///
-/// # Errors
-/// Returns validation or persistence errors.
-pub fn execute_security(
-    db: &Db,
-    company: &str,
-    command: &SecurityCommand,
-    actor: &Actor,
-) -> Result<Value, CliError> {
-    crate::db::companies::get_company(db.read(), &company.parse()?)?;
-    let data = match command {
-        SecurityCommand::Create {
-            symbol,
-            name,
-            currency,
-        } => {
-            let security = Granted::<Post>::with_db(db, actor, |grant| {
-                investments::create_security(
-                    grant,
-                    &company.parse()?,
-                    &investments::SecurityParams {
-                        symbol: symbol.clone(),
-                        name: name.clone(),
-                        currency: *currency,
-                    },
-                )
-            })?;
-            serde_json::to_value(security)
+impl From<QuotationCurrency> for Currency {
+    fn from(currency: QuotationCurrency) -> Self {
+        currency.0
+    }
+}
+
+/// Date at which an investment position is valued.
+#[derive(Clone, Copy, Default)]
+pub struct ValuationDate(crate::request::LocalDate);
+
+impl From<Option<NaiveDate>> for ValuationDate {
+    fn from(date: Option<NaiveDate>) -> Self {
+        date.map_or_else(Self::default, |date| Self(date.into()))
+    }
+}
+
+struct Denominated<T>(T, Currency);
+
+macro_rules! trade_amount {
+    ($name:ident, $doc:literal, $amount:ty, $pattern:pat, $message:literal) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone)]
+        pub struct $name(MajorAmount);
+
+        impl TryFrom<MajorAmount> for $name {
+            type Error = CliError;
+
+            fn try_from(amount: MajorAmount) -> Result<Self, Self::Error> {
+                if matches!(amount.sign(), $pattern) {
+                    Ok(Self(amount))
+                } else {
+                    Err(CliError::Validation($message.into()))
+                }
+            }
         }
-        SecurityCommand::List => serde_json::to_value(investments::list_securities(
-            &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
-        )?),
-        SecurityCommand::Price {
-            symbol,
-            date,
-            price,
-        } => {
-            let price = NonNegativeMoney::new(amount(db, company, symbol, price)?)
-                .map_err(|_| CliError::Validation("price must not be negative".into()))?;
-            let recorded = Granted::<Post>::with_db(db, actor, |grant| {
-                investments::record_price(
-                    grant,
-                    &company.parse()?,
-                    &investments::PriceParams {
-                        symbol: symbol.clone(),
-                        date: *date,
-                        price,
-                    },
-                )
-            })?;
-            serde_json::to_value(Wire(recorded))
+
+        impl FromStr for $name {
+            type Err = CliError;
+
+            fn from_str(amount: &str) -> Result<Self, Self::Err> {
+                amount.parse::<MajorAmount>()?.try_into()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&self.0, formatter)
+            }
+        }
+
+        impl TryFrom<Denominated<$name>> for $amount {
+            type Error = CliError;
+
+            fn try_from(
+                Denominated(amount, currency): Denominated<$name>,
+            ) -> Result<Self, Self::Error> {
+                let units = amount.0.minor_units(currency)?;
+                Self::try_from(Money::from_minor(i128::from(units), currency))
+                    .map_err(|error| CliError::Bean(error.into()))
+            }
         }
     };
-    data.map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
 }
 
-/// Execute an investment trade or report using the same behavior for CLI and MCP.
-///
-/// # Errors
-/// Returns validation, lot-selection, or persistence errors.
-pub fn execute_investment(
-    db: &Db,
-    company: &str,
-    command: &InvestmentCommand,
-    actor: &Actor,
-) -> Result<Value, CliError> {
-    crate::db::companies::get_company(db.read(), &company.parse()?)?;
-    let data = match command {
-        InvestmentCommand::Buy { trade, cost } => {
-            let cost =
-                PositiveMoney::new(amount(db, company, &trade.symbol, cost)?).map_err(|_| {
-                    CliError::Validation("buy quantity and cost must be positive".into())
-                })?;
-            let posted = Granted::<Post>::with_db(db, actor, |grant| {
-                investments::buy(
-                    grant,
-                    &company.parse()?,
-                    &investments::BuyParams {
-                        symbol: trade.symbol.clone(),
-                        quantity: trade.quantity,
-                        cost,
-                        date: trade.date,
-                        asset: trade.asset.clone(),
-                        cash: trade.cash.clone(),
-                        reference: normalized_reference(trade.reference.as_deref())?,
-                    },
-                )
-            })?;
-            serde_json::to_value(Wire(posted))
-        }
-        InvestmentCommand::Sell {
-            trade,
-            proceeds,
-            gain,
-            method,
-            lot,
-        } => {
-            let proceeds = NonNegativeMoney::new(amount(db, company, &trade.symbol, proceeds)?)
-                .map_err(|_| CliError::Validation("sell proceeds must be nonnegative".into()))?;
-            let posted = Granted::<Post>::with_db(db, actor, |grant| {
-                investments::sell(
-                    grant,
-                    &company.parse()?,
-                    &investments::SellParams {
-                        symbol: trade.symbol.clone(),
-                        quantity: trade.quantity,
-                        proceeds,
-                        date: trade.date,
-                        asset: trade.asset.clone(),
-                        cash: trade.cash.clone(),
-                        gain: gain.clone(),
-                        selection: investments::LotSelection::from_flags(*method, lot.clone())?,
-                        reference: normalized_reference(trade.reference.as_deref())?,
-                    },
-                )
-            })?;
-            serde_json::to_value(Wire(posted))
-        }
-        InvestmentCommand::Lots { symbol } => {
-            let rows = investments::list_lots(
-                &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
+trade_amount!(
+    PriceAmount,
+    "A nonnegative major-unit security price, before applying its quotation currency.",
+    NonNegativeMoney,
+    Ordering::Equal | Ordering::Greater,
+    "price must not be negative"
+);
+trade_amount!(
+    CostAmount,
+    "A positive major-unit purchase cost, before applying its quotation currency.",
+    PositiveMoney,
+    Ordering::Greater,
+    "buy quantity and cost must be positive"
+);
+trade_amount!(
+    ProceedsAmount,
+    "Nonnegative major-unit sale proceeds, before applying the quotation currency.",
+    NonNegativeMoney,
+    Ordering::Equal | Ordering::Greater,
+    "sell proceeds must be nonnegative"
+);
+
+/// Validated fields common to purchases and sales.
+pub struct TradeRequest {
+    /// Security being acquired or disposed.
+    pub symbol: SecuritySymbol,
+    /// Strictly positive share quantity.
+    pub quantity: PositiveQuantity,
+    /// Date of acquisition or disposal.
+    pub date: NaiveDate,
+    /// Account carrying the shares at cost.
+    pub asset: AccountCode,
+    /// Cash account for settlement.
+    pub cash: AccountCode,
+    /// Optional idempotency reference.
+    pub reference: Option<TransactionReference>,
+}
+
+impl TryFrom<&TradeArgs> for TradeRequest {
+    type Error = CliError;
+
+    fn try_from(trade: &TradeArgs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            symbol: trade.symbol.parse()?,
+            quantity: trade.quantity,
+            date: trade.date,
+            asset: account_code(&trade.asset)?,
+            cash: account_code(&trade.cash)?,
+            reference: trade.reference.as_deref().map(str::parse).transpose()?,
+        })
+    }
+}
+
+/// A security or investment operation scoped to a named company.
+pub enum InvestmentRequest {
+    /// Create a security with its immutable quotation currency.
+    SecurityCreate(CompanySlug, SecurityParams),
+    /// List the company securities.
+    SecurityList(CompanySlug),
+    /// Append an immutable dated price.
+    SecurityPrice(CompanySlug, SecuritySymbol, NaiveDate, PriceAmount),
+    /// Acquire a new lot and post the cash settlement.
+    Buy(CompanySlug, TradeRequest, CostAmount),
+    /// Dispose of shares with a valid lot selection and post the settlement.
+    Sell(
+        CompanySlug,
+        TradeRequest,
+        ProceedsAmount,
+        AccountCode,
+        LotSelection,
+    ),
+    /// Read the remaining lots of a specific security.
+    Lots(CompanySlug, SecuritySymbol),
+    /// Value all positions at a date.
+    Holdings(CompanySlug, ValuationDate),
+}
+
+impl TryFrom<(CompanySlug, &SecurityCommand)> for InvestmentRequest {
+    type Error = CliError;
+
+    fn try_from((company, command): (CompanySlug, &SecurityCommand)) -> Result<Self, Self::Error> {
+        Ok(match command {
+            SecurityCommand::Create {
                 symbol,
-            )?;
-            serde_json::to_value(rows.into_iter().map(Wire).collect::<Vec<_>>())
-        }
-        InvestmentCommand::Holdings { as_of } => {
-            let rows = investments::holdings(
-                db,
-                &company.parse()?,
-                as_of.unwrap_or_else(|| chrono::Local::now().date_naive()),
-            )?;
-            serde_json::to_value(rows.into_iter().map(Wire).collect::<Vec<_>>())
-        }
-    };
-    data.map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
-}
-
-fn normalized_reference(value: Option<&str>) -> Result<Option<String>, CliError> {
-    Ok(value
-        .map(str::parse::<super::reference::TransactionReference>)
-        .transpose()?
-        .map(super::reference::TransactionReference::into_string))
-}
-
-fn amount(db: &Db, company: &str, symbol: &str, value: &str) -> Result<Money, CliError> {
-    let currency = investments::get_security(
-        &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
-        symbol,
-    )?
-    .currency;
-    let minor = super::txn::parse_amount_to_minor(value, currency)?;
-    Ok(Money::from_minor(i128::from(minor), currency))
-}
-
-fn headers(name: Operation) -> &'static [&'static str] {
-    match name {
-        Operation::SecurityCreate | Operation::SecurityList => &["symbol", "name", "currency"],
-        Operation::SecurityPrice => &["symbol", "currency", "date", "price"],
-        Operation::InvestmentLots => &[
-            "id",
-            "symbol",
-            "asset",
-            "currency",
-            "acquired_date",
-            "quantity",
-            "remaining_quantity",
-            "remaining_cost_basis",
-        ],
-        Operation::InvestmentHoldings => &[
-            "symbol",
-            "asset",
-            "currency",
-            "quantity",
-            "cost_basis",
-            "price_date",
-            "latest_price",
-            "market_value",
-            "unrealized_gain",
-        ],
-        _ => &[
-            "currency",
-            "transaction_id",
-            "lot_id",
-            "quantity",
-            "cost_basis",
-            "proceeds",
-            "realized_gain",
-        ],
+                name,
+                currency,
+            } => Self::SecurityCreate(
+                company,
+                SecurityParams {
+                    symbol: symbol.parse()?,
+                    name: name.parse()?,
+                    currency: QuotationCurrency::from(*currency).into(),
+                },
+            ),
+            SecurityCommand::List => Self::SecurityList(company),
+            SecurityCommand::Price {
+                symbol,
+                date,
+                price,
+            } => Self::SecurityPrice(company, symbol.parse()?, *date, price.parse()?),
+        })
     }
 }
 
-fn render(cli: &Cli, company: &str, name: Operation, data: &Value) -> Result<(), CliError> {
-    let format = resolve_format(None, cli);
-    if cli.verbosity.quiet && format != OutputFormat::Json {
-        return Ok(());
+impl TryFrom<(CompanySlug, &InvestmentCommand)> for InvestmentRequest {
+    type Error = CliError;
+
+    fn try_from(
+        (company, command): (CompanySlug, &InvestmentCommand),
+    ) -> Result<Self, Self::Error> {
+        Ok(match command {
+            InvestmentCommand::Buy { trade, cost } => {
+                Self::Buy(company, trade.try_into()?, cost.parse()?)
+            }
+            InvestmentCommand::Sell {
+                trade,
+                proceeds,
+                gain,
+                method,
+                lot,
+            } => Self::Sell(
+                company,
+                trade.try_into()?,
+                proceeds.parse()?,
+                account_code(gain)?,
+                (*method, lot.clone()).try_into()?,
+            ),
+            InvestmentCommand::Lots { symbol } => Self::Lots(company, symbol.parse()?),
+            InvestmentCommand::Holdings { as_of } => Self::Holdings(company, (*as_of).into()),
+        })
     }
-    let rows = match data {
-        Value::Array(rows) => rows.as_slice(),
-        row => std::slice::from_ref(row),
-    };
-    let headers = headers(name);
-    match format {
-        OutputFormat::Csv => {
-            let mut writer = csv::Writer::from_writer(std::io::stdout());
-            writer
-                .write_record(headers)
-                .map_err(|error| CliError::General(error.to_string()))?;
-            for row in rows {
+}
+
+impl InvestmentRequest {
+    /// The operation represented by this request.
+    #[must_use]
+    pub const fn operation(&self) -> Operation {
+        match self {
+            Self::SecurityCreate(..) => Operation::SecurityCreate,
+            Self::SecurityList(_) => Operation::SecurityList,
+            Self::SecurityPrice(..) => Operation::SecurityPrice,
+            Self::Buy(..) => Operation::InvestmentBuy,
+            Self::Sell(..) => Operation::InvestmentSell,
+            Self::Lots(..) => Operation::InvestmentLots,
+            Self::Holdings(..) => Operation::InvestmentHoldings,
+        }
+    }
+
+    /// The company that owns the security or position.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        match self {
+            Self::SecurityCreate(company, _)
+            | Self::SecurityList(company)
+            | Self::SecurityPrice(company, ..)
+            | Self::Buy(company, ..)
+            | Self::Sell(company, ..)
+            | Self::Lots(company, _)
+            | Self::Holdings(company, _) => company,
+        }
+    }
+
+    /// Execute a security or investment request against an open ledger.
+    ///
+    /// # Errors
+    /// Returns authorization, storage, or investment validation errors.
+    pub(crate) fn execute(self, db: &Db, actor: &Actor) -> Result<InvestmentResponse, CliError> {
+        match self {
+            Self::SecurityCreate(company, params) => Granted::<Post>::with_db(db, actor, |grant| {
+                investments::create_security(grant, &company, &params)
+            })
+            .map(InvestmentResponse::Security),
+            Self::SecurityList(company) => {
+                let scope = Company::bind(db.read(), company)?;
+                investments::list_securities(&scope).map(InvestmentResponse::Securities)
+            }
+            Self::SecurityPrice(company, symbol, date, amount) => {
+                let currency = security_currency(db, &company, &symbol)?;
+                let params = PriceParams {
+                    symbol: symbol.as_ref().into(),
+                    date,
+                    price: Denominated(amount, currency).try_into()?,
+                };
+                Granted::<Post>::with_db(db, actor, |grant| {
+                    investments::record_price(grant, &company, &params)
+                })
+                .map(InvestmentResponse::Price)
+            }
+            Self::Buy(company, trade, cost) => {
+                let currency = security_currency(db, &company, &trade.symbol)?;
+                let params = BuyParams {
+                    symbol: trade.symbol.as_ref().into(),
+                    quantity: trade.quantity,
+                    cost: Denominated(cost, currency).try_into()?,
+                    date: trade.date,
+                    asset: trade.asset.as_str().into(),
+                    cash: trade.cash.as_str().into(),
+                    reference: trade.reference.map(Into::into),
+                };
+                Granted::<Post>::with_db(db, actor, |grant| {
+                    investments::buy(grant, &company, &params)
+                })
+                .map(InvestmentResponse::Trade)
+            }
+            Self::Sell(company, trade, proceeds, gain, selection) => {
+                let currency = security_currency(db, &company, &trade.symbol)?;
+                let params = SellParams {
+                    symbol: trade.symbol.as_ref().into(),
+                    quantity: trade.quantity,
+                    proceeds: Denominated(proceeds, currency).try_into()?,
+                    date: trade.date,
+                    asset: trade.asset.as_str().into(),
+                    cash: trade.cash.as_str().into(),
+                    gain: gain.as_str().into(),
+                    selection,
+                    reference: trade.reference.map(Into::into),
+                };
+                Granted::<Post>::with_db(db, actor, |grant| {
+                    investments::sell(grant, &company, &params)
+                })
+                .map(InvestmentResponse::Trade)
+            }
+            Self::Lots(company, symbol) => {
+                let scope = Company::bind(db.read(), company)?;
+                investments::list_lots(&scope, symbol.as_ref()).map(InvestmentResponse::Lots)
+            }
+            Self::Holdings(company, date) => {
+                investments::holdings(db, &company, date.0.into()).map(InvestmentResponse::Holdings)
+            }
+        }
+    }
+}
+
+fn security_currency(
+    db: &Db,
+    company: &CompanySlug,
+    symbol: &SecuritySymbol,
+) -> Result<Currency, CliError> {
+    let scope = Company::bind(db.read(), company.clone())?;
+    Ok(investments::get_security(&scope, symbol.as_ref())?.currency)
+}
+
+/// Typed data from a security or investment request.
+pub enum InvestmentResponse {
+    /// A newly created security.
+    Security(Security),
+    /// Current company securities.
+    Securities(Vec<Security>),
+    /// An appended price observation.
+    Price(Price),
+    /// The posted trade and any basis allocations.
+    Trade(Trade),
+    /// The acquisition lots and their remaining basis.
+    Lots(Vec<Lot>),
+    /// Positions valued at the requested date.
+    Holdings(Vec<Holding>),
+}
+
+impl Serialize for InvestmentResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Security(row) => row.serialize(serializer),
+            Self::Securities(rows) => rows.serialize(serializer),
+            Self::Price(row) => Wire(row).serialize(serializer),
+            Self::Trade(row) => Wire(row).serialize(serializer),
+            Self::Lots(rows) => serializer.collect_seq(rows.iter().map(Wire)),
+            Self::Holdings(rows) => serializer.collect_seq(rows.iter().map(Wire)),
+        }
+    }
+}
+
+impl InvestmentResponse {
+    fn headers(&self) -> &'static [&'static str] {
+        match self {
+            Self::Security(_) | Self::Securities(_) => &["symbol", "name", "currency"],
+            Self::Price(_) => &["symbol", "currency", "date", "price"],
+            Self::Lots(_) => &[
+                "id",
+                "symbol",
+                "asset",
+                "currency",
+                "acquired_date",
+                "quantity",
+                "remaining_quantity",
+                "remaining_cost_basis",
+            ],
+            Self::Holdings(_) => &[
+                "symbol",
+                "asset",
+                "currency",
+                "quantity",
+                "cost_basis",
+                "price_date",
+                "latest_price",
+                "market_value",
+                "unrealized_gain",
+            ],
+            Self::Trade(_) => &[
+                "currency",
+                "transaction_id",
+                "lot_id",
+                "quantity",
+                "cost_basis",
+                "proceeds",
+                "realized_gain",
+            ],
+        }
+    }
+
+    fn rows(&self) -> Vec<Vec<String>> {
+        let display = |money: Option<Money>| money.map_or_else(String::new, format_money);
+        match self {
+            Self::Security(row) => vec![security_cells(row)],
+            Self::Securities(rows) => rows.iter().map(security_cells).collect(),
+            Self::Price(row) => vec![vec![
+                row.symbol.clone(),
+                row.currency.code().into(),
+                row.date.to_string(),
+                format_money(row.price.money()),
+            ]],
+            Self::Trade(row) => vec![vec![
+                row.currency.code().into(),
+                row.transaction_id.to_string(),
+                row.lot_id
+                    .as_ref()
+                    .map_or_else(String::new, ToString::to_string),
+                row.quantity.to_string(),
+                format_money(row.cost_basis.money()),
+                format_money(row.proceeds.money()),
+                format_money(row.realized_gain),
+            ]],
+            Self::Lots(rows) => rows
+                .iter()
+                .map(|row| {
+                    vec![
+                        row.id.to_string(),
+                        row.symbol.clone(),
+                        row.asset.clone(),
+                        row.currency.code().into(),
+                        row.acquired_date.to_string(),
+                        row.quantity.to_string(),
+                        row.remaining_quantity.to_string(),
+                        format_money(row.remaining_cost_basis.money()),
+                    ]
+                })
+                .collect(),
+            Self::Holdings(rows) => rows
+                .iter()
+                .map(|row| {
+                    vec![
+                        row.symbol.clone(),
+                        row.asset.clone(),
+                        row.currency.code().into(),
+                        row.quantity.to_string(),
+                        format_money(row.cost_basis.money()),
+                        row.price_date
+                            .map_or_else(String::new, |date| date.to_string()),
+                        display(row.latest_price.map(Into::into)),
+                        display(row.market_value.map(Into::into)),
+                        display(row.unrealized_gain),
+                    ]
+                })
+                .collect(),
+        }
+    }
+
+    pub(crate) fn render(
+        &self,
+        cli: &Cli,
+        operation: Operation,
+        company: &str,
+    ) -> Result<(), CliError> {
+        let format = resolve_format(None, cli);
+        if cli.verbosity.quiet && format != OutputFormat::Json {
+            return Ok(());
+        }
+        match format {
+            OutputFormat::Csv => {
+                let mut writer = csv::Writer::from_writer(std::io::stdout());
                 writer
-                    .write_record(headers.iter().map(|key| display_cell(row, key)))
+                    .write_record(self.headers())
                     .map_err(|error| CliError::General(error.to_string()))?;
+                for row in self.rows() {
+                    writer
+                        .write_record(row)
+                        .map_err(|error| CliError::General(error.to_string()))?;
+                }
+                writer.flush()?;
             }
-            writer.flush()?;
-        }
-        OutputFormat::Table => {
-            let mut table = comfy_table::Table::new();
-            table.set_header(headers.iter().copied());
-            for row in rows {
-                table.add_row(headers.iter().map(|key| display_cell(row, key)));
+            OutputFormat::Table => {
+                let mut table = comfy_table::Table::new();
+                table.set_header(self.headers().iter().copied());
+                for row in self.rows() {
+                    table.add_row(row);
+                }
+                println!("{table}");
             }
-            println!("{table}");
-        }
-        OutputFormat::Json => {
-            println!(
+            OutputFormat::Json => println!(
                 "{}",
-                json::envelope_ok(cli.meta(name, Some(company)), data)?
-            );
+                json::envelope_ok(cli.meta(operation, Some(company)), self)?
+            ),
         }
-    }
-    Ok(())
-}
-
-fn display_cell(row: &Value, key: &str) -> String {
-    let display_key = format!("{key}_display");
-    let value = row.get(&display_key).unwrap_or(&row[key]);
-    match value {
-        Value::Null => String::new(),
-        Value::String(value) => value.clone(),
-        value => value.to_string(),
+        Ok(())
     }
 }
 
+fn security_cells(row: &Security) -> Vec<String> {
+    vec![
+        row.symbol.clone(),
+        row.name.clone(),
+        row.currency.code().into(),
+    ]
+}
 #[cfg(test)]
 mod tests {
     use clap::Parser;

@@ -145,10 +145,6 @@ impl Actor {
         Self::for_cli(explicit, None)
     }
 
-    pub(crate) fn cli_fallback() -> Self {
-        Self::new(ActorLabel(Label::Cli))
-    }
-
     pub(crate) fn for_cli(explicit: Option<&str>, identity: Option<VerifiedAgent>) -> Self {
         Self::attributed(ActorLabel::configured(explicit), identity, || {
             ["USER", "USERNAME"]

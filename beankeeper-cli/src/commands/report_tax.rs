@@ -3,16 +3,20 @@
 mod schedule;
 mod vendors;
 
-use beankeeper::types::{Currency, DebitOrCredit, Money};
+use beankeeper::types::{Currency, DebitOrCredit};
 use clap::Args;
 use rusqlite::params;
 use serde::Serialize;
 
 use super::report::ReportOutput;
-use crate::cli::{Cli, OutputFormat};
-use crate::db::connection::{Db, ReadConn};
+use super::report::ReportPresentation;
+use super::txn::MajorAmount;
+use crate::cli::OutputFormat;
+use crate::db::{
+    companies::Company,
+    connection::{Db, ReadConn},
+};
 use crate::error::CliError;
-use crate::operation::Operation;
 use crate::output::json::serialize_display;
 
 pub use super::report_dates::DateRange as Period;
@@ -30,7 +34,7 @@ pub struct TaxArgs {
     pub to: Option<crate::cli::CalendarDateArg>,
     /// Currency; required for companies with transactions in multiple currencies.
     #[arg(long)]
-    pub currency: Option<crate::cli::CurrencyArg>,
+    pub currency: Option<Currency>,
     /// Report format (also accepts the global --format or --json options).
     #[arg(long, value_enum)]
     pub output_format: Option<OutputFormat>,
@@ -41,9 +45,46 @@ pub struct TaxArgs {
 pub struct VendorArgs {
     #[command(flatten)]
     pub period: TaxArgs,
-    /// Minimum total in major currency units. Use 0 to list every payee.
-    #[arg(long, default_value = "600", allow_hyphen_values = true)]
-    pub threshold: String,
+    /// Minimum total in major currency units. Defaults to 600. Use 0 to list every payee.
+    #[arg(long, allow_hyphen_values = true)]
+    pub threshold: Option<VendorMinimum>,
+}
+
+/// Nonnegative vendor-report minimum before a reporting currency is chosen.
+#[derive(Debug, Clone)]
+pub struct VendorMinimum(MajorAmount);
+
+impl TryFrom<MajorAmount> for VendorMinimum {
+    type Error = CliError;
+
+    fn try_from(amount: MajorAmount) -> Result<Self, Self::Error> {
+        if amount.sign().is_lt() {
+            return Err(CliError::Validation(
+                "--threshold must be nonnegative".into(),
+            ));
+        }
+        Ok(Self(amount))
+    }
+}
+
+impl std::str::FromStr for VendorMinimum {
+    type Err = CliError;
+
+    fn from_str(amount: &str) -> Result<Self, Self::Err> {
+        amount.parse::<MajorAmount>()?.try_into()
+    }
+}
+
+impl Default for VendorMinimum {
+    fn default() -> Self {
+        Self(MajorAmount::from(600u32))
+    }
+}
+
+impl std::fmt::Display for VendorMinimum {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
 }
 
 struct TaxEntry {
@@ -99,17 +140,19 @@ pub fn build_schedule_c(
     period: Period,
     currency: Currency,
 ) -> Result<TaxReport<ScheduleSummary>, CliError> {
-    db.read_snapshot(|reader| build_schedule_c_on(reader, company, period, currency))
+    db.read_snapshot(|reader| {
+        let company = Company::bind(reader, company.parse()?)?;
+        build_schedule_c_on(reader, &company, period, currency)
+    })
 }
 
-fn build_schedule_c_on(
+pub(super) fn build_schedule_c_on(
     reader: ReadConn<'_>,
-    company: &str,
+    company: &Company<'_>,
     period: Period,
     currency: Currency,
 ) -> Result<TaxReport<ScheduleSummary>, CliError> {
-    crate::db::companies::get_company(reader, &company.parse()?)?;
-    let entries = load_entries(reader, company, period, currency)?;
+    let entries = load_entries(reader, company.slug().as_str(), period, currency)?;
     Ok(TaxReport {
         period,
         currency,
@@ -131,18 +174,20 @@ pub fn build_vendors(
     period: Period,
     threshold: VendorThreshold,
 ) -> Result<TaxReport<VendorSummary>, CliError> {
-    db.read_snapshot(|reader| build_vendors_on(reader, company, period, threshold))
+    db.read_snapshot(|reader| {
+        let company = Company::bind(reader, company.parse()?)?;
+        build_vendors_on(reader, &company, period, threshold)
+    })
 }
 
-fn build_vendors_on(
+pub(super) fn build_vendors_on(
     reader: ReadConn<'_>,
-    company: &str,
+    company: &Company<'_>,
     period: Period,
     threshold: VendorThreshold,
 ) -> Result<TaxReport<VendorSummary>, CliError> {
-    crate::db::companies::get_company(reader, &company.parse()?)?;
     let currency = threshold.money().currency();
-    let entries = load_entries(reader, company, period, currency)?;
+    let entries = load_entries(reader, company.slug().as_str(), period, currency)?;
     Ok(TaxReport {
         period,
         currency,
@@ -150,94 +195,51 @@ fn build_vendors_on(
     })
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum TaxInvocation<'a> {
-    ScheduleC(&'a TaxArgs),
-    Vendor1099(&'a VendorArgs),
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum ResolvedTaxReport {
-    ScheduleC {
-        period: Period,
-        currency: Currency,
-    },
-    Vendor1099 {
-        period: Period,
-        threshold: VendorThreshold,
-    },
-}
-
-impl TaxInvocation<'_> {
-    pub(super) fn resolve(
-        self,
-        reader: ReadConn<'_>,
-        company: &str,
-        today: chrono::NaiveDate,
-    ) -> Result<ResolvedTaxReport, CliError> {
-        let args = match self {
-            Self::ScheduleC(args) => args,
-            Self::Vendor1099(args) => &args.period,
-        };
-        let currency = super::report_currency::resolve_report_currency(
-            reader,
-            company,
-            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
-        )?;
-        let period = Period::resolve(args.from.as_ref(), args.to.as_ref(), today)?;
-        match self {
-            Self::ScheduleC(_) => Ok(ResolvedTaxReport::ScheduleC { period, currency }),
-            Self::Vendor1099(args) => {
-                let minor = super::txn::parse_amount_to_minor(&args.threshold, currency)?;
-                let threshold =
-                    VendorThreshold::new(Money::from_minor(i128::from(minor), currency))?;
-                Ok(ResolvedTaxReport::Vendor1099 { period, threshold })
-            }
-        }
-    }
-}
-
-pub(super) fn run_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    request: ResolvedTaxReport,
+pub(super) fn render_schedule(
+    context: &ReportPresentation<'_>,
+    report: &TaxReport<ScheduleSummary>,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    match request {
-        ResolvedTaxReport::ScheduleC { period, currency } => {
-            let report = build_schedule_c_on(reader, company, period, currency)?;
-            match output.format {
-                OutputFormat::Json => {
-                    let meta = cli
-                        .meta(Operation::ReportScheduleC, Some(company))
-                        .with_currency(currency);
-                    output.write_json(meta, &report, None)?;
-                }
-                OutputFormat::Csv => writeln!(output.writer, "{}", schedule::render_csv(&report)?)?,
-                OutputFormat::Table => {
-                    writeln!(output.writer, "{}", schedule::render_table(&report))?;
-                }
-            }
-        }
-        ResolvedTaxReport::Vendor1099 { period, threshold } => {
-            let currency = threshold.money().currency();
-            let report = build_vendors_on(reader, company, period, threshold)?;
-            match output.format {
-                OutputFormat::Json => {
-                    let meta = cli
-                        .meta(Operation::ReportVendor1099, Some(company))
-                        .with_currency(currency);
-                    output.write_json(meta, &report, None)?;
-                }
-                OutputFormat::Csv => writeln!(output.writer, "{}", vendors::render_csv(&report)?)?,
-                OutputFormat::Table => {
-                    writeln!(output.writer, "{}", vendors::render_table(&report))?;
-                }
-            }
-        }
+    render_tax(
+        context,
+        report,
+        output,
+        schedule::render_table,
+        schedule::render_csv,
+    )
+}
+
+pub(super) fn render_vendors(
+    context: &ReportPresentation<'_>,
+    report: &TaxReport<VendorSummary>,
+    output: &mut ReportOutput<'_>,
+) -> Result<(), CliError> {
+    render_tax(
+        context,
+        report,
+        output,
+        vendors::render_table,
+        vendors::render_csv,
+    )
+}
+
+fn render_tax<T: Serialize>(
+    context: &ReportPresentation<'_>,
+    report: &TaxReport<T>,
+    output: &mut ReportOutput<'_>,
+    table: impl FnOnce(&TaxReport<T>) -> String,
+    csv: impl FnOnce(&TaxReport<T>) -> Result<String, CliError>,
+) -> Result<(), CliError> {
+    match output.format {
+        OutputFormat::Json => output.write_json(
+            context.meta().with_currency(report.currency()),
+            report,
+            None,
+        )?,
+        OutputFormat::Csv => writeln!(output.writer, "{}", csv(report)?)?,
+        OutputFormat::Table => writeln!(output.writer, "{}", table(report))?,
     }
-    if !cli.verbosity.quiet {
+    if !context.quiet {
         eprintln!("[ok] tax book summary generated");
     }
     Ok(())

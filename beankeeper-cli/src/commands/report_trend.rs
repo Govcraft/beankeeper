@@ -1,6 +1,5 @@
 //! Historical spending activity and period-end net worth.
 
-use crate::operation::Operation;
 use std::collections::BTreeMap;
 
 use beankeeper::types::{AccountType, Currency, Money};
@@ -9,15 +8,11 @@ use clap::{Args, ValueEnum};
 use comfy_table::{Cell, CellAlignment, Table};
 use serde::{Serialize, Serializer};
 
-use super::report::ReportOutput;
+use super::report::{ReportOutput, ReportPresentation};
 use super::report_dates::DateRange;
 use super::report_periods::{Column, PeriodArg, period_columns};
-use crate::cli::{Cli, OutputFormat};
-use crate::db::{
-    self, BalanceRow,
-    companies::Company,
-    connection::{Db, ReadConn},
-};
+use crate::cli::OutputFormat;
+use crate::db::{self, BalanceRow, companies::Company, connection::Db};
 use crate::error::CliError;
 use crate::output::amounts::{MoneySequence, format_money};
 use crate::output::chart;
@@ -53,17 +48,17 @@ pub struct TrendArgs {
     /// Last date (inclusive). Defaults to today.
     #[arg(long)]
     pub to: Option<crate::cli::CalendarDateArg>,
-    /// Calendar granularity; first and last periods are clipped to the range.
-    #[arg(long, value_enum, default_value = "month")]
-    pub period: PeriodArg,
+    /// Calendar granularity (defaults to month); first and last periods are clipped to the range.
+    #[arg(long, value_enum)]
+    pub period: Option<PeriodArg>,
     /// Transaction currency. Required for companies with multiple currencies.
     #[arg(long)]
-    pub currency: Option<crate::cli::CurrencyArg>,
+    pub currency: Option<Currency>,
     /// Compare the full range with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD.
     #[arg(long)]
     pub compare: Option<super::report_periods::CompareArg>,
     /// Explain the change for one account code.
-    #[arg(long, requires = "compare")]
+    #[arg(long)]
     pub explain_change: Option<String>,
 }
 
@@ -218,56 +213,30 @@ struct Series {
     amounts: Vec<i64>,
 }
 
-pub(super) fn run_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    request: TrendRequest,
+pub(super) fn render(
+    context: &ReportPresentation<'_>,
+    report: &TrendReport,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let report = compute_trend_on(reader, company, request)?;
     match output.format {
         OutputFormat::Json => {
-            let meta = cli
-                .meta(Operation::ReportTrend, Some(company))
-                .with_currency(report.currency());
-            let chart =
-                chart::requested(cli, || chart::trend(company, &report, cli.output.chart_all))?;
-            output.write_json(meta, &report, chart)?;
+            let meta = context.meta().with_currency(report.currency());
+            let chart = context
+                .chart
+                .project(|all| chart::trend(context.company, report, all))?;
+            output.write_json(meta, report, chart)?;
         }
-        OutputFormat::Table => writeln!(output.writer, "{}", render_table(&report))?,
-        OutputFormat::Csv => writeln!(output.writer, "{}", render_csv(&report)?)?,
+        OutputFormat::Table => writeln!(output.writer, "{}", render_table(report))?,
+        OutputFormat::Csv => writeln!(output.writer, "{}", render_csv(report)?)?,
     }
-    if !cli.verbosity.quiet {
+    if !context.quiet {
         eprintln!(
             "[ok] {} generated ({} columns)",
-            request.metric.title().to_lowercase(),
+            report.metric().title().to_lowercase(),
             report.columns.len()
         );
     }
     Ok(())
-}
-
-impl TrendArgs {
-    pub(super) fn resolve(
-        &self,
-        reader: ReadConn<'_>,
-        company: &str,
-        today: NaiveDate,
-    ) -> Result<TrendRequest, CliError> {
-        let dates = DateRange::resolve(self.from.as_ref(), self.to.as_ref(), today)?;
-        let currency = super::report_currency::resolve_report_currency(
-            reader,
-            company,
-            crate::cli::CurrencyArg::resolve_optional(self.currency.as_ref())?,
-        )?;
-        Ok(TrendRequest {
-            dates,
-            currency,
-            metric: self.metric,
-            period: self.period,
-        })
-    }
 }
 
 /// Compute a trend in one currency on an already-open ledger.
@@ -280,19 +249,20 @@ pub fn compute_trend(
     company: &str,
     request: TrendRequest,
 ) -> Result<TrendReport, CliError> {
-    db.read_snapshot(|reader| compute_trend_on(reader, company, request))
+    db.read_snapshot(|reader| {
+        let company = Company::bind(reader, company.parse()?)?;
+        compute_trend_on(&company, request)
+    })
 }
 
-fn compute_trend_on(
-    reader: ReadConn<'_>,
-    company: &str,
+pub(super) fn compute_trend_on(
+    scope: &Company<'_>,
     request: TrendRequest,
 ) -> Result<TrendReport, CliError> {
-    let scope = Company::bind(reader, company.parse()?)?;
     let columns = period_columns(request.dates.from(), request.dates.to(), request.period)?;
     let rows = columns
         .iter()
-        .map(|column| column_rows(&scope, request.metric, request.currency, column));
+        .map(|column| column_rows(scope, request.metric, request.currency, column));
     let raw = match request.metric {
         TrendMetric::Spending => spending_series(rows)?,
         TrendMetric::NetWorth => net_worth_series(rows)?,

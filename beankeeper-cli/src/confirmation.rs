@@ -9,7 +9,7 @@ pub struct Confirmed(());
 
 impl Confirmed {
     /// Record explicit confirmation from CLI `--force` or an MCP delete call.
-    pub(crate) const fn explicit() -> Self {
+    const fn explicit() -> Self {
         Self(())
     }
 
@@ -28,21 +28,42 @@ impl Confirmed {
     }
 }
 
+/// An MCP tool call explicitly invoking a destructive operation.
+pub(crate) struct ExplicitDeleteCall;
+
+impl From<ExplicitDeleteCall> for Confirmed {
+    fn from(_: ExplicitDeleteCall) -> Self {
+        Self::explicit()
+    }
+}
+
+struct CliDeletion<'a> {
+    force: bool,
+    target: &'a str,
+}
+
+impl TryFrom<CliDeletion<'_>> for Option<Confirmed> {
+    type Error = CliError;
+
+    fn try_from(CliDeletion { force, target }: CliDeletion<'_>) -> Result<Self, Self::Error> {
+        let stdin = std::io::stdin();
+        if force || !stdin.is_terminal() {
+            return Confirmed::forced(force).map(Some);
+        }
+        eprint!("Delete {target}? [y/N] ");
+        let mut answer = String::new();
+        stdin.read_line(&mut answer)?;
+        Ok(answer
+            .trim()
+            .eq_ignore_ascii_case("y")
+            .then_some(Confirmed::explicit()))
+    }
+}
+
 /// Confirm deletion with `--force` or an affirmative answer on a terminal.
-///
 /// # Errors
 /// Returns a usage error without a terminal or `--force`, or an input error
 /// if the terminal could not supply an answer.
 pub fn confirm_deletion(force: bool, target: &str) -> Result<Option<Confirmed>, CliError> {
-    let stdin = std::io::stdin();
-    if force || !stdin.is_terminal() {
-        return Confirmed::forced(force).map(Some);
-    }
-    eprint!("Delete {target}? [y/N] ");
-    let mut answer = String::new();
-    stdin.read_line(&mut answer)?;
-    Ok(answer
-        .trim()
-        .eq_ignore_ascii_case("y")
-        .then_some(Confirmed(())))
+    CliDeletion { force, target }.try_into()
 }

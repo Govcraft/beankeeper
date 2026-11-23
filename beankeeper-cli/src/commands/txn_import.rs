@@ -22,6 +22,7 @@ use crate::db::{self, accounts, transactions};
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
 use crate::output::json;
+use crate::request::CurrencySetting;
 
 /// Options for CSV mapping and the default CSV/JSON transaction currency.
 #[derive(Args, Debug)]
@@ -29,8 +30,8 @@ pub struct ImportOptions {
     #[command(flatten)]
     mapping: CsvMapping,
     /// Default currency for CSV/JSON (JSON objects may override it).
-    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    currency: crate::cli::CurrencyArg,
+    #[arg(long)]
+    currency: Option<Currency>,
 }
 
 #[derive(Args, Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -111,7 +112,7 @@ struct InputTransaction {
     date: String,
     description: String,
     entries: Vec<InputEntry>,
-    currency: Option<String>,
+    currency: Option<Currency>,
     reference: Option<String>,
     metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -141,10 +142,6 @@ fn invalid(message: impl Into<String>) -> CliError {
     CliError::Validation(message.into())
 }
 
-fn parse_currency(code: &str) -> Result<Currency, CliError> {
-    Currency::from_code(code).map_err(|error| invalid(format!("invalid currency: {error}")))
-}
-
 fn parse_date(date: &str, format: &str) -> Result<NaiveDate, CliError> {
     NaiveDate::parse_from_str(date.trim(), format)
         .map_err(|error| invalid(format!("invalid date '{date}': {error}")))
@@ -152,12 +149,9 @@ fn parse_date(date: &str, format: &str) -> Result<NaiveDate, CliError> {
 
 fn prepare_json(
     input: InputTransaction,
-    default_currency: &crate::cli::CurrencyArg,
+    default_currency: Currency,
 ) -> Result<PreparedTransaction, CliError> {
-    let currency = input
-        .currency
-        .as_deref()
-        .map_or_else(|| default_currency.resolve(), parse_currency)?;
+    let currency = input.currency.unwrap_or(default_currency);
     let entries = input
         .entries
         .into_iter()
@@ -220,13 +214,13 @@ impl CsvColumns {
 fn prepare_csv(
     record: &csv::StringRecord,
     columns: &CsvColumns,
-    options: &ImportOptions,
+    mapping: &CsvMapping,
+    currency: Currency,
     bank: &str,
     suspense: &str,
 ) -> Result<PreparedTransaction, CliError> {
-    let currency = options.currency.resolve()?;
     let signed = super::txn::parse_amount_to_minor(record[columns.amount].trim(), currency)?;
-    let inflow = (signed > 0) == (options.mapping.positive_amount == PositiveAmount::Inflow);
+    let inflow = (signed > 0) == (mapping.positive_amount == PositiveAmount::Inflow);
     let (debit, credit) = if inflow {
         (bank, suspense)
     } else {
@@ -250,7 +244,7 @@ fn prepare_csv(
     })
     .collect();
     Ok(PreparedTransaction {
-        date: parse_date(&record[columns.date], &options.mapping.date_format)?,
+        date: parse_date(&record[columns.date], &mapping.date_format)?,
         description: record[columns.description].to_string(),
         currency,
         entries,
@@ -269,6 +263,7 @@ fn read_transactions(
     bank: Option<&str>,
     suspense: Option<&str>,
 ) -> Result<Vec<PreparedTransaction>, CliError> {
+    let currency = CurrencySetting::from(options.currency).try_into()?;
     match format {
         ImportFormat::Json => {
             let inputs: Vec<InputTransaction> = serde_json::from_str(content)
@@ -277,7 +272,7 @@ fn read_transactions(
                 .into_iter()
                 .enumerate()
                 .map(|(index, input)| {
-                    prepare_json(input, &options.currency).map_err(|error| {
+                    prepare_json(input, currency).map_err(|error| {
                         invalid(format!("JSON transaction {}: {error}", index + 1))
                     })
                 })
@@ -291,7 +286,14 @@ fn read_transactions(
             if bank == suspense {
                 return Err(invalid("CSV --account and --suspense must be different"));
             }
-            read_csv(content, options, bank, suspense, usize::MAX)
+            read_csv(
+                content,
+                &options.mapping,
+                currency,
+                bank,
+                suspense,
+                usize::MAX,
+            )
         }
         ImportFormat::Ofx => Err(CliError::Usage("expected CSV or JSON import".into())),
     }
@@ -299,7 +301,8 @@ fn read_transactions(
 
 fn read_csv(
     content: &str,
-    options: &ImportOptions,
+    mapping: &CsvMapping,
+    currency: Currency,
     bank: &str,
     suspense: &str,
     max_rows: usize,
@@ -310,7 +313,7 @@ fn read_csv(
     let headers = reader
         .headers()
         .map_err(|error| invalid(format!("CSV headers: {error}")))?;
-    let columns = CsvColumns::new(headers, &options.mapping)?;
+    let columns = CsvColumns::new(headers, mapping)?;
     reader
         .records()
         .enumerate()
@@ -320,7 +323,7 @@ fn read_csv(
             }
             let row = index + 2;
             let record = record.map_err(|error| invalid(format!("CSV row {row}: {error}")))?;
-            prepare_csv(&record, &columns, options, bank, suspense)
+            prepare_csv(&record, &columns, mapping, currency, bank, suspense)
                 .map_err(|error| invalid(format!("CSV row {row}: {error}")))
         })
         .collect()
@@ -335,12 +338,8 @@ pub(crate) fn read_csv_statement(
     suspense: &str,
     max_rows: usize,
 ) -> Result<Vec<SourceRow>, CliError> {
-    let options = ImportOptions {
-        mapping: mapping.clone(),
-        currency: currency.into(),
-    };
     let mut occurrences = HashMap::new();
-    read_csv(content, &options, bank, suspense, max_rows)?
+    read_csv(content, mapping, currency, bank, suspense, max_rows)?
         .into_iter()
         .map(|mut row| {
             let reference = row_reference(&mut row, ImportFormat::Csv, &mut occurrences)?
@@ -371,7 +370,7 @@ fn row_reference(
     occurrences: &mut HashMap<String, usize>,
 ) -> Result<String, CliError> {
     if let Some(reference) = prepared.reference.take() {
-        return Ok(reference.into_string());
+        return Ok(reference.into());
     }
     let bytes = serde_json::to_vec(prepared).map_err(|error| invalid(error.to_string()))?;
     let prefix = if format == ImportFormat::Csv {

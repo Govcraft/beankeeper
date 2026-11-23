@@ -164,6 +164,6 @@ fn ofx_closed_date_is_reported_as_a_failed_line_without_posting() -> TestResult 
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     assert_eq!(state, (0, before));
-    beankeeper_cli::commands::verify::execute_json(&db)?;
+    beankeeper_cli::db::verification::VerifiedLedger::read(&db)?;
     Ok(())
 }

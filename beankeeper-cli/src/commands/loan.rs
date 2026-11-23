@@ -66,7 +66,7 @@ fn checked_money(amount: Amount, currency: Currency) -> Result<Money, CliError> 
 }
 
 fn calculate(args: &LoanCalculationArgs) -> Result<(Currency, ScheduleData), CliError> {
-    let currency = args.currency.resolve()?;
+    let currency = crate::request::CurrencySetting::from(args.currency).try_into()?;
     let principal = super::txn::parse_amount_to_minor(&args.principal, currency)?;
     let principal = Amount::new(i128::from(principal));
     let rate: AnnualRate = args.rate.parse().map_err(validation)?;
@@ -173,7 +173,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
     let date = args.date.posting_date()?;
     let line = |code: &str, amount: MoneyField| {
         Ok::<_, CliError>(super::txn::PostingLine {
-            account_code: code.to_owned(),
+            account_code: super::txn::account_code(code)?,
             amount: beankeeper::types::Amount::new(amount.minor_units()).try_into()?,
             memo: None,
         })
@@ -191,34 +191,33 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         .reference
         .parse()
         .map_err(|error| CliError::Validation(format!("invalid reference: {error}")))?;
-    let post = super::txn::PostingRequest {
+    let post = super::txn::PostingRequest::try_from(super::txn::PostingDraft {
         description: format!("Loan payment {} ({})", row.number, args.reference.trim()),
         debit,
         credit,
         metadata: None,
         annotations: Vec::new(),
         currency,
-        date,
+        date: date.into(),
         correlate: None,
         reference: Some(reference),
-        on_conflict: args.on_conflict,
+        on_conflict: args.on_conflict.into(),
         tax: std::collections::HashMap::new(),
-    };
-    let result = super::txn::execute_direct_posting_json(&db, slug, &post, &cli.principal())?;
+    })?;
+    let result = super::txn::execute_direct_posting(&db, slug, &post, &cli.principal())?;
     // On a skipped reference the existing transaction may have different terms;
     // return only its identity/status, never claim that it contains this split.
     if cli.verbosity.quiet && resolve_format(None, cli) != OutputFormat::Json {
         return Ok(());
     }
-    let (id, status) = if result["skipped"].as_bool() == Some(true) {
-        (&result["existing_id"], "skipped")
-    } else {
-        (&result["id"], "created")
+    let (id, status) = match result {
+        crate::db::PostResult::Created(id) => (id, "created"),
+        crate::db::PostResult::Skipped(id) => (id, "skipped"),
     };
     match resolve_format(None, cli) {
         OutputFormat::Json => println!(
             "{}",
-            json::envelope_ok(cli.meta(Operation::LoanPay, Some(company)), &result,)?
+            json::render_post_result(result, cli.meta(Operation::LoanPay, Some(company)))?
         ),
         OutputFormat::Table => println!("{status} transaction #{id}"),
         OutputFormat::Csv => {

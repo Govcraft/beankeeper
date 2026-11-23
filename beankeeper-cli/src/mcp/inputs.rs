@@ -34,13 +34,12 @@ use crate::db::{
     proposals::ProposalId,
 };
 
-pub(super) use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as AuditEntityArg};
+pub(crate) use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as AuditEntityArg};
 
 use crate::error::CliError;
 
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
-type CurrencyCode = Text<Currency>;
 type Date = Text<CalendarDate>;
 type Amount = Text<DecimalAmount>;
 type Reference = Text<TransactionReference>;
@@ -48,7 +47,7 @@ type Comparison = Text<CompareArg>;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(super) enum OnConflictArg {
+pub(crate) enum OnConflictArg {
     Error,
     Skip,
 }
@@ -62,7 +61,7 @@ fn optional_direction_schema(_: &mut SchemaGenerator) -> Schema {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(super) enum ClearanceArg {
+pub(crate) enum ClearanceArg {
     Uncleared,
     Cleared,
     Reconciled,
@@ -70,21 +69,21 @@ pub(super) enum ClearanceArg {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(super) enum AgingMethodArg {
+pub(crate) enum AgingMethodArg {
     Fifo,
     Specific,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(super) enum ReconciliationModeArg {
+pub(crate) enum ReconciliationModeArg {
     Bank,
     Settlement,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(super) enum PeriodArg {
+pub(crate) enum PeriodArg {
     Month,
     Quarter,
     Year,
@@ -92,7 +91,7 @@ pub(super) enum PeriodArg {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CompanyShow {
+pub(crate) struct CompanyShow {
     pub slug: Company,
 }
 
@@ -116,7 +115,7 @@ impl JsonSchema for CompanyName {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CompanyCreate {
+pub(crate) struct CompanyCreate {
     pub slug: Company,
     pub name: CompanyName,
     pub description: Option<String>,
@@ -124,7 +123,7 @@ pub(super) struct CompanyCreate {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct AccountCreate {
+pub(crate) struct AccountCreate {
     pub company: Company,
     pub code: Account,
     pub name: String,
@@ -135,7 +134,7 @@ pub(super) struct AccountCreate {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct AccountList {
+pub(crate) struct AccountList {
     pub company: Company,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
@@ -146,19 +145,20 @@ pub(super) struct AccountList {
     pub from: Option<Date>,
     pub to: Option<Date>,
     /// Currency of balance totals. Required when the company uses multiple currencies.
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct AccountShow {
+pub(crate) struct AccountShow {
     pub company: Company,
     pub code: Account,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TxnList {
+pub(crate) struct TxnList {
     pub company: Company,
     pub account: Option<Account>,
     pub from: Option<Date>,
@@ -173,7 +173,8 @@ pub(super) struct TxnList {
     /// Exact entry amount in major units.
     pub amount_eq: Option<Amount>,
     /// Currency code. Required with an amount filter if the company uses multiple currencies.
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub reference: Option<Reference>,
     pub metadata: Option<String>,
     #[serde(default)]
@@ -187,7 +188,7 @@ pub(super) struct TxnList {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TxnReverse {
+pub(crate) struct TxnReverse {
     pub company: Company,
     pub id: TransactionId,
     /// YYYY-MM-DD, on or after the original transaction date; defaults to today.
@@ -200,7 +201,7 @@ pub(super) struct TxnReverse {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 #[schemars(extend("type" = "object"))]
-pub(super) enum TxnMetaSet {
+pub(crate) enum TxnMetaSet {
     Id {
         company: Company,
         id: TransactionId,
@@ -218,7 +219,7 @@ pub(super) enum TxnMetaSet {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 #[schemars(extend("type" = "object"))]
-pub(super) enum TxnMetaUnset {
+pub(crate) enum TxnMetaUnset {
     Id {
         company: Company,
         id: TransactionId,
@@ -235,14 +236,14 @@ pub(super) enum TxnMetaUnset {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TxnShow {
+pub(crate) struct TxnShow {
     pub company: Company,
     pub id: TransactionId,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct BudgetList {
+pub(crate) struct BudgetList {
     pub company: Company,
     pub year: i32,
     pub account: Option<Account>,
@@ -251,30 +252,32 @@ pub(super) struct BudgetList {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct BudgetSet {
+pub(crate) struct BudgetSet {
     pub company: Company,
     pub account: Account,
     pub year: i32,
     pub month: Option<Month>,
     pub amount: Option<Amount>,
     pub annual: Option<Amount>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub notes: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct BudgetDelete {
+pub(crate) struct BudgetDelete {
     pub company: Company,
     pub account: Account,
     pub year: i32,
     pub month: Option<Month>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct AuditLog {
+pub(crate) struct AuditLog {
     /// Exact recorded actor label.
     #[schemars(with = "Option<Text<ActorLabel>>")]
     pub actor: Option<ActorFilterArg>,
@@ -291,11 +294,11 @@ pub(super) struct AuditLog {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Empty {}
+pub(crate) struct Empty {}
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupStatementPreview {
+pub(crate) struct LedgerSetupStatementPreview {
     /// Stable reference for retries within this setup generation.
     reference: Text<SetupReference>,
     /// Company slug of the book being set up.
@@ -307,7 +310,8 @@ pub(super) struct LedgerSetupStatementPreview {
     /// Contra account used when no categorization rule matches.
     suspense: Account,
     /// Currency of the statement. For OFX it must match the embedded currency.
-    currency: CurrencyCode,
+    #[schemars(with = "Text<Currency>")]
+    currency: Currency,
     /// CSV or OFX. QFX is accepted as OFX.
     format: StatementFormat,
     /// The statement contents.
@@ -316,36 +320,27 @@ pub(super) struct LedgerSetupStatementPreview {
     csv: Option<CsvMapping>,
 }
 
-impl LedgerSetupStatementPreview {
-    pub(super) fn into_request(self) -> Result<(SetupReference, StatementRequest), CliError> {
-        let input = self;
-        let source = match input.format {
-            StatementFormat::Csv => StatementSource::Csv {
-                content: input.content,
-                mapping: input.csv.unwrap_or_default(),
-            },
-            StatementFormat::Ofx if input.csv.is_none() => StatementSource::Ofx(input.content),
-            StatementFormat::Ofx => {
-                return Err(CliError::Validation(
-                    "CSV field mapping is only valid for CSV statements".into(),
-                ));
-            }
-        };
+impl TryFrom<LedgerSetupStatementPreview> for crate::commands::setup::SetupRequest {
+    type Error = CliError;
+
+    fn try_from(input: LedgerSetupStatementPreview) -> Result<Self, Self::Error> {
         let request = StatementRequest {
             company: input.company.into_inner(),
             generation: input.generation,
-            bank: input.bank.into_inner(),
-            suspense: input.suspense.into_inner(),
-            currency: input.currency.into_inner(),
-            source,
+            accounts: (input.bank.into_inner(), input.suspense.into_inner()).try_into()?,
+            currency: input.currency,
+            source: StatementSource::try_from((input.format, input.content, input.csv))?,
         };
-        Ok((input.reference.into_inner(), request))
+        Ok(Self::StatementPreview(
+            input.reference.into_inner(),
+            request,
+        ))
     }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupStatementCommit {
+pub(crate) struct LedgerSetupStatementCommit {
     pub company: Company,
     pub batch_id: StatementBatchId,
     pub preview_sha256: Text<Sha256Hex>,
@@ -353,14 +348,14 @@ pub(super) struct LedgerSetupStatementCommit {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupStatementReceipt {
+pub(crate) struct LedgerSetupStatementReceipt {
     pub company: Company,
     pub batch_id: StatementBatchId,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupBegin {
+pub(crate) struct LedgerSetupBegin {
     pub name: String,
     pub public_key: String,
     pub ttl: Option<String>,
@@ -368,13 +363,13 @@ pub(super) struct LedgerSetupBegin {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupEnd {
+pub(crate) struct LedgerSetupEnd {
     pub generation: crate::db::audit::setup::Generation,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SetupTarget {
+pub(crate) struct SetupTarget {
     /// Company slug of the book being set up.
     pub company: Company,
     /// Active setup generation.
@@ -385,9 +380,10 @@ pub(super) struct SetupTarget {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SetupSettings {
+pub(crate) struct SetupSettings {
     pub purpose: BookPurpose,
-    pub base_currency: CurrencyCode,
+    #[schemars(with = "Text<Currency>")]
+    pub base_currency: Currency,
     pub fiscal_year_start: Text<FiscalYearStart>,
 }
 
@@ -395,7 +391,7 @@ impl From<SetupSettings> for BookSettings {
     fn from(settings: SetupSettings) -> Self {
         Self {
             purpose: settings.purpose,
-            base_currency: settings.base_currency.into_inner(),
+            base_currency: settings.base_currency,
             fiscal_year_start: settings.fiscal_year_start.into_inner(),
         }
     }
@@ -403,7 +399,7 @@ impl From<SetupSettings> for BookSettings {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupBookCreate {
+pub(crate) struct LedgerSetupBookCreate {
     pub target: SetupTarget,
     pub name: CompanyName,
     pub settings: SetupSettings,
@@ -411,14 +407,14 @@ pub(super) struct LedgerSetupBookCreate {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupBookInitialize {
+pub(crate) struct LedgerSetupBookInitialize {
     pub target: SetupTarget,
     pub settings: SetupSettings,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupBookUpdate {
+pub(crate) struct LedgerSetupBookUpdate {
     pub target: SetupTarget,
     /// Current profile revision being superseded.
     pub supersedes: ProfileRevision,
@@ -427,14 +423,14 @@ pub(super) struct LedgerSetupBookUpdate {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupChartApply {
+pub(crate) struct LedgerSetupChartApply {
     pub target: SetupTarget,
     pub template: ChartTemplate,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupAccountAdd {
+pub(crate) struct LedgerSetupAccountAdd {
     pub target: SetupTarget,
     pub code: Account,
     pub name: String,
@@ -443,7 +439,7 @@ pub(super) struct LedgerSetupAccountAdd {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Line {
+pub(crate) struct Line {
     pub account: Account,
     /// Decimal amount in major units, for example "12.34".
     pub amount: Amount,
@@ -452,11 +448,12 @@ pub(super) struct Line {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupOpeningPreview {
+pub(crate) struct LedgerSetupOpeningPreview {
     pub company: Company,
     pub generation: Generation,
     pub date: Date,
-    pub currency: CurrencyCode,
+    #[schemars(with = "Text<Currency>")]
+    pub currency: Currency,
     pub description: Option<String>,
     pub debits: NonEmpty<Line>,
     pub credits: NonEmpty<Line>,
@@ -464,7 +461,7 @@ pub(super) struct LedgerSetupOpeningPreview {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerSetupOpeningReserve {
+pub(crate) struct LedgerSetupOpeningReserve {
     pub opening: LedgerSetupOpeningPreview,
     /// Stable reference to reuse for an exact retry.
     pub reference: Text<SetupReference>,
@@ -474,11 +471,12 @@ pub(super) struct LedgerSetupOpeningReserve {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TxnPost {
+pub(crate) struct TxnPost {
     pub company: Company,
     pub description: String,
     pub metadata: Option<String>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub date: Option<Date>,
     pub correlate: Option<PartnerTransactionId>,
     pub reference: Option<Reference>,
@@ -493,7 +491,7 @@ pub(super) struct TxnPost {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TxnProposals {
+pub(crate) struct TxnProposals {
     pub company: Company,
     #[serde(default)]
     pub include_rejected: bool,
@@ -501,14 +499,14 @@ pub(super) struct TxnProposals {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TxnApprove {
+pub(crate) struct TxnApprove {
     pub company: Company,
     pub id: Text<ProposalId>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TxnReject {
+pub(crate) struct TxnReject {
     pub company: Company,
     pub id: Text<ProposalId>,
     pub reason: Option<String>,
@@ -518,7 +516,7 @@ pub(super) struct TxnReject {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "target", rename_all = "kebab-case", deny_unknown_fields)]
 #[schemars(extend("type" = "object"))]
-pub(super) enum TxnClear {
+pub(crate) enum TxnClear {
     /// Select a single entry by transaction and entry IDs.
     Entry {
         company: Company,
@@ -553,7 +551,7 @@ pub(super) enum TxnClear {
 /// Accept the explicit schema or infer its discriminator for older clients.
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
-pub(super) struct ClearInput(pub TxnClear);
+pub(crate) struct ClearInput(pub TxnClear);
 
 impl JsonSchema for ClearInput {
     fn schema_name() -> std::borrow::Cow<'static, str> {
@@ -595,14 +593,14 @@ impl<'de> Deserialize<'de> for ClearInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct BatchLine {
+pub(crate) struct BatchLine {
     pub reference: Reference,
     pub amount: Option<Text<StatementAmount>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[schemars(extend("unevaluatedProperties" = false))]
-pub(super) struct Report {
+pub(crate) struct Report {
     pub company: Company,
     /// Request versioned chart data with exact major-unit decimal strings.
     #[serde(default)]
@@ -616,7 +614,7 @@ pub(super) struct Report {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub(super) enum ReportOptions {
+pub(crate) enum ReportOptions {
     Trend(TrendInput),
     TrialBalance(TrialBalanceInput),
     Balance(BalanceInput),
@@ -635,12 +633,13 @@ pub(super) enum ReportOptions {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TrendInput {
+pub(crate) struct TrendInput {
     pub metric: TrendMetricArg,
     pub from: Option<Date>,
     pub to: Option<Date>,
     pub period: Option<PeriodArg>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
@@ -661,14 +660,15 @@ fn report_end_date_alias(schema: &mut Schema) {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(transform = report_end_date_alias)]
-pub(super) struct TrialBalanceInput {
+pub(crate) struct TrialBalanceInput {
     pub from: Option<Date>,
     /// Inclusive end date. Supply either `to` or `as_of`.
     #[serde(alias = "as_of")]
     pub to: Option<Date>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub period: Option<PeriodArg>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
@@ -677,23 +677,25 @@ pub(super) struct TrialBalanceInput {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(transform = report_end_date_alias)]
-pub(super) struct BalanceInput {
+pub(crate) struct BalanceInput {
     pub account: Account,
     pub from: Option<Date>,
     /// Inclusive end date. Supply either `to` or `as_of`.
     #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct IncomeStatementInput {
+pub(crate) struct IncomeStatementInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub period: Option<PeriodArg>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
@@ -702,69 +704,75 @@ pub(super) struct IncomeStatementInput {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(transform = report_end_date_alias)]
-pub(super) struct BalanceSheetInput {
+pub(crate) struct BalanceSheetInput {
     /// Inclusive end date. Supply either `to` or `as_of`.
     #[serde(alias = "as_of")]
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TaxPeriodInput {
+pub(crate) struct TaxPeriodInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Vendor1099Input {
+pub(crate) struct Vendor1099Input {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     /// Nonnegative decimal in major currency units; defaults to "600".
     pub threshold: Option<Amount>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LedgerInput {
+pub(crate) struct LedgerInput {
     #[serde(default)]
     pub account: Vec<Account>,
     pub from: Option<Date>,
     pub to: Option<Date>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     #[serde(default)]
     pub filter_metadata: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct BudgetVarianceInput {
+pub(crate) struct BudgetVarianceInput {
     pub year: i32,
     pub month: Option<Month>,
     pub from: Option<Month>,
     pub to: Option<Month>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     #[serde(default)]
     pub include_unbudgeted: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct AgingInput {
+pub(crate) struct AgingInput {
     pub account: NonEmpty<Account>,
     #[serde(default)]
     pub include_children: bool,
     pub as_of: Option<Date>,
     pub buckets: Option<String>,
     pub group_by_metadata: Option<String>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub method: Option<AgingMethodArg>,
     pub link_key: Option<String>,
     #[serde(default)]
@@ -778,7 +786,7 @@ pub(super) struct AgingInput {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(transform = report_end_date_alias)]
-pub(super) struct ReconciliationInput {
+pub(crate) struct ReconciliationInput {
     /// Bank balances (default) or statement-scoped AR/AP settlements.
     pub mode: Option<ReconciliationModeArg>,
     /// Settlement link metadata key; defaults to `applies_to`.
@@ -792,17 +800,19 @@ pub(super) struct ReconciliationInput {
     #[serde(default)]
     pub filter_metadata: Vec<String>,
     pub group_by_metadata: Option<String>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CashFlowInput {
+pub(crate) struct CashFlowInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
     #[serde(default)]
     pub cash_account: Vec<Account>,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
 }
@@ -810,7 +820,7 @@ pub(super) struct CashFlowInput {
 /// Quantity tracked by a historical trend report.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(super) enum TrendMetricArg {
+pub(crate) enum TrendMetricArg {
     Spending,
     NetWorth,
 }
@@ -818,22 +828,23 @@ pub(super) enum TrendMetricArg {
 /// Inputs for a company-scoped read.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CompanyScope {
+pub(crate) struct CompanyScope {
     pub company: Company,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SecurityCreate {
+pub(crate) struct SecurityCreate {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
     pub name: String,
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SecurityPrice {
+pub(crate) struct SecurityPrice {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
     pub date: Date,
@@ -842,7 +853,7 @@ pub(super) struct SecurityPrice {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InvestmentBuy {
+pub(crate) struct InvestmentBuy {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
     pub quantity: Text<PositiveQuantity>,
@@ -855,7 +866,7 @@ pub(super) struct InvestmentBuy {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum LotMethodArg {
+pub(crate) enum LotMethodArg {
     Fifo,
     Lifo,
     Specific,
@@ -863,7 +874,7 @@ pub(super) enum LotMethodArg {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InvestmentSell {
+pub(crate) struct InvestmentSell {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
     pub quantity: Text<PositiveQuantity>,
@@ -879,14 +890,14 @@ pub(super) struct InvestmentSell {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InvestmentLots {
+pub(crate) struct InvestmentLots {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InvestmentHoldings {
+pub(crate) struct InvestmentHoldings {
     pub company: Company,
     pub as_of: Option<Date>,
 }
@@ -894,16 +905,16 @@ pub(super) struct InvestmentHoldings {
 /// Inclusive company posting cutoff.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct PeriodClose {
+pub(crate) struct PeriodClose {
     pub company: Company,
     /// Inclusive YYYY-MM-DD cutoff.
-    pub through: Date,
+    pub through: Text<crate::db::periods::PeriodDate>,
 }
 
 /// Explicitly unlock previously closed company dates.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct PeriodReopen {
+pub(crate) struct PeriodReopen {
     pub company: Company,
     /// Nonempty explanation recorded in the audit trail.
     pub reason: String,
@@ -912,7 +923,7 @@ pub(super) struct PeriodReopen {
 /// Advisor-ready summary with the same options and envelope as `bk summary`.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct FinancialSummary {
+pub(crate) struct FinancialSummary {
     pub company: Company,
     /// Request versioned chart data with exact major-unit decimal strings.
     #[serde(default)]
@@ -925,9 +936,9 @@ pub(super) struct FinancialSummary {
 }
 
 /// Keep parameter failures available to the summary's named error envelope.
-pub(super) struct FinancialSummaryInput(pub Result<FinancialSummary, SummaryDecodeError>);
+pub(crate) struct FinancialSummaryInput(pub Result<FinancialSummary, SummaryDecodeError>);
 
-pub(super) struct SummaryDecodeError {
+pub(crate) struct SummaryDecodeError {
     pub company: Option<String>,
     pub cause: serde_json::Error,
 }
@@ -961,7 +972,7 @@ impl JsonSchema for FinancialSummaryInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SummaryOptions {
+pub(crate) struct SummaryOptions {
     /// First date, inclusive. Defaults to the end date's month start.
     pub from: Option<Date>,
     /// Last date, inclusive. Defaults to today.
@@ -971,7 +982,8 @@ pub(super) struct SummaryOptions {
     /// Last date in the comparison period. Requires `compare_from`.
     pub compare_to: Option<Date>,
     /// Required when the company uses multiple currencies.
-    pub currency: Option<CurrencyCode>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
     /// Cash asset accounts. Defaults to named cash/bank/checking/savings accounts.
     #[serde(default)]
     pub cash_account: Vec<Account>,

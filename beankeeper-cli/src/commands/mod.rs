@@ -13,7 +13,7 @@ pub mod loan;
 pub mod period;
 pub mod policy;
 mod posting_output;
-pub(crate) mod reference;
+pub mod reference;
 pub mod report;
 pub mod report_aging;
 pub mod report_cash_flow;
@@ -197,7 +197,129 @@ fn can_append_audit(command: &Command) -> bool {
 }
 
 fn dispatch_command(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
-    crate::output::chart::validate_request(cli)?;
+    let chart = report::ChartRequest::try_from((cli.output.chart, cli.output.chart_all))?;
+    chart.validate_cli(cli)?;
+    if dispatch_ledger(cli, meta.clone(), chart)? {
+        return Ok(());
+    }
+    dispatch_local(cli, meta)
+}
+
+fn dispatch_ledger(
+    cli: &Cli,
+    meta: Option<Meta>,
+    chart: report::ChartRequest,
+) -> Result<bool, CliError> {
+    use crate::request::LedgerRequest;
+
+    let request = match &cli.command {
+        Command::Setup(command) => {
+            let request = setup::SetupRequest::try_from(command)?;
+            let response = if request.reads_compatible_snapshot() {
+                let db = setup::open_setup_snapshot(cli)?;
+                LedgerRequest::Setup(request)
+                    .execute_with_actor(&db, |_| {
+                        cli.verify_agent(&db)?;
+                        Ok(cli.principal())
+                    })?
+                    .0
+            } else {
+                let db = cli.open_db()?;
+                LedgerRequest::Setup(request).execute(&db, &cli.principal())?
+            };
+            return response.render(cli, meta).map(|()| true);
+        }
+        Command::Summary(args) => Some(LedgerRequest::Summary(
+            (require_company(cli)?, args, chart).try_into()?,
+        )),
+        Command::Period(command) => Some(LedgerRequest::Period(
+            (require_company(cli)?.clone(), command).try_into()?,
+        )),
+        Command::Security(args) => Some(LedgerRequest::Investment(
+            (require_company(cli)?.clone(), &args.command).try_into()?,
+        )),
+        Command::Investment(args) => Some(LedgerRequest::Investment(
+            (require_company(cli)?.clone(), &args.command).try_into()?,
+        )),
+        Command::Verify => Some(LedgerRequest::Verify),
+        Command::Company(command) => {
+            return execute_confirmable(cli, meta, "Aborted.", || {
+                let request: Option<company::CompanyRequest> = command.try_into()?;
+                Ok(request.map(LedgerRequest::Company))
+            });
+        }
+        Command::Account(args) => {
+            return execute_confirmable(cli, meta, "Aborted.", || {
+                let request: Option<account::AccountRequest> =
+                    account::AccountCliInput(require_company(cli)?, &args.command).try_into()?;
+                Ok(request.map(LedgerRequest::Account))
+            });
+        }
+        Command::Txn(args) => match args.command.as_ref() {
+            TxnCommand::Import(_) | TxnCommand::Attach(_) => None,
+            command => {
+                let company = if matches!(command, TxnCommand::Reconcile) {
+                    None
+                } else {
+                    Some(require_company(cli)?)
+                };
+                Some(LedgerRequest::Transaction(txn::TxnRequest::try_from_cli(
+                    company, command,
+                )?))
+            }
+        },
+        Command::Budget(args) => {
+            return execute_confirmable(cli, meta, "aborted", || {
+                let request: Option<budget::BudgetRequest> =
+                    budget::BudgetCliInput(require_company(cli)?, &args.command).try_into()?;
+                Ok(request.map(LedgerRequest::Budget))
+            });
+        }
+        Command::Report(args) => Some(LedgerRequest::Report(
+            (require_company(cli)?, &args.command, chart).try_into()?,
+        )),
+        Command::Audit(args) => match &args.command {
+            AuditCommand::Log(args) => Some(LedgerRequest::AuditLog(args.try_into()?)),
+        },
+        Command::Agent(_)
+        | Command::Backup { .. }
+        | Command::Export { .. }
+        | Command::Init { .. }
+        | Command::Key(_)
+        | Command::Loan(_)
+        | Command::Mcp(_)
+        | Command::Policy(_)
+        | Command::Restore { .. }
+        | Command::Rule(_)
+        | Command::Schedule(_) => None,
+    };
+    if let Some(request) = request {
+        let db = cli.open_db()?;
+        let meta = meta.map(|meta| cli.meta(meta.command, meta.company.as_deref()));
+        request.execute(&db, &cli.principal())?.render(cli, meta)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn execute_confirmable(
+    cli: &Cli,
+    meta: Option<Meta>,
+    aborted: &str,
+    prepare: impl FnOnce() -> Result<Option<crate::request::LedgerRequest>, CliError>,
+) -> Result<bool, CliError> {
+    // Establish the ledger and caller before asking for confirmation.
+    let db = cli.open_db()?;
+    if let Some(request) = prepare()? {
+        request.execute(&db, &cli.principal())?.render(cli, meta)?;
+    } else {
+        eprintln!("{aborted}");
+    }
+    Ok(true)
+}
+
+fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     if !matches!(
         cli.command,
         Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. } | Command::Setup(_)
@@ -214,23 +336,8 @@ fn dispatch_command(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
-        Command::Setup(command) => setup::run(cli, command),
-        Command::Summary(args) => {
-            let company = require_company(cli)?.as_str();
-            summary::run(cli, company, args)
-        }
-        Command::Period(command) => {
-            let company = require_company(cli)?.as_str();
-            period::run(cli, company, command)
-        }
         Command::Backup { output, force } => backup::backup(cli, output, *force),
         Command::Restore { input, force } => backup::restore(cli, input, *force),
-        Command::Security(args) => {
-            investment::run_security(cli, require_company(cli)?.as_str(), &args.command)
-        }
-        Command::Investment(args) => {
-            investment::run_investment(cli, require_company(cli)?.as_str(), &args.command)
-        }
         Command::Schedule(args) => {
             let company = require_company(cli)?.as_str();
             schedule::run(cli, company, &args.command)
@@ -264,40 +371,23 @@ fn dispatch_command(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             demo,
         } => init::run(cli, *encrypt, path.as_deref(), *force, *demo),
 
-        Command::Verify => verify::run(cli),
-
         Command::Export { format, output, .. } => export::run(cli, *format, output.as_deref()),
 
-        Command::Company(sub) => company::run(cli, sub),
-
-        Command::Account(args) => {
-            let company = require_company(cli)?;
-            account::run(cli, company, &args.command)
-        }
-
         Command::Txn(args) => {
-            // Reconcile scans all companies, so --company is not required.
-            if matches!(args.command.as_ref(), crate::cli::TxnCommand::Reconcile) {
-                txn::run_reconcile_all(cli, crate::db::companies::AllCompanies)
-            } else {
-                let company = require_company(cli)?;
-                txn::run_for_company(cli, company, args.command.as_ref(), meta)
-            }
+            txn::run_for_company(cli, require_company(cli)?, args.command.as_ref(), meta)
         }
-
-        Command::Budget(args) => {
-            let company = require_company(cli)?.as_str();
-            budget::run(cli, company, &args.command)
-        }
-
-        Command::Report(args) => {
-            let company = require_company(cli)?.as_str();
-            report::run(cli, company, &args.command)
-        }
-
-        // Audit is cross-company by design, so --company is not required.
-        Command::Audit(args) => match &args.command {
-            AuditCommand::Log(args) => audit::run(cli, args),
-        },
+        Command::Setup(_)
+        | Command::Summary(_)
+        | Command::Period(_)
+        | Command::Security(_)
+        | Command::Investment(_)
+        | Command::Verify
+        | Command::Company(_)
+        | Command::Account(_)
+        | Command::Budget(_)
+        | Command::Report(_)
+        | Command::Audit(_) => Err(CliError::General(
+            "ledger request was not dispatched".into(),
+        )),
     }
 }

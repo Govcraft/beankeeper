@@ -3,33 +3,41 @@
 use beankeeper::types::{AccountCode, AccountType, Currency, Sha256Hex};
 use chrono::NaiveDate;
 use clap::{Args, Subcommand};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::cli::{Cli, OutputFormat, resolve_format};
 use crate::db::{
     Actor, Db,
     audit::setup::{
-        self, End, Generation,
-        books::{self, BookChange, ChartTemplate, SetupReference},
-        openings::{self, OpeningLine, OpeningRequest},
-        statement_batches,
+        self, End,
+        books::{self, BookChange},
+        openings, statement_batches,
     },
     companies::{CompanyName, CompanySlug},
     ids::StatementBatchId,
 };
 use crate::error::CliError;
-use crate::identity;
 use crate::operation::Operation;
 use crate::output::json;
 
 pub use super::setup_statement::StatementPreviewArgs;
 pub use crate::db::audit::setup::books::{
-    BookAccount, BookAccountCode, BookFacts, BookProfile, BookPurpose, BookSettings,
-    FiscalYearStart, ProfileRevision, book_facts,
+    BookAccount, BookAccountCode, BookFacts, BookOutcome, BookProfile, BookPurpose, BookSettings,
+    ChartApplied, ChartTemplate, FiscalYearStart, ProfileInitialized, ProfileRevision,
+    SetupAccount, SetupAccountName, SetupReference, book_facts,
+};
+pub use crate::db::audit::setup::{
+    Generation, Session, SetupAgentName, SetupLifetime, SetupPublicKey, Started,
+    openings::{
+        OpeningDescription, OpeningDraft, OpeningPreview, OpeningRequest, OpeningReservation,
+    },
+    statements::StatementRequest,
 };
 
 pub use crate::db::audit::setup::{
-    statement_batches::{StatementImportSummary, StatementReceipt, StatementTransaction},
+    statement_batches::{
+        StatementImportSummary, StatementReceipt, StatementReview, StatementTransaction,
+    },
     statements::StatementFormat,
 };
 
@@ -64,8 +72,6 @@ pub fn statement_import_summary(
 }
 
 const OLDEST_SETUP_READ_SCHEMA: i64 = 20;
-
-pub(crate) const DEFAULT_TTL: &str = "15m";
 
 /// Ledger setup operations.
 #[derive(Debug, Subcommand)]
@@ -103,9 +109,9 @@ pub enum SetupCommand {
         /// Base64 Ed25519 public key of the setup agent.
         #[arg(long)]
         public_key: String,
-        /// Credential lifetime, at most one hour.
-        #[arg(long, default_value = DEFAULT_TTL)]
-        ttl: String,
+        /// Credential lifetime, at most one hour (defaults to 15m).
+        #[arg(long)]
+        ttl: Option<String>,
     },
     /// Complete a setup generation and deactivate its credential.
     Finish {
@@ -167,21 +173,13 @@ struct BookTarget {
     reference: SetupReference,
 }
 
-impl BookTarget {
-    fn apply(
-        &self,
-        db: &Db,
-        actor: &Actor,
-        change: BookChange<'_>,
-    ) -> Result<serde_json::Value, CliError> {
-        books::apply(
-            db,
-            actor,
-            self.generation,
-            &self.reference,
-            &self.company,
-            change,
-        )
+impl From<&BookTarget> for SetupBookTarget {
+    fn from(target: &BookTarget) -> Self {
+        Self {
+            company: target.company.clone(),
+            generation: target.generation,
+            reference: target.reference.clone(),
+        }
     }
 }
 
@@ -276,9 +274,9 @@ pub struct OpeningPreviewArgs {
     /// Explicit currency for every line.
     #[arg(long)]
     currency: Currency,
-    /// Description for the opening journal.
-    #[arg(long, default_value = openings::DEFAULT_DESCRIPTION)]
-    description: String,
+    /// Description for the opening journal (defaults to "Opening balances").
+    #[arg(long)]
+    description: Option<String>,
     /// Debit line in ACCOUNT:AMOUNT[:MEMO] format. May repeat.
     #[arg(long, required = true)]
     debit: Vec<String>,
@@ -287,33 +285,32 @@ pub struct OpeningPreviewArgs {
     credit: Vec<String>,
 }
 
-impl OpeningPreviewArgs {
-    fn request(&self) -> Result<OpeningRequest, CliError> {
+impl TryFrom<&OpeningPreviewArgs> for OpeningRequest {
+    type Error = CliError;
+
+    fn try_from(args: &OpeningPreviewArgs) -> Result<Self, Self::Error> {
         let lines = |inputs: &[String]| {
             inputs
                 .iter()
-                .map(|line| {
-                    let super::txn::PostingLine {
-                        account_code,
-                        amount,
-                        memo,
-                    } = super::txn::parse_entry_arg(line, self.currency)?;
-                    let account = account_code
-                        .parse::<AccountCode>()
-                        .map_err(|error| CliError::Validation(error.to_string()))?;
-                    OpeningLine::new(account, amount.minor_units(), self.currency, memo)
+                .map(|line| line.parse())
+                .collect::<Result<Vec<_>, CliError>>()?
+                .try_into()
+                .map_err(|_| {
+                    CliError::Validation(
+                        "an opening requires at least one debit and one credit".into(),
+                    )
                 })
-                .collect::<Result<Vec<_>, _>>()
         };
-        Ok(OpeningRequest {
-            company: self.company.clone(),
-            generation: self.generation,
-            date: self.date,
-            currency: self.currency,
-            description: self.description.clone(),
-            debits: lines(&self.debit)?,
-            credits: lines(&self.credit)?,
-        })
+        OpeningDraft {
+            company: args.company.clone(),
+            generation: args.generation,
+            date: args.date,
+            currency: args.currency,
+            description: args.description.as_deref().map(str::parse).transpose()?,
+            debits: lines(&args.debit)?,
+            credits: lines(&args.credit)?,
+        }
+        .try_into()
     }
 }
 
@@ -370,12 +367,323 @@ pub fn status(db: &Db) -> Result<SetupStatus, CliError> {
     )?)
 }
 
-fn run_status(cli: &Cli) -> Result<(), CliError> {
-    let db = open_setup_snapshot(cli)?;
-    let state = db.read_snapshot(|_| {
-        cli.verify_agent(&db)?;
-        status(&db)
-    })?;
+pub(crate) fn open_setup_snapshot(cli: &Cli) -> Result<Db, CliError> {
+    Db::open_compatible_snapshot(
+        cli.db_path()?,
+        cli.resolve_passphrase()?,
+        OLDEST_SETUP_READ_SCHEMA,
+    )
+}
+
+/// A book, active setup generation, and stable request reference.
+pub struct SetupBookTarget {
+    /// Book addressed by the operation.
+    pub company: CompanySlug,
+    /// Active setup generation.
+    pub generation: Generation,
+    /// Reference the caller will reuse for an exact retry.
+    pub reference: SetupReference,
+}
+
+impl SetupBookTarget {
+    fn apply(
+        self,
+        db: &Db,
+        actor: &Actor,
+        change: BookChange<'_>,
+    ) -> Result<SetupResponse, CliError> {
+        books::apply(
+            db,
+            actor,
+            self.generation,
+            &self.reference,
+            &self.company,
+            change,
+        )
+        .map(SetupResponse::BookChanged)
+    }
+}
+
+/// One ledger setup operation with validated inputs.
+pub enum SetupRequest {
+    /// Read readiness facts from the opened ledger.
+    Status,
+    /// Read a book's profile and accounts.
+    BookShow(CompanySlug),
+    /// Freeze a statement review for the owner.
+    StatementPreview(SetupReference, StatementRequest),
+    /// Commit one specific statement review with a live approval credential.
+    StatementCommit(CompanySlug, StatementBatchId, Sha256Hex),
+    /// Read the receipt for a committed batch.
+    StatementReceipt(CompanySlug, StatementBatchId),
+    /// Issue and register a credential for the active setup generation.
+    Begin(SetupAgentName, SetupPublicKey, SetupLifetime),
+    /// Complete a setup generation and deactivate its credential.
+    Finish(Generation),
+    /// Cancel a setup generation and deactivate its credential.
+    Revoke(Generation),
+    /// Create a book and its first profile.
+    BookCreate(SetupBookTarget, CompanyName, BookSettings),
+    /// Add a profile to an existing book.
+    BookInitialize(SetupBookTarget, BookSettings),
+    /// Record a revised profile for a book.
+    BookUpdate(SetupBookTarget, ProfileRevision, BookSettings),
+    /// Create the accounts in a versioned template.
+    ChartApply(SetupBookTarget, ChartTemplate),
+    /// Add a real account to a book.
+    AccountAdd(SetupBookTarget, AccountCode, SetupAccountName, AccountType),
+    /// Verify and present a balanced opening journal.
+    OpeningPreview(OpeningRequest),
+    /// Reserve a verified opening journal for approval.
+    OpeningReserve(OpeningRequest, SetupReference, Sha256Hex),
+}
+
+impl TryFrom<&SetupCommand> for SetupRequest {
+    type Error = CliError;
+
+    fn try_from(command: &SetupCommand) -> Result<Self, Self::Error> {
+        Ok(match command {
+            SetupCommand::Status => Self::Status,
+            SetupCommand::BookShow { company } => Self::BookShow(company.clone()),
+            SetupCommand::StatementPreview(args) => {
+                Self::StatementPreview(args.reference.clone(), args.try_into()?)
+            }
+            SetupCommand::StatementCommit {
+                company,
+                batch_id,
+                preview_sha256,
+            } => Self::StatementCommit(company.clone(), *batch_id, preview_sha256.clone()),
+            SetupCommand::StatementReceipt { company, batch_id } => {
+                Self::StatementReceipt(company.clone(), *batch_id)
+            }
+            SetupCommand::Begin {
+                name,
+                public_key,
+                ttl,
+            } => Self::Begin(
+                name.parse()?,
+                public_key.parse()?,
+                ttl.as_deref()
+                    .map(str::parse)
+                    .transpose()?
+                    .unwrap_or_default(),
+            ),
+            SetupCommand::Finish { generation } => Self::Finish(*generation),
+            SetupCommand::Revoke { generation } => Self::Revoke(*generation),
+            SetupCommand::BookCreate(args) => Self::BookCreate(
+                (&args.target).into(),
+                args.name.clone(),
+                (&args.settings).into(),
+            ),
+            SetupCommand::BookInitialize(args) => {
+                Self::BookInitialize((&args.target).into(), (&args.settings).into())
+            }
+            SetupCommand::BookUpdate(args) => Self::BookUpdate(
+                (&args.target).into(),
+                args.supersedes,
+                (&args.settings).into(),
+            ),
+            SetupCommand::ChartApply(args) => {
+                Self::ChartApply((&args.target).into(), args.template)
+            }
+            SetupCommand::AccountAdd(args) => Self::AccountAdd(
+                (&args.target).into(),
+                args.code.clone(),
+                args.name.parse()?,
+                args.account_type,
+            ),
+            SetupCommand::OpeningPreview(args) => Self::OpeningPreview(args.try_into()?),
+            SetupCommand::OpeningReserve(args) => Self::OpeningReserve(
+                (&args.opening).try_into()?,
+                args.reference.clone(),
+                args.fingerprint.clone(),
+            ),
+        })
+    }
+}
+
+impl SetupRequest {
+    /// Canonical operation for authorizing this request.
+    #[must_use]
+    pub const fn operation(&self) -> Operation {
+        match self {
+            Self::Status => Operation::LedgerSetupStatus,
+            Self::BookShow(_) => Operation::LedgerSetupBookShow,
+            Self::StatementPreview(..) => Operation::LedgerSetupStatementPreview,
+            Self::StatementCommit(..) => Operation::LedgerSetupStatementCommit,
+            Self::StatementReceipt(..) => Operation::LedgerSetupStatementReceipt,
+            Self::Begin(..) => Operation::LedgerSetupBegin,
+            Self::Finish(_) => Operation::LedgerSetupFinish,
+            Self::Revoke(_) => Operation::LedgerSetupRevoke,
+            Self::BookCreate(..) => Operation::LedgerSetupBookCreate,
+            Self::BookInitialize(..) => Operation::LedgerSetupBookInitialize,
+            Self::BookUpdate(..) => Operation::LedgerSetupBookUpdate,
+            Self::ChartApply(..) => Operation::LedgerSetupChartApply,
+            Self::AccountAdd(..) => Operation::LedgerSetupAccountAdd,
+            Self::OpeningPreview(_) => Operation::LedgerSetupOpeningPreview,
+            Self::OpeningReserve(..) => Operation::LedgerSetupOpeningReserve,
+        }
+    }
+
+    pub(crate) const fn reads_compatible_snapshot(&self) -> bool {
+        matches!(
+            self,
+            Self::Status | Self::BookShow(_) | Self::OpeningPreview(_)
+        )
+    }
+
+    pub(crate) const fn render_company(&self) -> Option<&CompanySlug> {
+        match self {
+            Self::BookShow(company)
+            | Self::StatementCommit(company, ..)
+            | Self::StatementReceipt(company, _) => Some(company),
+            Self::StatementPreview(_, request) => Some(request.company()),
+            Self::OpeningPreview(request) => Some(request.company()),
+            Self::Status
+            | Self::Begin(..)
+            | Self::Finish(_)
+            | Self::Revoke(_)
+            | Self::BookCreate(..)
+            | Self::BookInitialize(..)
+            | Self::BookUpdate(..)
+            | Self::ChartApply(..)
+            | Self::AccountAdd(..)
+            | Self::OpeningReserve(..) => None,
+        }
+    }
+
+    /// Execute a request against the selected, already-open ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation is unauthorized, the ledger data is
+    /// unavailable, or the supplied request conflicts with persisted state.
+    pub(crate) fn execute(self, db: &Db, actor: &Actor) -> Result<SetupResponse, CliError> {
+        match self {
+            Self::Status => status(db).map(SetupResponse::Status),
+            Self::BookShow(company) => book_facts(db, &company).map(SetupResponse::BookFacts),
+            Self::StatementPreview(reference, request) => {
+                statement_batches::preview(db, actor, &reference, &request)
+                    .map(SetupResponse::StatementPreview)
+            }
+            Self::StatementCommit(company, batch_id, digest) => {
+                statement_batches::commit(db, actor, &company, batch_id, &digest)
+                    .map(SetupResponse::StatementReceipt)
+            }
+            Self::StatementReceipt(company, batch_id) => {
+                statement_receipt(db, &company, batch_id).map(SetupResponse::StatementReceipt)
+            }
+            Self::Begin(name, public_key, ttl) => setup::begin(db, actor, &name, &public_key, ttl)
+                .map(Box::new)
+                .map(SetupResponse::Started),
+            Self::Finish(generation) => {
+                setup::end(db, actor, generation, End::Finish).map(SetupResponse::Ended)
+            }
+            Self::Revoke(generation) => {
+                setup::end(db, actor, generation, End::Revoke).map(SetupResponse::Ended)
+            }
+            Self::BookCreate(target, name, settings) => target.apply(
+                db,
+                actor,
+                BookChange::Create {
+                    name: &name,
+                    settings,
+                },
+            ),
+            Self::BookInitialize(target, settings) => {
+                target.apply(db, actor, BookChange::Initialize(settings))
+            }
+            Self::BookUpdate(target, revision, settings) => {
+                target.apply(db, actor, BookChange::Supersede { revision, settings })
+            }
+            Self::ChartApply(target, template) => {
+                target.apply(db, actor, BookChange::ApplyChart(template))
+            }
+            Self::AccountAdd(target, code, name, account_type) => target.apply(
+                db,
+                actor,
+                BookChange::AddAccount {
+                    code: &code,
+                    name: &name,
+                    account_type,
+                },
+            ),
+            Self::OpeningPreview(request) => {
+                openings::preview(db, actor, &request).map(SetupResponse::OpeningPreview)
+            }
+            Self::OpeningReserve(request, reference, fingerprint) => {
+                openings::reserve(db, actor, &request, &reference, &fingerprint)
+                    .map(Box::new)
+                    .map(SetupResponse::OpeningReservation)
+            }
+        }
+    }
+}
+
+/// Typed result of a setup operation.
+pub enum SetupResponse {
+    /// Ledger readiness facts.
+    Status(SetupStatus),
+    /// Details of an existing book.
+    BookFacts(BookFacts),
+    /// A saved review of a bank statement.
+    StatementPreview(StatementReview),
+    /// Provenance and outcome of a committed import.
+    StatementReceipt(StatementReceipt),
+    /// New setup session and its one-time credential.
+    Started(Box<Started>),
+    /// Finished or revoked setup session.
+    Ended(Session),
+    /// Receipt for a change to a book or its profile.
+    BookChanged(BookOutcome),
+    /// Review of validated opening entries.
+    OpeningPreview(OpeningPreview),
+    /// Audited proposal for the reviewed opening.
+    OpeningReservation(Box<OpeningReservation>),
+}
+
+impl Serialize for SetupResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct StartedResponse<'a> {
+            session: &'a Session,
+            #[serde(serialize_with = "crate::identity::serialize_credential_response")]
+            credential: &'a crate::identity::IssuedCredential,
+        }
+
+        match self {
+            Self::Status(state) => state.serialize(serializer),
+            Self::BookFacts(facts) => facts.serialize(serializer),
+            Self::StatementPreview(review) => review.serialize(serializer),
+            Self::StatementReceipt(receipt) => receipt.serialize(serializer),
+            Self::Started(started) => StartedResponse {
+                session: &started.session,
+                credential: &started.credential,
+            }
+            .serialize(serializer),
+            Self::Ended(session) => session.serialize(serializer),
+            Self::BookChanged(outcome) => outcome.serialize(serializer),
+            Self::OpeningPreview(preview) => preview.serialize(serializer),
+            Self::OpeningReservation(reservation) => reservation.serialize(serializer),
+        }
+    }
+}
+
+impl SetupResponse {
+    pub(crate) fn render(
+        &self,
+        cli: &Cli,
+        operation: Operation,
+        company: Option<&str>,
+    ) -> Result<(), CliError> {
+        match self {
+            Self::Status(state) => render_status(cli, state),
+            _ => print_setup_data(cli, operation, company, self),
+        }
+    }
+}
+
+fn render_status(cli: &Cli, state: &SetupStatus) -> Result<(), CliError> {
     match resolve_format(None, cli) {
         OutputFormat::Json => println!(
             "{}",
@@ -403,157 +711,6 @@ fn run_status(cli: &Cli) -> Result<(), CliError> {
         }
     }
     Ok(())
-}
-
-fn open_setup_snapshot(cli: &Cli) -> Result<Db, CliError> {
-    Db::open_compatible_snapshot(
-        cli.db_path()?,
-        cli.resolve_passphrase()?,
-        OLDEST_SETUP_READ_SCHEMA,
-    )
-}
-
-fn run_book_show(cli: &Cli, company: &CompanySlug) -> Result<(), CliError> {
-    let db = open_setup_snapshot(cli)?;
-    let facts = db.read_snapshot(|_| {
-        cli.verify_agent(&db)?;
-        book_facts(&db, company)
-    })?;
-    print_setup_data(
-        cli,
-        Operation::LedgerSetupBookShow,
-        Some(company.as_str()),
-        facts,
-    )
-}
-
-fn run_opening_preview(cli: &Cli, args: &OpeningPreviewArgs) -> Result<(), CliError> {
-    let db = open_setup_snapshot(cli)?;
-    db.read_snapshot(|_| {
-        cli.verify_agent(&db)?;
-        let request = args.request()?;
-        let preview = openings::preview(&db, &cli.principal(), &request)?;
-        print_setup_data(
-            cli,
-            Operation::LedgerSetupOpeningPreview,
-            Some(args.company.as_str()),
-            preview,
-        )
-    })
-}
-
-fn run_statement_preview(cli: &Cli, args: &StatementPreviewArgs) -> Result<(), CliError> {
-    let db = cli.open_db()?;
-    let request = args.request()?;
-    let preview = statement_batches::preview(&db, &cli.principal(), &args.reference, &request)?;
-    print_setup_data(
-        cli,
-        Operation::LedgerSetupStatementPreview,
-        Some(request.company.as_str()),
-        preview,
-    )
-}
-
-pub(crate) fn begin_json(
-    db: &Db,
-    actor: &Actor,
-    name: &str,
-    public_key: &str,
-    ttl: &str,
-) -> Result<serde_json::Value, CliError> {
-    let result = setup::begin(db, actor, name, public_key, identity::parse_ttl(ttl)?)?;
-    Ok(serde_json::json!({
-        "session": result.session,
-        "credential": result.credential.response_json(),
-    }))
-}
-
-pub(crate) fn end_json(
-    db: &Db,
-    actor: &Actor,
-    generation: Generation,
-    end: End,
-) -> Result<serde_json::Value, CliError> {
-    let session = setup::end(db, actor, generation, end)?;
-    serde_json::to_value(session).map_err(|error| CliError::General(error.to_string()))
-}
-
-pub(crate) fn run(cli: &Cli, command: &SetupCommand) -> Result<(), CliError> {
-    let db = match command {
-        SetupCommand::Status => return run_status(cli),
-        SetupCommand::BookShow { company } => return run_book_show(cli, company),
-        SetupCommand::OpeningPreview(args) => return run_opening_preview(cli, args),
-        SetupCommand::StatementPreview(args) => return run_statement_preview(cli, args),
-        _ => cli.open_db()?,
-    };
-    let actor = cli.principal();
-    let data = match command {
-        SetupCommand::Begin {
-            name,
-            public_key,
-            ttl,
-        } => begin_json(&db, &actor, name, public_key, ttl)?,
-        SetupCommand::Finish { generation } => end_json(&db, &actor, *generation, End::Finish)?,
-        SetupCommand::Revoke { generation } => end_json(&db, &actor, *generation, End::Revoke)?,
-        SetupCommand::BookCreate(args) => args.target.apply(
-            &db,
-            &actor,
-            BookChange::Create {
-                name: &args.name,
-                settings: (&args.settings).into(),
-            },
-        )?,
-        SetupCommand::BookInitialize(args) => {
-            args.target
-                .apply(&db, &actor, BookChange::Initialize((&args.settings).into()))?
-        }
-        SetupCommand::BookUpdate(args) => args.target.apply(
-            &db,
-            &actor,
-            BookChange::Supersede {
-                revision: args.supersedes,
-                settings: (&args.settings).into(),
-            },
-        )?,
-        SetupCommand::ChartApply(args) => {
-            args.target
-                .apply(&db, &actor, BookChange::ApplyChart(args.template))?
-        }
-        SetupCommand::AccountAdd(args) => args.target.apply(
-            &db,
-            &actor,
-            BookChange::AddAccount {
-                code: &args.code,
-                name: &args.name,
-                account_type: args.account_type,
-            },
-        )?,
-        SetupCommand::OpeningReserve(args) => openings::reserve(
-            &db,
-            &actor,
-            &args.opening.request()?,
-            &args.reference,
-            &args.fingerprint,
-        )?,
-        SetupCommand::Status => return run_status(cli),
-        SetupCommand::BookShow { company } => return run_book_show(cli, company),
-        SetupCommand::OpeningPreview(args) => return run_opening_preview(cli, args),
-        SetupCommand::StatementPreview(args) => return run_statement_preview(cli, args),
-        SetupCommand::StatementCommit {
-            company,
-            batch_id,
-            preview_sha256,
-        } => {
-            let receipt =
-                statement_batches::commit(&db, &actor, company, *batch_id, preview_sha256)?;
-            return print_setup_data(cli, command.operation(), Some(company.as_str()), receipt);
-        }
-        SetupCommand::StatementReceipt { company, batch_id } => {
-            let receipt = statement_receipt(&db, company, *batch_id)?;
-            return print_setup_data(cli, command.operation(), Some(company.as_str()), receipt);
-        }
-    };
-    print_setup_data(cli, command.operation(), None, data)
 }
 
 fn print_setup_data(

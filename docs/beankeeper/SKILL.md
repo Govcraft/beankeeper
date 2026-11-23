@@ -115,6 +115,8 @@ grant posts directly by default. After a successful post, tell the owner what
 you recorded in plain words. Include the amount and currency, the company and
 transaction ID, and offer to undo the posting in one step. Offer a Desktop
 detail link when one is available.
+If you omit currency, the posting uses `BEANKEEPER_CURRENCY` when set
+and USD otherwise.
 
 Use `bk txn reverse ID` or `txn_reverse` in the selected company to undo a
 posted transaction. The owner needs `ledger/reverse` when enforcement is on.

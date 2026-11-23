@@ -1,247 +1,288 @@
-use crate::cli::{AccountCommand, Cli, CurrencyArg, OutputFormat, resolve_format};
-use crate::confirmation::confirm_deletion;
+//! Typed account catalog operations and CLI rendering.
+
+use beankeeper::types::{AccountCode, AccountType, Currency};
+use chrono::NaiveDate;
+use serde::{Serialize, Serializer};
+
+use crate::cli::{AccountCommand, Cli, OutputFormat, resolve_format};
+use crate::confirmation::{Confirmed, confirm_deletion};
 use crate::db::companies::{Company, CompanySlug};
-use crate::db::connection::Db;
-use crate::db::{self, AccountBalanceWindow, CreateAccountParams, accounts};
+use crate::db::{self, AccountBalanceWindow, Db, accounts};
 use crate::error::CliError;
 use crate::identity::{Admin, Granted};
 use crate::operation::Operation;
 use crate::output;
 
-/// Run a `bk account` subcommand.
-///
-/// # Errors
-///
-/// Returns [`CliError`] if the subcommand fails.
-pub fn run(cli: &Cli, company: &CompanySlug, sub: &AccountCommand) -> Result<(), CliError> {
-    let db = cli.open_db()?;
-    crate::db::companies::get_company(db.read(), company)?;
-    let use_color = output::should_use_color(cli.verbosity.no_color);
-    let format = resolve_format(None, cli);
+/// Whether an account listing includes balances and, if so, for which period.
+pub enum AccountTotals {
+    Catalog,
+    WithBalances(AccountBalanceWindow, Option<Currency>),
+}
 
-    if let AccountCommand::Delete { code, force } = sub {
-        return run_delete(cli, &db, company, code, *force, format);
-    }
-    let result = compute(&db, company, sub, &cli.principal())?;
-    match &result {
-        AccountData::Rows(rows) => {
-            render_accounts(rows, operation(sub), company, format, use_color, cli)?;
+impl TryFrom<(bool, Option<NaiveDate>, Option<NaiveDate>, Option<Currency>)> for AccountTotals {
+    type Error = CliError;
+
+    fn try_from(
+        (with_balances, from, to, currency): (
+            bool,
+            Option<NaiveDate>,
+            Option<NaiveDate>,
+            Option<Currency>,
+        ),
+    ) -> Result<Self, Self::Error> {
+        if with_balances {
+            Ok(Self::WithBalances(
+                AccountBalanceWindow::new(from, to)?,
+                currency,
+            ))
+        } else {
+            Ok(Self::Catalog)
         }
-        AccountData::Balances(rows) => {
-            render_accounts_with_balances(rows, company, format, use_color, cli)?;
+    }
+}
+
+/// An operation on the account catalog of a company.
+pub enum AccountRequest {
+    Create {
+        company: CompanySlug,
+        code: AccountCode,
+        name: String,
+        account_type: AccountType,
+        default_tax_category: Option<String>,
+    },
+    List {
+        company: CompanySlug,
+        account_type: Option<AccountType>,
+        name: Option<String>,
+        totals: AccountTotals,
+    },
+    Show(CompanySlug, AccountCode),
+    Delete(CompanySlug, AccountCode, Confirmed),
+}
+
+impl AccountRequest {
+    /// Canonical operation for authorization and metadata.
+    #[must_use]
+    pub const fn operation(&self) -> Operation {
+        match self {
+            Self::Create { .. } => Operation::AccountCreate,
+            Self::List { .. } => Operation::AccountList,
+            Self::Show(..) => Operation::AccountShow,
+            Self::Delete(..) => Operation::AccountDelete,
         }
     }
-    if !cli.verbosity.quiet {
-        match sub {
-            AccountCommand::Create { code, name, .. } => {
-                eprintln!("[ok] Created account: {code} ({name})");
+
+    pub(crate) fn execute(self, db: &Db, actor: &db::Actor) -> Result<AccountResponse, CliError> {
+        let operation = self.operation();
+        let (company, data) = match self {
+            Self::Create {
+                company,
+                code,
+                name,
+                account_type,
+                default_tax_category,
+            } => {
+                let row = Granted::<Admin>::with_db(db, actor, |grant| {
+                    accounts::create_validated_account(
+                        grant,
+                        &accounts::ValidatedAccountCreation {
+                            company_slug: &company,
+                            code: &code,
+                            name: &name,
+                            account_type,
+                            default_tax_category: default_tax_category.as_deref(),
+                        },
+                    )
+                })?;
+                (company, AccountData::Rows(vec![row]))
             }
-            AccountCommand::List { .. } => {
-                let count = match &result {
-                    AccountData::Rows(rows) => rows.len(),
-                    AccountData::Balances(rows) => rows.len(),
+            Self::List {
+                company,
+                account_type,
+                name,
+                totals,
+            } => {
+                let filter = accounts::ListAccountParams {
+                    type_filter: account_type,
+                    name_filter: name.as_deref(),
                 };
-                eprintln!(
-                    "{count} {noun}",
-                    noun = if count == 1 { "account" } else { "accounts" }
-                );
+                let data = match totals {
+                    AccountTotals::Catalog => {
+                        let scope = Company::bind(db.read(), company.clone())?;
+                        AccountData::Rows(accounts::list_accounts(&scope, &filter)?)
+                    }
+                    AccountTotals::WithBalances(window, currency) => {
+                        db.read_snapshot(|reader| {
+                            let currency = match currency {
+                                Some(currency) => currency,
+                                None => super::report_currency::infer_company_currency(
+                                    reader,
+                                    company.as_str(),
+                                    CliError::Validation,
+                                )?,
+                            };
+                            let scope = Company::bind(reader, company.clone())?;
+                            db::list_accounts_with_balances(&scope, &filter, window, currency)
+                                .map(AccountData::Balances)
+                        })?
+                    }
+                };
+                (company, data)
             }
-            _ => {}
-        }
+            Self::Show(company, code) => {
+                let scope = Company::bind(db.read(), company.clone())?;
+                let row = accounts::get_account(&scope, code.as_str())?;
+                (company, AccountData::Rows(vec![row]))
+            }
+            Self::Delete(company, code, confirmed) => {
+                Granted::<Admin>::with_db(db, actor, |grant| {
+                    db::delete_account(grant, &company, code.as_str(), confirmed)
+                })?;
+                (company, AccountData::Deleted(code))
+            }
+        };
+        Ok(AccountResponse {
+            operation,
+            company,
+            data,
+        })
     }
-    Ok(())
 }
 
 enum AccountData {
     Rows(Vec<db::AccountRow>),
     Balances(Vec<db::AccountWithBalanceRow>),
+    Deleted(AccountCode),
 }
 
-fn operation(sub: &AccountCommand) -> Operation {
-    match sub {
-        AccountCommand::Create { .. } => Operation::AccountCreate,
-        AccountCommand::Show { .. } => Operation::AccountShow,
-        _ => Operation::AccountList,
-    }
+/// Result of an account operation, with the existing JSON data shape.
+pub struct AccountResponse {
+    operation: Operation,
+    company: CompanySlug,
+    data: AccountData,
 }
 
-fn compute(
-    db: &Db,
-    company: &CompanySlug,
-    sub: &AccountCommand,
-    actor: &db::Actor,
-) -> Result<AccountData, CliError> {
-    let scope = Company::bind(db.read(), company.clone())?;
-    match sub {
-        AccountCommand::Create {
-            code,
-            name,
-            account_type,
-            default_tax_category,
-        } => {
-            let row = Granted::<Admin>::with_db(db, actor, |grant| {
-                accounts::create_account(
-                    grant,
-                    &CreateAccountParams {
-                        company_slug: company,
-                        code,
-                        name,
-                        account_type: *account_type,
-                        default_tax_category: default_tax_category.as_deref(),
-                    },
-                )
-            })?;
-            Ok(AccountData::Rows(vec![row]))
-        }
-        AccountCommand::List {
-            account_type,
-            name,
-            with_balances,
-            from,
-            to,
-            currency,
-        } => {
-            let type_filter = *account_type;
-            let filter = accounts::ListAccountParams {
-                type_filter,
-                name_filter: name.as_deref(),
-            };
-            if *with_balances {
-                let window = AccountBalanceWindow::new(*from, *to)?;
-                let currency = currency.as_ref().map(CurrencyArg::resolve).transpose()?;
-                db.read_snapshot(|reader| {
-                    let currency = match currency {
-                        Some(currency) => currency,
-                        None => super::report_currency::infer_company_currency(
-                            reader,
-                            company.as_str(),
-                            CliError::Validation,
-                        )?,
-                    };
-                    let rows = db::list_accounts_with_balances(&scope, &filter, window, currency)?;
-                    Ok(AccountData::Balances(rows))
-                })
-            } else {
-                Ok(AccountData::Rows(accounts::list_accounts(&scope, &filter)?))
+impl Serialize for AccountResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.data {
+            AccountData::Rows(rows) => output::json::account_rows(rows).serialize(serializer),
+            AccountData::Balances(rows) => {
+                output::json::account_balance_rows(rows).serialize(serializer)
+            }
+            AccountData::Deleted(code) => {
+                output::json::deleted_data(code.as_str()).serialize(serializer)
             }
         }
-        AccountCommand::Show { code } => Ok(AccountData::Rows(vec![accounts::get_account(
-            &scope, code,
-        )?])),
-        AccountCommand::Delete { .. } => Err(CliError::Usage(
-            "account deletion is unavailable through MCP".into(),
-        )),
     }
 }
 
-/// Execute an account operation with the default named principal.
-///
-/// # Errors
-/// Returns validation or database errors.
-pub fn execute_json(
-    db: &Db,
-    company: &CompanySlug,
-    sub: &AccountCommand,
-) -> Result<serde_json::Value, CliError> {
-    execute_json_with_actor(db, company, sub, &db::Actor::cli_fallback())
+impl AccountResponse {
+    pub(crate) fn render(&self, cli: &Cli) -> Result<(), CliError> {
+        let color = output::should_use_color(cli.verbosity.no_color);
+        match (resolve_format(None, cli), &self.data) {
+            (OutputFormat::Json, _) => println!(
+                "{}",
+                output::json::envelope_ok(
+                    cli.meta(self.operation, Some(self.company.as_str())),
+                    self
+                )?
+            ),
+            (OutputFormat::Table, AccountData::Rows(rows)) => {
+                println!("{}", output::table::render_accounts(rows, color));
+            }
+            (OutputFormat::Csv, AccountData::Rows(rows)) => {
+                print!("{}", output::csv::render_accounts(rows)?);
+            }
+            (OutputFormat::Table, AccountData::Balances(rows)) => println!(
+                "{}",
+                output::table::render_accounts_with_balances(rows, color)
+            ),
+            (OutputFormat::Csv, AccountData::Balances(rows)) => {
+                print!("{}", output::csv::render_accounts_with_balances(rows)?);
+            }
+            (_, AccountData::Deleted(_)) => {}
+        }
+        if !cli.verbosity.quiet {
+            match &self.data {
+                AccountData::Rows(rows) if self.operation == Operation::AccountCreate => {
+                    if let Some(row) = rows.first() {
+                        eprintln!("[ok] Created account: {} ({})", row.code, row.name);
+                    }
+                }
+                AccountData::Rows(rows) if self.operation == Operation::AccountList => {
+                    print_count(rows.len());
+                }
+                AccountData::Balances(rows) => print_count(rows.len()),
+                AccountData::Deleted(code) => eprintln!("[ok] Deleted account: {code}"),
+                AccountData::Rows(_) => {}
+            }
+        }
+        Ok(())
+    }
 }
 
-/// Execute an account operation without writing to stdout.
-///
-/// # Errors
-///
-/// Returns the same validation and database errors as the CLI.
-pub fn execute_json_with_actor(
-    db: &Db,
-    company: &CompanySlug,
-    sub: &AccountCommand,
-    actor: &db::Actor,
-) -> Result<serde_json::Value, CliError> {
-    let meta = output::json::meta(operation(sub), Some(company.as_str()));
-    let rendered = match compute(db, company, sub, actor)? {
-        AccountData::Rows(rows) => output::json::render_accounts(&rows, meta)?,
-        AccountData::Balances(rows) => return output::json::account_balances_payload(&rows),
-    };
-    super::company::json_data(&rendered)
+fn print_count(count: usize) {
+    let noun = if count == 1 { "account" } else { "accounts" };
+    eprintln!("{count} {noun}");
 }
 
-/// Execute the `account delete` subcommand.
-fn run_delete(
-    cli: &Cli,
-    db: &Db,
-    company: &CompanySlug,
-    code: &str,
-    force: bool,
-    format: OutputFormat,
-) -> Result<(), CliError> {
-    let Some(confirmed) = confirm_deletion(force, &format!("account '{code}'"))? else {
-        eprintln!("Aborted.");
-        return Ok(());
-    };
-    let actor = cli.principal();
-    Granted::<Admin>::with_db(db, &actor, |grant| {
-        crate::db::delete_account(grant, company, code, confirmed)
-    })?;
-    if format == OutputFormat::Json {
-        let meta = cli.meta(Operation::AccountDelete, Some(company.as_str()));
-        let rendered = output::json::render_deleted(code, meta)?;
-        println!("{rendered}");
-    }
-    if !cli.verbosity.quiet {
-        eprintln!("[ok] Deleted account: {code}");
-    }
-    Ok(())
-}
+pub(crate) struct AccountCliInput<'a>(pub &'a CompanySlug, pub &'a AccountCommand);
 
-/// Render account rows in the requested format.
-fn render_accounts(
-    rows: &[crate::db::AccountRow],
-    command: Operation,
-    company: &CompanySlug,
-    format: OutputFormat,
-    use_color: bool,
-    cli: &Cli,
-) -> Result<(), CliError> {
-    match format {
-        OutputFormat::Table => {
-            let rendered = output::table::render_accounts(rows, use_color);
-            println!("{rendered}");
-        }
-        OutputFormat::Json => {
-            let meta = cli.meta(command, Some(company.as_str()));
-            let rendered = output::json::render_accounts(rows, meta)?;
-            println!("{rendered}");
-        }
-        OutputFormat::Csv => {
-            let rendered = output::csv::render_accounts(rows)?;
-            print!("{rendered}");
-        }
-    }
-    Ok(())
-}
+impl TryFrom<AccountCliInput<'_>> for Option<AccountRequest> {
+    type Error = CliError;
 
-/// Render account-with-balance rows in the requested format.
-fn render_accounts_with_balances(
-    rows: &[db::AccountWithBalanceRow],
-    company: &CompanySlug,
-    format: OutputFormat,
-    use_color: bool,
-    cli: &Cli,
-) -> Result<(), CliError> {
-    match format {
-        OutputFormat::Table => {
-            let rendered = output::table::render_accounts_with_balances(rows, use_color);
-            println!("{rendered}");
-        }
-        OutputFormat::Json => {
-            let meta = cli.meta(Operation::AccountList, Some(company.as_str()));
-            let rendered = output::json::render_accounts_with_balances(rows, meta)?;
-            println!("{rendered}");
-        }
-        OutputFormat::Csv => {
-            let rendered = output::csv::render_accounts_with_balances(rows)?;
-            print!("{rendered}");
-        }
+    fn try_from(
+        AccountCliInput(company, command): AccountCliInput<'_>,
+    ) -> Result<Self, Self::Error> {
+        let company = company.clone();
+        let parse_code = |code: &str| {
+            code.parse().map_err(|error| {
+                CliError::Validation(format!("invalid account code '{code}': {error}"))
+            })
+        };
+        let lookup_code = |code: &str| {
+            code.parse().map_err(|_| {
+                CliError::NotFound(format!("account '{code}' not found in company '{company}'"))
+            })
+        };
+        Ok(Some(match command {
+            AccountCommand::Create {
+                code,
+                name,
+                account_type,
+                default_tax_category,
+            } => AccountRequest::Create {
+                company,
+                code: parse_code(code)?,
+                name: name.clone(),
+                account_type: *account_type,
+                default_tax_category: default_tax_category.clone(),
+            },
+            AccountCommand::List {
+                account_type,
+                name,
+                with_balances,
+                from,
+                to,
+                currency,
+            } => AccountRequest::List {
+                company,
+                account_type: *account_type,
+                name: name.clone(),
+                totals: (*with_balances, *from, *to, *currency).try_into()?,
+            },
+            AccountCommand::Show { code } => {
+                let code = lookup_code(code)?;
+                AccountRequest::Show(company, code)
+            }
+            AccountCommand::Delete { code, force } => {
+                let Some(confirmed) = confirm_deletion(*force, &format!("account '{code}'"))?
+                else {
+                    return Ok(None);
+                };
+                let code = lookup_code(code)?;
+                AccountRequest::Delete(company, code, confirmed)
+            }
+        }))
     }
-    Ok(())
 }

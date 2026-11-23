@@ -6,17 +6,20 @@ use beankeeper::types::{AccountCode, AccountType, Currency};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::super::{
     Actor, AuditAction, AuditChange, AuditEntity,
     catalog::{CompanyCreation, store_company},
     record,
 };
-use super::{ActiveSession, Generation, requests::apply_once, with_active_setup_write};
+use super::{
+    ActiveSession, Generation,
+    requests::{apply_once, deserialize_parsed},
+    with_active_setup_write,
+};
 use crate::db::{
-    AccountRow, Db, ListAccountParams,
-    accounts::CreateAccountParams,
+    Db, ListAccountParams,
     companies::{CompanyName, CompanySlug},
     connection::ReadConn,
     get_company, list_accounts,
@@ -24,7 +27,7 @@ use crate::db::{
 };
 use crate::error::CliError;
 
-pub(crate) use super::requests::SetupReference;
+pub use super::requests::SetupReference;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -130,16 +133,22 @@ impl FromStr for ProfileRevision {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 /// The typed settings selected for this revision.
 pub struct BookSettings {
     /// Personal or business classification.
     pub purpose: BookPurpose,
     /// Base currency selected for the book.
-    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    #[serde(
+        serialize_with = "crate::output::json::serialize_display",
+        deserialize_with = "deserialize_parsed"
+    )]
     pub base_currency: Currency,
     /// First fiscal day, serialized as MM-DD.
-    #[serde(serialize_with = "crate::output::json::serialize_display")]
+    #[serde(
+        serialize_with = "crate::output::json::serialize_display",
+        deserialize_with = "deserialize_parsed"
+    )]
     pub fiscal_year_start: FiscalYearStart,
 }
 
@@ -154,11 +163,10 @@ impl BookSettings {
 }
 
 /// A saved profile revision for the selected company.
-#[derive(Debug, Serialize)]
-pub struct BookProfile<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BookProfile {
     /// Company that owns this profile.
-    #[serde(serialize_with = "crate::output::json::serialize_display")]
-    pub company: &'a CompanySlug,
+    pub company: CompanySlug,
     /// Identifier of this profile revision.
     pub revision: ProfileRevision,
     /// Previous profile revision when this replaces saved settings.
@@ -170,14 +178,13 @@ pub struct BookProfile<'a> {
 
 /// Current setup values and accounts for an existing book.
 #[derive(Debug, Serialize)]
-pub struct BookFacts<'a> {
+pub struct BookFacts {
     /// Company slug of the selected book.
-    #[serde(serialize_with = "crate::output::json::serialize_display")]
-    pub company: &'a CompanySlug,
+    pub company: CompanySlug,
     /// Name of the selected book.
     pub name: String,
     /// Latest profile when setup settings have been recorded for the company.
-    pub profile: Option<BookProfile<'a>>,
+    pub profile: Option<BookProfile>,
     /// Current accounts ordered by account code.
     pub accounts: Vec<BookAccount>,
 }
@@ -237,7 +244,7 @@ impl Serialize for BookAccount {
 ///
 /// # Errors
 /// Returns a not-found error for an unknown company or a database error for an unreadable ledger.
-pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>, CliError> {
+pub fn book_facts(db: &Db, company: &CompanySlug) -> Result<BookFacts, CliError> {
     db.read_snapshot(|reader| {
         let named = get_company(reader, company)?;
         let profile = if get_schema_version(reader)? >= BOOK_PROFILE_SCHEMA_VERSION {
@@ -262,7 +269,7 @@ pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>
         })
         .collect();
         Ok(BookFacts {
-            company,
+            company: company.clone(),
             name: named.name,
             profile,
             accounts,
@@ -272,8 +279,11 @@ pub fn book_facts<'a>(db: &Db, company: &'a CompanySlug) -> Result<BookFacts<'a>
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum ChartTemplate {
+/// The predefined versioned accounts to create for a book.
+pub enum ChartTemplate {
+    /// Version 1 of the personal chart of accounts.
     PersonalV1,
+    /// Version 1 of the business chart of accounts.
     BusinessV1,
 }
 
@@ -335,7 +345,7 @@ pub(crate) enum BookChange<'a> {
     ApplyChart(ChartTemplate),
     AddAccount {
         code: &'a AccountCode,
-        name: &'a str,
+        name: &'a SetupAccountName,
         account_type: AccountType,
     },
 }
@@ -347,19 +357,21 @@ pub(crate) fn apply(
     reference: &SetupReference,
     company: &CompanySlug,
     change: BookChange<'_>,
-) -> Result<Value, CliError> {
+) -> Result<BookOutcome, CliError> {
     with_active_setup_write(db, actor, generation, |session| match change {
         BookChange::Create { name, settings } => {
             let input = json!(["book-create-v1", company, name, settings.request_fields()]);
             apply_once(session, reference, company, &input, || {
                 create_book(session, company, name, settings)
             })
+            .map(BookOutcome::ProfileInitialized)
         }
         BookChange::Initialize(settings) => {
             let input = json!(["book-initialize-v1", company, settings.request_fields()]);
             apply_once(session, reference, company, &input, || {
                 initialize_book(session, company, settings)
             })
+            .map(BookOutcome::ProfileInitialized)
         }
         BookChange::Supersede { revision, settings } => {
             let input = json!([
@@ -376,15 +388,16 @@ pub(crate) fn apply(
                         revision = revision.get()
                     )));
                 }
-                let profile = record_profile(session, company, Some(previous), settings)?;
-                Ok(json!(profile))
+                record_profile(session, company, Some(previous), settings)
             })
+            .map(BookOutcome::ProfileUpdated)
         }
         BookChange::ApplyChart(template) => {
             let input = json!(["chart-apply-v1", company, template]);
             apply_once(session, reference, company, &input, || {
                 apply_chart(session, company, template)
             })
+            .map(BookOutcome::ChartApplied)
         }
         BookChange::AddAccount {
             code,
@@ -395,15 +408,14 @@ pub(crate) fn apply(
                 "account-add-v1",
                 company,
                 code.as_str(),
-                name.trim(),
+                name.as_ref(),
                 account_type.code()
             ]);
             apply_once(session, reference, company, &input, || {
                 current_profile(session, company)?;
-                let account =
-                    create_setup_account(session, company, code.as_str(), name, account_type)?;
-                Ok(account_json(&account))
+                create_setup_account(session, company, code, name, account_type)
             })
+            .map(BookOutcome::AccountAdded)
         }
     })
 }
@@ -413,21 +425,24 @@ fn create_book(
     company: &CompanySlug,
     name: &CompanyName,
     settings: BookSettings,
-) -> Result<Value, CliError> {
+) -> Result<ProfileInitialized, CliError> {
     let row = store_company(
         session.audited_tx(),
         session.actor(),
         CompanyCreation::new(company, name, None),
     )?;
     let profile = record_profile(session, company, None, settings)?;
-    Ok(json!({"name": row.name, "profile": profile}))
+    Ok(ProfileInitialized {
+        name: row.name,
+        profile,
+    })
 }
 
 fn initialize_book(
     session: &ActiveSession<'_>,
     company: &CompanySlug,
     settings: BookSettings,
-) -> Result<Value, CliError> {
+) -> Result<ProfileInitialized, CliError> {
     let row = get_company(session.read(), company)?;
     if find_profile(session.read(), company)?.is_some() {
         return Err(CliError::Validation(format!(
@@ -435,21 +450,24 @@ fn initialize_book(
         )));
     }
     let profile = record_profile(session, company, None, settings)?;
-    Ok(json!({"name": row.name, "profile": profile}))
+    Ok(ProfileInitialized {
+        name: row.name,
+        profile,
+    })
 }
 
-pub(super) fn current_profile<'a>(
+pub(super) fn current_profile(
     session: &ActiveSession<'_>,
-    company: &'a CompanySlug,
-) -> Result<BookProfile<'a>, CliError> {
+    company: &CompanySlug,
+) -> Result<BookProfile, CliError> {
     find_profile(session.read(), company)?
         .ok_or_else(|| CliError::NotFound(format!("setup book profile for '{company}' not found")))
 }
 
-fn find_profile<'a>(
+fn find_profile(
     conn: ReadConn<'_>,
-    company: &'a CompanySlug,
-) -> Result<Option<BookProfile<'a>>, CliError> {
+    company: &CompanySlug,
+) -> Result<Option<BookProfile>, CliError> {
     let row = conn
         .query_row(
             "SELECT revision, supersedes, purpose, base_currency, fiscal_year_start
@@ -472,7 +490,7 @@ fn find_profile<'a>(
     let corrupt =
         || CliError::Database(format!("invalid stored setup book profile for '{company}'"));
     Ok(Some(BookProfile {
-        company,
+        company: company.clone(),
         revision: revision.try_into().map_err(|_| corrupt())?,
         supersedes: supersedes
             .map(ProfileRevision::try_from)
@@ -486,12 +504,12 @@ fn find_profile<'a>(
     }))
 }
 
-fn record_profile<'a>(
+fn record_profile(
     session: &ActiveSession<'_>,
-    company: &'a CompanySlug,
-    previous: Option<BookProfile<'_>>,
+    company: &CompanySlug,
+    previous: Option<BookProfile>,
     settings: BookSettings,
-) -> Result<BookProfile<'a>, CliError> {
+) -> Result<BookProfile, CliError> {
     let supersedes = previous.as_ref().map(|profile| profile.revision);
     let revision = session
         .tx
@@ -512,7 +530,7 @@ fn record_profile<'a>(
         )?
         .try_into()?;
     let profile = BookProfile {
-        company,
+        company: company.clone(),
         revision,
         supersedes,
         settings,
@@ -537,7 +555,7 @@ fn apply_chart(
     session: &ActiveSession<'_>,
     company: &CompanySlug,
     template: ChartTemplate,
-) -> Result<Value, CliError> {
+) -> Result<ChartApplied, CliError> {
     let profile = current_profile(session, company)?;
     if profile.settings.purpose != template.purpose() {
         return Err(CliError::Validation(
@@ -548,47 +566,132 @@ fn apply_chart(
         .accounts()
         .iter()
         .map(|&(code, name, account_type)| {
-            create_setup_account(session, company, code, name, account_type)
-                .map(|account| account_json(&account))
+            create_setup_account(
+                session,
+                company,
+                &code
+                    .parse()
+                    .map_err(|error: beankeeper::types::AccountCodeError| {
+                        CliError::Validation(error.to_string())
+                    })?,
+                &name.parse()?,
+                account_type,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({ "company": company.as_str(), "template": template, "accounts": accounts }))
+    Ok(ChartApplied {
+        company: company.clone(),
+        template,
+        accounts,
+    })
 }
 
 fn create_setup_account(
     session: &ActiveSession<'_>,
     company: &CompanySlug,
-    code: &str,
-    name: &str,
+    code: &AccountCode,
+    name: &SetupAccountName,
     account_type: AccountType,
-) -> Result<AccountRow, CliError> {
-    super::super::catalog::store_account(
+) -> Result<SetupAccount, CliError> {
+    let row = super::super::catalog::store_validated_account(
         session.audited_tx(),
         session.actor(),
-        &CreateAccountParams {
+        &crate::db::accounts::ValidatedAccountCreation {
             company_slug: company,
             code,
-            name: checked_name(name)?,
+            name: name.as_ref(),
             account_type,
             default_tax_category: None,
         },
-    )
+    )?;
+    Ok(SetupAccount {
+        company: company.clone(),
+        code: code.clone(),
+        name: row.name,
+        account_type,
+    })
 }
 
-fn checked_name(name: &str) -> Result<&str, CliError> {
-    let name = name.trim();
-    if name.is_empty() {
-        Err(CliError::Validation("name must not be empty".into()))
-    } else {
-        Ok(name)
+/// A trimmed, nonempty account display name during setup.
+#[derive(Debug, Clone)]
+pub struct SetupAccountName(Box<str>);
+
+impl AsRef<str> for SetupAccountName {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }
 
-fn account_json(account: &AccountRow) -> Value {
-    json!({
-        "company": account.company_slug,
-        "code": account.code,
-        "name": account.name,
-        "type": account.account_type.code(),
-    })
+impl FromStr for SetupAccountName {
+    type Err = CliError;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CliError::Validation("name must not be empty".into()));
+        }
+        Ok(Self(name.into()))
+    }
+}
+
+/// The settings and name recorded when creating or initializing a profile.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProfileInitialized {
+    /// Book name.
+    pub name: String,
+    /// Its newly recorded profile.
+    pub profile: BookProfile,
+}
+
+/// Result of applying a predefined chart of accounts.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChartApplied {
+    /// Book to which the template was applied.
+    pub company: CompanySlug,
+    /// Version of the chart applied.
+    pub template: ChartTemplate,
+    /// Accounts created by the template.
+    pub accounts: Vec<SetupAccount>,
+}
+
+/// An account added by setup.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetupAccount {
+    /// Book that owns this account.
+    pub company: CompanySlug,
+    /// Its validated account code.
+    #[serde(
+        serialize_with = "crate::output::json::serialize_display",
+        deserialize_with = "deserialize_parsed"
+    )]
+    pub code: AccountCode,
+    /// Recorded display name.
+    pub name: String,
+    /// Accounting classification.
+    #[serde(rename = "type", with = "AccountTypeWire")]
+    pub account_type: AccountType,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "AccountType", rename_all = "lowercase")]
+enum AccountTypeWire {
+    Asset,
+    Liability,
+    Equity,
+    Revenue,
+    Expense,
+}
+
+/// Typed receipt for a setup mutation to a book.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum BookOutcome {
+    /// A first profile, including the name of the book.
+    ProfileInitialized(ProfileInitialized),
+    /// A revision of an existing profile.
+    ProfileUpdated(BookProfile),
+    /// Accounts created from a chart.
+    ChartApplied(ChartApplied),
+    /// A single account created during setup.
+    AccountAdded(SetupAccount),
 }

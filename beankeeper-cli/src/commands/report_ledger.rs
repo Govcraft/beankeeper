@@ -22,6 +22,7 @@
 //! CSV output is one flat row per line of the statement with a `row_type`
 //! column of `opening`, `entry` or `closing` (see [`render_csv`]).
 
+use super::report::{AccountSelector, ChartRequest, ReportOutput, ReportPresentation};
 use crate::operation::Operation;
 use std::collections::BTreeSet;
 
@@ -56,8 +57,8 @@ pub struct LedgerOptions<'a> {
     pub filter_metadata: &'a [String],
 }
 
-pub(super) struct LedgerRequest<'a> {
-    pub accounts: &'a [String],
+struct LedgerRequest<'a> {
+    pub accounts: Vec<&'a str>,
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
     currency: Currency,
@@ -65,13 +66,9 @@ pub(super) struct LedgerRequest<'a> {
 }
 
 impl<'a> LedgerOptions<'a> {
-    pub(super) fn resolve(
-        &self,
-        conn: ReadConn<'_>,
-        company: &str,
-    ) -> Result<LedgerRequest<'a>, CliError> {
+    fn resolve(&self, conn: ReadConn<'_>, company: &str) -> Result<LedgerRequest<'a>, CliError> {
         Ok(LedgerRequest {
-            accounts: self.accounts,
+            accounts: self.accounts.iter().map(String::as_str).collect(),
             from: self.from,
             to: self.to,
             currency: resolve_ledger_currency(conn, company, self.currency)?,
@@ -228,38 +225,35 @@ pub fn run(
     let mut stdout = std::io::stdout().lock();
     let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
     let report = db.read_snapshot(|reader| build_report(reader, company, opts))?;
-    write_report(cli, company, &report, &mut output)
+    render(
+        &ReportPresentation::cli(
+            cli,
+            Operation::ReportLedger,
+            company,
+            ChartRequest::default(),
+        ),
+        &report,
+        &mut output,
+    )
 }
 
-pub(super) fn run_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    request: LedgerRequest<'_>,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let report = build_report_for_request(reader, company, request)?;
-    write_report(cli, company, &report, output)
-}
-
-fn write_report(
-    cli: &Cli,
-    company: &str,
+pub(super) fn render(
+    context: &ReportPresentation<'_>,
     report: &LedgerReport,
-    output: &mut super::report::ReportOutput<'_>,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
     match output.format {
         OutputFormat::Table => {
             writeln!(output.writer, "{}", render_table(report, output.use_color))?;
         }
         OutputFormat::Json => {
-            let meta = cli.meta(Operation::ReportLedger, Some(company));
+            let meta = context.meta();
             output.write_json(meta, report, None)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,
     }
 
-    if !cli.verbosity.quiet {
+    if !context.quiet {
         eprintln!(
             "[ok] general ledger generated ({} accounts)",
             report.accounts.len()
@@ -282,9 +276,7 @@ pub fn build_report(
     company: &str,
     opts: &LedgerOptions<'_>,
 ) -> Result<LedgerReport, CliError> {
-    if !db::companies::company_exists(conn, &company.parse()?)? {
-        return Err(CliError::NotFound(format!("company '{company}' not found")));
-    }
+    let scope = db::companies::Company::bind(conn, company.parse()?)?;
 
     if let (Some(f), Some(t)) = (opts.from, opts.to)
         && f > t
@@ -295,27 +287,44 @@ pub fn build_report(
     }
 
     let request = opts.resolve(conn, company)?;
+    build_report_for_request(conn, &scope, request)
+}
+
+pub(super) fn compute(
+    conn: ReadConn<'_>,
+    company: &db::companies::Company<'_>,
+    dates: super::report_dates::DateWindow,
+    accounts: &[AccountSelector],
+    currency: Option<Currency>,
+    filters: Vec<MetadataFilter>,
+) -> Result<LedgerReport, CliError> {
+    let request = LedgerRequest {
+        accounts: accounts.iter().map(AsRef::as_ref).collect(),
+        from: dates.from(),
+        to: Some(dates.to()),
+        currency: resolve_ledger_currency(conn, company.slug().as_str(), currency)?,
+        filters,
+    };
     build_report_for_request(conn, company, request)
 }
 
 fn build_report_for_request(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &db::companies::Company<'_>,
     request: LedgerRequest<'_>,
 ) -> Result<LedgerReport, CliError> {
     let currency = request.currency;
 
-    let scope = db::companies::Company::bind(conn, company.parse()?)?;
     let explicit = !request.accounts.is_empty();
     let accounts: Vec<db::AccountRow> = if explicit {
-        let codes: BTreeSet<&str> = request.accounts.iter().map(String::as_str).collect();
+        let codes: BTreeSet<&str> = request.accounts.into_iter().collect();
         codes
             .into_iter()
-            .map(|code| db::accounts::get_account(&scope, code))
+            .map(|code| db::accounts::get_account(company, code))
             .collect::<Result<_, _>>()?
     } else {
         db::accounts::list_accounts(
-            &scope,
+            company,
             &db::ListAccountParams {
                 type_filter: None,
                 name_filter: None,
@@ -323,6 +332,7 @@ fn build_report_for_request(
         )?
     };
 
+    let company = company.slug().as_str();
     let scope = StatementScope {
         currency,
         from: request.from,

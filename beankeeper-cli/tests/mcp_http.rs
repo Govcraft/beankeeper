@@ -625,7 +625,8 @@ fn http_read_only_is_a_ceiling_and_explicit_headers_override_fallback() -> TestR
     let tools = server.tools(None)?;
     for name in tools {
         assert_eq!(
-            beankeeper_cli::capability::Capability::for_operation(&name)?,
+            name.parse::<beankeeper_cli::operation::Operation>()?
+                .primary_capability()?,
             beankeeper_cli::capability::Capability::Read
         );
     }

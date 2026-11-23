@@ -6,13 +6,24 @@ use serde::Serialize;
 use crate::cli::CalendarDateArg;
 use crate::error::CliError;
 
+use crate::request::LocalDate;
+
 /// Effective dates, resolved once at the report boundary.
+#[derive(Debug, Clone, Copy)]
 pub(super) struct DateWindow {
-    pub from: Option<NaiveDate>,
-    pub to: NaiveDate,
+    from: Option<NaiveDate>,
+    to: NaiveDate,
 }
 
 impl DateWindow {
+    pub(super) const fn from(self) -> Option<NaiveDate> {
+        self.from
+    }
+
+    pub(super) const fn to(self) -> NaiveDate {
+        self.to
+    }
+
     /// Resolve an optional start and required end against an explicit local today.
     pub fn resolve(
         from: Option<&CalendarDateArg>,
@@ -24,6 +35,15 @@ impl DateWindow {
             .transpose()?
             .unwrap_or(today);
         let from = from.map(|date| resolve_date("--from", date)).transpose()?;
+        Self::try_from((from, Some(to)))
+    }
+}
+
+impl TryFrom<(Option<NaiveDate>, Option<NaiveDate>)> for DateWindow {
+    type Error = CliError;
+
+    fn try_from((from, to): (Option<NaiveDate>, Option<NaiveDate>)) -> Result<Self, Self::Error> {
+        let to = to.unwrap_or_else(|| LocalDate::default().into());
         if let Some(from) = from
             && from > to
         {
@@ -62,16 +82,7 @@ impl DateRange {
         today: NaiveDate,
     ) -> Result<Self, CliError> {
         let window = DateWindow::resolve(from, to, today)?;
-        let from = match window.from {
-            Some(from) => from,
-            None => window.to.with_ordinal(1).ok_or_else(|| {
-                CliError::Validation("date is out of the supported range".to_string())
-            })?,
-        };
-        Ok(Self {
-            from,
-            to: window.to,
-        })
+        Self::try_from(window)
     }
 
     /// First date included in the report.
@@ -84,6 +95,23 @@ impl DateRange {
     #[must_use]
     pub const fn to(self) -> NaiveDate {
         self.to
+    }
+}
+
+impl TryFrom<DateWindow> for DateRange {
+    type Error = CliError;
+
+    fn try_from(window: DateWindow) -> Result<Self, Self::Error> {
+        let from = match window.from {
+            Some(from) => from,
+            None => window.to.with_ordinal(1).ok_or_else(|| {
+                CliError::Validation("date is out of the supported range".to_string())
+            })?,
+        };
+        Ok(Self {
+            from,
+            to: window.to,
+        })
     }
 }
 

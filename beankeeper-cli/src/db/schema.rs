@@ -1603,7 +1603,7 @@ mod tests {
         let migrated = super::super::Db::open_existing(&path, None)?;
         assert_eq!(get_schema_version(migrated.read())?, CURRENT_VERSION);
         assert_eq!(history(migrated.conn())?, before);
-        crate::commands::verify::execute_json(&migrated)?;
+        crate::db::verification::VerifiedLedger::read(&migrated)?;
         ensure_schema(&conn)?;
         assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
         assert_eq!(history(&conn)?, before);

@@ -46,6 +46,15 @@ impl VendorThreshold {
     }
 }
 
+impl TryFrom<(super::VendorMinimum, Currency)> for VendorThreshold {
+    type Error = CliError;
+
+    fn try_from((amount, currency): (super::VendorMinimum, Currency)) -> Result<Self, Self::Error> {
+        let minor = amount.0.minor_units(currency)?;
+        Ok(Self { minor, currency })
+    }
+}
+
 /// Vendor payments meeting the requested threshold.
 #[derive(Serialize)]
 pub struct VendorSummary {

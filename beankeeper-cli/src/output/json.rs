@@ -308,7 +308,7 @@ pub struct AttachmentJson<'a> {
 }
 
 #[derive(Serialize)]
-struct TransactionWithAttachmentsJson<'a> {
+pub(crate) struct TransactionWithAttachmentsJson<'a> {
     id: TransactionId,
     description: String,
     metadata: Option<String>,
@@ -382,7 +382,11 @@ pub fn render_companies(companies: &[CompanyRow], meta: Meta) -> Result<String, 
 ///
 /// Returns `CliError::General` if JSON serialisation fails.
 pub fn render_accounts(accounts: &[AccountRow], meta: Meta) -> Result<String, CliError> {
-    let rows: Vec<AccountJson> = accounts
+    envelope_ok(meta, account_rows(accounts))
+}
+
+pub(crate) fn account_rows(accounts: &[AccountRow]) -> Vec<AccountJson> {
+    accounts
         .iter()
         .map(|a| AccountJson {
             code: a.code.clone(),
@@ -390,9 +394,7 @@ pub fn render_accounts(accounts: &[AccountRow], meta: Meta) -> Result<String, Cl
             r#type: a.account_type.code().to_owned(),
             normal_balance: a.account_type.normal_balance().code().to_string(),
         })
-        .collect();
-
-    envelope_ok(meta, rows)
+        .collect()
 }
 
 /// Render transactions with their entries as an enveloped JSON response.
@@ -408,7 +410,14 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
     entries_map: &HashMap<TransactionId, Vec<EntryRow>, S>,
     meta: Meta,
 ) -> Result<String, CliError> {
-    let rows: Vec<TransactionJson> = transactions
+    envelope_ok(meta, transaction_list_data(transactions, entries_map))
+}
+
+pub(crate) fn transaction_list_data<S: ::std::hash::BuildHasher>(
+    transactions: &[TransactionRow],
+    entries_map: &HashMap<TransactionId, Vec<EntryRow>, S>,
+) -> Vec<TransactionJson> {
+    transactions
         .iter()
         .map(|txn| {
             let entries = entries_map
@@ -429,9 +438,7 @@ pub fn render_transactions<S: ::std::hash::BuildHasher>(
                 entries,
             }
         })
-        .collect();
-
-    envelope_ok(meta, rows)
+        .collect()
 }
 
 /// Render transactions with entries and attachments as an enveloped JSON response.
@@ -454,55 +461,60 @@ pub fn render_transactions_with_attachments<
     clearings_map: &HashMap<EntryId, Vec<Clearing>, U>,
     meta: Meta,
 ) -> Result<String, CliError> {
-    let rows: Vec<_> = transactions
+    let rows = transactions
         .iter()
         .map(|txn| {
-            let entries = entries_map
-                .get(&txn.id)
-                .map(|rows| {
-                    rows.iter()
-                        .map(|e| {
-                            let clearings = clearings_map.get(&e.id).map_or(&[][..], Vec::as_slice);
-                            entry_with_clearings(e, txn.currency, clearings)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
-                .unwrap_or_default();
-
-            let att = attachments_map
-                .get(&txn.id)
-                .map(|rows| {
-                    rows.iter()
-                        .map(|a| AttachmentJson {
-                            id: a.id,
-                            document_type: a.document_type.as_str(),
-                            uri: &a.uri,
-                            hash: a.hash.as_ref().map(Sha256Hex::as_str),
-                            original_filename: a.original_filename.as_deref(),
-                            attached_at: &a.attached_at,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            Ok(TransactionWithAttachmentsJson {
-                id: txn.id,
-                description: txn.description.clone(),
-                metadata: txn.metadata.clone(),
-                reference: txn.reference.clone(),
-                posted_by: txn.posted_by.clone(),
-                agent_uri: txn.agent_uri.clone(),
-                token_jti: txn.token_jti.clone(),
-                currency: txn.currency,
-                date: txn.date,
-                entries,
-                attachments: att,
-            })
+            transaction_detail_data(
+                txn,
+                entries_map.get(&txn.id).map_or(&[], Vec::as_slice),
+                attachments_map.get(&txn.id).map_or(&[], Vec::as_slice),
+                clearings_map,
+            )
         })
-        .collect::<Result<_, CliError>>()?;
-
+        .collect::<Result<Vec<_>, _>>()?;
     envelope_ok(meta, rows)
+}
+
+pub(crate) fn transaction_detail_data<'a, S: ::std::hash::BuildHasher>(
+    txn: &TransactionRow,
+    entries: &[EntryRow],
+    attachments: &'a [AttachmentRow],
+    clearings: &HashMap<EntryId, Vec<Clearing>, S>,
+) -> Result<TransactionWithAttachmentsJson<'a>, CliError> {
+    let entries = entries
+        .iter()
+        .map(|entry| {
+            entry_with_clearings(
+                entry,
+                txn.currency,
+                clearings.get(&entry.id).map_or(&[], Vec::as_slice),
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let attachments = attachments
+        .iter()
+        .map(|attachment| AttachmentJson {
+            id: attachment.id,
+            document_type: attachment.document_type.as_str(),
+            uri: &attachment.uri,
+            hash: attachment.hash.as_ref().map(Sha256Hex::as_str),
+            original_filename: attachment.original_filename.as_deref(),
+            attached_at: &attachment.attached_at,
+        })
+        .collect();
+    Ok(TransactionWithAttachmentsJson {
+        id: txn.id,
+        description: txn.description.clone(),
+        metadata: txn.metadata.clone(),
+        reference: txn.reference.clone(),
+        posted_by: txn.posted_by.clone(),
+        agent_uri: txn.agent_uri.clone(),
+        token_jti: txn.token_jti.clone(),
+        currency: txn.currency,
+        date: txn.date,
+        entries,
+        attachments,
+    })
 }
 
 /// Render a trial balance as an enveloped JSON response with accounts, totals,
@@ -594,7 +606,13 @@ pub fn render_orphaned_correlations(
     orphans: &[crate::db::OrphanedCorrelation],
     meta: Meta,
 ) -> Result<String, CliError> {
-    let json_orphans: Vec<OrphanedCorrelationJson> = orphans
+    envelope_ok(meta, orphaned_correlations_data(orphans))
+}
+
+pub(crate) fn orphaned_correlations_data(
+    orphans: &[crate::db::OrphanedCorrelation],
+) -> impl Serialize {
+    orphans
         .iter()
         .map(|o| OrphanedCorrelationJson {
             transaction_id: o.transaction_id,
@@ -603,9 +621,7 @@ pub fn render_orphaned_correlations(
             date: o.date,
             partner_id: o.partner_id,
         })
-        .collect();
-
-    envelope_ok(meta, json_orphans)
+        .collect::<Vec<_>>()
 }
 
 // ---------------------------------------------------------------------------
@@ -666,7 +682,7 @@ struct AccountWithBalanceJson<'a> {
     credit_total: MoneyField,
 }
 
-fn account_balance_rows(rows: &[AccountWithBalanceRow]) -> Vec<AccountWithBalanceJson<'_>> {
+pub(crate) fn account_balance_rows(rows: &[AccountWithBalanceRow]) -> impl Serialize + '_ {
     rows.iter()
         .map(|row| AccountWithBalanceJson {
             code: &row.code,
@@ -678,7 +694,7 @@ fn account_balance_rows(rows: &[AccountWithBalanceRow]) -> Vec<AccountWithBalanc
             debit_total: MoneyField::new("debit_total", row.debit_total),
             credit_total: MoneyField::new("credit_total", row.credit_total),
         })
-        .collect()
+        .collect::<Vec<_>>()
 }
 
 /// Render accounts with balance totals as an enveloped JSON response.
@@ -692,13 +708,6 @@ pub fn render_accounts_with_balances(
     envelope_ok(meta, account_balance_rows(rows))
 }
 
-pub(crate) fn account_balances_payload(
-    rows: &[AccountWithBalanceRow],
-) -> Result<serde_json::Value, CliError> {
-    serde_json::to_value(account_balance_rows(rows))
-        .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
-}
-
 // ---------------------------------------------------------------------------
 // Simple data helpers for mutation commands
 // ---------------------------------------------------------------------------
@@ -709,11 +718,15 @@ pub(crate) fn account_balances_payload(
 ///
 /// Returns [`CliError`] on serialisation failure.
 pub fn render_count(count: i64, meta: Meta) -> Result<String, CliError> {
+    envelope_ok(meta, count_data(count))
+}
+
+pub(crate) fn count_data(count: i64) -> impl Serialize {
     #[derive(Serialize)]
     struct CountJson {
         count: i64,
     }
-    envelope_ok(meta, CountJson { count })
+    CountJson { count }
 }
 
 /// Render a deletion confirmation as an enveloped JSON response.
@@ -739,10 +752,10 @@ pub(crate) fn deleted_data(id: &str) -> impl Serialize + '_ {
 ///
 /// Returns [`CliError`] on serialisation failure.
 pub fn render_post_result(result: PostResult, meta: Meta) -> Result<String, CliError> {
-    envelope_ok(meta, post_result_data(result)?)
+    envelope_ok(meta, post_result_payload(result))
 }
 
-pub(crate) fn post_result_data(result: PostResult) -> Result<serde_json::Value, CliError> {
+pub(crate) fn post_result_payload(result: PostResult) -> impl Serialize {
     #[derive(Serialize)]
     struct PostResultJson {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -753,7 +766,7 @@ pub(crate) fn post_result_data(result: PostResult) -> Result<serde_json::Value, 
         skipped: bool,
     }
 
-    let json = match result {
+    match result {
         PostResult::Created(id) => PostResultJson {
             id: Some(id),
             existing_id: None,
@@ -766,9 +779,7 @@ pub(crate) fn post_result_data(result: PostResult) -> Result<serde_json::Value, 
             created: false,
             skipped: true,
         },
-    };
-
-    serde_json::to_value(json).map_err(|error| CliError::General(error.to_string()))
+    }
 }
 
 /// Render a `txn attach` confirmation as an enveloped JSON response.
@@ -925,8 +936,11 @@ struct BudgetJson {
 ///
 /// Returns [`CliError`] on serialisation failure.
 pub fn render_budgets(rows: &[crate::db::BudgetRow], meta: Meta) -> Result<String, CliError> {
-    let json_rows = rows
-        .iter()
+    envelope_ok(meta, budget_rows(rows))
+}
+
+pub(crate) fn budget_rows(rows: &[crate::db::BudgetRow]) -> impl Serialize {
+    rows.iter()
         .map(|row| BudgetJson {
             id: row.id,
             account_code: row.account_code.clone(),
@@ -937,9 +951,7 @@ pub fn render_budgets(rows: &[crate::db::BudgetRow], meta: Meta) -> Result<Strin
             notes: row.notes.clone(),
             created_at: row.created_at.clone(),
         })
-        .collect::<Vec<_>>();
-
-    envelope_ok(meta, json_rows)
+        .collect::<Vec<_>>()
 }
 
 #[derive(Serialize)]

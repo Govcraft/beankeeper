@@ -478,6 +478,24 @@ impl MetadataEdit {
     }
 }
 
+/// An edit whose keys are nonempty, unique and available to user annotations.
+pub(crate) struct ValidatedMetadataEdit(MetadataEdit);
+
+impl TryFrom<MetadataEdit> for ValidatedMetadataEdit {
+    type Error = CliError;
+
+    fn try_from(edit: MetadataEdit) -> Result<Self, Self::Error> {
+        edit.validate()?;
+        Ok(Self(edit))
+    }
+}
+
+impl AsRef<MetadataEdit> for ValidatedMetadataEdit {
+    fn as_ref(&self) -> &MetadataEdit {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

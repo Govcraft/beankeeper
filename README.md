@@ -525,8 +525,8 @@ mutation tools are absent and cannot be called.
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
 
-This catalog covers the full router. Capability enforcement can restrict discovery
-further. Company-scoped tools require a `company` argument. `report` takes a `kind`
+MCP discovery publishes input schemas and read-only hints from the ledger
+operation catalog. Capability enforcement can restrict discovery further. Company-scoped tools require a `company` argument. `report` takes a `kind`
 and its options, with all 13 CLI report kinds available, including `schedule-c`,
 `1099` and `trend`. See the [report-kind list](docs/beankeeper/references/commands.md#report-kinds).
 For `trial-balance`, `balance`, `balance-sheet`, and `reconciliation`, use

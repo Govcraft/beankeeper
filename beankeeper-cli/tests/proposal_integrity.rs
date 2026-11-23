@@ -3,8 +3,8 @@
 use beankeeper_cli::identity::{Admin, Granted};
 use std::error::Error;
 
-use beankeeper_cli::commands::verify;
 use beankeeper_cli::db::proposals::PostingPayload;
+use beankeeper_cli::db::verification::VerifiedLedger;
 use beankeeper_cli::db::{self, Actor, ConflictStrategy, Db, audit};
 use mti::prelude::*;
 use rusqlite::params;
@@ -61,7 +61,7 @@ fn proposals_require_immutable_payloads_and_audited_terminal_transitions() -> Te
     ] {
         assert!(raw.execute(sql, [&id]).is_err(), "unprotected: {sql}");
     }
-    verify::execute_json(&db)?;
+    VerifiedLedger::read(&db)?;
     let outcome =
         beankeeper_cli::identity::Granted::<beankeeper_cli::identity::ResolveProposal>::with_db(
             &db,
@@ -69,7 +69,7 @@ fn proposals_require_immutable_payloads_and_audited_terminal_transitions() -> Te
             |grant| audit::reject_proposal(grant, &"acme".parse()?, &id.parse()?, Some("No")),
         )?;
     assert_eq!(outcome.state.code(), "rejected");
-    verify::execute_json(&db)?;
+    VerifiedLedger::read(&db)?;
     assert!(
         raw.execute(
             "UPDATE txn_proposals SET reason = 'different' WHERE id = ?1",
@@ -96,7 +96,7 @@ fn verify_detects_changed_resolution_even_if_protection_triggers_are_removed() -
         [&id],
     )?;
     assert!(matches!(
-        verify::execute_json(&db),
+        VerifiedLedger::read(&db),
         Err(beankeeper_cli::error::CliError::Database(_))
     ));
     Ok(())
@@ -124,7 +124,7 @@ fn resolution_preserves_the_direction_spelling_of_a_legacy_proposal() -> TestRes
         |row| row.get(0),
     )?;
     assert_eq!(direction, "DEBIT");
-    verify::execute_json(&db)?;
+    VerifiedLedger::read(&db)?;
 
     raw.execute_batch(
         "DROP TRIGGER protect_proposal_payload; DROP TRIGGER protect_proposal_resolution;",
@@ -134,6 +134,6 @@ fn resolution_preserves_the_direction_spelling_of_a_legacy_proposal() -> TestRes
          WHERE id = ?1",
         [&id],
     )?;
-    assert!(verify::execute_json(&db).is_err());
+    assert!(VerifiedLedger::read(&db).is_err());
     Ok(())
 }
