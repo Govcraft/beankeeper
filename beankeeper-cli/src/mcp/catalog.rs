@@ -3,15 +3,15 @@
 use rmcp::{
     RoleServer,
     handler::server::{
-        common::{FromContextPart, schema_for_input},
+        common::schema_for_input,
         router::tool::{ToolRoute, ToolRouter},
-        wrapper::Parameters,
     },
     model::{CallToolResponse, CallToolResult, Tool, ToolAnnotations},
     service::RequestContext,
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 use super::{
     LedgerAccess, LedgerServer,
@@ -42,7 +42,11 @@ fn tool<Input: JsonSchema + 'static>(
         .with_annotations(ToolAnnotations::new().read_only(operation.is_read_only()))
 }
 
-fn route<Input, Handle, Future>(tool: Tool, handle: Handle) -> ToolRoute<LedgerServer>
+fn route<Input, Handle, Future>(
+    operation: Operation,
+    tool: Tool,
+    handle: Handle,
+) -> ToolRoute<LedgerServer>
 where
     Input: DeserializeOwned + Send + 'static,
     Handle: Fn(LedgerServer, Input, RequestContext<RoleServer>) -> Future
@@ -53,14 +57,23 @@ where
     Future: std::future::Future<Output = CallToolResult> + Send + 'static,
 {
     ToolRoute::<LedgerServer>::new_dyn(tool, move |mut context| {
-        let input = Parameters::<Input>::from_context_part(&mut context);
+        let arguments = Value::Object(context.arguments.take().unwrap_or_default());
+        let input = Input::deserialize(&arguments);
         let handle = handle.clone();
         Box::pin(async move {
             let result = match input {
-                Ok(Parameters(input)) => {
-                    handle(context.service.clone(), input, context.request_context).await
+                Ok(input) => handle(context.service.clone(), input, context.request_context).await,
+                Err(error) if operation == Operation::Summary => {
+                    let company = arguments.get("company").and_then(Value::as_str);
+                    let validation = CliError::Validation(error.to_string());
+                    super::summary_error(
+                        company,
+                        super::tool_error(&validation).structured_content.as_ref(),
+                    )
                 }
-                Err(error) => super::tool_error(&CliError::Validation(error.message.into_owned())),
+                Err(error) => super::tool_error(&CliError::Validation(format!(
+                    "failed to deserialize parameters: {error}"
+                ))),
             };
             Ok(CallToolResponse::from(result))
         })
@@ -89,6 +102,7 @@ macro_rules! route {
     ($router:ident, $access:ident, Summary, tool($name:ident, $input:ident, $description:literal)) => {
         if matches!($access, LedgerAccess::ReadWrite) || Operation::Summary.is_read_only() {
             $router.add_route(route(
+                Operation::Summary,
                 tool::<inputs::$input>(Operation::Summary, stringify!($name), $description),
                 |server, input: inputs::$input, context| async move {
                     server.execute_summary(input, context).await
@@ -99,6 +113,7 @@ macro_rules! route {
     ($router:ident, $access:ident, $variant:ident, tool($name:ident, $input:ident, $description:literal)) => {
         if matches!($access, LedgerAccess::ReadWrite) || Operation::$variant.is_read_only() {
             $router.add_route(route(
+                Operation::$variant,
                 tool::<inputs::$input>(Operation::$variant, stringify!($name), $description),
                 |server, input: inputs::$input, context| async move {
                     server

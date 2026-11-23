@@ -7,7 +7,6 @@ use super::{AccountSelector, ChartRequest, DateRange, DateWindow, ReportRequest}
 use crate::cli::{BudgetVarianceArgs, CalendarDateArg, ReportCommand, ReportMonth};
 use crate::commands::{
     report_aging::AgingRequest,
-    report_dates::resolve_date,
     report_periods::{CompareArg, PeriodArg},
     report_reconciliation::ReconciliationSelection,
     report_tax::{TaxArgs, VendorMinimum},
@@ -120,8 +119,8 @@ impl
         ),
     ) -> Result<Self, Self::Error> {
         Self::try_from((
-            from.map(|date| resolve_date("--from", date)).transpose()?,
-            to.map(|date| resolve_date("--to", date)).transpose()?,
+            from.copied().map(NaiveDate::from),
+            to.copied().map(NaiveDate::from),
             currency,
         ))
     }

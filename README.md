@@ -1318,6 +1318,9 @@ standing balances, income/spending comparisons, spending movers and attention
 counts with chartable amounts and an optional Desktop target. No app is required.
 The default is this month to date versus the full previous calendar month.
 `--from`, `--to`, `--compare-from`, `--compare-to` and `--currency` select the scope.
+Use real calendar dates in `YYYY-MM-DD` format for CLI and MCP report and
+summary filters. When the end date defaults to today, Beankeeper uses the local
+date. Invalid dates return `VALIDATION`.
 
 The CLI and MCP tool return the same full envelope. Overdue status is explicitly
 unavailable because the ledger has no payment due dates; older open items are

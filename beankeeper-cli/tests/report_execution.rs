@@ -189,7 +189,15 @@ fn in_process_reports_preserve_validation_and_missing_company_errors() -> TestRe
             None,
         )
     })?;
-    let cli = Cli::try_parse_from(["bk", "report", "trial-balance", "--from", "invalid"])?;
+    let cli = Cli::try_parse_from([
+        "bk",
+        "report",
+        "trial-balance",
+        "--from",
+        "2026-03-31",
+        "--to",
+        "2026-01-01",
+    ])?;
     let BkCommand::Report(args) = &cli.command else {
         return Err("expected report command".into());
     };

@@ -8,7 +8,7 @@ use super::inputs::{
     PeriodArg as WirePeriodArg, ReconciliationInput, ReconciliationModeArg, Report, ReportOptions,
     TaxPeriodInput, TrendMetricArg,
 };
-use crate::cli::{ActorFilterArg, ReconciliationMode};
+use crate::cli::ReconciliationMode;
 use crate::commands::{
     audit::AuditQuery,
     report::{
@@ -220,7 +220,7 @@ impl TryFrom<AgingInput> for AgingRequest {
         AgingSelection {
             accounts: input.account.map(account),
             include_children: input.include_children,
-            as_of: date(input.as_of),
+            as_of: date(input.as_of).into(),
             buckets: input.buckets,
             group_by: input.group_by_metadata,
             currency: input.currency,
@@ -241,7 +241,7 @@ impl TryFrom<ReconciliationInput> for ReconciliationSelection {
         ReconciliationOptions {
             mode: input.mode.map(Into::into).unwrap_or_default(),
             account: account(input.account),
-            as_of: date(input.to),
+            as_of: date(input.to).into(),
             statement_balance: input
                 .statement_balance
                 .map(|amount| amount.into_inner().into()),
@@ -279,12 +279,10 @@ impl TryFrom<FinancialSummary> for SummaryRequest {
     }
 }
 
-impl TryFrom<AuditLog> for AuditQuery {
-    type Error = CliError;
-
-    fn try_from(input: AuditLog) -> Result<Self, Self::Error> {
-        Ok(Self {
-            actor: ActorFilterArg::resolve_optional(input.actor.as_ref())?.cloned(),
+impl From<AuditLog> for AuditQuery {
+    fn from(input: AuditLog) -> Self {
+        Self {
+            actor: input.actor.map(Into::into),
             agent: input
                 .agent
                 .map(|value| value.into_inner().as_str().to_owned()),
@@ -293,6 +291,6 @@ impl TryFrom<AuditLog> for AuditQuery {
             action: input.action,
             limit: input.limit.unwrap_or_default(),
             offset: input.offset.unwrap_or_default(),
-        })
+        }
     }
 }

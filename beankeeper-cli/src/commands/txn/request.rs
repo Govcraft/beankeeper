@@ -7,7 +7,7 @@ use super::super::{
     reference::TransactionReference, txn_clear::ClearanceRequest, txn_meta::MetadataRequest,
 };
 use super::response::{ListPage, TransactionDetails, TxnData, TxnResponse};
-use super::{PostingRequest, account_code, resolve_posting_date};
+use super::{PostingRequest, account_code};
 use crate::cli::{TxnCommand, TxnListArgs, TxnPageLimit, TxnProposalCommand, TxnReverseArgs};
 use crate::db::{
     Actor, Db, attachments, audit,
@@ -211,6 +211,12 @@ impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PostingDate(crate::request::LocalDate);
 
+impl From<crate::request::CalendarDateArg> for PostingDate {
+    fn from(date: crate::request::CalendarDateArg) -> Self {
+        Self::from(NaiveDate::from(date))
+    }
+}
+
 impl From<NaiveDate> for PostingDate {
     fn from(date: NaiveDate) -> Self {
         Self(date.into())
@@ -237,7 +243,7 @@ impl TryFrom<&TxnReverseArgs> for ReverseRequest {
     fn try_from(args: &TxnReverseArgs) -> Result<Self, Self::Error> {
         Ok(Self {
             id: args.id,
-            date: resolve_posting_date(args.date.as_ref())?,
+            date: args.date.map(Into::into).unwrap_or_default(),
             description: args.description.clone(),
             reference: args.reference.as_deref().map(str::parse).transpose()?,
         })

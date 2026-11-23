@@ -1560,7 +1560,7 @@ fn age_account(
 pub(crate) struct AgingSelection {
     pub accounts: NonEmpty<AccountSelector>,
     pub include_children: bool,
-    pub as_of: Option<NaiveDate>,
+    pub as_of: crate::request::LocalDate,
     pub buckets: Option<String>,
     pub group_by: Option<String>,
     pub currency: Option<Currency>,
@@ -1573,7 +1573,7 @@ pub(crate) struct AgingSelection {
 
 pub(crate) struct AgingRequest {
     accounts: AgingAccounts,
-    as_of: NaiveDate,
+    as_of: crate::request::LocalDate,
     currency: Option<Currency>,
     projection: AgingProjection,
     buckets: Buckets,
@@ -1751,9 +1751,7 @@ impl TryFrom<AgingSelection> for AgingRequest {
     fn try_from(selection: AgingSelection) -> Result<Self, Self::Error> {
         Ok(Self {
             accounts: (selection.accounts, selection.include_children).try_into()?,
-            as_of: selection
-                .as_of
-                .unwrap_or_else(|| crate::request::LocalDate::default().into()),
+            as_of: selection.as_of,
             currency: selection.currency,
             buckets: selection
                 .buckets
@@ -1779,11 +1777,7 @@ impl TryFrom<&crate::cli::AgingCommandArgs> for AgingRequest {
         AgingSelection {
             accounts: args.account.as_slice().try_into()?,
             include_children: args.include_children,
-            as_of: args
-                .as_of
-                .as_ref()
-                .map(|date| super::report_dates::resolve_date("--as-of", date))
-                .transpose()?,
+            as_of: args.as_of.map(NaiveDate::from).into(),
             buckets: args.buckets.clone(),
             group_by: args.group_by_metadata.clone(),
             currency: args.currency,
@@ -1804,7 +1798,7 @@ impl TryFrom<&AgingOptions<'_>> for AgingRequest {
         AgingSelection {
             accounts: options.accounts.try_into()?,
             include_children: options.include_children,
-            as_of: options.as_of,
+            as_of: options.as_of.into(),
             buckets: Some(options.buckets.to_owned()),
             group_by: options.group_by_metadata.map(str::to_owned),
             currency: options.currency,
@@ -1874,7 +1868,7 @@ impl AgingRequest {
         let method = self.projection.matching.method();
         let scope = AgingScope {
             kind,
-            as_of: self.as_of,
+            as_of: self.as_of.into(),
             currency,
             buckets: self.buckets,
             method,
@@ -1891,7 +1885,7 @@ impl AgingRequest {
         Ok(AgingResponse {
             report,
             selected,
-            as_of: self.as_of,
+            as_of: self.as_of.into(),
             currency,
             projection: self.projection,
         })

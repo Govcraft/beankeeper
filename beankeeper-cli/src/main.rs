@@ -1,36 +1,34 @@
 use std::{error::Error, ffi::OsString, process::ExitCode};
 
 use beankeeper::types::CurrencyError;
-use clap::{ArgAction, CommandFactory, Parser, builder::OsStringValueParser};
+use clap::{
+    ArgAction, CommandFactory, Parser,
+    builder::OsStringValueParser,
+    error::{ContextKind, ContextValue},
+};
 
 use beankeeper_cli::cli::Cli;
 use beankeeper_cli::{commands, error::CliError, operation::Operation, output::json};
+use beankeeper_cli::{db::BlankActorLabel, request::CalendarDateError};
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => {
-            let Some(source) = error.source() else {
-                error.exit();
-            };
-            let currency = source
-                .downcast_ref::<CurrencyError>()
-                .map(|error| CliError::Validation(error.to_string()));
-            let cli_error = source.downcast_ref::<CliError>();
-            if currency.is_none() && cli_error.is_none() {
+            let validation = clap_validation(&error);
+            let receipt_error = error
+                .source()
+                .and_then(|cause| cause.downcast_ref::<CliError>());
+            if validation.is_none() && receipt_error.is_none() {
                 error.exit();
             }
             let (json_mode, meta) = parse_error_metadata(&args);
-            let validation = if meta
-                .as_ref()
-                .is_some_and(|meta| is_receipt_operation(meta.command))
-            {
-                cli_error.or(currency.as_ref())
-            } else {
-                currency.as_ref()
-            };
-            let Some(validation) = validation else {
+            let receipt_error = receipt_error.filter(|_| {
+                meta.as_ref()
+                    .is_some_and(|meta| is_receipt_operation(meta.command))
+            });
+            let Some(validation) = validation.as_ref().or(receipt_error) else {
                 error.exit();
             };
             validation.report(json_mode, meta);
@@ -64,6 +62,36 @@ fn main() -> ExitCode {
 
 fn is_receipt_operation(operation: Operation) -> bool {
     matches!(operation, Operation::AuditReceipts | Operation::AuditUndo)
+}
+
+fn clap_validation(error: &clap::Error) -> Option<CliError> {
+    let cause = error.source()?;
+    if let Some(currency) = cause.downcast_ref::<CurrencyError>() {
+        return Some(CliError::Validation(currency.to_string()));
+    }
+    if let Some(actor) = cause.downcast_ref::<BlankActorLabel>() {
+        return Some((*actor).into());
+    }
+    let flag = match error.get(ContextKind::InvalidArg) {
+        Some(ContextValue::String(arg)) => arg.split_whitespace().next(),
+        _ => None,
+    };
+    if let Some(date) = cause.downcast_ref::<CalendarDateError>() {
+        let message = match flag {
+            Some(flag) => format!(
+                "invalid {flag} date {:?}: expected YYYY-MM-DD",
+                date.input()
+            ),
+            None => date.to_string(),
+        };
+        return Some(CliError::Validation(message));
+    }
+    match (flag, cause.downcast_ref::<CliError>()) {
+        (Some("--compare"), Some(CliError::Validation(message))) => {
+            Some(CliError::Validation(message.clone()))
+        }
+        _ => None,
+    }
 }
 
 // Clap stops at an invalid value before returning matches. On that error path,

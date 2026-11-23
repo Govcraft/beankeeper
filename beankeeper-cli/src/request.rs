@@ -3,10 +3,12 @@
 //! This library owns the open ledger and its audited storage. CLI, MCP, and
 //! embedded hosts can feed validated requests directly to the same executor.
 
+mod calendar_date;
 mod collection;
 mod currency;
 mod local_date;
 
+pub use calendar_date::{CalendarDateArg, CalendarDateError};
 pub use collection::{EmptyCollection, NonEmpty};
 pub(crate) use currency::CurrencySetting;
 pub use local_date::LocalDate;

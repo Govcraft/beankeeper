@@ -401,7 +401,7 @@ fn reverse_posting(
         &ReverseTransactionParams {
             company_slug: company,
             id,
-            date: LocalDate::default().into(),
+            date: LocalDate::from(None).into(),
             description: None,
             reference: None,
         },

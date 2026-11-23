@@ -424,7 +424,7 @@ impl StatementSelection {
 pub(crate) struct ReconciliationOptions {
     pub mode: ReconciliationMode,
     pub account: AccountSelector,
-    pub as_of: Option<NaiveDate>,
+    pub as_of: crate::request::LocalDate,
     pub statement_balance: Option<StatementBalance>,
     pub statement: Option<String>,
     pub link_key: Option<String>,
@@ -435,7 +435,7 @@ pub(crate) struct ReconciliationOptions {
 
 pub(crate) struct ReconciliationSelection {
     account: AccountSelector,
-    as_of: NaiveDate,
+    as_of: crate::request::LocalDate,
     balance: Option<StatementBalance>,
     statement: StatementSelection,
     filters: Vec<MetadataFilter>,
@@ -449,9 +449,7 @@ impl TryFrom<ReconciliationOptions> for ReconciliationSelection {
     fn try_from(options: ReconciliationOptions) -> Result<Self, Self::Error> {
         Ok(Self {
             account: options.account,
-            as_of: options
-                .as_of
-                .unwrap_or_else(|| crate::request::LocalDate::default().into()),
+            as_of: options.as_of,
             balance: options.statement_balance,
             statement: (options.mode, options.statement, options.link_key).try_into()?,
             filters: metadata_filter::parse_filters(&options.filters)?,
@@ -468,11 +466,7 @@ impl TryFrom<&crate::cli::ReconciliationCommandArgs> for ReconciliationSelection
         ReconciliationOptions {
             mode: command.mode.unwrap_or_default(),
             account: command.account.clone().into(),
-            as_of: command
-                .to
-                .as_ref()
-                .map(|date| super::report_dates::resolve_date("--to", date))
-                .transpose()?,
+            as_of: command.to.map(NaiveDate::from).into(),
             statement_balance: command
                 .statement_balance
                 .as_deref()
@@ -502,7 +496,7 @@ impl ReconciliationSelection {
             .transpose()?;
         let request = ResolvedRequest {
             currency,
-            as_of: Some(self.as_of),
+            as_of: Some(self.as_of.into()),
             statement: self.statement.reference(),
             statement_balance,
             filters: self.filters,

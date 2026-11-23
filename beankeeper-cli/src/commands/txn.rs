@@ -420,7 +420,7 @@ impl TryFrom<&PostingArgs> for PostingRequest {
         Self::try_from(PostingDraft {
             description: args.description.clone(),
             currency,
-            date: resolve_posting_date(args.date.as_ref())?,
+            date: args.date.map(Into::into).unwrap_or_default(),
             debit: parse_entries(&args.debit, currency)?,
             credit: parse_entries(&args.credit, currency)?,
             metadata: args.metadata.clone(),
@@ -436,16 +436,6 @@ impl TryFrom<&PostingArgs> for PostingRequest {
             tax: parse_tax_args(&args.tax)?,
         })
     }
-}
-
-fn resolve_posting_date(
-    date: Option<&crate::cli::CalendarDateArg>,
-) -> Result<PostingDate, CliError> {
-    Ok(date
-        .map(crate::cli::CalendarDateArg::posting_date)
-        .transpose()?
-        .map(Into::into)
-        .unwrap_or_default())
 }
 
 fn execute_posting(
