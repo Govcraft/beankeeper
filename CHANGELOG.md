@@ -6,6 +6,14 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.33.0] - Unreleased
+
+### Added
+
+- Embedded hosts can read the financial summary's inclusive current and
+  comparison date windows and plain-language highlights directly from the typed
+  response. ([#257](https://github.com/Govcraft/beankeeper/issues/257))
+
 ## [0.32.1] - Unreleased
 
 ### Changed
