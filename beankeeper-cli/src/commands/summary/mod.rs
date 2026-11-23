@@ -358,6 +358,19 @@ pub struct SummaryResponse {
 }
 
 impl SummaryResponse {
+    /// The inclusive `(from, to)` windows, with the current period first and
+    /// the comparison period second.
+    #[must_use]
+    pub fn period_windows(&self) -> [(NaiveDate, NaiveDate); 2] {
+        self.report.periods.windows()
+    }
+
+    /// The summary's plain-language highlights in report order.
+    #[must_use]
+    pub fn highlights(&self) -> &[String] {
+        &self.report.highlights
+    }
+
     /// The shared summary envelope, including the verified caller if available.
     pub fn envelope(&self, actor: &Actor) -> impl Serialize + '_ {
         let mut meta = crate::output::json::meta(Operation::Summary, Some(self.company.as_str()))
@@ -616,6 +629,38 @@ mod tests {
         .periods(today)?;
         assert_eq!(p.prior.from.to_string(), "2024-12-01");
         assert_eq!(p.prior.to.to_string(), "2024-12-31");
+        Ok(())
+    }
+
+    #[test]
+    fn response_exposes_typed_period_windows_and_plain_highlights()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let db = Db::open_in_memory()?;
+        let actor = Actor::new("summary fixture".parse()?);
+        let company = "co".parse()?;
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            db::create_company(grant, &company, &"Company".parse()?, None)
+        })?;
+        let args = SummaryArgs {
+            to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
+            currency: Some(Currency::USD),
+            ..SummaryArgs::default()
+        };
+        let response = SummaryRequest::try_from((&company, &args, (false, false)))?.execute(&db)?;
+
+        let expected_windows: [(NaiveDate, NaiveDate); 2] = [
+            ("2024-03-01".parse()?, "2024-03-15".parse()?),
+            ("2024-02-01".parse()?, "2024-02-29".parse()?),
+        ];
+        assert_eq!(response.period_windows(), expected_windows);
+        let highlights = response.highlights();
+        assert!(
+            highlights
+                .first()
+                .is_some_and(|line| line.starts_with("No cash accounts were identified"))
+        );
+        let envelope = serde_json::to_value(response.envelope(&actor))?;
+        assert_eq!(json!(highlights), envelope["data"]["highlights"]);
         Ok(())
     }
 
