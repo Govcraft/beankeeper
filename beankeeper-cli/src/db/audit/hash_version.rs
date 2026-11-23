@@ -16,6 +16,8 @@ pub enum HashVersion {
     V4,
     /// Adds the nullable client hint.
     V5,
+    /// Adds the nullable undo and related posting links.
+    V6,
 }
 
 impl HashVersion {
@@ -26,6 +28,7 @@ impl HashVersion {
             Self::V3 => "beankeeper.audit.v3",
             Self::V4 => "beankeeper.audit.v4",
             Self::V5 => "beankeeper.audit.v5",
+            Self::V6 => "beankeeper.audit.v6",
         }
     }
 
@@ -33,8 +36,17 @@ impl HashVersion {
         !matches!(self, Self::V1)
     }
 
+    pub(super) const fn includes_client_hint(self) -> bool {
+        matches!(self, Self::V5 | Self::V6)
+    }
+
+    pub(super) const fn includes_receipt_links(self) -> bool {
+        matches!(self, Self::V6)
+    }
+
     pub(super) const fn for_schema(version: i64) -> Self {
         match version {
+            super::super::schema::RECEIPT_SCHEMA_VERSION.. => Self::V6,
             super::super::schema::CLIENT_HINT_SCHEMA_VERSION.. => Self::V5,
             20.. => Self::V4,
             18.. => Self::V3,
@@ -65,6 +77,7 @@ impl TryFrom<i64> for HashVersion {
             3 => Ok(Self::V3),
             4 => Ok(Self::V4),
             5 => Ok(Self::V5),
+            6 => Ok(Self::V6),
             _ => Err(UnsupportedHashVersion(version)),
         }
     }

@@ -1,6 +1,9 @@
 use core::fmt;
 use std::io;
 
+use crate::db::audit::{ReversalBlock, receipts::ReceiptUndoError};
+use crate::db::periods::ClosedPostingPeriod;
+
 /// CLI error type with semantic exit codes.
 #[derive(Debug)]
 pub enum CliError {
@@ -12,6 +15,12 @@ pub enum CliError {
     Forbidden(String),
     /// Validation error (unbalanced transaction, invalid account). Exit code 3.
     Validation(String),
+    /// Unsupported or ineligible receipt undo. Exit code 3.
+    ReceiptUndo(ReceiptUndoError),
+    /// Requested posting date lies in a closed period. Exit code 3.
+    PeriodLocked(ClosedPostingPeriod),
+    /// Current posting state disallows a reversal.
+    ReversalBlocked(ReversalBlock),
     /// Database error (I/O, corruption). Exit code 4.
     Database(String),
     /// Not found (account, transaction, company does not exist). Exit code 5.
@@ -39,6 +48,10 @@ pub enum ErrorCode {
     Forbidden,
     /// Inputs violate a domain rule.
     Validation,
+    /// The receipt's change has no undo operation.
+    UndoUnsupported,
+    /// Current ledger state prevents this receipt's undo.
+    UndoIneligible,
     /// The ledger could not be read or written.
     Database,
     /// A requested record does not exist.
@@ -60,6 +73,8 @@ impl ErrorCode {
             Self::Unauthorized => "UNAUTHORIZED",
             Self::Forbidden => "FORBIDDEN",
             Self::Validation => "VALIDATION",
+            Self::UndoUnsupported => "UNDO_UNSUPPORTED",
+            Self::UndoIneligible => "UNDO_INELIGIBLE",
             Self::Database => "DATABASE",
             Self::NotFound => "NOT_FOUND",
             Self::Unimplemented => "UNIMPLEMENTED",
@@ -71,7 +86,7 @@ impl ErrorCode {
     const fn exit_code(self) -> u8 {
         match self {
             Self::Usage | Self::Unimplemented => 2,
-            Self::Validation => 3,
+            Self::Validation | Self::UndoUnsupported | Self::UndoIneligible => 3,
             Self::Database => 4,
             Self::NotFound => 5,
             Self::Unauthorized => 6,
@@ -100,9 +115,16 @@ impl CliError {
         match self {
             Self::Usage(_) => ErrorCode::Usage,
             Self::Unimplemented(_) => ErrorCode::Unimplemented,
-            Self::Validation(_) | Self::Bean(_) => ErrorCode::Validation,
+            Self::NotFound(_) | Self::ReversalBlocked(ReversalBlock::PostingMissing { .. }) => {
+                ErrorCode::NotFound
+            }
+            Self::Validation(_)
+            | Self::Bean(_)
+            | Self::PeriodLocked(_)
+            | Self::ReversalBlocked(_) => ErrorCode::Validation,
+            Self::ReceiptUndo(ReceiptUndoError::Unsupported(_)) => ErrorCode::UndoUnsupported,
+            Self::ReceiptUndo(ReceiptUndoError::Ineligible { .. }) => ErrorCode::UndoIneligible,
             Self::Database(_) | Self::Sqlite(_) => ErrorCode::Database,
-            Self::NotFound(_) => ErrorCode::NotFound,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::Forbidden(_) => ErrorCode::Forbidden,
             Self::Io(_) => ErrorCode::Io,
@@ -169,6 +191,9 @@ impl fmt::Display for CliError {
             | Self::General(msg)
             | Self::Unimplemented(msg) => write!(f, "{msg}"),
             Self::Bean(e) => write!(f, "{e}"),
+            Self::ReceiptUndo(e) => write!(f, "{e}"),
+            Self::PeriodLocked(e) => write!(f, "{e}"),
+            Self::ReversalBlocked(e) => write!(f, "{e}"),
             Self::Sqlite(e) => write!(f, "database error: {e}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
         }
@@ -179,6 +204,9 @@ impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Bean(e) => Some(e),
+            Self::ReceiptUndo(e) => Some(e),
+            Self::PeriodLocked(e) => Some(e),
+            Self::ReversalBlocked(e) => Some(e),
             Self::Sqlite(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Usage(_)

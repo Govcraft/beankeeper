@@ -498,13 +498,13 @@ fn load_csv_rules(
         return Ok(Vec::new());
     }
     for code in [bank, suspense].into_iter().flatten() {
-        accounts::get_account(
+        accounts::get_active_account(
             &crate::db::companies::Company::bind(db.read(), company.parse()?)?,
             code,
         )
         .map_err(|error| invalid(format!("CSV account validation: {error}")))?;
     }
-    db::rules::list_rules(&crate::db::companies::Company::bind(
+    db::rules::list_active_rules(&crate::db::companies::Company::bind(
         db.read(),
         company.parse()?,
     )?)

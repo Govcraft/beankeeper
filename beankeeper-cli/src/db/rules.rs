@@ -86,12 +86,28 @@ pub struct Rule {
 /// # Errors
 /// Returns a database error if the query or stored rule data is invalid.
 pub fn list_rules(scope: &super::companies::Company<'_>) -> Result<Vec<Rule>, CliError> {
+    read_rules(scope, "")
+}
+
+/// Load only rules whose destination is available for categorization.
+///
+/// # Errors
+/// Returns a database error if the query or stored rule data is invalid.
+pub fn list_active_rules(scope: &super::companies::Company<'_>) -> Result<Vec<Rule>, CliError> {
+    read_rules(
+        scope,
+        " AND EXISTS (SELECT 1 FROM accounts a WHERE a.company_slug = r.company_slug
+                       AND a.code = r.account_code AND a.archived = 0)",
+    )
+}
+
+fn read_rules(scope: &super::companies::Company<'_>, filter: &str) -> Result<Vec<Rule>, CliError> {
     let conn = scope.read();
     let company = scope.slug();
-    let mut stmt = conn.prepare(
-        "SELECT id, company_slug, contains, account_code, priority FROM categorization_rules
-         WHERE company_slug = ?1 ORDER BY priority DESC, id ASC",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, company_slug, contains, account_code, priority FROM categorization_rules r
+         WHERE company_slug = ?1{filter} ORDER BY priority DESC, id ASC",
+    ))?;
     let rows = stmt.query_map([company], |row| {
         Ok((
             row.get::<_, String>(0)?,

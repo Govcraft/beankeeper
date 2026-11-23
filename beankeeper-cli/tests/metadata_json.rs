@@ -323,7 +323,12 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "DROP TABLE setup_statement_batches;
+            "DROP VIEW audit_receipt_postings;
+             DROP TRIGGER protect_archived_account_delete;
+             DROP TRIGGER protect_archived_account_insert;
+             DROP TRIGGER protect_account_archive;
+             ALTER TABLE accounts DROP COLUMN archived;
+             DROP TABLE setup_statement_batches;
              DROP TABLE setup_requests;
              DROP TABLE setup_book_profiles;
              DROP TABLE setup_sessions;

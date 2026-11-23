@@ -106,8 +106,22 @@ row_ids! {
     AttachmentId => "attachment ID",
     /// An audit log row identifier.
     AuditRowId => "audit row ID",
+    /// The audit row that anchors a company receipt.
+    ReceiptId => "receipt ID",
     /// A frozen statement batch awaiting or bearing owner approval.
     StatementBatchId => "statement batch ID",
+}
+
+impl From<ReceiptId> for AuditRowId {
+    fn from(id: ReceiptId) -> Self {
+        Self(id.0)
+    }
+}
+
+impl From<AuditRowId> for ReceiptId {
+    fn from(id: AuditRowId) -> Self {
+        Self(id.0)
+    }
 }
 
 impl From<TransactionId> for PartnerTransactionId {

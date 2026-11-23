@@ -142,6 +142,11 @@ to undo it. An owner with `ledger/reverse` can run `bk txn reverse ID` or call
 the original. Use `bk audit log --by-actor` or `audit_log` with `actor` to find
 both actions.
 
+Beankeeper Desktop can read grouped audit receipts and undo posting or account
+creation through the Rust API. Undo creates a linked reversal or archives the
+account. Archived accounts retain their balances and history. New postings and
+categorization use active accounts. [Audit receipts and owner undo](docs/audit-integrity.md#schema-v26-receipts-and-owner-undo)
+
 To opt one credential into sign-off, issue it with `--write-mode propose-only`.
 The same posting command or tool then returns a pending proposal with a
 `proposal_…` ID. A separate reviewer approves it with `bk txn approve` or MCP

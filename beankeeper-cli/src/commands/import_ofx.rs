@@ -602,7 +602,7 @@ pub fn run_import_ofx(
 ) -> Result<(), CliError> {
     let verbose = cli.verbosity.verbose;
     let actor = cli.principal();
-    let rules = crate::db::rules::list_rules(&crate::db::companies::Company::bind(
+    let rules = crate::db::rules::list_active_rules(&crate::db::companies::Company::bind(
         db_handle.read(),
         company.parse()?,
     )?)?;
@@ -660,12 +660,13 @@ fn validate_accounts(
 ) -> Result<(), CliError> {
     let scope = crate::db::companies::Company::bind(conn, company.parse()?)?;
     for code in [bank, suspense] {
-        if !accounts::account_exists(&scope, code)? {
-            return Err(OfxImportError::AccountNotFound {
-                code: code.to_string(),
+        accounts::require_active(&scope, code).map_err(|error| match error {
+            CliError::NotFound(_) => OfxImportError::AccountNotFound {
+                code: code.to_owned(),
             }
-            .into());
-        }
+            .into(),
+            _ => error,
+        })?;
     }
     Ok(())
 }

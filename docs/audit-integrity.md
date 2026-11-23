@@ -203,3 +203,47 @@ the v4 tuple. That field is `null` or the ordered JSON array
 order independently of JSON object serialization. Migration checks the chain
 before and after the atomic rebuild, retaining v1 through v4 rows and hashes.
 `bk verify` checks mixed chains and includes v5 hints in their integrity check.
+
+## Schema v26 receipts and owner undo
+
+Embedded hosts can call `db::audit::receipts::list_receipts` with a company,
+an exclusive `AuditCursor`, and a positive `ReceiptPageLimit`. Process receipts
+in ascending order with `continue_receipts` on the same ledger. Use the
+page's `through()` value as the next starting cursor after consuming the entire
+range. Each range captures one committed audit head. Later writes appear
+in the next range.
+
+A reversal or approved proposal and its explicitly linked posting creation
+appear in a single receipt in that company. The later action anchors the
+receipt. An intercompany correlation stays in its own company's audit range.
+The receipt exposes a typed target, UTC timestamp, actor label, and verified
+agent identity or unverified client hint. Its change enum describes account
+creation, deletion and archival, posting creation, reversal and correlation,
+and proposal resolution. Other actions retain their target and attribution.
+An undecodable snapshot fails the receipt read. The receipt exposes recorded
+source references and typed posting and undo links where applicable.
+
+Call `undo_receipt` with a `Granted<OwnerUndo>`, the company, and the
+receipt ID. The grant requires a live signed `ledger/admin` credential, even
+with enforcement off. A retry returns the original `UndoOutcome` and does not
+append another audit event. The error codes are `UNDO_UNSUPPORTED` for a
+change with no undo and `UNDO_INELIGIBLE` when current ledger state prevents it.
+`UndoIneligibility` distinguishes closed periods, blocked reversals, newer account
+creations, and inactive accounts.
+
+Posting undo adds a balanced mirror dated the later of today and the original
+posting date, subject to the period lock and existing reversal eligibility.
+An account creation undo archives the account. Existing rules and entries
+keep their references, and archived accounts remain in historical reports.
+Matching for automatic categorization skips rules that target archived accounts.
+Only audited reversals can post to those accounts.
+
+Schema v26 initializes existing accounts as active. The nullable `undo_of`
+and `related_posting` columns reference audit rows and transactions. A unique
+undo link keeps retries idempotent. New v6 audit hashes include both columns
+after the client hint. Migration backfills posting links from legacy snapshots
+once and records a digest in a v6 audit event when it backfills any links.
+Verification checks that digest and the typed relationships without changing
+historical IDs, snapshots, hashes or attribution. The `account_archives`
+check compares archive state with its audit history. Desktop owns the last-seen
+cursor and receipt presentation.

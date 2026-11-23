@@ -296,9 +296,38 @@ pub(super) fn check_posting<'a>(
     company: &'a crate::db::companies::CompanySlug,
     date: NaiveDate,
 ) -> Result<OpenPeriod<'a>, CliError> {
-    ensure_open(tx.read(), company, date)?;
+    check_open_date(tx.read(), company, date)?;
     Ok(OpenPeriod { tx, company, date })
 }
+
+/// The requested posting date falls within the company's closed period.
+#[derive(Debug)]
+pub struct ClosedPostingPeriod {
+    company: super::companies::CompanySlug,
+    date: NaiveDate,
+    cutoff: PeriodDate,
+}
+
+impl ClosedPostingPeriod {
+    pub(super) fn public_error(error: CliError) -> CliError {
+        match error {
+            CliError::PeriodLocked(period) => CliError::Validation(period.to_string()),
+            error => error,
+        }
+    }
+}
+
+impl fmt::Display for ClosedPostingPeriod {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "transaction date {} is in a closed period for company '{}' (closed through {}); use period reopen with a reason to unlock it",
+            self.date, self.company, self.cutoff,
+        )
+    }
+}
+
+impl std::error::Error for ClosedPostingPeriod {}
 
 /// Check that the company can accept a posting on this date.
 ///
@@ -309,13 +338,23 @@ pub fn ensure_open(
     company: &crate::db::companies::CompanySlug,
     date: NaiveDate,
 ) -> Result<(), CliError> {
+    check_open_date(conn, company, date).map_err(ClosedPostingPeriod::public_error)
+}
+
+fn check_open_date(
+    conn: ReadConn<'_>,
+    company: &crate::db::companies::CompanySlug,
+    date: NaiveDate,
+) -> Result<(), CliError> {
     if let Some(cutoff) = get(&crate::db::companies::Company::bind(conn, company.clone())?)?
         .and_then(|lock| lock.closed_through())
         && date <= cutoff.date()
     {
-        return Err(CliError::Validation(format!(
-            "transaction date {date} is in a closed period for company '{company}' (closed through {cutoff}); use period reopen with a reason to unlock it"
-        )));
+        return Err(CliError::PeriodLocked(ClosedPostingPeriod {
+            company: company.clone(),
+            date,
+            cutoff,
+        }));
     }
     Ok(())
 }

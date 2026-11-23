@@ -167,6 +167,69 @@ fn decode_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
     })
 }
 
+/// Whether this account can receive ordinary new postings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountStatus {
+    /// Available for new postings and categorization.
+    Active,
+    /// Retained for reporting and audited reversals.
+    Archived,
+}
+
+/// Return the current posting status of a company account.
+///
+/// # Errors
+/// Returns a not-found or storage error.
+pub fn account_status(company: &Company<'_>, code: &str) -> Result<AccountStatus, CliError> {
+    find_status(company, code)?.ok_or_else(|| {
+        CliError::NotFound(format!(
+            "account '{code}' not found in company '{}'",
+            company.slug()
+        ))
+    })
+}
+
+pub(super) fn find_status(
+    company: &Company<'_>,
+    code: &str,
+) -> Result<Option<AccountStatus>, CliError> {
+    use rusqlite::OptionalExtension as _;
+    Ok(company
+        .read()
+        .query_row(
+            "SELECT archived FROM accounts WHERE company_slug = ?1 AND code = ?2",
+            params![company.slug(), code],
+            |row| {
+                row.get::<_, bool>(0).map(|archived| {
+                    if archived {
+                        AccountStatus::Archived
+                    } else {
+                        AccountStatus::Active
+                    }
+                })
+            },
+        )
+        .optional()?)
+}
+
+pub(crate) fn require_active(company: &Company<'_>, code: &str) -> Result<(), CliError> {
+    match account_status(company, code)? {
+        AccountStatus::Active => Ok(()),
+        AccountStatus::Archived => Err(CliError::Validation(format!(
+            "account '{code}' in company '{}' is archived",
+            company.slug()
+        ))),
+    }
+}
+
+pub(crate) fn get_active_account(
+    company: &Company<'_>,
+    code: &str,
+) -> Result<AccountRow, CliError> {
+    require_active(company, code)?;
+    get_account(company, code)
+}
+
 /// Returns `true` if an account with the given code exists for the company.
 ///
 /// # Errors
