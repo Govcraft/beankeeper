@@ -701,8 +701,8 @@ or `inform_preference_set` with
 `{"company":"acme","preference":"daily-digest"}`.
 
 ```bash
-bk --company acme bookkeeping-policy set sales-tax track-liability
-bk --company acme bookkeeping-policy set processor-fees separate-expense
+bk --company acme bookkeeping-policy set sales-tax=track-liability
+bk --company acme bookkeeping-policy set processor-fees=separate-expense
 bk --company acme inform-preference set daily-digest
 ```
 

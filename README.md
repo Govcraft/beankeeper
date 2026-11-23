@@ -1066,8 +1066,8 @@ Agents can call `rule_list`, `rule_create`, `rule_amend`, `rule_match` and
 
 ```sh
 bk --company personal bookkeeping-policy show
-bk --company personal bookkeeping-policy set sales-tax track-liability
-bk --company personal bookkeeping-policy set processor-fees separate-expense
+bk --company personal bookkeeping-policy set sales-tax=track-liability
+bk --company personal bookkeeping-policy set processor-fees=separate-expense
 bk --company personal inform-preference show
 bk --company personal inform-preference set daily-digest
 ```

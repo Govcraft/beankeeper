@@ -10,9 +10,7 @@ use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::rules::{DescriptionPattern, RuleId, RulePriority, RuleTerms};
-use crate::db::standing::{
-    BookkeepingPolicy, InformPreference, ProcessorFeeHandling, SalesTaxTreatment,
-};
+use crate::db::standing::{BookkeepingPolicy, InformPreference};
 use crate::db::{ActorLabel, BlankActorLabel};
 use crate::error::CliError;
 use crate::identity::WriteMode;
@@ -1030,26 +1028,10 @@ pub enum BookkeepingPolicyCommand {
     /// Show both standing bookkeeping instructions.
     Show,
     /// Set or amend one standing bookkeeping instruction.
-    #[command(subcommand)]
-    Set(BookkeepingPolicyArgs),
-}
-
-/// Pick the company's instruction to change.
-#[derive(Subcommand, Debug)]
-pub enum BookkeepingPolicyArgs {
-    /// Choose unset, track-liability, marketplace-remitted, or not-applicable.
-    SalesTax { value: SalesTaxTreatment },
-    /// Choose unset, separate-expense, or net-from-revenue.
-    ProcessorFees { value: ProcessorFeeHandling },
-}
-
-impl From<&BookkeepingPolicyArgs> for BookkeepingPolicy {
-    fn from(args: &BookkeepingPolicyArgs) -> Self {
-        match *args {
-            BookkeepingPolicyArgs::SalesTax { value } => Self::SalesTax(value),
-            BookkeepingPolicyArgs::ProcessorFees { value } => Self::ProcessorFees(value),
-        }
-    }
+    Set {
+        /// A sales-tax=VALUE or processor-fees=VALUE instruction. Use unset to clear it.
+        policy: BookkeepingPolicy,
+    },
 }
 
 /// Manage a company's owner inform preference.

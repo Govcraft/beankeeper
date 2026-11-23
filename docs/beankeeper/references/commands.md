@@ -1618,8 +1618,8 @@ An account cannot be deleted while an active rule references it.
 ## Standing bookkeeping and inform preferences
 
 Use `bk --company COMPANY bookkeeping-policy show` to read both instructions.
-Use `bk --company COMPANY bookkeeping-policy set sales-tax VALUE` or
-`bk --company COMPANY bookkeeping-policy set processor-fees VALUE` to set one.
+Use `bk --company COMPANY bookkeeping-policy set sales-tax=VALUE` or
+`bk --company COMPANY bookkeeping-policy set processor-fees=VALUE` to set one.
 
 | Policy kind | Values |
 |---|---|

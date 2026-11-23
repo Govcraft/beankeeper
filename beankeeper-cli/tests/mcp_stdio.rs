@@ -5480,7 +5480,7 @@ mod catalog_payload_parity {
             json!({"preference":"per-change"})
         );
 
-        let tax = run(&["bookkeeping-policy", "set", "sales-tax", "track-liability"])?;
+        let tax = run(&["bookkeeping-policy", "set", "sales-tax=track-liability"])?;
         assert_eq!(
             tax,
             json!({"sales_tax":"track-liability", "processor_fees":"unset"})

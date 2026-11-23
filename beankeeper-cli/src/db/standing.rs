@@ -110,6 +110,20 @@ pub enum BookkeepingPolicy {
     ProcessorFees(ProcessorFeeHandling),
 }
 
+impl FromStr for BookkeepingPolicy {
+    type Err = CliError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.split_once('=') {
+            Some(("sales-tax", value)) => value.parse().map(Self::SalesTax),
+            Some(("processor-fees", value)) => value.parse().map(Self::ProcessorFees),
+            _ => Err(CliError::Validation(
+                "expected sales-tax=VALUE or processor-fees=VALUE".into(),
+            )),
+        }
+    }
+}
+
 /// The current standing bookkeeping instructions for a company.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BookkeepingPolicies {

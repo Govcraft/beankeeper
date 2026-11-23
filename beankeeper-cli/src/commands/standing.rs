@@ -19,7 +19,7 @@ impl BookkeepingPolicyCommand {
     pub(crate) const fn operation(&self) -> Operation {
         match self {
             Self::Show => Operation::BookkeepingPolicyShow,
-            Self::Set(_) => Operation::BookkeepingPolicySet,
+            Self::Set { .. } => Operation::BookkeepingPolicySet,
         }
     }
 }
@@ -43,10 +43,10 @@ pub enum StandingRequest {
 
 impl From<(&CompanySlug, &BookkeepingPolicyCommand)> for StandingRequest {
     fn from((company, command): (&CompanySlug, &BookkeepingPolicyCommand)) -> Self {
-        match command {
+        match *command {
             BookkeepingPolicyCommand::Show => Self::ShowBookkeeping(company.clone()),
-            BookkeepingPolicyCommand::Set(policy) => {
-                Self::SetBookkeeping(company.clone(), policy.into())
+            BookkeepingPolicyCommand::Set { policy } => {
+                Self::SetBookkeeping(company.clone(), policy)
             }
         }
     }
