@@ -6,6 +6,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Changed
+
+- Regular PRs can record a change under Unreleased without a version bump. Release PRs still require a matching dated section for the proposed CLI tag. ([#268](https://github.com/Govcraft/beankeeper/issues/268))
+
 ## [0.39.0] - Unreleased
 
 ### Added
