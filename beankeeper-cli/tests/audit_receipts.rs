@@ -243,12 +243,9 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
     Granted::<Admin>::with_db(&books.db, &books.local, identity::init_root)?;
     let owner = books.credential("owner", Capability::Admin)?;
     let agent = books.credential("reversal", Capability::Reverse)?;
+    let terms = ("supplies".parse()?, "5000".parse()?, Some(10.into())).into();
     let rule = Granted::<Post>::with_db(&books.db, &books.local, |grant| {
-        rules::create_rule(
-            grant,
-            &books.company,
-            ("supplies".parse()?, "5000".parse()?, Some(10.into())).into(),
-        )
+        rules::create_rule(grant, &books.company, terms)
     })?;
     let transaction = books.post(&books.db, "ORDER-1")?;
     let page = books.receipts()?;
@@ -268,7 +265,7 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
             &books.company,
             id_of(ReceiptTarget::Other {
                 entity: AuditEntity::Rule,
-                key: rule.id.to_string().into(),
+                key: rule.id().to_string().into(),
             })?,
         ),
         ErrorCode::UndoUnsupported,
@@ -363,19 +360,16 @@ fn assert_archived_account(books: &Books, transaction: TransactionId) -> TestRes
     assert_eq!(db::get_account(&scope, "5000")?.name, "5000");
     assert_eq!(db::get_transaction(&scope, transaction)?.1.len(), 2);
     assert_eq!(rules::list_rules(&scope)?.len(), 1);
-    assert!(rules::list_active_rules(&scope)?.is_empty());
+    assert_eq!(rules::list_active_rules(&scope)?, []);
     let posting_failure = books
         .post(&books.db, "AFTER-ARCHIVE")
         .err()
         .ok_or("archived account accepted a post")?;
     assert!(posting_failure.to_string().contains("archived"));
+    let terms = ("another".parse()?, "5000".parse()?, Some(10.into())).into();
     assert!(
         Granted::<Post>::with_db(&books.db, &books.local, |grant| {
-            rules::create_rule(
-                grant,
-                &books.company,
-                ("another".parse()?, "5000".parse()?, Some(10.into())).into(),
-            )
+            rules::create_rule(grant, &books.company, terms)
         })
         .is_err()
     );

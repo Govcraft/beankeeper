@@ -347,7 +347,7 @@ fn cli_and_mcp_audit_show_the_same_unverified_runtime_hint() -> TestResult {
         assert_eq!(row["actor"], "configured-operator");
         assert!(row["agent_uri"].is_null());
         assert!(row["token_jti"].is_null());
-        assert_eq!(row["hash_version"], 6);
+        assert_eq!(row["hash_version"], 7);
         assert_eq!(
             row["client_hint"],
             json!({
@@ -770,6 +770,15 @@ const LEDGER_TOOLS: &[&str] = &[
     "ledger_setup_statement_preview",
     "ledger_setup_statement_commit",
     "ledger_setup_statement_receipt",
+    "rule_list",
+    "rule_match",
+    "rule_create",
+    "rule_amend",
+    "rule_delete",
+    "bookkeeping_policy_show",
+    "bookkeeping_policy_set",
+    "inform_preference_show",
+    "inform_preference_set",
     "budget_list",
     "budget_set",
     "budget_delete",
@@ -5538,7 +5547,7 @@ mod catalog_payload_parity {
             decode_snapshot(&audit[0]["after"])?,
             json!({"kind":"sales-tax","value":"unset"})
         );
-        assert_eq!(audit[0]["hash_version"], 6);
+        assert_eq!(audit[0]["hash_version"], 7);
         let audit = client.success(
             "audit_log",
             &json!({"company":"acme","entity":"inform_preference"}),

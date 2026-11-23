@@ -1072,7 +1072,7 @@ object. Example excerpt from a ledger with one company and one posting:
 
 ```json
 {
-  "schema_version": 26,
+  "schema_version": 27,
   "status": "healthy",
   "companies": [{
     "company": "acme",
@@ -1443,9 +1443,9 @@ With `--agent-token` / `BK_AGENT_TOKEN`, envelopes add `meta.agent` containing
 the verified `agent://` URI. It is absent without a token, and unverified input
 is never echoed into metadata. Transaction show/list data and audit rows add
 nullable `agent_uri` and `token_jti`. Named `posted_by`/`actor` retain their
-meaning. Audit rows also include `hash_version`. Versions 2 through 5 include
-nullable identity in the hash payload. New rows use version 5, which also
-covers the nullable client hint. See [audit integrity](../../audit-integrity.md).
+meaning. Audit rows also include `hash_version`. Versions 2 through 7 include
+nullable identity in the hash payload. New rows use version 7, which also covers
+the nullable client hint and receipt links. See [audit integrity](../../audit-integrity.md).
 
 `key.init`, `agent.issue`, `agent.list`, `agent.revoke` use the normal envelope.
 See [the command reference](commands.md#agent-identity) for their data fields.

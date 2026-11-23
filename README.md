@@ -527,6 +527,10 @@ mutation tools are absent and cannot be called.
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `ledger_setup_book_show` | Read a book's current profile, fiscal year, base currency, and named accounts |
 | `report` | Run CLI reports |
+| `rule_list`, `rule_create`, `rule_amend`, `rule_delete` | Read and manage company categorization rules with audit history |
+| `rule_match` | Preview the winning rule for a candidate description |
+| `bookkeeping_policy_show`, `bookkeeping_policy_set` | Read or save standing sales-tax and processor-fee instructions |
+| `inform_preference_show`, `inform_preference_set` | Read or save how often the owner hears about completed changes |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
 

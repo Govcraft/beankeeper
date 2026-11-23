@@ -328,6 +328,7 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
              DROP TRIGGER protect_archived_account_insert;
              DROP TRIGGER protect_account_archive;
              ALTER TABLE accounts DROP COLUMN archived;
+             DROP TABLE standing_settings;
              DROP TABLE setup_statement_batches;
              DROP TABLE setup_requests;
              DROP TABLE setup_book_profiles;

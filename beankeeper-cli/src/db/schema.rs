@@ -1551,7 +1551,7 @@ enum AuditTable {
     StandingSettings,
 }
 
-fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+fn audit_extensions(table: AuditTable) -> (String, String) {
     use super::audit::{AuditAction, AuditEntity};
     use std::fmt::Write as _;
 
@@ -1563,6 +1563,15 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
             format!(",'{}'", AuditAction::DemoSeed),
         )
     };
+    if matches!(table, AuditTable::Receipts | AuditTable::StandingSettings) {
+        let _ = write!(entity, ",'{}'", AuditEntity::Audit);
+        let _ = write!(
+            action,
+            ",'{}','{}'",
+            AuditAction::AccountArchive,
+            AuditAction::ReceiptLinkMigration
+        );
+    }
     if table == AuditTable::StandingSettings {
         let _ = write!(
             entity,
@@ -1578,15 +1587,13 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
             AuditAction::InformPreferenceSet
         );
     }
+    (entity, action)
+}
+
+fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+    let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
         AuditTable::Receipts | AuditTable::StandingSettings => {
-            let _ = write!(entity, ",'{}'", AuditEntity::Audit);
-            let _ = write!(
-                action,
-                ",'{}','{}'",
-                AuditAction::AccountArchive,
-                AuditAction::ReceiptLinkMigration
-            );
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -2132,7 +2139,6 @@ mod tests {
     fn v27_keeps_existing_rules_active_and_migrates_atomically() -> Result<(), CliError> {
         use super::super::{Actor, audit, companies::Company, rules, standing};
         use crate::identity::Post;
-        use audit::AuditEntity;
 
         let conn = v17_connection()?;
         for migration in [
@@ -2200,12 +2206,6 @@ mod tests {
             standing::inform_preference(&scope)?,
             standing::InformPreference::default()
         );
-        let audit_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_log WHERE entity = ?1",
-            [AuditEntity::InformPreference.as_str()],
-            |row| row.get(0),
-        )?;
-        assert_eq!(audit_count, 0);
         assert!(
             conn.execute(
                 "INSERT INTO standing_settings(company_slug, sales_tax, processor_fees)

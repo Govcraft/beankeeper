@@ -154,7 +154,7 @@ impl Rule {
         terms: RuleTerms,
         supersedes: Option<RuleId>,
     ) -> Result<Self, CliError> {
-        accounts::get_active_account(company, terms.account_code.as_str())?;
+        accounts::require_active(company, terms.account_code.as_str())?;
         Ok(Self {
             id: RuleId::generate(),
             company_slug: company.slug().clone(),

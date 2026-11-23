@@ -282,6 +282,12 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `ledger_setup_book_show` | `company`; returns the current profile and chart of accounts |
 | `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
+| `rule_list` | `company`. Return active rules in evaluation order |
+| `rule_match` | `company` and `description`. Preview the winning rule |
+| `rule_create`, `rule_amend` | `company`, `contains`, `account`, optional `priority`. Amend also takes the active `id` |
+| `rule_delete` | `company` and active `id`. Record the last rule version in the audit trail |
+| `bookkeeping_policy_show`, `bookkeeping_policy_set` | `company`. Set also takes a `policy` object with `kind` and `value` |
+| `inform_preference_show`, `inform_preference_set` | `company`. Set also takes a `preference` |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
 | `txn_reconcile` | No arguments; checks orphaned intercompany links without changing data; requires `ledger/reconcile` under enforcement and is omitted by `--read-only` |
@@ -1739,7 +1745,7 @@ All support `--json`. Issue data includes `agent_uri`, `token_jti`, `agent_key`,
 `capabilities`, `issued_at`, `expires_at`, `token`, plus `private_key` only when
 requested. JSON envelopes add `meta.agent` when a valid token is supplied.
 `txn show`/`list` and audit rows expose nullable `agent_uri`/`token_jti`;
-audit rows also expose `hash_version` (1 for historical rows, 2 for preserved identity rows, 3 for new rows).
+audit rows expose their recorded `hash_version`. Schema v27 writes version 7.
 Audit filters also support entities `key`, `agent` and actions `create`,
 `key-init`, `token-issue`, `token-revoke`, `attach` (JSON uses underscores).
 
