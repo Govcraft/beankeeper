@@ -109,6 +109,8 @@ writes. Back up before schema v18 upgrades: existing hashes remain intact, but
 older binaries cannot append the new v3 audit format. `init --force` requires an
 admin to disable enforcement first. See
 [agent identity setup, capability map, and limits](docs/agent-identity.md).
+Embedded hosts can
+[rotate a managed credential atomically and recover by token ID](docs/agent-identity.md#rotate-a-managed-credential-in-an-embedded-host).
 
 ### Period close and locking
 
