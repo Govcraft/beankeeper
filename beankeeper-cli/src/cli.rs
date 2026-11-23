@@ -12,6 +12,7 @@ use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::{ActorLabel, BlankActorLabel};
 use crate::error::CliError;
 use crate::identity::WriteMode;
+use crate::ledger_target::{LedgerPath, LedgerPaths, LedgerTarget};
 use crate::operation::Operation;
 
 /// Double-entry accounting on the command line.
@@ -41,6 +42,17 @@ pub struct Cli {
         default_value = "beankeeper.db"
     )]
     pub db: PathBuf,
+
+    /// Bind a ledger name to a local path (TARGET=PATH, repeatable).
+    #[arg(long = "ledger", global = true, value_name = "TARGET=PATH")]
+    ledger_bindings: Vec<LedgerPath>,
+
+    /// Select a ledger for local commands and stdio MCP.
+    #[arg(long, global = true)]
+    ledger_target: Option<LedgerTarget>,
+
+    #[arg(skip)]
+    ledger_paths: OnceCell<LedgerPaths>,
 
     /// Company slug.
     #[arg(long, env = "BEANKEEPER_COMPANY")]
@@ -160,18 +172,44 @@ pub struct PassphraseOptions {
 }
 
 impl Cli {
-    /// Database destination supplied by an explicit `--db` argument.
-    pub(crate) fn explicit_db(&self) -> Option<&Path> {
-        match self.db_source {
-            DbSource::Explicit => Some(&self.db),
-            DbSource::Implicit => None,
+    /// Resolve the selected ledger to its operator-configured local path.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid binding set or an unregistered target.
+    pub fn db_path(&self) -> Result<&Path, CliError> {
+        self.ledger_paths()?
+            .resolve(&self.ledger_target(), &self.db)
+    }
+
+    pub(crate) fn ledger_target(&self) -> LedgerTarget {
+        self.ledger_target.clone().unwrap_or_default()
+    }
+
+    pub(crate) fn ledger_paths(&self) -> Result<&LedgerPaths, CliError> {
+        if let Some(paths) = self.ledger_paths.get() {
+            return Ok(paths);
         }
+        let paths = LedgerPaths::try_from(self.ledger_bindings.as_slice())?;
+        Ok(self.ledger_paths.get_or_init(|| paths))
+    }
+
+    /// Database destination supplied by an explicit path or named binding.
+    pub(crate) fn explicit_db(&self) -> Result<Option<&Path>, CliError> {
+        if self.ledger_target() != LedgerTarget::default()
+            || matches!(self.db_source, DbSource::Explicit)
+        {
+            return self.db_path().map(Some);
+        }
+        Ok(None)
     }
 
     pub(crate) fn for_mcp(command: Command, chart: bool, chart_all: bool) -> Self {
         Self {
             db: PathBuf::new(),
             db_source: DbSource::Implicit,
+            ledger_bindings: Vec::new(),
+            ledger_target: None,
+            ledger_paths: OnceCell::new(),
             company: None,
             actor: None,
             agent_token: None,
@@ -202,7 +240,7 @@ impl Cli {
     /// # Errors
     /// Returns passphrase, database or unauthorized errors.
     pub fn open_db(&self) -> Result<crate::db::Db, CliError> {
-        let db = crate::db::Db::open_existing(&self.db, self.resolve_passphrase()?)?;
+        let db = crate::db::Db::open_existing(self.db_path()?, self.resolve_passphrase()?)?;
         self.verify_agent(&db)?;
         Ok(db)
     }
@@ -275,7 +313,7 @@ pub enum McpCommand {
         #[arg(long)]
         read_only: bool,
         /// Use Streamable HTTP at /mcp instead of stdin/stdout.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "ledger_target")]
         http: bool,
         /// HTTP listen address [default: 127.0.0.1:8750].
         #[arg(long, requires = "http")]
@@ -464,7 +502,7 @@ EXAMPLES:\n  \
         encrypt: bool,
 
         /// Database file path (overrides --db).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "ledger_target")]
         path: Option<PathBuf>,
 
         /// Overwrite existing database.

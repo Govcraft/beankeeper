@@ -105,20 +105,14 @@ pub(super) struct HostServer<H> {
 }
 
 impl<H> HostServer<H> {
-    async fn identity(
-        &self,
-        context: &RequestContext<RoleServer>,
-    ) -> Result<VerifiedAgent, CliError> {
-        let identity = super::http_identity(context)?.clone();
-        let db = self.ledger.db.clone();
+    async fn live_identity(call: http::AuthenticatedLedger) -> Result<VerifiedAgent, CliError> {
         tokio::task::spawn_blocking(move || {
-            let db = db
-                .lock()
-                .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
+            let db = call.ledger().lock()?;
             db.read_snapshot(|reader| {
                 crate::db::policy::get(reader)?;
+                let identity = call.identity();
                 identity.check_live(reader)?;
-                Ok(Arc::unwrap_or_clone(identity))
+                Ok(identity.clone())
             })
         })
         .await
@@ -132,13 +126,16 @@ impl<H: HostToolHandler> ServerHandler for HostServer<H> {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let identity = self
-            .identity(&context)
-            .await
-            .map_err(|error| http::protocol_error(&error))?;
+        let call = http::authenticated_ledger(&context)
+            .map_err(|error| http::protocol_error(&error))?
+            .clone();
         let mut result = self.ledger.list_tools(request, context).await?;
+        if !call.ledger().is_startup() {
+            return Ok(result);
+        }
         for entry in self.tools.iter() {
-            if identity
+            if call
+                .identity()
                 .allows(entry.capability)
                 .map_err(|error| http::protocol_error(&error))?
             {
@@ -160,7 +157,12 @@ impl<H: HostToolHandler> ServerHandler for HostServer<H> {
         else {
             return self.ledger.call_tool(request, context).await;
         };
-        let identity = match self.identity(&context).await {
+        let call = match http::authenticated_ledger(&context) {
+            Ok(call) if call.ledger().is_startup() => call,
+            Ok(_) => return self.ledger.call_tool(request, context).await,
+            Err(error) => return Ok(tool_error(&error).into()),
+        };
+        let identity = match Self::live_identity(call.clone()).await {
             Ok(identity) => identity,
             Err(error) => return Ok(tool_error(&error).into()),
         };

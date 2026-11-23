@@ -6,6 +6,16 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.31.0] - Unreleased
+
+### Added
+
+- Authenticated MCP clients can select a registered ledger for each request on
+  an existing HTTP session. Beankeeper verifies the bearer and applies its
+  signed write mode against that ledger. Hosts can register opened ledgers
+  while clients are connected, and local CLI commands use the same target names.
+  ([#246](https://github.com/Govcraft/beankeeper/issues/246))
+
 ## [0.30.1] - Unreleased
 
 ### Fixed

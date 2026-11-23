@@ -406,7 +406,11 @@ fn run_status(cli: &Cli) -> Result<(), CliError> {
 }
 
 fn open_setup_snapshot(cli: &Cli) -> Result<Db, CliError> {
-    Db::open_compatible_snapshot(&cli.db, cli.resolve_passphrase()?, OLDEST_SETUP_READ_SCHEMA)
+    Db::open_compatible_snapshot(
+        cli.db_path()?,
+        cli.resolve_passphrase()?,
+        OLDEST_SETUP_READ_SCHEMA,
+    )
 }
 
 fn run_book_show(cli: &Cli, company: &CompanySlug) -> Result<(), CliError> {

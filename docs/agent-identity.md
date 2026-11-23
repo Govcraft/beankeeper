@@ -317,9 +317,12 @@ For Streamable HTTP, launch `bk mcp serve --http`, defaulting to
 `Authorization: Bearer <token>`, including initialize, notifications, GET, and
 DELETE. HTTP always requires verification even when ledger enforcement is off.
 The process can start without a token so multiple agents can connect with their
-own credentials. `--agent-token` / `BK_AGENT_TOKEN` is used only when a request
-has no Authorization header; invalid explicit headers are rejected rather than
-falling back. HTTP does not bind permissions to an MCP session ID.
+own credentials. `--agent-token` / `BK_AGENT_TOKEN` is a fallback for startup
+ledger requests with no Authorization header. Invalid explicit headers return
+HTTP 401. Each request uses the selected ledger's trust root and token registry.
+For a named target, send `Beankeeper-Ledger-Target: TARGET` and a bearer from
+that ledger. One MCP session can carry requests for different ledgers. See
+[ledger selection](beankeeper/references/commands.md#select-a-ledger).
 
 Missing, malformed, expired, revoked, and untrusted credentials return HTTP 401
 with `{code: "UNAUTHORIZED", message}` and `WWW-Authenticate: Bearer`. There is no

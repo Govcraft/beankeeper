@@ -63,6 +63,47 @@ arguments, and implement only the named authorized action. The host callback is
 async and runs outside the ledger transaction; the identity is a snapshot at
 dispatch, so do not cache it as authority for later requests.
 
+## Dispatch to another ledger
+
+Use `http_router_with_ledger_targets` to serve built-in tools against multiple
+opened ledgers on the same MCP endpoint. Construct `LedgerTargets::new(startup)`
+with the primary `Db` and pass a clone to the router factory. Keep the original
+to register additional ledgers as they become available, even after clients
+initialize a session.
+
+```rust
+use beankeeper_cli::{db::Db, mcp::{LedgerTargets, http_router_with_ledger_targets}};
+
+let startup = Db::open_existing(books_path, Some(&books_key))?;
+let targets = LedgerTargets::new(startup);
+let router = http_router_with_ledger_targets(&cli, targets.clone(), false, config, host)?;
+
+// The host can do this later, using a separately initialized demo ledger.
+let demo = Db::open_existing(demo_path, Some(&demo_key))?;
+targets.register("demo".parse()?, demo)?;
+```
+
+Send `Beankeeper-Ledger-Target: demo` with the demo ledger's bearer on each
+`tools/list` or `tools/call` request that targets it. Reuse the existing
+`Mcp-Session-Id`. Trusted axum middleware can instead insert a typed
+`LedgerTarget` into the request extensions, which takes precedence over the
+header. With neither selector, the request uses `LedgerTarget::default()`
+(`startup`).
+
+Each ledger has its own trust root and registry. For a newly initialized
+encrypted demo ledger, initialize its root and issue its grants before serving
+it. Beankeeper verifies the selected ledger's bearer and rechecks its live
+revocations, grant requirements, and policy in the same snapshot or write
+transaction that executes the tool. Direct grants use the ordinary posting path,
+and signed propose-only grants queue a proposal. Audit entries carry the
+verified caller's attribution. The read-only ceiling applies to every target.
+
+Use startup credentials and select the startup ledger for application host tools.
+The configured token fallback also applies there. Multi-ledger endpoints disable
+SSE replay with `Last-Event-ID` because the transport cache is session-scoped.
+For a lost response to a write, use the tool's existing idempotency mechanism
+or check the selected ledger before retrying.
+
 ## Example host
 
 This example queues a typed navigation request for an application's UI loop.

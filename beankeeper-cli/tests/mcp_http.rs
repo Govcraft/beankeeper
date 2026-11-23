@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use beankeeper_cli::db::{self, Actor, Db};
 use beankeeper_cli::identity::{self, Admin, Granted, IssueRequest};
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
@@ -792,6 +792,17 @@ fn embedded_request(
     method: &str,
     params: Value,
 ) -> TestResult<Response> {
+    Ok(embedded_rpc(client, endpoint, session, token, method, params).send()?)
+}
+
+fn embedded_rpc(
+    client: &Client,
+    endpoint: &str,
+    session: Option<&str>,
+    token: Option<&str>,
+    method: &str,
+    params: Value,
+) -> RequestBuilder {
     let mut body = json!({"jsonrpc":"2.0", "id":1, "method":method});
     body["params"] = params;
     let mut request = client
@@ -805,7 +816,7 @@ fn embedded_request(
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
-    Ok(request.send()?)
+    request
 }
 
 fn exercise_embedded_router(read_only: bool) -> TestResult {
@@ -1281,6 +1292,283 @@ fn resolved_http_router_rejects_missing_and_incorrect_keys_without_creating_a_le
 
 struct TestHost {
     calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[test]
+fn embedded_session_dispatches_against_a_ledger_registered_after_initialization() -> TestResult {
+    use axum::{
+        extract::Request,
+        middleware::{self, Next},
+    };
+    use beankeeper_cli::identity::WriteMode;
+    use beankeeper_cli::mcp::{LedgerTarget, LedgerTargets, http_router_with_ledger_targets};
+    use secrecy::ExposeSecret as _;
+
+    let startup = Ledger::new()?;
+    let demo = Ledger::new()?;
+    let targets = LedgerTargets::new(startup.db()?);
+    let target: LedgerTarget = "demo".parse()?;
+    let proposer = Granted::<Admin>::with_db(&demo.db()?, &demo.owner, |grant| {
+        identity::issue_credential_with_mode(
+            grant,
+            &IssueRequest {
+                name: "demo_proposer",
+                capabilities: &["ledger/read".into(), "ledger/post".into()],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+            WriteMode::ProposeOnly,
+        )
+    })?;
+    exercise_router_with_check(
+        &startup,
+        false,
+        |cli, config| {
+            let host = TestHost {
+                calls: std::sync::Arc::default(),
+            };
+            let selected = target.clone();
+            let app = http_router_with_ledger_targets(cli, targets.clone(), false, config, host)?;
+            Ok(app.layer(middleware::from_fn(
+                move |mut request: Request, next: Next| {
+                    if request.headers().contains_key("x-test-host-selection") {
+                        request.extensions_mut().insert(selected.clone());
+                    }
+                    async move { next.run(request).await }
+                },
+            )))
+        },
+        |client, endpoint| {
+            let session = initialize_embedded_router(client, endpoint)?;
+            targets.register(target.clone(), demo.db()?)?;
+            verify_selected_ledger(
+                &TargetSession {
+                    client,
+                    endpoint,
+                    id: &session,
+                },
+                &startup,
+                &demo,
+                proposer.token().expose_secret(),
+                proposer.agent_uri.as_str(),
+            )
+        },
+    )
+}
+
+struct TargetSession<'a> {
+    client: &'a Client,
+    endpoint: &'a str,
+    id: &'a str,
+}
+
+impl TargetSession<'_> {
+    fn request(&self, method: &str, params: Value, bearer: Option<&str>) -> RequestBuilder {
+        embedded_rpc(
+            self.client,
+            self.endpoint,
+            Some(self.id),
+            bearer,
+            method,
+            params,
+        )
+    }
+
+    fn call(&self, name: &str, arguments: &Value, bearer: Option<&str>) -> TestResult<Value> {
+        use beankeeper_cli::mcp::LEDGER_TARGET_HEADER;
+        rpc(self
+            .request(
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+                bearer,
+            )
+            .header(LEDGER_TARGET_HEADER, "demo")
+            .send()?)
+    }
+}
+
+fn verify_selected_ledger(
+    session: &TargetSession<'_>,
+    startup: &Ledger,
+    demo: &Ledger,
+    proposer: &str,
+    proposer_uri: &str,
+) -> TestResult {
+    use beankeeper_cli::mcp::LEDGER_TARGET_HEADER;
+
+    let direct = token(&demo.writer)?;
+    let discovery = |bearer| session.request("tools/list", json!({}), bearer);
+    let listed = rpc(discovery(Some(proposer))
+        .header(LEDGER_TARGET_HEADER, "missing")
+        .header("x-test-host-selection", "1")
+        .send()?)?;
+    let tools = listed["result"]["tools"].as_array().ok_or("tools")?;
+    assert!(tools.iter().any(|tool| tool["name"] == "txn_post"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "txn_approve"));
+    let posted = payload(&session.call("txn_post", &posting("demo-direct"), Some(direct))?)?;
+    assert_eq!(posted["created"], true);
+    let pending = payload(&session.call("txn_post", &posting("demo-pending"), Some(proposer))?)?;
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(pending["proposer_uri"], proposer_uri);
+    let ledger = demo.db()?;
+    let attribution: (String, String) = ledger.read().query_row(
+        "SELECT agent_uri, token_jti FROM transactions WHERE reference = 'demo-direct'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(attribution.0, demo.writer["agent_uri"]);
+    assert_eq!(attribution.1, demo.writer["token_jti"]);
+    let list = json!({"name":"txn_list", "arguments":{"company":"acme"}});
+    let startup_rows = rpc(session.request("tools/call", list.clone(), None).send()?)?;
+    assert_eq!(payload(&startup_rows)?, json!([]));
+    let demo_rows = payload(&session.call("txn_list", &list["arguments"], Some(direct))?)?;
+    assert_eq!(demo_rows.as_array().map(Vec::len), Some(1));
+    assert_eq!(demo_rows[0]["id"], posted["id"]);
+    assert!(
+        session
+            .call("host_post", &json!({}), Some(direct))?
+            .get("error")
+            .is_some()
+    );
+
+    demo.enforce()?;
+    let forbidden = session.call(
+        "txn_post",
+        &posting("demo-forbidden"),
+        Some(token(&demo.reader)?),
+    )?;
+    assert_eq!(payload(&forbidden)?["code"], "FORBIDDEN");
+    demo.revoke(demo.writer["token_jti"].as_str().ok_or("jti")?)?;
+    let revoked = session
+        .request(
+            "tools/call",
+            json!({"name":"txn_post", "arguments":posting("demo-revoked")}),
+            Some(direct),
+        )
+        .header(LEDGER_TARGET_HEADER, "demo")
+        .send()?;
+    assert_eq!(revoked.status(), 401);
+    assert_eq!(revoked.json::<Value>()?["code"], "UNAUTHORIZED");
+    assert_target_rejections(session, token(&startup.writer)?)
+}
+
+fn assert_target_rejections(session: &TargetSession<'_>, startup_token: &str) -> TestResult {
+    use beankeeper_cli::mcp::LEDGER_TARGET_HEADER;
+
+    let discovery = |bearer| session.request("tools/list", json!({}), bearer);
+    for (name, bearer, status) in [
+        ("../demo", Some(startup_token), 400),
+        ("missing", Some(startup_token), 404),
+        ("demo", Some(startup_token), 401),
+        ("demo", None, 401),
+    ] {
+        let response = discovery(bearer)
+            .header(LEDGER_TARGET_HEADER, name)
+            .send()?;
+        assert_eq!(response.status(), status);
+    }
+    assert_eq!(
+        discovery(Some(startup_token))
+            .header(LEDGER_TARGET_HEADER, "startup")
+            .header(LEDGER_TARGET_HEADER, "demo")
+            .send()?
+            .status(),
+        400
+    );
+    assert_eq!(
+        session
+            .client
+            .get(session.endpoint)
+            .header("Accept", "text/event-stream")
+            .header("Mcp-Session-Id", session.id)
+            .header("Last-Event-ID", "0")
+            .bearer_auth(startup_token)
+            .send()?
+            .status(),
+        405
+    );
+    Ok(())
+}
+
+#[test]
+fn cli_selects_a_named_ledger_and_rejects_unknown_targets() -> TestResult {
+    let startup = Ledger::new()?;
+    let demo = Ledger::new()?;
+    let binding = format!("demo={}", demo.path.display());
+    let run = |target: &str| -> TestResult<std::process::Output> {
+        startup
+            .command()
+            .args([
+                "--ledger",
+                &binding,
+                "--ledger-target",
+                target,
+                "--json",
+                "company",
+                "list",
+                "--agent-token",
+                token(&demo.writer)?,
+            ])
+            .output()
+            .map_err(Into::into)
+    };
+    let selected = run("demo")?;
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&selected.stdout)?["data"][0]["slug"],
+        "acme"
+    );
+    let unknown = run("missing")?;
+    assert_eq!(unknown.status.code(), Some(5));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&unknown.stderr)?["error"]["code"],
+        "NOT_FOUND"
+    );
+    assert_eq!(run("startup")?.status.code(), Some(6));
+    Ok(())
+}
+
+#[test]
+fn cli_http_registrations_keep_the_read_only_ceiling() -> TestResult {
+    use beankeeper_cli::mcp::LEDGER_TARGET_HEADER;
+
+    let startup = Ledger::new()?;
+    let demo = Ledger::new()?;
+    let startup_token = token(&startup.writer)?;
+    let demo_token = token(&demo.writer)?;
+    let mut command = startup.command();
+    command.args([
+        "mcp",
+        "serve",
+        "--http",
+        "--read-only",
+        "--bind",
+        "127.0.0.1:0",
+        "--ledger",
+        &format!("demo={}", demo.path.display()),
+    ]);
+    let mut server = Server::spawn(command)?;
+    server.initialize(Some(startup_token), "Named ledger client")?;
+    let session = TargetSession {
+        client: &server.client,
+        endpoint: &server.endpoint,
+        id: server.session.as_deref().ok_or("session")?,
+    };
+    let listed = rpc(session
+        .request("tools/list", json!({}), Some(demo_token))
+        .header(LEDGER_TARGET_HEADER, "demo")
+        .send()?)?;
+    let tools = listed["result"]["tools"].as_array().ok_or("tools")?;
+    assert!(tools.iter().any(|tool| tool["name"] == "txn_list"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "txn_post"));
+    let result = session.call("txn_post", &posting("blocked"), Some(demo_token))?;
+    assert!(result.get("error").is_some() || result["result"]["isError"] == true);
+    server.finish(&[startup_token, demo_token])
 }
 
 impl beankeeper_cli::mcp::HostToolHandler for TestHost {

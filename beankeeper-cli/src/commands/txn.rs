@@ -1060,7 +1060,7 @@ fn run_attach(
         }
 
         // 4. Hash and store the file in content-addressed storage
-        let (hash, stored_path) = attachments::hash_and_store_file(source, &cli.db)?;
+        let (hash, stored_path) = attachments::hash_and_store_file(source, cli.db_path()?)?;
 
         // 5. Derive the URI (relative to db parent) and original filename
         let uri = stored_path.file_name().map_or_else(

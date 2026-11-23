@@ -9,14 +9,18 @@ mod http;
 mod input_values;
 mod inputs;
 mod report_input;
+mod targets;
 
 pub use host::{HostTool, HostToolEffect, HostToolHandler};
-pub use http::{http_router, http_router_with_host_tools, http_router_with_passphrase, serve_http};
+pub use http::{
+    LEDGER_TARGET_HEADER, http_router, http_router_with_host_tools,
+    http_router_with_ledger_targets, http_router_with_passphrase, serve_http,
+};
 /// Transport options for the HTTP router factories, including host rules and cancellation.
 pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
+pub use targets::LedgerTargets;
 
 use crate::operation::Operation;
-use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
@@ -32,14 +36,15 @@ use crate::db::{
     connection::{Db, ReadConn},
 };
 use crate::error::CliError;
+pub use crate::ledger_target::LedgerTarget;
 use dispatch::Request;
+use targets::OpenedLedger;
 
 /// A ledger tool router, independent of the transport used to serve it.
 #[derive(Clone)]
 pub struct LedgerServer {
-    db: Arc<Mutex<Db>>,
     tool_router: ToolRouter<Self>,
-    credentials: Credentials,
+    backend: Backend,
     configured_actor: Option<ActorLabel>,
 }
 
@@ -63,14 +68,49 @@ impl From<bool> for LedgerAccess {
 }
 
 #[derive(Clone)]
-enum Credentials {
-    Stdio(Option<SecretString>),
+enum Backend {
+    Stdio {
+        ledger: OpenedLedger,
+        token: Option<SecretString>,
+    },
     Http,
 }
 
-enum CallCredential {
-    Stdio(Option<SecretString>),
-    Http(Arc<crate::identity::VerifiedAgent>),
+enum LedgerCall {
+    Stdio {
+        ledger: OpenedLedger,
+        token: Option<SecretString>,
+    },
+    Http(http::AuthenticatedLedger),
+}
+
+impl LedgerCall {
+    fn ledger(&self) -> &OpenedLedger {
+        match self {
+            Self::Stdio { ledger, .. } => ledger,
+            Self::Http(call) => call.ledger(),
+        }
+    }
+
+    fn authorize(
+        &self,
+        reader: ReadConn<'_>,
+        operation: Operation,
+    ) -> Result<Option<crate::identity::VerifiedAgent>, CliError> {
+        match self {
+            Self::Stdio { token, .. } => crate::identity::authorize_known_operation(
+                reader,
+                token.as_ref().map(ExposeSecret::expose_secret),
+                operation,
+            ),
+            Self::Http(call) => crate::identity::authorize_verified_operation(
+                reader,
+                call.identity().clone(),
+                operation,
+            )
+            .map(Some),
+        }
+    }
 }
 
 impl LedgerServer {
@@ -80,18 +120,19 @@ impl LedgerServer {
     /// register mutation tools.
     #[must_use]
     pub fn new(db: Db, access: impl Into<LedgerAccess>) -> Self {
-        Self::with_credentials(
-            db,
+        Self::with_backend(
             access.into(),
-            Credentials::Stdio(None),
+            Backend::Stdio {
+                ledger: OpenedLedger::new(LedgerTarget::default(), db),
+                token: None,
+            },
             ActorLabel::configured(None),
         )
     }
 
-    fn with_credentials(
-        db: Db,
+    fn with_backend(
         access: LedgerAccess,
-        credentials: Credentials,
+        backend: Backend,
         configured_actor: Option<ActorLabel>,
     ) -> Self {
         let mut tool_router = Self::tool_router();
@@ -103,9 +144,8 @@ impl LedgerServer {
             }
         }
         Self {
-            db: Arc::new(Mutex::new(db)),
             tool_router,
-            credentials,
+            backend,
             configured_actor,
         }
     }
@@ -119,31 +159,15 @@ impl LedgerServer {
         let writes_ledger = request.writes_ledger();
         let client_info = context.client_info();
         let configured_actor = self.configured_actor.clone();
-        let db = self.db.clone();
-        let credential = match self.call_credential(&context) {
-            Ok(credential) => credential,
+        let call = match self.ledger_call(&context) {
+            Ok(call) => call,
             Err(error) => return tool_error(&error),
         };
         let result = tokio::task::spawn_blocking(move || {
-            let db = db
-                .lock()
-                .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
+            let db = call.ledger().lock()?;
             // Authorize in the same snapshot that will execute the operation.
             let execute = |reader: ReadConn<'_>| {
-                let identity = match credential {
-                    CallCredential::Stdio(token) => crate::identity::authorize_known_operation(
-                        reader,
-                        token.as_ref().map(ExposeSecret::expose_secret),
-                        operation,
-                    )?,
-                    CallCredential::Http(identity) => {
-                        Some(crate::identity::authorize_verified_operation(
-                            reader,
-                            Arc::unwrap_or_clone(identity),
-                            operation,
-                        )?)
-                    }
-                };
+                let identity = call.authorize(reader, operation)?;
                 let actor = Actor::for_mcp(
                     configured_actor,
                     identity,
@@ -176,26 +200,17 @@ impl LedgerServer {
         }
     }
 
-    fn call_credential(
-        &self,
-        context: &RequestContext<RoleServer>,
-    ) -> Result<CallCredential, CliError> {
-        match &self.credentials {
-            Credentials::Stdio(token) => Ok(CallCredential::Stdio(token.clone())),
-            Credentials::Http => Ok(CallCredential::Http(http_identity(context)?.clone())),
+    fn ledger_call(&self, context: &RequestContext<RoleServer>) -> Result<LedgerCall, CliError> {
+        match &self.backend {
+            Backend::Stdio { ledger, token } => Ok(LedgerCall::Stdio {
+                ledger: ledger.clone(),
+                token: token.clone(),
+            }),
+            Backend::Http => Ok(LedgerCall::Http(
+                http::authenticated_ledger(context)?.clone(),
+            )),
         }
     }
-}
-
-fn http_identity(
-    context: &RequestContext<RoleServer>,
-) -> Result<&Arc<crate::identity::VerifiedAgent>, CliError> {
-    context
-        .extensions
-        .get::<axum::http::request::Parts>()
-        .and_then(|parts| parts.extensions.get::<http::RequestAgent>())
-        .map(|agent| &agent.0)
-        .ok_or_else(|| CliError::Unauthorized("HTTP requires an agent token".into()))
 }
 
 fn tool_error(error: &CliError) -> CallToolResult {
@@ -795,15 +810,13 @@ impl ServerHandler for LedgerServer {
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
         let mut tools = self.tool_router.list_all();
-        if matches!(self.credentials, Credentials::Http) {
-            let identity = http_identity(&context)
+        if matches!(self.backend, Backend::Http) {
+            let call = http::authenticated_ledger(&context)
                 .map_err(|error| http::protocol_error(&error))?
                 .clone();
-            let db = self.db.clone();
             tools = tokio::task::spawn_blocking(move || {
-                let db = db
-                    .lock()
-                    .map_err(|_| CliError::Database("ledger connection is unavailable".into()))?;
+                let db = call.ledger().lock()?;
+                let identity = call.identity();
                 db.read_snapshot(|reader| {
                     identity.check_live(reader)?;
                     if identity.enforces_permissions(crate::db::policy::get(reader)?.enforce) {
@@ -855,7 +868,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open_existing(&cli.db, passphrase.as_ref())?;
+    let db = Db::open_existing(cli.db_path()?, passphrase.as_ref())?;
     drop(passphrase);
     let identity = if let Some(token) = &cli.agent_token {
         Some(crate::identity::verify(db.read(), token.expose_secret())?)
@@ -868,10 +881,12 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
             "ledger enforcement requires an agent token".into(),
         ));
     }
-    let mut server = LedgerServer::with_credentials(
-        db,
+    let mut server = LedgerServer::with_backend(
         read_only.into(),
-        Credentials::Stdio(cli.agent_token.clone()),
+        Backend::Stdio {
+            ledger: OpenedLedger::new(cli.ledger_target(), db),
+            token: cli.agent_token.clone(),
+        },
         ActorLabel::configured(cli.actor.as_deref()),
     );
     if let Some(identity) = identity
