@@ -6,6 +6,15 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.32.0] - Unreleased
+
+### Added
+
+- Record an unverified runtime hint on CLI and stdio MCP audit rows when known
+  environment markers are present and the caller has no verified token.
+  Schema v25 adds hash version 5 and preserves earlier hashes.
+  ([#242](https://github.com/Govcraft/beankeeper/issues/242))
+
 ## [0.31.0] - Unreleased
 
 ### Added

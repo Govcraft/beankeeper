@@ -1072,7 +1072,7 @@ object. Example excerpt from a ledger with one company and one posting:
 
 ```json
 {
-  "schema_version": 24,
+  "schema_version": 25,
   "status": "healthy",
   "companies": [{
     "company": "acme",
@@ -1377,6 +1377,18 @@ JSON input schema, exact major-unit amounts, column mappings, and hash reference
 are JSON strings (snapshots of the relevant fields) or `null`; `company_slug`
 may be `null` for cross-company changes.
 
+CLI JSON and MCP `audit_log` rows include a nullable `client_hint`. When known
+environment markers are present on a write without a verified identity, the
+hint has this shape:
+
+```json
+{"verified": false, "source": "env", "runtime": "claude-code", "markers": ["CLAUDECODE"]}
+```
+
+Runtime labels are `claude-code`, `codex`, `gemini-cli`, `cursor-agent`, and
+`generic`. Use `agent_uri` for verified attribution. CLI table and CSV outputs
+show the runtime with an unverified label.
+
 ```json
 {
   "data": [
@@ -1431,9 +1443,9 @@ With `--agent-token` / `BK_AGENT_TOKEN`, envelopes add `meta.agent` containing
 the verified `agent://` URI. It is absent without a token, and unverified input
 is never echoed into metadata. Transaction show/list data and audit rows add
 nullable `agent_uri` and `token_jti`. Named `posted_by`/`actor` retain their
-meaning. Audit rows also include `hash_version`: 1 for preserved historical
-hashes, 2 for preserved identity rows, 3 for new rows. Versions 2 and 3 include
-nullable identity in the hash payload; v3 uses domain tag `beankeeper.audit.v3`.
+meaning. Audit rows also include `hash_version`. Versions 2 through 5 include
+nullable identity in the hash payload. New rows use version 5, which also
+covers the nullable client hint. See [audit integrity](../../audit-integrity.md).
 
 `key.init`, `agent.issue`, `agent.list`, `agent.revoke` use the normal envelope.
 See [the command reference](commands.md#agent-identity) for their data fields.

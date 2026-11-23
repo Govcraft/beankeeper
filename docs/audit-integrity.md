@@ -176,3 +176,30 @@ records the actor, verified identity if present, timestamp, and previous cutoff.
 Migration verifies the historical hash chain and tail before and after rebuilding
 the audit table atomically. It restores policy/proposal triggers and rolls back
 all schema changes on failure. Back up before upgrading to v20.
+
+## Schema v25 client hints
+
+The CLI and stdio MCP can record a `client_hint` when a write runs with no
+verified identity and known runtime markers are present. Detection uses only
+environment variable names, including names whose values are empty. The first
+matching group wins in this order:
+
+| Runtime | Marker names |
+| --- | --- |
+| Claude Code | `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` |
+| Codex | `CODEX_THREAD_ID`, `CODEX_CI`, `CODEX_SANDBOX` |
+| Gemini CLI | `GEMINI_CLI` |
+| Cursor Agent | `CURSOR_AGENT` |
+| Generic | `AI_AGENT` |
+
+The hint includes the matched names from that group and leaves `actor` and
+`posted_by` independent. It carries no identity or authorization. The CLI
+and stdio server can print an attribution notice to stderr after a successful
+write command. `--quiet` suppresses the notice.
+
+New appends use the `beankeeper.audit.v5` domain tag and add one final field to
+the v4 tuple. That field is `null` or the ordered JSON array
+`[false, "env", runtime, marker_names]`. This representation fixes the field
+order independently of JSON object serialization. Migration checks the chain
+before and after the atomic rebuild, retaining v1 through v4 rows and hashes.
+`bk verify` checks mixed chains and includes v5 hints in their integrity check.
