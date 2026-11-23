@@ -374,7 +374,7 @@ fn entry_error(error: beankeeper::types::EntryError, source: PostingSource) -> C
     }
 }
 
-fn command_posting_error(error: TransactionError, currency: Currency) -> CliError {
+pub(crate) fn command_posting_error(error: TransactionError, currency: Currency) -> CliError {
     let TransactionError::Unbalanced {
         total_debits,
         total_credits,

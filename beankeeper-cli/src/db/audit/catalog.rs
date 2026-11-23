@@ -1,10 +1,9 @@
 //! Catalog records appended by a verified owner or active setup session.
 
-use beankeeper::types::AccountCode;
 use rusqlite::{OptionalExtension, params};
 
 use super::{Actor, Creation, record_insert, savepoint::AuditedTx};
-use crate::db::accounts::{CreateAccountParams, account_exists, get_account};
+use crate::db::accounts::{ValidatedAccountCreation, account_exists, get_account};
 use crate::db::companies::{Company, CompanyName, CompanySlug};
 use crate::db::{AccountRow, CompanyRow};
 use crate::error::CliError;
@@ -69,21 +68,18 @@ pub(in crate::db) fn store_company(
     Ok(row)
 }
 
-pub(in crate::db) fn store_account(
+pub(in crate::db) fn store_validated_account(
     tx: &AuditedTx<'_>,
     actor: &Actor,
-    params: &CreateAccountParams<'_>,
+    params: &ValidatedAccountCreation<'_>,
 ) -> Result<AccountRow, CliError> {
-    let CreateAccountParams {
+    let ValidatedAccountCreation {
         company_slug,
         code,
         name,
         account_type,
         default_tax_category,
     } = *params;
-    let code = AccountCode::new(code)
-        .map_err(|error| CliError::Validation(format!("invalid account code '{code}': {error}")))?;
-
     let conn = tx.connection();
     let reader = tx.read();
     let code = code.as_str();

@@ -1,7 +1,7 @@
 //! Company-scoped securities and append-only, audited investment lots.
 
 use std::collections::BTreeMap;
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use beankeeper::{
     core::investments::{
@@ -114,14 +114,7 @@ impl LotSelection {
     /// # Errors
     /// Returns validation error if specific selection has no lot or an ordered mode has one.
     pub fn from_flags(method: LotMethod, lot: Option<LotId>) -> Result<Self, CliError> {
-        match (method, lot) {
-            (LotMethod::Fifo, None) => Ok(Self::Fifo),
-            (LotMethod::Lifo, None) => Ok(Self::Lifo),
-            (LotMethod::Specific, Some(lot)) => Ok(Self::Specific(lot)),
-            _ => Err(invalid(
-                "--method specific requires exactly one --lot; other methods do not accept --lot",
-            )),
-        }
+        (Some(method), lot).try_into()
     }
 
     fn method(&self) -> LotMethod {
@@ -140,6 +133,76 @@ impl LotSelection {
     }
 }
 
+impl TryFrom<(Option<LotMethod>, Option<LotId>)> for LotSelection {
+    type Error = CliError;
+
+    fn try_from((method, lot): (Option<LotMethod>, Option<LotId>)) -> Result<Self, Self::Error> {
+        match (method.unwrap_or_default(), lot) {
+            (LotMethod::Fifo, None) => Ok(Self::Fifo),
+            (LotMethod::Lifo, None) => Ok(Self::Lifo),
+            (LotMethod::Specific, Some(lot)) => Ok(Self::Specific(lot)),
+            _ => Err(invalid(
+                "--method specific requires exactly one --lot; other methods do not accept --lot",
+            )),
+        }
+    }
+}
+
+/// Company-scoped security symbol with a validated ASCII ticker format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecuritySymbol(Box<str>);
+
+impl AsRef<str> for SecuritySymbol {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SecuritySymbol {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_ref())
+    }
+}
+
+impl FromStr for SecuritySymbol {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty()
+            || value.len() > 32
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".-_:".contains(&byte))
+        {
+            return Err(invalid(
+                "symbol must be 1-32 ASCII letters, digits, '.', '-', '_' or ':'",
+            ));
+        }
+        Ok(Self(value.into()))
+    }
+}
+
+/// A nonblank display name for a security.
+#[derive(Debug, Clone)]
+pub struct SecurityName(Box<str>);
+
+impl AsRef<str> for SecurityName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for SecurityName {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.trim().is_empty() {
+            return Err(invalid("security name must not be empty"));
+        }
+        Ok(Self(value.into()))
+    }
+}
+
 /// Immutable security identity. Symbols are case-sensitive within a company.
 #[derive(Debug, Clone, Serialize)]
 pub struct Security {
@@ -150,9 +213,13 @@ pub struct Security {
 }
 
 /// New security definition.
+#[derive(Debug, Clone)]
 pub struct SecurityParams {
-    pub symbol: String,
-    pub name: String,
+    /// Validated company-scoped ticker symbol.
+    pub symbol: SecuritySymbol,
+    /// Nonblank display name.
+    pub name: SecurityName,
+    /// Currency used for all trades and prices.
     pub currency: Currency,
 }
 
@@ -393,29 +460,16 @@ pub fn get_security(
 /// Register a security with an immutable currency and audit snapshot.
 ///
 /// # Errors
-/// Rejects empty/invalid symbols, names, or duplicate symbols.
+/// Returns a storage error for a duplicate symbol or a missing company.
 pub fn create_security(
     grant: Granted<'_, Post>,
     company: &crate::db::companies::CompanySlug,
     p: &SecurityParams,
 ) -> Result<Security, CliError> {
-    if !valid_symbol(&p.symbol) || p.name.trim().is_empty() {
-        return Err(invalid(
-            "symbol must be 1-32 ASCII letters, digits, '.', '-', '_' or ':'; name must not be empty",
-        ));
-    }
     grant.mutate("sp_security_create", |tx, actor| {
         super::companies::get_company(tx.read(), company)?;
         audit::investment::store_security(tx, actor, company, p)
     })
-}
-
-pub(crate) fn valid_symbol(symbol: &str) -> bool {
-    !symbol.is_empty()
-        && symbol.len() <= 32
-        && symbol
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b".-_:".contains(&byte))
 }
 
 /// List securities, sorted by symbol.

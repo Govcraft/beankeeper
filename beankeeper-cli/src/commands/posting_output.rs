@@ -1,14 +1,12 @@
 //! Presentation of posting lines in template and proposal responses.
 
 use beankeeper::types::{Currency, Money};
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Serialize, Serializer};
 
 use crate::db::{
     ConflictStrategy, PostEntryParams,
     proposals::{PostingPayload, Proposal, ProposalCreation, ProposalId, ProposalState},
 };
-use crate::error::CliError;
 use crate::output::amounts::format_money;
 
 #[derive(Serialize)]
@@ -114,12 +112,25 @@ impl<'a> From<&'a Proposal> for ProposalJson<'a> {
     }
 }
 
-pub(super) fn proposal_creation_data(result: ProposalCreation) -> Result<Value, CliError> {
-    match result {
-        ProposalCreation::Created(row) => serde_json::to_value(ProposalJson::from(row.as_ref()))
-            .map_err(|error| CliError::General(error.to_string())),
-        ProposalCreation::Skipped(transaction_id) => {
-            Ok(serde_json::json!({"status":"skipped", "transaction_id":transaction_id}))
+pub(super) struct ProposalCreationJson<'a>(pub &'a ProposalCreation);
+
+impl Serialize for ProposalCreationJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Skipped {
+            status: &'static str,
+            transaction_id: crate::db::ids::TransactionId,
+        }
+
+        match self.0 {
+            ProposalCreation::Created(row) => {
+                ProposalJson::from(row.as_ref()).serialize(serializer)
+            }
+            ProposalCreation::Skipped(transaction_id) => Skipped {
+                status: "skipped",
+                transaction_id: *transaction_id,
+            }
+            .serialize(serializer),
         }
     }
 }

@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use mti::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
+use serde::{Serializer, ser::SerializeMap};
 use serde_json::{Value, json};
 
 use crate::capability::Capability;
@@ -447,14 +448,31 @@ impl IssuedCredential {
     }
 }
 
+pub(crate) fn serialize_credential_response<S: Serializer>(
+    credential: &IssuedCredential,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let mut fields = serializer.serialize_map(None)?;
+    fields.serialize_entry("agent_uri", credential.agent_uri.as_str())?;
+    fields.serialize_entry("token_jti", credential.token_jti.as_str())?;
+    fields.serialize_entry("agent_key", &credential.agent_key)?;
+    fields.serialize_entry("capabilities", &credential.capabilities)?;
+    fields.serialize_entry("write_mode", &credential.write_mode)?;
+    fields.serialize_entry("issued_at", &credential.issued_at)?;
+    fields.serialize_entry("expires_at", &credential.expires_at)?;
+    fields.serialize_entry("token", credential.token.expose_secret())?;
+    if let Some(private_key) = credential.generated_private_key() {
+        fields.serialize_entry("private_key", private_key.expose_secret())?;
+    }
+    fields.end()
+}
+
 pub(crate) fn prepare_credential(
     conn: ReadConn<'_>,
     request: &IssueRequest<'_>,
     write_mode: WriteMode,
 ) -> Result<IssuedCredential, CliError> {
     let grants = IssuanceGrants::try_from((write_mode, request.capabilities))?;
-    let scope = grants.scope();
-    let write_mode = grants.mode();
     if request.public_key.is_some() == request.generate_key {
         return Err(CliError::Usage(
             "supply --public-key BASE64 or --generate-key".into(),
@@ -470,6 +488,37 @@ pub(crate) fn prepare_credential(
             CliError::Validation("invalid Ed25519 public key (expected base64)".into())
         })?
     };
+    prepare_credential_for_agent(
+        conn,
+        grants,
+        request.ttl,
+        &agent_id,
+        &agent_key,
+        generated.as_ref(),
+    )
+}
+
+pub(crate) fn prepare_setup_credential(
+    conn: ReadConn<'_>,
+    agent_id: &AgentId,
+    agent_key: &VerifyingKey,
+    ttl: Duration,
+) -> Result<IssuedCredential, CliError> {
+    let capabilities = [Capability::Setup.path().to_owned()];
+    let grants = IssuanceGrants::try_from((WriteMode::default(), capabilities.as_slice()))?;
+    prepare_credential_for_agent(conn, grants, ttl, agent_id, agent_key, None)
+}
+
+fn prepare_credential_for_agent(
+    conn: ReadConn<'_>,
+    grants: IssuanceGrants,
+    ttl: Duration,
+    agent_id: &AgentId,
+    agent_key: &VerifyingKey,
+    generated: Option<&SigningKey>,
+) -> Result<IssuedCredential, CliError> {
+    let scope = grants.scope();
+    let write_mode = grants.mode();
     let (root, raw): (String, Vec<u8>) = conn
         .query_row(
             "SELECT trust_root, private_key FROM identity_root WHERE singleton = 1",
@@ -491,13 +540,13 @@ pub(crate) fn prepare_credential(
     let claims = AttestationClaims::builder()
         .jti(token_jti.to_string())
         .agent_uri(uri.to_string())
-        .agent_key(&agent_key)
+        .agent_key(agent_key)
         .capabilities(Vec::from(grants))
         .issuer(&root)
-        .ttl(request.ttl)
+        .ttl(ttl)
         .build()
         .map_err(|e| CliError::Validation(e.to_string()))?;
-    let token = Issuer::new(root, key, request.ttl)
+    let token = Issuer::new(root, key, ttl)
         .issue_claims(&claims)
         .map_err(|e| CliError::Validation(e.to_string()))?;
     Ok(IssuedCredential {
@@ -509,7 +558,7 @@ pub(crate) fn prepare_credential(
         issued_at: claims.iat,
         expires_at: claims.exp,
         token: token.into(),
-        private_key: generated.as_ref().map(generated_key_hex),
+        private_key: generated.map(generated_key_hex),
     })
 }
 

@@ -58,8 +58,12 @@
 //! age and shows what is still open after every settlement applied to it.
 //! Unapplied credit cannot be attributed to a charge and is not shown.
 
+use super::report::{AccountSelector, ChartRequest, ReportOutput, ReportPresentation};
+use super::report_dates::Today;
+use crate::db::companies::Company;
 use crate::db::ids::TransactionId;
 use crate::operation::Operation;
+use crate::request::NonEmpty;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::NonZeroU32;
 
@@ -732,6 +736,31 @@ pub struct Buckets {
     tail: Bucket,
 }
 
+impl Default for Buckets {
+    fn default() -> Self {
+        Self {
+            current: Bucket {
+                label: "Current".into(),
+                min_days: 0,
+                max_days: Some(0),
+            },
+            bounded: [(1, 30), (31, 60), (61, 90)]
+                .into_iter()
+                .map(|(min_days, max_days)| Bucket {
+                    label: format!("{min_days}-{max_days}"),
+                    min_days,
+                    max_days: Some(max_days),
+                })
+                .collect(),
+            tail: Bucket {
+                label: "90+".into(),
+                min_days: 91,
+                max_days: None,
+            },
+        }
+    }
+}
+
 impl std::str::FromStr for Buckets {
     type Err = CliError;
 
@@ -1109,6 +1138,14 @@ pub fn select_accounts(
     Ok(selected.into_iter().collect())
 }
 
+fn validated_child_prefix(code: &str) -> Result<&str, CliError> {
+    child_prefix(code).ok_or_else(|| {
+        CliError::Validation(format!(
+            "--include-children: account code '{code}' has no prefix to match children on (it is all zeros)"
+        ))
+    })
+}
+
 /// The aging kind shared by every selected account.
 ///
 /// # Errors
@@ -1439,34 +1476,6 @@ fn classify_with_db(
 }
 
 /// Resolve the requested codes (plus children) to account rows.
-fn resolve_accounts(
-    conn: ReadConn<'_>,
-    company: &str,
-    requested: &[String],
-    include_children: bool,
-) -> Result<Vec<db::AccountRow>, CliError> {
-    let scope = db::companies::Company::bind(conn, company.parse()?)?;
-    for code in requested {
-        db::accounts::get_account(&scope, code)?;
-    }
-    let all = if include_children {
-        db::accounts::list_accounts(
-            &scope,
-            &db::ListAccountParams {
-                type_filter: None,
-                name_filter: None,
-            },
-        )?
-    } else {
-        Vec::new()
-    };
-    let all_codes: Vec<&str> = all.iter().map(|a| a.code.as_str()).collect();
-    select_accounts(requested, &all_codes, include_children)?
-        .iter()
-        .map(|code| db::accounts::get_account(&scope, code))
-        .collect()
-}
-
 /// Resolve the report currency via the shared report resolver
 /// ([`super::report_currency::resolve_report_currency`]).
 fn resolve_currency(
@@ -1480,42 +1489,6 @@ fn resolve_currency(
 // ---------------------------------------------------------------------------
 // Command
 // ---------------------------------------------------------------------------
-
-impl<'a> TryFrom<&'a crate::cli::AgingCommandArgs> for AgingOptions<'a> {
-    type Error = CliError;
-
-    fn try_from(args: &'a crate::cli::AgingCommandArgs) -> Result<Self, Self::Error> {
-        let crate::cli::AgingCommandArgs {
-            account,
-            include_children,
-            as_of,
-            buckets,
-            group_by_metadata,
-            currency,
-            method,
-            link_key,
-            detail,
-            group_across_accounts,
-            filter_metadata,
-        } = args;
-        Ok(Self {
-            accounts: account,
-            include_children: *include_children,
-            as_of: as_of
-                .as_ref()
-                .map(|date| super::report_dates::resolve_date("--as-of", date))
-                .transpose()?,
-            buckets,
-            group_by_metadata: group_by_metadata.as_deref(),
-            currency: crate::cli::CurrencyArg::resolve_optional(currency.as_ref())?,
-            method: (*method).into(),
-            link_key: link_key.as_deref(),
-            detail: *detail,
-            group_across_accounts: *group_across_accounts,
-            filter_metadata,
-        })
-    }
-}
 
 /// Everything shared by the per-account aging runs.
 struct AgingScope<'a> {
@@ -1584,14 +1557,271 @@ fn age_account(
     Ok(AccountAging { account, report })
 }
 
+/// Unvalidated values used to build the report's aging selection.
+pub(crate) struct AgingSelection {
+    pub accounts: NonEmpty<AccountSelector>,
+    pub include_children: bool,
+    pub as_of: Option<NaiveDate>,
+    pub buckets: Option<String>,
+    pub group_by: Option<String>,
+    pub currency: Option<Currency>,
+    pub method: MatchMethod,
+    pub link_key: Option<String>,
+    pub detail: bool,
+    pub across: bool,
+    pub filters: Vec<String>,
+}
+
+pub(crate) struct AgingRequest {
+    accounts: AgingAccounts,
+    as_of: NaiveDate,
+    currency: Option<Currency>,
+    projection: AgingProjection,
+    buckets: Buckets,
+}
+
+struct AgingProjection {
+    matching: AgingMatching,
+    grouping: AgingGrouping,
+    filters: Vec<MetadataFilter>,
+    detail: bool,
+    include_children: bool,
+}
+
+struct AgingLinkKey(String);
+
+impl Default for AgingLinkKey {
+    fn default() -> Self {
+        Self(DEFAULT_LINK_KEY.to_owned())
+    }
+}
+
+impl TryFrom<String> for AgingLinkKey {
+    type Error = CliError;
+
+    fn try_from(key: String) -> Result<Self, Self::Error> {
+        if key.trim().is_empty() {
+            return Err(CliError::Validation("--link-key must not be empty".into()));
+        }
+        Ok(Self(key))
+    }
+}
+
+enum AgingMatching {
+    Fifo,
+    Specific(AgingLinkKey),
+}
+
+impl TryFrom<(MatchMethod, Option<String>)> for AgingMatching {
+    type Error = CliError;
+
+    fn try_from((method, link_key): (MatchMethod, Option<String>)) -> Result<Self, Self::Error> {
+        match (method, link_key) {
+            (MatchMethod::Fifo, None) => Ok(Self::Fifo),
+            (MatchMethod::Fifo, Some(_)) => Err(CliError::Validation(
+                "--link-key only applies with --method specific".into(),
+            )),
+            (MatchMethod::Specific, link_key) => Ok(Self::Specific(
+                link_key
+                    .map(AgingLinkKey::try_from)
+                    .transpose()?
+                    .unwrap_or_default(),
+            )),
+        }
+    }
+}
+
+impl AgingMatching {
+    fn method(&self) -> MatchMethod {
+        match self {
+            Self::Fifo => MatchMethod::Fifo,
+            Self::Specific(_) => MatchMethod::Specific,
+        }
+    }
+
+    fn link_key(&self) -> Option<&str> {
+        match self {
+            Self::Fifo => None,
+            Self::Specific(key) => Some(&key.0),
+        }
+    }
+}
+
+enum AgingGrouping {
+    Ungrouped { combine: bool },
+    PerAccount(String),
+    AcrossAccounts(String),
+}
+
+impl From<(Option<String>, bool)> for AgingGrouping {
+    fn from((key, across): (Option<String>, bool)) -> Self {
+        match (key, across) {
+            (Some(key), false) => Self::PerAccount(key),
+            (Some(key), true) => Self::AcrossAccounts(key),
+            // Preserve the presentation preference even when no grouping key was supplied.
+            (None, combine) => Self::Ungrouped { combine },
+        }
+    }
+}
+
+impl AgingGrouping {
+    fn key(&self) -> Option<&str> {
+        match self {
+            Self::Ungrouped { .. } => None,
+            Self::PerAccount(key) | Self::AcrossAccounts(key) => Some(key),
+        }
+    }
+
+    fn across(&self) -> bool {
+        matches!(
+            self,
+            Self::AcrossAccounts(_) | Self::Ungrouped { combine: true }
+        )
+    }
+}
+
+impl TryFrom<&[String]> for NonEmpty<AccountSelector> {
+    type Error = CliError;
+
+    fn try_from(accounts: &[String]) -> Result<Self, Self::Error> {
+        Self::try_from(accounts.iter().cloned().map(Into::into).collect::<Vec<_>>())
+            .map_err(|_| CliError::Usage("provide at least one --account".into()))
+    }
+}
+
+struct AgingAccounts {
+    accounts: NonEmpty<AccountSelector>,
+    child_prefixes: Vec<String>,
+}
+
+impl TryFrom<(NonEmpty<AccountSelector>, bool)> for AgingAccounts {
+    type Error = CliError;
+
+    fn try_from(
+        (accounts, include_children): (NonEmpty<AccountSelector>, bool),
+    ) -> Result<Self, Self::Error> {
+        let child_prefixes = if include_children {
+            accounts
+                .iter()
+                .map(|code| validated_child_prefix(code.as_ref()).map(str::to_owned))
+                .collect::<Result<_, _>>()?
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            accounts,
+            child_prefixes,
+        })
+    }
+}
+
+impl AgingAccounts {
+    fn resolve(self, company: &Company<'_>) -> Result<Vec<db::AccountRow>, CliError> {
+        let mut selected = BTreeMap::new();
+        for code in self.accounts.iter() {
+            if !selected.contains_key(code.as_ref()) {
+                let account = db::accounts::get_account(company, code.as_ref())?;
+                selected.insert(account.code.clone(), account);
+            }
+        }
+        if !self.child_prefixes.is_empty() {
+            let all = db::accounts::list_accounts(
+                company,
+                &db::ListAccountParams {
+                    type_filter: None,
+                    name_filter: None,
+                },
+            )?;
+            for account in all {
+                if self
+                    .child_prefixes
+                    .iter()
+                    .any(|prefix| account.code.starts_with(prefix))
+                {
+                    selected.entry(account.code.clone()).or_insert(account);
+                }
+            }
+        }
+        Ok(selected.into_values().collect())
+    }
+}
+
+impl TryFrom<AgingSelection> for AgingRequest {
+    type Error = CliError;
+
+    fn try_from(selection: AgingSelection) -> Result<Self, Self::Error> {
+        Ok(Self {
+            accounts: (selection.accounts, selection.include_children).try_into()?,
+            as_of: selection.as_of.unwrap_or_else(|| Today::default().into()),
+            currency: selection.currency,
+            buckets: selection
+                .buckets
+                .as_deref()
+                .map(str::parse)
+                .transpose()?
+                .unwrap_or_default(),
+            projection: AgingProjection {
+                matching: (selection.method, selection.link_key).try_into()?,
+                grouping: (selection.group_by, selection.across).into(),
+                filters: metadata_filter::parse_filters(&selection.filters)?,
+                detail: selection.detail,
+                include_children: selection.include_children,
+            },
+        })
+    }
+}
+
+impl TryFrom<&crate::cli::AgingCommandArgs> for AgingRequest {
+    type Error = CliError;
+
+    fn try_from(args: &crate::cli::AgingCommandArgs) -> Result<Self, Self::Error> {
+        AgingSelection {
+            accounts: args.account.as_slice().try_into()?,
+            include_children: args.include_children,
+            as_of: args
+                .as_of
+                .as_ref()
+                .map(|date| super::report_dates::resolve_date("--as-of", date))
+                .transpose()?,
+            buckets: args.buckets.clone(),
+            group_by: args.group_by_metadata.clone(),
+            currency: crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
+            method: args.method.map(Into::into).unwrap_or_default(),
+            link_key: args.link_key.clone(),
+            detail: args.detail,
+            across: args.group_across_accounts,
+            filters: args.filter_metadata.clone(),
+        }
+        .try_into()
+    }
+}
+
+impl TryFrom<&AgingOptions<'_>> for AgingRequest {
+    type Error = CliError;
+
+    fn try_from(options: &AgingOptions<'_>) -> Result<Self, Self::Error> {
+        AgingSelection {
+            accounts: options.accounts.try_into()?,
+            include_children: options.include_children,
+            as_of: options.as_of,
+            buckets: Some(options.buckets.to_owned()),
+            group_by: options.group_by_metadata.map(str::to_owned),
+            currency: options.currency,
+            method: options.method,
+            link_key: options.link_key.map(str::to_owned),
+            detail: options.detail,
+            across: options.group_across_accounts,
+            filters: options.filter_metadata.to_vec(),
+        }
+        .try_into()
+    }
+}
+
 /// Execute `bk report aging`.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Validation`] for a non-asset/liability account, a mix
-/// of asset and liability accounts, a bad date, bucket spec, link key,
-/// metadata filter or currency (or an ambiguous currency), and
-/// [`CliError::NotFound`] when an account does not exist.
+/// Returns errors for invalid selections, missing data or rendering failures.
 pub fn run(
     cli: &Cli,
     db: &Db,
@@ -1600,172 +1830,114 @@ pub fn run(
     format: OutputFormat,
     use_color: bool,
 ) -> Result<(), CliError> {
+    let request = AgingRequest::try_from(opts)?;
+    let report = db.read_snapshot(|reader| {
+        let company = Company::bind(reader, company.parse()?)?;
+        request.compute(reader, &company)
+    })?;
     let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    db.read_snapshot(|reader| run_to(cli, reader, company, opts, &mut output))
+    let mut output = ReportOutput::new(format, use_color, &mut stdout);
+    report.render(
+        &ReportPresentation::cli(
+            cli,
+            Operation::ReportAging,
+            company,
+            ChartRequest::default(),
+        ),
+        &mut output,
+    )
 }
 
-fn run_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    opts: &AgingOptions<'_>,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let as_of = opts
-        .as_of
-        .unwrap_or_else(|| chrono::Local::now().date_naive());
-    let resolved = ResolvedAging::resolve(reader, company, opts, as_of)?;
-    run_resolved_to(cli, reader, company, resolved, output)
-}
-
-pub(super) struct ResolvedAging<'a> {
-    accounts: Vec<db::AccountRow>,
-    kind: AgingKind,
+pub(super) struct AgingResponse {
+    report: MultiAgingReport,
+    selected: Vec<String>,
     as_of: NaiveDate,
     currency: Currency,
-    buckets: Buckets,
-    method: MatchMethod,
-    group_by: Option<&'a str>,
-    link_key: Option<&'a str>,
-    filters: Vec<MetadataFilter>,
-    detail: bool,
-    across: bool,
-    include_children: bool,
+    projection: AgingProjection,
 }
 
-impl<'a> ResolvedAging<'a> {
-    pub(super) fn from_command(
+impl AgingRequest {
+    pub(super) fn compute(
+        self,
         reader: ReadConn<'_>,
-        company: &str,
-        args: &'a crate::cli::AgingCommandArgs,
-        today: NaiveDate,
-    ) -> Result<Self, CliError> {
-        let options = AgingOptions::try_from(args)?;
-        Self::resolve(reader, company, &options, options.as_of.unwrap_or(today))
-    }
-
-    fn resolve(
-        reader: ReadConn<'_>,
-        company: &str,
-        opts: &AgingOptions<'a>,
-        as_of: NaiveDate,
-    ) -> Result<Self, CliError> {
-        let buckets = opts.buckets.parse()?;
-        let link_key = resolve_link_key(opts.method, opts.link_key)?;
-        let filters = metadata_filter::parse_filters(opts.filter_metadata)?;
-        let accounts = resolve_accounts(reader, company, opts.accounts, opts.include_children)?;
+        company: &Company<'_>,
+    ) -> Result<AgingResponse, CliError> {
+        let accounts = self.accounts.resolve(company)?;
+        let selected: Vec<_> = accounts
+            .iter()
+            .map(|account| account.code.clone())
+            .collect();
         let kind = common_kind(&accounts)?;
-        let currency = resolve_currency(reader, company, opts.currency)?;
-        Ok(Self {
-            accounts,
+        let company = company.slug().as_str();
+        let currency = resolve_currency(reader, company, self.currency)?;
+        let method = self.projection.matching.method();
+        let scope = AgingScope {
             kind,
-            as_of,
+            as_of: self.as_of,
             currency,
-            buckets,
-            method: opts.method,
-            group_by: opts.group_by_metadata,
-            link_key,
-            filters,
-            detail: opts.detail,
-            across: opts.group_across_accounts,
-            include_children: opts.include_children,
+            buckets: self.buckets,
+            method,
+            group_by: self.projection.grouping.key(),
+            link_key: self.projection.matching.link_key(),
+            filters: &self.projection.filters,
+            selected: &selected,
+        };
+        let per_account = accounts
+            .into_iter()
+            .map(|account| age_account(reader, company, account, &scope))
+            .collect::<Result<Vec<_>, _>>()?;
+        let report = combine(kind, method, scope.buckets, per_account)?;
+        Ok(AgingResponse {
+            report,
+            selected,
+            as_of: self.as_of,
+            currency,
+            projection: self.projection,
         })
     }
 }
 
-pub(super) fn run_resolved_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    resolved: ResolvedAging<'_>,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let ResolvedAging {
-        accounts,
-        kind,
-        as_of,
-        currency,
-        buckets,
-        method,
-        group_by,
-        link_key,
-        filters,
-        detail,
-        across,
-        include_children,
-    } = resolved;
-    let selected: Vec<String> = accounts.iter().map(|a| a.code.clone()).collect();
-
-    let scope = AgingScope {
-        kind,
-        as_of,
-        currency,
-        buckets,
-        method,
-        group_by,
-        link_key,
-        filters: &filters,
-        selected: &selected,
-    };
-    let per_account = accounts
-        .into_iter()
-        .map(|a| age_account(reader, company, a, &scope))
-        .collect::<Result<Vec<_>, _>>()?;
-    let report = combine(kind, method, scope.buckets.clone(), per_account)?;
-
-    let as_of_text = as_of.to_string();
-    let ctx = RenderContext {
-        kind,
-        as_of: &as_of_text,
-        currency,
-        group_by,
-        link_key,
-        detail,
-        across,
-        include_children,
-        filters: &filters,
-    };
-
-    match output.format {
-        OutputFormat::Table => writeln!(
-            output.writer,
-            "{}",
-            render_table(&report, &ctx, output.use_color)
-        )?,
-        OutputFormat::Json => output.write_json(
-            cli.meta(Operation::ReportAging, Some(company)),
-            aging_json(&report, &ctx),
-            None,
-        )?,
-        OutputFormat::Csv => write!(output.writer, "{}", render_csv(&report, &ctx)?)?,
-    }
-
-    if !cli.verbosity.quiet {
-        for u in &report.unmatched_links {
-            eprintln!("[warn] {}", describe_unmatched(u, &report, &ctx));
+impl AgingResponse {
+    pub(super) fn render(
+        &self,
+        context: &ReportPresentation<'_>,
+        output: &mut ReportOutput<'_>,
+    ) -> Result<(), CliError> {
+        let report = &self.report;
+        let as_of = self.as_of.to_string();
+        let ctx = RenderContext {
+            kind: report.kind,
+            as_of: &as_of,
+            currency: self.currency,
+            group_by: self.projection.grouping.key(),
+            link_key: self.projection.matching.link_key(),
+            detail: self.projection.detail,
+            across: self.projection.grouping.across(),
+            include_children: self.projection.include_children,
+            filters: &self.projection.filters,
+        };
+        match output.format {
+            OutputFormat::Table => writeln!(
+                output.writer,
+                "{}",
+                render_table(report, &ctx, output.use_color)
+            )?,
+            OutputFormat::Json => {
+                output.write_json(context.meta(), aging_json(report, &ctx), None)?;
+            }
+            OutputFormat::Csv => write!(output.writer, "{}", render_csv(report, &ctx)?)?,
         }
-        eprintln!(
-            "[ok] aging report generated for account{} {}",
-            if selected.len() == 1 { "" } else { "s" },
-            selected.join(", ")
-        );
-    }
-    Ok(())
-}
-
-/// The link key in effect: `--link-key` (or the default) with the specific
-/// method, `None` with FIFO.
-fn resolve_link_key(method: MatchMethod, link_key: Option<&str>) -> Result<Option<&str>, CliError> {
-    match (method, link_key) {
-        (MatchMethod::Fifo, Some(_)) => Err(CliError::Validation(
-            "--link-key only applies with --method specific".to_string(),
-        )),
-        (MatchMethod::Fifo, None) => Ok(None),
-        (MatchMethod::Specific, Some(k)) if k.trim().is_empty() => Err(CliError::Validation(
-            "--link-key must not be empty".to_string(),
-        )),
-        (MatchMethod::Specific, k) => Ok(Some(k.unwrap_or(DEFAULT_LINK_KEY))),
+        if !context.quiet {
+            for unmatched in &report.unmatched_links {
+                eprintln!("[warn] {}", describe_unmatched(unmatched, report, &ctx));
+            }
+            eprintln!(
+                "[ok] aging report generated for account{} {}",
+                if self.selected.len() == 1 { "" } else { "s" },
+                self.selected.join(", "),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -3270,18 +3442,21 @@ mod tests {
     }
 
     #[test]
-    fn link_key_resolution() {
-        assert_eq!(resolve_link_key(MatchMethod::Fifo, None).ok(), Some(None));
-        assert!(resolve_link_key(MatchMethod::Fifo, Some("x")).is_err());
+    fn link_key_resolution() -> Result<(), CliError> {
+        let selection =
+            |method, key: Option<&str>| AgingMatching::try_from((method, key.map(str::to_owned)));
+        assert_eq!(selection(MatchMethod::Fifo, None)?.link_key(), None);
+        assert!(selection(MatchMethod::Fifo, Some("x")).is_err());
         assert_eq!(
-            resolve_link_key(MatchMethod::Specific, None).ok(),
-            Some(Some(DEFAULT_LINK_KEY))
+            selection(MatchMethod::Specific, None)?.link_key(),
+            Some(DEFAULT_LINK_KEY)
         );
         assert_eq!(
-            resolve_link_key(MatchMethod::Specific, Some("invoice")).ok(),
-            Some(Some("invoice"))
+            selection(MatchMethod::Specific, Some("invoice"))?.link_key(),
+            Some("invoice")
         );
-        assert!(resolve_link_key(MatchMethod::Specific, Some(" ")).is_err());
+        assert!(selection(MatchMethod::Specific, Some(" ")).is_err());
+        Ok(())
     }
 
     #[test]

@@ -3,12 +3,14 @@
 //! Tool bodies use the same in-process database operations and JSON renderers
 //! as the CLI. Only the transport writes to stdout.
 
+pub(crate) mod catalog;
 mod dispatch;
 mod host;
 mod http;
-mod input_values;
-mod inputs;
+pub(crate) mod input_values;
+pub(crate) mod inputs;
 mod report_input;
+mod setup_investment_input;
 mod targets;
 
 pub use host::{HostTool, HostToolEffect, HostToolHandler};
@@ -22,14 +24,13 @@ pub use targets::LedgerTargets;
 
 use crate::operation::Operation;
 
-use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
+use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::service::RequestContext;
-use rmcp::{RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use rmcp::{RoleServer, ServerHandler, ServiceExt, tool_handler};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
 
-use crate::capability::Capability;
 use crate::cli::Cli;
 use crate::db::{
     Actor, ActorLabel,
@@ -37,7 +38,7 @@ use crate::db::{
 };
 use crate::error::CliError;
 pub use crate::ledger_target::LedgerTarget;
-use dispatch::Request;
+use crate::request::LedgerRequest;
 use targets::OpenedLedger;
 
 /// A ledger tool router, independent of the transport used to serve it.
@@ -93,23 +94,16 @@ impl LedgerCall {
         }
     }
 
-    fn authorize(
+    fn identity(
         &self,
         reader: ReadConn<'_>,
-        operation: Operation,
     ) -> Result<Option<crate::identity::VerifiedAgent>, CliError> {
         match self {
-            Self::Stdio { token, .. } => crate::identity::authorize_known_operation(
-                reader,
-                token.as_ref().map(ExposeSecret::expose_secret),
-                operation,
-            ),
-            Self::Http(call) => crate::identity::authorize_verified_operation(
-                reader,
-                call.identity().clone(),
-                operation,
-            )
-            .map(Some),
+            Self::Stdio { token, .. } => token
+                .as_ref()
+                .map(|token| crate::identity::verify(reader, token.expose_secret()))
+                .transpose(),
+            Self::Http(call) => Ok(Some(call.identity().clone())),
         }
     }
 }
@@ -136,14 +130,7 @@ impl LedgerServer {
         backend: Backend,
         configured_actor: Option<ActorLabel>,
     ) -> Self {
-        let mut tool_router = Self::tool_router();
-        if matches!(access, LedgerAccess::ReadOnly) {
-            for tool in tool_router.list_all() {
-                if Capability::for_operation(&tool.name).ok() != Some(Capability::Read) {
-                    tool_router.remove_route(&tool.name);
-                }
-            }
-        }
+        let tool_router = catalog::router(access);
         Self {
             tool_router,
             backend,
@@ -154,12 +141,23 @@ impl LedgerServer {
 
     async fn execute(
         &self,
-        request: Request,
+        operation: Operation,
+        request: Result<LedgerRequest, CliError>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let operation = request.operation();
-        let writes_ledger = operation.writes_ledger();
-        let show_client_hint_notice = writes_ledger && self.show_client_hint_notice;
+        let request = match request {
+            Ok(request) => request,
+            Err(error) => return tool_error(&error),
+        };
+        let actual = request.operation();
+        if operation != actual
+            && actual.exposure() != crate::operation::Exposure::Grouped(operation)
+        {
+            return tool_error(&CliError::General(
+                "tool is registered for a different operation".into(),
+            ));
+        }
+        let show_client_hint_notice = actual.writes_ledger() && self.show_client_hint_notice;
         let client_info = context.client_info();
         let configured_actor = self.configured_actor.clone();
         let call = match self.ledger_call(&context) {
@@ -168,27 +166,20 @@ impl LedgerServer {
         };
         let result = tokio::task::spawn_blocking(move || {
             let db = call.ledger().lock()?;
-            // Authorize in the same snapshot that will execute the operation.
-            let execute = |reader: ReadConn<'_>| {
-                let identity = call.authorize(reader, operation)?;
-                let actor = Actor::for_mcp(
+            let (response, actor) = request.execute_with_actor(&db, |reader| {
+                Ok(Actor::for_mcp(
                     configured_actor,
-                    identity,
+                    call.identity(reader)?,
                     client_info.as_ref().map(|info| info.name.as_str()),
-                );
-                let response = request.execute(&db, &actor)?;
-                let notice = if show_client_hint_notice {
-                    actor.unverified_hint_notice()
-                } else {
-                    None
-                };
-                Ok((response, notice))
-            };
-            if writes_ledger {
-                db.in_write_batch(|| execute(db.read()))
+                ))
+            })?;
+            let response = dispatch::response(&response, &actor)?;
+            let notice = if show_client_hint_notice {
+                actor.unverified_hint_notice()
             } else {
-                db.read_snapshot(execute)
-            }
+                None
+            };
+            Ok((response, notice))
         })
         .await;
         match result {
@@ -237,14 +228,10 @@ fn summary_error(company: Option<&str>, error: Option<&serde_json::Value>) -> Ca
     }))
 }
 
-#[tool_router]
 impl LedgerServer {
-    #[tool(
-        description = "Answer how the owner is doing: read-only financial summary, period comparisons, spending movers, attention counts and totals, brief highlights and optional Desktop targets. Returns the same full JSON envelope as bk summary; all amounts are in one currency."
-    )]
-    async fn financial_summary(
+    async fn execute_summary(
         &self,
-        Parameters(input): Parameters<inputs::FinancialSummaryInput>,
+        input: inputs::FinancialSummaryInput,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         let input = match input.0 {
@@ -258,559 +245,18 @@ impl LedgerServer {
             }
         };
         let company = input.company.to_string();
-        let result = self.execute(Request::Summary(input), context).await;
+        let result = self
+            .execute(
+                Operation::Summary,
+                dispatch::financial_summary(input),
+                context,
+            )
+            .await;
         if result.is_error == Some(true) {
             summary_error(Some(&company), result.structured_content.as_ref())
         } else {
             result
         }
-    }
-
-    #[tool(description = "Create a company-scoped security with a fixed quotation currency.")]
-    async fn security_create(
-        &self,
-        Parameters(input): Parameters<inputs::SecurityCreate>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::SecurityCreate(input), context).await
-    }
-
-    #[tool(description = "List company securities.")]
-    async fn security_list(
-        &self,
-        Parameters(input): Parameters<inputs::CompanyScope>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::SecurityList(input), context).await
-    }
-
-    #[tool(description = "Record a dated price per whole share in major currency units.")]
-    async fn security_price(
-        &self,
-        Parameters(input): Parameters<inputs::SecurityPrice>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::SecurityPrice(input), context).await
-    }
-
-    #[tool(
-        description = "Acquire an exact share quantity and post total acquisition cost against cash. A duplicate reference fails atomically."
-    )]
-    async fn investment_buy(
-        &self,
-        Parameters(input): Parameters<inputs::InvestmentBuy>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::InvestmentBuy(input), context).await
-    }
-
-    #[tool(
-        description = "Sell shares with FIFO by default, LIFO, or one specific lot; post proceeds, basis relief and realized gain or loss atomically."
-    )]
-    async fn investment_sell(
-        &self,
-        Parameters(input): Parameters<inputs::InvestmentSell>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::InvestmentSell(input), context).await
-    }
-
-    #[tool(description = "List acquisition lots with remaining share quantities and cost basis.")]
-    async fn investment_lots(
-        &self,
-        Parameters(input): Parameters<inputs::InvestmentLots>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::InvestmentLots(input), context).await
-    }
-
-    #[tool(
-        description = "Value holdings at the latest price on or before as_of without posting unrealized gains. Monetary results use minor units."
-    )]
-    async fn investment_holdings(
-        &self,
-        Parameters(input): Parameters<inputs::InvestmentHoldings>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::InvestmentHoldings(input), context)
-            .await
-    }
-
-    #[tool(description = "Read setup counts and owner-key readiness for the selected ledger.")]
-    async fn ledger_setup_status(
-        &self,
-        Parameters(input): Parameters<inputs::Empty>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupStatus(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Read one book's current profile, fiscal-year start, currency, and accounts."
-    )]
-    async fn ledger_setup_book_show(
-        &self,
-        Parameters(input): Parameters<inputs::CompanyScope>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupBookShow(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Freeze bounded CSV or OFX statement contents for owner review in an active setup generation."
-    )]
-    async fn ledger_setup_statement_preview(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupStatementPreview>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupStatementPreview(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Commit the exact reviewed statement batch with a live ledger/approve credential."
-    )]
-    async fn ledger_setup_statement_commit(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupStatementCommit>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupStatementCommit(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Read the imported and preexisting transaction IDs for a committed statement batch."
-    )]
-    async fn ledger_setup_statement_receipt(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupStatementReceipt>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupStatementReceipt(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Issue a short-lived setup-only credential for the encrypted ledger. Requires a live owner Admin credential."
-    )]
-    async fn ledger_setup_begin(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupBegin>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupBegin(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Finish a setup generation and revoke its credential. Requires a live owner Admin credential."
-    )]
-    async fn ledger_setup_finish(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupEnd>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupFinish(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Revoke a setup generation and its credential. Requires a live owner Admin credential."
-    )]
-    async fn ledger_setup_revoke(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupEnd>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupRevoke(input), context)
-            .await
-    }
-
-    #[tool(description = "Create a personal or business book in an active setup generation.")]
-    async fn ledger_setup_book_create(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupBookCreate>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupBookCreate(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Record the first profile for an existing book in an active setup generation."
-    )]
-    async fn ledger_setup_book_initialize(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupBookInitialize>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupBookInitialize(input), context)
-            .await
-    }
-
-    #[tool(description = "Supersede a book profile during an active setup generation.")]
-    async fn ledger_setup_book_update(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupBookUpdate>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupBookUpdate(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Apply a versioned chart template to a setup book and return the created accounts."
-    )]
-    async fn ledger_setup_chart_apply(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupChartApply>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupChartApply(input), context)
-            .await
-    }
-
-    #[tool(description = "Add the owner's named account to a setup book.")]
-    async fn ledger_setup_account_add(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupAccountAdd>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupAccountAdd(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Validate and preview a balanced opening journal for an active setup book."
-    )]
-    async fn ledger_setup_opening_preview(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupOpeningPreview>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupOpeningPreview(input), context)
-            .await
-    }
-
-    #[tool(
-        description = "Reserve the exact previewed opening journal for the existing approval workflow."
-    )]
-    async fn ledger_setup_opening_reserve(
-        &self,
-        Parameters(input): Parameters<inputs::LedgerSetupOpeningReserve>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::LedgerSetupOpeningReserve(input), context)
-            .await
-    }
-
-    #[tool(description = "List companies in the ledger.")]
-    async fn company_list(
-        &self,
-        Parameters(input): Parameters<inputs::Empty>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::CompanyList(input), context).await
-    }
-
-    #[tool(
-        description = "Create a company by slug, name and optional description. Requires ledger/admin when enforcement applies. Records an audit row."
-    )]
-    async fn company_create(
-        &self,
-        Parameters(input): Parameters<inputs::CompanyCreate>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::CompanyCreate(input), context).await
-    }
-
-    #[tool(
-        description = "Delete a company with no retained data and record an audit row. This call confirms deletion. Requires ledger/admin when enforcement applies."
-    )]
-    async fn company_delete(
-        &self,
-        Parameters(input): Parameters<inputs::CompanyShow>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::CompanyDelete(input), context).await
-    }
-
-    #[tool(description = "Show one company by slug.")]
-    async fn company_show(
-        &self,
-        Parameters(input): Parameters<inputs::CompanyShow>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::CompanyShow(input), context).await
-    }
-
-    #[tool(
-        description = "List accounts, optionally filtered by account_type or name. Set with_balances=true for debit, credit, and balance totals. Use from/to to restrict activity and supply currency when the company uses multiple currencies."
-    )]
-    async fn account_list(
-        &self,
-        Parameters(input): Parameters<inputs::AccountList>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::AccountList(input), context).await
-    }
-
-    #[tool(description = "Show one account in a company.")]
-    async fn account_show(
-        &self,
-        Parameters(input): Parameters<inputs::AccountShow>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::AccountShow(input), context).await
-    }
-
-    #[tool(description = "Create an account in a company.")]
-    async fn account_create(
-        &self,
-        Parameters(input): Parameters<inputs::AccountCreate>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::AccountCreate(input), context).await
-    }
-
-    #[tool(
-        description = "Record balanced debits and credits in decimal major units. Direct grants post immediately and return a transaction ID. A propose-only grant reserves the same input and returns a pending proposal ID for approval. Pass a stable reference and on_conflict=skip to skip an already posted reference. Use txn_proposals to find a pending reference."
-    )]
-    async fn txn_post(
-        &self,
-        Parameters(input): Parameters<inputs::TxnPost>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnPost(input), context).await
-    }
-
-    #[tool(
-        description = "Explicitly reserve a balanced posting for sign-off. Use txn_post for ordinary bookkeeping; it follows the agent's write mode. This tool uses the same arguments and reserves the reference until resolution. Requires a verified proposer identity and ledger/propose when enforcement is enabled."
-    )]
-    async fn txn_propose(
-        &self,
-        Parameters(input): Parameters<inputs::TxnPost>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnPropose(input), context).await
-    }
-
-    #[tool(
-        description = "List visible pending transaction proposals. Under enforcement, proposers see their own; approvers and administrators see all. include_rejected also includes approved, rejected and withdrawn proposals."
-    )]
-    async fn txn_proposals(
-        &self,
-        Parameters(input): Parameters<inputs::TxnProposals>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnProposals(input), context).await
-    }
-
-    #[tool(
-        description = "Approve a pending proposal and post it atomically as the approver. Requires ledger/approve when enforcement is enabled. Direct posts have already landed and can be undone with txn_reverse."
-    )]
-    async fn txn_approve(
-        &self,
-        Parameters(input): Parameters<inputs::TxnApprove>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnApprove(input), context).await
-    }
-
-    #[tool(
-        description = "Reject a pending proposal with an optional reason. ledger/propose can withdraw the caller's own proposal; ledger/approve can reject any proposal. Resolved proposals cannot be resolved again."
-    )]
-    async fn txn_reject(
-        &self,
-        Parameters(input): Parameters<inputs::TxnReject>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnReject(input), context).await
-    }
-
-    #[tool(
-        description = "Undo a posted transaction in one step by appending an audited, linked mirror posting under the caller's identity. Requires ledger/reverse when enforcement is enabled. Pass the same explicit reference on retries to return the existing reversal. Reconciled transactions cannot be reversed; existing clearings stay on the original."
-    )]
-    async fn txn_reverse(
-        &self,
-        Parameters(input): Parameters<inputs::TxnReverse>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnReverse(input), context).await
-    }
-
-    #[tool(
-        description = "Add or replace transaction annotations as key=value strings. Provide company and exactly one of id or reference. Relationship keys are reserved. No-op retries write no audit row."
-    )]
-    async fn txn_meta_set(
-        &self,
-        Parameters(input): Parameters<inputs::TxnMetaSet>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnMetaSet(input), context).await
-    }
-
-    #[tool(
-        description = "Remove transaction annotation keys. Provide company and exactly one of id or reference. Relationship keys are reserved; absent keys are a no-op."
-    )]
-    async fn txn_meta_unset(
-        &self,
-        Parameters(input): Parameters<inputs::TxnMetaUnset>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnMetaUnset(input), context).await
-    }
-
-    #[tool(description = "List or count transactions using the CLI filters and pagination.")]
-    async fn txn_list(
-        &self,
-        Parameters(input): Parameters<inputs::TxnList>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnList(input), context).await
-    }
-
-    #[tool(description = "Show transaction entries, attachments, and clearing details.")]
-    async fn txn_show(
-        &self,
-        Parameters(input): Parameters<inputs::TxnShow>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnShow(input), context).await
-    }
-
-    #[tool(
-        description = "Run a financial report for company. Use chart=true for supported charts and chart_all=true for all series. Optional fields unless marked required:
-- trend: metric (required), from, to, period, currency, compare, explain_change.
-- trial-balance: from, to or as_of, account_type, currency, period, compare, explain_change.
-- balance: account (required), from, to or as_of, currency, compare, explain_change.
-- income-statement: from, to, currency, period, compare, explain_change.
-- balance-sheet: to or as_of, currency, compare, explain_change.
-- schedule-c and tax-summary: from, to, currency.
-- 1099 (alias 1099-nec): from, to, currency, threshold.
-- ledger: account, from, to, currency, filter_metadata.
-- budget-variance: year (required), month or from/to (month numbers), account_type, currency, include_unbudgeted.
-- aging: account (at least one required), as_of, include_children, buckets, group_by_metadata, currency, method, link_key, detail, group_across_accounts, filter_metadata.
-- reconciliation: account (required), to or as_of, mode, link_key, statement_balance, statement, filter_metadata, group_by_metadata, currency.
-- cash-flow: from, to, cash_account, currency, compare, explain_change.
-Use only one of as_of and to. For date-range reports without as_of, use from and to."
-    )]
-    async fn report(
-        &self,
-        Parameters(input): Parameters<inputs::Report>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::Report(input), context).await
-    }
-
-    #[tool(description = "List budget entries for a company and year.")]
-    async fn budget_list(
-        &self,
-        Parameters(input): Parameters<inputs::BudgetList>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::BudgetList(input), context).await
-    }
-
-    #[tool(
-        description = "Set a monthly amount or distribute an annual budget across twelve months."
-    )]
-    async fn budget_set(
-        &self,
-        Parameters(input): Parameters<inputs::BudgetSet>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::BudgetSet(input), context).await
-    }
-
-    #[tool(description = "Delete a monthly or annual budget; this call confirms deletion.")]
-    async fn budget_delete(
-        &self,
-        Parameters(input): Parameters<inputs::BudgetDelete>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::BudgetDelete(input), context).await
-    }
-
-    #[tool(
-        description = "Clear or reconcile entries by transaction and entry IDs, reference and account, or an atomic in-memory batch. Amounts use major-unit strings. Use a minus sign for withdrawals (credit), an explicit plus for deposits (debit), or an unsigned amount for either side."
-    )]
-    async fn txn_clear(
-        &self,
-        Parameters(input): Parameters<inputs::ClearInput>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnClear(input), context).await
-    }
-
-    #[tool(
-        description = "Find orphaned intercompany correlations across the ledger without changing it."
-    )]
-    async fn txn_reconcile(
-        &self,
-        Parameters(input): Parameters<inputs::Empty>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::TxnReconcile(input), context).await
-    }
-
-    #[tool(
-        description = "Close a company through an inclusive date, rejecting new postings on or before it. Requires ledger/admin when enforcement is on."
-    )]
-    async fn period_close(
-        &self,
-        Parameters(input): Parameters<inputs::PeriodClose>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::PeriodClose(input), context).await
-    }
-
-    #[tool(
-        description = "Explicitly reopen all closed dates for a company with a required reason. Requires ledger/admin when enforcement is on."
-    )]
-    async fn period_reopen(
-        &self,
-        Parameters(input): Parameters<inputs::PeriodReopen>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::PeriodReopen(input), context).await
-    }
-
-    #[tool(
-        description = "List a company's current posting cutoff and last close/reopen attribution."
-    )]
-    async fn period_list(
-        &self,
-        Parameters(input): Parameters<inputs::CompanyScope>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::PeriodList(input), context).await
-    }
-
-    #[tool(
-        description = "Verify every company in the ledger and return balance, audit-chain, and check evidence."
-    )]
-    async fn verify(
-        &self,
-        Parameters(input): Parameters<inputs::Empty>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::Verify(input), context).await
-    }
-
-    #[tool(
-        description = "List audit changes in bounded pages, optionally filtered by actor, verified agent URI, company, entity, or action. A client_hint is unverified runtime context. Continue with _meta.pagination.next_offset and the same filters."
-    )]
-    async fn audit_log(
-        &self,
-        Parameters(input): Parameters<inputs::AuditLog>,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
-        self.execute(Request::AuditLog(input), context).await
     }
 }
 
@@ -834,7 +280,9 @@ impl ServerHandler for LedgerServer {
                     if identity.enforces_permissions(crate::db::policy::get(reader)?.enforce) {
                         let mut allowed = Vec::new();
                         for tool in tools {
-                            if identity.allows_known_operation(tool.name.parse()?)? {
+                            if identity
+                                .allows_known_operation(catalog::operation_for_tool(&tool.name)?)?
+                            {
                                 allowed.push(tool);
                             }
                         }
@@ -906,7 +354,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         && identity.enforces_permissions(enforce)
     {
         for tool in server.tool_router.list_all() {
-            if !identity.allows_known_operation(tool.name.parse()?)? {
+            if !identity.allows_known_operation(catalog::operation_for_tool(&tool.name)?)? {
                 server.tool_router.remove_route(&tool.name);
             }
         }
@@ -940,7 +388,9 @@ mod tests {
     fn every_mcp_tool_has_an_explicit_requirement() -> Result<(), CliError> {
         let server = LedgerServer::new(Db::open_in_memory()?, LedgerAccess::ReadWrite);
         for tool in server.tool_router.list_all() {
-            Capability::for_operation(&tool.name)?;
+            catalog::operation_for_tool(&tool.name)?
+                .permission()
+                .primary()?;
         }
         Ok(())
     }
@@ -1013,16 +463,17 @@ mod tests {
         let call = |tool, mut input: Value| {
             input["company"] = json!("acme");
             let request = match tool {
-                "security_create" => Request::SecurityCreate(decode(input)?),
-                "security_list" => Request::SecurityList(decode(input)?),
-                "investment_buy" => Request::InvestmentBuy(decode(input)?),
-                "security_price" => Request::SecurityPrice(decode(input)?),
-                "investment_sell" => Request::InvestmentSell(decode(input)?),
-                "investment_holdings" => Request::InvestmentHoldings(decode(input)?),
-                "investment_lots" => Request::InvestmentLots(decode(input)?),
+                "security_create" => dispatch::security_create(decode(input)?)?,
+                "security_list" => dispatch::security_list(decode(input)?),
+                "investment_buy" => dispatch::investment_buy(decode(input)?)?,
+                "security_price" => dispatch::security_price(decode(input)?)?,
+                "investment_sell" => dispatch::investment_sell(decode(input)?)?,
+                "investment_holdings" => dispatch::investment_holdings(decode(input)?),
+                "investment_lots" => dispatch::investment_lots(decode(input)?),
                 _ => return Err(CliError::General(format!("unexpected test tool: {tool}"))),
             };
-            request.execute(&db, &actor).map(|(data, _)| data)
+            let response = request.execute(&db, &actor)?;
+            dispatch::response(&response, &actor).map(|(data, _)| data)
         };
         call(
             "security_create",
@@ -1120,7 +571,7 @@ mod tests {
             input["company"] = json!("acme");
             let input: inputs::Report = serde_json::from_value(input)
                 .map_err(|error| CliError::General(error.to_string()))?;
-            Request::Report(input).execute(&db, &Actor::for_mcp(None, None, None))?;
+            dispatch::report(input)?.execute(&db, &Actor::for_mcp(None, None, None))?;
         }
         Ok(())
     }

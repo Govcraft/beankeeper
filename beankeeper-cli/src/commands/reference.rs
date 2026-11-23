@@ -6,15 +6,19 @@ use crate::error::CliError;
 
 /// The original nonempty reference, trimmed once for storage and lookup.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct TransactionReference(Box<str>);
+pub struct TransactionReference(Box<str>);
 
 impl TransactionReference {
-    pub(crate) fn as_str(&self) -> &str {
+    /// Return the normalized reference used for retries and lookups.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
         &self.0
     }
+}
 
-    pub(crate) fn into_string(self) -> String {
-        self.0.into_string()
+impl From<TransactionReference> for String {
+    fn from(reference: TransactionReference) -> Self {
+        reference.0.into_string()
     }
 }
 
@@ -25,7 +29,8 @@ impl fmt::Display for TransactionReference {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct EmptyReference;
+/// A reference is empty after trimming surrounding whitespace.
+pub struct EmptyReference;
 
 impl fmt::Display for EmptyReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

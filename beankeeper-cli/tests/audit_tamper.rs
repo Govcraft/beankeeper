@@ -705,7 +705,7 @@ fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestR
 #[test]
 fn empty_ledger_has_an_intact_chain_without_a_head() -> TestResult {
     let db = Db::open_in_memory()?;
-    let data = beankeeper_cli::commands::verify::execute_json(&db)?;
+    let data = serde_json::to_value(beankeeper_cli::db::verification::VerifiedLedger::read(&db)?)?;
     assert_eq!(data["companies"], json!([]));
     assert_eq!(
         data["row_counts"],

@@ -81,6 +81,12 @@ impl ReopenReason {
     }
 }
 
+impl fmt::Display for ReopenReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl FromStr for ReopenReason {
     type Err = CliError;
 

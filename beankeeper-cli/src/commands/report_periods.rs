@@ -9,8 +9,7 @@
 //! The per-column amounts come from [`db::compute_trial_balance`], called once
 //! per column window. Rendering lives in [`crate::output::report_periods`].
 //!
-//! When neither option is given, [`try_run`] returns `None` and the regular
-//! single-column report runs unchanged.
+//! Single-column and comparison modes use separate typed requests.
 
 use std::collections::BTreeMap;
 
@@ -19,14 +18,12 @@ use chrono::{Datelike, Months, NaiveDate};
 use clap::ValueEnum;
 use serde::Serialize;
 
+use super::report::{ReportOutput, ReportPresentation};
 use super::report_dates::{DateRange, resolve_date};
 
-use crate::cli::{Cli, Command, OutputFormat, ReportCommand};
+use crate::cli::{Command, OutputFormat, ReportCommand};
 use crate::db;
-use crate::db::{
-    companies::Company,
-    connection::{Db, ReadConn},
-};
+use crate::db::companies::Company;
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::output::{self, chart};
@@ -35,10 +32,11 @@ use crate::output::{self, chart};
 pub const MAX_PERIODS: usize = 120;
 
 /// Calendar granularity for `--period`.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PeriodArg {
     /// One column per calendar month (labelled `2026-01`).
+    #[default]
     Month,
     /// One column per calendar quarter (labelled `2026-Q1`).
     Quarter,
@@ -275,107 +273,21 @@ fn requested_layout(sub: &ReportCommand) -> Option<(MultiReportKind, Layout)> {
     }
 }
 
-/// Run the multi-column form of a report when `--period` or `--compare` is set.
-///
-/// Returns `None` when the subcommand is not in a multi-column mode, so the
-/// caller falls through to the regular single-column report.
-#[must_use]
-pub fn try_run(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    sub: &ReportCommand,
-    format: OutputFormat,
-    use_color: bool,
-) -> Option<Result<(), CliError>> {
-    let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    db.read_snapshot(|reader| try_run_to(cli, reader, company, sub, &mut output).transpose())
-        .transpose()
-}
-
-pub(crate) fn try_run_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    sub: &ReportCommand,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Option<Result<(), CliError>> {
-    let request = match sub {
-        ReportCommand::IncomeStatement {
-            period: Some(period),
-            from,
-            to,
-            currency,
-            ..
-        } => Request {
-            kind: MultiReportKind::IncomeStatement,
-            period: *period,
-            from: from.as_ref(),
-            to: to.as_ref(),
-            account_type: None,
-            currency: currency.as_ref(),
-        },
-        ReportCommand::TrialBalance {
-            period: Some(period),
-            from,
-            to,
-            account_type,
-            currency,
-            ..
-        } => Request {
-            kind: MultiReportKind::TrialBalance,
-            period: *period,
-            from: from.as_ref(),
-            to: to.as_ref(),
-            account_type: *account_type,
-            currency: currency.as_ref(),
-        },
-        ReportCommand::IncomeStatement {
-            compare: Some(_), ..
-        }
-        | ReportCommand::TrialBalance {
-            compare: Some(_), ..
-        } => {
-            return super::report_compare::try_run_to(cli, reader, company, sub, output);
-        }
-        _ => return None,
-    };
-    Some(run(cli, reader, company, &request, output))
-}
-
-/// Parsed inputs for a multi-column report.
-struct Request<'a> {
+pub(super) fn compute(
+    scope: &Company<'_>,
     kind: MultiReportKind,
     period: PeriodArg,
-    from: Option<&'a crate::cli::CalendarDateArg>,
-    to: Option<&'a crate::cli::CalendarDateArg>,
+    dates: DateRange,
+    currency: Currency,
     account_type: Option<AccountType>,
-    currency: Option<&'a crate::cli::CurrencyArg>,
-}
-
-fn run(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    req: &Request<'_>,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let dates = DateRange::resolve(req.from, req.to, chrono::Local::now().date_naive())?;
+) -> Result<MultiColumnReport, CliError> {
     let (from, to) = (dates.from(), dates.to());
-    let columns = period_columns(from, to, req.period)?;
-
-    let currency = super::report_currency::resolve_report_currency(
-        reader,
-        company,
-        crate::cli::CurrencyArg::resolve_optional(req.currency)?,
-    )?;
-    let scope = Company::bind(reader, company.parse()?)?;
-    let (accounts, summary) = build_lines(&scope, req.kind, req.account_type, currency, &columns)?;
+    let columns = period_columns(from, to, period)?;
+    let (accounts, summary) = build_lines(scope, kind, account_type, currency, &columns)?;
 
     let report = MultiColumnReport {
-        kind: req.kind,
-        period: req.period,
+        kind,
+        period,
         currency,
         from,
         to,
@@ -385,36 +297,45 @@ fn run(
     };
 
     output::report_periods::validate_totals(&report)?;
+    Ok(report)
+}
 
+pub(super) fn render(
+    context: &ReportPresentation<'_>,
+    report: &MultiColumnReport,
+    output: &mut ReportOutput<'_>,
+) -> Result<(), CliError> {
     match output.format {
         OutputFormat::Table => {
             writeln!(
                 output.writer,
                 "{}",
-                output::report_periods::render_table(&report, output.use_color)
+                output::report_periods::render_table(report, output.use_color)
             )?;
         }
         OutputFormat::Json => {
-            let id = mode_operation(req.kind, Layout::Periods(req.period));
-            let meta = cli.meta(id, Some(company));
-            let chart = chart::requested(cli, || {
-                chart::periods(company, &report, cli.output.chart_all)
-            })?;
-            output.write_json(meta, output::report_periods::report_json(&report), chart)?;
+            let chart = context
+                .chart
+                .project(|all| chart::periods(context.company, report, all))?;
+            output.write_json(
+                context.meta(),
+                output::report_periods::report_json(report),
+                chart,
+            )?;
         }
         OutputFormat::Csv => {
             write!(
                 output.writer,
                 "{}",
-                output::report_periods::render_csv(&report)?
+                output::report_periods::render_csv(report)?
             )?;
         }
     }
 
-    if !cli.verbosity.quiet {
+    if !context.quiet {
         eprintln!(
             "[ok] {} generated ({} columns)",
-            req.kind.title().to_lowercase(),
+            report.kind.title().to_lowercase(),
             report.columns.len()
         );
     }

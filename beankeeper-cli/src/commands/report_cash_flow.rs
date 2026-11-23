@@ -25,17 +25,19 @@
 //!    through `--to`. The report flags any difference between
 //!    `opening + net change` and `closing`.
 
-use crate::operation::Operation;
 use std::collections::{BTreeMap, BTreeSet};
 
 use beankeeper::types::{AccountCode, AccountType, Currency, Money};
 use rusqlite::{params, types::Type};
 use serde::{Serialize, Serializer};
 
+use super::report::{ReportOutput, ReportPresentation};
 use super::report_dates::DateRange;
 use crate::cli::{Cli, OutputFormat};
-use crate::db;
-use crate::db::connection::{Db, ReadConn};
+use crate::db::{
+    companies::Company,
+    connection::{Db, ReadConn},
+};
 use crate::error::CliError;
 use crate::output::amounts::{MoneyField, format_money_grouped};
 use crate::output::chart;
@@ -67,7 +69,7 @@ pub struct CashFlowArgs {
     #[arg(long)]
     pub compare: Option<super::report_periods::CompareArg>,
     /// Explain the change for one account code.
-    #[arg(long, requires = "compare")]
+    #[arg(long)]
     pub explain_change: Option<String>,
 }
 
@@ -350,45 +352,60 @@ pub fn run(
     use_color: bool,
 ) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
-    let mut output = super::report::ReportOutput::new(format, use_color, &mut stdout);
-    db.read_snapshot(|reader| {
-        let request = args.resolve(reader, company, chrono::Local::now().date_naive())?;
-        run_to(cli, reader, company, request, &mut output)
-    })
+    let mut output = ReportOutput::new(format, use_color, &mut stdout);
+    let report = db.read_snapshot(|reader| {
+        let scope = Company::bind(reader, company.parse()?)?;
+        let dates = DateRange::resolve(
+            args.from.as_ref(),
+            args.to.as_ref(),
+            super::report_dates::Today::default().into(),
+        )?;
+        let currency = super::report_currency::resolve_report_currency(
+            reader,
+            company,
+            crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
+        )?;
+        compute_scoped(
+            reader,
+            &scope,
+            dates,
+            currency,
+            args.cash_account.iter().map(String::as_str),
+        )
+    })?;
+    render(
+        &ReportPresentation::cli(
+            cli,
+            crate::operation::Operation::ReportCashFlow,
+            company,
+            (cli.output.chart, cli.output.chart_all).try_into()?,
+        ),
+        &report,
+        &mut output,
+    )
 }
 
-pub(super) fn run_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    request: CashFlowRequest<'_>,
-    output: &mut super::report::ReportOutput<'_>,
+pub(super) fn render(
+    context: &ReportPresentation<'_>,
+    statement: &CashFlowStatement,
+    output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let statement = compute_scoped(
-        reader,
-        company,
-        request.dates,
-        request.currency,
-        request.accounts.iter().map(String::as_str),
-    )?;
-
     match output.format {
         OutputFormat::Table => writeln!(
             output.writer,
             "{}",
-            render_table(&statement, output.use_color)
+            render_table(statement, output.use_color)
         )?,
         OutputFormat::Json => {
-            let meta = cli.meta(Operation::ReportCashFlow, Some(company));
-            let chart = chart::requested(cli, || {
-                chart::cash_flow(company, &statement, cli.output.chart_all)
-            })?;
-            output.write_json(meta, &statement, chart)?;
+            let chart = context
+                .chart
+                .project(|all| chart::cash_flow(context.company, statement, all))?;
+            output.write_json(context.meta(), statement, chart)?;
         }
-        OutputFormat::Csv => write!(output.writer, "{}", render_csv(&statement)?)?,
+        OutputFormat::Csv => write!(output.writer, "{}", render_csv(statement)?)?,
     }
 
-    if !cli.verbosity.quiet {
+    if !context.quiet {
         if statement.reconciled() {
             eprintln!("[ok] cash flow statement generated");
         } else {
@@ -400,34 +417,6 @@ pub(super) fn run_to(
     }
 
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct CashFlowRequest<'a> {
-    dates: DateRange,
-    currency: Currency,
-    accounts: &'a [String],
-}
-
-impl CashFlowArgs {
-    pub(super) fn resolve(
-        &self,
-        reader: ReadConn<'_>,
-        company: &str,
-        today: chrono::NaiveDate,
-    ) -> Result<CashFlowRequest<'_>, CliError> {
-        let dates = DateRange::resolve(self.from.as_ref(), self.to.as_ref(), today)?;
-        let currency = super::report_currency::resolve_report_currency(
-            reader,
-            company,
-            crate::cli::CurrencyArg::resolve_optional(self.currency.as_ref())?,
-        )?;
-        Ok(CashFlowRequest {
-            dates,
-            currency,
-            accounts: &self.cash_account,
-        })
-    }
 }
 
 /// Compute a cash flow report on an already-open ledger using explicit dates
@@ -444,9 +433,10 @@ pub fn compute_cash_flow(
     accounts: &[AccountCode],
 ) -> Result<CashFlowStatement, CliError> {
     db.read_snapshot(|reader| {
+        let company = Company::bind(reader, company.parse()?)?;
         compute_scoped(
             reader,
-            company,
+            &company,
             dates,
             currency,
             accounts.iter().map(AccountCode::as_str),
@@ -456,12 +446,12 @@ pub fn compute_cash_flow(
 
 pub(super) fn compute_scoped<'a>(
     conn: ReadConn<'_>,
-    company: &str,
+    company: &Company<'_>,
     dates: DateRange,
     currency: Currency,
     accounts: impl IntoIterator<Item = &'a str>,
 ) -> Result<CashFlowStatement, CliError> {
-    db::companies::get_company(conn, &company.parse()?)?;
+    let company = company.slug().as_str();
     let cash_accounts = resolve_cash_accounts(conn, company, accounts)?;
     compute_for_accounts(conn, company, dates, currency, cash_accounts)
 }

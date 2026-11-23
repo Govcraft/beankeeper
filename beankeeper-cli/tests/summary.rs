@@ -6,8 +6,9 @@ use std::process::{Command, Output};
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::{
     cli::{Cli, Command as BkCommand},
-    commands::summary,
-    db::connection::Db,
+    commands::summary::{SummaryArgs, SummaryRequest},
+    db::{Actor, connection::Db},
+    request::{LedgerRequest, LedgerResponse},
 };
 use clap::Parser;
 use serde_json::{Value, json};
@@ -88,6 +89,16 @@ impl Ledger {
         args.extend(options);
         Ok(serde_json::from_str(&self.ok(&args)?)?)
     }
+}
+
+fn read_summary(db: &Db, company: &str, args: &SummaryArgs) -> Result<Value, Box<dyn Error>> {
+    let actor = Actor::new("fixture".parse()?);
+    let request = SummaryRequest::try_from((&company.parse()?, args, (false, false)))?;
+    let LedgerResponse::Summary(response) = LedgerRequest::Summary(request).execute(db, &actor)?
+    else {
+        return Err("expected an in-process summary response".into());
+    };
+    Ok(serde_json::to_value(response.envelope(&actor))?)
 }
 
 fn metric<'a>(report: &'a Value, id: &str) -> &'a Value {
@@ -222,7 +233,7 @@ fn single_currency_selectors_and_company_isolation_are_enforced() -> TestResult 
     let BkCommand::Summary(args) = &cli.command else {
         return Err("expected summary".into());
     };
-    let isolated = summary::execute_json(&cli, &db, "other", args)?;
+    let isolated = read_summary(&db, "other", args)?;
     assert_eq!(isolated["data"]["standing"]["cash_on_hand"], 0);
     assert_eq!(
         isolated["data"]["standing"]["cash_accounts_identified"],
@@ -251,7 +262,7 @@ fn read_only_snapshot_matches_cli_and_summary_adds_no_audit_or_ledger_rows() -> 
             .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
     };
     let changes = total_changes()?;
-    let mut actual = summary::execute_json(&cli, &db, "co", args)?;
+    let mut actual = read_summary(&db, "co", args)?;
     let mut expected = ledger.summary(&["--to", "2024-03-31"])?;
     actual["meta"]
         .as_object_mut()

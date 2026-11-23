@@ -10,6 +10,8 @@ use std::num::NonZeroI64;
 use std::str::FromStr;
 use std::time::Duration;
 
+use agent_uri::AgentId;
+use agent_uri_attestation::VerifyingKey;
 use chrono::{DateTime, Utc};
 use mti::prelude::MagicTypeId;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -23,6 +25,65 @@ use crate::error::CliError;
 use crate::identity::{self, Granted, IssuedCredential, SetupOwner};
 
 const MAX_TTL: Duration = Duration::from_hours(1);
+
+/// A validated name with an allocated identity for the setup agent.
+#[derive(Debug, Clone)]
+pub struct SetupAgentName(AgentId);
+
+impl FromStr for SetupAgentName {
+    type Err = CliError;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        AgentId::try_new(name)
+            .map(Self)
+            .map_err(|error| CliError::Validation(error.to_string()))
+    }
+}
+
+/// The validated public Ed25519 key for a setup agent.
+#[derive(Debug, Clone)]
+pub struct SetupPublicKey(VerifyingKey);
+
+impl FromStr for SetupPublicKey {
+    type Err = CliError;
+
+    fn from_str(key: &str) -> Result<Self, Self::Err> {
+        VerifyingKey::from_base64(key).map(Self).map_err(|_| {
+            CliError::Validation("invalid Ed25519 public key (expected base64)".into())
+        })
+    }
+}
+
+/// A positive setup credential lifetime of at most one hour.
+#[derive(Debug, Clone, Copy)]
+pub struct SetupLifetime(Duration);
+
+impl Default for SetupLifetime {
+    fn default() -> Self {
+        Self(Duration::from_mins(15))
+    }
+}
+
+impl TryFrom<Duration> for SetupLifetime {
+    type Error = CliError;
+
+    fn try_from(duration: Duration) -> Result<Self, Self::Error> {
+        if duration.is_zero() || duration > MAX_TTL {
+            return Err(CliError::Validation(
+                "setup token lifetime must be positive and at most one hour".into(),
+            ));
+        }
+        Ok(Self(duration))
+    }
+}
+
+impl FromStr for SetupLifetime {
+    type Err = CliError;
+
+    fn from_str(ttl: &str) -> Result<Self, Self::Err> {
+        identity::parse_ttl(ttl)?.try_into()
+    }
+}
 
 /// The monotonically increasing setup generation of one ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -144,20 +205,15 @@ fn require_encryption(conn: &Connection) -> Result<(), CliError> {
 pub(crate) fn begin(
     db: &Db,
     owner: &Actor,
-    name: &str,
-    public_key: &str,
-    ttl: Duration,
+    name: &SetupAgentName,
+    public_key: &SetupPublicKey,
+    ttl: SetupLifetime,
 ) -> Result<Started, CliError> {
     db.with_audited_tx("sp_setup_lifecycle", |tx| {
         let conn = tx.connection();
         require_encryption(conn)?;
         super::reserve_ledger_writer(tx)?;
         let owner = Granted::<SetupOwner>::check(tx, owner)?;
-        if ttl.is_zero() || ttl > MAX_TTL {
-            return Err(CliError::Validation(
-                "setup token lifetime must be positive and at most one hour".into(),
-            ));
-        }
         let active = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM setup_sessions WHERE state = 'active')",
             [],
@@ -170,7 +226,7 @@ pub(crate) fn begin(
         }
 
         let credential =
-            super::identity_write::issue_setup_credential(&owner, name, public_key, ttl)?;
+            super::identity_write::issue_setup_credential(&owner, &name.0, &public_key.0, ttl.0)?;
         let generation = conn
             .query_row(
                 "INSERT INTO setup_sessions (token_jti, state) VALUES (?1, 'active')
@@ -405,22 +461,25 @@ mod tests {
         let db = Db::open(&directory.path().join("setup.db"), Some(&passphrase))?;
         let owner = owner(&db)?;
         let plain = Db::open(&directory.path().join("plain.db"), None)?;
-        let public_key = SigningKey::generate().verifying_key().to_base64();
-        let ttl = Duration::from_mins(10);
+        let public_key = SigningKey::generate()
+            .verifying_key()
+            .to_base64()
+            .parse::<SetupPublicKey>()?;
+        let ttl = SetupLifetime::try_from(Duration::from_mins(10))?;
 
         assert!(matches!(
-            begin(&plain, &owner, "setup", &public_key, ttl),
+            begin(&plain, &owner, &"setup".parse()?, &public_key, ttl),
             Err(CliError::Validation(message)) if message == "setup sessions require an encrypted ledger"
         ));
         let unnamed = Actor::new("owner".parse()?);
         assert!(matches!(
-            begin(&db, &unnamed, "setup", &public_key, ttl),
+            begin(&db, &unnamed, &"setup".parse()?, &public_key, ttl),
             Err(CliError::Unauthorized(_))
         ));
-        let setup = begin(&db, &owner, "setup", &public_key, ttl)?;
+        let setup = begin(&db, &owner, &"setup".parse()?, &public_key, ttl)?;
         assert_eq!(setup.credential.capabilities, [Capability::Setup.path()]);
         assert!(matches!(
-            begin(&db, &owner, "another", &public_key, ttl),
+            begin(&db, &owner, &"another".parse()?, &public_key, ttl),
             Err(CliError::Validation(_))
         ));
 
@@ -452,8 +511,16 @@ mod tests {
                     super::super::set_policy(grant, true)
                 })?;
             }
-            assert!(identity::authorize_operation(db.read(), Some(token), "setup.status").is_ok());
-            for operation in ["txn.post", "account.create", "agent.issue", "setup.finish"] {
+            assert!(
+                identity::authorize_operation(db.read(), Some(token), "ledger.setup.status")
+                    .is_ok()
+            );
+            for operation in [
+                "txn.post",
+                "account.create",
+                "agent.issue",
+                "ledger.setup.finish",
+            ] {
                 assert!(matches!(
                     identity::authorize_operation(db.read(), Some(token), operation),
                     Err(CliError::Forbidden(_))
@@ -473,10 +540,14 @@ mod tests {
             end(&db, &owner, generation, End::Revoke),
             Err(CliError::Validation(_))
         ));
-        let next = begin(&db, &owner, "setup", &public_key, ttl)?;
+        let next = begin(&db, &owner, &"setup".parse()?, &public_key, ttl)?;
         assert!(next.session.generation.get() > generation.get());
         let revoked = end(&db, &owner, next.session.generation, End::Revoke)?;
         assert_eq!(revoked.state, SessionState::Revoked);
+        assert_session_audit(&db, generation, token)?;
+        super::super::verify_hash_chain(db.read()).map(|_| ())
+    }
+    fn assert_session_audit(db: &Db, generation: Generation, token: &str) -> Result<(), CliError> {
         let mut audit = db.conn().prepare(
             "SELECT action, after FROM audit_log
              WHERE entity = 'agent' AND entity_id = ?1 ORDER BY id",
@@ -494,6 +565,6 @@ mod tests {
                 .iter()
                 .all(|(_, after)| !after.contains(token))
         );
-        super::super::verify_hash_chain(db.read()).map(|_| ())
+        Ok(())
     }
 }

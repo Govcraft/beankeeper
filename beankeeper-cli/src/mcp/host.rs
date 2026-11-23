@@ -78,11 +78,12 @@ pub(super) fn catalog(
     tools: Vec<HostTool>,
     read_only: bool,
 ) -> Result<Arc<Vec<HostTool>>, CliError> {
-    let mut names: std::collections::HashSet<_> = LedgerServer::tool_router()
-        .list_all()
-        .into_iter()
-        .map(|tool| tool.name.into_owned())
-        .collect();
+    let mut names: std::collections::HashSet<_> =
+        super::catalog::router(super::LedgerAccess::ReadWrite)
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
     for entry in &tools {
         if entry.tool.name.is_empty() || !names.insert(entry.tool.name.to_string()) {
             return Err(CliError::Validation(

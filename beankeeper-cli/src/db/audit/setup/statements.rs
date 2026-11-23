@@ -110,6 +110,34 @@ pub(crate) enum StatementSource {
     Ofx(StatementContent),
 }
 
+impl TryFrom<(StatementFormat, StatementContent, Option<CsvMapping>)> for StatementSource {
+    type Error = CliError;
+
+    fn try_from(
+        (format, content, csv): (StatementFormat, StatementContent, Option<CsvMapping>),
+    ) -> Result<Self, Self::Error> {
+        match (format, csv) {
+            (StatementFormat::Csv, csv) => Ok(Self::Csv {
+                content,
+                mapping: csv.unwrap_or_default(),
+            }),
+            (StatementFormat::Ofx, None) => Ok(Self::Ofx(content)),
+            (StatementFormat::Ofx, Some(_)) => Err(CliError::Validation(
+                "CSV field mapping is only valid for CSV statements".into(),
+            )),
+        }
+    }
+}
+
+impl From<(StatementFormat, StatementContent, CsvMapping)> for StatementSource {
+    fn from((format, content, mapping): (StatementFormat, StatementContent, CsvMapping)) -> Self {
+        match format {
+            StatementFormat::Csv => Self::Csv { content, mapping },
+            StatementFormat::Ofx => Self::Ofx(content),
+        }
+    }
+}
+
 impl StatementSource {
     fn format(&self) -> StatementFormat {
         match self {
@@ -130,8 +158,8 @@ impl StatementSource {
                 &content.text,
                 mapping,
                 request.currency,
-                request.bank.as_str(),
-                request.suspense.as_str(),
+                request.accounts.bank.as_str(),
+                request.accounts.suspense.as_str(),
                 MAX_ROWS,
             ),
             Self::Ofx(content) => {
@@ -141,16 +169,41 @@ impl StatementSource {
     }
 }
 
-pub(crate) struct StatementRequest {
+/// Distinct bank and suspense account codes for a statement.
+pub(crate) struct StatementAccounts {
+    bank: AccountCode,
+    suspense: AccountCode,
+}
+
+impl TryFrom<(AccountCode, AccountCode)> for StatementAccounts {
+    type Error = CliError;
+
+    fn try_from((bank, suspense): (AccountCode, AccountCode)) -> Result<Self, Self::Error> {
+        if bank == suspense {
+            return Err(CliError::Validation(
+                "statement bank and suspense accounts must differ".into(),
+            ));
+        }
+        Ok(Self { bank, suspense })
+    }
+}
+
+/// A statement and its independent bank and suspense accounts in one book.
+pub struct StatementRequest {
     pub(crate) company: CompanySlug,
     pub(crate) generation: Generation,
-    pub(crate) bank: AccountCode,
-    pub(crate) suspense: AccountCode,
+    pub(crate) accounts: StatementAccounts,
     pub(crate) currency: Currency,
     pub(crate) source: StatementSource,
 }
 
 impl StatementRequest {
+    /// The book to which the statement belongs.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        &self.company
+    }
+
     /// Hash only caller-controlled inputs, independent of mutable ledger rules and defaults.
     pub(crate) fn fingerprint(&self) -> Result<Sha256Hex, CliError> {
         #[derive(Serialize)]
@@ -165,8 +218,8 @@ impl StatementRequest {
         }
         let input = Input {
             company: self.company.as_str(),
-            bank: self.bank.as_str(),
-            suspense: self.suspense.as_str(),
+            bank: self.accounts.bank.as_str(),
+            suspense: self.accounts.suspense.as_str(),
             currency: self.currency.code(),
             format: self.source.format(),
             content_hash: self.source.content().hash.as_str(),
@@ -263,18 +316,12 @@ pub(crate) fn prepare_in_session(
             "setup credential is not active for this generation".into(),
         ));
     }
-    if request.bank == request.suspense {
-        return Err(CliError::Validation(
-            "statement bank and suspense accounts must differ".into(),
-        ));
-    }
-
     let profile = books::current_profile(session, &request.company)?;
     let conn = session.read();
     let company = &request.company;
     let scope = crate::db::companies::Company::bind(conn, company.clone())?;
-    let bank_code = request.bank.as_str();
-    let suspense_code = request.suspense.as_str();
+    let bank_code = request.accounts.bank.as_str();
+    let suspense_code = request.accounts.suspense.as_str();
     let bank = StatementAccount::load(&scope, bank_code)?;
     if !matches!(
         bank.account.account_type(),
@@ -339,8 +386,8 @@ pub(crate) fn prepare_in_session(
         generation: request.generation,
         company: request.company.clone(),
         profile_revision: profile.revision,
-        bank: request.bank.clone(),
-        suspense: request.suspense.clone(),
+        bank: request.accounts.bank.clone(),
+        suspense: request.accounts.suspense.clone(),
         currency: request.currency,
         format: request.source.format(),
         content_hash: request.source.content().hash.clone(),

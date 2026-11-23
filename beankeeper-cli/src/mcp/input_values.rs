@@ -15,25 +15,21 @@ use crate::commands::{reference::TransactionReference, report_periods::CompareAr
 use crate::db::audit::setup::books::{
     BookPurpose, ChartTemplate, FiscalYearStart, ProfileRevision, SetupReference,
 };
-pub(super) use crate::db::companies::CompanySlug;
-use crate::db::{
-    ActorLabel,
-    investments::{LotId, valid_symbol},
-    proposals::ProposalId,
-};
+pub(crate) use crate::db::companies::CompanySlug;
+use crate::db::{ActorLabel, investments::LotId, proposals::ProposalId};
 use crate::error::CliError;
 
-pub(super) trait TextValue: fmt::Display + FromStr {
+pub(crate) trait TextValue: fmt::Display + FromStr {
     const NAME: &'static str;
 
     fn schema() -> Schema;
 }
 
 #[derive(Debug)]
-pub(super) struct Text<T>(T);
+pub(crate) struct Text<T>(T);
 
 impl<T> Text<T> {
-    pub(super) fn into_inner(self) -> T {
+    pub(crate) fn into_inner(self) -> T {
         self.0
     }
 }
@@ -165,28 +161,7 @@ impl TextValue for AgentUri {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct SecuritySymbol(Box<str>);
-
-impl fmt::Display for SecuritySymbol {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl FromStr for SecuritySymbol {
-    type Err = CliError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        if valid_symbol(input) {
-            Ok(Self(input.into()))
-        } else {
-            Err(CliError::Validation(
-                "expected 1-32 ASCII letters, digits, '.', '-', '_' or ':'".into(),
-            ))
-        }
-    }
-}
+pub(crate) use crate::commands::investment::SecuritySymbol;
 
 impl TextValue for SecuritySymbol {
     const NAME: &'static str = "security symbol";
@@ -198,10 +173,10 @@ impl TextValue for SecuritySymbol {
 
 /// A date-only wire value with a resolved calendar date.
 #[derive(Debug)]
-pub(super) struct CalendarDate(NaiveDate);
+pub(crate) struct CalendarDate(NaiveDate);
 
 impl CalendarDate {
-    pub(super) fn date(&self) -> NaiveDate {
+    pub(crate) fn date(&self) -> NaiveDate {
         self.0
     }
 }
@@ -247,14 +222,14 @@ impl TextValue for LotId {
 }
 
 #[derive(Debug)]
-pub(super) struct Month(chrono::Month);
+pub(crate) struct Month(chrono::Month);
 
 impl Month {
-    pub(super) fn into_inner(self) -> chrono::Month {
+    pub(crate) fn into_inner(self) -> chrono::Month {
         self.0
     }
 
-    pub(super) fn get(&self) -> u32 {
+    pub(crate) fn get(&self) -> u32 {
         self.0.number_from_month()
     }
 }
@@ -287,10 +262,10 @@ impl JsonSchema for Month {
 /// Page size. SQLite treats negative limits as unlimited.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(transparent)]
-pub(super) struct PageLimit(i64);
+pub(crate) struct PageLimit(i64);
 
 impl PageLimit {
-    pub(super) fn get(&self) -> i64 {
+    pub(crate) fn get(&self) -> i64 {
         self.0
     }
 }
@@ -304,10 +279,10 @@ impl Serialize for PageLimit {
 /// Rows to skip before returning a page.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(transparent)]
-pub(super) struct PageOffset(i64);
+pub(crate) struct PageOffset(i64);
 
 impl PageOffset {
-    pub(super) fn get(&self) -> i64 {
+    pub(crate) fn get(&self) -> i64 {
         self.0
     }
 }
@@ -326,37 +301,7 @@ impl TextValue for CompanySlug {
     }
 }
 
-/// A plain decimal in major currency units, before applying a currency scale.
-#[derive(Debug)]
-pub(super) struct DecimalAmount(Box<str>);
-
-impl DecimalAmount {
-    pub(super) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for DecimalAmount {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for DecimalAmount {
-    type Err = CliError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let unsigned = input.strip_prefix(['+', '-']).unwrap_or(input);
-        let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-        let digits = |value: &str| value.bytes().all(|digit| digit.is_ascii_digit());
-        if whole.is_empty() || !digits(whole) || !digits(fraction) {
-            return Err(CliError::Validation(
-                "expected a plain decimal in major units".into(),
-            ));
-        }
-        Ok(Self(input.into()))
-    }
-}
+pub(crate) use crate::commands::txn::MajorAmount as DecimalAmount;
 
 impl TextValue for DecimalAmount {
     const NAME: &'static str = "amount";
@@ -435,23 +380,20 @@ impl JsonSchema for crate::db::audit::setup::Generation {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(transparent)]
-pub(super) struct NonEmpty<T>(Vec<T>);
+/// An array whose required first item survives decoding.
+pub(crate) use crate::request::NonEmpty;
 
-impl<T> NonEmpty<T> {
-    pub(super) fn into_vec(self) -> Vec<T> {
-        self.0
+impl<T: Serialize> Serialize for NonEmpty<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
     }
 }
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for NonEmpty<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let values = Vec::deserialize(deserializer)?;
-        if values.is_empty() {
-            return Err(de::Error::invalid_length(0, &"a non-empty array"));
-        }
-        Ok(Self(values))
+        Vec::deserialize(deserializer)?
+            .try_into()
+            .map_err(|_| de::Error::invalid_length(0, &"a non-empty array"))
     }
 }
 

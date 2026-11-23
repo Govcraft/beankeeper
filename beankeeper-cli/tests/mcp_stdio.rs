@@ -2888,6 +2888,12 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
         assert_eq!(actual["error"]["code"], code);
         assert!(actual.get("data").is_none());
     }
+    let partial_comparison = client.call(
+        "financial_summary",
+        &json!({"company":"acme", "compare_from":"2024-02-01"}),
+    )?;
+    assert_eq!(partial_comparison["result"]["isError"], true);
+    assert_eq!(payload(&partial_comparison)?["error"]["code"], "VALIDATION");
     let unknown = client.call(
         "financial_summary",
         &json!({"company":"acme", "db":"other.db"}),
@@ -3591,6 +3597,9 @@ fn assert_statement_import(
         approver.success("ledger_setup_statement_receipt", &lookup)?,
         receipt
     );
+    setup_investment_parity::assert_cli_statement_receipts(
+        path, passphrase, token, &approval, &receipt,
+    )?;
     assert_statement_collision_rolls_back(setup, &mut approver, &mut local, db, source)?;
     approver.success("verify", &json!({}))?;
     Ok((approver, approval, receipt))
@@ -4753,6 +4762,23 @@ fn audit_log_default_page_can_be_resumed() -> TestResult {
         &json!({"limit":50,"offset":0,"returned":50,"total":51,"has_more":true,"next_offset":50})
     );
     assert_eq!(first_data.as_array().map(Vec::len), Some(50));
+    let cli_audit = bk(&path)?
+        .args([
+            "--json",
+            "audit",
+            "log",
+            "--company",
+            "acme",
+            "--entity",
+            "transaction",
+            "--action",
+            "create",
+        ])
+        .assert()
+        .success();
+    let cli_audit: Value = serde_json::from_slice(&cli_audit.get_output().stdout)?;
+    assert_eq!(first_data, cli_audit["data"]);
+    assert_eq!(*page, cli_audit["meta"]["pagination"]);
     filters["offset"] = page["next_offset"].clone();
     let second = client.call("audit_log", &filters)?;
     let second_data = payload(&second)?;
@@ -4787,3 +4813,621 @@ fn audit_log_rejects_negative_offset() -> TestResult {
     assert_parameter_rejection(&result, "audit offset must be a nonnegative integer");
     Ok(())
 }
+
+fn transaction_cli_data(mut command: Command, args: &[&str]) -> Result<Value, Box<dyn Error>> {
+    let output = command
+        .args(["--json", "--company", "acme", "txn"])
+        .args(args)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(envelope["ok"], true);
+    Ok(envelope["data"].clone())
+}
+
+#[test]
+fn transaction_commands_and_tools_return_the_same_data() -> TestResult {
+    let directory = tempdir()?;
+    let cli_db = directory.path().join("cli.db");
+    let mcp_db = directory.path().join("mcp.db");
+    seed(&cli_db)?;
+    std::fs::copy(&cli_db, &mcp_db)?;
+
+    let configured = |database: &Path| {
+        let mut command = bk(database)?;
+        command
+            .env("BEANKEEPER_CURRENCY", "BHD")
+            .args(["--actor", "parity-operator"]);
+        Ok::<_, Box<dyn Error>>(command)
+    };
+    let mut server = configured(&mcp_db)?;
+    server.args(["mcp", "serve"]);
+    let mut client = Client::spawn(server)?;
+    client.initialize()?;
+
+    let cli_post = [
+        "post",
+        "--description",
+        "MCP sale",
+        "--date",
+        "2026-03-01",
+        "--debit",
+        "1000:12.50:bank receipt",
+        "--credit",
+        "4000:12.50",
+        "--reference",
+        "parity-sale",
+        "--on-conflict",
+        "skip",
+        "--meta",
+        "invoice=one",
+    ];
+    let mut mcp_post = posting("parity-sale");
+    mcp_post
+        .as_object_mut()
+        .ok_or("posting object")?
+        .remove("currency");
+    let posted = transaction_cli_data(configured(&cli_db)?, &cli_post)?;
+    assert_eq!(posted, client.success("txn_post", &mcp_post)?);
+    assert_eq!(
+        transaction_cli_data(configured(&cli_db)?, &cli_post)?,
+        client.success("txn_post", &mcp_post)?
+    );
+    let id = posted["id"].to_string();
+
+    let batch_file = directory.path().join("batch.csv");
+    // The cash line is a debit, so use the explicit deposit sign in both transports.
+    std::fs::write(&batch_file, "parity-sale,+1.234\n")?;
+    let batch_path = batch_file.to_str().ok_or("UTF-8 fixture path")?;
+    let clear = transaction_cli_data(
+        configured(&cli_db)?,
+        &[
+            "clear",
+            "--from-file",
+            batch_path,
+            "--account",
+            "1000",
+            "--date",
+            "2026-03-02",
+            "--statement",
+            "fixture",
+        ],
+    )?;
+    assert_eq!(clear["cleared_total"], 1234);
+    assert_eq!(
+        clear,
+        client.success(
+            "txn_clear",
+            &json!({
+                "company":"acme", "target":"batch", "account":"1000",
+                "date":"2026-03-02", "statement":"fixture",
+                "batch":[{"reference":"parity-sale", "amount":"+1.234"}],
+            })
+        )?
+    );
+
+    assert_eq!(
+        transaction_cli_data(configured(&cli_db)?, &["meta", "set", &id, "note=paid"])?,
+        client.success(
+            "txn_meta_set",
+            &json!({
+                "company":"acme", "id":posted["id"], "values":["note=paid"],
+            })
+        )?,
+    );
+    assert_eq!(
+        transaction_cli_data(
+            configured(&cli_db)?,
+            &["meta", "unset", "--reference", "parity-sale", "note"]
+        )?,
+        client.success(
+            "txn_meta_unset",
+            &json!({
+                "company":"acme", "reference":"parity-sale", "keys":["note"],
+            })
+        )?,
+    );
+
+    assert_transaction_reads_and_reverse(
+        |arguments| transaction_cli_data(configured(&cli_db)?, arguments),
+        &mut client,
+        &posted["id"],
+    )
+}
+
+fn assert_transaction_reads_and_reverse(
+    cli: impl Fn(&[&str]) -> Result<Value, Box<dyn Error>>,
+    client: &mut Client,
+    posted_id: &Value,
+) -> TestResult {
+    let id = posted_id.to_string();
+    let shown = cli(&["show", &id])?;
+    assert_eq!(shown[0]["currency"], "BHD");
+    assert_eq!(shown[0]["entries"][0]["amount_display"], "12.500");
+    assert_eq!(shown[0]["entries"][0]["clearings"][0]["amount"], 1234);
+    assert_eq!(
+        shown,
+        client.success("txn_show", &json!({"company":"acme", "id":posted_id}))?
+    );
+
+    assert_eq!(
+        cli(&[
+            "list",
+            "--limit",
+            "1",
+            "--offset",
+            "0",
+            "--account",
+            "1000",
+            "--amount-gt",
+            "12.000",
+            "--currency",
+            "BHD",
+            "--meta",
+            "invoice=one",
+        ])?,
+        client.success(
+            "txn_list",
+            &json!({
+                "company":"acme", "limit":1, "offset":0, "account":"1000", "amount_gt":"12.000",
+                "currency":"BHD", "meta":["invoice=one"],
+            })
+        )?,
+    );
+    assert_eq!(
+        cli(&["list", "--count", "--reference", "parity-sale"])?,
+        client.success(
+            "txn_list",
+            &json!({
+                "company":"acme", "count":true, "reference":"parity-sale",
+            })
+        )?,
+    );
+    assert_eq!(
+        cli(&[
+            "reverse",
+            &id,
+            "--date",
+            "2026-03-03",
+            "--reference",
+            "parity-undo",
+        ])?,
+        client.success(
+            "txn_reverse",
+            &json!({
+                "company":"acme", "id":posted_id, "date":"2026-03-03", "reference":"parity-undo",
+            })
+        )?,
+    );
+    assert_eq!(
+        cli(&["reconcile"])?,
+        client.success("txn_reconcile", &json!({}))?,
+    );
+    Ok(())
+}
+
+// These values are generated independently when the two transports create or
+// resolve proposals. Assert their presence and compare every other field.
+fn stable_proposal(mut row: Value) -> Value {
+    assert!(
+        row["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("proposal_"))
+    );
+    assert!(row["created_at"].is_string());
+    row["id"] = json!("proposal_fixture");
+    row["created_at"] = json!("fixture-timestamp");
+    if row["resolved_at"].is_string() {
+        row["resolved_at"] = json!("fixture-timestamp");
+    }
+    row
+}
+
+#[test]
+fn proposal_commands_and_tools_return_the_same_data() -> TestResult {
+    let directory = tempdir()?;
+    let cli_db = directory.path().join("cli.db");
+    let mcp_db = directory.path().join("mcp.db");
+    let passphrase_file = directory.path().join("passphrase");
+    identity_ledger(&cli_db, &passphrase_file)?;
+    let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
+    let db = beankeeper_cli::db::Db::open_existing(&cli_db, Some(&passphrase))?;
+    let proposer = proposal_identity(&db, "parity_proposer", &["ledger/read", "ledger/propose"])?;
+    let reviewer = proposal_identity(&db, "parity_reviewer", &["ledger/read", "ledger/approve"])?;
+    let proposer_token = proposer["token"].as_str().ok_or("proposer token")?;
+    let reviewer_token = reviewer["token"].as_str().ok_or("reviewer token")?;
+    drop(db);
+    std::fs::copy(&cli_db, &mcp_db)?;
+    let cli = |token: &str| {
+        let mut command = bk(&cli_db)?;
+        command
+            .arg("--passphrase-file")
+            .arg(&passphrase_file)
+            .args(["--agent-token", token]);
+        Ok::<_, Box<dyn Error>>(command)
+    };
+    let mut proposer = identity_client(&mcp_db, &passphrase_file, Some(proposer_token), false)?;
+    let mut reviewer = identity_client(&mcp_db, &passphrase_file, Some(reviewer_token), false)?;
+
+    for (reference, resolution, tool) in [
+        ("parity-approved", "approve", "txn_approve"),
+        ("parity-withdrawn", "reject", "txn_reject"),
+    ] {
+        let cli_proposal = transaction_cli_data(
+            cli(proposer_token)?,
+            &[
+                "propose",
+                "--description",
+                "MCP sale",
+                "--date",
+                "2026-03-01",
+                "--debit",
+                "1000:12.50:bank receipt",
+                "--credit",
+                "4000:12.50",
+                "--reference",
+                reference,
+                "--on-conflict",
+                "skip",
+                "--meta",
+                "invoice=one",
+            ],
+        )?;
+        let mcp_proposal = proposer.success("txn_propose", &posting(reference))?;
+        let cli_id = cli_proposal["id"]
+            .as_str()
+            .ok_or("CLI proposal ID")?
+            .to_owned();
+        let mcp_id = mcp_proposal["id"]
+            .as_str()
+            .ok_or("MCP proposal ID")?
+            .to_owned();
+        assert_eq!(stable_proposal(cli_proposal), stable_proposal(mcp_proposal));
+
+        let cli_list = transaction_cli_data(cli(proposer_token)?, &["proposals"])?;
+        let mcp_list = proposer.success("txn_proposals", &json!({"company":"acme"}))?;
+        assert_eq!(cli_list.as_array().map(Vec::len), Some(1));
+        assert_eq!(mcp_list.as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            stable_proposal(cli_list[0].clone()),
+            stable_proposal(mcp_list[0].clone())
+        );
+
+        let (token, client) = if resolution == "approve" {
+            (reviewer_token, &mut reviewer)
+        } else {
+            (proposer_token, &mut proposer)
+        };
+        let cli_resolved = transaction_cli_data(cli(token)?, &[resolution, &cli_id])?;
+        let mcp_resolved = client.success(tool, &json!({"company":"acme", "id":mcp_id}))?;
+        assert_eq!(stable_proposal(cli_resolved), stable_proposal(mcp_resolved));
+    }
+    Ok(())
+}
+
+fn report_parity_cases() -> [(&'static str, &'static [&'static str], Value); 17] {
+    [
+        ("trial-balance", &[], json!({})),
+        (
+            "trial-balance",
+            &["--period", "month"],
+            json!({"period": "month"}),
+        ),
+        (
+            "trial-balance",
+            &["--compare", "previous"],
+            json!({"compare": "previous"}),
+        ),
+        (
+            "balance",
+            &["--account", "1000"],
+            json!({"account": "1000"}),
+        ),
+        ("balance-sheet", &[], json!({})),
+        ("income-statement", &[], json!({})),
+        (
+            "income-statement",
+            &["--period", "quarter"],
+            json!({"period": "quarter"}),
+        ),
+        (
+            "income-statement",
+            &["--compare", "previous"],
+            json!({"compare": "previous"}),
+        ),
+        ("tax-summary", &[], json!({})),
+        ("schedule-c", &[], json!({})),
+        ("1099", &[], json!({})),
+        (
+            "ledger",
+            &["--account", "1000", "--filter-metadata", "invoice=one"],
+            json!({"account": ["1000"], "filter_metadata": ["invoice=one"]}),
+        ),
+        (
+            "budget-variance",
+            &["--year", "2026", "--month", "3"],
+            json!({"year": 2026, "month": 3}),
+        ),
+        (
+            "trend",
+            &["--metric", "net-worth"],
+            json!({"metric": "net-worth"}),
+        ),
+        ("cash-flow", &[], json!({})),
+        (
+            "aging",
+            &["--account", "1000"],
+            json!({"account": ["1000"]}),
+        ),
+        (
+            "reconciliation",
+            &["--account", "1000", "--statement-balance", "12.50"],
+            json!({"account": "1000", "statement_balance": "12.50"}),
+        ),
+    ]
+}
+
+#[test]
+fn report_queries_produce_the_same_data_over_cli_and_stdio() -> TestResult {
+    let directory = tempdir()?;
+    let books = directory.path().join("report-parity.db");
+    seed(&books)?;
+    let mut command = bk(&books)?;
+    command.args(["mcp", "serve"]);
+    let mut mcp = Client::spawn(command)?;
+    mcp.initialize()?;
+    mcp.success("txn_post", &posting("report-parity"))?;
+
+    for (kind, flags, mut parameters) in report_parity_cases() {
+        let mut expected = bk(&books)?;
+        expected
+            .args(["--json", "--company", "acme", "report", kind])
+            .args(flags);
+        parameters["company"] = json!("acme");
+        parameters["kind"] = json!(kind);
+        match kind {
+            "budget-variance" => {}
+            "aging" => {
+                expected.args(["--as-of", "2026-03-31"]);
+                parameters["as_of"] = json!("2026-03-31");
+            }
+            _ => {
+                expected.args(["--to", "2026-03-31"]);
+                parameters["to"] = json!("2026-03-31");
+            }
+        }
+        let output = expected.assert().success();
+        let cli: Value = serde_json::from_slice(&output.get_output().stdout)?;
+        assert_eq!(
+            mcp.success("report", &parameters)?,
+            cli["data"],
+            "{kind}: {flags:?}"
+        );
+    }
+    let invalid = mcp.call(
+        "report",
+        &json!({"company":"acme","kind":"trial-balance","period":"month","compare":"previous"}),
+    )?;
+    assert_eq!(invalid["result"]["isError"], true);
+    let error = payload(&invalid)?;
+    assert_eq!(error["code"], "USAGE");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("cannot be used with"))
+    );
+    Ok(())
+}
+
+#[test]
+fn generated_operations_cover_cli_paths_mcp_schemas_and_permissions() -> TestResult {
+    use beankeeper_cli::{
+        capability::Capability,
+        cli::Cli,
+        operation::{CliOnlyReason, Exposure, Operation},
+    };
+    use clap::CommandFactory;
+
+    let cli = Cli::command();
+    let dir = tempdir()?;
+    let path = dir.path().join("catalog.db");
+    bk(&path)?.arg("init").assert().success();
+    let mut server = bk(&path)?;
+    server.args(["mcp", "serve"]);
+    let mut client = Client::spawn(server)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?;
+    let mut expected = BTreeSet::new();
+
+    for &operation in Operation::ALL {
+        let path = operation.cli_path();
+        assert!(
+            path.split('.')
+                .try_fold(&cli, |command, segment| command.find_subcommand(segment))
+                .is_some(),
+            "{operation:?} has no clap path {path}"
+        );
+        let permission = Capability::for_operation(operation.name());
+        match operation.exposure() {
+            Exposure::Both(name) | Exposure::McpOnly(name, _) => {
+                assert!(expected.insert(name), "duplicate registered tool {name}");
+                let tool = tools.iter().find(|tool| tool["name"] == name).ok_or(name)?;
+                assert_eq!(tool["inputSchema"]["type"], "object");
+                assert_eq!(
+                    tool["annotations"]["readOnlyHint"],
+                    permission? == Capability::Read,
+                    "{name} advertises the wrong capability effect"
+                );
+            }
+            Exposure::Grouped(group) => {
+                assert!(matches!(group.exposure(), Exposure::McpOnly(_, _)));
+                assert_eq!(permission?, Capability::for_operation(group.name())?);
+            }
+            Exposure::CliOnly(CliOnlyReason::Transport) => assert!(permission.is_err()),
+            Exposure::CliOnly(_) => {
+                permission?;
+            }
+        }
+    }
+    assert_eq!(tool_names(&listed)?, expected);
+    Ok(())
+}
+
+mod catalog_payload_parity {
+    use super::*;
+
+    fn cli(path: &Path, args: &[&str]) -> Result<Value, Box<dyn Error>> {
+        let output = bk(path)?
+            .env("BEANKEEPER_CURRENCY", "BHD")
+            .arg("--json")
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        Ok(serde_json::from_slice::<Value>(&output)?["data"].clone())
+    }
+
+    fn without_row_timestamps(mut rows: Value) -> Value {
+        if let Some(rows) = rows.as_array_mut() {
+            for row in rows {
+                if let Some(fields) = row.as_object_mut() {
+                    fields.remove("created_at");
+                }
+            }
+        }
+        rows
+    }
+
+    type Fixture = (&'static str, Value, &'static [&'static str]);
+
+    fn fixtures() -> [Fixture; 10] {
+        [
+            ("company_list", json!({}), &["company", "list"]),
+            (
+                "company_show",
+                json!({"slug":"acme"}),
+                &["company", "show", "acme"],
+            ),
+            (
+                "company_create",
+                json!({"slug":"empty", "name":" Empty "}),
+                &["company", "create", "empty", " Empty "],
+            ),
+            (
+                "company_delete",
+                json!({"slug":"empty"}),
+                &["company", "delete", "empty", "--force"],
+            ),
+            (
+                "account_create",
+                json!({"company":"acme", "code":"5000", "name":"Rent", "account_type":"expense"}),
+                &[
+                    "--company",
+                    "acme",
+                    "account",
+                    "create",
+                    "5000",
+                    "Rent",
+                    "--type",
+                    "expense",
+                ],
+            ),
+            (
+                "account_list",
+                json!({"company":"acme"}),
+                &["--company", "acme", "account", "list"],
+            ),
+            (
+                "account_show",
+                json!({"company":"acme", "code":"5000"}),
+                &["--company", "acme", "account", "show", "5000"],
+            ),
+            (
+                "budget_set",
+                json!({"company":"acme", "account":"5000", "year":2026, "month":3, "amount":"12.345"}),
+                &[
+                    "--company",
+                    "acme",
+                    "budget",
+                    "set",
+                    "5000",
+                    "--year",
+                    "2026",
+                    "--month",
+                    "3",
+                    "--amount",
+                    "12.345",
+                ],
+            ),
+            (
+                "budget_list",
+                json!({"company":"acme", "year":2026}),
+                &["--company", "acme", "budget", "list", "--year", "2026"],
+            ),
+            (
+                "budget_delete",
+                json!({"company":"acme", "account":"5000", "year":2026, "month":3}),
+                &[
+                    "--company",
+                    "acme",
+                    "budget",
+                    "delete",
+                    "5000",
+                    "--year",
+                    "2026",
+                    "--month",
+                    "3",
+                    "--force",
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn companies_accounts_budgets_and_verification_share_payloads() -> TestResult {
+        let dir = tempdir()?;
+        let cli_db = dir.path().join("cli.db");
+        let mcp_db = dir.path().join("mcp.db");
+        seed(&cli_db)?;
+        std::fs::copy(&cli_db, &mcp_db)?;
+
+        let mut server = bk(&mcp_db)?;
+        server
+            .env("BEANKEEPER_CURRENCY", "BHD")
+            .args(["mcp", "serve"]);
+        let mut client = Client::spawn(server)?;
+        client.initialize()?;
+
+        for (tool, input, args) in fixtures() {
+            let local = cli(&cli_db, args)?;
+            if tool == "budget_set" {
+                assert_eq!(local[0]["currency"], "BHD");
+                assert_eq!(local[0]["amount_display"], "12.345");
+            }
+            // Mirrored writes can run on opposite sides of a clock tick.
+            assert_eq!(
+                without_row_timestamps(client.success(tool, &input)?),
+                without_row_timestamps(local),
+                "{tool}"
+            );
+        }
+        // Verification evidence describes one ledger's exact audit hashes.
+        assert_eq!(
+            client.success("verify", &json!({}))?,
+            cli(&mcp_db, &["verify"])?
+        );
+        Ok(())
+    }
+}
+
+#[path = "support/mcp_setup_investment_parity.rs"]
+mod setup_investment_parity;

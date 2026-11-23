@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use beankeeper::types::{AccountType, Currency, CurrencyError, DebitOrCredit};
+use beankeeper::types::{AccountType, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -14,6 +14,7 @@ use crate::error::CliError;
 use crate::identity::WriteMode;
 use crate::ledger_target::{LedgerPath, LedgerPaths, LedgerTarget};
 use crate::operation::Operation;
+pub use crate::request::CurrencyArg;
 
 /// Double-entry accounting on the command line.
 #[derive(Parser, Debug)]
@@ -201,37 +202,6 @@ impl Cli {
             return self.db_path().map(Some);
         }
         Ok(None)
-    }
-
-    pub(crate) fn for_mcp(command: Command, chart: bool, chart_all: bool) -> Self {
-        Self {
-            db: PathBuf::new(),
-            db_source: DbSource::Implicit,
-            ledger_bindings: Vec::new(),
-            ledger_target: None,
-            ledger_paths: OnceCell::new(),
-            company: None,
-            actor: None,
-            agent_token: None,
-            resolved_passphrase: OnceCell::new(),
-            verified_agent: OnceCell::new(),
-            output: FormatOptions {
-                format: None,
-                json: true,
-                chart,
-                chart_all,
-            },
-            verbosity: VerbosityOptions {
-                verbose: false,
-                quiet: true,
-                no_color: true,
-            },
-            passphrase: PassphraseOptions {
-                passphrase_fd: None,
-                passphrase_file: None,
-            },
-            command,
-        }
     }
 
     /// Opens an existing ledger, verifying any supplied token before use.
@@ -638,8 +608,8 @@ pub enum SecurityCommand {
         #[arg(long)]
         name: String,
         /// Quotation currency code.
-        #[arg(long, default_value = "USD")]
-        currency: beankeeper::types::Currency,
+        #[arg(long)]
+        currency: Option<beankeeper::types::Currency>,
     },
     /// List company securities.
     List,
@@ -731,8 +701,8 @@ pub enum InvestmentCommand {
         #[arg(long)]
         gain: String,
         /// Lot selection: fifo, lifo, or specific.
-        #[arg(long, default_value = "fifo")]
-        method: beankeeper::core::investments::LotMethod,
+        #[arg(long)]
+        method: Option<beankeeper::core::investments::LotMethod>,
         /// Lot ID required with --method specific.
         #[arg(long)]
         lot: Option<crate::db::investments::LotId>,
@@ -804,8 +774,8 @@ pub struct ScheduleCreateArgs {
     #[arg(long, required = true)]
     pub credit: Vec<String>,
     /// Currency code for all entries.
-    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    pub currency: CurrencyArg,
+    #[arg(long)]
+    pub currency: Option<CurrencyArg>,
     /// Metadata copied to each posting.
     #[arg(short = 'm', long)]
     pub metadata: Option<String>,
@@ -890,8 +860,8 @@ pub struct LoanCalculationArgs {
     #[arg(long)]
     pub months: u32,
     /// Currency used to interpret and display amounts.
-    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    pub currency: CurrencyArg,
+    #[arg(long)]
+    pub currency: Option<CurrencyArg>,
 }
 
 /// Stateless monthly loan operations. No persistent loan records are created.
@@ -1026,12 +996,12 @@ pub struct AuditLogArgs {
     pub action: Option<AuditActionArg>,
 
     /// Maximum rows (0 to 100). Use 0 for just the matching count.
-    #[arg(long, default_value_t)]
-    pub limit: AuditPageLimit,
+    #[arg(long)]
+    pub limit: Option<AuditPageLimit>,
 
     /// Number of matching rows to skip.
-    #[arg(long, default_value_t, allow_negative_numbers = true)]
-    pub offset: AuditPageOffset,
+    #[arg(long, allow_negative_numbers = true)]
+    pub offset: Option<AuditPageOffset>,
 }
 
 /// Shared typed classifications for audit-log filters.
@@ -1207,8 +1177,8 @@ EXAMPLES:\n  \
         month: Option<BudgetMonth>,
 
         /// Currency code.
-        #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-        currency: CurrencyArg,
+        #[arg(long)]
+        currency: Option<CurrencyArg>,
 
         /// Skip confirmation prompt.
         #[arg(long)]
@@ -1241,8 +1211,8 @@ pub struct BudgetSetArgs {
     pub annual: Option<String>,
 
     /// Currency code (default: USD or `BEANKEEPER_CURRENCY`).
-    #[arg(long, env = "BEANKEEPER_CURRENCY", default_value = "USD")]
-    pub currency: CurrencyArg,
+    #[arg(long)]
+    pub currency: Option<CurrencyArg>,
 
     /// Optional note for the budget line.
     #[arg(long)]
@@ -1257,7 +1227,7 @@ pub struct BudgetVarianceArgs {
     pub year: i32,
 
     /// Single month (1-12). Mutually exclusive with --from/--to.
-    #[arg(long, conflicts_with_all = ["from", "to"])]
+    #[arg(long)]
     pub month: Option<ReportMonth>,
 
     /// Start month (1-12, inclusive). Defaults to 1.
@@ -1274,7 +1244,7 @@ pub struct BudgetVarianceArgs {
 
     /// Currency code. When omitted, inferred from the company's
     /// transactions (required if they use more than one currency).
-    #[arg(long, env = "BEANKEEPER_CURRENCY")]
+    #[arg(long)]
     pub currency: Option<CurrencyArg>,
 
     /// Include accounts with actuals but no budget.
@@ -1819,8 +1789,8 @@ pub struct PostingArgs {
     pub meta: Vec<String>,
 
     /// Currency code.
-    #[arg(long, default_value = "USD")]
-    pub currency: CurrencyArg,
+    #[arg(long)]
+    pub currency: Option<CurrencyArg>,
 
     /// Transaction date (YYYY-MM-DD). Defaults to today.
     #[arg(long)]
@@ -1835,8 +1805,8 @@ pub struct PostingArgs {
     pub reference: Option<String>,
 
     /// Conflict resolution strategy for duplicate references.
-    #[arg(long, value_enum, default_value_t = OnConflictArg::Error)]
-    pub on_conflict: OnConflictArg,
+    #[arg(long, value_enum)]
+    pub on_conflict: Option<OnConflictArg>,
 
     /// Tax category for specific entries. Format: `account_code=category` (repeatable).
     /// Entries without a --tax flag inherit the account's `default_tax_category`.
@@ -1860,12 +1830,12 @@ pub struct TxnListArgs {
     pub to: Option<chrono::NaiveDate>,
 
     /// Maximum number of transactions to return. Use -1 for all matches.
-    #[arg(long, default_value = "50", allow_negative_numbers = true)]
-    pub limit: TxnPageLimit,
+    #[arg(long, allow_negative_numbers = true)]
+    pub limit: Option<TxnPageLimit>,
 
     /// Number of transactions to skip.
-    #[arg(long, default_value = "0")]
-    pub offset: u32,
+    #[arg(long)]
+    pub offset: Option<u32>,
 
     /// Search by description (substring, case-insensitive).
     #[arg(short = 'd', long)]
@@ -1939,16 +1909,36 @@ impl TxnPageLimit {
     }
 }
 
+impl Default for TxnPageLimit {
+    fn default() -> Self {
+        Self::Rows(50)
+    }
+}
+
+impl TryFrom<i64> for TxnPageLimit {
+    type Error = CliError;
+
+    fn try_from(raw: i64) -> Result<Self, Self::Error> {
+        if raw == -1 {
+            return Ok(Self::All);
+        }
+        u32::try_from(raw).map(Self::Rows).map_err(|_| {
+            CliError::Usage("limit must be a nonnegative row count or -1 for all matches".into())
+        })
+    }
+}
+
 impl std::str::FromStr for TxnPageLimit {
     type Err = CliError;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        if raw == "-1" {
-            return Ok(Self::All);
-        }
-        raw.parse().map(Self::Rows).map_err(|_| {
-            CliError::Usage("limit must be a nonnegative row count or -1 for all matches".into())
-        })
+        raw.parse::<i64>()
+            .map_err(|_| {
+                CliError::Usage(
+                    "limit must be a nonnegative row count or -1 for all matches".into(),
+                )
+            })?
+            .try_into()
     }
 }
 
@@ -2067,8 +2057,8 @@ pub struct TxnClearArgs {
     pub statement: Option<String>,
 
     /// Status to apply.
-    #[arg(long, value_enum, default_value_t = ClearanceArg::Cleared)]
-    pub status: ClearanceArg,
+    #[arg(long, value_enum)]
+    pub status: Option<ClearanceArg>,
 }
 
 /// Transaction proposal commands exposed directly under `bk txn`.
@@ -2146,7 +2136,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         currency: Option<CurrencyArg>,
         /// One column per period, plus a Total column. Defaults to year-to-date.
-        #[arg(long, value_enum, conflicts_with = "compare")]
+        #[arg(long, value_enum)]
         period: Option<crate::commands::report_periods::PeriodArg>,
 
         /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD. Defaults to year-to-date.
@@ -2154,7 +2144,7 @@ EXAMPLES:\n  \
         compare: Option<crate::commands::report_periods::CompareArg>,
 
         /// Explain the change for one account code, including transactions and payees.
-        #[arg(long, requires = "compare")]
+        #[arg(long)]
         explain_change: Option<String>,
     },
 
@@ -2192,7 +2182,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         compare: Option<crate::commands::report_periods::CompareArg>,
         /// Explain the change for one account code.
-        #[arg(long, requires = "compare")]
+        #[arg(long)]
         explain_change: Option<String>,
     },
 
@@ -2220,7 +2210,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         currency: Option<CurrencyArg>,
         /// One column per period, plus a Total column. Defaults to year-to-date.
-        #[arg(long, value_enum, conflicts_with = "compare")]
+        #[arg(long, value_enum)]
         period: Option<crate::commands::report_periods::PeriodArg>,
 
         /// Compare with previous, year-ago, or YYYY-MM-DD..YYYY-MM-DD. Defaults to year-to-date.
@@ -2228,7 +2218,7 @@ EXAMPLES:\n  \
         compare: Option<crate::commands::report_periods::CompareArg>,
 
         /// Explain the change for one account code, including transactions and payees.
-        #[arg(long, requires = "compare")]
+        #[arg(long)]
         explain_change: Option<String>,
     },
 
@@ -2255,7 +2245,7 @@ EXAMPLES:\n  \
         #[arg(long)]
         compare: Option<crate::commands::report_periods::CompareArg>,
         /// Explain the change for one account code.
-        #[arg(long, requires = "compare")]
+        #[arg(long)]
         explain_change: Option<String>,
     },
 
@@ -2477,8 +2467,8 @@ pub struct AgingCommandArgs {
     pub as_of: Option<CalendarDateArg>,
 
     /// Ascending, comma-separated bucket upper bounds in days.
-    #[arg(long, default_value = "30,60,90")]
-    pub buckets: String,
+    #[arg(long)]
+    pub buckets: Option<String>,
 
     /// Group by this key of the (JSON) transaction metadata. Missing keys
     /// and non-JSON or non-object metadata go to `(unassigned)`.
@@ -2490,8 +2480,8 @@ pub struct AgingCommandArgs {
     pub currency: Option<CurrencyArg>,
 
     /// How settlements are matched to charges.
-    #[arg(long, value_enum, default_value_t = AgingMethodArg::Fifo)]
-    pub method: AgingMethodArg,
+    #[arg(long, value_enum)]
+    pub method: Option<AgingMethodArg>,
 
     /// Metadata key holding a settlement's link to a charge (reference or
     /// transaction id); default `applies_to`. Only used with `--method specific`.
@@ -2520,8 +2510,8 @@ pub struct AgingCommandArgs {
 #[derive(Args, Debug, Clone)]
 pub struct ReconciliationCommandArgs {
     /// Bank balances (default) or statement-scoped AR/AP settlements.
-    #[arg(long, value_enum, default_value_t = ReconciliationMode::Bank)]
-    pub mode: ReconciliationMode,
+    #[arg(long, value_enum)]
+    pub mode: Option<ReconciliationMode>,
 
     /// Settlement link metadata key (settlement mode only; default `applies_to`).
     #[arg(long, value_name = "KEY")]
@@ -2778,74 +2768,6 @@ impl serde::Serialize for ActorFilterArg {
             Ok(label) => serializer.collect_str(label),
             Err(error) => Err(serde::ser::Error::custom(error)),
         }
-    }
-}
-
-/// A decoded currency flag with any validation error retained for the command envelope.
-#[derive(Debug, Clone)]
-pub struct CurrencyArg(Result<Currency, CurrencyError>);
-
-impl CurrencyArg {
-    pub(crate) fn decode(raw: &str) -> Self {
-        Self(parse_currency_arg(raw))
-    }
-
-    pub(crate) fn resolve_optional(value: Option<&Self>) -> Result<Option<Currency>, CliError> {
-        value.map(Self::resolve).transpose()
-    }
-
-    /// Returns the validated currency.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliError::Validation`] for an unsupported currency code.
-    pub fn resolve(&self) -> Result<Currency, CliError> {
-        self.0
-            .as_ref()
-            .copied()
-            .map_err(|error| CliError::Validation(error.to_string()))
-    }
-}
-
-impl From<Currency> for CurrencyArg {
-    fn from(currency: Currency) -> Self {
-        Self(Ok(currency))
-    }
-}
-
-impl std::str::FromStr for CurrencyArg {
-    type Err = std::convert::Infallible;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        Ok(Self::decode(raw))
-    }
-}
-
-impl serde::Serialize for CurrencyArg {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match &self.0 {
-            Ok(currency) => serializer.collect_str(currency),
-            Err(error) => Err(serde::ser::Error::custom(error)),
-        }
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for CurrencyArg {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let code = <String as serde::Deserialize>::deserialize(deserializer)?;
-        parse_currency_arg(&code)
-            .map(Self::from)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Parse a currency flag or its environment default.
-pub(crate) fn parse_currency_arg(raw: &str) -> Result<Currency, CurrencyError> {
-    let raw = raw.trim();
-    if raw.bytes().any(|byte| byte.is_ascii_lowercase()) {
-        raw.to_ascii_uppercase().parse()
-    } else {
-        raw.parse()
     }
 }
 

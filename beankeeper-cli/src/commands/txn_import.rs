@@ -371,7 +371,7 @@ fn row_reference(
     occurrences: &mut HashMap<String, usize>,
 ) -> Result<String, CliError> {
     if let Some(reference) = prepared.reference.take() {
-        return Ok(reference.into_string());
+        return Ok(reference.into());
     }
     let bytes = serde_json::to_vec(prepared).map_err(|error| invalid(error.to_string()))?;
     let prefix = if format == ImportFormat::Csv {

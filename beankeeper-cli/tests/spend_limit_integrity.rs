@@ -5,8 +5,8 @@ mod raw_ledger;
 
 use agent_uri::AgentUri;
 use beankeeper::types::Currency;
-use beankeeper_cli::commands::verify;
 use beankeeper_cli::db::spend_limits::{Caps, SpendLimit};
+use beankeeper_cli::db::verification::VerifiedLedger;
 use beankeeper_cli::db::{self, Actor, Db, audit, spend_limits};
 use beankeeper_cli::error::CliError;
 use beankeeper_cli::identity::{Admin, Granted};
@@ -36,14 +36,14 @@ fn unaudited_limit_changes_insertions_and_deletions_fail_closed() -> Result<(), 
         Granted::<Admin>::with_db(&db, &Actor::new("owner".parse()?), |grant| {
             audit::set_spend_limit(grant, &limit)
         })?;
-        verify::execute_json(&db)?;
+        VerifiedLedger::read(&db)?;
         raw_ledger::open(&path, None)?.execute_batch(tamper)?;
         assert!(matches!(
             spend_limits::list(db.read(), limit.agent_uri(), Some(&"acme".parse()?)),
             Err(CliError::Database(_))
         ));
         assert!(matches!(
-            verify::execute_json(&db),
+            VerifiedLedger::read(&db),
             Err(CliError::Database(_))
         ));
         audit::verify_hash_chain(db.read())?;

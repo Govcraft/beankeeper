@@ -1,8 +1,11 @@
+//! Typed company operations and CLI rendering.
+
+use serde::{Serialize, Serializer};
+
 use crate::cli::{Cli, CompanyCommand, OutputFormat, resolve_format};
 use crate::confirmation::{Confirmed, confirm_deletion};
-use crate::db::connection::Db;
 use crate::db::{
-    Actor, CompanyRow,
+    Actor, CompanyRow, Db,
     companies::{self, CompanyName, CompanySlug},
 };
 use crate::error::CliError;
@@ -10,173 +13,143 @@ use crate::identity::{Admin, Granted};
 use crate::operation::Operation;
 use crate::output;
 
-/// Run a `bk company` subcommand.
-///
-/// # Errors
-///
-/// Returns [`CliError`] if the subcommand fails.
-pub fn run(cli: &Cli, sub: &CompanyCommand) -> Result<(), CliError> {
-    let db = cli.open_db()?;
-    let use_color = output::should_use_color(cli.verbosity.no_color);
-    let format = resolve_format(None, cli);
+/// An operation on the company catalog.
+pub enum CompanyRequest {
+    Create {
+        slug: CompanySlug,
+        name: CompanyName,
+        description: Option<String>,
+    },
+    List,
+    Show(CompanySlug),
+    Delete(CompanySlug, Confirmed),
+}
 
-    match sub {
-        CompanyCommand::Create {
-            slug,
-            name,
-            description,
-        } => {
-            let row = create(&db, &cli.principal(), slug, name, description.as_deref())?;
-            if !cli.verbosity.quiet {
-                eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
-            }
-            render_companies(&[row], Operation::CompanyCreate, format, use_color, cli)?;
-        }
-        CompanyCommand::List => {
-            let rows = companies::list_companies(db.read())?;
-            render_companies(&rows, Operation::CompanyList, format, use_color, cli)?;
-            if !cli.verbosity.quiet {
-                let count = rows.len();
-                eprintln!(
-                    "{count} {noun}",
-                    noun = if count == 1 { "company" } else { "companies" }
-                );
-            }
-        }
-        CompanyCommand::Show { slug } => {
-            let row = companies::get_company(db.read(), slug)?;
-            render_companies(&[row], Operation::CompanyShow, format, use_color, cli)?;
-        }
-        CompanyCommand::Delete { slug, force } => {
-            let Some(confirmed) = confirm_deletion(*force, &format!("company '{slug}'"))? else {
-                eprintln!("Aborted.");
-                return Ok(());
-            };
-            delete(&db, &cli.principal(), slug, confirmed)?;
-            if format == OutputFormat::Json {
-                let meta = cli.meta(Operation::CompanyDelete, None);
-                let rendered = output::json::render_deleted(slug.as_str(), meta)?;
-                println!("{rendered}");
-            }
-            if !cli.verbosity.quiet {
-                eprintln!("[ok] Deleted company: {slug}");
-            }
+impl CompanyRequest {
+    /// Canonical operation for capability checks and output metadata.
+    #[must_use]
+    pub const fn operation(&self) -> Operation {
+        match self {
+            Self::Create { .. } => Operation::CompanyCreate,
+            Self::List => Operation::CompanyList,
+            Self::Show(_) => Operation::CompanyShow,
+            Self::Delete(..) => Operation::CompanyDelete,
         }
     }
 
-    Ok(())
+    pub(crate) fn execute(self, db: &Db, actor: &Actor) -> Result<CompanyResponse, CliError> {
+        let operation = self.operation();
+        let data = match self {
+            Self::Create {
+                slug,
+                name,
+                description,
+            } => {
+                let row = Granted::<Admin>::with_db(db, actor, |grant| {
+                    companies::create_company(grant, &slug, &name, description.as_deref())
+                })?;
+                CompanyData::Rows(vec![row])
+            }
+            Self::List => CompanyData::Rows(companies::list_companies(db.read())?),
+            Self::Show(slug) => CompanyData::Rows(vec![companies::get_company(db.read(), &slug)?]),
+            Self::Delete(slug, confirmed) => {
+                Granted::<Admin>::with_db(db, actor, |grant| {
+                    crate::db::delete_company(grant, &slug, confirmed)
+                })?;
+                CompanyData::Deleted(slug)
+            }
+        };
+        Ok(CompanyResponse { operation, data })
+    }
 }
 
-pub(crate) fn create(
-    db: &Db,
-    actor: &Actor,
-    slug: &CompanySlug,
-    name: &CompanyName,
-    description: Option<&str>,
-) -> Result<CompanyRow, CliError> {
-    Granted::<Admin>::with_db(db, actor, |grant| {
-        companies::create_company(grant, slug, name, description)
-    })
+enum CompanyData {
+    Rows(Vec<CompanyRow>),
+    Deleted(CompanySlug),
 }
 
-pub(crate) fn delete(
-    db: &Db,
-    actor: &Actor,
-    slug: &CompanySlug,
-    confirmed: Confirmed,
-) -> Result<(), CliError> {
-    Granted::<Admin>::with_db(db, actor, |grant| {
-        crate::db::delete_company(grant, slug, confirmed)
-    })
+/// Result of a company operation, with the existing JSON data shape.
+pub struct CompanyResponse {
+    operation: Operation,
+    data: CompanyData,
 }
 
-/// Render company rows in the requested format.
-fn render_companies(
-    rows: &[crate::db::CompanyRow],
-    command: Operation,
-    format: OutputFormat,
-    use_color: bool,
-    cli: &Cli,
-) -> Result<(), CliError> {
-    match format {
-        OutputFormat::Table => {
-            let rendered = output::table::render_companies(rows, use_color);
-            println!("{rendered}");
-        }
-        OutputFormat::Json => {
-            let meta = cli.meta(command, None);
-            let rendered = output::json::render_companies(rows, meta)?;
-            println!("{rendered}");
-        }
-        OutputFormat::Csv => {
-            let rendered = output::csv::render_companies(rows)?;
-            print!("{rendered}");
+impl Serialize for CompanyResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.data {
+            CompanyData::Rows(rows) => rows.serialize(serializer),
+            CompanyData::Deleted(slug) => {
+                output::json::deleted_data(slug.as_str()).serialize(serializer)
+            }
         }
     }
-    Ok(())
 }
 
-/// Execute a company read without writing to stdout.
-///
-/// # Errors
-///
-/// Returns the same validation and database errors as the CLI.
-pub fn execute_json(db: &Db, sub: &CompanyCommand) -> Result<serde_json::Value, CliError> {
-    let rows = match sub {
-        CompanyCommand::List => companies::list_companies(db.read())?,
-        CompanyCommand::Show { slug } => vec![companies::get_company(db.read(), slug)?],
-        _ => return Err(CliError::Usage("company read requires list or show".into())),
-    };
-    serde_json::to_value(rows).map_err(|error| CliError::General(error.to_string()))
-}
-
-pub(crate) fn json_data(rendered: &str) -> Result<serde_json::Value, CliError> {
-    let mut envelope: serde_json::Value = serde_json::from_str(rendered)
-        .map_err(|e| CliError::General(format!("JSON serialization failed: {e}")))?;
-    envelope
-        .get_mut("data")
-        .map(serde_json::Value::take)
-        .ok_or_else(|| CliError::General("JSON response is missing data".into()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn read_json_rejects_mutating_company_commands() -> Result<(), CliError> {
-        let db = Db::open_in_memory()?;
-        let create = CompanyCommand::Create {
-            slug: "acme".parse()?,
-            name: "Acme".parse()?,
-            description: None,
-        };
-        assert!(matches!(
-            execute_json(&db, &create),
-            Err(CliError::Usage(_))
-        ));
-        assert_eq!(
-            execute_json(&db, &CompanyCommand::List)?,
-            serde_json::json!([])
-        );
-        Granted::<Admin>::with_db(&db, &crate::db::Actor::new("fixture".parse()?), |grant| {
-            companies::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None)
-        })?;
-        let delete = CompanyCommand::Delete {
-            slug: "acme".parse()?,
-            force: true,
-        };
-        assert!(matches!(
-            execute_json(&db, &delete),
-            Err(CliError::Usage(_))
-        ));
-        let shown = execute_json(
-            &db,
-            &CompanyCommand::Show {
-                slug: "acme".parse()?,
-            },
-        )?;
-        assert_eq!(shown[0]["name"], "Acme");
+impl CompanyResponse {
+    pub(crate) fn render(&self, cli: &Cli) -> Result<(), CliError> {
+        let format = resolve_format(None, cli);
+        if self.operation == Operation::CompanyCreate
+            && !cli.verbosity.quiet
+            && let CompanyData::Rows(rows) = &self.data
+            && let Some(row) = rows.first()
+        {
+            eprintln!("[ok] Created company: {} ({})", row.slug, row.name);
+        }
+        match (format, &self.data) {
+            (OutputFormat::Json, _) => println!(
+                "{}",
+                output::json::envelope_ok(cli.meta(self.operation, None), self)?
+            ),
+            (OutputFormat::Table, CompanyData::Rows(rows)) => println!(
+                "{}",
+                output::table::render_companies(
+                    rows,
+                    output::should_use_color(cli.verbosity.no_color)
+                )
+            ),
+            (OutputFormat::Csv, CompanyData::Rows(rows)) => {
+                print!("{}", output::csv::render_companies(rows)?);
+            }
+            (_, CompanyData::Deleted(_)) => {}
+        }
+        if !cli.verbosity.quiet {
+            match &self.data {
+                CompanyData::Rows(rows) if self.operation == Operation::CompanyList => {
+                    let count = rows.len();
+                    let noun = if count == 1 { "company" } else { "companies" };
+                    eprintln!("{count} {noun}");
+                }
+                CompanyData::Deleted(slug) => eprintln!("[ok] Deleted company: {slug}"),
+                CompanyData::Rows(_) => {}
+            }
+        }
         Ok(())
+    }
+}
+
+impl TryFrom<&CompanyCommand> for Option<CompanyRequest> {
+    type Error = CliError;
+
+    fn try_from(command: &CompanyCommand) -> Result<Self, Self::Error> {
+        Ok(Some(match command {
+            CompanyCommand::Create {
+                slug,
+                name,
+                description,
+            } => CompanyRequest::Create {
+                slug: slug.clone(),
+                name: name.clone(),
+                description: description.clone(),
+            },
+            CompanyCommand::List => CompanyRequest::List,
+            CompanyCommand::Show { slug } => CompanyRequest::Show(slug.clone()),
+            CompanyCommand::Delete { slug, force } => {
+                let Some(confirmed) = confirm_deletion(*force, &format!("company '{slug}'"))?
+                else {
+                    return Ok(None);
+                };
+                CompanyRequest::Delete(slug.clone(), confirmed)
+            }
+        }))
     }
 }

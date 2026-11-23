@@ -10,20 +10,19 @@ use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use rusqlite::params;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use super::report::ReportOutput;
+use super::report::{AccountSelector, Comparison, ReportOutput, ReportPresentation, ReportScope};
 use super::report_dates::DateRange;
-use super::report_periods::{CompareArg, MultiReportKind, prior_range, range_label};
-use crate::cli::{Cli, OutputFormat, ReportCommand};
+use super::report_periods::{CompareArg, MultiReportKind, PeriodArg, prior_range, range_label};
+use super::report_trend::TrendMetric;
+use crate::cli::OutputFormat;
 use crate::db::{self, companies::Company, connection::ReadConn};
 use crate::error::CliError;
-use crate::operation::Operation;
 use crate::output::amounts::{MoneyField, format_money};
 use crate::output::chart::{self, ComparisonView};
 use crate::output::json::serialize_display;
 use crate::percent::Percent;
 
 struct Context<'a> {
-    cli: &'a Cli,
     reader: ReadConn<'a>,
     scope: &'a Company<'a>,
     company: &'a str,
@@ -432,13 +431,13 @@ impl std::fmt::Display for LedgerAccountCode {
 }
 
 #[derive(Clone, Copy)]
-enum Kind<'a> {
+pub(super) enum Kind<'a> {
     IncomeStatement,
     TrialBalance(Option<AccountType>),
     Balance(&'a str),
     BalanceSheet,
-    Trend(&'a super::report_trend::TrendArgs),
-    CashFlow(&'a super::report_cash_flow::CashFlowArgs),
+    Trend(PeriodArg, TrendMetric),
+    CashFlow(&'a [AccountSelector]),
 }
 
 impl Kind<'_> {
@@ -448,19 +447,8 @@ impl Kind<'_> {
             Self::TrialBalance(_) => "trial-balance",
             Self::Balance(_) => "balance",
             Self::BalanceSheet => "balance-sheet",
-            Self::Trend(_) => "trend",
+            Self::Trend(..) => "trend",
             Self::CashFlow(_) => "cash-flow",
-        }
-    }
-
-    const fn operation(self) -> Operation {
-        match self {
-            Self::IncomeStatement => Operation::ReportIncomeStatementCompare,
-            Self::TrialBalance(_) => Operation::ReportTrialBalanceCompare,
-            Self::Balance(_) => Operation::ReportBalance,
-            Self::BalanceSheet => Operation::ReportBalanceSheet,
-            Self::Trend(_) => Operation::ReportTrend,
-            Self::CashFlow(_) => Operation::ReportCashFlow,
         }
     }
 
@@ -480,119 +468,29 @@ impl<'a> Kind<'a> {
 
 struct Request<'a> {
     kind: Kind<'a>,
-    from: Option<&'a crate::cli::CalendarDateArg>,
-    to: Option<&'a crate::cli::CalendarDateArg>,
-    currency: Option<&'a crate::cli::CurrencyArg>,
+    scope: ReportScope,
     compare: CompareArg,
     explain: Option<&'a str>,
     cumulative: bool,
 }
 
-fn request(sub: &ReportCommand) -> Option<Request<'_>> {
-    let (kind, from, to, currency, compare, explain, cumulative) = match sub {
-        ReportCommand::IncomeStatement {
-            from,
-            to,
-            currency,
-            compare,
-            explain_change,
-            ..
-        } => (
-            Kind::IncomeStatement,
-            from.as_ref(),
-            to,
-            currency,
-            compare,
-            explain_change,
-            false,
-        ),
-        ReportCommand::TrialBalance {
-            from,
-            to,
-            currency,
-            compare,
-            explain_change,
-            account_type,
-            ..
-        } => (
-            Kind::TrialBalance(*account_type),
-            from.as_ref(),
-            to,
-            currency,
-            compare,
-            explain_change,
-            false,
-        ),
-        ReportCommand::Balance {
-            account,
-            from,
-            to,
-            currency,
-            compare,
-            explain_change,
-        } => (
-            Kind::Balance(account),
-            from.as_ref(),
-            to,
-            currency,
-            compare,
-            explain_change,
-            from.is_none(),
-        ),
-        ReportCommand::BalanceSheet {
-            to,
-            currency,
-            compare,
-            explain_change,
-        } => (
-            Kind::BalanceSheet,
-            None,
-            to,
-            currency,
-            compare,
-            explain_change,
-            true,
-        ),
-        ReportCommand::Trend(args) => (
-            Kind::Trend(args),
-            args.from.as_ref(),
-            &args.to,
-            &args.currency,
-            &args.compare,
-            &args.explain_change,
-            matches!(args.metric, super::report_trend::TrendMetric::NetWorth),
-        ),
-        ReportCommand::CashFlow(args) => (
-            Kind::CashFlow(args),
-            args.from.as_ref(),
-            &args.to,
-            &args.currency,
-            &args.compare,
-            &args.explain_change,
-            false,
-        ),
-        _ => return None,
-    };
-    Some(Request {
-        kind,
-        from,
-        to: to.as_ref(),
-        currency: currency.as_ref(),
-        compare: (*compare)?,
-        explain: explain.as_deref(),
-        cumulative,
-    })
+pub(super) struct ComparisonResponse {
+    data: ComparisonReport,
+    layout: ComparisonLayout,
 }
 
-pub(super) fn try_run_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    sub: &ReportCommand,
-    output: &mut ReportOutput<'_>,
-) -> Option<Result<(), CliError>> {
-    let req = request(sub)?;
-    Some(run(cli, reader, company, &req, output))
+enum ComparisonLayout {
+    IncomeStatement,
+    TrialBalance,
+    Trend(PeriodArg, TrendMetric),
+    CashFlow,
+    Standard,
+}
+
+impl ComparisonLayout {
+    fn legacy(&self) -> bool {
+        matches!(self, Self::IncomeStatement | Self::TrialBalance)
+    }
 }
 
 struct Windows {
@@ -605,9 +503,9 @@ struct Windows {
 
 impl Windows {
     fn resolve(req: &Request<'_>) -> Result<Self, CliError> {
-        let range = DateRange::resolve(req.from, req.to, chrono::Local::now().date_naive())?;
+        let range = DateRange::try_from(req.scope.dates)?;
         let to = range.to();
-        let from = if req.cumulative && req.from.is_none() {
+        let from = if req.cumulative && req.scope.dates.from().is_none() {
             to.with_day(1)
                 .ok_or_else(|| CliError::Validation("date is out of the supported range".into()))?
         } else {
@@ -651,38 +549,45 @@ impl Windows {
     }
 }
 
-fn run(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    req: &Request<'_>,
-    output: &mut ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let windows = Windows::resolve(req)?;
-    let currency = super::report_currency::resolve_report_currency(
-        reader,
-        company,
-        crate::cli::CurrencyArg::resolve_optional(req.currency)?,
-    )?;
-    let scope = Company::bind(reader, company.parse()?)?;
-    if let Some(account) = req.kind.account() {
-        db::accounts::get_account(&scope, account)?;
+pub(super) fn compute<'a>(
+    reader: ReadConn<'a>,
+    company: &'a Company<'a>,
+    kind: Kind<'_>,
+    scope: ReportScope,
+    comparison: &Comparison,
+) -> Result<ComparisonResponse, CliError> {
+    let cumulative = match kind {
+        Kind::Balance(_) => scope.dates.from().is_none(),
+        Kind::BalanceSheet | Kind::Trend(_, TrendMetric::NetWorth) => true,
+        _ => false,
+    };
+    let req = Request {
+        kind,
+        scope,
+        compare: comparison.compare,
+        explain: comparison.explain.as_ref().map(AsRef::as_ref),
+        cumulative,
+    };
+    let windows = Windows::resolve(&req)?;
+    let slug = company.slug().as_str();
+    let currency = super::report_currency::resolve_report_currency(reader, slug, scope.currency)?;
+    if let Some(account) = kind.account() {
+        db::accounts::get_account(company, account)?;
     }
     let context = Context {
-        cli,
         reader,
-        scope: &scope,
-        company,
+        scope: company,
+        company: slug,
         currency,
     };
-    let mut data = comparison_data(&context, req, &windows)?;
+    let mut data = comparison_data(&context, &req, &windows)?;
     data.movers = ranked_movers(&data.accounts);
     data.summary = summary(&data);
     let code = req
         .explain
         .or(req.kind.account())
         .or_else(|| data.movers.first().map(|row| row.line.code.as_str()));
-    data.desktop_view = desktop_view(company, code, &windows, currency);
+    data.desktop_view = desktop_view(slug, code, &windows, currency);
     if let Some(code) = req.explain {
         let account = data
             .accounts
@@ -693,7 +598,14 @@ fn run(
             })?;
         data.explanation = Some(explain(&context, account, &data, &windows)?);
     }
-    render(&context, req, &data, output)
+    let layout = match kind {
+        Kind::IncomeStatement => ComparisonLayout::IncomeStatement,
+        Kind::TrialBalance(_) => ComparisonLayout::TrialBalance,
+        Kind::Trend(period, metric) => ComparisonLayout::Trend(period, metric),
+        Kind::CashFlow(_) => ComparisonLayout::CashFlow,
+        Kind::Balance(_) | Kind::BalanceSheet => ComparisonLayout::Standard,
+    };
+    Ok(ComparisonResponse { data, layout })
 }
 
 fn comparison_data(
@@ -780,8 +692,8 @@ fn comparison_data(
         accounts,
         totals: Totals(totals),
         cash_accounts: (!legacy).then_some(current.cash_accounts),
-        metric: if let Kind::Trend(args) = req.kind {
-            Some(args.metric)
+        metric: if let Kind::Trend(_, metric) = req.kind {
+            Some(metric)
         } else {
             None
         },
@@ -826,7 +738,7 @@ fn snapshot(
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
     let zero = ReportMoney::from_minor(0, currency);
-    let spending = matches!(req.kind, Kind::Trend(args) if matches!(args.metric, super::report_trend::TrendMetric::Spending));
+    let spending = matches!(req.kind, Kind::Trend(_, TrendMetric::Spending));
     let mut earnings = zero;
     for row in rows {
         let code = LedgerAccountCode::from_balance(&row);
@@ -849,7 +761,7 @@ fn snapshot(
             code.as_str() == wanted
         } else if spending {
             kind == AccountType::Expense
-        } else if matches!(req.kind, Kind::Trend(_)) {
+        } else if matches!(req.kind, Kind::Trend(..)) {
             matches!(kind, AccountType::Asset | AccountType::Liability)
         } else {
             kind.is_balance_sheet()
@@ -897,8 +809,7 @@ fn finish_snapshot_totals(
                 .add(earnings)?,
         );
     }
-    if matches!(kind, Kind::Trend(args) if matches!(args.metric, super::report_trend::TrendMetric::NetWorth))
-    {
+    if matches!(kind, Kind::Trend(_, TrendMetric::NetWorth)) {
         totals.insert(
             TotalKey::NetWorth,
             category_total(totals, TotalKey::TotalAssets, zero).subtract(category_total(
@@ -988,22 +899,22 @@ fn period_snapshot(
 
 fn cash_snapshot(
     context: &Context<'_>,
-    args: &super::report_cash_flow::CashFlowArgs,
+    accounts: &[AccountSelector],
     (from, to): (NaiveDate, NaiveDate),
 ) -> Result<Snapshot, CliError> {
     let Context {
         reader,
-        company,
+        scope,
         currency,
         ..
     } = *context;
     let dates = super::report_dates::DateRange::new(from, to)?;
     let data = super::report_cash_flow::compute_scoped(
         reader,
-        company,
+        scope,
         dates,
         currency,
-        args.cash_account.iter().map(String::as_str),
+        accounts.iter().map(AsRef::as_ref),
     )?;
     let mut accounts = BTreeMap::new();
     let mut totals = BTreeMap::new();
@@ -1282,50 +1193,42 @@ fn finish_explanation(
     })
 }
 
-fn render(
-    context: &Context<'_>,
-    req: &Request<'_>,
-    data: &ComparisonReport,
+pub(super) fn render(
+    context: &ReportPresentation<'_>,
+    response: &ComparisonResponse,
     output: &mut ReportOutput<'_>,
 ) -> Result<(), CliError> {
-    let Context {
-        cli,
-        company,
-        currency,
-        ..
-    } = *context;
+    let ComparisonResponse { data, layout } = response;
+    let currency = data.currency;
     match output.format {
         OutputFormat::Json => {
-            let id = req.kind.operation();
-            let chart = chart::requested(cli, || {
-                let view = match req.kind {
-                    Kind::IncomeStatement => ComparisonView::IncomeStatement,
-                    Kind::TrialBalance(_) => ComparisonView::TrialBalance,
-                    Kind::Trend(args) => ComparisonView::Trend(args.period, args.metric),
-                    Kind::CashFlow(_) => ComparisonView::CashFlow(
+            let chart = context.chart.project(|all| {
+                let view = match layout {
+                    ComparisonLayout::IncomeStatement => ComparisonView::IncomeStatement,
+                    ComparisonLayout::TrialBalance => ComparisonView::TrialBalance,
+                    ComparisonLayout::Trend(period, metric) => {
+                        ComparisonView::Trend(*period, *metric)
+                    }
+                    ComparisonLayout::CashFlow => ComparisonView::CashFlow(
                         data.cash_accounts.as_deref().ok_or_else(|| {
                             CliError::General(
                                 "cash-flow comparison is missing its cash accounts".into(),
                             )
                         })?,
                     ),
-                    _ => {
+                    ComparisonLayout::Standard => {
                         return Err(CliError::Usage(
                             "--chart is unavailable for this comparison".into(),
                         ));
                     }
                 };
-                chart::comparison(company, data, view, cli.output.chart_all)
+                chart::comparison(context.company, data, view, all)
             })?;
-            output.write_json(
-                cli.meta(id, Some(company)).with_currency(currency),
-                data,
-                chart,
-            )?;
+            output.write_json(context.meta().with_currency(currency), data, chart)?;
         }
         OutputFormat::Table => {
             writeln!(output.writer, "{}", data.summary)?;
-            if req.kind.is_legacy() {
+            if layout.legacy() {
                 writeln!(
                     output.writer,
                     "{}",

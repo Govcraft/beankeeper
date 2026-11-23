@@ -46,25 +46,20 @@ pub struct StatementPreviewArgs {
     csv: CsvMapping,
 }
 
-impl StatementPreviewArgs {
-    pub(super) fn request(&self) -> Result<StatementRequest, CliError> {
-        let currency = self.currency.resolve()?;
-        let content = match &self.file {
+impl TryFrom<&StatementPreviewArgs> for StatementRequest {
+    type Error = CliError;
+
+    fn try_from(args: &StatementPreviewArgs) -> Result<Self, Self::Error> {
+        let currency = args.currency.resolve()?;
+        let content = match &args.file {
             InputSource::Stdin => StatementContent::read(io::stdin().lock())?,
             InputSource::Path(path) => StatementContent::read(File::open(path)?)?,
         };
-        let source = match self.statement_format {
-            StatementFormat::Csv => StatementSource::Csv {
-                content,
-                mapping: self.csv.clone(),
-            },
-            StatementFormat::Ofx => StatementSource::Ofx(content),
-        };
-        Ok(StatementRequest {
-            company: self.company.clone(),
-            generation: self.generation,
-            bank: self.bank.clone(),
-            suspense: self.suspense.clone(),
+        let source = StatementSource::from((args.statement_format, content, args.csv.clone()));
+        Ok(Self {
+            company: args.company.clone(),
+            generation: args.generation,
+            accounts: (args.bank.clone(), args.suspense.clone()).try_into()?,
             currency,
             source,
         })

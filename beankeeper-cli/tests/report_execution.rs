@@ -7,9 +7,10 @@ use std::process::Command;
 
 use assert_cmd::cargo::CommandCargoExt;
 use beankeeper_cli::cli::{Cli, Command as BkCommand};
-use beankeeper_cli::commands::report;
+use beankeeper_cli::commands::report::ReportRequest;
 use beankeeper_cli::db::Actor;
 use beankeeper_cli::db::connection::Db;
+use beankeeper_cli::request::{LedgerRequest, LedgerResponse};
 use clap::Parser;
 use serde_json::Value;
 
@@ -142,7 +143,17 @@ fn in_process_reports_match_every_cli_report_payload() -> TestResult {
         let BkCommand::Report(report_args) = &cli.command else {
             return Err("expected parsed report command".into());
         };
-        let actual = report::execute_json(&cli, &db, "acme-consulting", &report_args.command)?;
+        let request = ReportRequest::try_from((
+            &"acme-consulting".parse()?,
+            &report_args.command,
+            (false, false),
+        ))?;
+        let actor = Actor::new("fixture".parse()?);
+        let LedgerResponse::Report(report) = LedgerRequest::Report(request).execute(&db, &actor)?
+        else {
+            return Err("expected an in-process report response".into());
+        };
+        let actual = report.data()?;
         let output = Command::cargo_bin("bk")?
             .args(["--db"])
             .arg(&path)
@@ -182,12 +193,17 @@ fn in_process_reports_preserve_validation_and_missing_company_errors() -> TestRe
     let BkCommand::Report(args) = &cli.command else {
         return Err("expected report command".into());
     };
-    let result = report::execute_json(&cli, &db, "test", &args.command);
+    let result = ReportRequest::try_from((&"test".parse()?, &args.command, (false, false)));
     assert!(matches!(
         result,
         Err(beankeeper_cli::error::CliError::Validation(_))
     ));
-    let result = report::execute_json(&cli, &db, "missing", &args.command);
+    let valid_command = Cli::try_parse_from(["bk", "report", "trial-balance"])?;
+    let BkCommand::Report(args) = &valid_command.command else {
+        return Err("expected report command".into());
+    };
+    let request = ReportRequest::try_from((&"missing".parse()?, &args.command, (false, false)))?;
+    let result = LedgerRequest::Report(request).execute(&db, &Actor::new("fixture".parse()?));
     assert!(matches!(
         result,
         Err(beankeeper_cli::error::CliError::NotFound(_))

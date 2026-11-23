@@ -29,6 +29,9 @@ use chrono::NaiveDate;
 use rusqlite::types::Type;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
+use super::report::{AccountSelector, ChartRequest, ReportPresentation};
+use super::report_dates::Today;
+use super::txn::MajorAmount;
 use crate::cli::{Cli, OutputFormat, ReconciliationMode};
 
 mod settlement;
@@ -329,73 +332,190 @@ impl ReconciliationReport {
     }
 }
 
-enum ReportMode<'a> {
-    Bank,
-    Settlement { link_key: &'a str },
+struct SettlementLinkKey<'a>(&'a str);
+
+impl Default for SettlementLinkKey<'_> {
+    fn default() -> Self {
+        Self(super::report_aging::DEFAULT_LINK_KEY)
+    }
 }
 
-pub(super) struct ResolvedReconciliation<'a> {
-    account: db::AccountRow,
-    request: ResolvedRequest<'a>,
-    mode: ReportMode<'a>,
+impl<'a> TryFrom<Option<&'a str>> for SettlementLinkKey<'a> {
+    type Error = CliError;
+
+    fn try_from(key: Option<&'a str>) -> Result<Self, Self::Error> {
+        match key.map(str::trim) {
+            None => Ok(Self::default()),
+            Some("") => Err(CliError::Usage("--link-key must not be empty".into())),
+            Some(key) => Ok(Self(key)),
+        }
+    }
 }
 
-impl<'a> ResolvedReconciliation<'a> {
-    pub(super) fn resolve(
-        reader: ReadConn<'_>,
-        company: &str,
-        command: &'a crate::cli::ReconciliationCommandArgs,
-        today: NaiveDate,
-    ) -> Result<Self, CliError> {
-        let as_of = super::report_dates::DateWindow::resolve(None, command.to.as_ref(), today)?.to;
-        let args = ReconciliationArgs {
-            account: &command.account,
-            to: None,
-            statement_balance: command.statement_balance.as_deref(),
-            statement: command.statement.as_deref(),
-            filter_metadata: &command.filter_metadata,
-            group_by_metadata: command.group_by_metadata.as_deref(),
-            currency: crate::cli::CurrencyArg::resolve_optional(command.currency.as_ref())?,
-        };
-        let mode = match command.mode {
-            ReconciliationMode::Bank if command.link_key.is_some() => {
-                return Err(CliError::Usage(
-                    "--link-key requires --mode settlement".into(),
-                ));
+pub(crate) struct StatementBalance(MajorAmount);
+
+impl From<MajorAmount> for StatementBalance {
+    fn from(amount: MajorAmount) -> Self {
+        Self(amount)
+    }
+}
+
+impl std::str::FromStr for StatementBalance {
+    type Err = CliError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        raw.trim().parse::<MajorAmount>().map(Self)
+    }
+}
+
+struct DenominatedBalance(StatementBalance, Currency);
+
+impl TryFrom<DenominatedBalance> for Money {
+    type Error = CliError;
+
+    fn try_from(
+        DenominatedBalance(amount, currency): DenominatedBalance,
+    ) -> Result<Self, Self::Error> {
+        Ok(money(amount.0.minor_units(currency)?, currency))
+    }
+}
+
+enum StatementSelection {
+    Bank(Option<String>),
+    Settlement { statement: String, link_key: String },
+}
+
+impl TryFrom<(ReconciliationMode, Option<String>, Option<String>)> for StatementSelection {
+    type Error = CliError;
+
+    fn try_from(
+        (mode, statement, link_key): (ReconciliationMode, Option<String>, Option<String>),
+    ) -> Result<Self, Self::Error> {
+        let statement = normalize_statement(statement.as_deref());
+        match mode {
+            ReconciliationMode::Bank if link_key.is_some() => Err(CliError::Usage(
+                "--link-key requires --mode settlement".into(),
+            )),
+            ReconciliationMode::Bank => Ok(Self::Bank(statement.map(str::to_owned))),
+            ReconciliationMode::Settlement => {
+                let statement = statement.ok_or_else(|| {
+                    CliError::Usage("--mode settlement requires a non-empty --statement".into())
+                })?;
+                let link_key = SettlementLinkKey::try_from(link_key.as_deref())?
+                    .0
+                    .to_owned();
+                Ok(Self::Settlement {
+                    statement: statement.to_owned(),
+                    link_key,
+                })
             }
-            ReconciliationMode::Bank => ReportMode::Bank,
-            ReconciliationMode::Settlement => ReportMode::Settlement {
-                link_key: settlement::resolve_link_key(
-                    args.statement,
-                    command.link_key.as_deref(),
-                )?,
-            },
-        };
-        let scope = Company::bind(reader, company.parse()?)?;
-        let (account, request) = resolve_cli_request(reader, &scope, &args, Some(as_of))?;
+        }
+    }
+}
+
+impl StatementSelection {
+    fn reference(&self) -> Option<&str> {
+        match self {
+            Self::Bank(reference) => reference.as_deref(),
+            Self::Settlement { statement, .. } => Some(statement),
+        }
+    }
+}
+
+pub(crate) struct ReconciliationOptions {
+    pub mode: ReconciliationMode,
+    pub account: AccountSelector,
+    pub as_of: Option<NaiveDate>,
+    pub statement_balance: Option<StatementBalance>,
+    pub statement: Option<String>,
+    pub link_key: Option<String>,
+    pub filters: Vec<String>,
+    pub group: Option<String>,
+    pub currency: Option<Currency>,
+}
+
+pub(crate) struct ReconciliationSelection {
+    account: AccountSelector,
+    as_of: NaiveDate,
+    balance: Option<StatementBalance>,
+    statement: StatementSelection,
+    filters: Vec<MetadataFilter>,
+    group: Option<String>,
+    currency: Option<Currency>,
+}
+
+impl TryFrom<ReconciliationOptions> for ReconciliationSelection {
+    type Error = CliError;
+
+    fn try_from(options: ReconciliationOptions) -> Result<Self, Self::Error> {
         Ok(Self {
-            account,
-            request,
-            mode,
+            account: options.account,
+            as_of: options.as_of.unwrap_or_else(|| Today::default().into()),
+            balance: options.statement_balance,
+            statement: (options.mode, options.statement, options.link_key).try_into()?,
+            filters: metadata_filter::parse_filters(&options.filters)?,
+            group: options.group,
+            currency: options.currency,
         })
     }
 }
 
-pub(super) fn run_resolved_to(
-    cli: &Cli,
-    reader: ReadConn<'_>,
-    company: &str,
-    resolved: ResolvedReconciliation<'_>,
-    output: &mut super::report::ReportOutput<'_>,
-) -> Result<(), CliError> {
-    let scope = Company::bind(reader, company.parse()?)?;
-    let report = build_resolved_report(reader, &scope, resolved.account, resolved.request)?;
-    let report = match resolved.mode {
-        ReportMode::Bank => report,
-        ReportMode::Settlement { link_key } => settlement::apply(reader, &scope, report, link_key)?,
+impl TryFrom<&crate::cli::ReconciliationCommandArgs> for ReconciliationSelection {
+    type Error = CliError;
+
+    fn try_from(command: &crate::cli::ReconciliationCommandArgs) -> Result<Self, Self::Error> {
+        ReconciliationOptions {
+            mode: command.mode.unwrap_or_default(),
+            account: command.account.clone().into(),
+            as_of: command
+                .to
+                .as_ref()
+                .map(|date| super::report_dates::resolve_date("--to", date))
+                .transpose()?,
+            statement_balance: command
+                .statement_balance
+                .as_deref()
+                .map(str::parse)
+                .transpose()?,
+            statement: command.statement.clone(),
+            link_key: command.link_key.clone(),
+            filters: command.filter_metadata.clone(),
+            group: command.group_by_metadata.clone(),
+            currency: crate::cli::CurrencyArg::resolve_optional(command.currency.as_ref())?,
+        }
+        .try_into()
     }
-    .check_difference()?;
-    render(cli, company, &report, output)
+}
+
+impl ReconciliationSelection {
+    pub(super) fn compute(
+        self,
+        reader: ReadConn<'_>,
+        company: &Company<'_>,
+    ) -> Result<ReconciliationReport, CliError> {
+        let account = db::accounts::get_account(company, self.account.as_ref())?;
+        let currency = resolve_currency(reader, company.slug().as_str(), self.currency)?;
+        let statement_balance = self
+            .balance
+            .map(|balance| Money::try_from(DenominatedBalance(balance, currency)))
+            .transpose()?;
+        let request = ResolvedRequest {
+            currency,
+            as_of: Some(self.as_of),
+            statement: self.statement.reference(),
+            statement_balance,
+            filters: self.filters,
+            group_by_metadata: self.group.as_deref(),
+        };
+        let report = build_resolved_report(reader, company, account, request)?;
+        match self.statement {
+            StatementSelection::Bank(_) => report,
+            StatementSelection::Settlement { link_key, .. } => {
+                settlement::apply(reader, company, report, &link_key)?
+            }
+        }
+        .check_difference()
+    }
 }
 
 /// Execute `bk report reconciliation`.
@@ -425,12 +545,20 @@ pub(crate) fn run_to(
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
     let report = build_report(db, company, args)?;
-    render(cli, company, &report, output)
+    render(
+        &ReportPresentation::cli(
+            cli,
+            Operation::ReportReconciliation,
+            company,
+            ChartRequest::default(),
+        ),
+        &report,
+        output,
+    )
 }
 
-fn render(
-    cli: &Cli,
-    company: &str,
+pub(super) fn render(
+    context: &ReportPresentation<'_>,
     report: &ReconciliationReport,
     output: &mut super::report::ReportOutput<'_>,
 ) -> Result<(), CliError> {
@@ -439,13 +567,13 @@ fn render(
             writeln!(output.writer, "{}", render_table(report, output.use_color)?)?;
         }
         OutputFormat::Json => {
-            let meta = cli.meta(Operation::ReportReconciliation, Some(company));
+            let meta = context.meta();
             output.write_json(meta, report, None)?;
         }
         OutputFormat::Csv => write!(output.writer, "{}", render_csv(report)?)?,
     }
 
-    if !cli.verbosity.quiet {
+    if !context.quiet {
         eprintln!(
             "[ok] reconciliation report for account {} ({} uncleared entries)",
             report.code,

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use assert_cmd::cargo::CommandCargoExt;
-use beankeeper_cli::commands::verify;
+use beankeeper_cli::db::verification::VerifiedLedger;
 use beankeeper_cli::db::{self, Actor, Db, audit, periods, transactions};
 use beankeeper_cli::error::CliError;
 use serde_json::Value;
@@ -313,7 +313,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
         let ledger = Ledger::new()?;
         ledger.run("acme", &["period", "close", "--through", "2026-01-31"])?;
         assert!(ledger.raw()?.execute(tamper, []).is_err(), "{tamper}");
-        verify::execute_json(&ledger.db)?;
+        VerifiedLedger::read(&ledger.db)?;
     }
     for tamper in [
         "UPDATE period_locks SET closed_through = NULL, reason = 'bypass'",
@@ -326,7 +326,7 @@ fn lock_mutations_require_audit_and_verify_detects_trigger_bypass() -> TestResul
         )?;
         ledger.raw()?.execute(tamper, [])?;
         assert!(matches!(
-            verify::execute_json(&ledger.db),
+            VerifiedLedger::read(&ledger.db),
             Err(CliError::Database(_))
         ));
         assert!(matches!(

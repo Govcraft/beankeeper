@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use agent_uri_attestation::SigningKey;
+use agent_uri::AgentId;
+use agent_uri_attestation::{SigningKey, VerifyingKey};
 use mti::prelude::*;
 use rusqlite::params;
 use secrecy::{ExposeSecret, SecretBox};
@@ -14,6 +15,7 @@ use crate::capability::Capability;
 use crate::error::CliError;
 use crate::identity::{
     IssueRequest, IssuedCredential, WriteMode, ledger_encrypted, prepare_credential,
+    prepare_setup_credential,
 };
 
 /// Create one trust root, preserving any existing key. Private material stays in `SQLCipher`.
@@ -109,22 +111,13 @@ pub fn issue_credential_with_mode(
 
 pub(super) fn issue_setup_credential(
     owner: &Granted<'_, SetupOwner>,
-    name: &str,
-    public_key: &str,
+    agent_id: &AgentId,
+    public_key: &VerifyingKey,
     ttl: Duration,
 ) -> Result<IssuedCredential, CliError> {
-    issue_in_scope(
-        owner.audited_tx(),
-        owner.actor(),
-        &IssueRequest {
-            name,
-            capabilities: &[Capability::Setup.path().to_owned()],
-            ttl,
-            public_key: Some(public_key),
-            generate_key: false,
-        },
-        WriteMode::default(),
-    )
+    let tx = owner.audited_tx();
+    let credential = prepare_setup_credential(tx.read(), agent_id, public_key, ttl)?;
+    record_credential(tx, owner.actor(), credential)
 }
 
 fn issue_in_scope(
@@ -134,6 +127,14 @@ fn issue_in_scope(
     write_mode: WriteMode,
 ) -> Result<IssuedCredential, CliError> {
     let credential = prepare_credential(tx.read(), request, write_mode)?;
+    record_credential(tx, actor, credential)
+}
+
+fn record_credential(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    credential: IssuedCredential,
+) -> Result<IssuedCredential, CliError> {
     let conn = tx.connection();
     let capabilities = serde_json::to_string(&credential.capabilities)
         .map_err(|error| CliError::General(error.to_string()))?;

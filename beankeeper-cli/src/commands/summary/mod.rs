@@ -3,7 +3,8 @@
 mod attention;
 mod model;
 
-use super::report_dates::{DateRange, DateWindow, resolve_date};
+use super::report::{AccountSelector, ChartRequest};
+use super::report_dates::{DateRange, Today, resolve_date};
 use crate::operation::Operation;
 use std::io::Write;
 
@@ -13,20 +14,19 @@ use clap::Args;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::cli::{Cli, OutputFormat, resolve_format};
+use crate::cli::{Cli, CurrencyArg, OutputFormat, resolve_format};
 use crate::db::{
-    self, BalanceRow,
-    companies::Company,
+    self, Actor, BalanceRow,
+    companies::{Company, CompanySlug},
     connection::{Db, ReadConn},
 };
 use crate::error::CliError;
 use crate::output::amounts::MoneyField;
-use crate::output::chart::{self, WithChart};
+use crate::output::chart::{self, Chart, WithChart};
 use crate::output::json::Envelope;
 
-/// Options for `bk summary` and the `financial_summary` MCP tool.
-#[derive(Debug, Clone, Default, Args, serde::Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// Options for `bk summary`.
+#[derive(Debug, Clone, Default, Args)]
 pub struct SummaryArgs {
     /// First date, inclusive (YYYY-MM-DD). Defaults to the end date's month start.
     #[arg(long)]
@@ -35,26 +35,22 @@ pub struct SummaryArgs {
     #[arg(long)]
     pub to: Option<crate::cli::CalendarDateArg>,
     /// First comparison date. Requires --compare-to.
-    #[arg(long, requires = "compare_to")]
+    #[arg(long)]
     pub compare_from: Option<crate::cli::CalendarDateArg>,
     /// Last comparison date. Requires --compare-from.
-    #[arg(long, requires = "compare_from")]
+    #[arg(long)]
     pub compare_to: Option<crate::cli::CalendarDateArg>,
     /// Currency code; required when the company's currencies are ambiguous.
     #[arg(long)]
-    #[schemars(with = "Option<String>")]
     pub currency: Option<crate::cli::CurrencyArg>,
     /// Cash asset account (repeatable). Defaults to cash/bank/checking/savings names.
     #[arg(long = "cash-account")]
-    #[serde(default)]
     pub cash_account: Vec<String>,
     /// Receivable asset account (repeatable). Defaults to names containing receivable.
     #[arg(long = "receivable-account")]
-    #[serde(default)]
     pub receivable_account: Vec<String>,
     /// Payable liability account (repeatable). Defaults to names containing payable.
     #[arg(long = "payable-account")]
-    #[serde(default)]
     pub payable_account: Vec<String>,
 }
 
@@ -90,25 +86,72 @@ impl Periods {
 
 pub(crate) use model::Comparison;
 
-impl SummaryArgs {
-    fn periods(&self, today: NaiveDate) -> Result<Periods, CliError> {
-        let end = DateWindow::resolve(None, self.to.as_ref(), today)?.to;
+/// Date selection with an ordered, optional pair of comparison dates.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SummaryDates {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    comparison: Option<DateRange>,
+}
+
+#[derive(Debug)]
+pub(crate) enum SummaryDatesError {
+    IncompleteComparison,
+    InvalidRange(CliError),
+}
+
+impl SummaryDatesError {
+    const INCOMPLETE_COMPARISON: &str = "provide both comparison dates";
+}
+
+impl From<SummaryDatesError> for CliError {
+    fn from(error: SummaryDatesError) -> Self {
+        match error {
+            SummaryDatesError::IncompleteComparison => {
+                Self::Validation(SummaryDatesError::INCOMPLETE_COMPARISON.into())
+            }
+            SummaryDatesError::InvalidRange(error) => error,
+        }
+    }
+}
+
+impl TryFrom<[Option<NaiveDate>; 4]> for SummaryDates {
+    type Error = SummaryDatesError;
+
+    fn try_from(
+        [from, to, compare_from, compare_to]: [Option<NaiveDate>; 4],
+    ) -> Result<Self, Self::Error> {
+        let comparison = match (compare_from, compare_to) {
+            (Some(from), Some(to)) => {
+                Some(DateRange::new(from, to).map_err(SummaryDatesError::InvalidRange)?)
+            }
+            (None, None) => None,
+            _ => return Err(SummaryDatesError::IncompleteComparison),
+        };
+        Ok(Self {
+            from,
+            to,
+            comparison,
+        })
+    }
+}
+
+impl SummaryDates {
+    fn periods(self, today: NaiveDate) -> Result<Periods, CliError> {
+        let end = self.to.unwrap_or(today);
         let month_start = end.with_day(1).ok_or_else(date_error)?;
-        let start = self
-            .from
-            .as_ref()
-            .map_or(Ok(month_start), |from| resolve_date("--from", from))?;
+        let start = self.from.unwrap_or(month_start);
         let current = Period::from(DateRange::new(start, end)?);
-        let prior = match (&self.compare_from, &self.compare_to) {
-            (Some(from), Some(to)) => DateRange::resolve(Some(from), Some(to), today)?.into(),
-            (None, None) if self.from.is_none() => {
+        let prior = match self.comparison {
+            Some(range) => range.into(),
+            None if self.from.is_none() => {
                 let to = month_start.pred_opt().ok_or_else(date_error)?;
                 Period {
                     from: to.with_day(1).ok_or_else(date_error)?,
                     to,
                 }
             }
-            (None, None) => {
+            None => {
                 let days = u64::try_from((current.to - current.from).num_days() + 1)
                     .map_err(|_| date_error())?;
                 let to = current.from.pred_opt().ok_or_else(date_error)?;
@@ -120,9 +163,95 @@ impl SummaryArgs {
                     to,
                 }
             }
-            _ => return Err(CliError::Validation("provide both comparison dates".into())),
         };
         Ok(Periods { current, prior })
+    }
+}
+
+impl TryFrom<&SummaryArgs> for SummaryDates {
+    type Error = CliError;
+
+    fn try_from(args: &SummaryArgs) -> Result<Self, Self::Error> {
+        let optional = |flag, value: Option<&crate::cli::CalendarDateArg>| {
+            value.map(|value| resolve_date(flag, value)).transpose()
+        };
+        Self::try_from([
+            optional("--from", args.from.as_ref())?,
+            optional("--to", args.to.as_ref())?,
+            optional("--from", args.compare_from.as_ref())?,
+            optional("--to", args.compare_to.as_ref())?,
+        ])
+        .map_err(|error| match error {
+            SummaryDatesError::IncompleteComparison => {
+                CliError::Usage(SummaryDatesError::INCOMPLETE_COMPARISON.into())
+            }
+            SummaryDatesError::InvalidRange(error) => error,
+        })
+    }
+}
+
+/// Company-scoped inputs to the financial summary computation.
+pub struct SummaryRequest {
+    company: CompanySlug,
+    periods: Periods,
+    currency: Option<Currency>,
+    accounts: SummaryAccounts,
+    chart: ChartRequest,
+}
+
+pub(crate) struct SummaryAccounts {
+    pub cash: Vec<AccountSelector>,
+    pub receivables: Vec<AccountSelector>,
+    pub payables: Vec<AccountSelector>,
+}
+
+impl SummaryRequest {
+    pub(crate) fn new(
+        company: CompanySlug,
+        dates: SummaryDates,
+        currency: Option<Currency>,
+        accounts: SummaryAccounts,
+        chart: ChartRequest,
+    ) -> Result<Self, CliError> {
+        Ok(Self {
+            company,
+            periods: dates.periods(Today::default().into())?,
+            currency,
+            accounts,
+            chart,
+        })
+    }
+}
+
+impl TryFrom<(&CompanySlug, &SummaryArgs, (bool, bool))> for SummaryRequest {
+    type Error = CliError;
+
+    fn try_from(
+        (company, args, chart): (&CompanySlug, &SummaryArgs, (bool, bool)),
+    ) -> Result<Self, Self::Error> {
+        Self::try_from((company, args, ChartRequest::try_from(chart)?))
+    }
+}
+
+impl TryFrom<(&CompanySlug, &SummaryArgs, ChartRequest)> for SummaryRequest {
+    type Error = CliError;
+
+    fn try_from(
+        (company, args, chart): (&CompanySlug, &SummaryArgs, ChartRequest),
+    ) -> Result<Self, Self::Error> {
+        let accounts =
+            |items: &[String]| items.iter().cloned().map(AccountSelector::from).collect();
+        Self::new(
+            company.clone(),
+            SummaryDates::try_from(args)?,
+            CurrencyArg::resolve_optional(args.currency.as_ref())?,
+            SummaryAccounts {
+                cash: accounts(&args.cash_account),
+                receivables: accounts(&args.receivable_account),
+                payables: accounts(&args.payable_account),
+            },
+            chart,
+        )
     }
 }
 
@@ -160,7 +289,7 @@ fn sum<'a>(mut rows: impl Iterator<Item = &'a BalanceRow>) -> Result<i64, CliErr
 
 fn select_accounts(
     rows: &[BalanceRow],
-    explicit: &[String],
+    explicit: &[AccountSelector],
     kind: beankeeper::types::AccountType,
     keywords: &[&str],
 ) -> Result<Vec<String>, CliError> {
@@ -177,72 +306,88 @@ fn select_accounts(
             .collect());
     }
     let mut codes = std::collections::BTreeSet::new();
-    for code in explicit {
+    for code in explicit.iter().map(AsRef::as_ref) {
         let row = rows
             .iter()
-            .find(|row| &row.code == code)
+            .find(|row| row.code == code)
             .ok_or_else(|| CliError::NotFound(format!("account '{code}' not found")))?;
         if row.account_type != kind {
             return Err(CliError::Validation(format!(
                 "account '{code}' must be a {kind} account"
             )));
         }
-        codes.insert(code.clone());
+        codes.insert(code.to_owned());
     }
     Ok(codes.into_iter().collect())
 }
 
-/// Compute a consistent summary envelope without changing any ledger records.
-///
-/// Dates use local today. All reads share one SQLite snapshot, also when called
-/// inside an MCP request's authorization snapshot.
-///
-/// # Errors
-/// Returns named CLI errors for invalid options, missing companies/accounts,
-/// ambiguous currencies, amount overflow, or database failures.
-pub fn execute_json(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    args: &SummaryArgs,
-) -> Result<Value, CliError> {
-    let report = read_summary(cli, db, company, args)?;
-    envelope(cli, company, &report)
+impl SummaryRequest {
+    /// Compute a consistent summary without changing any ledger records.
+    ///
+    /// # Errors
+    /// Returns named CLI errors for missing companies/accounts, ambiguous
+    /// currencies, amount overflow, or database failures.
+    pub(crate) fn execute(self, db: &Db) -> Result<SummaryResponse, CliError> {
+        db.read_snapshot(move |reader| {
+            let company = self.company.clone();
+            let chart_request = self.chart;
+            let report = compute(reader, self)?;
+            let chart = chart_request.project(|all| {
+                chart::summary(
+                    company.as_str(),
+                    report.currency,
+                    &report.periods,
+                    &report.comparison,
+                    all,
+                )
+            })?;
+            Ok(SummaryResponse {
+                company,
+                report,
+                chart,
+            })
+        })
+    }
 }
 
-fn read_summary(
-    cli: &Cli,
-    db: &Db,
-    company: &str,
-    args: &SummaryArgs,
-) -> Result<SummaryReport, CliError> {
-    chart::validate_request(cli)?;
-    db.read_snapshot(|reader| compute(reader, company, args))
+/// Financial standing, comparison and attention items computed in one snapshot.
+pub struct SummaryResponse {
+    company: CompanySlug,
+    report: SummaryReport,
+    chart: Option<Chart>,
 }
 
-fn envelope(cli: &Cli, company: &str, report: &SummaryReport) -> Result<Value, CliError> {
-    let meta = cli
-        .meta(Operation::Summary, Some(company))
-        .with_currency(report.currency);
-    let chart = chart::requested(cli, || {
-        chart::summary(
-            company,
-            report.currency,
-            &report.periods,
-            &report.comparison,
-            cli.output.chart_all,
-        )
-    })?;
-    serde_json::to_value(Envelope {
-        ok: true,
-        meta,
-        data: Some(WithChart {
-            report: report.json(),
-            chart,
-        }),
-        error: None,
-    })
-    .map_err(|error| CliError::General(format!("JSON serialization failed: {error}")))
+impl SummaryResponse {
+    /// The shared summary envelope, including the verified caller if available.
+    pub fn envelope(&self, actor: &Actor) -> impl Serialize + '_ {
+        let mut meta = crate::output::json::meta(Operation::Summary, Some(self.company.as_str()))
+            .with_currency(self.report.currency);
+        meta.agent = actor.agent_uri().map(str::to_owned);
+        Envelope {
+            ok: true,
+            meta,
+            data: Some(WithChart {
+                report: self.report.json(),
+                chart: self.chart.as_ref(),
+            }),
+            error: None,
+        }
+    }
+
+    /// Render this summary as plain words, JSON, or CSV.
+    ///
+    /// # Errors
+    /// Returns output or serialization errors.
+    pub fn render(&self, cli: &Cli) -> Result<(), CliError> {
+        let rendered = match resolve_format(None, cli) {
+            OutputFormat::Json => serde_json::to_string_pretty(&self.envelope(&cli.principal()))
+                .map_err(|error| CliError::General(error.to_string()))?,
+            OutputFormat::Table => model::plain(&self.report),
+            OutputFormat::Csv => model::csv(&self.report)?,
+        };
+        writeln!(std::io::stdout().lock(), "{rendered}")?;
+        Ok(())
+    }
 }
 
 struct SummaryReport {
@@ -341,34 +486,33 @@ impl SummaryReport {
     }
 }
 
-fn compute(
-    reader: ReadConn<'_>,
-    company: &str,
-    args: &SummaryArgs,
-) -> Result<SummaryReport, CliError> {
-    let scope = Company::bind(reader, company.parse()?)?;
-    let periods = args.periods(chrono::Local::now().date_naive())?;
-    let currency = super::report_currency::resolve_report_currency(
-        reader,
+fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryReport, CliError> {
+    let SummaryRequest {
         company,
-        crate::cli::CurrencyArg::resolve_optional(args.currency.as_ref())?,
-    )?;
+        periods,
+        currency,
+        accounts,
+        ..
+    } = request;
+    let scope = Company::bind(reader, company.clone())?;
+    let company = company.as_str();
+    let currency = super::report_currency::resolve_report_currency(reader, company, currency)?;
     let rows = db::compute_trial_balance(&scope, None, None, Some(periods.current.to), currency)?;
     let cash = select_accounts(
         &rows,
-        &args.cash_account,
+        &accounts.cash,
         beankeeper::types::AccountType::Asset,
         super::report_cash_flow::DEFAULT_CASH_NAME_KEYWORDS,
     )?;
     let receivables = select_accounts(
         &rows,
-        &args.receivable_account,
+        &accounts.receivables,
         beankeeper::types::AccountType::Asset,
         &["receivable"],
     )?;
     let payables = select_accounts(
         &rows,
-        &args.payable_account,
+        &accounts.payables,
         beankeeper::types::AccountType::Liability,
         &["payable"],
     )?;
@@ -437,16 +581,12 @@ fn compute(
 /// # Errors
 /// Returns summary validation, database, serialization or output errors.
 pub fn run(cli: &Cli, company: &str, args: &SummaryArgs) -> Result<(), CliError> {
-    let db = cli.open_db()?;
-    let report = read_summary(cli, &db, company, args)?;
-    let rendered = match resolve_format(None, cli) {
-        OutputFormat::Json => serde_json::to_string_pretty(&envelope(cli, company, &report)?)
-            .map_err(|error| CliError::General(error.to_string()))?,
-        OutputFormat::Table => model::plain(&report),
-        OutputFormat::Csv => model::csv(&report)?,
-    };
-    writeln!(std::io::stdout().lock(), "{rendered}")?;
-    Ok(())
+    let chart = ChartRequest::try_from((cli.output.chart, cli.output.chart_all))?;
+    chart.validate_cli(cli)?;
+    let company = company.parse()?;
+    SummaryRequest::try_from((&company, args, chart))?
+        .execute(&cli.open_db()?)?
+        .render(cli)
 }
 
 #[cfg(test)]
@@ -457,7 +597,7 @@ mod tests {
     #[test]
     fn periods_handle_month_edges_leap_years_and_explicit_intervals() -> Result<(), CliError> {
         let today = NaiveDate::from_ymd_opt(2024, 3, 15).ok_or_else(date_error)?;
-        let p = SummaryArgs::default().periods(today)?;
+        let p = SummaryDates::default().periods(today)?;
         assert_eq!(p.current.from.to_string(), "2024-03-01");
         assert_eq!(p.prior.from.to_string(), "2024-02-01");
         assert_eq!(p.prior.to.to_string(), "2024-02-29");
@@ -466,13 +606,13 @@ mod tests {
             to: Some(crate::cli::CalendarDateArg::decode("2024-03-15")),
             ..SummaryArgs::default()
         };
-        let p = args.periods(today)?;
+        let p = SummaryDates::try_from(&args)?.periods(today)?;
         assert_eq!(p.prior.from.to_string(), "2024-03-04");
         assert_eq!(p.prior.to.to_string(), "2024-03-09");
-        let p = SummaryArgs {
+        let p = SummaryDates::try_from(&SummaryArgs {
             to: Some(crate::cli::CalendarDateArg::decode("2025-01-01")),
             ..SummaryArgs::default()
-        }
+        })?
         .periods(today)?;
         assert_eq!(p.prior.from.to_string(), "2024-12-01");
         assert_eq!(p.prior.to.to_string(), "2024-12-31");
@@ -491,7 +631,10 @@ mod tests {
             currency: Some(Currency::BHD.into()),
             ..SummaryArgs::default()
         };
-        let report = compute(db.read(), "co", &args)?;
+        let report = compute(
+            db.read(),
+            SummaryRequest::try_from((&"co".parse()?, &args, (false, false)))?,
+        )?;
         let json = serde_json::to_value(report.json())?;
         assert_eq!(json["standing"]["cash_on_hand"], 0);
         assert_eq!(json["standing"]["cash_on_hand_display"], "0.000");

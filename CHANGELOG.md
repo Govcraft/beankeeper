@@ -6,6 +6,16 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.32.1] - Unreleased
+
+### Changed
+
+- CLI, MCP, and embedded hosts can execute the same typed ledger requests.
+  MCP discovery generates schemas and capability hints from the operation
+  catalog. Omitted transaction posting currency follows
+  `BEANKEEPER_CURRENCY` when set and otherwise defaults to USD.
+  ([#240](https://github.com/Govcraft/beankeeper/issues/240))
+
 ## [0.32.0] - Unreleased
 
 ### Added

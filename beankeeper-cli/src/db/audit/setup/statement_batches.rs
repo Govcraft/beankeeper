@@ -80,7 +80,7 @@ impl FrozenEntry {
 
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "DebitOrCredit", rename_all = "lowercase")]
-enum DirectionCode {
+pub(super) enum DirectionCode {
     Debit,
     Credit,
 }
@@ -95,7 +95,8 @@ fn deserialize_minor<'de, D: serde::Deserializer<'de>>(
 }
 
 #[derive(Serialize)]
-pub(crate) struct StatementReview {
+/// A frozen statement review with immutable source and posting details.
+pub struct StatementReview {
     batch_id: StatementBatchId,
     #[serde(with = "hash_text")]
     preview_sha256: Sha256Hex,
@@ -475,7 +476,7 @@ fn freeze(
             })
             .collect::<Result<_, _>>()?;
         let row = FrozenRow {
-            reference: row.reference.into_string(),
+            reference: row.reference.into(),
             date: row.journal.date(),
             description: row.journal.description().to_owned(),
             metadata: row.journal.metadata().map(str::to_owned),

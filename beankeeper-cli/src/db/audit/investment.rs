@@ -18,18 +18,23 @@ pub(in crate::db) fn store_security(
     let conn = tx.connection();
     conn.execute(
         "INSERT INTO securities(company_slug,symbol,name,currency) VALUES (?1,?2,?3,?4)",
-        params![company, params.symbol, params.name, params.currency.code()],
+        params![
+            company,
+            params.symbol.as_ref(),
+            params.name.as_ref(),
+            params.currency.code()
+        ],
     )?;
     let security = get_security(
         &crate::db::companies::Company::bind(tx.read(), company.clone())?,
-        &params.symbol,
+        params.symbol.as_ref(),
     )?;
     record_insert(
         conn,
         actor,
         company,
         Creation::Security,
-        &params.symbol,
+        params.symbol.as_ref(),
         &serde_json::json!(&security),
     )?;
     Ok(security)

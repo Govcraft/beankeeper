@@ -2784,7 +2784,16 @@ pub fn edit_metadata(
     target: MetadataTarget<'_>,
     edit: &metadata::MetadataEdit,
 ) -> Result<MetadataResult, CliError> {
-    edit.validate()?;
+    edit_validated_metadata(grant, company, target, &edit.clone().try_into()?)
+}
+
+pub(crate) fn edit_validated_metadata(
+    grant: grant::Granted<'_, grant::Post>,
+    company: &crate::db::companies::CompanySlug,
+    target: MetadataTarget<'_>,
+    edit: &metadata::ValidatedMetadataEdit,
+) -> Result<MetadataResult, CliError> {
+    let edit = edit.as_ref();
     grant.mutate("sp_metadata", |tx, actor| {
         let reader = tx.read();
         let (predicate, value): (&str, &dyn rusqlite::ToSql) = match &target {

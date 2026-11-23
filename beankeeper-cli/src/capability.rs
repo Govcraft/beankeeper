@@ -99,7 +99,6 @@ mod tests {
             ("restore", Capability::Admin),
             ("report.schedule-c", Capability::Read),
             ("report.1099", Capability::Read),
-            ("report.1099-nec", Capability::Read),
             ("report", Capability::Read),
         ] {
             assert_eq!(Capability::for_operation(operation)?, expected);

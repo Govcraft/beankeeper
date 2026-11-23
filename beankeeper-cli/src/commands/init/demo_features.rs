@@ -143,8 +143,8 @@ fn seed_investments(db: &Db, actor: &Actor) -> Result<(), CliError> {
             grant,
             &"personal".parse()?,
             &investments::SecurityParams {
-                symbol: "DEMO".into(),
-                name: "Fictional Demo Fund".into(),
+                symbol: "DEMO".parse()?,
+                name: "Fictional Demo Fund".parse()?,
                 currency: Currency::USD,
             },
         )
