@@ -16,7 +16,12 @@ use crate::db::audit::setup::books::{
     BookPurpose, ChartTemplate, FiscalYearStart, ProfileRevision, SetupReference,
 };
 pub(crate) use crate::db::companies::CompanySlug;
-use crate::db::{ActorLabel, investments::LotId, proposals::ProposalId};
+use crate::db::{
+    ActorLabel,
+    investments::LotId,
+    proposals::ProposalId,
+    rules::{DescriptionPattern, RuleId},
+};
 use crate::error::CliError;
 
 pub(crate) trait TextValue: fmt::Display + FromStr {
@@ -122,6 +127,22 @@ impl TextValue for CompareArg {
             "pattern": "^(previous|year-ago|prior-period|prior-year|[0-9]{4}-[0-9]{2}-[0-9]{2}\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})$",
             "description": "A relative period or inclusive YYYY-MM-DD..YYYY-MM-DD range."
         })
+    }
+}
+
+impl TextValue for DescriptionPattern {
+    const NAME: &'static str = "description pattern";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "pattern": "\\S"})
+    }
+}
+
+impl TextValue for RuleId {
+    const NAME: &'static str = "rule ID";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "pattern": "^rule_[0-7][0-9a-hjkmnp-tv-z]{25}$"})
     }
 }
 

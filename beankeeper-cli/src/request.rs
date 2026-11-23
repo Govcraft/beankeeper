@@ -21,7 +21,9 @@ use crate::{
         investment::{InvestmentRequest, InvestmentResponse},
         period::{PeriodRequest, PeriodResponse},
         report::{ReportRequest, ReportResponse},
+        rule::{RuleRequest, RuleResponse},
         setup::{SetupRequest, SetupResponse},
+        standing::{StandingRequest, StandingResponse},
         summary::{SummaryRequest, SummaryResponse},
         txn::{TxnRequest, TxnResponse},
     },
@@ -41,7 +43,9 @@ pub enum LedgerRequest {
     Investment(InvestmentRequest),
     Period(PeriodRequest),
     Report(ReportRequest),
+    Rule(RuleRequest),
     Setup(SetupRequest),
+    Standing(StandingRequest),
     Summary(SummaryRequest),
     Transaction(TxnRequest),
     Verify,
@@ -57,7 +61,9 @@ pub enum LedgerResponse {
     Investment(Operation, CompanySlug, InvestmentResponse),
     Period(Operation, CompanySlug, PeriodResponse),
     Report(ReportResponse),
+    Rule(Operation, CompanySlug, RuleResponse),
     Setup(Operation, Option<CompanySlug>, SetupResponse),
+    Standing(Operation, CompanySlug, StandingResponse),
     Summary(SummaryResponse),
     Transaction(TxnResponse),
     Verify(VerifiedLedger),
@@ -75,7 +81,9 @@ impl LedgerRequest {
             Self::Investment(request) => request.operation(),
             Self::Period(request) => request.operation(),
             Self::Report(request) => request.operation(),
+            Self::Rule(request) => request.operation(),
             Self::Setup(request) => request.operation(),
+            Self::Standing(request) => request.operation(),
             Self::Summary(_) => Operation::Summary,
             Self::Transaction(request) => request.operation(),
             Self::Verify => Operation::Verify,
@@ -142,10 +150,20 @@ impl LedgerRequest {
                 Ok(LedgerResponse::Period(operation, company, response))
             }
             Self::Report(request) => request.execute(db).map(LedgerResponse::Report),
+            Self::Rule(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Rule(operation, company, response))
+            }
             Self::Setup(request) => {
                 let company = request.render_company().cloned();
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::Setup(operation, company, response))
+            }
+            Self::Standing(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Standing(operation, company, response))
             }
             Self::Summary(request) => request.execute(db).map(LedgerResponse::Summary),
             Self::Transaction(request) => {
@@ -170,8 +188,12 @@ impl LedgerResponse {
                 response.render(cli, *operation, company.as_str())
             }
             Self::Report(response) => response.render(cli),
+            Self::Rule(operation, company, response) => response.render(cli, *operation, company),
             Self::Setup(operation, company, response) => {
                 response.render(cli, *operation, company.as_ref().map(CompanySlug::as_str))
+            }
+            Self::Standing(operation, company, response) => {
+                response.render(cli, *operation, company)
             }
             Self::Summary(response) => response.render(cli),
             Self::Transaction(response) => response.render(cli, meta),

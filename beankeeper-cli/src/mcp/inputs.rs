@@ -26,6 +26,8 @@ use crate::db::audit::setup::{
     statements::{StatementContent, StatementFormat, StatementRequest, StatementSource},
 };
 use crate::db::audit::{AuditPageLimit, AuditPageOffset};
+use crate::db::rules::{DescriptionPattern, RuleId, RulePriority};
+use crate::db::standing::{BookkeepingPolicy, InformPreference};
 use crate::db::{
     ActorLabel,
     companies::CompanyName,
@@ -830,6 +832,53 @@ pub(crate) enum TrendMetricArg {
 #[serde(deny_unknown_fields)]
 pub(crate) struct CompanyScope {
     pub company: Company,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuleCreate {
+    pub company: Company,
+    pub contains: Text<DescriptionPattern>,
+    pub account: Account,
+    pub priority: Option<RulePriority>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuleAmend {
+    pub company: Company,
+    pub id: Text<RuleId>,
+    pub contains: Text<DescriptionPattern>,
+    pub account: Account,
+    pub priority: Option<RulePriority>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuleMatch {
+    pub company: Company,
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuleDelete {
+    pub company: Company,
+    pub id: Text<RuleId>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BookkeepingPolicySet {
+    pub company: Company,
+    pub policy: BookkeepingPolicy,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InformPreferenceSet {
+    pub company: Company,
+    pub preference: InformPreference,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

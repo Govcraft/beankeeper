@@ -37,9 +37,9 @@ impl From<ExplicitDeleteCall> for Confirmed {
     }
 }
 
-struct CliDeletion<'a> {
-    force: bool,
-    target: &'a str,
+pub(crate) struct CliDeletion<'a> {
+    pub(crate) force: bool,
+    pub(crate) target: &'a str,
 }
 
 impl TryFrom<CliDeletion<'_>> for Option<Confirmed> {

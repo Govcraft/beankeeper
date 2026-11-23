@@ -247,3 +247,13 @@ Verification checks that digest and the typed relationships without changing
 historical IDs, snapshots, hashes or attribution. The `account_archives`
 check compares archive state with its audit history. Desktop owns the last-seen
 cursor and receipt presentation.
+
+## Schema v27 standing settings and rule amendments
+
+Schema v27 adds append-only company settings revisions and a superseded rule ID.
+New writes use the `beankeeper.audit.v7` domain and retain every v6 hash field,
+including the client hint, undo link, and related posting link. The before and
+after snapshots commit to the changed setting or both versions of an amended
+rule, including its lineage. Migration preserves existing audit rows, hashes,
+and receipt links. Verification reads each row with its recorded hash version,
+so v6 and v7 rows verify in the same chain.

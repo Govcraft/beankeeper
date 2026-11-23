@@ -2,13 +2,17 @@ use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use beankeeper::types::{AccountType, Currency, DebitOrCredit};
+use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
+use crate::db::rules::{DescriptionPattern, RuleId, RulePriority, RuleTerms};
+use crate::db::standing::{
+    BookkeepingPolicy, InformPreference, ProcessorFeeHandling, SalesTaxTreatment,
+};
 use crate::db::{ActorLabel, BlankActorLabel};
 use crate::error::CliError;
 use crate::identity::WriteMode;
@@ -581,6 +585,14 @@ EXAMPLES:\n  \
     /// Manage automatic bank import categorization.
     Rule(RuleArgs),
 
+    /// Read or set standing sales-tax and processor-fee instructions.
+    #[command(subcommand)]
+    BookkeepingPolicy(BookkeepingPolicyCommand),
+
+    /// Read or set how often the owner hears about completed changes.
+    #[command(subcommand)]
+    InformPreference(InformPreferenceCommand),
+
     /// Calculate monthly loan payments or post a scheduled payment.
     Loan(LoanArgs),
 
@@ -952,7 +964,7 @@ pub struct LoanPayArgs {
 #[command(
     subcommand_required = true,
     arg_required_else_help = true,
-    after_help = "EXAMPLES:\n  bk --company acme rule create --contains Starbucks --account 5000 --priority 10\n  bk --company acme rule list --json\n  bk --company acme rule delete <RULE_ID> --force\n\nRules apply to future CSV/OFX imports. Higher priority wins; ties use ascending rule ID."
+    after_help = "EXAMPLES:\n  bk --company acme rule create --contains Starbucks --account 5000 --priority 10\n  bk --company acme rule match --description 'Starbucks 123'\n  bk --company acme rule list --json\n\nRules apply to future CSV/OFX imports. Higher priority wins; ties use ascending rule ID."
 )]
 pub struct RuleArgs {
     #[command(subcommand)]
@@ -966,26 +978,89 @@ pub struct RuleArgs {
 #[derive(Subcommand, Debug)]
 pub enum RuleCommand {
     /// Create a case-insensitive description-contains rule.
-    Create {
-        /// Nonempty literal substring to find in the imported description.
-        #[arg(long)]
-        contains: crate::db::rules::DescriptionPattern,
-        /// Destination account replacing suspense on matching bank rows.
-        #[arg(long)]
-        account: String,
-        /// Higher priority wins; ties use ascending rule ID.
-        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
-        priority: i32,
+    Create(RuleTermsArgs),
+    /// Supersede an active rule with fully specified replacement terms.
+    Amend {
+        /// Active rule ID returned by create, amend or list.
+        id: RuleId,
+        #[command(flatten)]
+        terms: RuleTermsArgs,
     },
-    /// List rules in evaluation order.
+    /// List active rules in evaluation order.
     List,
+    /// Check a candidate description without posting.
+    Match {
+        /// Candidate transaction's description.
+        #[arg(long)]
+        description: String,
+    },
     /// Delete a rule. Existing postings remain unchanged.
     Delete {
-        /// Rule `TypeID` returned by create/list.
-        id: crate::db::rules::RuleId,
+        /// Active rule ID returned by create, amend or list.
+        id: RuleId,
         /// Skip interactive confirmation.
         #[arg(long)]
         force: bool,
+    },
+}
+
+/// Rule terms accepted at the CLI boundary.
+#[derive(Args, Debug)]
+pub struct RuleTermsArgs {
+    /// Nonempty literal substring to find in the imported description.
+    #[arg(long)]
+    contains: DescriptionPattern,
+    /// Destination account replacing suspense on matching bank rows.
+    #[arg(long)]
+    account: AccountCode,
+    /// Higher priority wins; ties use ascending rule ID.
+    #[arg(long, allow_negative_numbers = true)]
+    priority: Option<RulePriority>,
+}
+
+impl From<&RuleTermsArgs> for RuleTerms {
+    fn from(args: &RuleTermsArgs) -> Self {
+        (args.contains.clone(), args.account.clone(), args.priority).into()
+    }
+}
+
+/// Manage company-scoped bookkeeping instructions.
+#[derive(Subcommand, Debug)]
+pub enum BookkeepingPolicyCommand {
+    /// Show both standing bookkeeping instructions.
+    Show,
+    /// Set or amend one standing bookkeeping instruction.
+    #[command(subcommand)]
+    Set(BookkeepingPolicyArgs),
+}
+
+/// Pick the company's instruction to change.
+#[derive(Subcommand, Debug)]
+pub enum BookkeepingPolicyArgs {
+    /// Choose unset, track-liability, marketplace-remitted, or not-applicable.
+    SalesTax { value: SalesTaxTreatment },
+    /// Choose unset, separate-expense, or net-from-revenue.
+    ProcessorFees { value: ProcessorFeeHandling },
+}
+
+impl From<&BookkeepingPolicyArgs> for BookkeepingPolicy {
+    fn from(args: &BookkeepingPolicyArgs) -> Self {
+        match *args {
+            BookkeepingPolicyArgs::SalesTax { value } => Self::SalesTax(value),
+            BookkeepingPolicyArgs::ProcessorFees { value } => Self::ProcessorFees(value),
+        }
+    }
+}
+
+/// Manage a company's owner inform preference.
+#[derive(Subcommand, Debug)]
+pub enum InformPreferenceCommand {
+    /// Show how often the owner hears about changes.
+    Show,
+    /// Set or amend the preference for future updates.
+    Set {
+        /// Choose per-change, daily-digest, or weekly-digest.
+        value: InformPreference,
     },
 }
 

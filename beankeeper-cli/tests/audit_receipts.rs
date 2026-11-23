@@ -244,7 +244,11 @@ fn owner_undo_is_scoped_revocable_and_idempotent_with_audited_outcomes() -> Test
     let owner = books.credential("owner", Capability::Admin)?;
     let agent = books.credential("reversal", Capability::Reverse)?;
     let rule = Granted::<Post>::with_db(&books.db, &books.local, |grant| {
-        rules::create_rule(grant, &books.company, "supplies".parse()?, "5000", 10)
+        rules::create_rule(
+            grant,
+            &books.company,
+            ("supplies".parse()?, "5000".parse()?, Some(10.into())).into(),
+        )
     })?;
     let transaction = books.post(&books.db, "ORDER-1")?;
     let page = books.receipts()?;
@@ -367,7 +371,11 @@ fn assert_archived_account(books: &Books, transaction: TransactionId) -> TestRes
     assert!(posting_failure.to_string().contains("archived"));
     assert!(
         Granted::<Post>::with_db(&books.db, &books.local, |grant| {
-            rules::create_rule(grant, &books.company, "another".parse()?, "5000", 10)
+            rules::create_rule(
+                grant,
+                &books.company,
+                ("another".parse()?, "5000".parse()?, Some(10.into())).into(),
+            )
         })
         .is_err()
     );

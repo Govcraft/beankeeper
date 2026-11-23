@@ -20,6 +20,7 @@ pub mod rules;
 pub mod schedules;
 pub mod schema;
 pub mod spend_limits;
+pub mod standing;
 pub mod transactions;
 pub mod verification;
 

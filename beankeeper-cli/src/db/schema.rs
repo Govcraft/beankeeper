@@ -5,11 +5,12 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = RECEIPT_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = STANDING_SETTINGS_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
 pub(crate) const RECEIPT_SCHEMA_VERSION: i64 = 26;
+pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: i64 = 27;
 
 /// Returns the current schema version, or `0` if the `schema_version` table
 /// does not yet exist.
@@ -149,6 +150,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < RECEIPT_SCHEMA_VERSION {
         apply_v26(conn)?;
+    }
+    if version < STANDING_SETTINGS_SCHEMA_VERSION {
+        apply_v27(conn)?;
     }
 
     debug_assert_eq!(
@@ -1431,13 +1435,6 @@ fn apply_v26(conn: &Connection) -> Result<(), CliError> {
         conn.execute_batch(
             "ALTER TABLE accounts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
                  CHECK (archived IN (0, 1));
-             CREATE INDEX idx_receipt_company ON audit_log(company_slug, id);
-             CREATE UNIQUE INDEX idx_receipt_undo ON audit_log(undo_of) WHERE undo_of IS NOT NULL;
-             CREATE INDEX idx_receipt_posting ON audit_log(company_slug, related_posting)
-                 WHERE action IN ('reverse', 'proposal_approve');
-             CREATE VIEW audit_receipt_postings AS
-                 SELECT id, company_slug, related_posting AS posting_id
-                 FROM audit_log WHERE action IN ('reverse', 'proposal_approve');
              CREATE TRIGGER protect_archived_account_delete BEFORE DELETE ON accounts
                  WHEN OLD.archived = 1
                  BEGIN SELECT RAISE(ABORT, 'archived accounts are retained'); END;
@@ -1457,21 +1454,68 @@ fn apply_v26(conn: &Connection) -> Result<(), CliError> {
                  )
                  BEGIN SELECT RAISE(ABORT, 'account archive requires an owner undo audit record'); END;",
         )?;
+        install_receipt_read_paths(conn)?;
         conn.execute_batch("DROP TRIGGER protect_proposal_resolution;")?;
         install_proposal_resolution_trigger(conn, ProposalAuditLink::Column)?;
         Ok(())
     })
 }
 
+fn install_receipt_read_paths(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "CREATE INDEX idx_receipt_company ON audit_log(company_slug, id);
+         CREATE UNIQUE INDEX idx_receipt_undo ON audit_log(undo_of) WHERE undo_of IS NOT NULL;
+         CREATE INDEX idx_receipt_posting ON audit_log(company_slug, related_posting)
+             WHERE action IN ('reverse', 'proposal_approve');
+         CREATE VIEW audit_receipt_postings AS
+             SELECT id, company_slug, related_posting AS posting_id
+             FROM audit_log WHERE action IN ('reverse', 'proposal_approve');",
+    )?;
+    Ok(())
+}
+
+/// Add typed standing settings and rule lineage, preserving all existing audit rows.
+fn apply_v27(conn: &Connection) -> Result<(), CliError> {
+    migrate_audit(
+        conn,
+        AuditTable::StandingSettings,
+        STANDING_SETTINGS_SCHEMA_VERSION,
+    )
+}
+
+fn create_standing_settings(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "ALTER TABLE categorization_rules ADD COLUMN supersedes TEXT CHECK(supersedes IS NULL OR supersedes != id);
+         CREATE TABLE standing_settings (
+            revision INTEGER PRIMARY KEY,
+            company_slug TEXT NOT NULL REFERENCES companies(slug),
+            sales_tax TEXT NOT NULL CHECK(sales_tax IN ('unset', 'track-liability', 'marketplace-remitted', 'not-applicable')),
+            processor_fees TEXT NOT NULL CHECK(processor_fees IN ('unset', 'separate-expense', 'net-from-revenue')),
+            inform_preference TEXT CHECK(inform_preference IN ('per-change', 'daily-digest', 'weekly-digest'))
+         );
+         CREATE INDEX idx_standing_settings_company ON standing_settings(company_slug, revision DESC);
+         CREATE TRIGGER protect_standing_settings_update BEFORE UPDATE ON standing_settings
+           BEGIN SELECT RAISE(ABORT, 'standing settings revisions are immutable'); END;
+         CREATE TRIGGER protect_standing_settings_delete BEFORE DELETE ON standing_settings
+           BEGIN SELECT RAISE(ABORT, 'standing settings revisions cannot be deleted'); END;"
+    )?;
+    Ok(())
+}
+
 fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
-        let triggers = [
+        let mut triggers = vec![
             "protect_policy_update",
             "protect_proposal_resolution",
             "protect_period_insert",
             "protect_period_update",
         ];
+        if table == AuditTable::StandingSettings {
+            triggers.push("protect_account_archive");
+            conn.execute_batch("DROP VIEW audit_receipt_postings")?;
+            create_standing_settings(conn)?;
+        }
         let mut definitions = Vec::with_capacity(triggers.len());
         for name in triggers {
             let definition: String = conn.query_row(
@@ -1485,6 +1529,9 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         rebuild_audit(conn, table)?;
         for definition in definitions {
             conn.execute_batch(&definition)?;
+        }
+        if table == AuditTable::StandingSettings {
+            install_receipt_read_paths(conn)?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
         if table == AuditTable::Receipts {
@@ -1501,22 +1548,38 @@ enum AuditTable {
     Demo,
     ClientHints,
     Receipts,
+    StandingSettings,
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+    use super::audit::{AuditAction, AuditEntity};
+    use std::fmt::Write as _;
+
     let (mut entity, mut action) = if table == AuditTable::Periods {
         (String::new(), String::new())
     } else {
-        use super::audit::{AuditAction, AuditEntity};
         (
             format!(",'{}'", AuditEntity::Demo),
             format!(",'{}'", AuditAction::DemoSeed),
         )
     };
+    if table == AuditTable::StandingSettings {
+        let _ = write!(
+            entity,
+            ",'{}','{}'",
+            AuditEntity::BookkeepingPolicy,
+            AuditEntity::InformPreference
+        );
+        let _ = write!(
+            action,
+            ",'{}','{}','{}'",
+            AuditAction::RuleSupersede,
+            AuditAction::BookkeepingPolicySet,
+            AuditAction::InformPreferenceSet
+        );
+    }
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts => {
-            use super::audit::{AuditAction, AuditEntity};
-            use std::fmt::Write as _;
+        AuditTable::Receipts | AuditTable::StandingSettings => {
             let _ = write!(entity, ",'{}'", AuditEntity::Audit);
             let _ = write!(
                 action,
@@ -1524,13 +1587,18 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
                 AuditAction::AccountArchive,
                 AuditAction::ReceiptLinkMigration
             );
+            let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
+                (6, ",5,6", ", NULL, NULL")
+            } else {
+                (7, ",5,6,7", "")
+            };
             (
-                6,
-                ",5,6",
+                hash_version,
+                version_suffix,
                 "client_hint TEXT,
                  undo_of INTEGER REFERENCES audit_log_rebuild(id),
                  related_posting INTEGER REFERENCES transactions(id),",
-                ", CHECK(client_hint IS NULL OR (hash_version IN (5, 6) AND agent_uri IS NULL AND json_valid(client_hint))),
+                ", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
                        AND undo_of < id AND action IN ('reverse', 'account_archive')
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
@@ -1540,7 +1608,7 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
                        AND (action <> 'account_archive' OR undo_of IS NOT NULL)))",
-                ", NULL, NULL",
+                select_suffix,
             )
         }
         AuditTable::ClientHints => (
@@ -1753,7 +1821,7 @@ mod tests {
         audit::verify_creations(ReadConn::new(&conn))?;
         verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
         periods::verify(ReadConn::new(&conn))?;
-        assert_eq!(history(&conn)?.last().map(|row| row.0), Some(6));
+        assert_eq!(history(&conn)?.last().map(|row| row.0), Some(7));
         ensure_schema(&conn)?;
         Ok(())
     }
@@ -2041,6 +2109,15 @@ mod tests {
         )?;
         assert_eq!(tail, (6, "receipt_link_migration".into()));
 
+        // The next migration must retain the backfilled links and their v6 commitment.
+        ensure_schema(&conn)?;
+        assert_eq!(crate::db::audit::verify_hash_chain(reader)?.length(), 6);
+        let projected_postings: i64 =
+            conn.query_row("SELECT COUNT(*) FROM audit_receipt_postings", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(projected_postings, 2);
+
         conn.execute_batch(
             "DROP TRIGGER protect_audit_update;
              UPDATE audit_log SET related_posting = 1 WHERE action = 'reverse';",
@@ -2048,6 +2125,117 @@ mod tests {
         let error = crate::db::audit::verify_hash_chain(reader)
             .expect_err("changing a legacy typed link must invalidate the commitment");
         assert!(error.to_string().contains("receipt links"));
+        Ok(())
+    }
+
+    #[test]
+    fn v27_keeps_existing_rules_active_and_migrates_atomically() -> Result<(), CliError> {
+        use super::super::{Actor, audit, companies::Company, rules, standing};
+        use crate::identity::Post;
+        use audit::AuditEntity;
+
+        let conn = v17_connection()?;
+        for migration in [
+            apply_v18, apply_v19, apply_v20, apply_v21, apply_v22, apply_v23, apply_v24, apply_v25,
+        ] {
+            migration(&conn)?;
+        }
+        apply_v26(&conn)?;
+        let company = "legacy".parse()?;
+        let actor = Actor::new("owner".parse()?);
+        audit::record_identity(
+            &conn,
+            &actor,
+            audit::IdentityEvent::TokenRevoked,
+            "v26",
+            &serde_json::json!({}),
+        )?;
+        let tail = || -> Result<(audit::HashVersion, String, String), CliError> {
+            Ok(conn.query_row(
+                "SELECT hash_version, prev_hash, row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        };
+        let v26_tail = tail()?;
+        assert_eq!(v26_tail.0, audit::HashVersion::V6);
+        let id = rules::RuleId::generate();
+        conn.execute(
+            "INSERT INTO categorization_rules (id, company_slug, contains, account_code, priority)
+             VALUES (?1, ?2, 'sale', '4000', -7)",
+            params![id.to_string(), &company],
+        )?;
+        // A failure during the audit table rebuild must undo the new rule column and settings table.
+        conn.execute_batch("CREATE TABLE audit_log_rebuild (collision TEXT)")?;
+        assert!(ensure_schema(&conn).is_err());
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn))?,
+            RECEIPT_SCHEMA_VERSION
+        );
+        assert!(
+            conn.prepare("SELECT supersedes FROM categorization_rules")
+                .is_err()
+        );
+        assert!(conn.prepare("SELECT * FROM standing_settings").is_err());
+        assert!(conn.prepare("SELECT * FROM audit_receipt_postings").is_ok());
+        conn.execute_batch("DROP TABLE audit_log_rebuild")?;
+
+        ensure_schema(&conn)?;
+        assert_eq!(
+            get_schema_version(ReadConn::new(&conn))?,
+            STANDING_SETTINGS_SCHEMA_VERSION
+        );
+        assert_eq!(tail()?, v26_tail);
+        let scope = Company::bind(ReadConn::new(&conn), company)?;
+        let active = rules::list_rules(&scope)?;
+        let rule = rules::matching_rule(&active, "Retail SALE").expect("migrated match");
+        assert_eq!(rule.id(), &id);
+        assert_eq!(rule.supersedes(), None);
+        assert_eq!(i32::from(rule.priority()), -7);
+        assert_eq!(
+            standing::bookkeeping_policies(&scope)?,
+            standing::BookkeepingPolicies::default()
+        );
+        assert_eq!(
+            standing::inform_preference(&scope)?,
+            standing::InformPreference::default()
+        );
+        let audit_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE entity = ?1",
+            [AuditEntity::InformPreference.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(audit_count, 0);
+        assert!(
+            conn.execute(
+                "INSERT INTO standing_settings(company_slug, sales_tax, processor_fees)
+             VALUES ('legacy', 'separate-expense', 'unset')",
+                [],
+            )
+            .is_err()
+        );
+        assert!(conn.execute(
+            "INSERT INTO audit_log(id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
+             SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 6
+             FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+        ).is_err());
+        let reader = ReadConn::new(&conn);
+        let old_chain = audit::verify_hash_chain(reader)?;
+        audit::savepoint::with_audited_tx(&conn, "sp_standing_fixture", |tx| {
+            audit::set_inform_preference(
+                Granted::<Post>::check(tx, &actor)?,
+                scope.slug(),
+                standing::InformPreference::DailyDigest,
+            )
+        })?;
+        let (version, previous, _) = tail()?;
+        assert_eq!(version, audit::HashVersion::V7);
+        assert_eq!(previous, v26_tail.2);
+        assert_eq!(
+            audit::verify_hash_chain(reader)?.length(),
+            old_chain.length() + 1
+        );
         Ok(())
     }
 
@@ -2076,7 +2264,7 @@ mod tests {
             &super::super::Actor::new("owner".parse()?),
             |grant| super::super::audit::set_policy(grant, true),
         )?;
-        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(6));
+        assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(7));
         super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
         super::super::audit::verify_creations(ReadConn::new(&conn))?;
         for sql in [
@@ -2322,14 +2510,23 @@ mod tests {
         let actor = Actor::new("v14".parse()?);
         let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
             let grant = Granted::<Post>::check(tx, &actor)?;
-            rules::create_rule(grant, &"legacy".parse()?, "sale".parse()?, "4000", 0)
+            rules::create_rule(
+                grant,
+                &"legacy".parse()?,
+                (
+                    "sale".parse()?,
+                    "4000".parse().expect("fixture account code"),
+                    None,
+                )
+                    .into(),
+            )
         })?;
         audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
             let grant = Granted::<Post>::check(tx, &actor)?;
             audit::delete_rule(
                 grant,
                 &"legacy".parse()?,
-                &rule.id,
+                rule.id(),
                 crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
             )
         })?;

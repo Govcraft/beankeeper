@@ -230,11 +230,11 @@ fn matching_is_literal_lowercase_and_uses_priority_then_id() -> TestResult {
         db.read(),
         "acme".parse()?,
     )?)?;
-    assert_eq!(rules[0].priority, 10);
-    assert!(rules[0].id.to_string() < rules[1].id.to_string());
+    assert_eq!(i32::from(rules[0].priority()), 10);
+    assert!(rules[0].id().to_string() < rules[1].id().to_string());
     assert_eq!(
-        rules::matching_rule(&rules, "COFFEE shop").map(|r| &r.id),
-        Some(&rules[0].id)
+        rules::matching_rule(&rules, "COFFEE shop").map(rules::Rule::id),
+        Some(rules[0].id())
     );
     assert!(rules::matching_rule(&rules, "café 100X").is_none());
     assert!(rules::matching_rule(&rules, "CAFÉ 10%_ receipt").is_some());
@@ -499,27 +499,62 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
     let actor = Actor::new("rules-test".parse()?);
     raw.execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
     Granted::<Post>::with_db(&db, &actor, |grant| {
-        assert!(rules::create_rule(grant, &"acme".parse()?, "coffee".parse()?, "5000", 0).is_err());
+        assert!(
+            rules::create_rule(
+                grant,
+                &"acme".parse()?,
+                (
+                    "coffee".parse()?,
+                    "5000".parse().map_err(beankeeper::error::BeanError::from)?,
+                    None
+                )
+                    .into()
+            )
+            .is_err()
+        );
         Ok(())
     })?;
-    assert!(
-        rules::list_rules(&beankeeper_cli::db::companies::Company::bind(
-            db.read(),
-            "acme".parse()?
-        )?)?
-        .is_empty()
+    assert_eq!(
+        rules::list_rules(&companies::Company::bind(db.read(), "acme".parse()?)?)?,
+        Vec::<rules::Rule>::new()
     );
     raw.execute_batch("DROP TRIGGER fail_rule_audit;")?;
     let rule = Granted::<Post>::with_db(&db, &actor, |grant| {
-        rules::create_rule(grant, &"acme".parse()?, "coffee".parse()?, "5000", 0)
+        rules::create_rule(
+            grant,
+            &"acme".parse()?,
+            (
+                "coffee".parse()?,
+                "5000".parse().map_err(beankeeper::error::BeanError::from)?,
+                None,
+            )
+                .into(),
+        )
     })?;
     raw.execute_batch("CREATE TRIGGER fail_rule_audit BEFORE INSERT ON audit_log WHEN NEW.entity = 'rule' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
+    Granted::<Post>::with_db(&db, &actor, |grant| {
+        assert!(
+            rules::amend_rule(
+                grant,
+                &"acme".parse()?,
+                rule.id(),
+                (
+                    "tea".parse()?,
+                    "5000".parse().map_err(beankeeper::error::BeanError::from)?,
+                    None
+                )
+                    .into(),
+            )
+            .is_err()
+        );
+        Ok(())
+    })?;
     Granted::<Post>::with_db(&db, &actor, |grant| {
         assert!(
             audit::delete_rule(
                 grant,
                 &"acme".parse()?,
-                &rule.id,
+                rule.id(),
                 beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
             )
             .is_err()
@@ -527,12 +562,8 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
         Ok(())
     })?;
     assert_eq!(
-        rules::list_rules(&beankeeper_cli::db::companies::Company::bind(
-            db.read(),
-            "acme".parse()?
-        )?)?
-        .len(),
-        1
+        rules::list_rules(&companies::Company::bind(db.read(), "acme".parse()?)?)?,
+        [rule]
     );
     audit::verify_hash_chain(db.read())?;
     Ok(())
@@ -618,5 +649,51 @@ fn rule_output_formats_escape_values_and_respect_quiet() -> TestResult {
     let mut reader = csv::Reader::from_reader(deleted.stdout.as_slice());
     assert_eq!(reader.headers()?.iter().collect::<Vec<_>>(), ["deleted"]);
     assert_eq!(&reader.records().next().ok_or("missing deletion")??[0], id);
+    Ok(())
+}
+
+#[test]
+fn standing_setting_revisions_roll_back_when_the_audit_insert_fails() -> TestResult {
+    use beankeeper_cli::db::standing::{
+        self, BookkeepingPolicy, InformPreference, SalesTaxTreatment,
+    };
+
+    let ledger = Ledger::new()?;
+    let db = Db::open_existing(&ledger.path, None)?;
+    let raw = raw_ledger::open(&ledger.path, None)?;
+    raw.execute_batch(
+        "CREATE TRIGGER fail_settings_audit BEFORE INSERT ON audit_log
+         WHEN NEW.entity IN ('bookkeeping_policy', 'inform_preference')
+         BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+    )?;
+    let actor = Actor::new("rules-test".parse()?);
+    let company = "acme".parse()?;
+    assert!(
+        Granted::<Post>::with_db(&db, &actor, |grant| {
+            audit::set_bookkeeping_policy(
+                grant,
+                &company,
+                BookkeepingPolicy::SalesTax(SalesTaxTreatment::TrackLiability),
+            )
+        })
+        .is_err()
+    );
+    assert!(
+        Granted::<Post>::with_db(&db, &actor, |grant| {
+            audit::set_inform_preference(grant, &company, InformPreference::WeeklyDigest)
+        })
+        .is_err()
+    );
+    assert_eq!(ledger.count("standing_settings")?, 0);
+    let scope = companies::Company::bind(db.read(), company)?;
+    assert_eq!(
+        standing::bookkeeping_policies(&scope)?,
+        standing::BookkeepingPolicies::default()
+    );
+    assert_eq!(
+        standing::inform_preference(&scope)?,
+        InformPreference::default()
+    );
+    audit::verify_hash_chain(db.read())?;
     Ok(())
 }
