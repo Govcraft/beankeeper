@@ -323,7 +323,17 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "DROP VIEW audit_receipt_postings;
+            "DROP VIEW hold_adjustments;
+             DROP VIEW posting_reversals;
+             DROP VIEW posted_transactions;
+             DROP TRIGGER protect_hold_settlement;
+             DROP TRIGGER require_hold_actor;
+             DROP TRIGGER protect_hold_fields;
+             DROP INDEX idx_hold_settlements;
+             ALTER TABLE transactions DROP COLUMN amount_delta;
+             ALTER TABLE transactions DROP COLUMN settles_hold;
+             ALTER TABLE transactions DROP COLUMN posting_status;
+             DROP VIEW audit_receipt_postings;
              DROP TRIGGER protect_archived_account_delete;
              DROP TRIGGER protect_archived_account_insert;
              DROP TRIGGER protect_account_archive;
