@@ -172,6 +172,7 @@ audit_labels! {
         ScheduleCancel => "schedule_cancel" | "schedule-cancel",
         MetadataSet => "metadata_set" | "metadata-set",
         MetadataUnset => "metadata_unset" | "metadata-unset",
+        MetadataRestore => "metadata_restore" | "metadata-restore",
         RuleDeactivate => "rule_deactivate" | "rule-deactivate",
         RuleDelete => "rule_delete" | "rule-delete",
         RuleSupersede => "rule_supersede" | "rule-supersede",
@@ -2937,6 +2938,15 @@ pub enum MetadataTarget<'a> {
     Reference(&'a str),
 }
 
+impl std::fmt::Display for MetadataTarget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id(id) => write!(f, "with ID {id}"),
+            Self::Reference(reference) => write!(f, "with reference '{reference}'"),
+        }
+    }
+}
+
 /// Result of an annotation edit, including whether an audit row was written.
 #[derive(Debug, serde::Serialize)]
 pub struct MetadataResult {
@@ -2946,6 +2956,10 @@ pub struct MetadataResult {
     pub metadata: Option<String>,
     /// Whether metadata changed and an audit record was appended.
     pub changed: bool,
+    /// Receipt to pass to owner undo, when an edit changed the metadata.
+    pub receipt: Option<receipts::ReceiptId>,
+    /// Desktop detail link for the receipt, when an edit changed the metadata.
+    pub desktop_path: Option<String>,
 }
 
 /// Edits transaction annotations and records one whole-object before/after row.
@@ -2970,7 +2984,6 @@ pub(crate) fn edit_validated_metadata(
     target: MetadataTarget<'_>,
     edit: &metadata::ValidatedMetadataEdit,
 ) -> Result<MetadataResult, CliError> {
-    let edit = edit.as_ref();
     grant.mutate("sp_metadata", |tx, actor| {
         let reader = tx.read();
         let (predicate, value): (&str, &dyn rusqlite::ToSql) = match &target {
@@ -2981,9 +2994,9 @@ pub(crate) fn edit_validated_metadata(
             &format!("SELECT id, metadata FROM transactions WHERE company_slug = ?1 AND {predicate} = ?2"),
             params![company, value],
             |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?.ok_or_else(|| CliError::NotFound(format!("transaction {target:?} not found in company '{company}'")))?;
+        ).optional()?.ok_or_else(|| CliError::NotFound(format!("transaction {target} not found in company '{company}'")))?;
         let (after, changed) = edited_metadata(reader, before.as_deref(), edit)?;
-        if changed {
+        let receipt = if changed {
             let conn = tx.connection();
             conn.execute(
                 "UPDATE transactions SET metadata = ?1 WHERE company_slug = ?2 AND id = ?3",
@@ -2997,17 +3010,22 @@ pub(crate) fn edit_validated_metadata(
                     entity: AuditEntity::Transaction,
                     entity_id: &id.to_string(),
                     action: match edit {
-                        metadata::MetadataEdit::Set(_) => AuditAction::MetadataSet,
-                        metadata::MetadataEdit::Unset(_) => AuditAction::MetadataUnset,
+                        metadata::ValidatedMetadataEdit::Set(_) => AuditAction::MetadataSet,
+                        metadata::ValidatedMetadataEdit::Unset(_) => AuditAction::MetadataUnset,
                     },
-                    snapshots: (Some(before.as_deref().unwrap_or("{}")), Some(&after)),
+                    snapshots: (before.as_deref(), Some(&after)),
                 },
             )?;
-        }
+            Some(conn.last_insert_rowid().try_into()?)
+        } else {
+            None
+        };
         Ok(MetadataResult {
             id,
             metadata: if changed { Some(after) } else { before },
             changed,
+            receipt,
+            desktop_path: receipt.map(|id| receipts::desktop_receipt_path(company, id)),
         })
     })
 }
@@ -3017,23 +3035,14 @@ pub(crate) fn edit_validated_metadata(
 fn edited_metadata(
     conn: ReadConn<'_>,
     before: Option<&str>,
-    edit: &metadata::MetadataEdit,
+    edit: &metadata::ValidatedMetadataEdit,
 ) -> Result<(String, bool), CliError> {
     let mut after = before
         .and_then(metadata::normalize)
         .map_or_else(|| "{}".into(), metadata::NormalizedMetadata::into_string);
     let mut changed = false;
-    let pairs: Vec<(&str, Option<&str>)> = match edit {
-        metadata::MetadataEdit::Set(pairs) => pairs
-            .iter()
-            .map(|(key, value)| (key.as_str(), Some(value.as_str())))
-            .collect(),
-        metadata::MetadataEdit::Unset(keys) => {
-            keys.iter().map(|key| (key.as_str(), None)).collect()
-        }
-    };
-    for (key, value) in pairs {
-        let path = format!("$.{}", serde_json::Value::String(key.into()));
+    for (key, value) in edit.changes() {
+        let path = format!("$.{}", serde_json::Value::String(key.as_ref().into()));
         let present: Option<String> =
             conn.query_row("SELECT json_type(?1, ?2)", params![after, path], |row| {
                 row.get(0)

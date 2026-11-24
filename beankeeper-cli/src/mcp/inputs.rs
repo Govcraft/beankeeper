@@ -38,6 +38,7 @@ use crate::db::{
     companies::CompanyName,
     ids::{EntryId, PartnerTransactionId, StatementBatchId, TransactionId},
     investments::LotId,
+    metadata::{AnnotationKey, AnnotationKeys, AnnotationValues},
     proposals::ProposalId,
 };
 
@@ -224,44 +225,93 @@ pub(crate) struct TxnReverse {
     pub reference: Option<Reference>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(untagged, deny_unknown_fields)]
-#[schemars(extend("type" = "object"))]
-pub(crate) enum TxnMetaSet {
-    Id {
-        company: Company,
-        id: TransactionId,
-        /// Non-empty array of key=value strings, using the CLI --meta rule.
-        #[serde(deserialize_with = "deserialize_structured")]
-        values: NonEmpty<String>,
-    },
-    Reference {
-        company: Company,
-        reference: Reference,
-        /// Non-empty array of key=value strings, using the CLI --meta rule.
-        #[serde(deserialize_with = "deserialize_structured")]
-        values: NonEmpty<String>,
-    },
+pub(super) const ANNOTATION_VALUES_HINT: &str = r#"Send values as an object of string values, e.g. {"status":"pending"}, or as a legacy array, e.g. ["status=pending"]."#;
+pub(super) const ANNOTATION_KEYS_HINT: &str =
+    r#"Send keys as a nonempty array of annotation keys, e.g. ["status"]."#;
+
+fn annotation_values_schema(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": {"type": "string"},
+        "examples": [{"status": "pending"}],
+        "description": format!(
+            "{ANNOTATION_VALUES_HINT} Reserved keys: {}.",
+            AnnotationKey::reserved().collect::<Vec<_>>().join(", ")
+        )
+    })
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(untagged, deny_unknown_fields)]
-#[schemars(extend("type" = "object"))]
-pub(crate) enum TxnMetaUnset {
-    Id {
-        company: Company,
-        id: TransactionId,
-        /// Non-empty array of top-level annotation keys.
-        #[serde(deserialize_with = "deserialize_structured")]
-        keys: NonEmpty<String>,
-    },
-    Reference {
-        company: Company,
-        reference: Reference,
-        /// Non-empty array of top-level annotation keys.
-        #[serde(deserialize_with = "deserialize_structured")]
-        keys: NonEmpty<String>,
-    },
+fn annotation_keys_schema(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {"type": "string"},
+        "examples": [["status"]],
+        "description": format!(
+            "{ANNOTATION_KEYS_HINT} Reserved keys: {}.",
+            AnnotationKey::reserved().collect::<Vec<_>>().join(", ")
+        )
+    })
+}
+
+fn deserialize_annotation_values<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<AnnotationValues, D::Error> {
+    match deserialize_structured(deserializer)? {
+        value @ Value::Object(_) => {
+            let pairs =
+                BTreeMap::<String, String>::deserialize(value).map_err(de::Error::custom)?;
+            pairs
+                .into_iter()
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(de::Error::custom)
+        }
+        value @ Value::Array(_) => {
+            let arguments = Vec::<String>::deserialize(value).map_err(de::Error::custom)?;
+            arguments.as_slice().try_into().map_err(de::Error::custom)
+        }
+        _ => Err(de::Error::custom("invalid annotation values")),
+    }
+}
+
+fn deserialize_annotation_keys<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<AnnotationKeys, D::Error> {
+    let keys: Vec<String> = deserialize_structured(deserializer)?;
+    keys.as_slice().try_into().map_err(de::Error::custom)
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [
+    {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}},
+    {"type": "object", "required": ["reference"], "properties": {"reference": {"type": "string"}}}
+]))]
+pub(crate) struct TxnMetaSet {
+    pub company: Company,
+    pub id: Option<TransactionId>,
+    pub reference: Option<Reference>,
+    #[serde(deserialize_with = "deserialize_annotation_values")]
+    #[schemars(schema_with = "annotation_values_schema")]
+    pub values: AnnotationValues,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [
+    {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}},
+    {"type": "object", "required": ["reference"], "properties": {"reference": {"type": "string"}}}
+]))]
+pub(crate) struct TxnMetaUnset {
+    pub company: Company,
+    pub id: Option<TransactionId>,
+    pub reference: Option<Reference>,
+    #[serde(deserialize_with = "deserialize_annotation_keys")]
+    #[schemars(schema_with = "annotation_keys_schema")]
+    pub keys: AnnotationKeys,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

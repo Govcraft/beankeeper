@@ -306,3 +306,86 @@ fn assert_owner_required(
     }
     Ok(())
 }
+
+#[test]
+fn annotation_receipts_restore_exact_metadata_through_cli_and_mcp() -> TestResult {
+    use beankeeper_cli::db::Db;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("annotation-undo.db");
+    let passphrase = dir.path().join("passphrase");
+    identity_ledger(&path, &passphrase)?;
+    let secret = secrecy::SecretString::from("mcp-test-passphrase");
+    let db = Db::open_existing(&path, Some(&secret))?;
+    let owner = proposal_identity(&db, "annotation_owner", &["ledger/admin", "ledger/read"])?;
+    let token = owner["token"].as_str().ok_or("missing owner token")?;
+    let mut agent = identity_client(&path, &passphrase, None, false)?;
+    let mut owner = identity_client(&path, &passphrase, Some(token), false)?;
+
+    let exact = r#"{ "status": "cleared", "large": 123456789012345678901234567890 }"#;
+    for (reference, before) in [
+        ("with-metadata", json!(exact)),
+        ("without-metadata", Value::Null),
+        ("empty-metadata", json!("{}")),
+    ] {
+        let mut input = posting(reference);
+        input["metadata"] = before.clone();
+        input["meta"] = json!({});
+        let id = agent.success("txn_post", &input)?["id"].clone();
+        let set = agent.success(
+            "txn_meta_set",
+            &json!({
+                "company":"acme", "id":id, "values":{"status":"pending"}
+            }),
+        )?;
+        let original = &set["receipt"];
+        assert!(original.is_i64(), "{set}");
+        assert!(
+            set["desktop_path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with(&format!("#receipt-{original}")))
+        );
+
+        let unset = receipt_result(receipt_cli(&path, &passphrase, None)?.args([
+            "--company",
+            "acme",
+            "txn",
+            "meta",
+            "unset",
+            "--reference",
+            reference,
+            "status",
+        ]))?;
+        let removed = &unset["receipt"];
+        assert!(removed.is_i64(), "{unset}");
+        let original_input = json!({"company":"acme", "receipt":original});
+        let stale = owner.call("audit_undo", &original_input)?;
+        assert_eq!(payload(&stale)?["code"], "UNDO_INELIGIBLE");
+
+        let restored =
+            owner.success("audit_undo", &json!({"company":"acme", "receipt":removed}))?;
+        assert_eq!(restored["kind"], "annotations_restored");
+        assert_eq!(restored["transaction"], id);
+        let show = json!({"company":"acme", "id":id});
+        assert_eq!(
+            agent.success("txn_show", &show)?[0]["metadata"],
+            set["metadata"]
+        );
+
+        let undo = receipt_result(receipt_cli(&path, &passphrase, Some(token))?.args([
+            "--company",
+            "acme",
+            "audit",
+            "undo",
+            &original.to_string(),
+        ]))?;
+        assert_eq!(undo["kind"], "annotations_restored");
+        assert_eq!(undo, owner.success("audit_undo", &original_input)?);
+        assert_eq!(agent.success("txn_show", &show)?[0]["metadata"], before);
+    }
+
+    let restores = agent.success("audit_log", &json!({"action":"metadata_restore"}))?;
+    assert_eq!(restores.as_array().map(Vec::len), Some(6));
+    agent.success("verify", &json!({}))?;
+    Ok(())
+}

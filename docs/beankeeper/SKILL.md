@@ -124,15 +124,17 @@ Use `bk --company acme txn meta set 42 status=disputed dispute_id=D-42` or
 `txn meta set --reference CHARGE-42 status=disputed`. Remove annotations with
 `txn meta unset 42 status dispute_id` or select by `--reference`.
 Values are strings, including numbers and booleans, as with `txn post --meta`.
-Do not edit `correlate`, `reverses`, `reversed_by`, `proposal_id`, or `applies_to`: those keys
-are reserved for ledger relationships. Set custom settlement link keys at post
-time and treat them as relationships too. Duplicate keys are rejected.
-Each changed batch records whole-object snapshots under `metadata_set` or
-`metadata_unset`; no-op retries append nothing. JSON uses `txn.meta.set` /
-`txn.meta.unset` and returns `{id, metadata, changed}` with metadata as JSON text
-(or null for a no-op on an unannotated transaction). Removing the last key
-leaves `{}`. Dates and financial fields stay unchanged, so tagging an original
-AR charge preserves its age under `report aging --filter-metadata status=disputed`.
+Reserved keys are `correlate`, `reverses`, `reversed_by`, `proposal_id`,
+`applies_to`, and `beankeeper_source`. Set custom settlement link keys at post
+time and treat them as relationships too. Each key must be unique, nonempty,
+and free of double quotes and NUL.
+Each changed batch records a `receipt` with whole-object snapshots and returns
+a `desktop_path` for optional detail. Tell the owner what changed and give them
+the receipt for one-step undo with `bk audit undo --company ACME RECEIPT` or
+`audit_undo` using the owner's signed grant. Undo newer annotation edits first.
+No-op retries have a null receipt. Removing the last key leaves `{}`. Dates and
+financial fields stay unchanged, so tagging an original AR charge preserves
+its age under `report aging --filter-metadata status=disputed`.
 
 ## Record first and inform the owner
 
@@ -395,7 +397,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 - Use `company_create` with `slug`, `name`, and optional `description` to add a company. Use `ledger_setup_book_create` when the company also needs a setup profile. Both use the same audited company insert.
 - Call `company_delete` with `slug` when the owner asks to delete that company. The call confirms deletion, records the eligible company's prior state in the audit log, and returns `{"deleted":"slug"}`. On `VALIDATION` for retained data, explain that the company keeps its history and use `txn_reverse` for posting corrections. Both company tools require `ledger/admin` under enforcement and are hidden in read-only mode.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Direct grants post immediately. Propose-only grants return a pending proposal. Supply a stable `reference` and `on_conflict: "skip"` for retries of posted references. Find a pending reference with `txn_proposals`. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
-- Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: ["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset` takes the same selector and `keys: ["status", "dispute_id"]`. Values are strings; relationship keys are reserved. These writes preserve financial fields and use one audited batch per change. Both tools are absent in read-only mode.
+- Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: {"status":"pending"}`. Legacy arrays such as `["status=pending"]` still work. `txn_meta_unset` takes the same selector and `keys: ["status"]`. Report the returned `receipt` to the owner, who can pass it with `company` to `audit_undo` using their signed grant. Read-only mode omits both write tools.
 - Call `txn_reverse` with `company` and the original `id` to create a linked mirror posting; optional fields are `date`, `description`, and `reference`. Supply the same explicit `reference` on retries to get `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed. Existing clearings stay on the original; reversal entries start uncleared. This write tool is absent in read-only mode.
 - Call `txn_list` or `txn_show` to inspect posted entries. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
 - For `report` with `kind: "reconciliation"`, `mode` accepts `bank` (default) or `settlement`. Settlement mode requires `statement` and accepts `link_key` (default `applies_to`) for payment-to-charge metadata links.

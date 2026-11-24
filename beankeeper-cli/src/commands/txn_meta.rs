@@ -30,16 +30,25 @@ pub struct MetadataRequest {
     edit: metadata::ValidatedMetadataEdit,
 }
 
-impl TryFrom<(MetadataSelector, metadata::MetadataEdit)> for MetadataRequest {
+impl From<(MetadataSelector, metadata::ValidatedMetadataEdit)> for MetadataRequest {
+    fn from((target, edit): (MetadataSelector, metadata::ValidatedMetadataEdit)) -> Self {
+        Self { target, edit }
+    }
+}
+
+impl TryFrom<(Option<TransactionId>, Option<TransactionReference>)> for MetadataSelector {
     type Error = CliError;
 
     fn try_from(
-        (target, edit): (MetadataSelector, metadata::MetadataEdit),
+        (id, reference): (Option<TransactionId>, Option<TransactionReference>),
     ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            target,
-            edit: edit.try_into()?,
-        })
+        match (id, reference) {
+            (Some(id), None) => Ok(Self::Id(id)),
+            (None, Some(reference)) => Ok(Self::Reference(reference)),
+            _ => Err(CliError::Validation(
+                "provide exactly one of id or reference".into(),
+            )),
+        }
     }
 }
 
@@ -67,19 +76,21 @@ impl TryFrom<&TxnMetaCommand> for MetadataRequest {
         };
         let edit = match sub {
             TxnMetaCommand::Set { .. } => {
-                metadata::MetadataEdit::Set(metadata::parse_meta_args(arguments)?)
+                metadata::ValidatedMetadataEdit::Set(arguments.try_into()?)
             }
-            TxnMetaCommand::Unset { .. } => metadata::MetadataEdit::Unset(arguments.to_vec()),
+            TxnMetaCommand::Unset { .. } => {
+                metadata::ValidatedMetadataEdit::Unset(arguments.try_into()?)
+            }
         };
-        Self::try_from((target, edit))
+        Ok(Self::from((target, edit)))
     }
 }
 
 impl MetadataRequest {
     pub(super) fn operation(&self) -> Operation {
-        match self.edit.as_ref() {
-            metadata::MetadataEdit::Set(_) => Operation::TxnMetaSet,
-            metadata::MetadataEdit::Unset(_) => Operation::TxnMetaUnset,
+        match self.edit {
+            metadata::ValidatedMetadataEdit::Set(_) => Operation::TxnMetaSet,
+            metadata::ValidatedMetadataEdit::Unset(_) => Operation::TxnMetaUnset,
         }
     }
 

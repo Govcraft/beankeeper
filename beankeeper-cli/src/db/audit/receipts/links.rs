@@ -139,6 +139,12 @@ pub(in crate::db::audit) fn verify_links(reader: ReadConn<'_>) -> Result<(), Cli
                          WHERE rule.company_slug = event.company_slug
                            AND rule.id = event.entity_id)
                  ))
+                 OR (event.action = 'metadata_restore' AND NOT (
+                     event.entity = 'transaction' AND original.entity = 'transaction'
+                     AND original.action IN ('metadata_set', 'metadata_unset')
+                     AND original.entity_id = event.entity_id
+                     AND original.after IS event.before AND original.before IS event.after
+                 ))
              )) LIMIT 1",
             [],
             |row| row.get(0),

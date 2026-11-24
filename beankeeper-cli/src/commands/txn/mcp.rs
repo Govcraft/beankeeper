@@ -10,9 +10,7 @@ use super::{
 };
 use crate::cli;
 use crate::db::{
-    companies::CompanySlug,
-    metadata::{self, MetadataEdit},
-    metadata_filter,
+    companies::CompanySlug, metadata::ValidatedMetadataEdit, metadata_filter,
     transactions::ConflictStrategy,
 };
 use crate::error::CliError;
@@ -162,24 +160,11 @@ impl TryFrom<inputs::TxnMetaSet> for TxnRequest {
     type Error = CliError;
 
     fn try_from(input: inputs::TxnMetaSet) -> Result<Self, Self::Error> {
-        let (company, target, values) = match input {
-            inputs::TxnMetaSet::Id {
-                company,
-                id,
-                values,
-            } => (company, MetadataSelector::Id(id), values),
-            inputs::TxnMetaSet::Reference {
-                company,
-                reference,
-                values,
-            } => (
-                company,
-                MetadataSelector::Reference(reference.into_inner()),
-                values,
-            ),
-        };
-        let edit = MetadataEdit::Set(metadata::parse_meta_args(&values.into_vec())?);
-        Ok(Self::Meta(company.into_inner(), (target, edit).try_into()?))
+        let target = MetadataSelector::try_from((input.id, input.reference.map(Text::into_inner)))?;
+        Ok(Self::Meta(
+            input.company.into_inner(),
+            (target, ValidatedMetadataEdit::Set(input.values)).into(),
+        ))
     }
 }
 
@@ -187,23 +172,10 @@ impl TryFrom<inputs::TxnMetaUnset> for TxnRequest {
     type Error = CliError;
 
     fn try_from(input: inputs::TxnMetaUnset) -> Result<Self, Self::Error> {
-        let (company, target, keys) = match input {
-            inputs::TxnMetaUnset::Id { company, id, keys } => {
-                (company, MetadataSelector::Id(id), keys)
-            }
-            inputs::TxnMetaUnset::Reference {
-                company,
-                reference,
-                keys,
-            } => (
-                company,
-                MetadataSelector::Reference(reference.into_inner()),
-                keys,
-            ),
-        };
+        let target = MetadataSelector::try_from((input.id, input.reference.map(Text::into_inner)))?;
         Ok(Self::Meta(
-            company.into_inner(),
-            (target, MetadataEdit::Unset(keys.into_vec())).try_into()?,
+            input.company.into_inner(),
+            (target, ValidatedMetadataEdit::Unset(input.keys)).into(),
         ))
     }
 }

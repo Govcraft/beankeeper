@@ -84,6 +84,12 @@ where
                         super::tool_error(&validation).structured_content.as_ref(),
                     )
                 }
+                Err(error) if operation == Operation::TxnMetaSet => super::tool_error(
+                    &CliError::Validation(format!("{error}. {}", inputs::ANNOTATION_VALUES_HINT)),
+                ),
+                Err(error) if operation == Operation::TxnMetaUnset => super::tool_error(
+                    &CliError::Validation(format!("{error}. {}", inputs::ANNOTATION_KEYS_HINT)),
+                ),
                 Err(error) => super::tool_error(&CliError::Validation(format!(
                     "failed to deserialize parameters: {error}"
                 ))),

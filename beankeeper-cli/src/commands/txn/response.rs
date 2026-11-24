@@ -258,6 +258,9 @@ impl TxnResponse {
                     data.id,
                     data.metadata.as_deref().unwrap_or("{}")
                 );
+                if let Some(receipt) = data.receipt {
+                    println!("Recorded as receipt #{receipt}.");
+                }
             }
             TxnData::Reconciled(orphans) if format == OutputFormat::Table => {
                 if orphans.is_empty() {

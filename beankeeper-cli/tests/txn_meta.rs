@@ -431,7 +431,7 @@ fn initially_absent_metadata_empty_objects_and_environment_actor_are_supported()
     );
     let rows = books.audit("metadata_set")?;
     assert_eq!(rows[0]["actor"], "workflow");
-    assert_eq!(rows[0]["before"], "{}");
+    assert_eq!(rows[0]["before"], Value::Null);
     let unset = books.json(&["txn", "meta", "unset", &id, "status"])?;
     assert_eq!(unset["data"]["metadata"], "{}");
     assert_eq!(books.audit("metadata_unset")?[0]["after"], "{}");
