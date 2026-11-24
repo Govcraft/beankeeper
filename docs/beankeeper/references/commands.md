@@ -514,7 +514,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 ### Read-only tools
 
 Read-only mode removes `company_create`, `company_delete`, `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
-`txn_reject`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
+`txn_reject`, `txn_reverse`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,

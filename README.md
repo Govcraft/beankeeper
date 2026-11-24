@@ -539,7 +539,7 @@ mutation tools are absent and cannot be called.
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |
-| `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Record or settle a hold using the grant's write mode, undo a posting, or edit annotations |
+| `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Record transactions and holds, settle holds, undo postings, or edit annotations |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
