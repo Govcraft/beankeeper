@@ -67,6 +67,7 @@ convert! {
         account_type: input.account_type, default_tax_category: input.default_tax_category,
     }),
     txn_reverse(TxnReverse) => Transaction(input => input.into()),
+    txn_settle_hold(TxnSettleHold) => Transaction(input => input.into()),
     txn_proposals(TxnProposals) => Transaction(input => input.into()),
     txn_approve(TxnApprove) => Transaction(input => input.into()),
     txn_reject(TxnReject) => Transaction(input => input.into()),

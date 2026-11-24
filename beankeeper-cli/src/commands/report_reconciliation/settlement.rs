@@ -532,7 +532,7 @@ fn match_settlement(
                     && let Some(id) = report_aging::find_link_target(conn, company, target)?
                 {
                     let on_account: bool = conn.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM entries e JOIN transactions t ON t.id=e.transaction_id AND t.company_slug=e.company_slug WHERE t.id=?1 AND e.account_code=?2 AND t.currency=?3)",
+                        "SELECT EXISTS(SELECT 1 FROM entries e JOIN posted_transactions t ON t.id=e.transaction_id AND t.company_slug=e.company_slug WHERE t.id=?1 AND e.account_code=?2 AND t.currency=?3)",
                         rusqlite::params![id, account, currency.code()],
                         |r| r.get(0),
                     )?;

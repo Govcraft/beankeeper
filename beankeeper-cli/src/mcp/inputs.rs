@@ -36,6 +36,7 @@ use crate::db::standing::{BookkeepingPolicy, InformPreference};
 use crate::db::{
     ActorLabel,
     companies::CompanyName,
+    holds::{EntryStatus, SettlementAmount},
     ids::{EntryId, PartnerTransactionId, StatementBatchId, TransactionId},
     investments::LotId,
     metadata::{AnnotationKey, AnnotationKeys, AnnotationValues},
@@ -223,6 +224,28 @@ pub(crate) struct TxnReverse {
     pub description: Option<String>,
     /// Pass the same explicit reference for safe retries.
     pub reference: Option<Reference>,
+}
+
+/// Exactly one way to identify the original authorization.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+pub(crate) enum HoldTarget {
+    Id { id: TransactionId },
+    Reference { reference: Reference },
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TxnSettleHold {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub hold: HoldTarget,
+    /// Actual positive amount in the hold's currency, in decimal major units.
+    pub amount: Text<SettlementAmount>,
+    /// Date the charge posted (YYYY-MM-DD).
+    pub date: Date,
+    /// Stable reference for the posted charge. Reuse it for an exact retry.
+    pub reference: Reference,
 }
 
 pub(super) const ANNOTATION_VALUES_HINT: &str = r#"Send values as an object of string values, e.g. {"status":"pending"}, or as a legacy array, e.g. ["status=pending"]."#;
@@ -627,6 +650,9 @@ pub(crate) struct LedgerSetupOpeningReserve {
 pub(crate) struct TxnPost {
     pub company: Company,
     pub description: String,
+    /// Use pending for a card authorization. Defaults to posted.
+    #[serde(default)]
+    pub status: EntryStatus,
     pub metadata: Option<String>,
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,

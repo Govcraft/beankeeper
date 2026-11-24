@@ -7,7 +7,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = ANNOTATION_UNDO_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = HOLDS_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -16,6 +16,7 @@ pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: i64 = 27;
 const RULE_UNDO_SCHEMA_VERSION: i64 = 28;
 const DIRECT_SETUP_SCHEMA_VERSION: i64 = 29;
 const ANNOTATION_UNDO_SCHEMA_VERSION: i64 = 30;
+pub(super) const HOLDS_SCHEMA_VERSION: i64 = 31;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +180,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         apply_v25(conn)?;
     }
     apply_receipt_migrations(conn, version)?;
+    if version < HOLDS_SCHEMA_VERSION {
+        apply_v31(conn)?;
+    }
 
     debug_assert_eq!(
         get_schema_version(ReadConn::new(conn)).unwrap_or(0),
@@ -202,7 +206,6 @@ fn apply_receipt_migrations(conn: &Connection, version: i64) -> Result<(), CliEr
     if version < DIRECT_SETUP_SCHEMA_VERSION {
         apply_v29(conn)?;
     }
-
     if version < ANNOTATION_UNDO_SCHEMA_VERSION {
         apply_v30(conn)?;
     }
@@ -1565,6 +1568,18 @@ fn apply_v30(conn: &Connection) -> Result<(), CliError> {
     )
 }
 
+/// Add pending holds after the annotation undo migration rebuilds the audit table.
+fn apply_v31(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.execute_batch(include_str!("schema/holds.sql"))?;
+        conn.execute(
+            "INSERT INTO schema_version(version) VALUES (?1)",
+            [HOLDS_SCHEMA_VERSION],
+        )?;
+        Ok(())
+    })
+}
+
 fn install_annotation_undo_guard(conn: &Connection) -> Result<(), CliError> {
     conn.execute_batch(
         "CREATE TRIGGER protect_annotation_restore BEFORE INSERT ON audit_log
@@ -1976,13 +1991,12 @@ mod tests {
             description: "Review".into(),
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date: "2026-01-01"
-                .parse()
-                .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("fixture date"),
             entries: Vec::new(),
             correlate: None,
             reference: None,
             on_conflict: super::super::ConflictStrategy::Error,
+            purpose: crate::db::holds::PostingPurpose::default(),
         };
         conn.execute(
             "INSERT INTO txn_proposals(id, company_slug, status, payload, debit_total, currency, proposer_uri, proposer_jti)

@@ -9,6 +9,7 @@ use super::amounts::PositiveMinorUnits;
 use super::audit::{self, Actor, savepoint::AuditedTx};
 use super::companies::{AllCompanies, Company, CompanySlug};
 use super::connection::ReadConn;
+use super::holds::{self, EntryStatus, HoldJournal, PostingPurpose, PostingState, ReadySettlement};
 use super::metadata;
 use super::metadata_filter;
 use super::{
@@ -24,11 +25,21 @@ pub(crate) fn reference_exists(
     company: &crate::db::companies::CompanySlug,
     reference: &str,
 ) -> Result<bool, CliError> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM transactions WHERE company_slug = ?1 AND reference = ?2)",
-        params![company, reference],
-        |row| row.get(0),
-    )?)
+    Ok(find_reference(conn, company, reference)?.is_some())
+}
+
+pub(super) fn find_reference(
+    conn: ReadConn<'_>,
+    company: &CompanySlug,
+    reference: &str,
+) -> Result<Option<TransactionId>, CliError> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
+            params![company, reference],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 /// A single entry to be posted as part of a transaction.
@@ -180,9 +191,18 @@ pub(crate) fn post_from_source(
     params: &PostTransactionParams<'_>,
     source: PostingSource,
 ) -> Result<PostResult, CliError> {
+    post_from_source_with_status(grant, params, source, EntryStatus::default())
+}
+
+pub(crate) fn post_from_source_with_status(
+    grant: Granted<'_, Post>,
+    params: &PostTransactionParams<'_>,
+    source: PostingSource,
+    status: EntryStatus,
+) -> Result<PostResult, CliError> {
     grant.mutate("sp_authorized_post", |tx, actor| {
         let params = PostTransactionParams { actor, ..*params };
-        post_direct(tx, &params, source)
+        post_direct_with_status(tx, &params, source, status)
     })
 }
 
@@ -191,12 +211,21 @@ pub(super) fn post_direct(
     params: &PostTransactionParams<'_>,
     source: PostingSource,
 ) -> Result<PostResult, CliError> {
+    post_direct_with_status(tx, params, source, EntryStatus::default())
+}
+
+fn post_direct_with_status(
+    tx: &AuditedTx<'_>,
+    params: &PostTransactionParams<'_>,
+    source: PostingSource,
+    status: EntryStatus,
+) -> Result<PostResult, CliError> {
     if source == PostingSource::Storage && params.entries.is_empty() {
         return Err(CliError::Validation(
             "transaction must have at least one entry".to_string(),
         ));
     }
-    post_with_source(tx, &Posting::Direct(params), source)
+    post_with_source(tx, &Posting::Direct(params, status), source)
 }
 
 // Onboarding has already resolved active accounts and sealed a balanced journal.
@@ -252,8 +281,20 @@ pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<Post
     )
 }
 
+pub(super) fn post_settlement(
+    params: &PostTransactionParams<'_>,
+    ready: ReadySettlement<'_>,
+) -> Result<PostResult, CliError> {
+    post_with_source(
+        ready.transaction(),
+        &Posting::Settlement(params, ready.into_state()),
+        PostingSource::Storage,
+    )
+}
+
 enum Posting<'a> {
-    Direct(&'a PostTransactionParams<'a>),
+    Direct(&'a PostTransactionParams<'a>, EntryStatus),
+    Settlement(&'a PostTransactionParams<'a>, PostingState),
     Prepared(&'a PostTransactionParams<'a>, &'a Transaction),
     Approved(super::proposals::ApprovedPosting<'a>),
     ApprovedStatement(audit::setup::statement_batches::ApprovedStatementPosting<'a>),
@@ -268,7 +309,9 @@ fn post_with_source(
     let reader = tx.read();
     let approved;
     let p = match posting {
-        Posting::Direct(params) | Posting::Prepared(params, _) => *params,
+        Posting::Direct(params, _)
+        | Posting::Prepared(params, _)
+        | Posting::Settlement(params, _) => *params,
         Posting::Reversal(reversal) => reversal.params(),
         Posting::Approved(approval) => {
             approved = approval.params();
@@ -286,28 +329,8 @@ fn post_with_source(
         _ if source != PostingSource::Storage => Some(build_journal(reader, p, source)?),
         _ => None,
     };
-    // Check for duplicate reference before inserting.
-    if let Some(ref_str) = p.reference {
-        let existing: Option<TransactionId> = reader
-            .query_row(
-                "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
-                params![p.company_slug, ref_str],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        if let Some(existing_id) = existing {
-            match p.on_conflict {
-                ConflictStrategy::Error => {
-                    return Err(CliError::Validation(format!(
-                        "transaction with reference '{ref_str}' already exists (id: {existing_id})"
-                    )));
-                }
-                ConflictStrategy::Skip => {
-                    return Ok(PostResult::Skipped(existing_id));
-                }
-            }
-        }
+    if let Some(id) = duplicate_reference(reader, p, posting.status())? {
+        return Ok(PostResult::Skipped(id));
     }
 
     if !matches!(posting, Posting::Approved(_))
@@ -320,6 +343,7 @@ fn post_with_source(
         posting,
         Posting::Approved(_) | Posting::ApprovedStatement(_)
     ) && !owner_undo
+        && posting.status() == EntryStatus::Posted
     {
         super::spend_limits::check(reader, p)?;
     }
@@ -347,16 +371,19 @@ fn post_with_source(
                 super::periods::ClosedPostingPeriod::public_error(error)
             }
         })?;
+    let state = posting_state(tx, posting, p, &journal)?;
     let validated = ValidatedPosting {
+        state,
         journal,
         period,
         request: p,
     };
     let metadata = match posting {
-        Posting::Direct(_) | Posting::Prepared(..) | Posting::ApprovedStatement(_) => {
-            metadata::UserAnnotations::parse(p.metadata)?
-                .map(metadata::UserAnnotations::into_normalized)
-        }
+        Posting::Direct(..)
+        | Posting::Prepared(..)
+        | Posting::ApprovedStatement(_)
+        | Posting::Settlement(..) => metadata::UserAnnotations::parse(p.metadata)?
+            .map(metadata::UserAnnotations::into_normalized),
         Posting::Approved(_) => p.metadata.and_then(metadata::normalize),
         Posting::Reversal(reversal) => Some(metadata::reversal_link(reversal.original_id())?),
     };
@@ -371,9 +398,78 @@ fn post_with_source(
     audit::persist_posting(validated, effective_metadata.as_deref())
 }
 
+impl Posting<'_> {
+    fn status(&self) -> EntryStatus {
+        match self {
+            Self::Direct(_, status) => *status,
+            Self::Reversal(reversal) => reversal.status(),
+            Self::Approved(approval) => approval.purpose().status(),
+            _ => EntryStatus::Posted,
+        }
+    }
+}
+
+pub(super) fn duplicate_reference(
+    reader: ReadConn<'_>,
+    params: &PostTransactionParams<'_>,
+    status: EntryStatus,
+) -> Result<Option<TransactionId>, CliError> {
+    let Some(reference) = params.reference else {
+        return Ok(None);
+    };
+    let existing: Option<(TransactionId, EntryStatus)> = reader
+        .query_row(
+            "SELECT id, posting_status FROM transactions WHERE company_slug = ?1 AND reference = ?2",
+            params![params.company_slug, reference],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match existing {
+        None => Ok(None),
+        Some((id, existing_status)) if existing_status != status => {
+            Err(CliError::Validation(format!(
+                "reference '{reference}' identifies {existing_status} transaction #{id}; use a different reference or settle the original hold"
+            )))
+        }
+        Some((id, _)) if params.on_conflict == ConflictStrategy::Skip => Ok(Some(id)),
+        Some((id, _)) => Err(CliError::Validation(format!(
+            "transaction with reference '{reference}' already exists (id: {id})"
+        ))),
+    }
+}
+
+fn posting_state(
+    tx: &AuditedTx<'_>,
+    posting: &Posting<'_>,
+    params: &PostTransactionParams<'_>,
+    journal: &Transaction,
+) -> Result<PostingState, CliError> {
+    match posting {
+        Posting::Direct(_, EntryStatus::Pending) => {
+            HoldJournal::try_from((journal, params.correlate)).map(Into::into)
+        }
+        Posting::Settlement(_, state) => Ok(*state),
+        Posting::Reversal(reversal) => Ok(match reversal.status() {
+            EntryStatus::Posted => PostingState::Posted,
+            EntryStatus::Pending => PostingState::Pending,
+        }),
+        Posting::Approved(approval) => match approval.purpose() {
+            PostingPurpose::Posted => Ok(PostingState::Posted),
+            PostingPurpose::Pending => {
+                HoldJournal::try_from((journal, params.correlate)).map(Into::into)
+            }
+            PostingPurpose::Settle(id) => {
+                holds::approve(tx, params, journal, id).map(ReadySettlement::into_state)
+            }
+        },
+        _ => Ok(PostingState::Posted),
+    }
+}
+
 /// The only input to the posting insert. The validated journal and open
 /// period both come from this request and connection.
 pub(super) struct ValidatedPosting<'a> {
+    state: PostingState,
     journal: Transaction,
     period: super::periods::OpenPeriod<'a>,
     request: &'a PostTransactionParams<'a>,
@@ -383,11 +479,12 @@ impl<'a> ValidatedPosting<'a> {
     pub(super) fn into_parts(
         self,
     ) -> (
+        PostingState,
         Transaction,
         super::periods::OpenPeriod<'a>,
         &'a PostTransactionParams<'a>,
     ) {
-        (self.journal, self.period, self.request)
+        (self.state, self.journal, self.period, self.request)
     }
 }
 
@@ -735,8 +832,8 @@ pub fn list_transactions(
 
     let mut sql = format!(
         "SELECT DISTINCT t.id, t.company_slug, t.description, \
-         t.metadata, t.currency, t.date, t.posted_at, t.reference, t.posted_by, t.agent_uri, t.token_jti \
-         {where_clause}"
+         t.metadata, t.currency, t.date, t.posted_at, t.reference, t.posted_by, t.agent_uri, t.token_jti, \
+         t.posting_status, t.settles_hold, t.amount_delta {where_clause}"
     );
 
     sql.push_str(" ORDER BY t.date, t.id");
@@ -834,6 +931,7 @@ fn decode_transaction(row: &rusqlite::Row<'_>) -> rusqlite::Result<TransactionRo
         posted_by: row.get(8)?,
         agent_uri: row.get(9)?,
         token_jti: row.get(10)?,
+        posting_state: PostingState::read(row, 11)?,
     })
 }
 
@@ -844,11 +942,16 @@ fn read_transaction_by<T>(
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Option<(T, Vec<EntryRow>)>, CliError> {
     let company_slug = company.as_str();
-    let mut stmt = conn.prepare(
-        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti \
-         FROM transactions \
-         WHERE company_slug = ?1 AND id = ?2",
-    )?;
+    let has_holds = super::schema::get_schema_version(conn)? >= super::schema::HOLDS_SCHEMA_VERSION;
+    let lifecycle = if has_holds {
+        "posting_status, settles_hold, amount_delta"
+    } else {
+        "'posted', NULL, NULL"
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti, {lifecycle} \
+         FROM transactions WHERE company_slug = ?1 AND id = ?2"
+    ))?;
 
     let mut rows = stmt.query_map(params![company_slug, id], decode)?;
 
@@ -856,7 +959,7 @@ fn read_transaction_by<T>(
         return Ok(None);
     };
     let txn = row?;
-    let entries = read_entries(conn, company, id)?;
+    let entries = read_entries(conn, company, id, has_holds)?;
     Ok(Some((txn, entries)))
 }
 
@@ -869,22 +972,28 @@ pub fn get_entries_for_transaction(
     company: &Company<'_>,
     txn_id: TransactionId,
 ) -> Result<Vec<EntryRow>, CliError> {
-    read_entries(company.read(), company.slug(), txn_id)
+    read_entries(company.read(), company.slug(), txn_id, true)
 }
 
 fn read_entries(
     conn: ReadConn<'_>,
     company: &CompanySlug,
     txn_id: TransactionId,
+    has_holds: bool,
 ) -> Result<Vec<EntryRow>, CliError> {
-    let mut stmt = conn.prepare_cached(
+    let status = if has_holds {
+        "t.posting_status"
+    } else {
+        "'posted'"
+    };
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT e.id, e.transaction_id, e.account_code, e.company_slug, e.direction, \
-         e.amount, e.memo, e.tax_category, e.status \
+         e.amount, e.memo, e.tax_category, e.status, {status} \
          FROM transactions t \
          JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug \
          WHERE t.id = ?1 AND t.company_slug = ?2 \
          ORDER BY e.id",
-    )?;
+    ))?;
 
     let rows = stmt.query_map(params![txn_id, company.as_str()], |row| {
         Ok(EntryRow {
@@ -897,6 +1006,7 @@ fn read_entries(
             memo: row.get(6)?,
             tax_category: row.get(7)?,
             status: row.get(8)?,
+            posting_status: row.get(9)?,
         })
     })?;
 

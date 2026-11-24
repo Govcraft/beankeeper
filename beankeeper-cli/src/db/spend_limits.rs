@@ -373,7 +373,7 @@ fn daily_used(
 ) -> Result<i128, CliError> {
     super::proposals::verify_resolutions(conn)?;
     let mut stmt = conn.prepare(
-        "SELECT t.date, e.amount FROM transactions t JOIN entries e ON e.transaction_id = t.id
+        "SELECT t.date, e.amount FROM posted_transactions t JOIN entries e ON e.transaction_id = t.id
          LEFT JOIN txn_proposals p ON p.transaction_id = t.id AND p.status = 'approved'
          WHERE t.company_slug = ?1 AND t.currency = ?2
            AND COALESCE(p.proposer_uri, t.agent_uri) = ?3 AND e.direction = 'debit'",

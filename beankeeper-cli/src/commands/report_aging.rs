@@ -1373,7 +1373,7 @@ fn load_account_transactions(
             COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0), \
             {} \
          FROM entries e \
-         JOIN transactions t ON t.id = e.transaction_id \
+         JOIN posted_transactions t ON t.id = e.transaction_id \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 \
            AND t.currency = ?3 AND t.date <= ?4 \
          GROUP BY t.id \
@@ -1413,7 +1413,7 @@ pub(super) fn find_link_target(
     if let LinkTarget::Reference(r) = target {
         let id = conn
             .query_row(
-                "SELECT id FROM transactions WHERE company_slug = ?1 AND reference = ?2",
+                "SELECT id FROM posted_transactions WHERE company_slug = ?1 AND reference = ?2",
                 params![company, r],
                 |row| row.get(0),
             )
@@ -1426,7 +1426,7 @@ pub(super) fn find_link_target(
         return Ok(None);
     };
     conn.query_row(
-        "SELECT id FROM transactions WHERE company_slug = ?1 AND id = ?2",
+        "SELECT id FROM posted_transactions WHERE company_slug = ?1 AND id = ?2",
         params![company, fallback],
         |row| row.get(0),
     )
@@ -1455,7 +1455,7 @@ fn classify_with_db(
         };
         let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT e.account_code FROM entries e \
-             JOIN transactions t ON t.id = e.transaction_id \
+             JOIN posted_transactions t ON t.id = e.transaction_id \
              WHERE e.transaction_id = ?1 AND e.company_slug = ?2 AND t.currency = ?3",
         )?;
         let on: Vec<String> = stmt

@@ -10,7 +10,10 @@ use super::{
 };
 use crate::cli;
 use crate::db::{
-    companies::CompanySlug, metadata::ValidatedMetadataEdit, metadata_filter,
+    companies::CompanySlug,
+    holds::HoldSelector,
+    metadata::ValidatedMetadataEdit,
+    metadata_filter,
     transactions::ConflictStrategy,
 };
 use crate::error::CliError;
@@ -57,6 +60,7 @@ impl TryFrom<inputs::TxnPost> for (CompanySlug, PostingRequest) {
         };
         let request = PostingRequest::try_from(PostingDraft {
             description: input.description,
+            status: input.status,
             currency,
             date: input
                 .date
@@ -110,6 +114,30 @@ impl From<inputs::TxnReverse> for TxnRequest {
                 description: input.description,
                 reference: input.reference.map(Text::into_inner),
             },
+        )
+    }
+}
+
+impl From<inputs::HoldTarget> for HoldSelector {
+    fn from(input: inputs::HoldTarget) -> Self {
+        match input {
+            inputs::HoldTarget::Id { id } => Self::Id(id),
+            inputs::HoldTarget::Reference { reference } => Self::Reference(reference.into_inner()),
+        }
+    }
+}
+
+impl From<inputs::TxnSettleHold> for TxnRequest {
+    fn from(input: inputs::TxnSettleHold) -> Self {
+        Self::SettleHold(
+            input.company.into_inner(),
+            (
+                input.hold.into(),
+                input.amount.into_inner(),
+                input.date.into_inner().date(),
+                input.reference.into_inner(),
+            )
+                .into(),
         )
     }
 }

@@ -123,7 +123,7 @@ impl AccountRequest {
                             };
                             let scope = Company::bind(reader, company.clone())?;
                             db::list_accounts_with_balances(&scope, &filter, window, currency)
-                                .map(AccountData::Balances)
+                                .map(|rows| AccountData::Balances(rows, window))
                         })?
                     }
                 };
@@ -151,7 +151,7 @@ impl AccountRequest {
 
 enum AccountData {
     Rows(Vec<db::AccountRow>),
-    Balances(Vec<db::AccountWithBalanceRow>),
+    Balances(Vec<db::AccountWithBalanceRow>, AccountBalanceWindow),
     Deleted(AccountCode),
 }
 
@@ -166,8 +166,9 @@ impl Serialize for AccountResponse {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match &self.data {
             AccountData::Rows(rows) => output::json::account_rows(rows).serialize(serializer),
-            AccountData::Balances(rows) => {
-                output::json::account_balance_rows(rows).serialize(serializer)
+            AccountData::Balances(rows, window) => {
+                output::json::account_balance_rows(rows, Some(self.company.as_str()), *window)
+                    .serialize(serializer)
             }
             AccountData::Deleted(code) => {
                 output::json::deleted_data(code.as_str()).serialize(serializer)
@@ -193,11 +194,11 @@ impl AccountResponse {
             (OutputFormat::Csv, AccountData::Rows(rows)) => {
                 print!("{}", output::csv::render_accounts(rows)?);
             }
-            (OutputFormat::Table, AccountData::Balances(rows)) => println!(
+            (OutputFormat::Table, AccountData::Balances(rows, _)) => println!(
                 "{}",
                 output::table::render_accounts_with_balances(rows, color)
             ),
-            (OutputFormat::Csv, AccountData::Balances(rows)) => {
+            (OutputFormat::Csv, AccountData::Balances(rows, _)) => {
                 print!("{}", output::csv::render_accounts_with_balances(rows)?);
             }
             (_, AccountData::Deleted(_)) => {}
@@ -212,7 +213,7 @@ impl AccountResponse {
                 AccountData::Rows(rows) if self.operation == Operation::AccountList => {
                     print_count(rows.len());
                 }
-                AccountData::Balances(rows) => print_count(rows.len()),
+                AccountData::Balances(rows, _) => print_count(rows.len()),
                 AccountData::Deleted(code) => eprintln!("[ok] Deleted account: {code}"),
                 AccountData::Rows(_) => {}
             }

@@ -9,6 +9,7 @@ pub(crate) mod calendar_date;
 pub mod clearings;
 pub mod companies;
 pub mod connection;
+pub mod holds;
 pub mod ids;
 pub mod investments;
 pub mod metadata;
@@ -103,6 +104,21 @@ pub struct TransactionRow {
     pub posted_by: Option<String>,
     pub agent_uri: Option<String>,
     pub token_jti: Option<String>,
+    pub(crate) posting_state: holds::PostingState,
+}
+
+impl TransactionRow {
+    /// Posting status shared by all entries in this transaction.
+    #[must_use]
+    pub const fn status(&self) -> holds::EntryStatus {
+        self.posting_state.status()
+    }
+
+    /// Original hold and amount delta for a settled posting.
+    #[must_use]
+    pub const fn settlement(&self) -> Option<holds::SettlementLink> {
+        self.posting_state.settlement()
+    }
 }
 
 /// A row from the `entries` table.
@@ -116,7 +132,10 @@ pub struct EntryRow {
     pub amount: amounts::PositiveMinorUnits,
     pub memo: Option<String>,
     pub tax_category: Option<String>,
+    /// Statement clearance, independent of the transaction's posting status.
     pub status: EntryStatus,
+    /// Pending or posted for this entry, inherited from its balanced journal.
+    pub posting_status: holds::EntryStatus,
 }
 
 /// A row from the `budgets` table.
@@ -180,6 +199,10 @@ pub struct AccountWithBalanceRow {
     pub default_tax_category: Option<String>,
     pub debit_total: Money,
     pub credit_total: Money,
+    /// Net posted activity on the account's normal side.
+    pub posted_balance: Money,
+    /// Posted activity plus dated hold movements, on the account's normal side.
+    pub available_balance: Money,
 }
 
 /// Inclusive date bounds for account activity. Absent bounds are open-ended.
@@ -204,6 +227,10 @@ impl AccountBalanceWindow {
         }
         Ok(Self { from, to })
     }
+
+    pub(crate) const fn bounds(self) -> (Option<NaiveDate>, Option<NaiveDate>) {
+        (self.from, self.to)
+    }
 }
 
 /// List accounts with totals for the selected currency and date window.
@@ -219,19 +246,27 @@ pub fn list_accounts_with_balances(
 ) -> Result<Vec<AccountWithBalanceRow>, CliError> {
     let mut stmt = company.read().prepare(
         "SELECT a.code, a.name, a.type, a.default_tax_category,
-                COALESCE(activity.debit_total, 0), COALESCE(activity.credit_total, 0)
+                COALESCE(activity.debit_total, 0), COALESCE(activity.credit_total, 0),
+                COALESCE(holds.net, 0)
          FROM accounts a
          LEFT JOIN (
              SELECT e.account_code,
                     SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END) AS debit_total,
                     SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END) AS credit_total
-             FROM transactions t
+             FROM posted_transactions t
              JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
              WHERE t.company_slug = ?1 AND t.currency = ?2
                AND (?3 IS NULL OR substr(t.date, 1, 10) >= ?3)
                AND (?4 IS NULL OR substr(t.date, 1, 10) <= ?4)
              GROUP BY e.account_code
          ) activity ON activity.account_code = a.code
+         LEFT JOIN (
+             SELECT account_code, SUM(net) AS net FROM hold_adjustments
+             WHERE company_slug = ?1 AND currency = ?2
+               AND (?3 IS NULL OR date >= ?3)
+               AND (?4 IS NULL OR date <= ?4)
+             GROUP BY account_code
+         ) holds ON holds.account_code = a.code
          WHERE a.company_slug = ?1
            AND (?5 IS NULL OR a.type = ?5 COLLATE NOCASE)
            AND (?6 IS NULL OR a.name LIKE '%' || ?6 || '%')
@@ -247,13 +282,27 @@ pub fn list_accounts_with_balances(
             filter.name_filter,
         ],
         |row| {
+            let account_type: beankeeper::types::AccountType = row.get(2)?;
+            let debit = i128::from(row.get::<_, i64>(4)?);
+            let credit = i128::from(row.get::<_, i64>(5)?);
+            let hold_net = i128::from(row.get::<_, i64>(6)?);
+            let normal = if account_type.normal_balance().is_debit() {
+                1
+            } else {
+                -1
+            };
             Ok(AccountWithBalanceRow {
                 code: row.get(0)?,
                 name: row.get(1)?,
-                account_type: row.get(2)?,
+                account_type,
                 default_tax_category: row.get(3)?,
-                debit_total: Money::from_minor(i128::from(row.get::<_, i64>(4)?), currency),
-                credit_total: Money::from_minor(i128::from(row.get::<_, i64>(5)?), currency),
+                debit_total: Money::from_minor(debit, currency),
+                credit_total: Money::from_minor(credit, currency),
+                posted_balance: Money::from_minor(normal * (debit - credit), currency),
+                available_balance: Money::from_minor(
+                    normal * (debit - credit + hold_net),
+                    currency,
+                ),
             })
         },
     )?;
@@ -280,7 +329,7 @@ pub fn compute_trial_balance(
          COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
          FROM accounts a \
-         LEFT JOIN (entries e JOIN transactions t ON t.id = e.transaction_id \
+         LEFT JOIN (entries e JOIN posted_transactions t ON t.id = e.transaction_id \
            AND t.company_slug = e.company_slug AND t.currency = ?2",
     );
     let currency_code = currency.code();
@@ -339,7 +388,7 @@ pub fn compute_account_balance(
          COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
          COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
          FROM entries e \
-         JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+         JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3",
     );
     let currency_code = currency.code();
@@ -376,7 +425,7 @@ pub fn compute_tax_summary(
          SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), \
          SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END) \
          FROM entries e \
-         JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+         JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
          WHERE e.company_slug = ?1 AND e.tax_category IS NOT NULL AND t.currency = ?2",
     );
     let currency_code = currency.code();

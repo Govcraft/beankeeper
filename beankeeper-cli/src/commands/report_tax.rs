@@ -253,7 +253,7 @@ fn load_entries(
 ) -> Result<Vec<TaxEntry>, CliError> {
     let mut stmt = reader.prepare(
         "SELECT t.id, t.metadata, a.code, a.name, a.type, e.tax_category, e.direction, e.amount
-         FROM transactions t JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
+         FROM posted_transactions t JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
          JOIN accounts a ON a.company_slug = e.company_slug AND a.code = e.account_code
          WHERE t.company_slug = ?1 AND t.currency = ?2 AND t.date >= ?3 AND t.date <= ?4
          ORDER BY t.id, e.id",
