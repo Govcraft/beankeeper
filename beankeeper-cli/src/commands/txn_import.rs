@@ -18,10 +18,11 @@ use super::reference::TransactionReference;
 use super::statement_source::SourceRow;
 use crate::cli::{Cli, ImportFormat, OnConflictArg, OutputFormat, TxnImportArgs};
 use crate::db::connection::Db;
+use crate::db::holds::matching::{BankLine, HoldMatchOptions, match_bank_import};
 use crate::db::{self, accounts, transactions};
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
-use crate::output::json;
+use crate::output::{ImportSettlement, json};
 use crate::request::CurrencySetting;
 
 /// Options for CSV mapping and the default CSV/JSON transaction currency.
@@ -342,8 +343,7 @@ pub(crate) fn read_csv_statement(
     read_csv(content, mapping, currency, bank, suspense, max_rows)?
         .into_iter()
         .map(|mut row| {
-            let reference = row_reference(&mut row, ImportFormat::Csv, &mut occurrences)?
-                .parse::<TransactionReference>()?;
+            let reference = row_reference(&mut row, ImportFormat::Csv, &mut occurrences)?;
             let bank_entry = row
                 .entries
                 .iter()
@@ -355,6 +355,7 @@ pub(crate) fn read_csv_statement(
             Ok(SourceRow {
                 reference,
                 date: row.date,
+                payee: row.description.parse().ok(),
                 description: row.description,
                 amount,
                 bank_direction: bank_entry.direction,
@@ -368,9 +369,9 @@ fn row_reference(
     prepared: &mut PreparedTransaction,
     format: ImportFormat,
     occurrences: &mut HashMap<String, usize>,
-) -> Result<String, CliError> {
+) -> Result<TransactionReference, CliError> {
     if let Some(reference) = prepared.reference.take() {
-        return Ok(reference.into());
+        return Ok(reference);
     }
     let bytes = serde_json::to_vec(prepared).map_err(|error| invalid(error.to_string()))?;
     let prefix = if format == ImportFormat::Csv {
@@ -383,7 +384,7 @@ fn row_reference(
     // rows and explicit references cannot shift ordinals on overlapping imports.
     let ordinal = occurrences.entry(hash.clone()).or_default();
     *ordinal += 1;
-    Ok(format!("{hash}:{ordinal}"))
+    Ok(format!("{hash}:{ordinal}").parse()?)
 }
 
 #[derive(Serialize)]
@@ -403,6 +404,8 @@ struct ImportOutcome {
     description: String,
     reference: String,
     status: ImportStatus,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    settlement: Option<ImportSettlement>,
 }
 
 #[derive(Serialize)]
@@ -414,7 +417,7 @@ enum ImportStatus {
 
 struct ImportContext<'a> {
     db: &'a Db,
-    company: &'a str,
+    company: &'a db::companies::CompanySlug,
     actor: &'a db::Actor,
     format: ImportFormat,
     rules: &'a [db::rules::Rule],
@@ -422,6 +425,7 @@ struct ImportContext<'a> {
     suspense: Option<&'a str>,
     strategy: transactions::ConflictStrategy,
     dry_run: bool,
+    matching: HoldMatchOptions,
 }
 
 fn post_import(
@@ -430,11 +434,50 @@ fn post_import(
     occurrences: &mut HashMap<String, usize>,
 ) -> Result<ImportOutcome, CliError> {
     let reference = row_reference(&mut prepared, ctx.format, occurrences)?;
+    if ctx.format == ImportFormat::Csv
+        && let Some(bank) = ctx.bank
+        && let Some(entry) = prepared
+            .entries
+            .iter()
+            .find(|entry| entry.account_code == bank)
+    {
+        let payee = prepared.description.parse().ok();
+        let line = BankLine {
+            reference: &reference,
+            description: &prepared.description,
+            payee: payee.as_ref(),
+            date: prepared.date,
+            currency: prepared.currency,
+            bank,
+            direction: entry.direction,
+            amount: entry.amount,
+            metadata: None,
+        };
+        if let Some(matched) =
+            match_bank_import(ctx.db, ctx.actor, ctx.company, &line, ctx.matching)?
+        {
+            let id = (!ctx.dry_run).then_some(matched.transaction_id);
+            return Ok(ImportOutcome {
+                id,
+                date: prepared.date.to_string(),
+                description: prepared.description,
+                reference: reference.into(),
+                status: ImportStatus::Imported,
+                settlement: Some(ImportSettlement::new(
+                    matched.settlement,
+                    ctx.company.as_str(),
+                    ctx.bank,
+                    matched.currency,
+                    matched.date,
+                )),
+            });
+        }
+    }
     // Existing CSV references are checked against the uncategorized source.
     // A changed rule cannot change the identity or validation of a replay.
     let skip_source = ctx.format == ImportFormat::Csv
         && ctx.strategy == transactions::ConflictStrategy::Skip
-        && transactions::reference_exists(ctx.db.read(), &ctx.company.parse()?, &reference)?;
+        && transactions::reference_exists(ctx.db.read(), ctx.company, reference.as_str())?;
     if !skip_source && ctx.format == ImportFormat::Csv {
         categorize_csv(&mut prepared, ctx.rules, ctx.bank, ctx.suspense)?;
     }
@@ -450,7 +493,7 @@ fn post_import(
         })
         .collect::<Vec<_>>();
     let params = transactions::PostTransactionParams {
-        company_slug: &ctx.company.parse()?,
+        company_slug: ctx.company,
         description: &prepared.description,
         metadata: prepared
             .metadata
@@ -460,7 +503,7 @@ fn post_import(
         date: prepared.date,
         entries: &entries,
         correlate: None,
-        reference: Some(&reference),
+        reference: Some(reference.as_str()),
         on_conflict: ctx.strategy,
         actor: ctx.actor,
     };
@@ -482,8 +525,9 @@ fn post_import(
         id,
         date: prepared.date.to_string(),
         description: prepared.description,
-        reference,
+        reference: reference.into(),
         status,
+        settlement: None,
     })
 }
 
@@ -546,6 +590,7 @@ pub fn run(
         account,
         suspense,
         on_conflict,
+        hold_matching,
         ..
     } = args;
     let strategy = match on_conflict {
@@ -561,6 +606,7 @@ pub fn run(
         suspense.as_deref(),
     )?;
     let actor = cli.principal();
+    let company_slug = company.parse()?;
     let import = || {
         let rules = load_csv_rules(db, company, format, account.as_deref(), suspense.as_deref())?;
         let mut result = BatchResult {
@@ -573,7 +619,7 @@ pub fn run(
         let mut occurrences = HashMap::new();
         let ctx = ImportContext {
             db,
-            company,
+            company: &company_slug,
             actor: &actor,
             format,
             rules: &rules,
@@ -581,6 +627,7 @@ pub fn run(
             suspense: suspense.as_deref(),
             strategy,
             dry_run: *dry_run,
+            matching: *hold_matching,
         };
         for (index, prepared) in prepared.into_iter().enumerate() {
             let outcome =
@@ -639,8 +686,18 @@ fn render_result(
     } else {
         "Imported"
     };
-    Ok(Some(format!(
+    let matched = result
+        .transactions
+        .iter()
+        .filter(|row| row.settlement.is_some())
+        .count();
+    let mut summary = format!(
         "{action} {} transactions, skipped {} duplicates.",
         result.imported, result.skipped
-    )))
+    );
+    if matched > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(summary, " Matched {matched} card holds to posted charges.");
+    }
+    Ok(Some(summary))
 }

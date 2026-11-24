@@ -72,10 +72,8 @@ fn run_import(
     let TxnImportArgs {
         file,
         format: import_format,
-        dry_run,
         account,
         suspense,
-        on_conflict,
         ..
     } = args;
 
@@ -101,16 +99,7 @@ fn run_import(
             let susp = suspense
                 .as_deref()
                 .ok_or(crate::commands::import_ofx::OfxImportError::MissingSuspenseFlag)?;
-            crate::commands::import_ofx::run_import_ofx(
-                cli,
-                db_handle,
-                company,
-                file,
-                acct,
-                susp,
-                *dry_run,
-                *on_conflict,
-            )
+            crate::commands::import_ofx::run_import_ofx(cli, db_handle, company, acct, susp, args)
         }
         crate::cli::ImportFormat::Csv | crate::cli::ImportFormat::Json => {
             super::txn_import::run(cli, db_handle, company, args, effective_format)

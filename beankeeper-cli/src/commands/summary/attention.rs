@@ -9,7 +9,15 @@ use rusqlite::params;
 use serde::Serialize;
 
 use crate::commands::report_aging::{self, Movement};
-use crate::db::{self, companies::Company, connection::ReadConn};
+use crate::db::{
+    self,
+    companies::Company,
+    connection::ReadConn,
+    holds::{
+        StaleHoldAge,
+        matching::{StaleHold, stale_holds},
+    },
+};
 use crate::error::CliError;
 use crate::output::amounts::OptionalMoneyField;
 
@@ -21,6 +29,7 @@ pub(super) struct AttentionContext<'a> {
     pub company: &'a str,
     pub currency: Currency,
     pub as_of: NaiveDate,
+    pub stale_hold_age: StaleHoldAge,
     pub cash: &'a [String],
     pub receivables: &'a [String],
     pub payables: &'a [String],
@@ -81,6 +90,10 @@ enum Details {
     Aged {
         older_than_days: u8,
     },
+    StaleHolds {
+        older_than_days: StaleHoldAge,
+        holds: Vec<StaleHold>,
+    },
 }
 
 /// Aggregate facts without posting schedules, changing clearings or writing audit
@@ -104,9 +117,35 @@ pub(super) fn compute(context: &AttentionContext<'_>) -> Result<Attention, CliEr
             aged(context, context.receivables, false)?,
         ),
         ("aged_payables", aged(context, context.payables, true)?),
+        ("stale_holds", stale(context)?),
         ("overdue_receivables", unavailable()),
         ("overdue_payables", unavailable()),
     ]))
+}
+
+fn stale(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
+    let holds = stale_holds(
+        context.conn,
+        context.company,
+        context.currency,
+        context.as_of,
+        context.stale_hold_age,
+    )?;
+    let total = holds
+        .iter()
+        .try_fold(0, |total, hold| add(total, hold.amount.minor_units()))?;
+    let mut item = AttentionItem::available(
+        "stale_holds",
+        holds.len(),
+        super::money(total, context.currency),
+        "open-card-authorizations-by-authorization-date",
+        "These card holds were still open on the report date. They can reduce available funds until they settle or are released.",
+    );
+    item.details = Some(Details::StaleHolds {
+        older_than_days: context.stale_hold_age,
+        holds,
+    });
+    Ok(item)
 }
 
 fn uncategorized(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
@@ -453,6 +492,7 @@ mod tests {
             as_of: as_of
                 .parse()
                 .map_err(|error: chrono::ParseError| CliError::Validation(error.to_string()))?,
+            stale_hold_age: StaleHoldAge::default(),
             cash: &["1000".into()],
             receivables: &["1100".into()],
             payables: &["2000".into()],

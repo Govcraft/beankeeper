@@ -34,7 +34,7 @@ pub use crate::db::audit::setup::{
         OpeningDescription, OpeningDraft, OpeningJournal, OpeningJournalDraft, OpeningPreview,
         OpeningRequest, OpeningReservation,
     },
-    statements::{StatementInput, StatementRequest},
+    statements::{StatementImport, StatementRequest},
 };
 
 pub use crate::db::audit::setup::{
@@ -526,7 +526,7 @@ pub enum SetupRequest {
     /// Freeze a statement review for the owner.
     StatementPreview(SetupReference, StatementRequest),
     /// Import typed statement contents immediately.
-    StatementImport(SetupReference, StatementInput),
+    StatementImport(SetupReference, StatementImport),
     /// Commit one specific statement review with a live approval credential.
     StatementCommit(CompanySlug, StatementBatchId, Sha256Hex),
     /// Read the receipt for a committed batch.

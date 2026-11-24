@@ -4,12 +4,13 @@ use beankeeper::types::{Currency, DebitOrCredit, Money, PositiveMoney};
 use chrono::NaiveDate;
 
 use super::{import_ofx, reference::TransactionReference};
-use crate::error::CliError;
+use crate::{db::holds::matching::PayeeKey, error::CliError};
 
 pub(crate) struct SourceRow {
     pub(crate) reference: TransactionReference,
     pub(crate) date: NaiveDate,
     pub(crate) description: String,
+    pub(crate) payee: Option<PayeeKey>,
     pub(crate) amount: PositiveMoney,
     pub(crate) bank_direction: DebitOrCredit,
     pub(crate) metadata: Option<String>,
@@ -52,9 +53,10 @@ pub(crate) fn read_ofx(
         let amount = PositiveMoney::new(Money::from_minor(i128::from(row.amount_minor), currency))
             .map_err(|error| CliError::Validation(error.to_string()))?;
         rows.push(SourceRow {
-            reference: row.reference.parse::<TransactionReference>()?,
+            reference: row.reference,
             date: row.date,
             description: row.description,
+            payee: row.payee,
             amount,
             bank_direction: if row.is_inflow {
                 DebitOrCredit::Debit

@@ -355,3 +355,110 @@ fn competing_writers_cannot_settle_the_same_hold_twice() -> TestResult {
     assert_eq!(rows.as_array().ok_or("missing rows")?.len(), 2);
     Ok(())
 }
+
+#[test]
+fn statement_settlement_replays_across_transports_and_undo_restores_summary_attention() -> TestResult
+{
+    use beankeeper_cli::db::Db;
+
+    let dir = tempdir()?;
+    let path = dir.path().join("matched-import.db");
+    let passfile = dir.path().join("passphrase");
+    identity_ledger(&path, &passfile)?;
+    let secret = secrecy::SecretString::from("mcp-test-passphrase");
+    let db = Db::open_existing(&path, Some(&secret))?;
+    let owner = proposal_identity(
+        &db,
+        "owner",
+        &["ledger/admin", "ledger/read", "ledger/post"],
+    )?;
+    let token = owner["token"].as_str().ok_or("missing owner token")?;
+    let mut client = identity_client(&path, &passfile, Some(token), false)?;
+    let hold = client.success(
+        "txn_post",
+        &json!({
+            "company":"acme","status":"pending","description":"Cafe","date":"2026-03-01",
+            "debits":[{"account":"4000","amount":"10.00"}],
+            "credits":[{"account":"1000","amount":"10.00"}]
+        }),
+    )?;
+    let content = "date,description,amount,reference\n2026-03-02,cafe,-9.75,posted-cafe\n";
+    let mut request = json!({
+        "company":"acme","reference":"batch","bank":"1000","suspense":"4000",
+        "currency":"USD","format":"csv","content":content,"hold_amount_tolerance":25,
+        "hold_posting_window_days":1
+    });
+    let created = client.success("ledger_setup_statement_import", &request)?;
+    assert_eq!(
+        created["created"][0]["settlement"],
+        json!({
+            "hold_id":hold["id"],"amount_delta":-25
+        })
+    );
+    let mut retry = bk(&path)?;
+    retry.arg("--passphrase-file").arg(&passfile).args([
+        "--agent-token",
+        token,
+        "--json",
+        "setup",
+        "statement-import",
+        "acme",
+        "--reference",
+        "batch",
+        "--bank",
+        "1000",
+        "--suspense",
+        "4000",
+        "--currency",
+        "USD",
+        "--statement-format",
+        "csv",
+        "--hold-amount-tolerance",
+        "25",
+        "--hold-posting-window-days",
+        "1",
+    ]);
+    let retry = assert_cmd::Command::from_std(retry)
+        .write_stdin(content)
+        .assert()
+        .success();
+    let wire: Value = serde_json::from_slice(&retry.get_output().stdout)?;
+    assert_eq!(wire["data"], created);
+
+    request["reference"] = json!("overlap");
+    let overlap = client.success("ledger_setup_statement_import", &request)?;
+    assert_eq!(overlap["created"], json!([]));
+    assert_eq!(overlap["preexisting"][0], created["created"][0]);
+    request["hold_amount_tolerance"] = json!(-1);
+    assert_parameter_rejection(
+        &client.call("ledger_setup_statement_import", &request)?,
+        "hold amount tolerance",
+    );
+
+    let summary = json!({
+        "company":"acme","to":"2099-12-31","currency":"USD","stale_hold_age_days":15
+    });
+    let attention = |value: Value| value["data"]["needs_attention"]["items"]["stale_holds"].clone();
+    assert_eq!(
+        attention(client.success("financial_summary", &summary)?)["count"],
+        0
+    );
+    let undone = client.success(
+        "audit_undo",
+        &json!({
+            "company":"acme","receipt":created["receipt_id"]
+        }),
+    )?;
+    assert_eq!(undone["kind"], "onboarding_reverted");
+    assert_eq!(undone["child_receipts"].as_array().map(Vec::len), Some(1));
+    let summary = client.success("financial_summary", &summary)?;
+    assert_eq!(
+        summary["data"]["desktop_view"]["link"]["state"]["stale_hold_age_days"],
+        15
+    );
+    let stale = attention(summary);
+    assert_eq!(stale["total"], 1000);
+    assert_eq!(stale["holds"][0]["hold_id"], hold["id"]);
+    client.success("verify", &json!({}))?;
+    Ok(())
+}

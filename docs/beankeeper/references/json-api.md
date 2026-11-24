@@ -1407,6 +1407,20 @@ CSV/JSON responses retain `dry_run`, `imported`, `skipped`, `errors`, and
 `amount` and `reason` fields because JSON journals can contain split entries.
 Use `txn show` to retrieve the posted entries and amounts.
 
+A CSV or OFX/QFX row that settles a hold returns the posted transaction `id`,
+`settlement: {"hold_id":42,"amount_delta":43}`, `settlement_currency`,
+`amount_delta_display`, and a `desktop_view` register target. The signed
+integer delta is posted amount minus authorized amount in minor units.
+Replaying the same posted movement and reference returns the same row. A
+dry run omits the posted ID.
+
+`bk setup statement-import` and `ledger_setup_statement_import` use the
+same matching rules. Settled entries in `created` or `preexisting` use
+`transaction_id` and the same `settlement` structure in the input currency.
+A propose-only response includes `matched_hold_id` alongside `proposal_id`.
+Use the batch receipt for one-step undo of newly posted rows.
+
+
 ```json
 {
   "ok": true,

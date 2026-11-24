@@ -81,6 +81,10 @@ visual would help. Do not send the owner to a dashboard to get the answer.
 Overdue status is unavailable without invoice due dates. Older open items,
 named suspense activity and scheduled posting volume carry explicit limits;
 do not present them as overdue bills or unresolved transaction counts.
+`needs_attention.items.stale_holds` lists card authorizations held open for
+more than seven days as of the summary end date. Explain that these amounts can
+still reduce available funds. Override the age with `stale_hold_age_days` or
+`--stale-hold-age-days`.
 The MCP tool returns the full `{ok, meta, data}` or `{ok, meta, error}` CLI
 envelope and is available in read-only mode with `ledger/read`.
 See [financial summary details](../financial-summary.md).
@@ -154,8 +158,20 @@ post or its undo.
 
 For a card authorization, use `txn_post` with `status: "pending"` or
 `bk txn post --status pending`. Supply one debit and one credit on different
-accounts and use a stable authorization reference. When the bank posts the
-charge, call `txn_settle_hold` with `company`, `hold: {"id":42}` or
+accounts and use a stable authorization reference. A CSV or OFX/QFX import can
+settle an open hold when the statement line uniquely matches its bank account,
+currency, direction, payee, and amount within seven days. Set the optional
+`hold_amount_tolerance` in minor units or `hold_posting_window_days` on
+`ledger_setup_statement_import`. The CLI accepts the same options as
+`--hold-amount-tolerance` and `--hold-posting-window-days` on
+`bk setup statement-import` and `bk txn import`.
+
+Use the posted ID, `settlement.hold_id`, and `settlement.amount_delta` to tell
+the owner what posted and how it differed from the hold. Offer the statement
+receipt or register link when a visual would help. Retry with the same
+reference. If the import finds multiple candidates and you can identify the
+intended hold, call `txn_settle_hold` using the posted reference from the
+import error. For explicit settlement, call `txn_settle_hold` with `company`, `hold: {"id":42}` or
 `hold: {"reference":"hold-1"}`, the actual decimal `amount`, the posted
 `date`, and the bank's posted `reference`. In the CLI, use
 `bk txn settle-hold --id 42 --amount 43.88 --date 2026-03-04 --reference posted-1`.

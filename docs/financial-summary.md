@@ -60,7 +60,7 @@ There is no currency conversion or cross-currency sum.
 | `standing` | `cash_on_hand`, `owed_to_you`, `you_owe`, `net_worth`; selected `cash_accounts`, `receivable_accounts`, `payable_accounts` contain company-scoped account codes |
 | `comparison.series` | Stable metric `id` (`income`, `spending`, `left_over`), `label`, `current`, `prior`, `change`, `change_percent` |
 | `biggest_movers.series` | Up to five expense accounts ordered by absolute change, ties by account code; `id` is the account code, with the same comparison fields |
-| `needs_attention.items` | Stable item keys/IDs, `available`, `count`, `total`, `basis`/`reason`; recurring items add `from`, `to`, `schedule_count`; unreconciled items add `entry_count` |
+| `needs_attention.items` | Stable item keys/IDs, `available`, `count`, `total`, `basis` and `reason`. Recurring items add `from`, `to` and `schedule_count`. Unreconciled items add `entry_count`. Stale holds add `older_than_days` and `holds`. |
 | `highlights` | Brief, repeatable facts with human-readable amounts; no accounting entry terminology or account codes |
 | `desktop_view` | Stable `view: "financial-summary"`, company, currency, current/comparison dates, selected account lists and a navigation `uri`; also included on each section |
 
@@ -111,13 +111,23 @@ of the payable selection.
   30 days old by posting date, after specific `applies_to` links and FIFO
   matching within each account. These totals do not establish payment deadlines.
 
+- `stale_holds` counts open card authorizations strictly older than seven days
+  as of the summary end date. Use `--stale-hold-age-days` on the CLI or
+  `stale_hold_age_days` in MCP to choose a different nonnegative threshold.
+  Each row includes the hold ID, authorization date, description, and amount in
+  minor units. The count and total cover the report company and currency, one
+  amount per hold. A settlement or cancellation removes the hold from its
+  effective date. An audited reversal of a settlement restores it as of the
+  reversal date, using the original date to measure age.
+
 ## Optional Desktop targets and output formats
 
 `desktop_view` supplies a portable navigation target for a Desktop host. Its URI
 contract is `beankeeper://summary?company=SLUG&currency=CODE&from=DATE&to=DATE&compare_from=DATE&compare_to=DATE`.
 Query values are percent-encoded. Repeated `cash_account`, `receivable_account`
 and `payable_account` query parameters preserve the selected account lists; the
-same lists accompany the target object.
+same lists accompany the target object. A custom stale-hold threshold is
+included as `stale_hold_age_days` in the URI and structured link state.
 Desktop owns registering and handling this target; this CLI change does not
 install a URI handler or build a screen. Agents can pass the complete target to
 a host navigation tool without opening Desktop to answer the question.

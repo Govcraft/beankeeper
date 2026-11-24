@@ -1,5 +1,8 @@
 //! Pending card authorizations and their audited settlement.
 
+pub(crate) mod matching;
+pub use matching::{HoldMatchOptions, StaleHoldAge};
+
 use std::{cmp::Ordering, fmt, str::FromStr};
 
 use beankeeper::{
@@ -129,7 +132,7 @@ impl From<EntryStatus> for PostingPurpose {
 }
 
 /// Typed relationship between the actual posting and its original hold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettlementLink {
     hold_id: TransactionId,
     amount_delta: i64,
@@ -563,7 +566,7 @@ pub(super) fn approve(
     Ok(hold.into_link(pair.debit.amount().amount().try_into()?))
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct SettlementResult {
     pub(crate) transaction_id: TransactionId,
     pub(crate) settlement: SettlementLink,
@@ -573,7 +576,7 @@ pub(crate) struct SettlementResult {
     pub(crate) date: NaiveDate,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SettlementDisposition {
     Created,
@@ -617,11 +620,7 @@ pub(crate) fn settle_direct(
 ) -> Result<SettlementOutcome, CliError> {
     grant.mutate("sp_settle_hold", |tx, actor| {
         settle(tx, actor, company, request, |ready| {
-            let (link, currency, date) = (ready.link, ready.params.currency, ready.params.date);
-            let result = transactions::post_settlement(ready)?;
-            Ok(SettlementOutcome::Posted(SettlementResult::new(
-                result, link, currency, date,
-            )))
+            post_ready(ready).map(SettlementOutcome::Posted)
         })
     })
 }
@@ -633,16 +632,25 @@ pub(crate) fn propose_settlement(
 ) -> Result<SettlementOutcome, CliError> {
     grant.mutate("sp_propose_settlement", |tx, actor| {
         settle(tx, actor, company, request, |ready| {
-            proposals::reserve_in_scope(
-                ready.transaction(),
-                PostingPurpose::Settle(ready.link.hold_id),
-                actor,
-                ready.params(),
-                PostingSource::Proposal,
-            )
-            .map(SettlementOutcome::Proposed)
+            propose_ready(&ready).map(SettlementOutcome::Proposed)
         })
     })
+}
+
+fn post_ready(ready: ReadySettlement<'_>) -> Result<SettlementResult, CliError> {
+    let (link, currency, date) = (ready.link, ready.params.currency, ready.params.date);
+    let result = transactions::post_settlement(ready)?;
+    Ok(SettlementResult::new(result, link, currency, date))
+}
+
+fn propose_ready(ready: &ReadySettlement<'_>) -> Result<ProposalCreation, CliError> {
+    proposals::reserve_in_scope(
+        ready.transaction(),
+        PostingPurpose::Settle(ready.link.hold_id),
+        ready.params().actor,
+        ready.params(),
+        PostingSource::Proposal,
+    )
 }
 
 fn settle(
@@ -686,17 +694,36 @@ fn settle(
         return Err(HoldError::ReferenceInUse(existing).into());
     }
     let hold = OpenHold::load(tx, row, &entries, request.date)?;
-    let lines = hold.lines(amount);
     let description = hold.row.description.clone();
+    finish(
+        hold,
+        actor,
+        amount,
+        (request.date, &request.reference),
+        (&description, None),
+        execute,
+    )
+}
+
+fn finish<T>(
+    hold: OpenHold<'_>,
+    actor: &Actor,
+    amount: PositiveMinorUnits,
+    (date, reference): (NaiveDate, &TransactionReference),
+    (description, metadata): (&str, Option<&str>),
+    execute: impl FnOnce(ReadySettlement<'_>) -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    let lines = hold.lines(amount);
+    let company = hold.row.company_slug.clone();
     let params = PostTransactionParams {
-        company_slug: company,
-        description: &description,
-        metadata: None,
+        company_slug: &company,
+        description,
+        metadata,
         currency: hold.row.currency,
-        date: request.date,
+        date,
         entries: &lines,
         correlate: None,
-        reference: Some(request.reference.as_str()),
+        reference: Some(reference.as_str()),
         on_conflict: ConflictStrategy::Error,
         actor,
     };

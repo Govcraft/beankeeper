@@ -208,6 +208,7 @@ fn existing_propose_only_bookkeeper_can_onboard_and_owner_can_approve() -> TestR
     assert!(account["receipt_id"].is_i64());
     assert_proposed_opening(&mut agent, &mut reviewer, cli(&path, &passfile, token)?)?;
     assert_proposed_import(&mut agent, &mut reviewer, cli(&path, &passfile, token)?)?;
+    assert_proposed_hold_import(&mut agent, &mut reviewer)?;
     reviewer.success("verify", &json!({}))?;
     Ok(())
 }
@@ -295,6 +296,52 @@ fn assert_proposed_import(agent: &mut Client, reviewer: &mut Client, cli: Comman
         imported
     );
     assert_eq!(agent.success("txn_proposals", &company)?, json!([]));
+    Ok(())
+}
+
+fn assert_proposed_hold_import(agent: &mut Client, reviewer: &mut Client) -> TestResult {
+    let authorization = agent.success(
+        "txn_post",
+        &json!({
+            "company":"home", "description":"Cafe", "status":"pending", "date":"2026-03-01",
+            "debits":[{"account":"5000","amount":"10.00"}],
+            "credits":[{"account":"1234","amount":"10.00"}]
+        }),
+    )?;
+    let approved = reviewer.success(
+        "txn_approve",
+        &json!({"company":"home","id":authorization["id"]}),
+    )?;
+    let hold = &approved["transaction_id"];
+    let before = agent.success("txn_list", &json!({"company":"home"}))?;
+    let request = import(
+        "card-batch",
+        "date,description,amount,reference\n2026-03-02,Cafe,-10,posted-cafe\n",
+    );
+    let review = agent.success("ledger_setup_statement_import", &request)?;
+    assert_eq!(review["proposals"][0]["matched_hold_id"], *hold);
+    assert_eq!(
+        agent.success("ledger_setup_statement_import", &request)?,
+        review
+    );
+    assert_eq!(
+        agent.success("txn_list", &json!({"company":"home"}))?,
+        before
+    );
+    let posted = reviewer.success(
+        "txn_approve",
+        &json!({
+            "company":"home","id":review["proposals"][0]["proposal_id"]
+        }),
+    )?;
+    let details = reviewer.success(
+        "txn_show",
+        &json!({"company":"home","id":posted["transaction_id"]}),
+    )?;
+    assert_eq!(
+        details[0]["settlement"],
+        json!({"hold_id":hold,"amount_delta":0})
+    );
     Ok(())
 }
 
