@@ -229,7 +229,7 @@ fn assert_proposed_opening(agent: &mut Client, reviewer: &mut Client, cli: Comma
     }));
     assert_eq!(
         payload(&reviewer.call("audit_undo", &undo_args("home", &opened))?)?["code"],
-        "UNDO_INELIGIBLE"
+        "UNDO_UNSUPPORTED"
     );
     let approval = json!({"company":"home", "id":opened["proposal_id"]});
     let denied = agent.call("txn_approve", &approval)?;
