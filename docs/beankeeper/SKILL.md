@@ -330,6 +330,12 @@ as `bk --db /absolute/path/books.db mcp serve` against an existing ledger. Add
 never include a passphrase in tool arguments. Stdio uses one ledger for the
 life of the process.
 
+Send nested tool arguments as JSON objects or arrays. Beankeeper also accepts
+JSON text in those fields for clients that stringify them. If a tool rejects
+its arguments, explain the error in plain words, correct the arguments, and
+retry with the same reference where the tool supports one. Keep bookkeeping
+writes in MCP or the CLI and offer Desktop views for optional detail.
+
 For a shared Streamable HTTP endpoint, start `bk mcp serve --http`, optionally
 with `--bind 127.0.0.1:PORT` (default `127.0.0.1:8750`). The endpoint is `/mcp`;
 the actual bound address is printed to stderr. Every request requires a verified

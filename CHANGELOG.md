@@ -20,6 +20,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 ### Fixed
 
 - Existing propose-only bookkeepers can configure books and accounts directly and submit openings and statement rows through transaction sign-off on the CLI and MCP. ([#275](https://github.com/Govcraft/beankeeper/issues/275))
+- MCP tool schemas describe nested objects and arrays inline, and clients such as Claude Desktop can send those arguments as JSON text. ([#277](https://github.com/Govcraft/beankeeper/issues/277))
 
 ## [0.39.0] - Unreleased
 

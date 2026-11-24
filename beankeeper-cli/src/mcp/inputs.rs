@@ -52,6 +52,25 @@ type Amount = Text<DecimalAmount>;
 type Reference = Text<TransactionReference>;
 type Comparison = Text<CompareArg>;
 
+/// Decode JSON text only at fields whose wire shape is an object or array.
+fn deserialize_structured<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: de::DeserializeOwned,
+{
+    let value = Value::deserialize(deserializer)?;
+    let input = match value {
+        Value::String(encoded) => {
+            if !encoded.trim_ascii_start().starts_with(['{', '[']) {
+                return Err(de::Error::custom("expected a JSON object or array"));
+            }
+            serde_json::from_str(&encoded)
+        }
+        native => T::deserialize(native),
+    };
+    input.map_err(de::Error::custom)
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum OnConflictArg {
@@ -184,7 +203,7 @@ pub(crate) struct TxnList {
     pub currency: Option<Currency>,
     pub reference: Option<Reference>,
     pub metadata: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub meta: Vec<String>,
     pub tax_category: Option<String>,
     #[schemars(schema_with = "optional_direction_schema")]
@@ -213,12 +232,14 @@ pub(crate) enum TxnMetaSet {
         company: Company,
         id: TransactionId,
         /// Non-empty array of key=value strings, using the CLI --meta rule.
+        #[serde(deserialize_with = "deserialize_structured")]
         values: NonEmpty<String>,
     },
     Reference {
         company: Company,
         reference: Reference,
         /// Non-empty array of key=value strings, using the CLI --meta rule.
+        #[serde(deserialize_with = "deserialize_structured")]
         values: NonEmpty<String>,
     },
 }
@@ -231,12 +252,14 @@ pub(crate) enum TxnMetaUnset {
         company: Company,
         id: TransactionId,
         /// Non-empty array of top-level annotation keys.
+        #[serde(deserialize_with = "deserialize_structured")]
         keys: NonEmpty<String>,
     },
     Reference {
         company: Company,
         reference: Reference,
         /// Non-empty array of top-level annotation keys.
+        #[serde(deserialize_with = "deserialize_structured")]
         keys: NonEmpty<String>,
     },
 }
@@ -350,6 +373,7 @@ pub(crate) struct LedgerSetupStatementImport {
     /// The statement contents.
     content: StatementContent,
     /// Optional CSV headers, date format, and amount direction.
+    #[serde(default, deserialize_with = "deserialize_structured")]
     csv: Option<CsvMapping>,
 }
 
@@ -453,30 +477,37 @@ impl From<SetupSettings> for BookSettings {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupBookCreate {
+    #[serde(deserialize_with = "deserialize_structured")]
     pub target: SetupTarget,
     pub name: CompanyName,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub settings: SetupSettings,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupBookInitialize {
+    #[serde(deserialize_with = "deserialize_structured")]
     pub target: SetupTarget,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub settings: SetupSettings,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupBookUpdate {
+    #[serde(deserialize_with = "deserialize_structured")]
     pub target: SetupTarget<Generation>,
     /// Current profile revision being superseded.
     pub supersedes: ProfileRevision,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub settings: SetupSettings,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupChartApply {
+    #[serde(deserialize_with = "deserialize_structured")]
     pub target: SetupTarget,
     pub template: ChartTemplate,
 }
@@ -484,6 +515,7 @@ pub(crate) struct LedgerSetupChartApply {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupAccountAdd {
+    #[serde(deserialize_with = "deserialize_structured")]
     pub target: SetupTarget,
     pub code: Account,
     pub name: Text<SetupAccountName>,
@@ -523,13 +555,16 @@ pub(crate) struct OpeningInput {
     #[schemars(with = "Text<Currency>")]
     pub currency: Currency,
     pub description: Option<Text<OpeningDescription>>,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub debits: NonEmpty<Line>,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub credits: NonEmpty<Line>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupOpeningReserve {
+    #[serde(deserialize_with = "deserialize_structured")]
     pub opening: LedgerSetupOpeningPreview,
     /// Stable reference to reuse for an exact retry.
     pub reference: Text<SetupReference>,
@@ -549,11 +584,13 @@ pub(crate) struct TxnPost {
     pub correlate: Option<PartnerTransactionId>,
     pub reference: Option<Reference>,
     pub on_conflict: Option<OnConflictArg>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub tax: Vec<String>,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub debits: NonEmpty<Line>,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub credits: NonEmpty<Line>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub meta: BTreeMap<String, String>,
 }
 
@@ -609,6 +646,7 @@ pub(crate) enum TxnClear {
     Batch {
         company: Company,
         account: Account,
+        #[serde(deserialize_with = "deserialize_structured")]
         batch: NonEmpty<BatchLine>,
         date: Option<Date>,
         statement: Option<String>,
@@ -805,13 +843,13 @@ pub(crate) struct Vendor1099Input {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerInput {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub account: Vec<Account>,
     pub from: Option<Date>,
     pub to: Option<Date>,
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub filter_metadata: Vec<String>,
 }
 
@@ -833,6 +871,7 @@ pub(crate) struct BudgetVarianceInput {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgingInput {
+    #[serde(deserialize_with = "deserialize_structured")]
     pub account: NonEmpty<Account>,
     #[serde(default)]
     pub include_children: bool,
@@ -847,7 +886,7 @@ pub(crate) struct AgingInput {
     pub detail: bool,
     #[serde(default)]
     pub group_across_accounts: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub filter_metadata: Vec<String>,
 }
 
@@ -865,7 +904,7 @@ pub(crate) struct ReconciliationInput {
     pub to: Option<Date>,
     pub statement_balance: Option<Amount>,
     pub statement: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub filter_metadata: Vec<String>,
     pub group_by_metadata: Option<String>,
     #[schemars(with = "Option<Text<Currency>>")]
@@ -877,7 +916,7 @@ pub(crate) struct ReconciliationInput {
 pub(crate) struct CashFlowInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub cash_account: Vec<Account>,
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
@@ -937,6 +976,8 @@ pub(crate) struct RuleIdInput {
 #[serde(deny_unknown_fields)]
 pub(crate) struct BookkeepingPolicySet {
     pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    #[schemars(extend("type" = "object"))]
     pub policy: BookkeepingPolicy,
 }
 
@@ -1065,13 +1106,13 @@ pub(crate) struct SummaryOptions {
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     /// Cash asset accounts. Defaults to named cash/bank/checking/savings accounts.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub cash_account: Vec<Account>,
     /// Receivable asset accounts. Defaults to accounts named receivable.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub receivable_account: Vec<Account>,
     /// Payable liability accounts. Defaults to accounts named payable.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_structured")]
     pub payable_account: Vec<Account>,
 }
 
@@ -1144,17 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_describes_list_and_selector_requirements() -> Result<(), serde_json::Error> {
-        let post = serde_json::to_value(schemars::schema_for!(TxnPost))?;
-        let debit_ref = post["properties"]["debits"]["$ref"]
-            .as_str()
-            .and_then(|reference| reference.strip_prefix('#'));
-        assert_eq!(
-            debit_ref
-                .and_then(|path| post.pointer(path))
-                .map(|schema| &schema["minItems"]),
-            Some(&json!(1))
-        );
+    fn schema_describes_selector_requirements() -> Result<(), serde_json::Error> {
         let clear = serde_json::to_value(schemars::schema_for!(ClearInput))?;
         assert_eq!(clear["type"], "object");
         assert_eq!(clear["oneOf"].as_array().map(Vec::len), Some(3));

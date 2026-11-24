@@ -2,16 +2,14 @@
 
 use rmcp::{
     RoleServer,
-    handler::server::{
-        common::schema_for_input,
-        router::tool::{ToolRoute, ToolRouter},
-    },
+    handler::server::router::tool::{ToolRoute, ToolRouter},
     model::{CallToolResponse, CallToolResult, Tool, ToolAnnotations},
     service::RequestContext,
 };
-use schemars::JsonSchema;
+use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::sync::Arc;
 
 use super::{
     LedgerAccess, LedgerServer,
@@ -31,14 +29,29 @@ pub(crate) fn operation_for_tool(name: &str) -> Result<Operation, CliError> {
         .ok_or_else(|| CliError::Usage("operation has no capability mapping".into()))
 }
 
-fn tool<Input: JsonSchema + 'static>(
+fn tool<Input: JsonSchema>(
     operation: Operation,
     name: &'static str,
     description: &'static str,
 ) -> Tool {
-    let schema = schema_for_input::<Input>()
-        .unwrap_or_else(|error| panic!("invalid schema for {name}: {error}"));
-    Tool::new(name, description, schema)
+    // Some MCP clients do not resolve references when assembling tool arguments.
+    let mut settings = SchemaSettings::draft2020_12();
+    settings.inline_subschemas = true;
+    let Value::Object(mut schema) = settings
+        .into_generator()
+        .into_root_schema_for::<Input>()
+        .to_value()
+    else {
+        panic!("input schema for {name} must be a JSON object");
+    };
+    assert_eq!(
+        schema.get("type").and_then(Value::as_str),
+        Some("object"),
+        "input schema for {name} must declare type: object"
+    );
+    schema.remove("title");
+    schema.remove("description");
+    Tool::new(name, description, Arc::new(schema))
         .with_annotations(ToolAnnotations::new().read_only(operation.is_read_only()))
 }
 
