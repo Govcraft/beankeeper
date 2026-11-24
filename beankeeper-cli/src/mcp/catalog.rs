@@ -90,6 +90,16 @@ where
                 Err(error) if operation == Operation::TxnMetaUnset => super::tool_error(
                     &CliError::Validation(format!("{error}. {}", inputs::ANNOTATION_KEYS_HINT)),
                 ),
+                Err(error)
+                    if matches!(
+                        operation,
+                        Operation::AccountRename
+                            | Operation::AccountCreate
+                            | Operation::LedgerSetupAccountAdd
+                    ) =>
+                {
+                    super::tool_error(&CliError::Validation(error.to_string()))
+                }
                 Err(error) => super::tool_error(&CliError::Validation(format!(
                     "failed to deserialize parameters: {error}"
                 ))),

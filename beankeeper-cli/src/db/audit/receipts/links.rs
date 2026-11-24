@@ -127,6 +127,11 @@ pub(in crate::db::audit) fn verify_links(reader: ReadConn<'_>) -> Result<(), Cli
                      OR (original.entity = 'proposal' AND original.action = 'proposal_approve'
                          AND original.related_posting IS CAST(event.entity_id AS INTEGER))
                  ))
+                 OR (event.action = 'account_rename' AND NOT (
+                     original.entity = 'account' AND original.action = 'account_rename'
+                     AND original.entity_id = event.entity_id AND original.undo_of IS NULL
+                     AND original.before IS event.after AND original.after IS event.before
+                 ))
                  OR (event.action = 'setup_revert' AND NOT (
                      event.entity = 'company' AND original.entity = 'company'
                      AND original.action = 'setup_apply'

@@ -168,6 +168,13 @@ impl ReceiptResponse {
                         format!("Restored the annotations on transaction {transaction}.")
                     }
                     ReceiptUndoOutcome::Onboarding(_) => "Reverted the onboarding change.".into(),
+                    ReceiptUndoOutcome::Single(UndoOutcome::AccountNameRestored {
+                        account,
+                        name,
+                        ..
+                    }) => {
+                        format!("Restored the name of account {account} to {name:?}.")
+                    }
                     ReceiptUndoOutcome::Single(UndoOutcome::Archived { account, .. }) => {
                         format!("Archived account {account}. Its history is still in your books.")
                     }

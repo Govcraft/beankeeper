@@ -2,7 +2,7 @@
 
 use std::{fmt, str::FromStr};
 
-use beankeeper::types::{AccountCode, AccountType, Currency};
+use beankeeper::types::{AccountCode, AccountName, AccountType, Currency};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
@@ -345,7 +345,7 @@ pub(crate) enum BookChange<'a> {
     ApplyChart(ChartTemplate),
     AddAccount {
         code: &'a AccountCode,
-        name: &'a SetupAccountName,
+        name: &'a AccountName,
         account_type: AccountType,
     },
 }
@@ -648,7 +648,7 @@ fn create_setup_account(
     writer: &BookWriter<'_>,
     company: &CompanySlug,
     code: &AccountCode,
-    name: &SetupAccountName,
+    name: &AccountName,
     account_type: AccountType,
 ) -> Result<SetupAccount, CliError> {
     let row = super::super::catalog::store_validated_account(
@@ -657,7 +657,7 @@ fn create_setup_account(
         &crate::db::accounts::ValidatedAccountCreation {
             company_slug: company,
             code,
-            name: name.as_ref(),
+            name,
             account_type,
             default_tax_category: None,
         },
@@ -668,34 +668,6 @@ fn create_setup_account(
         name: row.name,
         account_type,
     })
-}
-
-/// A trimmed, nonempty account display name during setup.
-#[derive(Debug, Clone)]
-pub struct SetupAccountName(Box<str>);
-
-impl fmt::Display for SetupAccountName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.pad(self.as_ref())
-    }
-}
-
-impl AsRef<str> for SetupAccountName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl FromStr for SetupAccountName {
-    type Err = CliError;
-
-    fn from_str(name: &str) -> Result<Self, Self::Err> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(CliError::Validation("name must not be empty".into()));
-        }
-        Ok(Self(name.into()))
-    }
 }
 
 /// The settings and name recorded when creating or initializing a profile.

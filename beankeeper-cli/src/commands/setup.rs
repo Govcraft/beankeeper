@@ -1,6 +1,6 @@
 //! Readiness for the selected ledger's onboarding flow.
 
-use beankeeper::types::{AccountCode, AccountType, Currency, Sha256Hex};
+use beankeeper::types::{AccountCode, AccountName, AccountType, Currency, Sha256Hex};
 use clap::{Args, Subcommand};
 use serde::{Serialize, Serializer};
 
@@ -20,11 +20,13 @@ use crate::error::CliError;
 use crate::operation::Operation;
 use crate::output::json;
 
+pub use beankeeper::types::AccountName as SetupAccountName;
+
 pub use super::setup_statement::{StatementImportArgs, StatementPreviewArgs};
 pub use crate::db::audit::setup::books::{
     BookAccount, BookAccountCode, BookFacts, BookOutcome, BookProfile, BookPurpose, BookSettings,
     ChartApplied, ChartTemplate, FiscalYearStart, ProfileInitialized, ProfileRevision,
-    SetupAccount, SetupAccountName, SetupReference, book_facts,
+    SetupAccount, SetupReference, book_facts,
 };
 pub use crate::db::audit::setup::{
     Generation, Session, SetupAgentName, SetupLifetime, SetupPublicKey, Started,
@@ -268,7 +270,7 @@ pub struct AccountAddArgs {
     #[command(flatten)]
     target: BookTarget,
     code: AccountCode,
-    name: SetupAccountName,
+    name: AccountName,
     /// Accounting classification of this account.
     #[arg(long = "type")]
     account_type: AccountType,
@@ -465,7 +467,7 @@ pub enum DirectBookChange {
     /// Apply a versioned chart of accounts.
     Chart(ChartTemplate),
     /// Add one account with its validated code and type.
-    Account(AccountCode, SetupAccountName, AccountType),
+    Account(AccountCode, AccountName, AccountType),
 }
 
 impl From<(BookMutationTarget, DirectBookChange)> for SetupRequest {
@@ -546,7 +548,7 @@ pub enum SetupRequest {
     /// Create the accounts in a versioned template.
     ChartApply(SetupBookTarget, ChartTemplate),
     /// Add a real account to a book.
-    AccountAdd(SetupBookTarget, AccountCode, SetupAccountName, AccountType),
+    AccountAdd(SetupBookTarget, AccountCode, AccountName, AccountType),
     /// Verify and present a balanced opening journal.
     OpeningPreview(OpeningRequest),
     /// Reserve a verified opening journal for approval.

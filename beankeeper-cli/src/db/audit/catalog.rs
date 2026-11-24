@@ -97,7 +97,7 @@ pub(in crate::db) fn store_validated_account(
         params![
             company_slug,
             code,
-            name,
+            name.as_ref(),
             account_type.code(),
             default_tax_category
         ],

@@ -8,6 +8,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use mti::prelude::MagicTypeId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 
+use super::AccountLabel;
 use crate::db::amounts::PositiveMinorUnits;
 use crate::db::audit::{ActorLabel, AuditAction, AuditEntity, AuditLogRow, ClientHint};
 use crate::db::ids::{AuditRowId, EntryId, ReceiptId, TransactionId};
@@ -25,7 +26,7 @@ pub enum ReceiptTarget {
     Rule(RuleId),
     /// Immutable posting.
     Transaction(TransactionId),
-    /// A posting proposal.
+    /// A posting or account rename proposal.
     Proposal(ProposalId),
     /// A posted journal entry.
     Entry(EntryId),
@@ -49,7 +50,9 @@ impl TryFrom<(AuditEntity, &str)> for ReceiptTarget {
                 .parse()
                 .map(Self::Transaction)
                 .map_err(invalid_stored_value),
-            AuditEntity::Proposal => id.parse().map(Self::Proposal).map_err(invalid_stored_value),
+            AuditEntity::Proposal | AuditEntity::AccountRenameProposal => {
+                id.parse().map(Self::Proposal).map_err(invalid_stored_value)
+            }
             AuditEntity::Entry => id.parse().map(Self::Entry).map_err(invalid_stored_value),
             _ => Ok(Self::Other {
                 entity,
@@ -146,6 +149,13 @@ pub enum ReceiptChange {
     AccountDeleted {
         /// Last recorded state.
         before: AccountSnapshot,
+    },
+    /// The account label changed without changing its code.
+    AccountRenamed {
+        /// Exact previous label.
+        before: AccountLabel,
+        /// Resulting label.
+        after: AccountLabel,
     },
     /// The account went from active to archived.
     AccountArchived,
@@ -391,6 +401,13 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
                 None,
             ))
         }
+        (Entity::Account, Action::AccountRename) => Ok((
+            ReceiptChange::AccountRenamed {
+                before: decode.before()?,
+                after: decode.after()?,
+            },
+            None,
+        )),
         (Entity::Account, Action::AccountArchive) => {
             let before: ArchiveSnapshot = decode.before()?;
             let after: ArchiveSnapshot = decode.after()?;

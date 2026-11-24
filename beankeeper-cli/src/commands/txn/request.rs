@@ -13,7 +13,7 @@ use crate::cli::{
 };
 use crate::db::{
     Actor, Db, attachments,
-    audit::{self, grant::PostingGrant},
+    audit::{self, account_rename, grant::PostingGrant},
     companies::{AllCompanies, Company, CompanySlug},
     holds::{self, HoldSelector, SettlementRequest},
     ids::TransactionId,
@@ -109,26 +109,41 @@ impl TxnRequest {
             )?),
             Self::Proposals(company, include_rejected) => {
                 crate::db::get_company(db.read(), &company)?;
-                TxnData::Proposals(proposals::list(
-                    db.read(),
-                    &company,
-                    actor,
-                    include_rejected,
-                )?)
+                db.read_snapshot(|reader| {
+                    let mut proposals: Vec<_> =
+                        proposals::list(reader, &company, actor, include_rejected)?
+                            .into_iter()
+                            .map(super::response::ReviewProposal::from)
+                            .collect();
+                    proposals.extend(
+                        account_rename::list(reader, &company, actor, include_rejected)?
+                            .into_iter()
+                            .map(super::response::ReviewProposal::from),
+                    );
+                    Ok(TxnData::Proposals(proposals))
+                })?
             }
             Self::Approve(company, id) => {
                 crate::db::get_company(db.read(), &company)?;
                 let resolved = Granted::<Approve>::with_db(db, actor, |grant| {
-                    audit::approve_proposal(grant, &company, &id)
+                    if let Some(rename) = account_rename::approve(&grant, &company, &id)? {
+                        return Ok(rename.into());
+                    }
+                    audit::approve_proposal(grant, &company, &id).map(Into::into)
                 })?;
-                TxnData::Resolved(Box::new(resolved))
+                TxnData::Resolved(resolved)
             }
             Self::Reject(company, id, reason) => {
                 crate::db::get_company(db.read(), &company)?;
                 let resolved = Granted::<ResolveProposal>::with_db(db, actor, |grant| {
-                    audit::reject_proposal(grant, &company, &id, reason.as_deref())
+                    if let Some(rename) =
+                        account_rename::reject(&grant, &company, &id, reason.as_deref())?
+                    {
+                        return Ok(rename.into());
+                    }
+                    audit::reject_proposal(grant, &company, &id, reason.as_deref()).map(Into::into)
                 })?;
-                TxnData::Resolved(Box::new(resolved))
+                TxnData::Resolved(resolved)
             }
             Self::Reverse(company, request) => request.execute(db, &company, actor)?,
             Self::SettleHold(company, request) => {

@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit};
+use beankeeper::types::{AccountCode, AccountName, AccountType, Currency, DebitOrCredit};
 use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -1560,14 +1560,22 @@ EXAMPLES:\n  \
     Create {
         /// Account code (digits, hyphens, dots).
         code: String,
-        /// Account display name.
-        name: String,
+        /// Account display name, nonempty after trimming.
+        name: AccountName,
         /// Account type.
         #[arg(long = "type", value_parser = account_type_parser())]
         account_type: AccountType,
         /// Default tax category for entries posted to this account.
         #[arg(long)]
         default_tax_category: Option<String>,
+    },
+
+    /// Rename an account (for example, 1000 "Operating Cash").
+    Rename {
+        /// Account code (digits, hyphens, dots).
+        code: AccountCode,
+        /// New display name, nonempty after trimming.
+        name: AccountName,
     },
 
     /// List accounts.
@@ -2174,7 +2182,7 @@ pub enum TxnProposalCommand {
         #[arg(long)]
         include_rejected: bool,
     },
-    /// Approve a pending proposal and atomically post it.
+    /// Approve a pending posting or account rename and apply it atomically.
     Approve {
         id: crate::db::proposals::ProposalId,
     },

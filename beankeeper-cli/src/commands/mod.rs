@@ -98,6 +98,7 @@ pub fn operation(cmd: &Command) -> Operation {
         },
         Command::Account(args) => match &args.command {
             AccountCommand::Create { .. } => Operation::AccountCreate,
+            AccountCommand::Rename { .. } => Operation::AccountRename,
             AccountCommand::List { .. } => Operation::AccountList,
             AccountCommand::Show { .. } => Operation::AccountShow,
             AccountCommand::Delete { .. } => Operation::AccountDelete,

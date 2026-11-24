@@ -13,6 +13,7 @@ use crate::db::connection::ReadConn;
 use crate::db::ids::{AuditRowId, TransactionId};
 use crate::error::CliError;
 
+pub use super::account_rename::AccountLabel;
 pub use crate::db::ids::ReceiptId;
 
 mod event;
