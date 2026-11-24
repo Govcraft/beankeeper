@@ -3,6 +3,9 @@
 #[path = "mcp_stdio/audit_receipts.rs"]
 mod audit_receipts;
 
+#[path = "mcp_stdio/holds.rs"]
+mod holds;
+
 #[path = "mcp_stdio/onboarding.rs"]
 mod onboarding;
 
@@ -770,6 +773,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_approve",
     "txn_reject",
     "txn_reverse",
+    "txn_settle_hold",
     "txn_meta_set",
     "txn_meta_unset",
     "txn_list",
