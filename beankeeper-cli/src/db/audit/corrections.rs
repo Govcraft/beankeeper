@@ -139,8 +139,8 @@ pub(crate) enum ReverseSubmission {
 }
 
 pub(crate) struct AppliedReversal {
-    pub(crate) result: PostResult,
-    pub(crate) receipt: ReceiptId,
+    result: PostResult,
+    receipt: ReceiptId,
 }
 
 impl AppliedReversal {
@@ -156,6 +156,14 @@ impl AppliedReversal {
             |row| row.get(0),
         )?;
         Ok(Self { result, receipt })
+    }
+
+    pub(crate) const fn result(&self) -> PostResult {
+        self.result
+    }
+
+    pub(crate) const fn receipt(&self) -> ReceiptId {
+        self.receipt
     }
 
     const fn reversal_id(&self) -> TransactionId {

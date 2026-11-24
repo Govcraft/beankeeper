@@ -321,7 +321,7 @@ impl fmt::Display for ClosedPostingPeriod {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "transaction date {} is in a closed period for company '{}' (closed through {}); choose an open date or ask a ledger administrator to reopen the period with a reason",
+            "transaction date {} is in a closed period for company '{}' (closed through {}). Choose an open date or ask a ledger administrator to reopen the period with a reason",
             self.date, self.company, self.cutoff,
         )
     }

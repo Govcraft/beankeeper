@@ -1811,16 +1811,16 @@ impl std::fmt::Display for ReversalBlock {
             }
             Self::Reconciled(transaction) => write!(
                 formatter,
-                "transaction #{transaction} has reconciled clearings; verify it against the statement and arrange an audited reconciliation correction before retrying"
+                "transaction #{transaction} has reconciled clearings. Verify it against the statement and arrange an audited reconciliation correction before retrying"
             ),
             Self::InvestmentTrade => formatter.write_str(
                 "investment trades require a lot-aware correction; inspect the trade and its lot history before making any further entries",
             ),
             Self::BeforeOriginal { requested, original } => write!(
-                formatter, "reversal date {requested} must be on or after the original transaction date {original}; choose a later date"
+                formatter, "reversal date {requested} must be on or after the original transaction date {original}. Choose a later date"
             ),
             Self::ReversalOfUndo(id) => write!(
-                formatter, "transaction #{id} is itself a reversal; inspect the original and record any new activity separately"
+                formatter, "transaction #{id} is itself a reversal. Inspect the original and record any new activity separately"
             ),
         }
     }

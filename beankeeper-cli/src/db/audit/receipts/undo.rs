@@ -51,7 +51,7 @@ impl fmt::Display for ReceiptUndoError {
         match self {
             Self::Unsupported(id) => write!(
                 formatter,
-                "receipt #{id} does not support undo; inspect the original change to choose a correction"
+                "receipt #{id} does not support undo. Inspect the original change to choose a correction"
             ),
             Self::OwnerOnly { receipt, kind } => write!(
                 formatter,
@@ -124,7 +124,7 @@ impl fmt::Display for UndoIneligibility {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AlreadyAnUndo => formatter.write_str(
-                "this receipt already records an undo or reversal; inspect the original change and record any new activity separately",
+                "this receipt already records an undo or reversal. Inspect the original change and record any new activity separately",
             ),
             Self::PeriodLocked(error) => error.fmt(formatter),
             Self::ReversalBlocked(error) => error.fmt(formatter),

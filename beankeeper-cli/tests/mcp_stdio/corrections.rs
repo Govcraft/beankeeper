@@ -71,6 +71,33 @@ impl Fixture {
         Ok(command)
     }
 
+    fn assert_admin_restricted(
+        &self,
+        credential: &Value,
+        tools: &std::collections::BTreeSet<&str>,
+    ) -> TestResult {
+        for admin in [
+            "account_create",
+            "company_create",
+            "period_reopen",
+            "ledger_setup_begin",
+        ] {
+            assert!(!tools.contains(admin), "{admin}");
+        }
+        require_exit(
+            self.command(credential)?
+                .args(["account", "create", "5555", "Other", "--type", "asset"]),
+            7,
+        )?;
+        require_exit(
+            self.command(credential)?
+                .args(["backup", "--output"])
+                .arg(self.path.with_extension("backup")),
+            7,
+        )?;
+        Ok(())
+    }
+
     fn client(&self, credential: &Value) -> Result<Client, Box<dyn Error>> {
         identity_client(
             &self.path,
@@ -155,27 +182,7 @@ fn legacy_direct_bookkeepers_correct_without_admin() -> TestResult {
             let names = tool_names(&catalog)?;
             assert!(names.contains("txn_reverse"));
             assert!(names.contains("audit_undo"));
-            for admin in [
-                "account_create",
-                "company_create",
-                "period_reopen",
-                "ledger_setup_begin",
-            ] {
-                assert!(!names.contains(admin), "{admin}");
-            }
-            require_exit(
-                fixture
-                    .command(&credential)?
-                    .args(["account", "create", "5555", "Other", "--type", "asset"]),
-                7,
-            )?;
-            require_exit(
-                fixture
-                    .command(&credential)?
-                    .args(["backup", "--output"])
-                    .arg(fixture.path.with_extension("backup")),
-                7,
-            )?;
+            fixture.assert_admin_restricted(&credential, &names)?;
 
             let posted = agent.success("txn_post", &posting(label))?;
             let original = receipt(&mut agent, label)?;

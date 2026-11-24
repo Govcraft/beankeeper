@@ -137,12 +137,12 @@ impl Serialize for TxnResponse {
                     desktop_path: Option<String>,
                 }
                 ReversalJson {
-                    posting: json::post_result_payload(result.result),
-                    receipt: result.receipt,
+                    posting: json::post_result_payload(result.result()),
+                    receipt: result.receipt(),
                     desktop_path: self
                         .company
                         .as_ref()
-                        .map(|company| desktop_receipt_path(company, result.receipt)),
+                        .map(|company| desktop_receipt_path(company, result.receipt())),
                 }
                 .serialize(serializer)
             }
@@ -348,7 +348,7 @@ impl TxnResponse {
                     result.delta(),
                 );
             }
-            TxnData::Reversed { id, result } => match result.result {
+            TxnData::Reversed { id, result } => match result.result() {
                 PostResult::Created(reversal_id) => {
                     eprintln!("[ok] transaction #{id} reversed by #{reversal_id}");
                 }
