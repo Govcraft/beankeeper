@@ -454,20 +454,18 @@ impl<'a> OpenHold<'a> {
         })
     }
 
-    fn settlement(self, amount: PositiveMinorUnits) -> ReadySettlement<'a> {
-        ReadySettlement {
-            tx: self.tx,
-            link: SettlementLink {
-                hold_id: self.row.id,
-                amount_delta: amount.minor_units() - self.pair.debit.amount.minor_units(),
-            },
+    fn into_link(self, amount: PositiveMinorUnits) -> SettlementLink {
+        SettlementLink {
+            hold_id: self.row.id,
+            amount_delta: amount.minor_units() - self.pair.debit.amount.minor_units(),
         }
     }
 }
 
-/// A single-use transition from an open hold into its linked posting.
+/// A single-use transition binding the hold, exact posting and writer.
 pub(super) struct ReadySettlement<'a> {
     tx: &'a AuditedTx<'a>,
+    params: PostTransactionParams<'a>,
     link: SettlementLink,
 }
 
@@ -476,8 +474,12 @@ impl<'a> ReadySettlement<'a> {
         self.tx
     }
 
-    pub(super) fn into_state(self) -> PostingState {
-        PostingState::Settlement(self.link)
+    pub(super) const fn params(&self) -> &PostTransactionParams<'a> {
+        &self.params
+    }
+
+    pub(super) const fn link(&self) -> SettlementLink {
+        self.link
     }
 }
 
@@ -541,12 +543,12 @@ pub(super) fn check_reversal(
 }
 
 /// Recheck the mutable hold lifecycle when executing an already frozen proposal.
-pub(super) fn approve<'a>(
-    tx: &'a AuditedTx<'a>,
+pub(super) fn approve(
+    tx: &AuditedTx<'_>,
     params: &PostTransactionParams<'_>,
     journal: &Transaction,
     id: TransactionId,
-) -> Result<ReadySettlement<'a>, CliError> {
+) -> Result<SettlementLink, CliError> {
     let company = Company::bind(tx.read(), params.company_slug.clone())?;
     let (row, entries) = transactions::get_transaction(&company, id)?;
     let hold = OpenHold::load(tx, row, &entries, params.date)?;
@@ -558,7 +560,7 @@ pub(super) fn approve<'a>(
     {
         return Err(HoldError::PostingMismatch(id).into());
     }
-    Ok(hold.settlement(pair.debit.amount().amount().try_into()?))
+    Ok(hold.into_link(pair.debit.amount().amount().try_into()?))
 }
 
 #[derive(Serialize)]
@@ -614,14 +616,11 @@ pub(crate) fn settle_direct(
     request: &SettlementRequest,
 ) -> Result<SettlementOutcome, CliError> {
     grant.mutate("sp_settle_hold", |tx, actor| {
-        settle(tx, actor, company, request, |params, ready| {
-            let link = ready.link;
-            let posting = transactions::post_settlement(params, ready)?;
+        settle(tx, actor, company, request, |ready| {
+            let (link, currency, date) = (ready.link, ready.params.currency, ready.params.date);
+            let result = transactions::post_settlement(ready)?;
             Ok(SettlementOutcome::Posted(SettlementResult::new(
-                posting,
-                link,
-                params.currency,
-                params.date,
+                result, link, currency, date,
             )))
         })
     })
@@ -633,12 +632,12 @@ pub(crate) fn propose_settlement(
     request: &SettlementRequest,
 ) -> Result<SettlementOutcome, CliError> {
     grant.mutate("sp_propose_settlement", |tx, actor| {
-        settle(tx, actor, company, request, |params, ready| {
+        settle(tx, actor, company, request, |ready| {
             proposals::reserve_in_scope(
                 ready.transaction(),
                 PostingPurpose::Settle(ready.link.hold_id),
                 actor,
-                params,
+                ready.params(),
                 PostingSource::Proposal,
             )
             .map(SettlementOutcome::Proposed)
@@ -651,10 +650,7 @@ fn settle(
     actor: &Actor,
     company: &CompanySlug,
     request: &SettlementRequest,
-    execute: impl FnOnce(
-        &PostTransactionParams<'_>,
-        ReadySettlement<'_>,
-    ) -> Result<SettlementOutcome, CliError>,
+    execute: impl FnOnce(ReadySettlement<'_>) -> Result<SettlementOutcome, CliError>,
 ) -> Result<SettlementOutcome, CliError> {
     let scope = Company::bind(tx.read(), company.clone())?;
     let id = match &request.selector {
@@ -704,5 +700,9 @@ fn settle(
         on_conflict: ConflictStrategy::Error,
         actor,
     };
-    execute(&params, hold.settlement(amount))
+    execute(ReadySettlement {
+        tx: hold.tx,
+        params,
+        link: hold.into_link(amount),
+    })
 }

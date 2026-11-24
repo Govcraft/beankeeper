@@ -281,20 +281,17 @@ pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<Post
     )
 }
 
-pub(super) fn post_settlement(
-    params: &PostTransactionParams<'_>,
-    ready: ReadySettlement<'_>,
-) -> Result<PostResult, CliError> {
+pub(super) fn post_settlement(ready: ReadySettlement<'_>) -> Result<PostResult, CliError> {
     post_with_source(
         ready.transaction(),
-        &Posting::Settlement(params, ready.into_state()),
+        &Posting::Settlement(ready),
         PostingSource::Storage,
     )
 }
 
 enum Posting<'a> {
     Direct(&'a PostTransactionParams<'a>, EntryStatus),
-    Settlement(&'a PostTransactionParams<'a>, PostingState),
+    Settlement(ReadySettlement<'a>),
     Prepared(&'a PostTransactionParams<'a>, &'a Transaction),
     Approved(super::proposals::ApprovedPosting<'a>),
     ApprovedStatement(audit::setup::statement_batches::ApprovedStatementPosting<'a>),
@@ -309,9 +306,8 @@ fn post_with_source(
     let reader = tx.read();
     let approved;
     let p = match posting {
-        Posting::Direct(params, _)
-        | Posting::Prepared(params, _)
-        | Posting::Settlement(params, _) => *params,
+        Posting::Direct(params, _) | Posting::Prepared(params, _) => *params,
+        Posting::Settlement(ready) => ready.params(),
         Posting::Reversal(reversal) => reversal.params(),
         Posting::Approved(approval) => {
             approved = approval.params();
@@ -448,7 +444,7 @@ fn posting_state(
         Posting::Direct(_, EntryStatus::Pending) => {
             HoldJournal::try_from((journal, params.correlate)).map(Into::into)
         }
-        Posting::Settlement(_, state) => Ok(*state),
+        Posting::Settlement(ready) => Ok(PostingState::Settlement(ready.link())),
         Posting::Reversal(reversal) => Ok(match reversal.status() {
             EntryStatus::Posted => PostingState::Posted,
             EntryStatus::Pending => PostingState::Pending,
@@ -459,7 +455,7 @@ fn posting_state(
                 HoldJournal::try_from((journal, params.correlate)).map(Into::into)
             }
             PostingPurpose::Settle(id) => {
-                holds::approve(tx, params, journal, id).map(ReadySettlement::into_state)
+                holds::approve(tx, params, journal, id).map(PostingState::Settlement)
             }
         },
         _ => Ok(PostingState::Posted),
