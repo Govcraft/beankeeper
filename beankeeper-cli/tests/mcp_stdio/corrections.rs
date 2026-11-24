@@ -1,8 +1,11 @@
 //! Signed bookkeepers correct their work through the CLI and MCP.
 
-use std::{error::Error, path::PathBuf, process::Command};
+use std::{
+    error::Error,
+    path::PathBuf,
+    process::{Command, Output},
+};
 
-use assert_cmd::prelude::*;
 use beankeeper_cli::{
     db::{self, Actor, Db},
     identity::{Admin, Granted},
@@ -78,21 +81,21 @@ impl Fixture {
     }
 
     fn issue(&self, name: &str, grants: &str, arguments: &[&str]) -> Result<Value, Box<dyn Error>> {
-        let issue = self
-            .command(&self.owner)?
-            .args([
-                "agent",
-                "issue",
-                "--name",
-                name,
-                "--generate-key",
-                "--caps",
-                grants,
-            ])
-            .args(arguments)
-            .assert()
-            .success();
-        let wire: Value = serde_json::from_slice(&issue.get_output().stdout)?;
+        let issue = require_exit(
+            self.command(&self.owner)?
+                .args([
+                    "agent",
+                    "issue",
+                    "--name",
+                    name,
+                    "--generate-key",
+                    "--caps",
+                    grants,
+                ])
+                .args(arguments),
+            0,
+        )?;
+        let wire: Value = serde_json::from_slice(&issue.stdout)?;
         Ok(wire["data"].clone())
     }
 
@@ -105,9 +108,20 @@ impl Fixture {
     }
 }
 
+fn require_exit(command: &mut Command, code: i32) -> Result<Output, Box<dyn Error>> {
+    let output = command.output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output)
+}
+
 fn cli_data(command: &mut Command) -> Result<Value, Box<dyn Error>> {
-    let output = command.assert().success();
-    let wire: Value = serde_json::from_slice(&output.get_output().stdout)?;
+    let output = require_exit(command, 0)?;
+    let wire: Value = serde_json::from_slice(&output.stdout)?;
     Ok(wire["data"].clone())
 }
 
@@ -149,17 +163,19 @@ fn legacy_direct_bookkeepers_correct_without_admin() -> TestResult {
             ] {
                 assert!(!names.contains(admin), "{admin}");
             }
-            fixture
-                .command(&credential)?
-                .args(["account", "create", "5555", "Other", "--type", "asset"])
-                .assert()
-                .code(7);
-            fixture
-                .command(&credential)?
-                .args(["backup", "--output"])
-                .arg(fixture.path.with_extension("backup"))
-                .assert()
-                .code(7);
+            require_exit(
+                fixture
+                    .command(&credential)?
+                    .args(["account", "create", "5555", "Other", "--type", "asset"]),
+                7,
+            )?;
+            require_exit(
+                fixture
+                    .command(&credential)?
+                    .args(["backup", "--output"])
+                    .arg(fixture.path.with_extension("backup")),
+                7,
+            )?;
 
             let posted = agent.success("txn_post", &posting(label))?;
             let original = receipt(&mut agent, label)?;
@@ -202,6 +218,7 @@ fn legacy_direct_bookkeepers_correct_without_admin() -> TestResult {
             assert_eq!(payload(&denied)?["code"], "UNDO_OWNER_ONLY");
 
             let posted = agent.success("txn_post", &posting(&format!("{label}-reverse")))?;
+            let reversal_reference = format!("{label}-correction");
             let first = cli_data(fixture.command(&credential)?.args([
                 "txn",
                 "reverse",
@@ -209,11 +226,11 @@ fn legacy_direct_bookkeepers_correct_without_admin() -> TestResult {
                 "--date",
                 "2026-03-02",
                 "--reference",
-                label,
+                &reversal_reference,
             ]))?;
             let retry = agent.success(
                 "txn_reverse",
-                &json!({"company":"acme","id":posted["id"],"reference":label}),
+                &json!({"company":"acme","id":posted["id"],"reference":reversal_reference}),
             )?;
             assert_eq!(retry["existing_id"], first["id"]);
             assert_eq!(retry["receipt"], first["receipt"]);
@@ -281,18 +298,19 @@ fn propose_only_corrections_are_pending_until_a_signed_approver_applies_them() -
 
     for pending in [&reverse, &undo] {
         let approval = json!({"company":"acme","id":pending["proposal_id"]});
-        bk(&fixture.path)?
-            .arg("--passphrase-file")
-            .arg(&fixture.passphrase)
-            .args([
-                "--company",
-                "acme",
-                "txn",
-                "approve",
-                pending["proposal_id"].as_str().ok_or("proposal ID")?,
-            ])
-            .assert()
-            .code(6);
+        require_exit(
+            bk(&fixture.path)?
+                .arg("--passphrase-file")
+                .arg(&fixture.passphrase)
+                .args([
+                    "--company",
+                    "acme",
+                    "txn",
+                    "approve",
+                    pending["proposal_id"].as_str().ok_or("proposal ID")?,
+                ]),
+            6,
+        )?;
         let approved = owner.success("txn_approve", &approval)?;
         assert_eq!(approved["status"], "approved");
         assert_eq!(approved, owner.success("txn_approve", &approval)?);
