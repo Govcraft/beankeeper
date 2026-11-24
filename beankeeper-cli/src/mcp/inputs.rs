@@ -287,8 +287,8 @@ fn deserialize_annotation_keys<'de, D: Deserializer<'de>>(
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("oneOf" = [
-    {"required": ["id"], "properties": {"id": {"type": "integer"}}},
-    {"required": ["reference"], "properties": {"reference": {"type": "string"}}}
+    {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}},
+    {"type": "object", "required": ["reference"], "properties": {"reference": {"type": "string"}}}
 ]))]
 pub(crate) struct TxnMetaSet {
     pub company: Company,
@@ -302,8 +302,8 @@ pub(crate) struct TxnMetaSet {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("oneOf" = [
-    {"required": ["id"], "properties": {"id": {"type": "integer"}}},
-    {"required": ["reference"], "properties": {"reference": {"type": "string"}}}
+    {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}},
+    {"type": "object", "required": ["reference"], "properties": {"reference": {"type": "string"}}}
 ]))]
 pub(crate) struct TxnMetaUnset {
     pub company: Company,
