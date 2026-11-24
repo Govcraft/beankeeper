@@ -326,6 +326,7 @@ fn annotation_receipts_restore_exact_metadata_through_cli_and_mcp() -> TestResul
     for (reference, before) in [
         ("with-metadata", json!(exact)),
         ("without-metadata", Value::Null),
+        ("empty-metadata", json!("{}")),
     ] {
         let mut input = posting(reference);
         input["metadata"] = before.clone();
@@ -384,7 +385,7 @@ fn annotation_receipts_restore_exact_metadata_through_cli_and_mcp() -> TestResul
     }
 
     let restores = agent.success("audit_log", &json!({"action":"metadata_restore"}))?;
-    assert_eq!(restores.as_array().map(Vec::len), Some(4));
+    assert_eq!(restores.as_array().map(Vec::len), Some(6));
     agent.success("verify", &json!({}))?;
     Ok(())
 }
