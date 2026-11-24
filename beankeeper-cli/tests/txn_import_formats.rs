@@ -660,3 +660,203 @@ fn json_currency_defaults_and_integer_amounts_use_major_units() -> TestResult {
     assert_eq!(rows, [("JPY".into(), 100), ("BHD".into(), 1000)]);
     Ok(())
 }
+
+fn post_hold(ledger: &Ledger, reference: &str, extra: &[&str]) -> TestResult {
+    ledger
+        .command()?
+        .args([
+            "txn",
+            "post",
+            "--status",
+            "pending",
+            "-d",
+            "Card authorization",
+            "--debit",
+            "4000:10",
+            "--credit",
+            "1000:10",
+            "--date",
+            "2026-03-01",
+            "--meta",
+            "payee=Cafe",
+            "--reference",
+            reference,
+        ])
+        .args(extra)
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[test]
+fn csv_matches_the_original_hold_once_and_reports_staleness_as_of_the_summary_date() -> TestResult {
+    let ledger = Ledger::new()?;
+    post_hold(&ledger, "hold", &[])?;
+    post_hold(&ledger, "foreign-currency", &["--currency", "CAD"])?;
+    post_hold(&ledger, "foreign-company", &["--company", "other"])?;
+    let statement = "date,description,amount,reference\n2026-03-09,CAFE,-10.43,posted\n";
+    let flags = [
+        BANK_FLAGS,
+        &[
+            "--hold-amount-tolerance",
+            "43",
+            "--hold-posting-window-days",
+            "8",
+            "--on-conflict",
+            "error",
+        ],
+    ]
+    .concat();
+    let preview = success(&ledger.import(
+        "bank.csv",
+        statement,
+        &[flags.as_slice(), &["--dry-run"]].concat(),
+    )?)?;
+    assert_eq!(
+        preview["transactions"][0]["settlement"],
+        json!({"hold_id":1,"amount_delta":43})
+    );
+    assert!(preview["transactions"][0]["id"].is_null());
+    assert_eq!(ledger.count("transactions")?, 3);
+    let imported = success(&ledger.import("bank.csv", statement, &flags)?)?;
+    let posted = &imported["transactions"][0];
+    assert_eq!(
+        posted["settlement"],
+        preview["transactions"][0]["settlement"]
+    );
+    assert_eq!(
+        success(&ledger.import("bank.csv", statement, &flags)?)?,
+        imported
+    );
+    assert_eq!(ledger.count("transactions")?, 4);
+    let posting = posted["id"].to_string();
+    let show = ledger.command()?.args(["txn", "show", &posting]).output()?;
+    assert!(show.status.success());
+    let shown: Value = serde_json::from_slice(&show.stdout)?;
+    assert_eq!(shown["data"][0]["entries"][0]["account_code"], "4000");
+
+    let stale = |date| -> Result<Value, Box<dyn Error>> {
+        let result = ledger
+            .command()?
+            .args([
+                "summary",
+                "--currency",
+                "USD",
+                "--to",
+                date,
+                "--stale-hold-age-days",
+                "6",
+            ])
+            .assert()
+            .success();
+        let summary: Value = serde_json::from_slice(&result.get_output().stdout)?;
+        Ok(summary["data"]["needs_attention"]["items"]["stale_holds"].clone())
+    };
+    assert_eq!(stale("2026-03-07")?["count"], 0);
+    assert_eq!(stale("2026-03-08")?["total"], 1000);
+    assert_eq!(stale("2026-03-09")?["count"], 0);
+    ledger
+        .command()?
+        .args(["txn", "reverse", &posting, "--date", "2026-03-10"])
+        .assert()
+        .success();
+    assert_eq!(stale("2026-03-09")?["count"], 0);
+    assert_eq!(stale("2026-03-10")?["holds"][0]["hold_id"], 1);
+    // Retrying the original bank event after undo keeps the owner's reversal effective.
+    assert_eq!(
+        success(&ledger.import("bank.csv", statement, &flags)?)?,
+        imported
+    );
+    assert_eq!(ledger.count("transactions")?, 5);
+    Ok(())
+}
+
+#[test]
+fn ambiguous_csv_rolls_back_the_batch_and_allows_explicit_settlement() -> TestResult {
+    let ledger = Ledger::new()?;
+    post_hold(&ledger, "first", &[])?;
+    post_hold(&ledger, "second", &[])?;
+    let content = "date,description,amount,reference\n2026-03-02,Unrelated,-25,unrelated\n2026-03-02,Cafe,-10,posted\n";
+    validation_error(
+        &ledger.import("bank.csv", content, BANK_FLAGS)?,
+        "matches multiple open holds",
+    )?;
+    assert_eq!(ledger.count("transactions")?, 2);
+    ledger
+        .command()?
+        .args([
+            "txn",
+            "settle-hold",
+            "--hold-reference",
+            "second",
+            "--amount",
+            "10",
+            "--date",
+            "2026-03-02",
+            "--reference",
+            "posted",
+        ])
+        .assert()
+        .success();
+    let result = success(&ledger.import("bank.csv", content, BANK_FLAGS)?)?;
+    assert_eq!(
+        result["transactions"][1]["settlement"],
+        json!({"hold_id":2,"amount_delta":0})
+    );
+    assert_eq!(ledger.count("transactions")?, 4);
+    Ok(())
+}
+
+#[test]
+fn ofx_uses_the_payee_name_and_keeps_the_bank_reference_on_retry() -> TestResult {
+    let ledger = Ledger::new()?;
+    post_hold(&ledger, "card-hold", &[])?;
+    let statement = concat!(
+        "OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\nSECURITY:NONE\n",
+        "ENCODING:USASCII\nCHARSET:1252\nCOMPRESSION:NONE\nOLDFILEUID:NONE\nNEWFILEUID:NONE\n\n",
+        "<OFX><SIGNONMSGSRSV1><SONRS><STATUS><CODE>0<SEVERITY>INFO</STATUS>",
+        "<DTSERVER>20260301<LANGUAGE>ENG</SONRS></SIGNONMSGSRSV1>",
+        "<BANKMSGSRSV1><STMTTRNRS><TRNUID>1<STATUS><CODE>0<SEVERITY>INFO</STATUS>",
+        "<STMTRS><CURDEF>USD<BANKACCTFROM><BANKID>123<ACCTID>456<ACCTTYPE>CHECKING</BANKACCTFROM>",
+        "<BANKTRANLIST><DTSTART>20260301<DTEND>20260331",
+        "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260302<TRNAMT>-10<FITID>POSTED",
+        "<NAME>cafe<MEMO>Terminal 6</STMTTRN></BANKTRANLIST><LEDGERBAL><BALAMT>10<DTASOF>20260331",
+        "</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>",
+    );
+    let original = success(&ledger.import("bank.ofx", statement, BANK_FLAGS)?)?;
+    assert_eq!(
+        original["transactions"][0]["settlement"],
+        json!({"hold_id":1,"amount_delta":0})
+    );
+    assert_eq!(
+        success(&ledger.import("bank.ofx", statement, BANK_FLAGS)?)?,
+        original
+    );
+    assert_eq!(ledger.count("transactions")?, 2);
+    Ok(())
+}
+
+#[test]
+fn automatic_matching_requires_the_default_window_amount_direction_and_payee() -> TestResult {
+    let ledger = Ledger::new()?;
+    post_hold(&ledger, "guarded-hold", &[])?;
+    let statement = concat!(
+        "date,description,amount,reference\n",
+        "2026-02-28,Cafe,-10,before-authorization\n",
+        "2026-03-09,Cafe,-10,outside-window\n",
+        "2026-03-02,Cafe,-10.01,different-amount\n",
+        "2026-03-02,Cafe,10,different-direction\n",
+        "2026-03-02,Cafe 2,-10,different-payee\n",
+    );
+    let result = success(&ledger.import("bank.csv", statement, BANK_FLAGS)?)?;
+    assert_eq!(result["imported"], 5);
+    assert!(
+        result["transactions"]
+            .as_array()
+            .ok_or("missing transactions")?
+            .iter()
+            .all(|line| line["settlement"].is_null())
+    );
+    assert_eq!(ledger.count("transactions")?, 6);
+    Ok(())
+}
