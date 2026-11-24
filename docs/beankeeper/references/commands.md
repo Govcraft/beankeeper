@@ -278,7 +278,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_propose` | Same posting arguments as `txn_post`; requires a verified proposer, reserves the reference and waits for approval without posting |
 | `txn_proposals` | `company`, optional `include_rejected` (includes all resolved statuses); visibility follows identity and grants |
 | `txn_approve`, `txn_reject` | `company`, proposal `id`; reject accepts optional `reason`; approval posts atomically, rejection also serves proposer withdrawal |
-| `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: ["key=value", ...]`, unset takes `keys: ["key", ...]`; values are strings; reserved relationship keys are rejected |
+| `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: {"status":"pending"}` and accepts legacy `["status=pending"]`; unset takes `keys: ["status"]`. Both return `receipt` and `desktop_path` on changes. |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
@@ -816,23 +816,27 @@ bk audit log --action metadata_set
 `qty=3` stores `"3"`, `paid=true` stores `"true"`, and `note=` stores an empty
 string. Split on the first `=`. Select by transaction ID or trimmed `--reference`
 in the selected company. Unknown transactions return `NOT_FOUND`. Empty keys,
-keys containing a double quote, duplicate keys, and the relationship keys
-`correlate`, `reverses`, `reversed_by`, and `applies_to` are rejected. Set custom
-settlement `--link-key` values at post time and treat them as relationships too.
+keys containing a double quote or NUL, and duplicate keys are rejected.
+Reserved keys are `correlate`, `proposal_id`, `reverses`, `reversed_by`,
+`applies_to`, and `beankeeper_source`. Set custom settlement `--link-key` values
+at post time and treat them as relationships too.
 
 Each changed batch writes one `metadata_set` or `metadata_unset` audit row with
 whole-object `before`/`after` snapshots and the resolved actor, atomically with
-the edit. An absent metadata object is represented as `{}` in the snapshots;
-removing its last key leaves `{}`. Setting an identical string or removing an
-absent key is a no-op with no audit row. Other keys and numeric precision survive.
+the edit. Removing the last key leaves `{}`. Setting an identical string or
+removing an absent key is a no-op with no audit row. Other keys and numeric
+precision survive. Use the returned `receipt` with
+`bk audit undo --company COMPANY RECEIPT` under the owner's signed grant to
+restore the exact prior metadata. Undo newer annotation edits first.
 Dates, entries, amounts, currency, references, and creation attribution stay
 unchanged. Tagging the original charge preserves its age and payment matching
 in `report aging --filter-metadata status=disputed`.
 
 JSON envelopes use `txn.meta.set` / `txn.meta.unset` and return
-`data: {"id": 42, "metadata": "{...}", "changed": true}`. `metadata` is the stored
-JSON text, or `null` for a no-op on a transaction without metadata. Table mode
-prints the transaction ID and resulting metadata. Use `txn show` to inspect it.
+the transaction `id`, stored JSON text (or `null`) in `metadata`, and a
+`changed` flag. Changes also return a `receipt` ID and a `desktop_path` to its
+detail view. For a no-op, both fields are `null`. Table mode prints the
+transaction ID, resulting metadata, and any new receipt ID.
 
 ### `bk txn show ID`
 
@@ -1716,7 +1720,8 @@ snapshots. The recorded operations are:
 | Action | Recorded when |
 |--------|---------------|
 | `status_change` | `bk txn clear` adds, promotes or removes an entry's clearings. `before`/`after` hold the derived entry `status` and `cleared_amount`; `after` adds `op` (`clear`, `reconcile`, `unclear`) and `clearings` (id, amount, cleared_date, reconciled_date, statement, status of the affected rows). Skips record nothing |
-| `metadata_set`, `metadata_unset` | `bk txn meta set/unset` changes annotations; whole-object snapshots, one row per changed batch, no row for no-ops |
+| `metadata_set`, `metadata_unset` | `bk txn meta set/unset` records one whole-object snapshot pair and receipt per changed batch. |
+| `metadata_restore` | `bk audit undo` restores prior annotations and links to the original receipt. |
 | `reverse` | `bk txn reverse` posts and links a reversal |
 | `correlate` | `bk txn post --correlate` links a partner transaction |
 | `proposal_approve`, `proposal_reject` | Approval, rejection or withdrawal snapshots, filter with `--entity proposal` |
@@ -1744,7 +1749,7 @@ bk audit log --json                                # full before/after snapshots
 - `--company SLUG`: Restrict to one company
 - `--by-actor NAME` and `--agent URI`: Match the recorded label and verified URI respectively. Both filters apply when supplied together.
 - `--entity KIND`: One of `entry`, `transaction`, `budget`, `account`, `company`
-- `--action KIND`: One of `metadata_set`, `metadata_unset`, `status-change`, `correlate`, `reverse`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
+- `--action KIND`: One of `metadata_set`, `metadata_unset`, `metadata_restore`, `status-change`, `correlate`, `reverse`, `budget-set`, `budget-delete`, `account-delete`, `company-delete`
 - `--limit N` (default: 50), `--offset N` (default: 0)
 
 JSON keeps the row array and adds `meta.pagination` (`limit`, `offset`, `returned`,

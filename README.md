@@ -617,9 +617,12 @@ with a fresh path and a passphrase resolved by the host. It publishes a
 verified demo ledger without overwriting an existing destination.
 
 Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and a
-`values` array such as `["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset`
-takes the same selector and a `keys` array. They share the CLI validation and
-audit behavior and are absent in read-only mode.
+`values` object such as `{"status":"pending"}`. Legacy `["status=pending"]`
+arrays still work. `txn_meta_unset` takes the same selector and an array such
+as `keys: ["status"]`. Both tools share the CLI validation and return a
+`receipt` for each change. With the owner's signed grant, call `audit_undo` with
+that receipt and company to restore the prior annotations in one step.
+Read-only mode omits both write tools.
 
 Call `txn_reverse` with `company` and the original transaction `id`; `date`,
 `description`, and `reference` are optional. It creates a linked mirror posting.
@@ -912,23 +915,27 @@ bk audit log --action metadata_set
 `qty=3` stores `"3"`, `paid=true` stores `"true"`, and `note=` stores an empty
 string. Split on the first `=`. Select by transaction ID or trimmed `--reference`
 in the selected company. Unknown transactions return `NOT_FOUND`. Empty keys,
-keys containing a double quote, duplicate keys, and the relationship keys
-`correlate`, `reverses`, `reversed_by`, and `applies_to` are rejected. Set custom
-settlement `--link-key` values at post time and treat them as relationships too.
+keys containing a double quote or NUL, and duplicate keys are rejected.
+Reserved keys are `correlate`, `proposal_id`, `reverses`, `reversed_by`,
+`applies_to`, and `beankeeper_source`. Set custom settlement `--link-key` values
+at post time and treat them as relationships too.
 
 Each changed batch writes one `metadata_set` or `metadata_unset` audit row with
 whole-object `before`/`after` snapshots and the resolved actor, atomically with
-the edit. An absent metadata object is represented as `{}` in the snapshots;
-removing its last key leaves `{}`. Setting an identical string or removing an
-absent key is a no-op with no audit row. Other keys and numeric precision survive.
+the edit. Removing the last key leaves `{}`. Setting an identical string or
+removing an absent key is a no-op with no audit row. Other keys and numeric
+precision survive. Use the returned `receipt` with
+`bk audit undo --company COMPANY RECEIPT` under the owner's signed grant to
+restore the exact prior metadata. Undo newer annotation edits first.
 Dates, entries, amounts, currency, references, and creation attribution stay
 unchanged. Tagging the original charge preserves its age and payment matching
 in `report aging --filter-metadata status=disputed`.
 
 JSON envelopes use `txn.meta.set` / `txn.meta.unset` and return
-`data: {"id": 42, "metadata": "{...}", "changed": true}`. `metadata` is the stored
-JSON text, or `null` for a no-op on a transaction without metadata. Table mode
-prints the transaction ID and resulting metadata. Use `txn show` to inspect it.
+the transaction `id`, stored JSON text (or `null`) in `metadata`, and a
+`changed` flag. Changes also return a `receipt` ID and a `desktop_path` to its
+detail view. For a no-op, both fields are `null`. Table mode prints the
+transaction ID, resulting metadata, and any new receipt ID.
 
 ### Reverse a mistaken transaction
 
