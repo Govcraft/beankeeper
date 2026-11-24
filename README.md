@@ -136,12 +136,16 @@ for output fields, history, and retry behavior.
 
 ### Set up books over the agent connection
 
-The Direct bookkeeper can create or initialize books, add accounts, apply a
-chart, post opening balances, and import CSV or OFX/QFX statement contents on
-its normal connection. The agent reports what it did and offers to undo it.
-Each write returns a receipt ID and an optional Desktop detail path. An owner
-can undo a receipt in one step from the CLI or MCP. Statement undo reverses
-only the postings that import created.
+Bookkeepers can create or initialize books, add accounts, and apply a chart on
+their normal connection in either write mode. Direct bookkeepers also post
+opening balances and import CSV or OFX/QFX statement contents immediately.
+The agent reports completed changes and offers one-step owner undo using the
+receipt ID, with an optional Desktop detail path. Statement undo reverses the
+postings that import created.
+
+If the owner opted into propose-only, the same tools submit an opening
+proposal and one proposal per new statement row for the existing transaction
+sign-off. Existing bookkeeper credentials gain this setup access automatically.
 
 [CLI and MCP onboarding commands](docs/beankeeper/references/commands.md#direct-onboarding)
 

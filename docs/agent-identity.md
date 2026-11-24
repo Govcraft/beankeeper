@@ -79,12 +79,13 @@ The URI is `agent://<id>.bk.local/ledger/<name>_<typeid-suffix>`. The common
 capability paths strictly below `ledger`. A bare `ledger` grant is rejected at
 issuance and verification, including when enforcement is off.
 
-`ledger/chart` authorizes direct onboarding. Direct credentials with the exact
-default CLI grants (`ledger/read` and `ledger/post`) or managed Desktop
-bookkeeper grants (those two plus `ledger/propose`) already have effective
-chart access. They retain their signed claims and connection after upgrade.
-A custom Direct credential can request `ledger/chart` explicitly. Read-only
-and propose-only credentials remain restricted.
+`ledger/chart` authorizes onboarding on the normal connection. Existing
+bookkeeper credentials with the exact default CLI grants (`ledger/read` and
+`ledger/post`), managed Desktop grants (those two plus `ledger/propose`), or
+their signed propose-only equivalent gain chart access at verification. Their
+signed claims and connections continue to work after upgrade. A custom
+credential can request `ledger/chart` explicitly. The signed write mode
+controls whether opening balances and imports post or become proposals.
 [Onboarding operations](beankeeper/references/commands.md#direct-onboarding)
 
 Hosts can issue separate `--caps ui/navigate` tokens. These use a `/ui/` subject

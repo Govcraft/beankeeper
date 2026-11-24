@@ -332,8 +332,8 @@ not exposed to tools.
 
 ### Direct onboarding
 
-A Direct bookkeeper can configure books and post opening or imported entries
-over its normal connection. In MCP, use `target: {company, reference}` for
+A bookkeeper can configure books in either write mode over its normal
+connection. In MCP, use `target: {company, reference}` for
 `ledger_setup_book_create`, `ledger_setup_book_initialize`,
 `ledger_setup_chart_apply`, and `ledger_setup_account_add`. Omit
 `target.generation`. A chart must match the book profile's purpose.
@@ -346,8 +346,16 @@ defaults to “Opening balances.”
 `ledger_setup_statement_import` takes `company`, `reference`, `bank`,
 `suspense`, `currency`, `format`, and UTF-8 `content` up to 1 MiB and
 5,000 rows. Use `format: "csv"` or `format: "ofx"` (also accepts `"qfx"`).
-The optional `csv` field describes CSV headers and amount direction. The response
-identifies the `created` postings and identical `preexisting` matches.
+The optional `csv` field describes CSV headers and amount direction. Both
+write modes identify identical `preexisting` matches. Direct imports also
+return the `created` postings and Direct openings return a `transaction_id`.
+
+In propose-only mode, an opening returns `proposal_id` and an import returns
+`proposals` with a `reference` and `proposal_id` for each new row. The import
+reserves all new rows together. A reviewer can resolve them individually with
+`txn_approve` or `bk --company home txn approve PROPOSAL_ID`. Exact retries
+return the original IDs. To check their current status, call `txn_proposals`
+with `include_rejected: true` or run `bk txn proposals --include-rejected`.
 
 ```bash
 bk --json setup book-create home Home --reference home-book \
@@ -362,7 +370,7 @@ bk --json setup statement-import home --reference january --bank 1010 --suspense
 
 Use the same reference and inputs for an exact retry within a book. A changed
 request under that reference returns `VALIDATION`. Each response includes
-`receipt_id` and `desktop_path`. Use `audit_undo` or
+`receipt_id` and `desktop_path`. For a completed direct change, use `audit_undo` or
 `bk --company home audit undo RECEIPT` with the owner's signed authority.
 Undo archives created accounts, retires a profile revision, or appends mirror
 postings. An unused book created through onboarding can be archived. Undo of

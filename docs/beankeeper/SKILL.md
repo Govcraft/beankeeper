@@ -43,18 +43,23 @@ not replace Apple notarization or Windows Authenticode.
 ## Set up books on the normal connection
 
 Use `ledger_setup_status` and `ledger_setup_book_show` to see what already
-exists. Ask the owner conversationally for the missing information. A Direct
-bookkeeper can call `ledger_setup_book_create`, `ledger_setup_book_initialize`,
+exists. Ask the owner conversationally for the missing information. A
+bookkeeper in either write mode can call `ledger_setup_book_create`, `ledger_setup_book_initialize`,
 `ledger_setup_chart_apply`, and `ledger_setup_account_add` with a
 `target` containing the company slug and a stable reference. Omit
 `target.generation`.
 
 Use `ledger_setup_opening_post` for opening balances and
 `ledger_setup_statement_import` for CSV or OFX/QFX statement text. Reuse
-the same reference and inputs on a retry. Report the completed changes
-in plain language, distinguish newly imported postings from preexisting
-matches, and offer owner undo using the returned `receipt_id`. If Desktop
-is available, use the returned `desktop_path` to offer the detailed receipt.
+the same reference and inputs on a retry. Report completed changes in plain
+language, distinguish newly imported postings from preexisting matches, and
+offer owner undo using the returned `receipt_id`. With an existing propose-only
+credential, opening balances return a `proposal_id` and statement imports
+return `proposals` for the new rows. Report those as pending until they are
+approved through `txn_approve`. Use `txn_proposals` with
+`include_rejected: true` to check current status after a retry. If Desktop is
+available, use `desktop_path` to offer the
+detailed receipt.
 Owners can handle their recovery material directly while the agent completes
 the bookkeeping.
 
@@ -452,8 +457,8 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk mcp serve` | Serve MCP stdio, or authenticated HTTP with `--http`; `--read-only` omits writes |
 | `bk init` | Create a new database (`--demo` for sample data, `--encrypt` for passphrase) |
 | `bk setup begin/finish/revoke` | Manage an encrypted ledger's setup session with an owner `ledger/admin` credential |
-| `bk setup book-create/book-initialize/chart-apply/account-add` | Configure books and accounts through the Direct bookkeeper connection or an active setup session |
-| `bk setup opening-post/statement-import` | Post opening balances or import statement text immediately and return an owner undo receipt |
+| `bk setup book-create/book-initialize/chart-apply/account-add` | Configure books and accounts through the bookkeeper connection or an active setup session |
+| `bk setup opening-post/statement-import` | Submit opening balances or statement text. Direct posts return an undo receipt. Propose-only returns proposal IDs. |
 | `bk setup book-update` | Record a new profile revision in an active setup session |
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
