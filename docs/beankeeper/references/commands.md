@@ -188,7 +188,8 @@ cancellation, and progress are audited under entity `schedule`, with actions
 
 `bk --company SLUG summary [--from DATE] [--to DATE] [--compare-from DATE
 --compare-to DATE] [--currency CODE] [--cash-account CODE ...]
-[--receivable-account CODE ...] [--payable-account CODE ...] [--json]`
+[--receivable-account CODE ...] [--payable-account CODE ...]
+[--stale-hold-age-days DAYS] [--json]`
 
 Provides advisor-ready facts and chartable data without changing ledger records.
 The matching `financial_summary` MCP tool accepts `company` plus snake_case CLI
@@ -376,6 +377,10 @@ request under that reference returns `VALIDATION`. Each response includes
 Undo archives created accounts, retires a profile revision, or appends mirror
 postings. An unused book created through onboarding can be archived. Undo of
 a chart or statement is atomic. Earlier matching postings stay in place.
+For statement imports, `--hold-amount-tolerance` (minor units, default 0) and
+`--hold-posting-window-days` (default 7, inclusive) adjust pending-hold
+matching. Corresponding MCP fields use snake_case. An ambiguous bank line
+reports a validation error and keeps its candidate holds open.
 
 ### Optional setup sessions
 

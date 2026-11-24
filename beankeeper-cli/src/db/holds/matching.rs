@@ -326,7 +326,7 @@ fn posted_reference(scope: &Company<'_>, line: &BankLine<'_>) -> Result<PostedRe
     let Some(settlement) = posted.settlement() else {
         if posted.status() == super::EntryStatus::Pending {
             return Err(CliError::Validation(format!(
-                "bank reference '{}' belongs to pending transaction #{id}; use its posted reference",
+                "bank reference '{}' belongs to pending transaction #{id}. Use the posted bank reference",
                 line.reference
             )));
         }

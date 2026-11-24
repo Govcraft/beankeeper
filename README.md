@@ -1295,8 +1295,32 @@ Direct grants settle immediately. A propose-only grant returns a proposal.
 To undo a settlement, reverse the settled transaction or undo its audit
 receipt. Undo restores the hold as of the reversal date. Settle a restored
 hold with a fresh posted reference. To cancel an open hold, reverse the hold
-itself. Statement import matching and stale-hold alerts are tracked in
-[#281](https://github.com/Govcraft/beankeeper/issues/281).
+itself.
+
+CSV and OFX/QFX imports settle a unique open hold in the same company, bank
+account, currency, and direction. The importer compares the CSV description or
+OFX payee name with the hold's `payee` metadata, using the hold description when
+no payee is set. The comparison ignores case and surrounding whitespace. By
+default the amount must match exactly and the posted date must be within seven
+days of the authorization, inclusive.
+
+```sh
+bk --company personal --json txn import --file card.csv --account 1000 --suspense 9000 \
+  --hold-amount-tolerance 50 --hold-posting-window-days 5
+bk --company personal --json summary --stale-hold-age-days 10
+```
+
+The tolerance is in minor units (50 cents for USD). A matched file row reports
+the posted ID, original hold ID, signed amount difference, and Desktop
+register link. Retrying the same bank reference and movement returns the same
+settlement, including after an undo. When several holds match, the importer
+reports the ambiguity and leaves the line unwritten. An agent that can identify
+the right hold can settle it by ID with the posted bank reference, then retry.
+
+The bounded import also matches holds through `bk setup statement-import` and
+`ledger_setup_statement_import`. For MCP use `hold_amount_tolerance` and
+`hold_posting_window_days`. Direct grants return an audited batch receipt for
+one-step undo. Propose-only grants return proposal IDs and their matched hold IDs.
 
 ### Output Formats
 
@@ -1381,7 +1405,10 @@ date. Invalid dates return `VALIDATION`.
 
 The CLI and MCP tool return the same full envelope. Overdue status is explicitly
 unavailable because the ledger has no payment due dates; older open items are
-reported separately. See the [summary contract and limitations](docs/financial-summary.md).
+reported separately. The `stale_holds` attention item shows authorizations still
+open at the end date and older than seven days by default. Use
+`--stale-hold-age-days` or MCP `stale_hold_age_days` to change the threshold.
+See the [summary contract and limitations](docs/financial-summary.md).
 
 ### Historical Trends
 

@@ -5,7 +5,7 @@
 macro_rules! ledger_operations {
     ($consumer:ident) => {
         $consumer! {
-            Summary => ("summary", Read, tool(financial_summary, FinancialSummary, "Answer how the owner is doing: read-only financial summary, period comparisons, spending movers, attention counts and totals including stale card holds, brief highlights and optional Desktop targets. Returns the same full JSON envelope as bk summary; all amounts are in one currency.")),
+            Summary => ("summary", Read, tool(financial_summary, FinancialSummary, "Read the financial summary with period comparisons, spending movers, attention counts and totals including stale card holds, brief highlights and optional Desktop targets. Returns the same full JSON envelope as bk summary with amounts in one currency.")),
             LedgerSetupStatus => ("ledger.setup.status", SetupStatus, tool_at("setup.status", ledger_setup_status, Empty, "Read setup counts and owner-key readiness for the selected ledger.")),
             LedgerSetupBookShow => ("ledger.setup.book.show", SetupStatus, tool_at("setup.book-show", ledger_setup_book_show, CompanyScope, "Read one book's current profile, fiscal-year start, currency, and accounts.")),
             LedgerSetupStatementPreview => ("ledger.setup.statement.preview", Setup, tool_at("setup.statement-preview", ledger_setup_statement_preview, LedgerSetupStatementPreview, "Freeze bounded CSV or OFX statement contents for owner review in an active setup generation.")),
