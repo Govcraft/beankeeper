@@ -370,6 +370,7 @@ pub(super) enum PostingOutcome {
 pub struct PostingRequest(PostingDraft);
 
 pub(crate) struct PostingDraft {
+    pub(crate) status: db::holds::EntryStatus,
     pub(crate) description: String,
     pub(crate) currency: Currency,
     pub(crate) date: PostingDate,
@@ -420,6 +421,7 @@ impl TryFrom<&PostingArgs> for PostingRequest {
         let currency = crate::request::CurrencySetting::from(args.currency).try_into()?;
         Self::try_from(PostingDraft {
             description: args.description.clone(),
+            status: args.status.unwrap_or_default(),
             currency,
             date: args.date.map(Into::into).unwrap_or_default(),
             debit: parse_entries(&args.debit, currency)?,
@@ -448,12 +450,16 @@ fn execute_posting(
     db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| {
         PostingGrant::with_db(db, actor, |grant| match grant {
-            PostingGrant::Direct(grant) => {
-                transactions::post_from_source(grant, params, transactions::PostingSource::Command)
-                    .map(PostingOutcome::Posted)
-            }
+            PostingGrant::Direct(grant) => transactions::post_from_source_with_status(
+                grant,
+                params,
+                transactions::PostingSource::Command,
+                request.0.status,
+            )
+            .map(PostingOutcome::Posted),
             PostingGrant::Proposal(grant) => {
-                proposals::create_from_command(grant, params).map(PostingOutcome::Proposed)
+                proposals::create_from_command(grant, params, request.0.status)
+                    .map(PostingOutcome::Proposed)
             }
         })
     })
@@ -468,7 +474,7 @@ fn execute_proposal_posting(
     db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| {
         Granted::<Propose>::with_db(db, actor, |grant| {
-            proposals::create_from_command(grant, params)
+            proposals::create_from_command(grant, params, request.0.status)
         })
     })
 }
@@ -482,7 +488,12 @@ pub(super) fn execute_direct_posting(
     db::get_company(db.read(), company)?;
     with_post_params(company, request, actor, |params| {
         Granted::<Post>::with_db(db, actor, |grant| {
-            transactions::post_from_source(grant, params, transactions::PostingSource::Command)
+            transactions::post_from_source_with_status(
+                grant,
+                params,
+                transactions::PostingSource::Command,
+                request.0.status,
+            )
         })
     })
 }
@@ -505,6 +516,7 @@ fn with_post_params<T>(
         reference,
         on_conflict,
         tax: tax_map,
+        status: _,
     } = &request.0;
     let currency = *currency;
     let metadata = db::metadata::build_post_metadata(metadata.as_deref(), annotations)?;
@@ -560,11 +572,12 @@ impl From<crate::cli::OnConflictArg> for transactions::ConflictStrategy {
     }
 }
 
-fn describe_posting(outcome: &PostingOutcome) {
+fn describe_posting(outcome: &PostingOutcome, status: db::holds::EntryStatus) {
     match outcome {
-        PostingOutcome::Posted(transactions::PostResult::Created(id)) => {
-            eprintln!("[ok] transaction #{id} posted");
-        }
+        PostingOutcome::Posted(transactions::PostResult::Created(id)) => match status {
+            db::holds::EntryStatus::Pending => eprintln!("[ok] recorded pending hold #{id}"),
+            db::holds::EntryStatus::Posted => eprintln!("[ok] transaction #{id} posted"),
+        },
         PostingOutcome::Proposed(proposals::ProposalCreation::Created(proposal)) => {
             eprintln!("[ok] proposal {} is pending approval", proposal.id);
         }

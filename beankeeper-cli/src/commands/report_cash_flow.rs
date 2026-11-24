@@ -547,7 +547,7 @@ fn compute_for_accounts(
         "SELECT t.id, e.account_code, a.name, a.type, \
                 CASE WHEN e.direction = 'debit' THEN e.amount ELSE -e.amount END \
          FROM entries e \
-         JOIN transactions t ON t.id = e.transaction_id \
+         JOIN posted_transactions t ON t.id = e.transaction_id \
          JOIN accounts a ON a.company_slug = e.company_slug AND a.code = e.account_code \
          WHERE t.company_slug = ?1 AND t.currency = ?2 AND t.date >= ?3 AND t.date <= ?4 \
          ORDER BY t.id, e.id",
@@ -712,7 +712,7 @@ fn cash_balance(
     let op = if inclusive { "<=" } else { "<" };
     let sql = format!(
         "SELECT COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE -e.amount END), 0) \
-         FROM entries e JOIN transactions t ON t.id = e.transaction_id \
+         FROM entries e JOIN posted_transactions t ON t.id = e.transaction_id \
          WHERE t.company_slug = ?1 AND t.currency = ?2 AND e.account_code = ?3 AND t.date {op} ?4"
     );
     let mut stmt = conn.prepare(&sql)?;

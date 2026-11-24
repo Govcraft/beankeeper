@@ -112,7 +112,7 @@ pub(super) fn compute(context: &AttentionContext<'_>) -> Result<Attention, CliEr
 fn uncategorized(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
     let mut statement = context.conn.prepare(
         "SELECT t.id, e.account_code, SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE -e.amount END)
-         FROM transactions t JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
+         FROM posted_transactions t JOIN entries e ON e.transaction_id = t.id AND e.company_slug = t.company_slug
          JOIN accounts a ON a.code = e.account_code AND a.company_slug = e.company_slug
          WHERE t.company_slug = ?1 AND t.currency = ?2 AND t.date <= ?3
            AND (lower(a.name) LIKE '%uncategorized%' OR lower(a.name) LIKE '%suspense%')
@@ -150,7 +150,7 @@ fn unreconciled(context: &AttentionContext<'_>) -> Result<AttentionItem, CliErro
     let mut statement = context.conn.prepare(
         "SELECT e.amount, COALESCE(SUM(CASE WHEN c.status = 'reconciled'
              AND c.cleared_date <= ?4 AND c.reconciled_date <= ?4 THEN c.amount ELSE 0 END), 0)
-         FROM entries e JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug
+         FROM entries e JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug
          LEFT JOIN entry_clearings c ON c.entry_id = e.id
          WHERE t.company_slug = ?1 AND t.currency = ?2 AND e.account_code = ?3 AND t.date <= ?4
          GROUP BY e.id ORDER BY e.id",
@@ -315,7 +315,7 @@ fn load_movements(
         "SELECT t.id, t.date, t.description, t.reference, t.metadata,
              SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END),
              SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END)
-         FROM entries e JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug
+         FROM entries e JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug
          WHERE t.company_slug = ?1 AND t.currency = ?2 AND e.account_code = ?3 AND t.date <= ?4
          GROUP BY t.id ORDER BY t.date, t.id",
     )?;

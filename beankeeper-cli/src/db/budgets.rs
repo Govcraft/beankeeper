@@ -362,7 +362,7 @@ fn build_variance_query_budget_only(account_type: Option<AccountType>) -> String
                        - COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0) \
                 END AS total \
             FROM entries e \
-            JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+            JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
             JOIN accounts a ON a.company_slug = e.company_slug AND a.code = e.account_code \
             WHERE e.company_slug = ?1 AND t.currency = ?2 \
               AND t.date >= ?6 AND t.date <= ?7 \
@@ -412,7 +412,7 @@ fn build_variance_query_with_unbudgeted(account_type: Option<AccountType>) -> St
                        - COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0) \
                 END AS total \
             FROM entries e \
-            JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+            JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
             JOIN accounts a ON a.company_slug = e.company_slug AND a.code = e.account_code \
             WHERE e.company_slug = ?1 AND t.currency = ?2 \
               AND t.date >= ?6 AND t.date <= ?7 \

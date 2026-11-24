@@ -38,6 +38,7 @@ fn pending_with_entries(
         correlate: None,
         reference: None,
         on_conflict: ConflictStrategy::Error,
+        purpose: beankeeper_cli::db::holds::PostingPurpose::default(),
     };
     let mut payload = serde_json::to_value(payload)?;
     payload["entries"] = entries;

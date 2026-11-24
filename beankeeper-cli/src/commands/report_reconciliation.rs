@@ -924,7 +924,7 @@ fn load_entries(
                 COALESCE(c.cleared_all, 0), COALESCE(c.reconciled_all, 0), \
                 COALESCE(c.cleared_stmt, 0), COALESCE(c.reconciled_stmt, 0) \
          FROM entries e \
-         JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
+         JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug \
          LEFT JOIN ( \
              SELECT entry_id, \
                     SUM(amount) AS cleared_all, \

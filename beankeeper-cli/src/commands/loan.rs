@@ -191,6 +191,7 @@ fn pay(cli: &Cli, args: &LoanPayArgs) -> Result<(), CliError> {
         .parse()
         .map_err(|error| CliError::Validation(format!("invalid reference: {error}")))?;
     let post = super::txn::PostingRequest::try_from(super::txn::PostingDraft {
+        status: crate::db::holds::EntryStatus::default(),
         description: format!("Loan payment {} ({})", row.number, args.reference.trim()),
         debit,
         credit,

@@ -1746,6 +1746,9 @@ EXAMPLES:\n  \
     )]
     Reverse(TxnReverseArgs),
 
+    /// Settle a pending card hold with the actual amount from the bank.
+    SettleHold(TxnSettleHoldArgs),
+
     /// Import transactions from file or stdin.
     #[command(after_help = "\
 EXAMPLES:\n  \
@@ -1865,6 +1868,10 @@ pub struct PostingArgs {
     /// Transaction date (YYYY-MM-DD). Defaults to today.
     #[arg(long)]
     pub date: Option<CalendarDateArg>,
+
+    /// Use pending for an authorization hold. Defaults to posted.
+    #[arg(long)]
+    pub status: Option<crate::db::holds::EntryStatus>,
 
     /// Correlate with an existing transaction in another company (intercompany linking).
     #[arg(long)]
@@ -2026,6 +2033,30 @@ pub struct TxnReverseArgs {
     /// Idempotency reference. Defaults to reversal-of-ID.
     #[arg(short, long)]
     pub reference: Option<String>,
+}
+
+/// Arguments accepted by `bk txn settle-hold`.
+#[derive(Args, Debug)]
+pub struct TxnSettleHoldArgs {
+    /// Original pending transaction ID.
+    #[arg(
+        long,
+        required_unless_present = "hold_reference",
+        conflicts_with = "hold_reference"
+    )]
+    pub id: Option<TransactionId>,
+    /// Reference used to record the original hold.
+    #[arg(long)]
+    pub hold_reference: Option<crate::commands::reference::TransactionReference>,
+    /// Actual positive amount in the hold's currency, in decimal major units.
+    #[arg(long)]
+    pub amount: crate::db::holds::SettlementAmount,
+    /// Date the charge posted (YYYY-MM-DD).
+    #[arg(long)]
+    pub date: CalendarDateArg,
+    /// Stable reference for the posted charge. Reuse it for an exact retry.
+    #[arg(long)]
+    pub reference: crate::commands::reference::TransactionReference,
 }
 
 /// Arguments accepted by `bk txn import`.

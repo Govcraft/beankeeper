@@ -45,6 +45,8 @@ struct PostingPayloadJson<'a> {
     correlate: Option<crate::db::ids::PartnerTransactionId>,
     reference: Option<&'a str>,
     on_conflict: ConflictStrategy,
+    #[serde(skip_serializing_if = "crate::db::holds::PostingPurpose::is_posted")]
+    purpose: crate::db::holds::PostingPurpose,
 }
 
 impl<'a> From<&'a PostingPayload> for PostingPayloadJson<'a> {
@@ -58,6 +60,7 @@ impl<'a> From<&'a PostingPayload> for PostingPayloadJson<'a> {
             correlate: payload.correlate,
             reference: payload.reference.as_deref(),
             on_conflict: payload.on_conflict,
+            purpose: payload.purpose,
         }
     }
 }
@@ -176,6 +179,7 @@ mod tests {
                 correlate: None,
                 reference: Some("EX-1".into()),
                 on_conflict: ConflictStrategy::Error,
+                purpose: crate::db::holds::PostingPurpose::default(),
             },
             reference: Some("EX-1".into()),
             debit_total: 1234,

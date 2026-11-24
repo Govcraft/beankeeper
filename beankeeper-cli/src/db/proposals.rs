@@ -10,6 +10,7 @@ use super::audit::savepoint::AuditedTx;
 use super::audit::{self, Actor};
 use super::companies::{Company, CompanySlug};
 use super::connection::ReadConn;
+use super::holds::{self, HoldJournal, PostingPurpose};
 use super::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
 use crate::capability::Capability;
 use crate::error::CliError;
@@ -87,6 +88,9 @@ pub struct PostingPayload {
     pub correlate: Option<crate::db::ids::PartnerTransactionId>,
     pub reference: Option<String>,
     pub on_conflict: ConflictStrategy,
+    /// Posting intent carried through approval.
+    #[serde(default, skip_serializing_if = "PostingPurpose::is_posted")]
+    pub purpose: PostingPurpose,
 }
 
 impl PostingPayload {
@@ -140,6 +144,7 @@ impl TryFrom<(&beankeeper::core::Transaction, &str)> for PostingPayload {
             correlate: None,
             reference: Some(reference.to_owned()),
             on_conflict: ConflictStrategy::default(),
+            purpose: PostingPurpose::default(),
         })
     }
 }
@@ -522,6 +527,10 @@ impl<'a> ApprovedPosting<'a> {
         self.tx
     }
 
+    pub(super) const fn purpose(&self) -> PostingPurpose {
+        self.payload.purpose
+    }
+
     pub(super) fn params(&self) -> PostTransactionParams<'_> {
         self.payload.params(self.company, self.actor)
     }
@@ -617,7 +626,12 @@ pub fn create(
     grant: Granted<'_, Propose>,
     p: &PostTransactionParams<'_>,
 ) -> Result<serde_json::Value, CliError> {
-    match reserve(grant, p, super::transactions::PostingSource::Proposal)? {
+    match reserve(
+        grant,
+        p,
+        PostingPurpose::default(),
+        super::transactions::PostingSource::Proposal,
+    )? {
         ProposalCreation::Created(proposal) => {
             serde_json::to_value(proposal).map_err(|error| CliError::General(error.to_string()))
         }
@@ -635,61 +649,78 @@ pub(crate) enum ProposalCreation {
 pub(crate) fn create_from_command(
     grant: Granted<'_, Propose>,
     p: &PostTransactionParams<'_>,
+    status: holds::EntryStatus,
 ) -> Result<ProposalCreation, CliError> {
-    reserve(grant, p, super::transactions::PostingSource::Command)
+    reserve(
+        grant,
+        p,
+        status.into(),
+        super::transactions::PostingSource::Command,
+    )
 }
 
 fn reserve(
     grant: Granted<'_, Propose>,
     p: &PostTransactionParams<'_>,
+    purpose: PostingPurpose,
     source: super::transactions::PostingSource,
 ) -> Result<ProposalCreation, CliError> {
     grant.mutate("sp_reserve_proposal", |tx, actor| {
-        let reader = tx.read();
-        let preflight = (source == super::transactions::PostingSource::Command)
-            .then(|| super::transactions::build_journal(reader, p, source))
-            .transpose()?;
-        let identity = actor.identity().ok_or_else(|| {
-            CliError::Unauthorized("txn propose requires a verified agent token".into())
-        })?;
-        super::metadata::UserAnnotations::parse(p.metadata)?;
-        let total = super::spend_limits::debit_total(p.entries)?;
-        let journal = match preflight {
-            Some(journal) => journal,
-            None => super::transactions::build_journal(reader, p, source)?,
-        };
-        if let Some(reference) = p.reference {
-            if let Some(id) = posted_reference(reader, p.company_slug, reference)? {
-                return match p.on_conflict {
-                    ConflictStrategy::Skip => Ok(ProposalCreation::Skipped(id)),
-                    ConflictStrategy::Error => Err(CliError::Validation(format!(
-                        "transaction with reference '{reference}' already exists (id: {id})"
-                    ))),
-                };
-            }
-            check_reference(reader, p.company_slug, reference)?;
-        }
-        let payload = PostingPayload {
-            description: p.description.into(),
-            metadata: p.metadata.map(str::to_owned),
-            currency: p.currency,
-            date: p.date,
-            entries: p
-                .entries
-                .iter()
-                .zip(journal.entries())
-                .map(|(input, entry)| PostEntryParams {
-                    tax_category: entry.tax_category().map(str::to_owned),
-                    ..input.clone()
-                })
-                .collect(),
-            correlate: p.correlate,
-            reference: p.reference.map(str::to_owned),
-            on_conflict: p.on_conflict,
-        };
-        insert_pending(tx, p.company_slug, &payload, total, identity)
-            .map(|proposal| ProposalCreation::Created(Box::new(proposal)))
+        reserve_in_scope(tx, purpose, actor, p, source)
     })
+}
+
+pub(super) fn reserve_in_scope(
+    tx: &AuditedTx<'_>,
+    purpose: PostingPurpose,
+    actor: &Actor,
+    p: &PostTransactionParams<'_>,
+    source: super::transactions::PostingSource,
+) -> Result<ProposalCreation, CliError> {
+    let reader = tx.read();
+    let preflight = (source == super::transactions::PostingSource::Command)
+        .then(|| super::transactions::build_journal(reader, p, source))
+        .transpose()?;
+    let identity = actor.identity().ok_or_else(|| {
+        CliError::Unauthorized("txn propose requires a verified agent token".into())
+    })?;
+    super::metadata::UserAnnotations::parse(p.metadata)?;
+    let total = super::spend_limits::debit_total(p.entries)?;
+    let journal = match preflight {
+        Some(journal) => journal,
+        None => super::transactions::build_journal(reader, p, source)?,
+    };
+    let purpose = match purpose {
+        PostingPurpose::Pending => HoldJournal::try_from((&journal, p.correlate))?.into(),
+        other => other,
+    };
+    if let Some(id) = super::transactions::duplicate_reference(reader, p, purpose.status())? {
+        return Ok(ProposalCreation::Skipped(id));
+    }
+    if let Some(reference) = p.reference {
+        check_reference(reader, p.company_slug, reference)?;
+    }
+    let payload = PostingPayload {
+        description: p.description.into(),
+        metadata: p.metadata.map(str::to_owned),
+        currency: p.currency,
+        date: p.date,
+        entries: p
+            .entries
+            .iter()
+            .zip(journal.entries())
+            .map(|(input, entry)| PostEntryParams {
+                tax_category: entry.tax_category().map(str::to_owned),
+                ..input.clone()
+            })
+            .collect(),
+        correlate: p.correlate,
+        reference: p.reference.map(str::to_owned),
+        on_conflict: p.on_conflict,
+        purpose,
+    };
+    insert_pending(tx, p.company_slug, &payload, total, identity)
+        .map(|proposal| ProposalCreation::Created(Box::new(proposal)))
 }
 
 pub(in crate::db) fn reserve_setup_opening(

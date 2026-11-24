@@ -523,7 +523,7 @@ pub struct EntryTarget {
 
 const TARGET_SELECT: &str = "SELECT t.id, e.id, e.account_code, e.amount, t.currency, \
      t.reference, t.date, e.direction \
-     FROM entries e JOIN transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug";
+     FROM entries e JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug";
 
 fn map_target(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryTarget> {
     Ok(EntryTarget {

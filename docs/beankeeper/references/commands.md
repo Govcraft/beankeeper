@@ -274,7 +274,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
-| `txn_post` | `company`, `description`, `debits`, `credits`; optional `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
+| `txn_post` | `company`, `description`, `debits`, `credits`; optional `status`, `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
+| `txn_settle_hold` | `company`, `hold` as `{"id":42}` or `{"reference":"hold-1"}`, positive decimal `amount`, posting `date`, posted `reference` |
 | `txn_propose` | Same posting arguments as `txn_post`; requires a verified proposer, reserves the reference and waits for approval without posting |
 | `txn_proposals` | `company`, optional `include_rejected` (includes all resolved statuses); visibility follows identity and grants |
 | `txn_approve`, `txn_reject` | `company`, proposal `id`; reject accepts optional `reason`; approval posts atomically, rejection also serves proposer withdrawal |
@@ -513,7 +514,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 ### Read-only tools
 
 Read-only mode removes `company_create`, `company_delete`, `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
-`txn_reject`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
+`txn_reject`, `txn_reverse`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
@@ -845,6 +846,23 @@ shows the entry id, its cleared and remaining amounts, and one line per
 clearing (id, amount, status, cleared date, reconciled date, statement). JSON
 adds `id`, `cleared_amount`, `remaining_amount` and `clearings` to each entry
 (see `json-api.md`). CSV output is the transaction row only (no entries).
+
+### `bk txn settle-hold`
+
+Record an authorization with `txn post --status pending`. Use one debit and one
+credit on different accounts. To settle, supply `--id` or `--hold-reference`,
+plus the actual `--amount` in the hold's currency, the posted `--date`, and
+the posted `--reference`.
+
+```sh
+bk --company acme --json txn settle-hold --hold-reference hold-1 \
+  --amount 43.88 --date 2026-03-04 --reference posted-1
+```
+
+Direct mode settles in one write. Propose-only mode uses the existing
+`txn approve` path. An exact retry with the same posted reference reuses the
+settled transaction. Reverse that transaction to restore the hold. Use a fresh
+reference if you settle the restored hold again.
 
 ### `bk txn reverse ID`
 

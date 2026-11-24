@@ -15,6 +15,7 @@ use crate::db::{
     audit::MetadataResult,
     clearings::Clearing,
     companies::CompanySlug,
+    holds::{EntryStatus, SettlementOutcome, SettlementResult},
     ids::{EntryId, TransactionId},
     proposals::{Proposal, ProposalCreation},
     transactions::PostResult,
@@ -41,7 +42,11 @@ pub(super) struct TransactionDetails {
 }
 
 pub(super) enum TxnData {
-    Posted(PostingOutcome),
+    Posted {
+        outcome: PostingOutcome,
+        status: EntryStatus,
+    },
+    Settled(SettlementOutcome),
     Proposed(ProposalCreation),
     Proposals(Vec<Proposal>),
     Resolved(Box<Proposal>),
@@ -67,11 +72,52 @@ pub struct TxnResponse {
 impl Serialize for TxnResponse {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match &self.data {
-            TxnData::Posted(PostingOutcome::Posted(result)) | TxnData::Reversed { result, .. } => {
+            TxnData::Posted {
+                outcome: PostingOutcome::Posted(result),
+                status,
+            } => {
+                #[derive(Serialize)]
+                struct PostingJson<T> {
+                    #[serde(flatten)]
+                    result: T,
+                    status: EntryStatus,
+                }
+                PostingJson {
+                    result: json::post_result_payload(*result),
+                    status: *status,
+                }
+                .serialize(serializer)
+            }
+            TxnData::Reversed { result, .. } => {
                 json::post_result_payload(*result).serialize(serializer)
             }
-            TxnData::Posted(PostingOutcome::Proposed(result)) | TxnData::Proposed(result) => {
-                ProposalCreationJson(result).serialize(serializer)
+            TxnData::Posted {
+                outcome: PostingOutcome::Proposed(result),
+                ..
+            }
+            | TxnData::Settled(SettlementOutcome::Proposed(result))
+            | TxnData::Proposed(result) => ProposalCreationJson(result).serialize(serializer),
+            TxnData::Settled(SettlementOutcome::Posted(result)) => {
+                #[derive(Serialize)]
+                struct SettlementJson<'a> {
+                    #[serde(flatten)]
+                    result: &'a SettlementResult,
+                    amount_delta_display: String,
+                    desktop_view: Option<output::DesktopRegister>,
+                }
+                SettlementJson {
+                    result,
+                    amount_delta_display: output::amounts::format_money(result.delta()),
+                    desktop_view: self.company.as_ref().map(|company| {
+                        output::DesktopRegister::new(
+                            company.as_str(),
+                            result.currency,
+                            None,
+                            (Some(result.date), Some(result.date)),
+                        )
+                    }),
+                }
+                .serialize(serializer)
             }
             TxnData::Proposals(proposals) => proposals
                 .iter()
@@ -172,7 +218,10 @@ impl TxnResponse {
         out: &mut dyn Write,
     ) -> Result<(), CliError> {
         match &self.data {
-            TxnData::Proposed(_) | TxnData::Proposals(_) | TxnData::Resolved(_) => {
+            TxnData::Settled(SettlementOutcome::Proposed(_))
+            | TxnData::Proposed(_)
+            | TxnData::Proposals(_)
+            | TxnData::Resolved(_) => {
                 let data = serde_json::to_string_pretty(self)
                     .map_err(|error| CliError::General(error.to_string()))?;
                 writeln!(out, "{data}")?;
@@ -225,7 +274,8 @@ impl TxnResponse {
                     table::render_orphaned_correlations(orphans, use_color)
                 )?;
             }
-            TxnData::Posted(_)
+            TxnData::Posted { .. }
+            | TxnData::Settled(_)
             | TxnData::Reversed { .. }
             | TxnData::Metadata(_)
             | TxnData::Clear(_)
@@ -236,7 +286,15 @@ impl TxnResponse {
 
     fn describe(&self, format: OutputFormat) {
         match &self.data {
-            TxnData::Posted(outcome) => describe_posting(outcome),
+            TxnData::Posted { outcome, status } => describe_posting(outcome, *status),
+            TxnData::Settled(SettlementOutcome::Posted(result)) => {
+                eprintln!(
+                    "Hold #{} settled as transaction #{}. The posted amount differs by {}.",
+                    result.settlement.hold_id(),
+                    result.transaction_id,
+                    result.delta(),
+                );
+            }
             TxnData::Reversed { id, result } => match result {
                 PostResult::Created(reversal_id) => {
                     eprintln!("[ok] transaction #{id} reversed by #{reversal_id}");

@@ -11,11 +11,11 @@ pub(in crate::db) fn persist_posting(
     posting: ValidatedPosting<'_>,
     effective_metadata: Option<&str>,
 ) -> Result<PostResult, CliError> {
-    let (journal, period, p) = posting.into_parts();
+    let (state, journal, period, p) = posting.into_parts();
     let (tx, company, date) = period.into_parts();
     let txn_id = tx.insert(
-        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by, agent_uri, token_jti) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO transactions (company_slug, description, metadata, currency, date, reference, posted_by, agent_uri, token_jti, posting_status, settles_hold, amount_delta) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             company,
             journal.description(),
@@ -25,7 +25,10 @@ pub(in crate::db) fn persist_posting(
             p.reference,
             p.actor.name(),
             p.actor.agent_uri(),
-            p.actor.token_jti()
+            p.actor.token_jti(),
+            state.status(),
+            state.settlement().map(crate::db::holds::SettlementLink::hold_id),
+            state.settlement().map(crate::db::holds::SettlementLink::amount_delta),
         ],
     ).and_then(TransactionId::try_from)?;
 

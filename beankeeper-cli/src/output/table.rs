@@ -135,6 +135,8 @@ pub fn render_accounts_with_balances(
             bold_style(),
             use_color,
         )),
+        Cell::new(styled("Posted Balance", bold_style(), use_color)),
+        Cell::new(styled("Available Balance", bold_style(), use_color)),
     ]);
 
     for a in accounts {
@@ -144,6 +146,9 @@ pub fn render_accounts_with_balances(
             Cell::new(a.account_type.to_string()),
             Cell::new(format_money_grouped(a.debit_total)).set_alignment(CellAlignment::Right),
             Cell::new(format_money_grouped(a.credit_total)).set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(a.posted_balance)).set_alignment(CellAlignment::Right),
+            Cell::new(format_money_grouped(a.available_balance))
+                .set_alignment(CellAlignment::Right),
         ]);
     }
 
@@ -165,6 +170,7 @@ pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool)
         Cell::new(styled("Date", bold_style(), use_color)),
         Cell::new(styled("Description", bold_style(), use_color)),
         Cell::new(styled("Currency", bold_style(), use_color)),
+        Cell::new(styled("Status", bold_style(), use_color)),
     ];
     if has_links {
         header.push(Cell::new(styled("Reversal", bold_style(), use_color)));
@@ -176,6 +182,7 @@ pub fn render_transaction_list(transactions: &[TransactionRow], use_color: bool)
             Cell::new(txn.date),
             Cell::new(&txn.description),
             Cell::new(txn.currency.code()),
+            Cell::new(txn.status()),
         ];
         if has_links {
             row.push(Cell::new(link));
@@ -201,6 +208,25 @@ fn reversal_links(txn: &TransactionRow) -> String {
         }
     }
     links.join(", ")
+}
+
+fn posting_status_lines(txn: &TransactionRow) -> Vec<String> {
+    let mut lines = vec![];
+    lines.push(format!("  Status:      {}", txn.status()));
+    if let Some(link) = txn.settlement() {
+        let delta =
+            beankeeper::types::Money::from_minor(i128::from(link.amount_delta()), txn.currency);
+        lines.push(format!(
+            "  Settles:     hold #{} ({delta} difference)",
+            link.hold_id()
+        ));
+    }
+    let reversal = reversal_links(txn);
+    if !reversal.is_empty() {
+        lines.push(format!("  Reversal:    {reversal}"));
+    }
+
+    lines
 }
 
 /// Render a single transaction in detail with its entry lines.
@@ -240,10 +266,7 @@ pub fn render_transaction_detail_with_clearings<S: ::std::hash::BuildHasher>(
     lines.push(format!("  Date:        {}", txn.date));
     lines.push(format!("  Description: {}", txn.description));
     lines.push(format!("  Currency:    {}", txn.currency));
-    let reversal = reversal_links(txn);
-    if !reversal.is_empty() {
-        lines.push(format!("  Reversal:    {reversal}"));
-    }
+    lines.extend(posting_status_lines(txn));
 
     if let Some(ref meta) = txn.metadata {
         lines.push(format!(
@@ -930,6 +953,7 @@ mod tests {
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
             agent_uri: None,
+            posting_state: crate::db::holds::PostingState::Posted,
             token_jti: None,
             reference: None,
         }];
@@ -956,6 +980,7 @@ mod tests {
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
             agent_uri: None,
+            posting_state: crate::db::holds::PostingState::Posted,
             token_jti: None,
             reference: None,
         };
@@ -972,6 +997,7 @@ mod tests {
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
+                posting_status: crate::db::holds::EntryStatus::Posted,
             },
             EntryRow {
                 id: crate::db::ids::fixture_id(2),
@@ -985,6 +1011,7 @@ mod tests {
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
+                posting_status: crate::db::holds::EntryStatus::Posted,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, false).expect("representable totals");
@@ -1011,6 +1038,7 @@ mod tests {
             posted_at: "2025-03-15 10:00:00".into(),
             posted_by: None,
             agent_uri: None,
+            posting_state: crate::db::holds::PostingState::Posted,
             token_jti: None,
             reference: None,
         };
@@ -1027,6 +1055,7 @@ mod tests {
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
+                posting_status: crate::db::holds::EntryStatus::Posted,
             },
             EntryRow {
                 id: crate::db::ids::fixture_id(2),
@@ -1040,6 +1069,7 @@ mod tests {
                 memo: None,
                 tax_category: None,
                 status: EntryStatus::Uncleared,
+                posting_status: crate::db::holds::EntryStatus::Posted,
             },
         ];
         let out = render_transaction_detail(&txn, &entries, false).expect("representable totals");

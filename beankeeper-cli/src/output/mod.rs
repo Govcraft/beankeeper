@@ -109,3 +109,37 @@ mod tests {
         assert!(!should_use_color(true));
     }
 }
+
+/// A navigation target for Desktop hosts that expose the transaction register.
+#[derive(serde::Serialize)]
+pub(crate) struct DesktopRegister {
+    view_id: &'static str,
+    url: String,
+}
+
+impl DesktopRegister {
+    pub(crate) fn new(
+        company: &str,
+        currency: beankeeper::types::Currency,
+        account: Option<&str>,
+        dates: (Option<chrono::NaiveDate>, Option<chrono::NaiveDate>),
+    ) -> Self {
+        use std::fmt::Write as _;
+
+        let company = crate::commands::report_compare::encode(company);
+        let mut url = format!("/transactions?company={company}&currency={currency}");
+        if let Some(code) = account {
+            let account = crate::commands::report_compare::encode(code);
+            let _ = write!(url, "&account={account}");
+        }
+        for (key, date) in [("from", dates.0), ("to", dates.1)] {
+            if let Some(date) = date {
+                let _ = write!(url, "&{key}={date}");
+            }
+        }
+        Self {
+            view_id: "transactions",
+            url,
+        }
+    }
+}

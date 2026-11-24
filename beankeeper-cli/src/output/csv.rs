@@ -90,6 +90,8 @@ pub fn render_accounts_with_balances(
         "normal_balance",
         "debit_total",
         "credit_total",
+        "posted_balance",
+        "available_balance",
     ])
     .map_err(|e| csv_err(&e))?;
 
@@ -101,6 +103,8 @@ pub fn render_accounts_with_balances(
             a.account_type.normal_balance().code(),
             &a.debit_total.amount().minor_units().to_string(),
             &a.credit_total.amount().minor_units().to_string(),
+            &a.posted_balance.amount().minor_units().to_string(),
+            &a.available_balance.amount().minor_units().to_string(),
         ])
         .map_err(|e| csv_err(&e))?;
     }
@@ -128,6 +132,7 @@ pub fn render_transactions(transactions: &[TransactionRow]) -> Result<String, Cl
         "metadata",
         "currency",
         "reference",
+        "status",
     ])
     .map_err(|e| csv_err(&e))?;
 
@@ -142,6 +147,7 @@ pub fn render_transactions(transactions: &[TransactionRow]) -> Result<String, Cl
             meta,
             txn.currency.code(),
             reference,
+            &txn.status().to_string(),
         ])
         .map_err(|e| csv_err(&e))?;
     }
@@ -478,7 +484,7 @@ mod tests {
         let csv_str = render_transactions(&[]).unwrap_or_default();
         assert_eq!(
             csv_str.trim(),
-            "id,date,description,metadata,currency,reference"
+            "id,date,description,metadata,currency,reference,status"
         );
     }
 
@@ -496,6 +502,7 @@ mod tests {
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,
+            posting_state: crate::db::holds::PostingState::Posted,
             token_jti: None,
             reference: None,
         }];
@@ -517,6 +524,7 @@ mod tests {
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,
+            posting_state: crate::db::holds::PostingState::Posted,
             token_jti: None,
             reference: None,
         }];

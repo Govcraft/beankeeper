@@ -330,6 +330,18 @@ impl TextValue for DecimalAmount {
     }
 }
 
+impl TextValue for crate::db::holds::SettlementAmount {
+    const NAME: &'static str = "posted amount";
+
+    fn schema() -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^[+]?[0-9]+(\\.[0-9]*)?$",
+            "description": "Positive decimal in the hold's currency, in major units."
+        })
+    }
+}
+
 impl TextValue for crate::commands::txn_clear::StatementAmount {
     const NAME: &'static str = "statement amount";
 

@@ -1072,7 +1072,7 @@ fn explain(
     let mut stmt = reader.prepare(
         "SELECT t.id, t.date, t.description, t.metadata, t.reference,
         SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE -e.amount END)
-        FROM transactions t JOIN entries e ON e.transaction_id=t.id
+        FROM posted_transactions t JOIN entries e ON e.transaction_id=t.id
         WHERE t.company_slug=?1 AND t.currency=?2 AND e.account_code=?3 AND e.company_slug=?1
         AND t.date<=?4 GROUP BY t.id ORDER BY t.id",
     )?;
@@ -1546,7 +1546,7 @@ fn desktop_view(
     }
 }
 
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     value
         .bytes()
         .map(|byte| {

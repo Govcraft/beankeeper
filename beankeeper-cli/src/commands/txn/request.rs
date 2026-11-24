@@ -8,10 +8,14 @@ use super::super::{
 };
 use super::response::{ListPage, TransactionDetails, TxnData, TxnResponse};
 use super::{PostingRequest, account_code};
-use crate::cli::{TxnCommand, TxnListArgs, TxnPageLimit, TxnProposalCommand, TxnReverseArgs};
+use crate::cli::{
+    TxnCommand, TxnListArgs, TxnPageLimit, TxnProposalCommand, TxnReverseArgs, TxnSettleHoldArgs,
+};
 use crate::db::{
-    Actor, Db, attachments, audit,
+    Actor, Db, attachments,
+    audit::{self, grant::PostingGrant},
     companies::{AllCompanies, Company, CompanySlug},
+    holds::{self, HoldSelector, SettlementRequest},
     ids::TransactionId,
     metadata_filter::{self, MetadataFilter},
     proposals::{self, ProposalId},
@@ -36,6 +40,8 @@ pub enum TxnRequest {
     Reject(CompanySlug, ProposalId, Option<String>),
     /// Reverse a transaction through a new audited posting.
     Reverse(CompanySlug, ReverseRequest),
+    /// Replace a pending hold with its actual posted charge.
+    SettleHold(CompanySlug, SettlementRequest),
     /// Read or count transactions under a shared set of filters.
     List(CompanySlug, ListRequest),
     /// Read one transaction with entries, clearings and attachments.
@@ -59,6 +65,7 @@ impl TxnRequest {
             Self::Approve(..) => Operation::TxnApprove,
             Self::Reject(..) => Operation::TxnReject,
             Self::Reverse(..) => Operation::TxnReverse,
+            Self::SettleHold(..) => Operation::TxnSettleHold,
             Self::List(..) => Operation::TxnList,
             Self::Show(..) => Operation::TxnShow,
             Self::Meta(_, request) => request.operation(),
@@ -75,6 +82,7 @@ impl TxnRequest {
             | Self::Approve(company, _)
             | Self::Reject(company, ..)
             | Self::Reverse(company, _)
+            | Self::SettleHold(company, _)
             | Self::List(company, _)
             | Self::Show(company, _)
             | Self::Meta(company, _)
@@ -92,9 +100,10 @@ impl TxnRequest {
         let operation = self.operation();
         let company = self.company().cloned();
         let data = match self {
-            Self::Post(company, request) => {
-                TxnData::Posted(super::execute_posting(db, &company, &request, actor)?)
-            }
+            Self::Post(company, request) => TxnData::Posted {
+                status: request.0.status,
+                outcome: super::execute_posting(db, &company, &request, actor)?,
+            },
             Self::Propose(company, request) => TxnData::Proposed(super::execute_proposal_posting(
                 db, &company, &request, actor,
             )?),
@@ -122,6 +131,14 @@ impl TxnRequest {
                 TxnData::Resolved(Box::new(resolved))
             }
             Self::Reverse(company, request) => request.execute(db, &company, actor)?,
+            Self::SettleHold(company, request) => {
+                TxnData::Settled(PostingGrant::with_db(db, actor, |grant| match grant {
+                    PostingGrant::Direct(grant) => holds::settle_direct(grant, &company, &request),
+                    PostingGrant::Proposal(grant) => {
+                        holds::propose_settlement(grant, &company, &request)
+                    }
+                })?)
+            }
             Self::List(company, request) => request.execute(db, &company)?,
             Self::Show(company, id) => db.read_snapshot(|reader| {
                 let scope = Company::bind(reader, company)?;
@@ -195,6 +212,7 @@ impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
                 }
             },
             TxnCommand::Reverse(args) => Ok(Self::Reverse(company, args.try_into()?)),
+            TxnCommand::SettleHold(args) => Ok(Self::SettleHold(company, args.try_into()?)),
             TxnCommand::List(args) => Ok(Self::List(company, args.try_into()?)),
             TxnCommand::Show { id } => Ok(Self::Show(company, *id)),
             TxnCommand::Meta(command) => Ok(Self::Meta(company, command.try_into()?)),
@@ -204,6 +222,20 @@ impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
                 "transaction file operations require a local source".into(),
             )),
         }
+    }
+}
+
+impl TryFrom<&TxnSettleHoldArgs> for SettlementRequest {
+    type Error = CliError;
+
+    fn try_from(args: &TxnSettleHoldArgs) -> Result<Self, Self::Error> {
+        Ok((
+            HoldSelector::try_from((args.id, args.hold_reference.clone()))?,
+            args.amount.clone(),
+            args.date.into(),
+            args.reference.clone(),
+        )
+            .into())
     }
 }
 

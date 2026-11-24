@@ -1126,6 +1126,13 @@ fn posting_snapshot(
         "currency": txn.currency.code(), "date": date_text, "posted_at": txn.posted_at,
         "reference": txn.reference, "posted_by": txn.posted_by, "entries": entries,
     });
+    // Preserve exact snapshots for ordinary postings from existing ledgers.
+    if txn.status() == super::holds::EntryStatus::Pending {
+        result["status"] = serde_json::json!(txn.status());
+    }
+    if let Some(link) = txn.settlement() {
+        result["settlement"] = serde_json::json!(link);
+    }
     if hash_version.includes_identity() {
         result["agent_uri"] = serde_json::json!(txn.agent_uri);
         result["token_jti"] = serde_json::json!(txn.token_jti);
@@ -1703,7 +1710,7 @@ fn correlate_partner(
     let (partner_company, partner_metadata): (crate::db::companies::CompanySlug, Option<String>) =
         tx.read()
             .query_row(
-                "SELECT company_slug, metadata FROM transactions WHERE id = ?1",
+                "SELECT company_slug, metadata FROM posted_transactions WHERE id = ?1",
                 params![partner_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1812,6 +1819,7 @@ pub struct ReverseTransactionParams<'a> {
 pub(super) struct ReversalPosting<'a> {
     tx: &'a savepoint::AuditedTx<'a>,
     original_id: TransactionId,
+    status: super::holds::EntryStatus,
     undo_of: Option<receipts::ReceiptId>,
     params: super::transactions::PostTransactionParams<'a>,
 }
@@ -1827,6 +1835,10 @@ impl<'a> ReversalPosting<'a> {
 
     pub(super) const fn original_id(&self) -> TransactionId {
         self.original_id
+    }
+
+    pub(super) const fn status(&self) -> super::holds::EntryStatus {
+        self.status
     }
 
     pub(super) const fn is_owner_undo(&self) -> bool {
@@ -1890,6 +1902,7 @@ fn reverse_in_scope(
     let date = undo_of.map_or(p.date, |_| {
         receipts::UndoPostingDate::from((p.date, original.date)).into()
     });
+    super::holds::check_reversal(tx, &original, date)?;
     validate_reversal(conn, p.id, date, original.date)?;
     let description = p.description.map_or_else(
         || format!("Reversal of #{}: {}", p.id, original.description),
@@ -1905,6 +1918,7 @@ fn reverse_in_scope(
     let result = super::transactions::post_reversal(ReversalPosting {
         tx,
         original_id: p.id,
+        status: original.status(),
         undo_of,
         params: PostTransactionParams {
             company_slug: p.company_slug,

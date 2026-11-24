@@ -218,6 +218,9 @@ pub struct TransactionJson {
     token_jti: Option<String>,
     #[serde(serialize_with = "serialize_display")]
     currency: Currency,
+    status: crate::db::holds::EntryStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settlement: Option<crate::db::holds::SettlementLink>,
     date: chrono::NaiveDate,
     entries: Vec<EntryJson>,
 }
@@ -234,6 +237,7 @@ pub struct EntryJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     tax_category: Option<String>,
     status: EntryStatus,
+    posting_status: crate::db::holds::EntryStatus,
     /// Total cleared amount (`txn show` only).
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     cleared_amount: Option<MoneyField>,
@@ -267,6 +271,7 @@ fn entry_json(e: &EntryRow, currency: Currency) -> EntryJson {
         memo: e.memo.clone(),
         tax_category: e.tax_category.clone(),
         status: e.status,
+        posting_status: e.posting_status,
         cleared_amount: None,
         remaining_amount: None,
         clearings: None,
@@ -324,6 +329,9 @@ pub(crate) struct TransactionWithAttachmentsJson<'a> {
     token_jti: Option<String>,
     #[serde(serialize_with = "serialize_display")]
     currency: Currency,
+    status: crate::db::holds::EntryStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settlement: Option<crate::db::holds::SettlementLink>,
     date: chrono::NaiveDate,
     entries: Vec<EntryJson>,
     attachments: Vec<AttachmentJson<'a>>,
@@ -440,6 +448,8 @@ pub(crate) fn transaction_list_data<S: ::std::hash::BuildHasher>(
                 agent_uri: txn.agent_uri.clone(),
                 token_jti: txn.token_jti.clone(),
                 currency: txn.currency,
+                status: txn.status(),
+                settlement: txn.settlement(),
                 date: txn.date,
                 entries,
             }
@@ -517,6 +527,8 @@ pub(crate) fn transaction_detail_data<'a, S: ::std::hash::BuildHasher>(
         agent_uri: txn.agent_uri.clone(),
         token_jti: txn.token_jti.clone(),
         currency: txn.currency,
+        status: txn.status(),
+        settlement: txn.settlement(),
         date: txn.date,
         entries,
         attachments,
@@ -686,9 +698,19 @@ struct AccountWithBalanceJson<'a> {
     debit_total: MoneyField,
     #[serde(flatten)]
     credit_total: MoneyField,
+    #[serde(flatten)]
+    posted_balance: MoneyField,
+    #[serde(flatten)]
+    available_balance: MoneyField,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desktop_view: Option<super::DesktopRegister>,
 }
 
-pub(crate) fn account_balance_rows(rows: &[AccountWithBalanceRow]) -> impl Serialize + '_ {
+pub(crate) fn account_balance_rows<'a>(
+    rows: &'a [AccountWithBalanceRow],
+    company: Option<&str>,
+    window: crate::db::AccountBalanceWindow,
+) -> impl Serialize + 'a {
     rows.iter()
         .map(|row| AccountWithBalanceJson {
             code: &row.code,
@@ -699,6 +721,16 @@ pub(crate) fn account_balance_rows(rows: &[AccountWithBalanceRow]) -> impl Seria
             currency: row.debit_total.currency(),
             debit_total: MoneyField::new("debit_total", row.debit_total),
             credit_total: MoneyField::new("credit_total", row.credit_total),
+            posted_balance: MoneyField::new("posted_balance", row.posted_balance),
+            available_balance: MoneyField::new("available_balance", row.available_balance),
+            desktop_view: company.map(|name| {
+                super::DesktopRegister::new(
+                    name,
+                    row.posted_balance.currency(),
+                    Some(&row.code),
+                    window.bounds(),
+                )
+            }),
         })
         .collect::<Vec<_>>()
 }
@@ -711,7 +743,12 @@ pub fn render_accounts_with_balances(
     rows: &[AccountWithBalanceRow],
     meta: Meta,
 ) -> Result<String, CliError> {
-    envelope_ok(meta, account_balance_rows(rows))
+    let balances = account_balance_rows(
+        rows,
+        meta.company.as_deref(),
+        crate::db::AccountBalanceWindow::default(),
+    );
+    envelope_ok(meta, balances)
 }
 
 // ---------------------------------------------------------------------------
@@ -1142,6 +1179,7 @@ mod tests {
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,
+            posting_state: crate::db::holds::PostingState::Posted,
             token_jti: None,
             reference: None,
         }];
@@ -1161,6 +1199,7 @@ mod tests {
                     memo: None,
                     tax_category: None,
                     status: EntryStatus::Uncleared,
+                    posting_status: crate::db::holds::EntryStatus::Posted,
                 },
                 EntryRow {
                     id: crate::db::ids::fixture_id(2),
@@ -1174,6 +1213,7 @@ mod tests {
                     memo: None,
                     tax_category: None,
                     status: EntryStatus::Uncleared,
+                    posting_status: crate::db::holds::EntryStatus::Posted,
                 },
             ],
         );
@@ -1200,6 +1240,7 @@ mod tests {
             posted_at: "2025-03-15T10:00:00".into(),
             posted_by: None,
             agent_uri: None,
+            posting_state: crate::db::holds::PostingState::Posted,
             token_jti: None,
             reference: None,
         }];

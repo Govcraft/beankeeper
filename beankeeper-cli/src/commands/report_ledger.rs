@@ -438,7 +438,7 @@ fn account_statement(
                     "SELECT \
                        COALESCE(SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END), 0), \
                        COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE 0 END), 0) \
-                     FROM entries e JOIN transactions t ON t.id = e.transaction_id \
+                     FROM entries e JOIN posted_transactions t ON t.id = e.transaction_id \
                      WHERE e.company_slug = ?1 AND e.account_code = ?2 \
                        AND t.currency = ?3 AND t.date < ?4 AND {}",
                     filter.sql
@@ -454,7 +454,7 @@ fn account_statement(
     let filter = metadata_filter::sql_predicate("t.metadata", filters, 6);
     let mut stmt = conn.prepare(&format!(
         "SELECT t.date, t.id, e.id, t.description, t.reference, e.memo, e.direction, e.amount \
-         FROM entries e JOIN transactions t ON t.id = e.transaction_id \
+         FROM entries e JOIN posted_transactions t ON t.id = e.transaction_id \
          WHERE e.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3 \
            AND (?4 IS NULL OR t.date >= ?4) AND (?5 IS NULL OR t.date <= ?5) AND {} \
          ORDER BY t.date, t.id, e.id",

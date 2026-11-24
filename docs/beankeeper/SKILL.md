@@ -152,6 +152,23 @@ This immediately appends an audited reversal linked to the original. Use
 `bk audit log --by-actor ACTOR` or the MCP `audit_log` filter `actor` to find the
 post or its undo.
 
+For a card authorization, use `txn_post` with `status: "pending"` or
+`bk txn post --status pending`. Supply one debit and one credit on different
+accounts and use a stable authorization reference. When the bank posts the
+charge, call `txn_settle_hold` with `company`, `hold: {"id":42}` or
+`hold: {"reference":"hold-1"}`, the actual decimal `amount`, the posted
+`date`, and the bank's posted `reference`. In the CLI, use
+`bk txn settle-hold --id 42 --amount 43.88 --date 2026-03-04 --reference posted-1`.
+Pass the same values on retry. Tell the owner the actual charge and difference
+from the authorization. For undo, offer to reverse the settled transaction or
+undo its receipt, which restores the hold. A propose-only response is a
+proposal that awaits the ledger's usual approval.
+
+For a bank balance question, use `account_list` with `with_balances: true`
+or `bk account list --with-balances`. Report the posted balance and what is
+available after holds. Use the numeric fields and currency for charts. Offer
+the response's `desktop_view.url` on the matching Desktop listener when useful.
+
 When the owner asks what changed, run `bk --company acme --json audit receipts`
 or call `audit_receipts` with `company`. Pass the saved `cursor` for that ledger
 and company, or omit it on the first read. Copy the returned `continuation`
@@ -477,6 +494,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk txn proposals` | List visible pending requests, optionally including resolved proposals |
 | `bk txn approve/reject` | Resolve a pending proposal; `withdraw` aliases rejection of an owned request |
 | `bk txn list` | Search and filter transactions |
+| `bk txn settle-hold` | Replace a card authorization with the actual posted charge and retain its history. |
 | `bk txn reverse ID` | Undo a posting immediately with a linked mirror transaction (alias `void`). Reconciled originals cannot be reversed. |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
