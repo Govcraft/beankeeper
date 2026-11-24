@@ -9,12 +9,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{
-    ActiveSession, Generation, books,
+    Generation, books,
     requests::{SetupReference, apply_once, deserialize_parsed, digest},
     statement_batches::DirectionCode,
     with_active_session, with_active_setup_write,
 };
 use crate::commands::txn::{MajorPostingLine, PostingLine};
+use crate::db::connection::ReadConn;
 use crate::db::{
     Actor, Db, accounts,
     companies::CompanySlug,
@@ -81,8 +82,23 @@ pub struct OpeningDraft {
 
 /// A requested opening journal with nonempty debits and credits in one currency.
 pub struct OpeningRequest {
-    company: CompanySlug,
     generation: Generation,
+    journal: OpeningJournal,
+}
+
+/// A typed opening journal draft shared by both CLI and MCP.
+pub struct OpeningJournalDraft {
+    pub(crate) company: CompanySlug,
+    pub(crate) date: NaiveDate,
+    pub(crate) currency: Currency,
+    pub(crate) description: Option<OpeningDescription>,
+    pub(crate) debits: NonEmpty<MajorPostingLine>,
+    pub(crate) credits: NonEmpty<MajorPostingLine>,
+}
+
+/// A requested opening journal with exact, nonempty lines in one currency.
+pub struct OpeningJournal {
+    company: CompanySlug,
     date: NaiveDate,
     currency: Currency,
     description: OpeningDescription,
@@ -95,8 +111,39 @@ impl TryFrom<OpeningDraft> for OpeningRequest {
 
     fn try_from(draft: OpeningDraft) -> Result<Self, Self::Error> {
         Ok(Self {
-            company: draft.company,
             generation: draft.generation,
+            journal: OpeningJournalDraft {
+                company: draft.company,
+                date: draft.date,
+                currency: draft.currency,
+                description: draft.description,
+                debits: draft.debits,
+                credits: draft.credits,
+            }
+            .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<(Generation, OpeningJournalDraft)> for OpeningRequest {
+    type Error = CliError;
+
+    fn try_from(
+        (generation, draft): (Generation, OpeningJournalDraft),
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            generation,
+            journal: draft.try_into()?,
+        })
+    }
+}
+
+impl TryFrom<OpeningJournalDraft> for OpeningJournal {
+    type Error = CliError;
+
+    fn try_from(draft: OpeningJournalDraft) -> Result<Self, Self::Error> {
+        Ok(Self {
+            company: draft.company,
             date: draft.date,
             currency: draft.currency,
             description: draft.description.unwrap_or_default(),
@@ -111,6 +158,14 @@ impl TryFrom<OpeningDraft> for OpeningRequest {
 }
 
 impl OpeningRequest {
+    /// Company identified by the opening journal.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        self.journal.company()
+    }
+}
+
+impl OpeningJournal {
     /// Company identified by the opening journal.
     #[must_use]
     pub const fn company(&self) -> &CompanySlug {
@@ -197,7 +252,7 @@ pub(crate) fn preview(
     request: &OpeningRequest,
 ) -> Result<OpeningPreview, CliError> {
     with_active_session(db, actor, request.generation, |session| {
-        prepare(session, request).map(|prepared| prepared.preview)
+        prepare(session.read(), &request.journal).map(|prepared| prepared.preview)
     })
 }
 
@@ -209,29 +264,10 @@ pub(crate) fn reserve(
     expected: &Sha256Hex,
 ) -> Result<OpeningReservation, CliError> {
     with_active_setup_write(db, actor, request.generation, |session| {
-        let lines = |side: &NonEmpty<PostingLine>| {
-            side.iter()
-                .map(|line| {
-                    json!([
-                        line.account_code.as_str(),
-                        line.amount.to_string(),
-                        line.memo
-                    ])
-                })
-                .collect::<Vec<_>>()
-        };
-        let input = json!([
-            "opening-reserve-v1",
-            request.company.as_str(),
-            request.date,
-            request.currency.code(),
-            request.description.as_ref(),
-            expected.as_str(),
-            lines(&request.debits),
-            lines(&request.credits)
-        ]);
+        let request = &request.journal;
+        let input = request.fingerprint_input("opening-reserve-v1", Some(expected));
         apply_once(session, reference, &request.company, &input, || {
-            let prepared = prepare(session, request)?;
+            let prepared = prepare(session.read(), request)?;
             if prepared.preview.fingerprint != *expected {
                 return Err(CliError::Validation(
                     "opening preview differs from the current request or book; preview it again"
@@ -255,34 +291,59 @@ pub(crate) fn reserve(
     })
 }
 
+impl OpeningJournal {
+    pub(super) fn fingerprint_input(
+        &self,
+        operation: &str,
+        expected: Option<&Sha256Hex>,
+    ) -> serde_json::Value {
+        let lines = |side: &NonEmpty<PostingLine>| {
+            side.iter()
+                .map(|line| {
+                    json!([
+                        line.account_code.as_str(),
+                        line.amount.to_string(),
+                        line.memo
+                    ])
+                })
+                .collect::<Vec<_>>()
+        };
+        json!([
+            operation,
+            self.company.as_str(),
+            self.date,
+            self.currency.code(),
+            self.description.as_ref(),
+            expected.map(Sha256Hex::as_str),
+            lines(&self.debits),
+            lines(&self.credits)
+        ])
+    }
+
+    pub(super) fn build(&self, reader: ReadConn<'_>) -> Result<Transaction, CliError> {
+        let scope = crate::db::companies::Company::bind(reader, self.company.clone())?;
+        let mut journal = JournalEntry::new(self.date, self.description.as_ref(), self.currency);
+        for (direction, lines) in [
+            (DebitOrCredit::Debit, &self.debits),
+            (DebitOrCredit::Credit, &self.credits),
+        ] {
+            for line in lines.iter() {
+                journal = journal.entry(opening_entry(&scope, line, direction, self.currency)?)?;
+            }
+        }
+        Ok(journal.post()?)
+    }
+}
+
 struct PreparedOpening {
     preview: OpeningPreview,
     journal: Transaction,
 }
 
-fn prepare(
-    session: &ActiveSession<'_>,
-    request: &OpeningRequest,
-) -> Result<PreparedOpening, CliError> {
-    let profile = books::current_profile(session, &request.company)?;
-    let mut journal =
-        JournalEntry::new(request.date, request.description.as_ref(), request.currency);
-    for (direction, lines) in [
-        (DebitOrCredit::Debit, &request.debits),
-        (DebitOrCredit::Credit, &request.credits),
-    ] {
-        for line in lines.iter() {
-            journal = journal.entry(opening_entry(
-                session,
-                &request.company,
-                line,
-                direction,
-                request.currency,
-            )?)?;
-        }
-    }
-    let journal = journal.post()?;
-    periods::ensure_open(session.read(), &request.company, journal.date())?;
+fn prepare(reader: ReadConn<'_>, request: &OpeningJournal) -> Result<PreparedOpening, CliError> {
+    let profile = books::current_profile(reader, &request.company)?;
+    let journal = request.build(reader)?;
+    periods::ensure_open(reader, &request.company, journal.date())?;
     let details = PreviewDetails {
         company: request.company.clone(),
         profile_revision: profile.revision,
@@ -307,20 +368,18 @@ fn prepare(
 }
 
 fn opening_entry(
-    session: &ActiveSession<'_>,
-    company: &CompanySlug,
+    scope: &crate::db::companies::Company<'_>,
     line: &PostingLine,
     direction: DebitOrCredit,
     currency: Currency,
 ) -> Result<Entry, CliError> {
-    let row = accounts::get_account(
-        &crate::db::companies::Company::bind(session.read(), company.clone())?,
-        line.account_code.as_str(),
-    )
-    .map_err(|error| match error {
-        CliError::NotFound(message) => CliError::Validation(message),
-        other => other,
-    })?;
+    let row =
+        accounts::get_active_account(scope, line.account_code.as_str()).map_err(
+            |error| match error {
+                CliError::NotFound(message) => CliError::Validation(message),
+                other => other,
+            },
+        )?;
     let account = accounts::row_to_account(&row)?;
     let amount = Money::from_minor(i128::from(line.amount), currency);
     let entry = match &line.memo {

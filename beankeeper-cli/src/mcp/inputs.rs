@@ -22,9 +22,13 @@ use crate::db::audit::receipts::{AuditCursor, ReceiptContinuation, ReceiptId, Re
 use crate::db::audit::setup::{
     Generation,
     books::{
-        BookPurpose, BookSettings, ChartTemplate, FiscalYearStart, ProfileRevision, SetupReference,
+        BookPurpose, BookSettings, ChartTemplate, FiscalYearStart, ProfileRevision,
+        SetupAccountName, SetupReference,
     },
-    statements::{StatementContent, StatementFormat, StatementRequest, StatementSource},
+    openings::OpeningDescription,
+    statements::{
+        StatementContent, StatementFormat, StatementInput, StatementRequest, StatementSource,
+    },
 };
 use crate::db::audit::{AuditPageLimit, AuditPageOffset};
 use crate::db::rules::{DescriptionPattern, RuleId, RulePriority};
@@ -321,12 +325,19 @@ pub(crate) struct Empty {}
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupStatementPreview {
-    /// Stable reference for retries within this setup generation.
-    reference: Text<SetupReference>,
-    /// Company slug of the book being set up.
-    company: Company,
     /// Active setup generation.
     generation: Generation,
+    #[serde(flatten)]
+    statement: LedgerSetupStatementImport,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LedgerSetupStatementImport {
+    /// Stable reference for exact retries.
+    reference: Text<SetupReference>,
+    /// Company slug of the book.
+    company: Company,
     /// The account represented by this statement.
     bank: Account,
     /// Contra account used when no categorization rule matches.
@@ -342,21 +353,41 @@ pub(crate) struct LedgerSetupStatementPreview {
     csv: Option<CsvMapping>,
 }
 
-impl TryFrom<LedgerSetupStatementPreview> for crate::commands::setup::SetupRequest {
+impl TryFrom<LedgerSetupStatementImport> for (SetupReference, StatementInput) {
     type Error = CliError;
 
-    fn try_from(input: LedgerSetupStatementPreview) -> Result<Self, Self::Error> {
-        let request = StatementRequest {
+    fn try_from(input: LedgerSetupStatementImport) -> Result<Self, Self::Error> {
+        let request = StatementInput {
             company: input.company.into_inner(),
-            generation: input.generation,
             accounts: (input.bank.into_inner(), input.suspense.into_inner()).try_into()?,
             currency: input.currency,
             source: StatementSource::try_from((input.format, input.content, input.csv))?,
         };
+        Ok((input.reference.into_inner(), request))
+    }
+}
+
+impl TryFrom<LedgerSetupStatementPreview> for crate::commands::setup::SetupRequest {
+    type Error = CliError;
+
+    fn try_from(input: LedgerSetupStatementPreview) -> Result<Self, Self::Error> {
+        let (reference, statement) = input.statement.try_into()?;
         Ok(Self::StatementPreview(
-            input.reference.into_inner(),
-            request,
+            reference,
+            StatementRequest {
+                generation: input.generation,
+                input: statement,
+            },
         ))
+    }
+}
+
+impl TryFrom<LedgerSetupStatementImport> for crate::commands::setup::SetupRequest {
+    type Error = CliError;
+
+    fn try_from(input: LedgerSetupStatementImport) -> Result<Self, Self::Error> {
+        let (reference, statement) = input.try_into()?;
+        Ok(Self::StatementImport(reference, statement))
     }
 }
 
@@ -391,11 +422,11 @@ pub(crate) struct LedgerSetupEnd {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SetupTarget {
+pub(crate) struct SetupTarget<G = Option<Generation>> {
     /// Company slug of the book being set up.
     pub company: Company,
-    /// Active setup generation.
-    pub generation: Generation,
+    /// Active setup generation when using a setup-session credential. Omit for direct onboarding.
+    pub generation: G,
     /// Stable reference to reuse when retrying this request.
     pub reference: Text<SetupReference>,
 }
@@ -437,7 +468,7 @@ pub(crate) struct LedgerSetupBookInitialize {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupBookUpdate {
-    pub target: SetupTarget,
+    pub target: SetupTarget<Generation>,
     /// Current profile revision being superseded.
     pub supersedes: ProfileRevision,
     pub settings: SetupSettings,
@@ -455,7 +486,7 @@ pub(crate) struct LedgerSetupChartApply {
 pub(crate) struct LedgerSetupAccountAdd {
     pub target: SetupTarget,
     pub code: Account,
-    pub name: String,
+    pub name: Text<SetupAccountName>,
     pub account_type: Text<AccountType>,
 }
 
@@ -471,12 +502,27 @@ pub(crate) struct Line {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupOpeningPreview {
-    pub company: Company,
     pub generation: Generation,
+    #[serde(flatten)]
+    pub opening: OpeningInput,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LedgerSetupOpeningPost {
+    pub reference: Text<SetupReference>,
+    #[serde(flatten)]
+    pub opening: OpeningInput,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpeningInput {
+    pub company: Company,
     pub date: Date,
     #[schemars(with = "Text<Currency>")]
     pub currency: Currency,
-    pub description: Option<String>,
+    pub description: Option<Text<OpeningDescription>>,
     pub debits: NonEmpty<Line>,
     pub credits: NonEmpty<Line>,
 }

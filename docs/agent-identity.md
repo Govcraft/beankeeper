@@ -74,10 +74,18 @@ bk --json agent issue --name claude --generate-key --ttl 8h
 `--name` is a valid agent TypeID prefix (lowercase letters and underscores).
 The URI is `agent://<id>.bk.local/ledger/<name>_<typeid-suffix>`. The common
 `ledger` path accommodates sibling grants such as `ledger/post`,
-`ledger/reverse`, `ledger/reconcile`, `ledger/budget` and `ledger/admin`.
+`ledger/reverse`, `ledger/reconcile`, `ledger/budget`, `ledger/chart` and `ledger/admin`.
 `ledger/read,ledger/post` is the default grant list. Ledger grants must be valid
 capability paths strictly below `ledger`. A bare `ledger` grant is rejected at
 issuance and verification, including when enforcement is off.
+
+`ledger/chart` authorizes direct onboarding. Direct credentials with the exact
+default CLI grants (`ledger/read` and `ledger/post`) or managed Desktop
+bookkeeper grants (those two plus `ledger/propose`) already have effective
+chart access. They retain their signed claims and connection after upgrade.
+A custom Direct credential can request `ledger/chart` explicitly. Read-only
+and propose-only credentials remain restricted.
+[Onboarding operations](beankeeper/references/commands.md#direct-onboarding)
 
 Hosts can issue separate `--caps ui/navigate` tokens. These use a `/ui/` subject
 and require explicit navigation authority even when ledger enforcement is off.

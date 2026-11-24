@@ -3,6 +3,9 @@
 #[path = "mcp_stdio/audit_receipts.rs"]
 mod audit_receipts;
 
+#[path = "mcp_stdio/onboarding.rs"]
+mod onboarding;
+
 use beankeeper_cli::db::CreateAccountParams;
 use beankeeper_cli::identity::{Admin, Granted};
 use std::collections::BTreeSet;
@@ -782,6 +785,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "ledger_setup_account_add",
     "ledger_setup_opening_preview",
     "ledger_setup_opening_reserve",
+    "ledger_setup_opening_post",
+    "ledger_setup_statement_import",
     "ledger_setup_statement_preview",
     "ledger_setup_statement_commit",
     "ledger_setup_statement_receipt",

@@ -27,8 +27,8 @@ pub(super) use links::{verify_legacy_links, verify_links};
 pub(super) use undo::UndoPostingDate;
 pub(in crate::db) use undo::verify_archives;
 pub use undo::{
-    ReceiptUndoError, RuleUndoOutcome, UndoIneligibility, UndoOutcome, undo_receipt,
-    undo_rule_creation,
+    OnboardingUndoOutcome, ReceiptUndoError, ReceiptUndoOutcome, RuleUndoOutcome,
+    UndoIneligibility, UndoOutcome, undo_change, undo_receipt, undo_rule_creation,
 };
 
 /// An exclusive position in the ledger's audit order. Zero starts at the beginning.
@@ -93,6 +93,20 @@ impl fmt::Display for AuditCursor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         i64::from(*self).fmt(formatter)
     }
+}
+
+pub(crate) fn desktop_receipt_path(company: &CompanySlug, id: ReceiptId) -> String {
+    let path = changes_path(company, AuditCursor::before(id), id.into());
+    format!("{path}#receipt-{id}")
+}
+
+pub(crate) fn changes_path(
+    company: &CompanySlug,
+    after: AuditCursor,
+    through: AuditCursor,
+) -> String {
+    // CompanySlug contains only characters safe in a query value.
+    format!("/changes?company={company}&after={after}&through={through}")
 }
 
 /// A positive number of receipts per page, up to the audit page maximum.
@@ -451,7 +465,7 @@ fn read_page(
     through: AuditCursor,
     limit: ReceiptPageLimit,
 ) -> Result<ReceiptPage, CliError> {
-    Company::bind(reader, company.clone())?;
+    Company::bind_retained(reader, company.clone())?;
     let columns = audit_columns(crate::db::schema::CURRENT_VERSION);
     let mut statement = reader.prepare(&format!(
         "SELECT {columns} FROM audit_log a

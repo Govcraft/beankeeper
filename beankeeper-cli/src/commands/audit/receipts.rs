@@ -5,7 +5,8 @@ use crate::{
     db::{
         Actor, Db,
         audit::receipts::{
-            AuditCursor, ReceiptId, ReceiptPage, ReceiptQuery, UndoOutcome, undo_receipt,
+            ReceiptId, ReceiptPage, ReceiptQuery, ReceiptUndoOutcome, UndoOutcome, changes_path,
+            desktop_receipt_path, undo_change,
         },
         companies::CompanySlug,
     },
@@ -56,15 +57,11 @@ impl ReceiptRequest {
             }
             Self::Undo(company, receipt) => {
                 let outcome = Granted::<OwnerUndo>::with_db(db, actor, |grant| {
-                    undo_receipt(grant, &company, receipt)
+                    undo_change(grant, &company, receipt)
                 })?;
                 let id = outcome.receipt();
-                let path = changes_path(&company, AuditCursor::before(id), id.into());
-                (
-                    company,
-                    ReceiptResult::Undo(outcome),
-                    format!("{path}#receipt-{id}"),
-                )
+                let path = desktop_receipt_path(&company, id);
+                (company, ReceiptResult::Undo(outcome), path)
             }
         };
         Ok(ReceiptResponse {
@@ -75,16 +72,11 @@ impl ReceiptRequest {
     }
 }
 
-fn changes_path(company: &CompanySlug, after: AuditCursor, through: AuditCursor) -> String {
-    // CompanySlug contains only characters safe in a query value.
-    format!("/changes?company={company}&after={after}&through={through}")
-}
-
 #[derive(Serialize)]
 #[serde(untagged)]
 enum ReceiptResult {
     Page(ReceiptPage),
-    Undo(UndoOutcome),
+    Undo(ReceiptUndoOutcome),
 }
 
 /// Typed receipt payload shared by CLI JSON and MCP structured results.
@@ -106,12 +98,21 @@ impl ReceiptResponse {
         }
     }
 
-    /// The audited outcome, when this is an undo result.
+    /// The audited outcome of a single account or posting undo.
     #[must_use]
     pub const fn undo_outcome(&self) -> Option<&UndoOutcome> {
         match &self.result {
-            ReceiptResult::Page(_) => None,
+            ReceiptResult::Undo(ReceiptUndoOutcome::Single(outcome)) => Some(outcome),
+            _ => None,
+        }
+    }
+
+    /// The audited outcome of a single or grouped undo.
+    #[must_use]
+    pub const fn change_undo_outcome(&self) -> Option<&ReceiptUndoOutcome> {
+        match &self.result {
             ReceiptResult::Undo(outcome) => Some(outcome),
+            ReceiptResult::Page(_) => None,
         }
     }
 
@@ -153,14 +154,15 @@ impl ReceiptResponse {
             }
             ReceiptResult::Undo(outcome) => {
                 let message = match outcome {
-                    UndoOutcome::Reversed {
+                    ReceiptUndoOutcome::Single(UndoOutcome::Reversed {
                         transaction,
                         reversal,
                         ..
-                    } => {
+                    }) => {
                         format!("Reversed transaction {transaction} with transaction {reversal}.")
                     }
-                    UndoOutcome::Archived { account, .. } => {
+                    ReceiptUndoOutcome::Onboarding(_) => "Reverted the onboarding change.".into(),
+                    ReceiptUndoOutcome::Single(UndoOutcome::Archived { account, .. }) => {
                         format!("Archived account {account}. Its history is still in your books.")
                     }
                 };

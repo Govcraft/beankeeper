@@ -8,7 +8,10 @@ use super::inputs;
 use crate::commands::{
     investment::{InvestmentRequest, QuotationCurrency, TradeRequest},
     period::PeriodRequest,
-    setup::{OpeningDraft, OpeningRequest, SetupBookTarget, SetupRequest},
+    setup::{
+        BookMutationTarget, DirectBookChange, OpeningJournalDraft, OpeningRequest, SetupBookTarget,
+        SetupRequest,
+    },
     txn::MajorPostingLine,
 };
 use crate::db::{investments::SecurityParams, periods::PeriodDate};
@@ -168,8 +171,8 @@ impl From<inputs::LedgerSetupStatementReceipt> for SetupRequest {
     }
 }
 
-impl From<inputs::SetupTarget> for SetupBookTarget {
-    fn from(input: inputs::SetupTarget) -> Self {
+impl From<inputs::SetupTarget<crate::commands::setup::Generation>> for SetupBookTarget {
+    fn from(input: inputs::SetupTarget<crate::commands::setup::Generation>) -> Self {
         Self {
             company: input.company.into_inner(),
             generation: input.generation,
@@ -178,15 +181,34 @@ impl From<inputs::SetupTarget> for SetupBookTarget {
     }
 }
 
+impl From<inputs::SetupTarget> for BookMutationTarget {
+    fn from(input: inputs::SetupTarget) -> Self {
+        (
+            input.company.into_inner(),
+            input.generation,
+            input.reference.into_inner(),
+        )
+            .into()
+    }
+}
+
 impl From<inputs::LedgerSetupBookCreate> for SetupRequest {
     fn from(input: inputs::LedgerSetupBookCreate) -> Self {
-        Self::BookCreate(input.target.into(), input.name, input.settings.into())
+        (
+            input.target.into(),
+            DirectBookChange::Create(input.name, input.settings.into()),
+        )
+            .into()
     }
 }
 
 impl From<inputs::LedgerSetupBookInitialize> for SetupRequest {
     fn from(input: inputs::LedgerSetupBookInitialize) -> Self {
-        Self::BookInitialize(input.target.into(), input.settings.into())
+        (
+            input.target.into(),
+            DirectBookChange::Initialize(input.settings.into()),
+        )
+            .into()
     }
 }
 
@@ -198,28 +220,26 @@ impl From<inputs::LedgerSetupBookUpdate> for SetupRequest {
 
 impl From<inputs::LedgerSetupChartApply> for SetupRequest {
     fn from(input: inputs::LedgerSetupChartApply) -> Self {
-        Self::ChartApply(input.target.into(), input.template)
+        (input.target.into(), DirectBookChange::Chart(input.template)).into()
     }
 }
 
-impl TryFrom<inputs::LedgerSetupAccountAdd> for SetupRequest {
-    type Error = CliError;
-
-    fn try_from(input: inputs::LedgerSetupAccountAdd) -> Result<Self, Self::Error> {
-        Ok(Self::AccountAdd(
+impl From<inputs::LedgerSetupAccountAdd> for SetupRequest {
+    fn from(input: inputs::LedgerSetupAccountAdd) -> Self {
+        (
             input.target.into(),
-            input.code.into_inner(),
-            input.name.parse()?,
-            input.account_type.into_inner(),
-        ))
+            DirectBookChange::Account(
+                input.code.into_inner(),
+                input.name.into_inner(),
+                input.account_type.into_inner(),
+            ),
+        )
+            .into()
     }
 }
 
-impl TryFrom<inputs::LedgerSetupOpeningPreview> for OpeningRequest {
-    type Error = CliError;
-
-    fn try_from(input: inputs::LedgerSetupOpeningPreview) -> Result<Self, Self::Error> {
-        let currency = input.currency;
+impl From<inputs::OpeningInput> for OpeningJournalDraft {
+    fn from(input: inputs::OpeningInput) -> Self {
         let lines = |side: NonEmpty<inputs::Line>| {
             side.map(|line| {
                 MajorPostingLine::from((
@@ -229,16 +249,33 @@ impl TryFrom<inputs::LedgerSetupOpeningPreview> for OpeningRequest {
                 ))
             })
         };
-        OpeningDraft {
+        Self {
             company: input.company.into_inner(),
-            generation: input.generation,
             date: input.date.into_inner().date(),
-            currency,
-            description: input.description.as_deref().map(str::parse).transpose()?,
+            currency: input.currency,
+            description: input.description.map(Text::into_inner),
             debits: lines(input.debits),
             credits: lines(input.credits),
         }
-        .try_into()
+    }
+}
+
+impl TryFrom<inputs::LedgerSetupOpeningPreview> for OpeningRequest {
+    type Error = CliError;
+
+    fn try_from(input: inputs::LedgerSetupOpeningPreview) -> Result<Self, Self::Error> {
+        (input.generation, OpeningJournalDraft::from(input.opening)).try_into()
+    }
+}
+
+impl TryFrom<inputs::LedgerSetupOpeningPost> for SetupRequest {
+    type Error = CliError;
+
+    fn try_from(input: inputs::LedgerSetupOpeningPost) -> Result<Self, Self::Error> {
+        Ok(Self::OpeningPost(
+            input.reference.into_inner(),
+            OpeningJournalDraft::from(input.opening).try_into()?,
+        ))
     }
 }
 

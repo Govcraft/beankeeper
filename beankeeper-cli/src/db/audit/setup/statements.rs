@@ -10,10 +10,10 @@ use beankeeper::types::{
 };
 use rusqlite::{OptionalExtension, params};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{ActiveSession, Generation, books};
+use super::{ActiveSession, Generation};
 use crate::commands::{
     reference::TransactionReference,
     statement_source::{self, SourceRow},
@@ -21,7 +21,6 @@ use crate::commands::{
 };
 use crate::db::{accounts, companies::CompanySlug, ids::TransactionId, periods, rules};
 use crate::error::CliError;
-use crate::output::{amounts::format_money, json::serialize_display};
 
 pub(crate) const MAX_CONTENT_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_ROWS: usize = 5_000;
@@ -36,7 +35,6 @@ impl StatementContent {
         let mut reader: Take<_> = reader.take((MAX_CONTENT_BYTES + 1) as u64);
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
-        require_bounded_content(bytes.len())?;
         String::from_utf8(bytes)
             .map_err(|_| CliError::Validation("statement content must be UTF-8".into()))?
             .try_into()
@@ -152,7 +150,7 @@ impl StatementSource {
         }
     }
 
-    fn decode(&self, request: &StatementRequest) -> Result<Vec<SourceRow>, CliError> {
+    fn decode(&self, request: &StatementInput) -> Result<Vec<SourceRow>, CliError> {
         match self {
             Self::Csv { content, mapping } => read_csv_statement(
                 &content.text,
@@ -190,14 +188,27 @@ impl TryFrom<(AccountCode, AccountCode)> for StatementAccounts {
 
 /// A statement and its independent bank and suspense accounts in one book.
 pub struct StatementRequest {
-    pub(crate) company: CompanySlug,
     pub(crate) generation: Generation,
+    pub(crate) input: StatementInput,
+}
+
+/// In-memory statement content with distinct, typed account codes.
+pub struct StatementInput {
+    pub(crate) company: CompanySlug,
     pub(crate) accounts: StatementAccounts,
     pub(crate) currency: Currency,
     pub(crate) source: StatementSource,
 }
 
 impl StatementRequest {
+    /// Company identified by the statement.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        self.input.company()
+    }
+}
+
+impl StatementInput {
     /// The book to which the statement belongs.
     #[must_use]
     pub const fn company(&self) -> &CompanySlug {
@@ -234,80 +245,23 @@ impl StatementRequest {
     }
 }
 
-#[derive(Serialize)]
-pub(crate) struct StatementPreview {
-    pub(crate) generation: Generation,
-    #[serde(serialize_with = "serialize_display")]
-    pub(crate) company: CompanySlug,
-    pub(crate) profile_revision: books::ProfileRevision,
-    #[serde(serialize_with = "serialize_display")]
-    pub(crate) bank: AccountCode,
-    #[serde(serialize_with = "serialize_display")]
-    pub(crate) suspense: AccountCode,
-    #[serde(serialize_with = "serialize_display")]
-    pub(crate) currency: Currency,
-    pub(crate) format: StatementFormat,
-    #[serde(serialize_with = "serialize_display")]
-    pub(crate) content_hash: Sha256Hex,
-    #[serde(serialize_with = "serialize_display")]
-    pub(crate) request_fingerprint: Sha256Hex,
-    pub(crate) rows: Vec<PreparedRow>,
+pub(super) struct StatementPreview {
+    pub(super) company: CompanySlug,
+    pub(super) bank: AccountCode,
+    pub(super) suspense: AccountCode,
+    pub(super) currency: Currency,
+    pub(super) format: StatementFormat,
+    pub(super) content_hash: Sha256Hex,
+    pub(super) rows: Vec<PreparedRow>,
 }
 
-pub(crate) struct PreparedRow {
-    pub(crate) reference: TransactionReference,
-    pub(crate) journal: Transaction,
-    pub(crate) existing_transaction: Option<TransactionId>,
+pub(super) struct PreparedRow {
+    pub(super) reference: TransactionReference,
+    pub(super) journal: Transaction,
+    pub(super) existing_transaction: Option<TransactionId>,
 }
 
-impl Serialize for PreparedRow {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        struct Preview<'a> {
-            reference: &'a str,
-            date: chrono::NaiveDate,
-            description: &'a str,
-            metadata: Option<&'a str>,
-            existing_transaction: Option<TransactionId>,
-            entries: Vec<PreviewEntry<'a>>,
-        }
-        #[derive(Serialize)]
-        struct PreviewEntry<'a> {
-            account_code: &'a str,
-            account_name: &'a str,
-            direction: &'static str,
-            amount_minor: String,
-            amount_display: String,
-            tax_category: Option<&'a str>,
-        }
-        Preview {
-            reference: self.reference.as_str(),
-            date: self.journal.date(),
-            description: self.journal.description(),
-            metadata: self.journal.metadata(),
-            existing_transaction: self.existing_transaction,
-            entries: self
-                .journal
-                .entries()
-                .iter()
-                .map(|entry| {
-                    let amount = entry.amount();
-                    PreviewEntry {
-                        account_code: entry.account().code().as_str(),
-                        account_name: entry.account().name(),
-                        direction: entry.direction().code(),
-                        amount_minor: amount.amount().minor_units().to_string(),
-                        amount_display: format_money(amount),
-                        tax_category: entry.tax_category(),
-                    }
-                })
-                .collect(),
-        }
-        .serialize(serializer)
-    }
-}
-
-pub(crate) fn prepare_in_session(
+pub(super) fn prepare_in_session(
     session: &ActiveSession<'_>,
     request: &StatementRequest,
 ) -> Result<StatementPreview, CliError> {
@@ -316,8 +270,13 @@ pub(crate) fn prepare_in_session(
             "setup credential is not active for this generation".into(),
         ));
     }
-    let profile = books::current_profile(session, &request.company)?;
-    let conn = session.read();
+    prepare(session.read(), &request.input)
+}
+
+pub(super) fn prepare(
+    conn: crate::db::connection::ReadConn<'_>,
+    request: &StatementInput,
+) -> Result<StatementPreview, CliError> {
     let company = &request.company;
     let scope = crate::db::companies::Company::bind(conn, company.clone())?;
     let bank_code = request.accounts.bank.as_str();
@@ -383,15 +342,12 @@ pub(crate) fn prepare_in_session(
     }
 
     Ok(StatementPreview {
-        generation: request.generation,
         company: request.company.clone(),
-        profile_revision: profile.revision,
         bank: request.accounts.bank.clone(),
         suspense: request.accounts.suspense.clone(),
         currency: request.currency,
         format: request.source.format(),
         content_hash: request.source.content().hash.clone(),
-        request_fingerprint: request.fingerprint()?,
         rows,
     })
 }

@@ -1,17 +1,17 @@
 //! Readiness for the selected ledger's onboarding flow.
 
 use beankeeper::types::{AccountCode, AccountType, Currency, Sha256Hex};
-use chrono::NaiveDate;
 use clap::{Args, Subcommand};
 use serde::{Serialize, Serializer};
 
 use crate::cli::{Cli, OutputFormat, resolve_format};
+use crate::commands::txn::MajorPostingLine;
 use crate::db::{
     Actor, Db,
     audit::setup::{
         self, End,
         books::{self, BookChange},
-        openings, statement_batches,
+        direct, openings, statement_batches,
     },
     companies::{CompanyName, CompanySlug},
     ids::StatementBatchId,
@@ -20,7 +20,7 @@ use crate::error::CliError;
 use crate::operation::Operation;
 use crate::output::json;
 
-pub use super::setup_statement::StatementPreviewArgs;
+pub use super::setup_statement::{StatementImportArgs, StatementPreviewArgs};
 pub use crate::db::audit::setup::books::{
     BookAccount, BookAccountCode, BookFacts, BookOutcome, BookProfile, BookPurpose, BookSettings,
     ChartApplied, ChartTemplate, FiscalYearStart, ProfileInitialized, ProfileRevision,
@@ -29,9 +29,10 @@ pub use crate::db::audit::setup::books::{
 pub use crate::db::audit::setup::{
     Generation, Session, SetupAgentName, SetupLifetime, SetupPublicKey, Started,
     openings::{
-        OpeningDescription, OpeningDraft, OpeningPreview, OpeningRequest, OpeningReservation,
+        OpeningDescription, OpeningDraft, OpeningJournal, OpeningJournalDraft, OpeningPreview,
+        OpeningRequest, OpeningReservation,
     },
-    statements::StatementRequest,
+    statements::{StatementInput, StatementRequest},
 };
 
 pub use crate::db::audit::setup::{
@@ -85,6 +86,8 @@ pub enum SetupCommand {
     },
     /// Freeze balanced statement entries for the owner's review.
     StatementPreview(StatementPreviewArgs),
+    /// Import statement contents immediately from standard input.
+    StatementImport(StatementImportArgs),
     /// Approve and commit one exact reviewed batch with a live approval credential.
     StatementCommit {
         /// Company slug of the selected book.
@@ -132,6 +135,8 @@ pub enum SetupCommand {
     OpeningPreview(OpeningPreviewArgs),
     /// Reserve a previewed opening journal for approval.
     OpeningReserve(OpeningReserveArgs),
+    /// Post a balanced opening journal immediately.
+    OpeningPost(OpeningPostArgs),
     /// Cancel a setup generation and deactivate its credential.
     Revoke {
         /// Setup generation returned by begin.
@@ -145,6 +150,7 @@ impl SetupCommand {
             Self::Status => Operation::LedgerSetupStatus,
             Self::BookShow { .. } => Operation::LedgerSetupBookShow,
             Self::StatementPreview(_) => Operation::LedgerSetupStatementPreview,
+            Self::StatementImport(_) => Operation::LedgerSetupStatementImport,
             Self::StatementCommit { .. } => Operation::LedgerSetupStatementCommit,
             Self::StatementReceipt { .. } => Operation::LedgerSetupStatementReceipt,
             Self::Begin { .. } => Operation::LedgerSetupBegin,
@@ -157,6 +163,7 @@ impl SetupCommand {
             Self::AccountAdd(_) => Operation::LedgerSetupAccountAdd,
             Self::OpeningPreview(_) => Operation::LedgerSetupOpeningPreview,
             Self::OpeningReserve(_) => Operation::LedgerSetupOpeningReserve,
+            Self::OpeningPost(_) => Operation::LedgerSetupOpeningPost,
         }
     }
 }
@@ -165,21 +172,22 @@ impl SetupCommand {
 struct BookTarget {
     /// Company slug for the book.
     company: CompanySlug,
-    /// Active generation returned by setup begin.
+    /// Optional generation for the legacy setup-session path.
     #[arg(long)]
-    generation: Generation,
+    generation: Option<Generation>,
     /// Stable request reference. Reuse it when retrying this request.
     #[arg(long)]
     reference: SetupReference,
 }
 
-impl From<&BookTarget> for SetupBookTarget {
+impl From<&BookTarget> for BookMutationTarget {
     fn from(target: &BookTarget) -> Self {
-        Self {
-            company: target.company.clone(),
-            generation: target.generation,
-            reference: target.reference.clone(),
-        }
+        (
+            target.company.clone(),
+            target.generation,
+            target.reference.clone(),
+        )
+            .into()
     }
 }
 
@@ -230,8 +238,14 @@ pub struct BookInitializeArgs {
 /// Arguments to supersede a book profile.
 #[derive(Debug, Args)]
 pub struct BookUpdateArgs {
-    #[command(flatten)]
-    target: BookTarget,
+    /// Company whose profile is being changed.
+    company: CompanySlug,
+    /// Active generation returned by setup begin.
+    #[arg(long)]
+    generation: Generation,
+    /// Stable reference for retries.
+    #[arg(long)]
+    reference: SetupReference,
     /// Current profile revision being superseded.
     #[arg(long)]
     supersedes: ProfileRevision,
@@ -254,7 +268,7 @@ pub struct AccountAddArgs {
     #[command(flatten)]
     target: BookTarget,
     code: AccountCode,
-    name: String,
+    name: SetupAccountName,
     /// Accounting classification of this account.
     #[arg(long = "type")]
     account_type: AccountType,
@@ -263,55 +277,66 @@ pub struct AccountAddArgs {
 /// Inputs to validate and preview an opening journal.
 #[derive(Debug, Args)]
 pub struct OpeningPreviewArgs {
-    /// Company whose opening balances are being prepared.
-    company: CompanySlug,
+    #[command(flatten)]
+    opening: OpeningJournalArgs,
     /// Active generation returned by setup begin.
     #[arg(long)]
     generation: Generation,
+}
+
+#[derive(Debug, Args)]
+struct OpeningJournalArgs {
+    /// Company whose opening balances are being recorded.
+    company: CompanySlug,
     /// Opening date, in YYYY-MM-DD.
     #[arg(long)]
-    date: NaiveDate,
+    date: crate::request::CalendarDateArg,
     /// Explicit currency for every line.
     #[arg(long)]
     currency: Currency,
     /// Description for the opening journal (defaults to "Opening balances").
     #[arg(long)]
-    description: Option<String>,
+    description: Option<OpeningDescription>,
     /// Debit line in ACCOUNT:AMOUNT[:MEMO] format. May repeat.
     #[arg(long, required = true)]
-    debit: Vec<String>,
+    debit: Vec<MajorPostingLine>,
     /// Credit line in ACCOUNT:AMOUNT[:MEMO] format. May repeat.
     #[arg(long, required = true)]
-    credit: Vec<String>,
+    credit: Vec<MajorPostingLine>,
+}
+
+impl TryFrom<&OpeningJournalArgs> for OpeningJournalDraft {
+    type Error = CliError;
+
+    fn try_from(args: &OpeningJournalArgs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            company: args.company.clone(),
+            date: args.date.into(),
+            currency: args.currency,
+            description: args.description.clone(),
+            debits: args.debit.clone().try_into()?,
+            credits: args.credit.clone().try_into()?,
+        })
+    }
 }
 
 impl TryFrom<&OpeningPreviewArgs> for OpeningRequest {
     type Error = CliError;
 
     fn try_from(args: &OpeningPreviewArgs) -> Result<Self, Self::Error> {
-        let lines = |inputs: &[String]| {
-            inputs
-                .iter()
-                .map(|line| line.parse())
-                .collect::<Result<Vec<_>, CliError>>()?
-                .try_into()
-                .map_err(|_| {
-                    CliError::Validation(
-                        "an opening requires at least one debit and one credit".into(),
-                    )
-                })
-        };
-        OpeningDraft {
-            company: args.company.clone(),
-            generation: args.generation,
-            date: args.date,
-            currency: args.currency,
-            description: args.description.as_deref().map(str::parse).transpose()?,
-            debits: lines(&args.debit)?,
-            credits: lines(&args.credit)?,
-        }
-        .try_into()
+        let draft = OpeningJournalDraft::try_from(&args.opening)?;
+        (args.generation, draft).try_into()
     }
+}
+
+/// Arguments to post opening balances on the normal connection.
+#[derive(Debug, Args)]
+pub struct OpeningPostArgs {
+    #[command(flatten)]
+    opening: OpeningJournalArgs,
+    /// Stable reference to reuse for an exact retry.
+    #[arg(long)]
+    reference: SetupReference,
 }
 
 /// Inputs to hold a previewed opening journal for approval.
@@ -404,6 +429,92 @@ impl SetupBookTarget {
     }
 }
 
+/// A book addressed directly on the existing agent connection.
+pub struct DirectBookTarget {
+    company: CompanySlug,
+    reference: SetupReference,
+}
+
+pub(crate) enum BookMutationTarget {
+    Session(SetupBookTarget),
+    Direct(DirectBookTarget),
+}
+
+impl From<(CompanySlug, Option<Generation>, SetupReference)> for BookMutationTarget {
+    fn from(
+        (company, generation, reference): (CompanySlug, Option<Generation>, SetupReference),
+    ) -> Self {
+        match generation {
+            Some(generation) => Self::Session(SetupBookTarget {
+                company,
+                generation,
+                reference,
+            }),
+            None => Self::Direct(DirectBookTarget { company, reference }),
+        }
+    }
+}
+
+/// Supported direct book mutations. Profile revisions via book-update use
+/// the existing setup-session path.
+pub enum DirectBookChange {
+    /// Create a personal or business book and its initial profile.
+    Create(CompanyName, BookSettings),
+    /// Initialize the profile of an existing book.
+    Initialize(BookSettings),
+    /// Apply a versioned chart of accounts.
+    Chart(ChartTemplate),
+    /// Add one account with its validated code and type.
+    Account(AccountCode, SetupAccountName, AccountType),
+}
+
+impl From<(BookMutationTarget, DirectBookChange)> for SetupRequest {
+    fn from((target, change): (BookMutationTarget, DirectBookChange)) -> Self {
+        match target {
+            BookMutationTarget::Direct(target) => Self::DirectBook(target, change),
+            BookMutationTarget::Session(target) => match change {
+                DirectBookChange::Create(name, settings) => {
+                    Self::BookCreate(target, name, settings)
+                }
+                DirectBookChange::Initialize(settings) => Self::BookInitialize(target, settings),
+                DirectBookChange::Chart(template) => Self::ChartApply(target, template),
+                DirectBookChange::Account(code, name, kind) => {
+                    Self::AccountAdd(target, code, name, kind)
+                }
+            },
+        }
+    }
+}
+
+impl<'a> From<&'a DirectBookChange> for BookChange<'a> {
+    fn from(change: &'a DirectBookChange) -> Self {
+        match change {
+            DirectBookChange::Create(name, settings) => Self::Create {
+                name,
+                settings: *settings,
+            },
+            DirectBookChange::Initialize(settings) => Self::Initialize(*settings),
+            DirectBookChange::Chart(template) => Self::ApplyChart(*template),
+            DirectBookChange::Account(code, name, account_type) => Self::AddAccount {
+                code,
+                name,
+                account_type: *account_type,
+            },
+        }
+    }
+}
+
+impl DirectBookChange {
+    const fn operation(&self) -> Operation {
+        match self {
+            Self::Create(..) => Operation::LedgerSetupBookCreate,
+            Self::Initialize(_) => Operation::LedgerSetupBookInitialize,
+            Self::Chart(_) => Operation::LedgerSetupChartApply,
+            Self::Account(..) => Operation::LedgerSetupAccountAdd,
+        }
+    }
+}
+
 /// One ledger setup operation with validated inputs.
 pub enum SetupRequest {
     /// Read readiness facts from the opened ledger.
@@ -412,6 +523,8 @@ pub enum SetupRequest {
     BookShow(CompanySlug),
     /// Freeze a statement review for the owner.
     StatementPreview(SetupReference, StatementRequest),
+    /// Import typed statement contents immediately.
+    StatementImport(SetupReference, StatementInput),
     /// Commit one specific statement review with a live approval credential.
     StatementCommit(CompanySlug, StatementBatchId, Sha256Hex),
     /// Read the receipt for a committed batch.
@@ -424,6 +537,8 @@ pub enum SetupRequest {
     Revoke(Generation),
     /// Create a book and its first profile.
     BookCreate(SetupBookTarget, CompanyName, BookSettings),
+    /// Record a book or account change directly on the normal connection.
+    DirectBook(DirectBookTarget, DirectBookChange),
     /// Add a profile to an existing book.
     BookInitialize(SetupBookTarget, BookSettings),
     /// Record a revised profile for a book.
@@ -436,6 +551,8 @@ pub enum SetupRequest {
     OpeningPreview(OpeningRequest),
     /// Reserve a verified opening journal for approval.
     OpeningReserve(OpeningRequest, SetupReference, Sha256Hex),
+    /// Post a balanced opening journal immediately.
+    OpeningPost(SetupReference, OpeningJournal),
 }
 
 impl TryFrom<&SetupCommand> for SetupRequest {
@@ -446,7 +563,10 @@ impl TryFrom<&SetupCommand> for SetupRequest {
             SetupCommand::Status => Self::Status,
             SetupCommand::BookShow { company } => Self::BookShow(company.clone()),
             SetupCommand::StatementPreview(args) => {
-                Self::StatementPreview(args.reference.clone(), args.try_into()?)
+                Self::StatementPreview(args.reference().clone(), args.try_into()?)
+            }
+            SetupCommand::StatementImport(args) => {
+                Self::StatementImport(args.reference().clone(), args.try_into()?)
             }
             SetupCommand::StatementCommit {
                 company,
@@ -470,27 +590,38 @@ impl TryFrom<&SetupCommand> for SetupRequest {
             ),
             SetupCommand::Finish { generation } => Self::Finish(*generation),
             SetupCommand::Revoke { generation } => Self::Revoke(*generation),
-            SetupCommand::BookCreate(args) => Self::BookCreate(
+            SetupCommand::BookCreate(args) => (
                 (&args.target).into(),
-                args.name.clone(),
-                (&args.settings).into(),
-            ),
-            SetupCommand::BookInitialize(args) => {
-                Self::BookInitialize((&args.target).into(), (&args.settings).into())
-            }
+                DirectBookChange::Create(args.name.clone(), (&args.settings).into()),
+            )
+                .into(),
+            SetupCommand::BookInitialize(args) => (
+                (&args.target).into(),
+                DirectBookChange::Initialize((&args.settings).into()),
+            )
+                .into(),
             SetupCommand::BookUpdate(args) => Self::BookUpdate(
-                (&args.target).into(),
+                SetupBookTarget {
+                    company: args.company.clone(),
+                    generation: args.generation,
+                    reference: args.reference.clone(),
+                },
                 args.supersedes,
                 (&args.settings).into(),
             ),
-            SetupCommand::ChartApply(args) => {
-                Self::ChartApply((&args.target).into(), args.template)
-            }
-            SetupCommand::AccountAdd(args) => Self::AccountAdd(
+            SetupCommand::ChartApply(args) => (
                 (&args.target).into(),
-                args.code.clone(),
-                args.name.parse()?,
-                args.account_type,
+                DirectBookChange::Chart(args.template),
+            )
+                .into(),
+            SetupCommand::AccountAdd(args) => (
+                (&args.target).into(),
+                DirectBookChange::Account(args.code.clone(), args.name.clone(), args.account_type),
+            )
+                .into(),
+            SetupCommand::OpeningPost(args) => Self::OpeningPost(
+                args.reference.clone(),
+                OpeningJournalDraft::try_from(&args.opening)?.try_into()?,
             ),
             SetupCommand::OpeningPreview(args) => Self::OpeningPreview(args.try_into()?),
             SetupCommand::OpeningReserve(args) => Self::OpeningReserve(
@@ -510,18 +641,21 @@ impl SetupRequest {
             Self::Status => Operation::LedgerSetupStatus,
             Self::BookShow(_) => Operation::LedgerSetupBookShow,
             Self::StatementPreview(..) => Operation::LedgerSetupStatementPreview,
+            Self::StatementImport(..) => Operation::LedgerSetupStatementImport,
             Self::StatementCommit(..) => Operation::LedgerSetupStatementCommit,
             Self::StatementReceipt(..) => Operation::LedgerSetupStatementReceipt,
             Self::Begin(..) => Operation::LedgerSetupBegin,
             Self::Finish(_) => Operation::LedgerSetupFinish,
             Self::Revoke(_) => Operation::LedgerSetupRevoke,
             Self::BookCreate(..) => Operation::LedgerSetupBookCreate,
+            Self::DirectBook(_, change) => change.operation(),
             Self::BookInitialize(..) => Operation::LedgerSetupBookInitialize,
             Self::BookUpdate(..) => Operation::LedgerSetupBookUpdate,
             Self::ChartApply(..) => Operation::LedgerSetupChartApply,
             Self::AccountAdd(..) => Operation::LedgerSetupAccountAdd,
             Self::OpeningPreview(_) => Operation::LedgerSetupOpeningPreview,
             Self::OpeningReserve(..) => Operation::LedgerSetupOpeningReserve,
+            Self::OpeningPost(..) => Operation::LedgerSetupOpeningPost,
         }
     }
 
@@ -538,6 +672,9 @@ impl SetupRequest {
             | Self::StatementCommit(company, ..)
             | Self::StatementReceipt(company, _) => Some(company),
             Self::StatementPreview(_, request) => Some(request.company()),
+            Self::StatementImport(_, request) => Some(request.company()),
+            Self::OpeningPost(_, request) => Some(request.company()),
+            Self::DirectBook(target, _) => Some(&target.company),
             Self::OpeningPreview(request) => Some(request.company()),
             Self::Status
             | Self::Begin(..)
@@ -566,6 +703,10 @@ impl SetupRequest {
                 statement_batches::preview(db, actor, &reference, &request)
                     .map(SetupResponse::StatementPreview)
             }
+            Self::StatementImport(reference, request) => {
+                direct::import_statement(db, actor, &reference, &request)
+                    .map(SetupResponse::StatementImported)
+            }
             Self::StatementCommit(company, batch_id, digest) => {
                 statement_batches::commit(db, actor, &company, batch_id, &digest)
                     .map(SetupResponse::StatementReceipt)
@@ -581,6 +722,10 @@ impl SetupRequest {
             }
             Self::Revoke(generation) => {
                 setup::end(db, actor, generation, End::Revoke).map(SetupResponse::Ended)
+            }
+            Self::DirectBook(target, change) => {
+                direct::apply_book(db, actor, &target.company, &target.reference, &change)
+                    .map(SetupResponse::DirectBookChanged)
             }
             Self::BookCreate(target, name, settings) => target.apply(
                 db,
@@ -611,6 +756,10 @@ impl SetupRequest {
             Self::OpeningPreview(request) => {
                 openings::preview(db, actor, &request).map(SetupResponse::OpeningPreview)
             }
+            Self::OpeningPost(reference, request) => {
+                direct::post_opening(db, actor, &reference, &request)
+                    .map(SetupResponse::OpeningPosted)
+            }
             Self::OpeningReserve(request, reference, fingerprint) => {
                 openings::reserve(db, actor, &request, &reference, &fingerprint)
                     .map(Box::new)
@@ -630,16 +779,22 @@ pub enum SetupResponse {
     StatementPreview(StatementReview),
     /// Provenance and outcome of a committed import.
     StatementReceipt(StatementReceipt),
+    /// Audited direct import with newly created and preexisting postings.
+    StatementImported(direct::OnboardingReceipt<direct::StatementImported>),
     /// New setup session and its one-time credential.
     Started(Box<Started>),
     /// Finished or revoked setup session.
     Ended(Session),
     /// Receipt for a change to a book or its profile.
     BookChanged(BookOutcome),
+    /// Direct book or chart change and the owner undo receipt.
+    DirectBookChanged(direct::OnboardingReceipt<BookOutcome>),
     /// Review of validated opening entries.
     OpeningPreview(OpeningPreview),
     /// Audited proposal for the reviewed opening.
     OpeningReservation(Box<OpeningReservation>),
+    /// Posted opening journal and the owner undo receipt.
+    OpeningPosted(direct::OnboardingReceipt<direct::OpeningPosted>),
 }
 
 impl Serialize for SetupResponse {
@@ -656,6 +811,7 @@ impl Serialize for SetupResponse {
             Self::BookFacts(facts) => facts.serialize(serializer),
             Self::StatementPreview(review) => review.serialize(serializer),
             Self::StatementReceipt(receipt) => receipt.serialize(serializer),
+            Self::StatementImported(receipt) => receipt.serialize(serializer),
             Self::Started(started) => StartedResponse {
                 session: &started.session,
                 credential: &started.credential,
@@ -663,8 +819,10 @@ impl Serialize for SetupResponse {
             .serialize(serializer),
             Self::Ended(session) => session.serialize(serializer),
             Self::BookChanged(outcome) => outcome.serialize(serializer),
+            Self::DirectBookChanged(outcome) => outcome.serialize(serializer),
             Self::OpeningPreview(preview) => preview.serialize(serializer),
             Self::OpeningReservation(reservation) => reservation.serialize(serializer),
+            Self::OpeningPosted(receipt) => receipt.serialize(serializer),
         }
     }
 }

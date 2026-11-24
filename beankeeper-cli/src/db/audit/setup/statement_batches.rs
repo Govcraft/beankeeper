@@ -1,6 +1,6 @@
 //! Frozen statement previews and receipts for owner-approved imports.
 
-use beankeeper::types::{DebitOrCredit, Sha256Hex};
+use beankeeper::types::{Currency, DebitOrCredit, Sha256Hex};
 use chrono::{NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 use super::super::{AuditAction, AuditChange, AuditEntity, record};
 use super::requests::SetupReference;
 use super::statements::{StatementFormat, StatementPreview, StatementRequest, prepare_in_session};
-use super::{ActiveSession, Generation, SessionState, find_session, with_active_setup_write};
+use super::{
+    ActiveSession, Generation, SessionState, books, find_session, with_active_setup_write,
+};
 use crate::db::companies::CompanySlug;
 use crate::db::connection::{Db, ReadConn};
 use crate::db::ids::{StatementBatchId, TransactionId};
@@ -176,15 +178,23 @@ pub(crate) fn summary(
         return Ok(StatementImportSummary::default());
     }
     let (summary, valid) = reader.query_row(
-        "SELECT COUNT(*),
-                COALESCE(SUM(json_array_length(a.after, '$.created')), 0),
-                COALESCE(SUM(json_array_length(a.after, '$.preexisting')), 0),
-                COUNT(*) = COUNT(DISTINCT b.id) AND COUNT(*) = COUNT(CASE
-                    WHEN json_type(a.after, '$.created') = 'array'
-                     AND json_type(a.after, '$.preexisting') = 'array' THEN 1 END)
-         FROM setup_statement_batches b
-         JOIN audit_log a ON a.company_slug = b.company_slug AND a.entity_id = (?2 || b.id)
-         WHERE b.company_slug = ?1 AND a.entity = 'company' AND a.action = 'create'",
+        "WITH imports (legacy_id, result) AS (
+             SELECT b.id, a.after
+             FROM setup_statement_batches b
+             JOIN audit_log a ON a.company_slug = b.company_slug AND a.entity_id = (?2 || b.id)
+             WHERE b.company_slug = ?1 AND a.entity = 'company' AND a.action = 'create'
+             UNION ALL
+             SELECT NULL, json_extract(after, '$.result') FROM audit_log
+             WHERE company_slug = ?1 AND action = 'setup_apply'
+               AND json_extract(after, '$.effect.kind') = 'statement'
+         )
+         SELECT COUNT(*),
+                COALESCE(SUM(json_array_length(result, '$.created')), 0),
+                COALESCE(SUM(json_array_length(result, '$.preexisting')), 0),
+                COUNT(legacy_id) = COUNT(DISTINCT legacy_id) AND COUNT(*) = COUNT(CASE
+                    WHEN json_type(result, '$.created') = 'array'
+                     AND json_type(result, '$.preexisting') = 'array' THEN 1 END)
+         FROM imports",
         params![company.as_str(), COMMIT_EVENT],
         |row| {
             let count = |index| {
@@ -429,9 +439,9 @@ pub(crate) fn preview(
     with_active_setup_write(db, actor, request.generation, |session| {
         reserve(
             session,
-            &request.company,
+            request.company(),
             &reference.to_string(),
-            &request.fingerprint()?,
+            &request.input.fingerprint()?,
             || freeze(session, reference, prepare_in_session(session, request)?),
         )
     })
@@ -442,12 +452,13 @@ fn freeze(
     reference: &SetupReference,
     preview: StatementPreview,
 ) -> Result<FrozenBatch, CliError> {
+    let profile = books::current_profile(session.read(), &preview.company)?;
     let mut batch = FrozenBatch {
         version: 1,
         company: preview.company.clone(),
         reference: reference.to_string(),
-        generation: preview.generation,
-        profile_revision: preview.profile_revision.get(),
+        generation: session.session().generation,
+        profile_revision: profile.revision.get(),
         format: preview.format,
         source_sha256: preview.content_hash,
         bank: preview.bank.to_string(),
@@ -456,8 +467,18 @@ fn freeze(
         rows: Vec::with_capacity(preview.rows.len()),
     };
     for row in preview.rows {
-        let entries = row
-            .journal
+        let row = freeze_row(&row)?;
+        if let Some(id) = row.existing_transaction {
+            require_existing_match(session.read(), &batch.company, batch.currency, &row, id)?;
+        }
+        batch.rows.push(row);
+    }
+    Ok(batch)
+}
+
+fn freeze_row(row: &super::statements::PreparedRow) -> Result<FrozenRow, CliError> {
+    let entries =
+        row.journal
             .entries()
             .iter()
             .map(|entry| -> Result<_, CliError> {
@@ -475,20 +496,29 @@ fn freeze(
                 })
             })
             .collect::<Result<_, _>>()?;
-        let row = FrozenRow {
-            reference: row.reference.into(),
-            date: row.journal.date(),
-            description: row.journal.description().to_owned(),
-            metadata: row.journal.metadata().map(str::to_owned),
-            entries,
-            existing_transaction: row.existing_transaction,
-        };
-        if let Some(id) = row.existing_transaction {
-            require_existing_match(session.read(), &batch, &row, id)?;
-        }
-        batch.rows.push(row);
-    }
-    Ok(batch)
+    Ok(FrozenRow {
+        reference: row.reference.as_str().to_owned(),
+        date: row.journal.date(),
+        description: row.journal.description().to_owned(),
+        metadata: row.journal.metadata().map(str::to_owned),
+        entries,
+        existing_transaction: row.existing_transaction,
+    })
+}
+
+pub(super) fn match_prepared(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    row: &super::statements::PreparedRow,
+    id: TransactionId,
+) -> Result<(), CliError> {
+    require_existing_match(
+        reader,
+        company,
+        row.journal.currency(),
+        &freeze_row(row)?,
+        id,
+    )
 }
 
 pub(crate) fn commit(
@@ -695,7 +725,7 @@ fn apply_batch(
     };
     for row in &batch.rows {
         let (transaction_id, items) = if let Some(id) = row.existing_transaction {
-            require_existing_match(tx.read(), batch, row, id)?;
+            require_existing_match(tx.read(), &batch.company, batch.currency, row, id)?;
             (id, &mut receipt.preexisting)
         } else {
             let entry_params: Vec<_> = row
@@ -731,12 +761,13 @@ fn reference_conflict(reference: &str) -> CliError {
 
 fn require_existing_match(
     conn: ReadConn<'_>,
-    batch: &FrozenBatch,
+    company: &CompanySlug,
+    currency: Currency,
     row: &FrozenRow,
     id: TransactionId,
 ) -> Result<(), CliError> {
     let (transaction, entries) = transactions::get_transaction(
-        &crate::db::companies::Company::bind(conn, batch.company.clone())?,
+        &crate::db::companies::Company::bind(conn, company.clone())?,
         id,
     )?;
     let metadata_matches = match row.metadata.as_deref().and_then(metadata::normalize) {
@@ -767,7 +798,7 @@ fn require_existing_match(
     if transaction.reference.as_deref() != Some(row.reference.as_str())
         || transaction.date != row.date
         || transaction.description != row.description
-        || transaction.currency != batch.currency
+        || transaction.currency != currency
         || !metadata_matches
         || !entries_match
     {

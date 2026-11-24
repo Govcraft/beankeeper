@@ -13,6 +13,8 @@ pub enum Capability {
     Admin,
     /// Scoped authority for an active ledger setup session.
     Setup,
+    /// Record audited onboarding changes directly on the normal connection.
+    Chart,
     /// Host navigation authority, issued to a separate UI-scoped identity.
     Navigate,
 }
@@ -29,6 +31,7 @@ impl Capability {
             Self::Budget,
             Self::Admin,
             Self::Setup,
+            Self::Chart,
             Self::Navigate,
         ]
         .into_iter()
@@ -47,6 +50,7 @@ impl Capability {
             Self::Budget => "ledger/budget",
             Self::Admin => "ledger/admin",
             Self::Setup => "ledger/setup",
+            Self::Chart => "ledger/chart",
             Self::Navigate => "ui/navigate",
         }
     }

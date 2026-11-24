@@ -101,7 +101,25 @@ impl VerifiedAgent {
             Permission::SetupStatus => {
                 Ok(self.allows(Capability::Read)? || self.allows(Capability::Setup)?)
             }
+            Permission::SetupOrChart => Ok(self.allows(Capability::Setup)?
+                || self.allows(Capability::Chart)?
+                || self.allows(Capability::Admin)?),
+            Permission::Chart => {
+                Ok(self.allows(Capability::Chart)? || self.allows(Capability::Admin)?)
+            }
             permission => self.allows(permission.primary()?),
+        }
+    }
+
+    pub(crate) fn can_discover(
+        &self,
+        operation: Operation,
+        ledger_enforced: bool,
+    ) -> Result<bool, CliError> {
+        if self.enforces_permissions(ledger_enforced) || operation.requires_onboarding_grant() {
+            self.allows_known_operation(operation)
+        } else {
+            Ok(true)
         }
     }
 
@@ -121,7 +139,19 @@ impl VerifiedAgent {
     /// # Errors
     /// This method retains its fallible signature for existing callers.
     pub fn allows(&self, capability: Capability) -> Result<bool, CliError> {
-        Ok(self.grants.contains(&capability))
+        Ok(self.grants.contains(&capability)
+            || (capability == Capability::Chart && self.is_compatible_bookkeeper()))
+    }
+
+    // Upgrade the exact signed Direct bookkeeper presets already issued by
+    // the CLI and managed Desktop. Custom grants and explicit restrictions
+    // retain their original capabilities.
+    fn is_compatible_bookkeeper(&self) -> bool {
+        self.write_mode == WriteMode::Direct
+            && matches!(self.signed_capabilities.len(), 2 | 3)
+            && self.grants.contains(&Capability::Read)
+            && self.grants.contains(&Capability::Post)
+            && (self.signed_capabilities.len() == 2 || self.grants.contains(&Capability::Propose))
     }
 }
 
@@ -256,7 +286,7 @@ pub(crate) fn authorize_known_operation(
         })?;
         return verify_required(conn, token, Some(Capability::Admin)).map(Some);
     }
-    let enforce = crate::db::policy::get(conn)?.enforce;
+    let enforce = crate::db::policy::get(conn)?.enforce || operation.requires_onboarding_grant();
     let identity = match token {
         Some(token) => Some(verify(conn, token)?),
         None if enforce => {
@@ -299,6 +329,7 @@ fn require_operation_grant(
     };
     let enforce = ledger_enforced
         || matches!(permission, Permission::SetupOwner | Permission::OwnerUndo)
+        || operation.requires_onboarding_grant()
         || matches!(
             permission,
             Permission::Capability(Capability::Navigate | Capability::Setup)
@@ -308,7 +339,8 @@ fn require_operation_grant(
     }
     let alternative = match permission {
         Permission::ProposalList | Permission::ProposalReject => Some(Capability::Approve),
-        Permission::SetupStatus => Some(Capability::Setup),
+        Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
+        Permission::Chart => Some(Capability::Admin),
         _ => None,
     };
     let requirement = match alternative {
@@ -369,16 +401,7 @@ fn verify_required(
         .filter_map(|path| Capability::from_path(path))
         .filter(|capability| write_mode.permits(*capability))
         .collect();
-    if let Some(required) = required
-        && !grants.contains(&required)
-    {
-        return Err(CliError::Forbidden(format!(
-            "operation requires capability {}",
-            required.path()
-        )));
-    }
-
-    Ok(VerifiedAgent {
+    let agent = VerifiedAgent {
         uri,
         jti: MagicTypeId::from_str(&claims.jti).map_err(|_| unauthorized())?,
         grants,
@@ -388,7 +411,17 @@ fn verify_required(
         issuer_key: key,
         expires_at: claims.exp,
         delegation: None,
-    })
+    };
+    if let Some(required) = required
+        && !agent.allows(required)?
+    {
+        return Err(CliError::Forbidden(format!(
+            "operation requires capability {}",
+            required.path()
+        )));
+    }
+
+    Ok(agent)
 }
 
 pub(crate) fn ledger_encrypted(conn: &Connection) -> Result<bool, CliError> {

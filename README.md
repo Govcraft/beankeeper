@@ -134,6 +134,17 @@ appending. Close/reopen events record the actor and before/after state; `verify`
 checks cutoff integrity. See [period commands](docs/beankeeper/references/commands.md#period-close-and-locking)
 for output fields, history, and retry behavior.
 
+### Set up books over the agent connection
+
+The Direct bookkeeper can create or initialize books, add accounts, apply a
+chart, post opening balances, and import CSV or OFX/QFX statement contents on
+its normal connection. The agent reports what it did and offers to undo it.
+Each write returns a receipt ID and an optional Desktop detail path. An owner
+can undo a receipt in one step from the CLI or MCP. Statement undo reverses
+only the postings that import created.
+
+[CLI and MCP onboarding commands](docs/beankeeper/references/commands.md#direct-onboarding)
+
 ### Direct posting and optional sign-off
 
 The bookkeeper preset posts directly with `bk txn post` or MCP `txn_post`,
@@ -511,7 +522,9 @@ mutation tools are absent and cannot be called.
 | Tools | Purpose |
 | --- | --- |
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
-| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure personal and business books, charts, and accounts with an active setup grant |
+| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure books and accounts on the normal bookkeeper connection or in an opted-in setup session |
+| `ledger_setup_book_update` | Record a new profile revision in an active setup session |
+| `ledger_setup_opening_post`, `ledger_setup_statement_import` | Post opening balances or import statement contents immediately and return an owner undo receipt |
 | `ledger_setup_opening_preview` | Validate a balanced opening journal within an active setup generation |
 | `ledger_setup_opening_reserve` | Hold the exact previewed opening journal for the existing approval workflow |
 | `ledger_setup_statement_preview` | Freeze the entries parsed from bounded CSV, OFX, or QFX content for review |

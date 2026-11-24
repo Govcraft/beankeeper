@@ -2,10 +2,14 @@ use std::fmt;
 
 use beankeeper::types::AccountCode;
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{ReceiptEvent, ReceiptId, ReceiptTarget, posting_creation};
+use crate::db::audit::setup::{
+    books::{ProfileRevision, current_profile},
+    direct::{self, OnboardingEffect},
+};
 use crate::db::audit::{
     AuditAction, AuditChange, AuditEntity, AuditLinks, ReversalBlock, ReverseTransactionParams,
     audit_columns, read_audit_row, record_with_links, reverse_in_scope, savepoint::AuditedTx,
@@ -66,6 +70,10 @@ pub enum UndoIneligibility {
     AccountNotActive(AccountCode),
     /// The original rule was removed or superseded.
     RuleNotCurrent(RuleId),
+    /// A newer profile revision is still in effect.
+    ProfileNotCurrent(ProfileRevision),
+    /// The newly created book still has active accounts or posted activity.
+    BookInUse,
 }
 
 impl fmt::Display for UndoIneligibility {
@@ -80,6 +88,12 @@ impl fmt::Display for UndoIneligibility {
                 write!(formatter, "account '{code}' is no longer active")
             }
             Self::RuleNotCurrent(id) => write!(formatter, "rule '{id}' is no longer current"),
+            Self::ProfileNotCurrent(revision) => write!(
+                formatter,
+                "book profile revision {} is no longer current",
+                revision.get()
+            ),
+            Self::BookInUse => formatter.write_str("book has active accounts or posted activity"),
         }
     }
 }
@@ -126,6 +140,47 @@ impl UndoOutcome {
             }
         }
     }
+}
+
+/// Audited outcome for a single change or an onboarding operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum ReceiptUndoOutcome {
+    /// A single account archive or posting reversal.
+    Single(UndoOutcome),
+    /// A complete onboarding operation reversed in one write.
+    Onboarding(OnboardingUndoOutcome),
+}
+
+impl ReceiptUndoOutcome {
+    /// The audit receipt recording the completed undo.
+    #[must_use]
+    pub const fn receipt(&self) -> ReceiptId {
+        match self {
+            Self::Single(outcome) => outcome.receipt(),
+            Self::Onboarding(outcome) => outcome.undo_receipt,
+        }
+    }
+}
+
+/// The receipt and effects of an onboarding undo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename = "onboarding_reverted")]
+pub struct OnboardingUndoOutcome {
+    undo_receipt: ReceiptId,
+    #[serde(flatten)]
+    change: OnboardingUndo,
+}
+
+/// Effects of the owner undo of an onboarding receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct OnboardingUndo {
+    /// Receipts for the posting reversals or account archives.
+    child_receipts: Vec<ReceiptId>,
+    /// The profile revision retired by this undo, if any.
+    profile_revision: Option<ProfileRevision>,
+    /// Whether the retired profile belonged to a book created by this request.
+    book_archived: bool,
 }
 
 /// A categorization rule creation reversed by an owner.
@@ -187,7 +242,9 @@ impl RuleCreation {
     }
 }
 
-/// Undo a receipt immediately within the live, reserved owner write scope.
+/// Undo a single account or posting receipt within the live owner write scope.
+///
+/// Use [`undo_change`] to also support direct onboarding receipts.
 ///
 /// A signed administration grant is required even when ledger enforcement is
 /// disabled. The receipt and its current eligibility are resolved in that
@@ -202,19 +259,183 @@ pub fn undo_receipt(
     receipt: ReceiptId,
 ) -> Result<UndoOutcome, CliError> {
     grant.mutate("sp_owner_undo_receipt", |tx, actor| {
-        let scope = Company::bind(tx.read(), company.clone())?;
+        let scope = Company::bind_retained(tx.read(), company.clone())?;
         let target = resolve_target(&scope, receipt)?;
-        if let Some(outcome) = recorded_outcome(tx.read(), company, receipt, &target)? {
-            return Ok(outcome);
-        }
+        undo_single(tx, actor, &scope, receipt, &target)
+    })
+}
 
-        match &target {
-            UndoTarget::Posting(id) => reverse_posting(tx, actor, company, receipt, *id)?,
-            UndoTarget::Account(code) => archive_account(tx, actor, &scope, receipt, code)?,
+/// Undo an account, posting, or complete direct onboarding operation.
+///
+/// # Errors
+/// Returns an authorization, not-found, eligibility, or storage error.
+/// All effects of an onboarding undo commit together.
+pub fn undo_change(
+    grant: Granted<'_, OwnerUndo>,
+    company: &CompanySlug,
+    receipt: ReceiptId,
+) -> Result<ReceiptUndoOutcome, CliError> {
+    grant.mutate("sp_owner_undo_change", |tx, actor| {
+        let scope = Company::bind_retained(tx.read(), company.clone())?;
+        if let Some(effect) = direct::find_effect(tx.read(), company, receipt)? {
+            undo_onboarding(tx, actor, &scope, receipt, effect).map(ReceiptUndoOutcome::Onboarding)
+        } else {
+            let target = resolve_target(&scope, receipt)?;
+            undo_single(tx, actor, &scope, receipt, &target).map(ReceiptUndoOutcome::Single)
         }
-        recorded_outcome(tx.read(), company, receipt, &target)?.ok_or_else(|| {
-            CliError::Database(format!("undo of receipt #{receipt} was not recorded"))
-        })
+    })
+}
+
+fn undo_single(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    scope: &Company<'_>,
+    receipt: ReceiptId,
+    target: &UndoTarget,
+) -> Result<UndoOutcome, CliError> {
+    let company = scope.slug();
+    if let Some(outcome) = recorded_outcome(tx.read(), company, receipt, target)? {
+        return Ok(outcome);
+    }
+    match target {
+        UndoTarget::Posting(id) => reverse_posting(tx, actor, company, receipt, *id)?,
+        UndoTarget::Account(code) => archive_account(tx, actor, scope, receipt, code)?,
+    }
+    recorded_outcome(tx.read(), company, receipt, target)?
+        .ok_or_else(|| CliError::Database(format!("undo of receipt #{receipt} was not recorded")))
+}
+
+fn undo_onboarding(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    scope: &Company<'_>,
+    receipt: ReceiptId,
+    effect: OnboardingEffect,
+) -> Result<OnboardingUndoOutcome, CliError> {
+    let company = scope.slug();
+    let saved: Option<(ReceiptId, String)> = tx
+        .read()
+        .query_row(
+            "SELECT id, after FROM audit_log WHERE undo_of = ?1 AND company_slug = ?2
+         AND action = 'setup_revert'",
+            params![receipt, company],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((undo_receipt, raw)) = saved {
+        let change = serde_json::from_str(&raw).map_err(invalid_stored_target)?;
+        return Ok(OnboardingUndoOutcome {
+            undo_receipt,
+            change,
+        });
+    }
+
+    let change = match effect {
+        OnboardingEffect::Profile {
+            revision,
+            created_book,
+        } => check_profile_undo(tx.read(), company, receipt, revision, created_book)?,
+        OnboardingEffect::Accounts { receipts } => {
+            undo_onboarding_children(tx, actor, scope, receipt, receipts, AuditEntity::Account)?
+        }
+        OnboardingEffect::Opening { receipt: member } => undo_onboarding_children(
+            tx,
+            actor,
+            scope,
+            receipt,
+            vec![member],
+            AuditEntity::Transaction,
+        )?,
+        OnboardingEffect::Statement { receipts } => undo_onboarding_children(
+            tx,
+            actor,
+            scope,
+            receipt,
+            receipts,
+            AuditEntity::Transaction,
+        )?,
+    };
+    record_with_links(
+        tx.connection(),
+        actor,
+        AuditChange {
+            company_slug: Some(company),
+            entity: AuditEntity::Company,
+            entity_id: &receipt.to_string(),
+            action: AuditAction::SetupRevert,
+            snapshots: (None, Some(&snapshot(&change))),
+        },
+        AuditLinks::Undo(receipt),
+    )?;
+    Ok(OnboardingUndoOutcome {
+        undo_receipt: tx.connection().last_insert_rowid().try_into()?,
+        change,
+    })
+}
+
+fn check_profile_undo(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    receipt: ReceiptId,
+    revision: ProfileRevision,
+    created_book: bool,
+) -> Result<OnboardingUndo, CliError> {
+    match current_profile(reader, company) {
+        Ok(profile) if profile.revision == revision => (),
+        Ok(_) | Err(CliError::NotFound(_)) => {
+            return Err(ineligible(
+                receipt,
+                UndoIneligibility::ProfileNotCurrent(revision),
+            ));
+        }
+        Err(error) => return Err(error),
+    }
+    if created_book {
+        let in_use = reader.query_row(
+            "SELECT EXISTS (SELECT 1 FROM accounts WHERE company_slug = ?1 AND archived = 0)
+                 OR EXISTS (SELECT 1 FROM transactions WHERE company_slug = ?1)",
+            [company],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if in_use {
+            return Err(ineligible(receipt, UndoIneligibility::BookInUse));
+        }
+    }
+    Ok(OnboardingUndo {
+        child_receipts: Vec::new(),
+        profile_revision: Some(revision),
+        book_archived: created_book,
+    })
+}
+
+fn undo_onboarding_children(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    scope: &Company<'_>,
+    receipt: ReceiptId,
+    members: Vec<ReceiptId>,
+    entity: AuditEntity,
+) -> Result<OnboardingUndo, CliError> {
+    let mut child_receipts = Vec::with_capacity(members.len());
+    for member in members {
+        let belongs = tx.read().query_row(
+            "SELECT EXISTS (SELECT 1 FROM audit_log WHERE id = ?1 AND id < ?2
+             AND company_slug = ?3 AND entity = ?4 AND action = 'create')",
+            params![member, receipt, scope.slug(), entity.as_str()],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !belongs {
+            return Err(invalid_stored_target(
+                "onboarding member does not match receipt",
+            ));
+        }
+        let target = resolve_target(scope, member)?;
+        child_receipts.push(undo_single(tx, actor, scope, member, &target)?.receipt());
+    }
+    Ok(OnboardingUndo {
+        child_receipts,
+        profile_revision: None,
+        book_archived: false,
     })
 }
 

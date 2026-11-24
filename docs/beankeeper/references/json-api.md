@@ -1074,7 +1074,7 @@ object. Example excerpt from a ledger with one company and one posting:
 
 ```json
 {
-  "schema_version": 28,
+  "schema_version": 29,
   "status": "healthy",
   "companies": [{
     "company": "acme",
@@ -1451,6 +1451,20 @@ derived `status` and total `cleared_amount`; `after` also carries `op`
 (for `unclear`, the removed ones), each with `id`, `amount`, `cleared_date`,
 `reconciled_date` (`null` unless reconciled), `statement` and `status`.
 
+### Direct onboarding receipts
+
+The direct setup commands and MCP tools return a numeric `receipt_id`, the
+operation's result, and a `desktop_path` to its audit receipt. A successful
+statement import returns the format, `source_sha256`, `created`, and
+`preexisting`. Each item in those arrays contains its statement reference
+and `transaction_id`.
+
+The owner can pass the receipt ID to `audit undo` or `audit_undo`.
+The response has `kind: "onboarding_reverted"` and an `undo_receipt`.
+`child_receipts` identifies the account archives or mirror postings.
+A profile undo returns its `profile_revision` and whether the book was
+archived. Exact retries return the recorded result.
+
 ### `audit receipts`
 
 CLI JSON `data` and MCP `audit_receipts` structured content have the same
@@ -1510,11 +1524,12 @@ signed `ledger/admin` token regardless of the ledger's enforcement setting.
 The write applies immediately, and retries for the same receipt return the
 original result.
 
-Both success outcomes include `company`, `undo_receipt`, and the relative
+Successful undo results include `company`, `undo_receipt`, and the relative
 `desktop_path` to the new audit receipt:
 
 - `kind: "reversed"` includes `transaction` (original ID) and `reversal` (new ID).
 - `kind: "archived"` includes the archived `account` code.
+- `kind: "onboarding_reverted"` includes the [onboarding undo details](#direct-onboarding-receipts).
 
 Expect `NOT_FOUND` for a receipt missing from the selected company,
 `UNDO_UNSUPPORTED` when the change has no undo, and `UNDO_INELIGIBLE` when
