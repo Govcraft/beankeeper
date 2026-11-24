@@ -238,7 +238,8 @@ Direct grants return a posted transaction ID. The unused ID field is omitted.
   "data": {
     "id": 42,
     "created": true,
-    "skipped": false
+    "skipped": false,
+    "status": "posted"
   }
 }
 ```
@@ -250,7 +251,8 @@ When `--on-conflict skip` and reference already exists:
   "data": {
     "existing_id": 42,
     "created": false,
-    "skipped": true
+    "skipped": true,
+    "status": "posted"
   }
 }
 ```
@@ -260,6 +262,36 @@ A `propose-only` grant returns the same pending proposal payload as
 `transaction_id`. With `--on-conflict skip`, an already posted reference
 returns `{"status":"skipped","transaction_id":42}`. MCP `txn_post` returns
 the same data payloads.
+
+### `txn settle-hold` / `txn_settle_hold`
+
+A direct settlement returns the posted transaction ID, the original hold ID,
+and the posted amount minus the original authorization in minor units. An
+exact retry returns the same IDs and delta with `status: "skipped"`. A
+propose-only settlement uses the proposal response with
+`payload.purpose: {"settle":42}`.
+
+```json
+{
+  "transaction_id": 65,
+  "settlement": {"hold_id": 42, "amount_delta": 43},
+  "amount_delta_display": "0.43",
+  "status": "created",
+  "currency": "USD",
+  "date": "2026-03-04",
+  "desktop_view": {
+    "view_id": "transactions",
+    "url": "/transactions?company=acme&currency=USD&from=2026-03-04&to=2026-03-04"
+  }
+}
+```
+
+Transaction results from `txn post`, `txn show`, and `txn list` carry the
+journal's `status` of `pending` or `posted`. The transaction's entries expose
+that value as `posting_status`. Entry `status` describes statement clearance.
+A settled transaction also has `settlement`; the original remains in history.
+`account_list` with balances returns `posted_balance` and `available_balance`
+with decimal display companions and an optional Desktop register link.
 
 ### `txn meta set/unset`
 
@@ -279,14 +311,14 @@ unknown company-scoped IDs or references fail with `NOT_FOUND`.
 
 ### `txn reverse` (alias `txn void`)
 
-Uses the direct posting `data` shape, with `meta.command` equal to
-`txn.reverse`. A new mirror returns `id`, `created: true`, `skipped: false`.
+The envelope uses `meta.command: "txn.reverse"`. A new mirror returns
+`id`, `created: true`, and `skipped: false`.
 Retrying with an explicit reference matching the linked reversal returns
 `existing_id`, `created: false`, `skipped: true`, without another audit row.
 Other repeat attempts fail with `VALIDATION` (exit 3). Missing or foreign
 transaction IDs return `NOT_FOUND` (exit 5).
 
-`txn show` and `txn list` retain their existing shape. Parse the transaction's
+Parse the transaction's
 `metadata` string to read numeric links: `reversed_by` on the original and
 `reverses` on the reversal. The original's other metadata is preserved;
 the new transaction contains only the reversal link. Its entries start

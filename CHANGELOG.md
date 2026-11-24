@@ -8,6 +8,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Added
 
+- Record and settle pending card holds through CLI or MCP, see posted and available balances, and undo settlements in one audited step. ([#280](https://github.com/Govcraft/beankeeper/issues/280))
 - Bookkeepers can set up books and accounts, post opening balances, and import statements on their normal CLI or MCP connection with one-step owner undo. ([#273](https://github.com/Govcraft/beankeeper/issues/273))
 
 ### Changed

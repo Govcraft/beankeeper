@@ -539,7 +539,7 @@ mutation tools are absent and cannot be called.
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create` | Inspect and create accounts |
-| `txn_post`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Record a transaction using the grant's write mode, undo a posting, or edit annotations |
+| `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Record or settle a hold using the grant's write mode, undo a posting, or edit annotations |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
@@ -1257,7 +1257,8 @@ currencies requires `--currency` (MCP: `currency`). With no selection,
 no transactions. `BEANKEEPER_CURRENCY` does not select a currency for this query.
 
 Set `with_balances: true` in MCP `account_list` or pass `--with-balances`
-to `bk account list` to include debit, credit, and balance totals. Supply a
+to `bk account list` for posted debit and credit totals, a posted balance,
+and an available balance that includes pending holds. Supply a
 currency if the company has transactions in several currencies.
 
 ```sh
@@ -1267,6 +1268,35 @@ bk --company personal account list --type expense --with-balances --json
 # Search accounts by name, with balances for a period
 bk --company personal account list --name "Cash" --with-balances --to 2026-06-30 --json
 ```
+
+### Pending card holds
+
+Record a card authorization with one debit and one credit on different accounts.
+The hold affects the available balance as of its authorization date. Posted
+balances, financial statements, tax reports and reconciliation use posted activity.
+
+```sh
+bk --company personal --json txn post -d "Pharmacy" --status pending \
+  --debit 5000:43.45 --credit 1000:43.45 --date 2026-03-02 --reference hold-1
+
+bk --company personal --json txn settle-hold --hold-reference hold-1 \
+  --amount 43.88 --date 2026-03-04 --reference posted-1
+```
+
+For MCP, pass `status: "pending"` to `txn_post`. Call `txn_settle_hold` with
+`company`, `hold: {"reference":"hold-1"}` or `hold: {"id":42}`, decimal
+`amount`, `date`, and the posted `reference`. Settlement uses the hold's
+accounts and currency. It releases the authorization and posts the actual
+charge together. The result identifies both transactions and reports the
+amount difference in minor units and as a decimal string. Retry with the same
+posted reference, date and amount.
+
+Direct grants settle immediately. A propose-only grant returns a proposal.
+To undo a settlement, reverse the settled transaction or undo its audit
+receipt. Undo restores the hold as of the reversal date. Settle a restored
+hold with a fresh posted reference. To cancel an open hold, reverse the hold
+itself. Statement import matching and stale-hold alerts are tracked in
+[#281](https://github.com/Govcraft/beankeeper/issues/281).
 
 ### Output Formats
 
