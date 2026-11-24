@@ -40,6 +40,26 @@ for artifact/bundle names, exact release-tag identity, issuer, and manual
 `cosign verify-blob` / `gh attestation verify` commands. Sigstore signing does
 not replace Apple notarization or Windows Authenticode.
 
+## Set up books on the normal connection
+
+Use `ledger_setup_status` and `ledger_setup_book_show` to see what already
+exists. Ask the owner conversationally for the missing information. A Direct
+bookkeeper can call `ledger_setup_book_create`, `ledger_setup_book_initialize`,
+`ledger_setup_chart_apply`, and `ledger_setup_account_add` with a
+`target` containing the company slug and a stable reference. Omit
+`target.generation`.
+
+Use `ledger_setup_opening_post` for opening balances and
+`ledger_setup_statement_import` for CSV or OFX/QFX statement text. Reuse
+the same reference and inputs on a retry. Report the completed changes
+in plain language, distinguish newly imported postings from preexisting
+matches, and offer owner undo using the returned `receipt_id`. If Desktop
+is available, use the returned `desktop_path` to offer the detailed receipt.
+Owners can handle their recovery material directly while the agent completes
+the bookkeeping.
+
+[CLI and MCP onboarding commands](references/commands.md#direct-onboarding)
+
 ## Answering "How am I doing?"
 
 Call `financial_summary` with `{"company":"SLUG"}` or run
@@ -361,7 +381,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
-- Use `company_create` with `slug`, `name`, and optional `description` to add a company. Use `ledger_setup_book_create` in an active setup session when the company also needs a setup profile. Both use the same audited company insert.
+- Use `company_create` with `slug`, `name`, and optional `description` to add a company. Use `ledger_setup_book_create` when the company also needs a setup profile. Both use the same audited company insert.
 - Call `company_delete` with `slug` when the owner asks to delete that company. The call confirms deletion, records the eligible company's prior state in the audit log, and returns `{"deleted":"slug"}`. On `VALIDATION` for retained data, explain that the company keeps its history and use `txn_reverse` for posting corrections. Both company tools require `ledger/admin` under enforcement and are hidden in read-only mode.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Direct grants post immediately. Propose-only grants return a pending proposal. Supply a stable `reference` and `on_conflict: "skip"` for retries of posted references. Find a pending reference with `txn_proposals`. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
 - Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: ["status=disputed", "dispute_id=D-42"]`. `txn_meta_unset` takes the same selector and `keys: ["status", "dispute_id"]`. Values are strings; relationship keys are reserved. These writes preserve financial fields and use one audited batch per change. Both tools are absent in read-only mode.
@@ -432,7 +452,9 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk mcp serve` | Serve MCP stdio, or authenticated HTTP with `--http`; `--read-only` omits writes |
 | `bk init` | Create a new database (`--demo` for sample data, `--encrypt` for passphrase) |
 | `bk setup begin/finish/revoke` | Manage an encrypted ledger's setup session with an owner `ledger/admin` credential |
-| `bk setup book-create/book-initialize/book-update/chart-apply/account-add` | Configure books and accounts within an active setup generation |
+| `bk setup book-create/book-initialize/chart-apply/account-add` | Configure books and accounts through the Direct bookkeeper connection or an active setup session |
+| `bk setup opening-post/statement-import` | Post opening balances or import statement text immediately and return an owner undo receipt |
+| `bk setup book-update` | Record a new profile revision in an active setup session |
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/delete` | Manage chart of accounts |

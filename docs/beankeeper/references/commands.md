@@ -259,7 +259,10 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | Tool | Arguments / behavior |
 |------|----------------------|
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
-| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Apply book, profile, chart, and account setup requests using a live generation and request reference |
+| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure books and accounts on the Direct bookkeeper connection or in an active setup session |
+| `ledger_setup_book_update` | Write a profile revision in an active setup session |
+| `ledger_setup_opening_post` | Post a balanced opening journal directly and return an owner undo receipt |
+| `ledger_setup_statement_import` | Import CSV or OFX statement contents directly and return an owner undo receipt |
 | `ledger_setup_opening_preview` | Preview checked opening entries and totals with an active setup credential |
 | `ledger_setup_opening_reserve` | Hold a previewed opening journal and return its approval proposal ID |
 | `ledger_setup_statement_preview` | Freeze bounded statement content with a setup generation and request reference |
@@ -327,7 +330,45 @@ while retaining their data arrays.
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
 not exposed to tools.
 
-### Setup sessions
+### Direct onboarding
+
+A Direct bookkeeper can configure books and post opening or imported entries
+over its normal connection. In MCP, use `target: {company, reference}` for
+`ledger_setup_book_create`, `ledger_setup_book_initialize`,
+`ledger_setup_chart_apply`, and `ledger_setup_account_add`. Omit
+`target.generation`. A chart must match the book profile's purpose.
+
+`ledger_setup_opening_post` takes `company`, `reference`, `date`, `currency`,
+and nonempty `debits` and `credits`. Each line takes an `account`, a decimal
+`amount` string in major units, and an optional `memo`. The journal description
+defaults to “Opening balances.”
+
+`ledger_setup_statement_import` takes `company`, `reference`, `bank`,
+`suspense`, `currency`, `format`, and UTF-8 `content` up to 1 MiB and
+5,000 rows. Use `format: "csv"` or `format: "ofx"` (also accepts `"qfx"`).
+The optional `csv` field describes CSV headers and amount direction. The response
+identifies the `created` postings and identical `preexisting` matches.
+
+```bash
+bk --json setup book-create home Home --reference home-book \
+  --purpose personal --base-currency USD --fiscal-year-start 01-01
+bk --json setup chart-apply home personal-v1 --reference home-chart
+bk --json setup account-add home 1010 "Checking" --type asset --reference home-checking
+bk --json setup opening-post home --reference opening --date 2026-01-01 \
+  --currency USD --debit 1010:125.50 --credit 3000:125.50
+bk --json setup statement-import home --reference january --bank 1010 --suspense 5000 \
+  --currency USD --statement-format csv < january.csv
+```
+
+Use the same reference and inputs for an exact retry within a book. A changed
+request under that reference returns `VALIDATION`. Each response includes
+`receipt_id` and `desktop_path`. Use `audit_undo` or
+`bk --company home audit undo RECEIPT` with the owner's signed authority.
+Undo archives created accounts, retires a profile revision, or appends mirror
+postings. An unused book created through onboarding can be archived. Undo of
+a chart or statement is atomic. Earlier matching postings stay in place.
+
+### Optional setup sessions
 
 Use `bk setup status` or `ledger_setup_status` to read readiness. The owner
 authenticates with `ledger/admin` and calls `ledger_setup_begin` with `name`, the agent's
@@ -354,9 +395,9 @@ currency, and fiscal-year start. Existing books without a saved profile
 return `profile: null`. Both a read credential and an active setup credential
 can call the tool.
 
-A personal book and a business book use separate company slugs. Supply
-`target` with `company`, `generation`, and a stable `reference` of up to 128
-bytes on each MCP request. Reuse the same reference with the same inputs to
+A personal book and a business book use separate company slugs. A setup session
+supplies `target` with `company`, its `generation`, and a stable `reference` of
+up to 128 bytes on each MCP request. Reuse the same reference with the same inputs to
 recover the original response. Changing the inputs under that reference
 returns `VALIDATION`.
 
@@ -469,7 +510,8 @@ Read-only mode removes `company_create`, `company_delete`, `account_create`, `tx
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
-`ledger_setup_account_add`, `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
+`ledger_setup_account_add`, `ledger_setup_opening_post`, `ledger_setup_statement_import`,
+`ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
 `ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
 `rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
 `inform_preference_set` and `audit_undo` from the router.

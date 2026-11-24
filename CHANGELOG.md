@@ -6,6 +6,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Added
+
+- Bookkeepers can set up books and accounts, post opening balances, and import statements on their normal CLI or MCP connection with one-step owner undo. ([#273](https://github.com/Govcraft/beankeeper/issues/273))
+
 ### Changed
 
 - CLI and MCP reject invalid calendar dates and blank audit actor filters at input parsing with `VALIDATION`, and share typed local-day report defaults. ([#255](https://github.com/Govcraft/beankeeper/issues/255))
