@@ -63,9 +63,12 @@ convert! {
     company_delete(CompanyShow) => Company(input => CompanyRequest::Delete(input.slug.into_inner(), ExplicitDeleteCall.into())),
     account_show(AccountShow) => Account(input => AccountRequest::Show(input.company.into_inner(), input.code.into_inner())),
     account_create(AccountCreate) => Account(input => AccountRequest::Create {
-        company: input.company.into_inner(), code: input.code.into_inner(), name: input.name,
+        company: input.company.into_inner(), code: input.code.into_inner(), name: input.name.into_inner(),
         account_type: input.account_type, default_tax_category: input.default_tax_category,
     }),
+    account_rename(AccountRename) => Account(input => AccountRequest::Rename(
+        input.company.into_inner(), input.code.into_inner(), input.name.into_inner(),
+    )),
     txn_reverse(TxnReverse) => Transaction(input => input.into()),
     txn_settle_hold(TxnSettleHold) => Transaction(input => input.into()),
     txn_proposals(TxnProposals) => Transaction(input => input.into()),

@@ -45,6 +45,8 @@ mod hash_version;
 pub use hash_version::{HashVersion, UnsupportedHashVersion};
 mod posting;
 pub(super) use posting::persist_posting;
+pub(crate) mod account_rename;
+pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
@@ -151,6 +153,7 @@ audit_labels! {
         Transaction => "transaction",
         Budget => "budget",
         Account => "account",
+        AccountRenameProposal => "account_rename_proposal",
         Company => "company",
         Demo => "demo",
         Key => "key",
@@ -187,6 +190,9 @@ audit_labels! {
         BudgetSet => "budget_set" | "budget-set",
         BudgetDelete => "budget_delete" | "budget-delete",
         AccountDelete => "account_delete" | "account-delete",
+        AccountRename => "account_rename" | "account-rename",
+        AccountRenamePropose => "account_rename_propose",
+        AccountRenameResolve => "account_rename_resolve",
         AccountArchive => "account_archive" | "account-archive",
         CompanyDelete => "company_delete" | "company-delete",
         DemoSeed => "demo_seed" | "demo-seed",

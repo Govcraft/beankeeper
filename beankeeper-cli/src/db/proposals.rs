@@ -21,7 +21,7 @@ use crate::identity::{Approve, Granted, Propose, ResolveProposal};
 pub struct ProposalId(MagicTypeId);
 
 impl ProposalId {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self("proposal".create_type_id::<V7>())
     }
 

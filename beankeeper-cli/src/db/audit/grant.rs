@@ -243,6 +243,14 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>, &Actor) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
+        self.mutate_in_scope(name, run)
+    }
+
+    pub(super) fn mutate_in_scope<T>(
+        &self,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>, &Actor) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
         AuditedTx::run(self.tx.read(), name, |tx| {
             Self::require_current(tx, self.actor)?;
             run(tx, self.actor)

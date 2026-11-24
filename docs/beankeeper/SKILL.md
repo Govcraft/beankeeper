@@ -317,6 +317,7 @@ as `policy_change`; repeated state is a no-op. Missing tokens are `UNAUTHORIZED`
 | `ledger/reverse` | txn reverse |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
+| `ledger/chart` | Rename account labels on the bookkeeper connection. Direct applies immediately, and propose-only uses sign-off. |
 | `ledger/admin` | Company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
 
 Admin does not imply other grants; post does not imply reverse. Issue explicit
@@ -411,6 +412,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
+- When the owner asks to change an existing account's label, rename the account by its current code. Use `account_rename` with `{"company":"acme","code":"1000","name":"Operating Cash"}` or `bk --company acme account rename 1000 "Operating Cash"`. This keeps its identity, balance, and posting history together. Tell the owner the new label and share the returned undo receipt and optional Desktop link. With a propose-only grant, report the proposal ID for `txn_approve` instead.
 - Use `company_create` with `slug`, `name`, and optional `description` to add a company. Use `ledger_setup_book_create` when the company also needs a setup profile. Both use the same audited company insert.
 - Call `company_delete` with `slug` when the owner asks to delete that company. The call confirms deletion, records the eligible company's prior state in the audit log, and returns `{"deleted":"slug"}`. On `VALIDATION` for retained data, explain that the company keeps its history and use `txn_reverse` for posting corrections. Both company tools require `ledger/admin` under enforcement and are hidden in read-only mode.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Direct grants post immediately. Propose-only grants return a pending proposal. Supply a stable `reference` and `on_conflict: "skip"` for retries of posted references. Find a pending reference with `txn_proposals`. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
@@ -487,7 +489,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk setup book-update` | Record a new profile revision in an active setup session |
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
-| `bk account create/list/show/delete` | Manage chart of accounts |
+| `bk account create/list/show/rename/delete` | Manage chart of accounts |
 | `bk txn post` | Record a balanced journal entry |
 | `bk txn meta set/unset` | Annotate posted transactions by ID or reference without changing financial fields |
 | `bk txn propose` | Submit a balanced posting for approval without posting it |

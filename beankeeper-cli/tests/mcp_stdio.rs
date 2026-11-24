@@ -1,5 +1,7 @@
 //! Exercise the real MCP server over its newline-delimited stdio transport.
 
+#[path = "mcp_stdio/account_rename.rs"]
+mod account_rename;
 #[path = "mcp_stdio/audit_receipts.rs"]
 mod audit_receipts;
 
@@ -767,6 +769,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "account_list",
     "account_show",
     "account_create",
+    "account_rename",
     "txn_post",
     "txn_propose",
     "txn_proposals",

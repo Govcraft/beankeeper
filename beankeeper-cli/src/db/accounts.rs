@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use beankeeper::types::{Account, AccountCode, AccountType};
+use beankeeper::types::{Account, AccountCode, AccountName, AccountType};
 use rusqlite::params;
 
 use super::AccountRow;
@@ -50,12 +50,13 @@ pub fn create_account(
     let code = AccountCode::new(params.code).map_err(|error| {
         CliError::Validation(format!("invalid account code '{}': {error}", params.code))
     })?;
+    let name = params.name.parse()?;
     create_validated_account(
         grant,
         &ValidatedAccountCreation {
             company_slug: params.company_slug,
             code: &code,
-            name: params.name,
+            name: &name,
             account_type: params.account_type,
             default_tax_category: params.default_tax_category,
         },
@@ -65,7 +66,7 @@ pub fn create_account(
 pub(crate) struct ValidatedAccountCreation<'a> {
     pub(crate) company_slug: &'a CompanySlug,
     pub(crate) code: &'a AccountCode,
-    pub(crate) name: &'a str,
+    pub(crate) name: &'a AccountName,
     pub(crate) account_type: AccountType,
     pub(crate) default_tax_category: Option<&'a str>,
 }

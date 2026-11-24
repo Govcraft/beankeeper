@@ -1,11 +1,12 @@
 //! Typed account catalog operations and CLI rendering.
 
-use beankeeper::types::{AccountCode, AccountType, Currency};
+use beankeeper::types::{AccountCode, AccountName, AccountType, Currency};
 use chrono::NaiveDate;
 use serde::{Serialize, Serializer};
 
 use crate::cli::{AccountCommand, Cli, OutputFormat, resolve_format};
 use crate::confirmation::{Confirmed, confirm_deletion};
+use crate::db::audit::account_rename::{self, RenameSubmission};
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::{self, AccountBalanceWindow, Db, accounts};
 use crate::error::CliError;
@@ -46,7 +47,7 @@ pub enum AccountRequest {
     Create {
         company: CompanySlug,
         code: AccountCode,
-        name: String,
+        name: AccountName,
         account_type: AccountType,
         default_tax_category: Option<String>,
     },
@@ -57,6 +58,7 @@ pub enum AccountRequest {
         totals: AccountTotals,
     },
     Show(CompanySlug, AccountCode),
+    Rename(CompanySlug, AccountCode, AccountName),
     Delete(CompanySlug, AccountCode, Confirmed),
 }
 
@@ -68,6 +70,7 @@ impl AccountRequest {
             Self::Create { .. } => Operation::AccountCreate,
             Self::List { .. } => Operation::AccountList,
             Self::Show(..) => Operation::AccountShow,
+            Self::Rename(..) => Operation::AccountRename,
             Self::Delete(..) => Operation::AccountDelete,
         }
     }
@@ -134,6 +137,10 @@ impl AccountRequest {
                 let row = accounts::get_account(&scope, code.as_str())?;
                 (company, AccountData::Rows(vec![row]))
             }
+            Self::Rename(company, code, name) => {
+                let result = account_rename::submit(db, actor, &company, code, name)?;
+                (company, AccountData::Rename(result))
+            }
             Self::Delete(company, code, confirmed) => {
                 Granted::<Admin>::with_db(db, actor, |grant| {
                     db::delete_account(grant, &company, code.as_str(), confirmed)
@@ -153,6 +160,7 @@ enum AccountData {
     Rows(Vec<db::AccountRow>),
     Balances(Vec<db::AccountWithBalanceRow>, AccountBalanceWindow),
     Deleted(AccountCode),
+    Rename(RenameSubmission),
 }
 
 /// Result of an account operation, with the existing JSON data shape.
@@ -170,6 +178,7 @@ impl Serialize for AccountResponse {
                 output::json::account_balance_rows(rows, Some(self.company.as_str()), *window)
                     .serialize(serializer)
             }
+            AccountData::Rename(result) => result.serialize(serializer),
             AccountData::Deleted(code) => {
                 output::json::deleted_data(code.as_str()).serialize(serializer)
             }
@@ -201,6 +210,7 @@ impl AccountResponse {
             (OutputFormat::Csv, AccountData::Balances(rows, _)) => {
                 print!("{}", output::csv::render_accounts_with_balances(rows)?);
             }
+            (_, AccountData::Rename(result)) => println!("{result}"),
             (_, AccountData::Deleted(_)) => {}
         }
         if !cli.verbosity.quiet {
@@ -215,7 +225,7 @@ impl AccountResponse {
                 }
                 AccountData::Balances(rows, _) => print_count(rows.len()),
                 AccountData::Deleted(code) => eprintln!("[ok] Deleted account: {code}"),
-                AccountData::Rows(_) => {}
+                AccountData::Rows(_) | AccountData::Rename(_) => {}
             }
         }
         Ok(())
@@ -272,6 +282,9 @@ impl TryFrom<AccountCliInput<'_>> for Option<AccountRequest> {
                 name: name.clone(),
                 totals: (*with_balances, *from, *to, *currency).try_into()?,
             },
+            AccountCommand::Rename { code, name } => {
+                AccountRequest::Rename(company, code.clone(), name.clone())
+            }
             AccountCommand::Show { code } => {
                 let code = lookup_code(code)?;
                 AccountRequest::Show(company, code)

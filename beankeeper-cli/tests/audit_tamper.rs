@@ -594,6 +594,24 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
     Ok(())
 }
 
+const VERIFICATION_CHECKS: [&str; 15] = [
+    "schema_version",
+    "audit_hash_chain",
+    "ledger_policy",
+    "period_locks",
+    "proposal_resolutions",
+    "spend_limits",
+    "accounting",
+    "creation_snapshots",
+    "account_archives",
+    "account_labels",
+    "transaction_links",
+    "statement_batches",
+    "foreign_keys",
+    "sqlite_integrity",
+    "row_counts",
+];
+
 #[test]
 fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestResult {
     use beankeeper::types::{AccountType, Currency};
@@ -666,25 +684,9 @@ fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestR
         })
     );
     let checks = data["checks"].as_array().ok_or("verification checks")?;
-    let expected = [
-        "schema_version",
-        "audit_hash_chain",
-        "ledger_policy",
-        "period_locks",
-        "proposal_resolutions",
-        "spend_limits",
-        "accounting",
-        "creation_snapshots",
-        "account_archives",
-        "transaction_links",
-        "statement_batches",
-        "foreign_keys",
-        "sqlite_integrity",
-        "row_counts",
-    ];
     assert_eq!(
         checks,
-        &expected.map(|name| json!({"name": name, "outcome": "passed"}))
+        &VERIFICATION_CHECKS.map(|name| json!({"name": name, "outcome": "passed"}))
     );
     assert_eq!(data["desktop_view"]["link"], json!({"view_id": "review"}));
 

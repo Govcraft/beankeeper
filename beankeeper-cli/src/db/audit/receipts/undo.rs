@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{ReceiptChange, ReceiptEvent, ReceiptId, ReceiptTarget, posting_creation};
+use crate::db::audit::account_rename::{self, AccountLabel};
 use crate::db::audit::setup::{
     books::{ProfileRevision, current_profile},
     direct::{self, OnboardingEffect},
@@ -68,6 +69,8 @@ pub enum UndoIneligibility {
     NewerAccountCreation(AccountCode),
     /// There is no active account with this code.
     AccountNotActive(AccountCode),
+    /// The account label or account lifecycle changed after this receipt.
+    AccountNameNotCurrent(AccountCode),
     /// The original rule was removed or superseded.
     RuleNotCurrent(RuleId),
     /// A newer profile revision is still in effect.
@@ -88,6 +91,9 @@ impl fmt::Display for UndoIneligibility {
             }
             Self::AccountNotActive(code) => {
                 write!(formatter, "account '{code}' is no longer active")
+            }
+            Self::AccountNameNotCurrent(code) => {
+                write!(formatter, "account '{code}' changed after this rename")
             }
             Self::RuleNotCurrent(id) => write!(formatter, "rule '{id}' is no longer current"),
             Self::ProfileNotCurrent(revision) => write!(
@@ -138,6 +144,12 @@ pub enum UndoOutcome {
         account: AccountCode,
         undo_receipt: ReceiptId,
     },
+    /// A new label change restores the exact label that preceded the rename.
+    AccountNameRestored {
+        account: AccountCode,
+        name: String,
+        undo_receipt: ReceiptId,
+    },
 }
 
 impl UndoOutcome {
@@ -147,7 +159,8 @@ impl UndoOutcome {
         match *self {
             Self::Reversed { undo_receipt, .. }
             | Self::AnnotationsRestored { undo_receipt, .. }
-            | Self::Archived { undo_receipt, .. } => undo_receipt,
+            | Self::Archived { undo_receipt, .. }
+            | Self::AccountNameRestored { undo_receipt, .. } => undo_receipt,
         }
     }
 }
@@ -217,6 +230,11 @@ impl RuleUndoOutcome {
 enum UndoTarget {
     Posting(TransactionId),
     Account(AccountCode),
+    Rename {
+        code: AccountCode,
+        before: AccountLabel,
+        after: AccountLabel,
+    },
     Annotations(AnnotationUndo),
 }
 
@@ -318,6 +336,13 @@ fn undo_single(
         UndoTarget::Posting(id) => reverse_posting(tx, actor, company, receipt, *id)?,
         UndoTarget::Account(code) => archive_account(tx, actor, scope, receipt, code)?,
         UndoTarget::Annotations(edit) => edit.restore(tx, actor, company, receipt)?,
+        UndoTarget::Rename {
+            code,
+            before,
+            after,
+        } => {
+            account_rename::restore(tx, actor, scope, code, receipt, (before, after))?;
+        }
     }
     recorded_outcome(tx.read(), company, receipt, target)?
         .ok_or_else(|| CliError::Database(format!("undo of receipt #{receipt} was not recorded")))
@@ -479,6 +504,16 @@ fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget,
         (ReceiptTarget::Account(code), AuditAction::Create) => {
             Ok(UndoTarget::Account(code.clone()))
         }
+        (ReceiptTarget::Account(code), AuditAction::AccountRename) if event.undo_of().is_none() => {
+            let ReceiptChange::AccountRenamed { before, after } = event.summary() else {
+                return Err(invalid_stored_target("expected account rename"));
+            };
+            Ok(UndoTarget::Rename {
+                code: code.clone(),
+                before: before.clone(),
+                after: after.clone(),
+            })
+        }
         (ReceiptTarget::Proposal(_), AuditAction::ProposalApprove) => {
             if let Some(id) = event.related_posting()
                 && posting_creation(reader, scope.slug(), id, event.id())?.is_some()
@@ -577,6 +612,20 @@ fn recorded_outcome(
             transaction: edit.transaction,
             undo_receipt,
         })),
+        (
+            UndoTarget::Rename { code, .. },
+            ReceiptTarget::Account(recorded),
+            AuditAction::AccountRename,
+        ) if recorded == code => {
+            let ReceiptChange::AccountRenamed { after, .. } = event.summary() else {
+                return Err(invalid_stored_target("expected account label restoration"));
+            };
+            Ok(Some(UndoOutcome::AccountNameRestored {
+                account: code.clone(),
+                name: after.as_str().to_owned(),
+                undo_receipt,
+            }))
+        }
         _ => Err(invalid_stored_target("undo outcome does not match receipt")),
     }
 }

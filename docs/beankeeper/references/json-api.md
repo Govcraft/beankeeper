@@ -209,6 +209,29 @@ retained ledger or setup data return `VALIDATION` and keep their history.
 
 `normal_balance` is `"debit"` for asset/expense, `"credit"` for liability/equity/revenue.
 
+### `account rename`
+
+A direct rename returns the same `data` in the CLI envelope and from the MCP
+`account_rename` tool.
+
+```json
+{
+  "status": "renamed",
+  "code": "1000",
+  "previous_name": "Cash",
+  "name": "Operating Cash",
+  "receipt_id": 42,
+  "desktop_path": "/changes?company=acme&after=41&through=42#receipt-42"
+}
+```
+
+A no-op with no matching rename receipt returns `status: "unchanged"`, `code`,
+and `name`. A propose-only request returns `status: "proposed"`, `code`, `name`,
+and `proposal_id`. Rename proposals in `txn_proposals` have
+`kind: "account_rename"`. Approving one returns its `receipt_id` and
+`desktop_path`. Undo returns `kind: "account_name_restored"`, `account`, the
+restored `name`, and `undo_receipt`.
+
 ### `loan schedule` and `loan pay`
 
 `loan.schedule` needs no company or ledger unless agent-token verification is
@@ -1150,7 +1173,7 @@ and SQLite high-water mark passed for the local snapshot.
 
 The full `checks` array includes schema version, audit chain, policy, period
 locks, proposal resolutions, spend limits, accounting, creation snapshots,
-relationship links, statement batches, foreign keys, SQLite integrity and row
+account archives, current renamed labels, relationship links, statement batches, foreign keys, SQLite integrity and row
 counts in execution order. Checks have outcome `passed` or `skipped` when the
 snapshot schema predates that check. A failure returns a `DATABASE` error
 instead of a success report. Its message begins with the failed check name.

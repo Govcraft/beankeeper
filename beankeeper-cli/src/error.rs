@@ -1,7 +1,7 @@
 use core::fmt;
 use std::io;
 
-use crate::db::audit::{ReversalBlock, receipts::ReceiptUndoError};
+use crate::db::audit::{DuplicateAccountName, ReversalBlock, receipts::ReceiptUndoError};
 use crate::db::periods::ClosedPostingPeriod;
 
 /// CLI error type with semantic exit codes.
@@ -15,6 +15,8 @@ pub enum CliError {
     Forbidden(String),
     /// Validation error (unbalanced transaction, invalid account). Exit code 3.
     Validation(String),
+    /// A requested account label is already in use in the book.
+    DuplicateAccountName(DuplicateAccountName),
     /// Unsupported or ineligible receipt undo. Exit code 3.
     ReceiptUndo(ReceiptUndoError),
     /// Requested posting date lies in a closed period. Exit code 3.
@@ -48,6 +50,8 @@ pub enum ErrorCode {
     Forbidden,
     /// Inputs violate a domain rule.
     Validation,
+    /// A requested account label is already in use in the book.
+    DuplicateAccountName,
     /// The receipt's change has no undo operation.
     UndoUnsupported,
     /// Current ledger state prevents this receipt's undo.
@@ -73,6 +77,7 @@ impl ErrorCode {
             Self::Unauthorized => "UNAUTHORIZED",
             Self::Forbidden => "FORBIDDEN",
             Self::Validation => "VALIDATION",
+            Self::DuplicateAccountName => "DUPLICATE_ACCOUNT_NAME",
             Self::UndoUnsupported => "UNDO_UNSUPPORTED",
             Self::UndoIneligible => "UNDO_INELIGIBLE",
             Self::Database => "DATABASE",
@@ -86,7 +91,10 @@ impl ErrorCode {
     const fn exit_code(self) -> u8 {
         match self {
             Self::Usage | Self::Unimplemented => 2,
-            Self::Validation | Self::UndoUnsupported | Self::UndoIneligible => 3,
+            Self::Validation
+            | Self::DuplicateAccountName
+            | Self::UndoUnsupported
+            | Self::UndoIneligible => 3,
             Self::Database => 4,
             Self::NotFound => 5,
             Self::Unauthorized => 6,
@@ -122,6 +130,7 @@ impl CliError {
             | Self::Bean(_)
             | Self::PeriodLocked(_)
             | Self::ReversalBlocked(_) => ErrorCode::Validation,
+            Self::DuplicateAccountName(_) => ErrorCode::DuplicateAccountName,
             Self::ReceiptUndo(ReceiptUndoError::Unsupported(_)) => ErrorCode::UndoUnsupported,
             Self::ReceiptUndo(ReceiptUndoError::Ineligible { .. }) => ErrorCode::UndoIneligible,
             Self::Database(_) | Self::Sqlite(_) => ErrorCode::Database,
@@ -191,6 +200,7 @@ impl fmt::Display for CliError {
             | Self::General(msg)
             | Self::Unimplemented(msg) => write!(f, "{msg}"),
             Self::Bean(e) => write!(f, "{e}"),
+            Self::DuplicateAccountName(e) => write!(f, "{e}"),
             Self::ReceiptUndo(e) => write!(f, "{e}"),
             Self::PeriodLocked(e) => write!(f, "{e}"),
             Self::ReversalBlocked(e) => write!(f, "{e}"),
@@ -204,6 +214,7 @@ impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Bean(e) => Some(e),
+            Self::DuplicateAccountName(e) => Some(e),
             Self::ReceiptUndo(e) => Some(e),
             Self::PeriodLocked(e) => Some(e),
             Self::ReversalBlocked(e) => Some(e),
@@ -218,6 +229,12 @@ impl std::error::Error for CliError {
             | Self::General(_)
             | Self::Unimplemented(_) => None,
         }
+    }
+}
+
+impl From<beankeeper::types::EmptyAccountName> for CliError {
+    fn from(error: beankeeper::types::EmptyAccountName) -> Self {
+        Self::Validation(error.to_string())
     }
 }
 

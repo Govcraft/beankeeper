@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod account_code;
+pub mod account_name;
 pub mod account_type;
 pub mod amount;
 pub mod clearance;
@@ -17,6 +18,7 @@ pub mod money;
 
 pub use account::Account;
 pub use account_code::{AccountCode, AccountCodeError};
+pub use account_name::{AccountName, EmptyAccountName};
 pub use account_type::{AccountType, AccountTypeError};
 pub use amount::{Amount, AmountError};
 pub use clearance::{ClearanceStatus, ParseClearanceError};

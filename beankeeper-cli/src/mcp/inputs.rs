@@ -2,7 +2,7 @@
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountType, Currency, DebitOrCredit, Sha256Hex},
+    types::{AccountCode, AccountName, AccountType, Currency, DebitOrCredit, Sha256Hex},
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -22,8 +22,7 @@ use crate::db::audit::receipts::{AuditCursor, ReceiptContinuation, ReceiptId, Re
 use crate::db::audit::setup::{
     Generation,
     books::{
-        BookPurpose, BookSettings, ChartTemplate, FiscalYearStart, ProfileRevision,
-        SetupAccountName, SetupReference,
+        BookPurpose, BookSettings, ChartTemplate, FiscalYearStart, ProfileRevision, SetupReference,
     },
     openings::OpeningDescription,
     statements::{
@@ -154,10 +153,19 @@ pub(crate) struct CompanyCreate {
 pub(crate) struct AccountCreate {
     pub company: Company,
     pub code: Account,
-    pub name: String,
+    pub name: Text<AccountName>,
     #[schemars(with = "Text<AccountType>")]
     pub account_type: AccountType,
     pub default_tax_category: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AccountRename {
+    pub company: Company,
+    /// Existing account code, for example 1000.
+    pub code: Account,
+    pub name: Text<AccountName>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -591,7 +599,7 @@ pub(crate) struct LedgerSetupAccountAdd {
     #[serde(deserialize_with = "deserialize_structured")]
     pub target: SetupTarget,
     pub code: Account,
-    pub name: Text<SetupAccountName>,
+    pub name: Text<AccountName>,
     pub account_type: Text<AccountType>,
 }
 

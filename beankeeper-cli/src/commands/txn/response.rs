@@ -12,7 +12,7 @@ use super::{PostingOutcome, describe_posting, orphaned_correlations};
 use crate::cli::{Cli, OutputFormat, resolve_format};
 use crate::db::{
     AttachmentRow, EntryRow, OrphanedCorrelation, TransactionRow,
-    audit::MetadataResult,
+    audit::{MetadataResult, account_rename::RenameProposal},
     clearings::Clearing,
     companies::CompanySlug,
     holds::{EntryStatus, SettlementOutcome, SettlementResult},
@@ -41,6 +41,32 @@ pub(super) struct TransactionDetails {
     pub clearings: HashMap<EntryId, Vec<Clearing>>,
 }
 
+pub(super) enum ReviewProposal {
+    Posting(Box<Proposal>),
+    Rename(Box<RenameProposal>),
+}
+
+impl From<Proposal> for ReviewProposal {
+    fn from(proposal: Proposal) -> Self {
+        Self::Posting(Box::new(proposal))
+    }
+}
+
+impl From<RenameProposal> for ReviewProposal {
+    fn from(proposal: RenameProposal) -> Self {
+        Self::Rename(Box::new(proposal))
+    }
+}
+
+impl Serialize for ReviewProposal {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Posting(proposal) => ProposalJson::from(proposal.as_ref()).serialize(serializer),
+            Self::Rename(proposal) => proposal.serialize(serializer),
+        }
+    }
+}
+
 pub(super) enum TxnData {
     Posted {
         outcome: PostingOutcome,
@@ -48,8 +74,8 @@ pub(super) enum TxnData {
     },
     Settled(SettlementOutcome),
     Proposed(ProposalCreation),
-    Proposals(Vec<Proposal>),
-    Resolved(Box<Proposal>),
+    Proposals(Vec<ReviewProposal>),
+    Resolved(ReviewProposal),
     Reversed {
         id: TransactionId,
         result: PostResult,
@@ -119,12 +145,8 @@ impl Serialize for TxnResponse {
                 }
                 .serialize(serializer)
             }
-            TxnData::Proposals(proposals) => proposals
-                .iter()
-                .map(ProposalJson::from)
-                .collect::<Vec<_>>()
-                .serialize(serializer),
-            TxnData::Resolved(row) => ProposalJson::from(row.as_ref()).serialize(serializer),
+            TxnData::Proposals(proposals) => proposals.serialize(serializer),
+            TxnData::Resolved(proposal) => proposal.serialize(serializer),
             TxnData::List(list) => {
                 json::transaction_list_data(&list.rows, &list.entries).serialize(serializer)
             }

@@ -5,7 +5,7 @@ use std::{borrow::Cow, fmt, str::FromStr};
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountType, Currency, Sha256Hex},
+    types::{AccountCode, AccountName, AccountType, Currency, Sha256Hex},
 };
 use chrono::NaiveDate;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -363,11 +363,13 @@ impl TextValue for FiscalYearStart {
     }
 }
 
-impl TextValue for crate::commands::setup::SetupAccountName {
+impl TextValue for AccountName {
     const NAME: &'static str = "account name";
 
     fn schema() -> Schema {
-        json_schema!({"type": "string", "minLength": 1})
+        json_schema!({"type": "string", "pattern": "\\S",
+            "description": "Account display name, nonempty after trimming whitespace.",
+            "examples": ["Operating Cash"]})
     }
 }
 
