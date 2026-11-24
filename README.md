@@ -95,7 +95,7 @@ all reads and mutations require tokens. Missing credentials return `UNAUTHORIZED
 | `ledger/post` | Posting/import/attachments/annotations, investment trades, security writes, loan pay, schedule writes, rule writes |
 | `ledger/propose` | Propose, list and withdraw owned pending requests |
 | `ledger/approve` | List all proposals, approve or reject |
-| `ledger/reverse` | txn reverse |
+| `ledger/reverse` | Reverse postings and undo eligible audit receipts |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
 | `ledger/admin` | Company/account writes, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
@@ -151,25 +151,24 @@ sign-off. Existing bookkeeper credentials gain this setup access automatically.
 
 ### Direct posting and optional sign-off
 
-The bookkeeper preset posts directly with `bk txn post` or MCP `txn_post`,
-including when ledger enforcement is on. The result identifies the posted
-transaction. Tell the owner what was posted and give them the transaction ID
-to undo it. An owner with `ledger/reverse` can run `bk txn reverse ID` or call
-`txn_reverse`. The undo appends a linked reversal immediately and preserves
-the original. Use `bk audit log --by-actor` or `audit_log` with `actor` to find
-both actions.
+The bookkeeper preset posts directly with `bk txn post` or MCP `txn_post`.
+Tell the owner what posted and give them the transaction ID. To correct it,
+the same bookkeeper can run `bk txn reverse ID` or use `txn_reverse`. Existing
+direct bookkeeper credentials already have reversal access. A correction
+appends an audited mirror posting and keeps the original in the ledger.
 
-Ask what changed using `bk --company acme --json audit receipts` or MCP
-`audit_receipts`. The result groups related events and includes a saved cursor
-and an optional Desktop detail path. To undo an eligible change, use
-`bk --company acme audit undo RECEIPT` or MCP `audit_undo` with the owner's
-signed `ledger/admin` token. Undo immediately appends a linked reversal or
-archives the account while retaining its history. [Audit receipts and owner undo](docs/beankeeper/references/json-api.md#audit-receipts)
+Use `bk --company acme --json audit receipts` or MCP `audit_receipts` to see
+what changed. Run `bk --company acme audit undo RECEIPT` or MCP `audit_undo` with
+your signed bookkeeper credential to reverse an eligible posting, restore
+annotations, or restore an account label. An owner with a signed `ledger/admin`
+credential can also archive an account created by a receipt or undo a grouped
+setup change. A retry returns the recorded undo and its optional Desktop detail
+link. Report the result to the owner where they asked.
+[Audit receipt fields and errors](docs/beankeeper/references/json-api.md#audit-receipts)
 
-To opt one credential into sign-off, issue it with `--write-mode propose-only`.
-The same posting command or tool then returns a pending proposal with a
-`proposal_…` ID. A separate reviewer approves it with `bk txn approve` or MCP
-`txn_approve`.
+A credential explicitly issued with `--write-mode propose-only` returns a
+pending proposal for a post, reversal, or receipt undo. A separate signed
+reviewer applies a pending correction with `bk txn approve` or `txn_approve`.
 
 ```sh
 bk agent issue --name bookkeeper --public-key "$AGENT_PUBLIC_KEY" --write-mode propose-only
@@ -554,7 +553,7 @@ mutation tools are absent and cannot be called.
 | `inform_preference_show`, `inform_preference_set` | Read or save how often the owner hears about completed changes |
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
-| `audit_receipts`, `audit_undo` | Read grouped changes and undo an eligible receipt under the owner's signed grant |
+| `audit_receipts`, `audit_undo` | Read grouped changes and apply or propose an eligible receipt undo |
 
 MCP discovery publishes input schemas and read-only hints from the ledger
 operation catalog. Input schemas describe nested fields inline. Send objects and
@@ -620,12 +619,14 @@ Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and a
 `values` object such as `{"status":"pending"}`. Legacy `["status=pending"]`
 arrays still work. `txn_meta_unset` takes the same selector and an array such
 as `keys: ["status"]`. Both tools share the CLI validation and return a
-`receipt` for each change. With the owner's signed grant, call `audit_undo` with
+`receipt` for each change. With a signed direct bookkeeper grant, call `audit_undo` with
 that receipt and company to restore the prior annotations in one step.
 Read-only mode omits both write tools.
 
 Call `txn_reverse` with `company` and the original transaction `id`; `date`,
-`description`, and `reference` are optional. It creates a linked mirror posting.
+`description`, and `reference` are optional. A direct grant creates a linked
+mirror posting and returns its audit receipt. Propose-only grants return a
+pending proposal.
 Supply the same explicit `reference` on retries to return the existing reversal
 with `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed;
 existing clearings stay on the original and reversal entries start uncleared.
@@ -925,7 +926,7 @@ whole-object `before`/`after` snapshots and the resolved actor, atomically with
 the edit. Removing the last key leaves `{}`. Setting an identical string or
 removing an absent key is a no-op with no audit row. Other keys and numeric
 precision survive. Use the returned `receipt` with
-`bk audit undo --company COMPANY RECEIPT` under the owner's signed grant to
+`bk audit undo --company COMPANY RECEIPT` under a signed direct bookkeeper grant to
 restore the exact prior metadata. Undo newer annotation edits first.
 Dates, entries, amounts, currency, references, and creation attribution stay
 unchanged. Tagging the original charge preserves its age and payment matching
@@ -1265,10 +1266,10 @@ bk --company personal account rename 1000 "Operating Cash" --json
 
 The equivalent MCP call is `account_rename` with
 `{"company":"personal","code":"1000","name":"Operating Cash"}`.
-The bookkeeper's direct grant returns the previous name, an owner undo receipt,
+The bookkeeper's direct grant returns the previous name, an undo receipt,
 and a Desktop link to the change. A propose-only grant returns a proposal ID for
-`txn_approve`. Use `bk --company personal audit undo RECEIPT_ID` or `audit_undo` with the owner's
-signed grant to restore the previous name.
+`txn_approve`. Use `bk --company personal audit undo RECEIPT_ID` or `audit_undo` with the
+signed bookkeeper grant to restore the previous name.
 
 Set `with_balances: true` in MCP `account_list` or pass `--with-balances`
 to `bk account list` for posted debit and credit totals, a posted balance,
