@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{ReceiptEvent, ReceiptId, ReceiptTarget, posting_creation};
+use super::{ReceiptChange, ReceiptEvent, ReceiptId, ReceiptTarget, posting_creation};
 use crate::db::audit::setup::{
     books::{ProfileRevision, current_profile},
     direct::{self, OnboardingEffect},
@@ -72,6 +72,8 @@ pub enum UndoIneligibility {
     RuleNotCurrent(RuleId),
     /// A newer profile revision is still in effect.
     ProfileNotCurrent(ProfileRevision),
+    /// The transaction's metadata diverged from the receipt or has a newer edit.
+    AnnotationsNotCurrent(TransactionId),
     /// The newly created book still has active accounts or posted activity.
     BookInUse,
 }
@@ -93,6 +95,9 @@ impl fmt::Display for UndoIneligibility {
                 "book profile revision {} is no longer current",
                 revision.get()
             ),
+            Self::AnnotationsNotCurrent(id) => {
+                write!(formatter, "transaction {id} has newer metadata changes")
+            }
             Self::BookInUse => formatter.write_str("book has active accounts or posted activity"),
         }
     }
@@ -123,6 +128,11 @@ pub enum UndoOutcome {
         reversal: TransactionId,
         undo_receipt: ReceiptId,
     },
+    /// The transaction's prior annotations were restored.
+    AnnotationsRestored {
+        transaction: TransactionId,
+        undo_receipt: ReceiptId,
+    },
     /// The account remains in the ledger and rejects ordinary new postings.
     Archived {
         account: AccountCode,
@@ -135,9 +145,9 @@ impl UndoOutcome {
     #[must_use]
     pub const fn receipt(&self) -> ReceiptId {
         match *self {
-            Self::Reversed { undo_receipt, .. } | Self::Archived { undo_receipt, .. } => {
-                undo_receipt
-            }
+            Self::Reversed { undo_receipt, .. }
+            | Self::AnnotationsRestored { undo_receipt, .. }
+            | Self::Archived { undo_receipt, .. } => undo_receipt,
         }
     }
 }
@@ -146,7 +156,7 @@ impl UndoOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum ReceiptUndoOutcome {
-    /// A single account archive or posting reversal.
+    /// A single account archive, posting reversal, or annotation restore.
     Single(UndoOutcome),
     /// A complete onboarding operation reversed in one write.
     Onboarding(OnboardingUndoOutcome),
@@ -207,6 +217,13 @@ impl RuleUndoOutcome {
 enum UndoTarget {
     Posting(TransactionId),
     Account(AccountCode),
+    Annotations(AnnotationUndo),
+}
+
+struct AnnotationUndo {
+    transaction: TransactionId,
+    before: Option<String>,
+    after: String,
 }
 
 // Provenance checked before a rule can be deactivated.
@@ -242,7 +259,7 @@ impl RuleCreation {
     }
 }
 
-/// Undo a single account or posting receipt within the live owner write scope.
+/// Undo a single account, posting, or annotation receipt within the live owner write scope.
 ///
 /// Use [`undo_change`] to also support direct onboarding receipts.
 ///
@@ -265,7 +282,7 @@ pub fn undo_receipt(
     })
 }
 
-/// Undo an account, posting, or complete direct onboarding operation.
+/// Undo an account, posting, annotation, or complete direct onboarding operation.
 ///
 /// # Errors
 /// Returns an authorization, not-found, eligibility, or storage error.
@@ -300,6 +317,7 @@ fn undo_single(
     match target {
         UndoTarget::Posting(id) => reverse_posting(tx, actor, company, receipt, *id)?,
         UndoTarget::Account(code) => archive_account(tx, actor, scope, receipt, code)?,
+        UndoTarget::Annotations(edit) => edit.restore(tx, actor, company, receipt)?,
     }
     recorded_outcome(tx.read(), company, receipt, target)?
         .ok_or_else(|| CliError::Database(format!("undo of receipt #{receipt} was not recorded")))
@@ -481,6 +499,16 @@ fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget,
             }
             Ok(UndoTarget::Posting(*id))
         }
+        (ReceiptTarget::Transaction(id), AuditAction::MetadataSet | AuditAction::MetadataUnset) => {
+            let ReceiptChange::AnnotationsEdited { before, after } = event.summary() else {
+                return Err(invalid_stored_target("missing annotation snapshots"));
+            };
+            Ok(UndoTarget::Annotations(AnnotationUndo {
+                transaction: *id,
+                before: before.clone(),
+                after: after.clone(),
+            }))
+        }
         _ => Err(ReceiptUndoError::Unsupported(receipt).into()),
     }
 }
@@ -541,7 +569,58 @@ fn recorded_outcome(
             account: account.clone(),
             undo_receipt,
         })),
+        (
+            UndoTarget::Annotations(edit),
+            ReceiptTarget::Transaction(recorded),
+            AuditAction::MetadataRestore,
+        ) if *recorded == edit.transaction => Ok(Some(UndoOutcome::AnnotationsRestored {
+            transaction: edit.transaction,
+            undo_receipt,
+        })),
         _ => Err(invalid_stored_target("undo outcome does not match receipt")),
+    }
+}
+
+impl AnnotationUndo {
+    fn restore(
+        &self,
+        tx: &AuditedTx<'_>,
+        actor: &Actor,
+        company: &CompanySlug,
+        receipt: ReceiptId,
+    ) -> Result<(), CliError> {
+        let conn = tx.connection();
+        let target = self.transaction.to_string();
+        let changed = conn.execute(
+            "UPDATE transactions SET metadata = ?1
+             WHERE company_slug = ?2 AND id = ?3 AND metadata IS ?4
+               AND NOT EXISTS (
+                 SELECT 1 FROM audit_log newer
+                 WHERE newer.company_slug = ?2 AND newer.entity = 'transaction'
+                   AND newer.entity_id = ?5 AND newer.id > ?6
+                   AND newer.action IN ('metadata_set', 'metadata_unset')
+                   AND NOT EXISTS (SELECT 1 FROM audit_log restored WHERE restored.undo_of = newer.id)
+               )",
+            params![self.before, company, self.transaction, self.after, target, receipt],
+        )?;
+        if changed == 0 {
+            return Err(ineligible(
+                receipt,
+                UndoIneligibility::AnnotationsNotCurrent(self.transaction),
+            ));
+        }
+        record_with_links(
+            conn,
+            actor,
+            AuditChange {
+                company_slug: Some(company),
+                entity: AuditEntity::Transaction,
+                entity_id: &target,
+                action: AuditAction::MetadataRestore,
+                snapshots: (Some(&self.after), self.before.as_deref()),
+            },
+            AuditLinks::Undo(receipt),
+        )
     }
 }
 

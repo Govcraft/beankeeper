@@ -1918,6 +1918,149 @@ fn invalid_session_token_fails_before_mcp_protocol_starts() -> TestResult {
 }
 
 #[test]
+fn metadata_set_describes_its_schema_and_recovers_from_bad_mcp_inputs() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    let listed = client.request("tools/list", &json!({}))?;
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "txn_meta_set")
+        .ok_or("missing txn_meta_set")?;
+    let example = r#"{"status":"pending"}"#;
+    let reserved = [
+        "correlate",
+        "proposal_id",
+        "reverses",
+        "reversed_by",
+        "applies_to",
+        "beankeeper_source",
+    ];
+    let schema = &tool["inputSchema"];
+    let values = &schema["properties"]["values"];
+    for description in [&tool["description"], &values["description"]] {
+        let text = description.as_str().ok_or("missing description")?;
+        assert!(text.contains(example), "{text}");
+        for key in reserved {
+            assert!(text.contains(key), "missing {key}: {text}");
+        }
+    }
+    assert_eq!(schema["type"], "object");
+    assert_eq!(values["type"], "object");
+    assert_eq!(values["examples"], json!([{"status":"pending"}]));
+    assert!(!schema.to_string().contains(r#""$ref""#), "{schema}");
+
+    let selector = json!({"company":"acme", "reference":"hold-1"});
+    let missing = payload(&client.call(
+        "txn_meta_set",
+        &json!({"company":"acme", "reference":"hold-1", "values":{"status":"pending"}}),
+    )?)?;
+    assert_eq!(missing["code"], "NOT_FOUND");
+    assert_eq!(
+        missing["message"],
+        "transaction with reference 'hold-1' not found in company 'acme'"
+    );
+    client.success("txn_post", &posting("hold-1"))?;
+
+    for (field, input) in [
+        ("values", json!(["pending"])),
+        ("tags", json!(["pending"])),
+        ("values", json!(true)),
+        ("values", json!({"status":true})),
+        ("values", json!({"correlate":"1"})),
+    ] {
+        let mut rejected = selector.clone();
+        rejected[field] = input;
+        let response = client.call("txn_meta_set", &rejected)?;
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let error = payload(&response)?;
+        assert_eq!(error["code"], "VALIDATION");
+        let message = error["message"]
+            .as_str()
+            .ok_or("missing validation message")?;
+        assert!(message.contains(example), "{message}");
+        assert!(
+            !message.contains("--meta") && !message.contains("untagged enum"),
+            "{message}"
+        );
+
+        let mut corrected = selector.clone();
+        corrected["values"] = json!({"status":"pending"});
+        let success = client.success("txn_meta_set", &corrected)?;
+        let stored: Value =
+            serde_json::from_str(success["metadata"].as_str().ok_or("missing metadata")?)?;
+        assert_eq!(stored["status"], "pending");
+    }
+
+    for values in [
+        json!({"pending":"true"}),
+        json!(["status=pending"]),
+        json!(r#"{"status":"pending"}"#),
+        json!(r#"["status=pending"]"#),
+    ] {
+        let mut input = selector.clone();
+        input["values"] = values;
+        client.success("txn_meta_set", &input)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn metadata_validation_wording_matches_cli_and_mcp() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+
+    for (operation, argument, field) in [
+        ("set", "pending", "values"),
+        ("set", "proposal_id=123", "values"),
+        ("set", "=pending", "values"),
+        ("set", r#"quoted"key=pending"#, "values"),
+        ("unset", "beankeeper_source", "keys"),
+    ] {
+        let cli = bk(&path)?
+            .args([
+                "--json",
+                "--company",
+                "acme",
+                "txn",
+                "meta",
+                operation,
+                "1",
+                argument,
+            ])
+            .assert()
+            .failure();
+        let cli_error: Value = serde_json::from_slice(&cli.get_output().stderr)?;
+        let mut input = json!({"company":"acme", "id":1});
+        input[field] = json!([argument]);
+        let mcp_error = payload(&client.call(&format!("txn_meta_{operation}"), &input)?)?;
+        assert_eq!(cli_error["error"]["code"], "VALIDATION");
+        assert_eq!(mcp_error["code"], "VALIDATION");
+        let cli_message = cli_error["error"]["message"]
+            .as_str()
+            .ok_or("missing CLI error")?;
+        let mcp_message = mcp_error["message"].as_str().ok_or("missing MCP error")?;
+        assert!(
+            mcp_message.starts_with(cli_message),
+            "{mcp_message} vs {cli_message}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn metadata_tools_share_cli_rules_and_audit_the_mcp_actor() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -1931,7 +2074,9 @@ fn metadata_tools_share_cli_rules_and_audit_the_mcp_actor() -> TestResult {
     let updated = client.success("txn_meta_set", &set)?;
     assert_eq!(updated["id"], id);
     assert_eq!(updated["changed"], true);
-    assert_eq!(client.success("txn_meta_set", &set)?["changed"], false);
+    let retry = client.success("txn_meta_set", &set)?;
+    assert_eq!(retry["changed"], false);
+    assert_eq!(retry["receipt"], Value::Null);
     let audit = client.success("audit_log", &json!({"action":"metadata_set"}))?;
     assert_eq!(audit.as_array().map(Vec::len), Some(1));
     assert_eq!(audit[0]["actor"], "mcp:codex-test-client");
@@ -5286,7 +5431,7 @@ fn transaction_commands_and_tools_return_the_same_data() -> TestResult {
         client.success(
             "txn_meta_set",
             &json!({
-                "company":"acme", "id":posted["id"], "values":["note=paid"],
+                "company":"acme", "id":posted["id"], "values":{"note":"paid"},
             })
         )?,
     );

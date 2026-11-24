@@ -28,7 +28,7 @@
 //! `$.correlate` is present and not `null`. [`has_correlate`] is the Rust
 //! form; [`SQL_CORRELATE_EXPR`] is the SQL form. Both must agree.
 
-use std::{fmt, str::FromStr};
+use std::{collections::BTreeSet, fmt, str::FromStr};
 
 use serde_json::{Map, Value};
 
@@ -106,15 +106,26 @@ pub(crate) enum LinkKey {
 }
 
 impl LinkKey {
-    pub(crate) fn classify(key: &str) -> Option<Self> {
-        match key {
-            CORRELATE_KEY => Some(Self::Correlate),
-            "reverses" => Some(Self::Reverses),
-            "reversed_by" => Some(Self::ReversedBy),
-            PROPOSAL_KEY => Some(Self::Proposal),
-            "applies_to" => Some(Self::Settlement),
-            _ => None,
+    const ALL: [Self; 5] = [
+        Self::Correlate,
+        Self::Reverses,
+        Self::ReversedBy,
+        Self::Proposal,
+        Self::Settlement,
+    ];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Correlate => CORRELATE_KEY,
+            Self::Reverses => "reverses",
+            Self::ReversedBy => "reversed_by",
+            Self::Proposal => PROPOSAL_KEY,
+            Self::Settlement => "applies_to",
         }
+    }
+
+    pub(crate) fn classify(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|link| link.as_str() == key)
     }
 
     fn validate_post_key(key: &str) -> Result<(), CliError> {
@@ -442,57 +453,219 @@ pub enum MetadataEdit {
     Unset(Vec<String>),
 }
 
-impl MetadataEdit {
-    /// Validates the entire edit before any data is changed.
-    ///
-    /// # Errors
-    /// Returns a validation error for an empty edit, invalid or repeated keys,
-    /// or a relationship key owned by another ledger operation.
-    pub fn validate(&self) -> Result<(), CliError> {
-        let keys: Vec<&str> = match self {
-            Self::Set(pairs) => pairs.iter().map(|(key, _)| key.as_str()).collect(),
-            Self::Unset(keys) => keys.iter().map(String::as_str).collect(),
-        };
-        if keys.is_empty() {
-            return Err(CliError::Validation(
-                "at least one metadata key is required".into(),
-            ));
+/// A user-editable top-level metadata key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct AnnotationKey(String);
+
+impl AnnotationKey {
+    pub(crate) fn reserved() -> impl Iterator<Item = &'static str> {
+        LinkKey::ALL
+            .into_iter()
+            .map(LinkKey::as_str)
+            .chain([TransactionSource::KEY])
+    }
+}
+
+impl AsRef<str> for AnnotationKey {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for AnnotationKey {
+    type Err = AnnotationError;
+
+    fn from_str(key: &str) -> Result<Self, Self::Err> {
+        key.to_owned().try_into()
+    }
+}
+
+impl TryFrom<String> for AnnotationKey {
+    type Error = AnnotationError;
+
+    fn try_from(key: String) -> Result<Self, Self::Error> {
+        if key.is_empty() || key.contains(['"', '\0']) {
+            Err(AnnotationError::InvalidKey(key))
+        } else if Self::reserved().any(|reserved| reserved == key) {
+            Err(AnnotationError::ReservedKey(key))
+        } else {
+            Ok(Self(key))
         }
-        for (index, key) in keys.iter().enumerate() {
-            if key.is_empty() || key.contains('"') {
-                return Err(CliError::Validation(
-                    "metadata keys must be non-empty and must not contain '\"'".into(),
-                ));
+    }
+}
+
+/// A validated annotation key and its unrestricted string value.
+#[derive(Debug, Clone)]
+pub(crate) struct Annotation {
+    key: AnnotationKey,
+    value: String,
+}
+
+impl TryFrom<(String, String)> for Annotation {
+    type Error = AnnotationError;
+
+    fn try_from((key, value): (String, String)) -> Result<Self, Self::Error> {
+        Ok(Self {
+            key: key.try_into()?,
+            value,
+        })
+    }
+}
+
+impl FromStr for Annotation {
+    type Err = AnnotationError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let (key, value) = input
+            .split_once('=')
+            .ok_or(AnnotationError::MissingEquals)?;
+        (key.to_owned(), value.to_owned()).try_into()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum AnnotationError {
+    MissingEquals,
+    InvalidKey(String),
+    ReservedKey(String),
+    EmptyBatch,
+    DuplicateKey(String),
+}
+
+impl fmt::Display for AnnotationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingEquals => {
+                f.write_str("annotation must be key=value, e.g. status=pending")?
             }
-            TransactionSource::validate_annotation_key(key)?;
-            if LinkKey::classify(key).is_some() {
-                return Err(reserved_link_error(key));
-            }
-            if keys[..index].contains(key) {
-                return Err(CliError::Validation(format!(
-                    "duplicate metadata key '{key}'"
-                )));
+            Self::InvalidKey(key) => write!(
+                f,
+                "invalid annotation key {key:?}; use a nonempty key without double quotes or NUL, e.g. status in status=pending"
+            )?,
+            Self::ReservedKey(key) => write!(
+                f,
+                "annotation key '{key}' is reserved; use a custom key, e.g. status in status=pending"
+            )?,
+            Self::EmptyBatch => f.write_str(
+                "provide at least one annotation, e.g. status=pending or the key status",
+            )?,
+            Self::DuplicateKey(key) => {
+                write!(f, "duplicate annotation key '{key}'; provide each key once")?
             }
         }
-        Ok(())
+        write!(
+            f,
+            "; reserved keys: {}",
+            AnnotationKey::reserved().collect::<Vec<_>>().join(", ")
+        )
+    }
+}
+
+impl std::error::Error for AnnotationError {}
+
+impl From<AnnotationError> for CliError {
+    fn from(error: AnnotationError) -> Self {
+        Self::Validation(error.to_string())
+    }
+}
+
+fn check_batch<'a>(
+    keys: impl IntoIterator<Item = &'a AnnotationKey>,
+) -> Result<(), AnnotationError> {
+    let mut seen = BTreeSet::new();
+    for key in keys {
+        if !seen.insert(key) {
+            return Err(AnnotationError::DuplicateKey(key.as_ref().to_owned()));
+        }
+    }
+    if seen.is_empty() {
+        return Err(AnnotationError::EmptyBatch);
+    }
+    Ok(())
+}
+
+/// Nonempty set of assignments with unique, validated keys.
+#[derive(Debug)]
+pub(crate) struct AnnotationValues(Vec<Annotation>);
+
+impl TryFrom<Vec<Annotation>> for AnnotationValues {
+    type Error = AnnotationError;
+
+    fn try_from(annotations: Vec<Annotation>) -> Result<Self, Self::Error> {
+        check_batch(annotations.iter().map(|annotation| &annotation.key))?;
+        Ok(Self(annotations))
+    }
+}
+
+impl TryFrom<Vec<(String, String)>> for AnnotationValues {
+    type Error = AnnotationError;
+
+    fn try_from(pairs: Vec<(String, String)>) -> Result<Self, Self::Error> {
+        pairs
+            .into_iter()
+            .map(Annotation::try_from)
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+    }
+}
+
+impl TryFrom<&[String]> for AnnotationValues {
+    type Error = AnnotationError;
+
+    fn try_from(arguments: &[String]) -> Result<Self, Self::Error> {
+        arguments
+            .iter()
+            .map(|arg| arg.parse::<Annotation>())
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+    }
+}
+
+/// Nonempty set of unique, validated keys to remove.
+#[derive(Debug)]
+pub(crate) struct AnnotationKeys(Vec<AnnotationKey>);
+
+impl TryFrom<&[String]> for AnnotationKeys {
+    type Error = AnnotationError;
+
+    fn try_from(keys: &[String]) -> Result<Self, Self::Error> {
+        let keys = keys
+            .iter()
+            .map(|key| key.parse())
+            .collect::<Result<Vec<_>, _>>()?;
+        check_batch(&keys)?;
+        Ok(Self(keys))
     }
 }
 
 /// An edit whose keys are nonempty, unique and available to user annotations.
-pub(crate) struct ValidatedMetadataEdit(MetadataEdit);
+#[derive(Debug)]
+pub(crate) enum ValidatedMetadataEdit {
+    Set(AnnotationValues),
+    Unset(AnnotationKeys),
+}
 
 impl TryFrom<MetadataEdit> for ValidatedMetadataEdit {
     type Error = CliError;
 
     fn try_from(edit: MetadataEdit) -> Result<Self, Self::Error> {
-        edit.validate()?;
-        Ok(Self(edit))
+        match edit {
+            MetadataEdit::Set(pairs) => Ok(Self::Set(pairs.try_into()?)),
+            MetadataEdit::Unset(keys) => Ok(Self::Unset(keys.as_slice().try_into()?)),
+        }
     }
 }
 
-impl AsRef<MetadataEdit> for ValidatedMetadataEdit {
-    fn as_ref(&self) -> &MetadataEdit {
-        &self.0
+impl ValidatedMetadataEdit {
+    pub(super) fn changes(&self) -> impl Iterator<Item = (&AnnotationKey, Option<&str>)> {
+        let (assignments, removals) = match self {
+            Self::Set(values) => (values.0.as_slice(), [].as_slice()),
+            Self::Unset(keys) => ([].as_slice(), keys.0.as_slice()),
+        };
+        assignments
+            .iter()
+            .map(|item| (&item.key, Some(item.value.as_str())))
+            .chain(removals.iter().map(|key| (key, None)))
     }
 }
 
@@ -509,12 +682,37 @@ mod tests {
         let raw = serde_json::json!({&key: demo.to_string()}).to_string();
         assert!(UserAnnotations::parse(Some(&raw)).is_err());
         assert!(
-            MetadataEdit::Set(vec![(key.clone(), demo.to_string())])
-                .validate()
-                .is_err()
+            ValidatedMetadataEdit::try_from(MetadataEdit::Set(vec![(
+                key.clone(),
+                demo.to_string()
+            )]))
+            .is_err()
         );
-        assert!(MetadataEdit::Unset(vec![key]).validate().is_err());
+        assert!(ValidatedMetadataEdit::try_from(MetadataEdit::Unset(vec![key])).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn annotation_batches_reject_empty_duplicate_and_reserved_keys() {
+        assert!(AnnotationValues::try_from([].as_slice()).is_err());
+        assert!(AnnotationKeys::try_from([].as_slice()).is_err());
+        let keys = ["status".into(), "status".into()];
+        let assignments = ["status=pending".into(), "status=cleared".into()];
+        assert!(matches!(
+            AnnotationKeys::try_from(keys.as_slice()),
+            Err(AnnotationError::DuplicateKey(_))
+        ));
+        assert!(matches!(
+            AnnotationValues::try_from(assignments.as_slice()),
+            Err(AnnotationError::DuplicateKey(_))
+        ));
+        for key in AnnotationKey::reserved() {
+            assert!(matches!(
+                key.parse::<AnnotationKey>(),
+                Err(AnnotationError::ReservedKey(_))
+            ));
+        }
+        assert!("a\0b".parse::<AnnotationKey>().is_err());
     }
 
     fn norm(s: &str) -> Option<String> {

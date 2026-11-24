@@ -7,7 +7,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = DIRECT_SETUP_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = ANNOTATION_UNDO_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -15,6 +15,7 @@ pub(crate) const RECEIPT_SCHEMA_VERSION: i64 = 26;
 pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: i64 = 27;
 const RULE_UNDO_SCHEMA_VERSION: i64 = 28;
 const DIRECT_SETUP_SCHEMA_VERSION: i64 = 29;
+const ANNOTATION_UNDO_SCHEMA_VERSION: i64 = 30;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +189,10 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < DIRECT_SETUP_SCHEMA_VERSION {
         apply_v29(conn)?;
+    }
+
+    if version < ANNOTATION_UNDO_SCHEMA_VERSION {
+        apply_v30(conn)?;
     }
 
     debug_assert_eq!(
@@ -1539,14 +1544,34 @@ fn apply_v29(conn: &Connection) -> Result<(), CliError> {
              );
              INSERT INTO setup_book_profiles SELECT * FROM legacy_book_profiles ORDER BY revision;
              DROP TABLE legacy_book_profiles;
-             CREATE INDEX idx_setup_book_revisions ON setup_book_profiles(company_slug, revision DESC);
-             CREATE UNIQUE INDEX idx_direct_setup_reference ON audit_log(company_slug, entity_id)
-                 WHERE action = 'setup_apply';
-             CREATE INDEX idx_direct_setup_reverts ON audit_log(company_slug)
-                 WHERE action = 'setup_revert';",
+             CREATE INDEX idx_setup_book_revisions ON setup_book_profiles(company_slug, revision DESC);",
         )?;
         Ok(())
     })
+}
+
+/// Add linked annotation undo events without rewriting historical hashes.
+fn apply_v30(conn: &Connection) -> Result<(), CliError> {
+    migrate_audit(
+        conn,
+        AuditTable::AnnotationUndo,
+        ANNOTATION_UNDO_SCHEMA_VERSION,
+    )
+}
+
+fn install_annotation_undo_guard(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(
+        "CREATE TRIGGER protect_annotation_restore BEFORE INSERT ON audit_log
+         WHEN NEW.action = 'metadata_restore' AND NOT EXISTS (
+             SELECT 1 FROM audit_log original
+             WHERE original.id = NEW.undo_of AND original.entity = 'transaction'
+               AND original.action IN ('metadata_set', 'metadata_unset')
+               AND original.company_slug = NEW.company_slug
+               AND original.entity_id = NEW.entity_id
+               AND original.after IS NEW.before AND original.before IS NEW.after
+         ) BEGIN SELECT RAISE(ABORT, 'annotation restore must reverse the original receipt'); END;",
+    )?;
+    Ok(())
 }
 
 fn install_rule_undo_guards(conn: &Connection) -> Result<(), CliError> {
@@ -1610,12 +1635,15 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         ];
         if matches!(
             table,
-            AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup
+            AuditTable::StandingSettings
+                | AuditTable::RuleUndo
+                | AuditTable::DirectSetup
+                | AuditTable::AnnotationUndo
         ) {
             triggers.push("protect_account_archive");
             conn.execute_batch("DROP VIEW audit_receipt_postings")?;
         }
-        if table == AuditTable::DirectSetup {
+        if matches!(table, AuditTable::DirectSetup | AuditTable::AnnotationUndo) {
             conn.execute_batch(
                 "DROP TRIGGER protect_deactivated_rule_insert;
                  DROP TRIGGER protect_deactivated_rule_update;
@@ -1641,12 +1669,29 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         }
         if matches!(
             table,
-            AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup
+            AuditTable::StandingSettings
+                | AuditTable::RuleUndo
+                | AuditTable::DirectSetup
+                | AuditTable::AnnotationUndo
         ) {
             install_receipt_read_paths(conn)?;
         }
-        if matches!(table, AuditTable::RuleUndo | AuditTable::DirectSetup) {
+        if matches!(
+            table,
+            AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo
+        ) {
             install_rule_undo_guards(conn)?;
+        }
+        if matches!(table, AuditTable::DirectSetup | AuditTable::AnnotationUndo) {
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX idx_direct_setup_reference ON audit_log(company_slug, entity_id)
+                     WHERE action = 'setup_apply';
+                 CREATE INDEX idx_direct_setup_reverts ON audit_log(company_slug)
+                     WHERE action = 'setup_revert';",
+            )?;
+        }
+        if table == AuditTable::AnnotationUndo {
+            install_annotation_undo_guard(conn)?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
         if table == AuditTable::Receipts {
@@ -1666,6 +1711,7 @@ enum AuditTable {
     StandingSettings,
     RuleUndo,
     DirectSetup,
+    AnnotationUndo,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1686,6 +1732,7 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             | AuditTable::StandingSettings
             | AuditTable::RuleUndo
             | AuditTable::DirectSetup
+            | AuditTable::AnnotationUndo
     ) {
         let _ = write!(entity, ",'{}'", AuditEntity::Audit);
         let _ = write!(
@@ -1697,7 +1744,10 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
     }
     if matches!(
         table,
-        AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup
+        AuditTable::StandingSettings
+            | AuditTable::RuleUndo
+            | AuditTable::DirectSetup
+            | AuditTable::AnnotationUndo
     ) {
         let _ = write!(
             entity,
@@ -1713,10 +1763,13 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::InformPreferenceSet
         );
     }
-    if matches!(table, AuditTable::RuleUndo | AuditTable::DirectSetup) {
+    if matches!(
+        table,
+        AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo
+    ) {
         let _ = write!(action, ",'{}'", AuditAction::RuleDeactivate);
     }
-    if table == AuditTable::DirectSetup {
+    if matches!(table, AuditTable::DirectSetup | AuditTable::AnnotationUndo) {
         let _ = write!(
             action,
             ",'{}','{}'",
@@ -1724,11 +1777,14 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::SetupRevert
         );
     }
+    if table == AuditTable::AnnotationUndo {
+        let _ = write!(action, ",'{}'", AuditAction::MetadataRestore);
+    }
     (entity, action)
 }
 
 fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
-    if table == AuditTable::DirectSetup {
+    if matches!(table, AuditTable::DirectSetup | AuditTable::AnnotationUndo) {
         (",'setup_revert'", ", CHECK(action <> 'setup_revert' OR (
              entity = 'company' AND undo_of IS NOT NULL AND hash_version = 7)),
              CHECK(action <> 'setup_apply' OR (
@@ -1740,19 +1796,30 @@ fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
-    let (undo_action, rule_check) =
-        if matches!(table, AuditTable::RuleUndo | AuditTable::DirectSetup) {
-            (
-                ",'rule_deactivate'",
-                ", CHECK(action <> 'rule_deactivate' OR (
+    let (undo_action, rule_check) = if matches!(
+        table,
+        AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo
+    ) {
+        (
+            ",'rule_deactivate'",
+            ", CHECK(action <> 'rule_deactivate' OR (
                    entity = 'rule' AND undo_of IS NOT NULL AND hash_version >= 7))",
-            )
-        } else {
-            ("", "")
-        };
+        )
+    } else {
+        ("", "")
+    };
     let (setup_undo, setup_check) = setup_audit_checks(table);
+    let (annotation_undo, annotation_check) = if table == AuditTable::AnnotationUndo {
+        (
+            ",'metadata_restore'",
+            ", CHECK(action <> 'metadata_restore' OR (
+            entity = 'transaction' AND undo_of IS NOT NULL AND hash_version = 7))",
+        )
+    } else {
+        ("", "")
+    };
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -1766,14 +1833,14 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
                  related_posting INTEGER REFERENCES transactions(id),",
                 format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
-                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo})
+                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo})
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
                    CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
                        AND related_posting > 0 AND company_slug IS NOT NULL
                        AND action IN ('reverse', 'proposal_approve', 'correlate'))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}"),
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}"),
                 select_suffix,
             )
         }
@@ -2446,7 +2513,7 @@ mod tests {
     }
 
     #[test]
-    fn v29_preserves_setup_profiles_and_audit_chain() -> Result<(), CliError> {
+    fn v29_and_v30_preserve_setup_profiles_and_audit_chain() -> Result<(), CliError> {
         let conn = v17_connection()?;
         for migrate in [
             apply_v18, apply_v19, apply_v20, apply_v21, apply_v22, apply_v23, apply_v24, apply_v25,
@@ -2473,6 +2540,8 @@ mod tests {
         };
         let before = audit_head()?;
         apply_v29(&conn)?;
+        assert_eq!(get_schema_version(reader)?, DIRECT_SETUP_SCHEMA_VERSION);
+        apply_v30(&conn)?;
         assert_eq!(audit_head()?, before);
         super::super::audit::verify_hash_chain(reader)?;
         let preserved: (i64, i64, String) = conn.query_row(
@@ -2480,7 +2549,14 @@ mod tests {
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         assert_eq!(preserved, (3, 1, "04-01".into()));
-        assert_eq!(get_schema_version(reader)?, DIRECT_SETUP_SCHEMA_VERSION);
+        let indexes: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+             AND name IN ('idx_direct_setup_reference', 'idx_direct_setup_reverts')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(indexes, 2);
+        assert_eq!(get_schema_version(reader)?, ANNOTATION_UNDO_SCHEMA_VERSION);
         Ok(())
     }
 

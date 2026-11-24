@@ -169,6 +169,15 @@ pub enum ReceiptChange {
     PostingReversed,
     /// The posting gained an intercompany link, exposed on the event.
     PostingCorrelated,
+    /// An edit to the transaction's annotations.
+    AnnotationsEdited {
+        /// Exact prior metadata text, when present.
+        before: Option<String>,
+        /// Exact resulting metadata text.
+        after: String,
+    },
+    /// The owner restored the prior annotations.
+    AnnotationsRestored,
     /// A setup action applied directly on the agent's normal connection.
     OnboardingApplied,
     /// Setup submitted transaction proposals through the agent's normal connection.
@@ -427,6 +436,26 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
             let after: ProposalSnapshot = decode.after()?;
             let reference = after.reference.clone().or_else(|| before.reference.clone());
             Ok((ReceiptChange::ProposalResolved { before, after }, reference))
+        }
+        (Entity::Transaction, Action::MetadataSet | Action::MetadataUnset) => {
+            let after = row
+                .after
+                .as_ref()
+                .ok_or_else(|| decode.invalid("after", "missing snapshot"))?;
+            decode.validate_other("before", row.before.as_deref())?;
+            decode.validate_other("after", Some(after))?;
+            Ok((
+                ReceiptChange::AnnotationsEdited {
+                    before: row.before.clone(),
+                    after: after.clone(),
+                },
+                None,
+            ))
+        }
+        (Entity::Transaction, Action::MetadataRestore) => {
+            decode.validate_other("before", row.before.as_deref())?;
+            decode.validate_other("after", row.after.as_deref())?;
+            Ok((ReceiptChange::AnnotationsRestored, None))
         }
         (Entity::Transaction, Action::Reverse | Action::Correlate) => {
             let before: PostingLinkSnapshot = decode.before()?;
