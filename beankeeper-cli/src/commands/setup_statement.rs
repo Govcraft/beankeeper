@@ -12,10 +12,12 @@ use crate::db::{
         Generation,
         books::SetupReference,
         statements::{
-            StatementContent, StatementFormat, StatementInput, StatementRequest, StatementSource,
+            StatementContent, StatementFormat, StatementImport, StatementInput, StatementRequest,
+            StatementSource,
         },
     },
     companies::CompanySlug,
+    holds::HoldMatchOptions,
 };
 use crate::error::CliError;
 
@@ -93,6 +95,8 @@ impl TryFrom<&StatementPreviewArgs> for StatementRequest {
 pub struct StatementImportArgs {
     #[command(flatten)]
     statement: StatementArgs,
+    #[command(flatten)]
+    matching: HoldMatchOptions,
 }
 
 impl StatementImportArgs {
@@ -101,10 +105,13 @@ impl StatementImportArgs {
     }
 }
 
-impl TryFrom<&StatementImportArgs> for StatementInput {
+impl TryFrom<&StatementImportArgs> for StatementImport {
     type Error = CliError;
 
     fn try_from(args: &StatementImportArgs) -> Result<Self, Self::Error> {
-        (&args.statement, StatementContent::read(io::stdin().lock())?).try_into()
+        Ok(Self {
+            input: (&args.statement, StatementContent::read(io::stdin().lock())?).try_into()?,
+            matching: args.matching,
+        })
     }
 }

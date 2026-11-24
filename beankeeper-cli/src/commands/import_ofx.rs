@@ -17,8 +17,10 @@ use ofx_rs::{
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
-use crate::cli::{Cli, ImportFormat, InputSource};
+use super::reference::TransactionReference;
+use crate::cli::{Cli, ImportFormat, TxnImportArgs};
 use crate::db::connection::{Db, ReadConn};
+use crate::db::holds::matching::{BankLine, HoldMatchOptions, PayeeKey, match_bank_import};
 use crate::db::{accounts, transactions};
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
@@ -115,6 +117,7 @@ pub struct ImportedTransaction {
     pub description: String,
     pub amount: Money,
     pub is_inflow: bool,
+    pub(crate) settlement: Option<(crate::db::holds::SettlementLink, NaiveDate)>,
 }
 
 /// A transaction skipped due to duplicate reference.
@@ -241,7 +244,8 @@ pub(crate) struct PreparedTransaction {
     pub(crate) description: String,
     pub(crate) amount_minor: crate::db::amounts::PositiveMinorUnits,
     pub(crate) is_inflow: bool,
-    pub(crate) reference: String,
+    pub(crate) reference: TransactionReference,
+    pub(crate) payee: Option<PayeeKey>,
     pub(crate) metadata: String,
     currency: Currency,
 }
@@ -283,7 +287,14 @@ pub(crate) fn prepare_transaction(
         message: format!("invalid posting date for transaction '{fit_id}'"),
     })?;
     let description = build_description(txn.name(), txn.memo(), fit_id);
-    let reference = build_ofx_reference(currency.code(), account_id, fit_id);
+    let reference = build_ofx_reference(currency.code(), account_id, fit_id)
+        .parse()
+        .map_err(
+            |error: super::reference::EmptyReference| OfxImportError::ParseFailed {
+                message: error.to_string(),
+            },
+        )?;
+    let payee = txn.name().and_then(|name| name.parse().ok());
     let metadata = build_metadata_json(&txn.transaction_type().to_string());
 
     Ok(Some(PreparedTransaction {
@@ -292,6 +303,7 @@ pub(crate) fn prepare_transaction(
         amount_minor,
         is_inflow,
         reference,
+        payee,
         metadata,
         currency,
     }))
@@ -299,6 +311,36 @@ pub(crate) fn prepare_transaction(
 
 /// Post one prepared transaction, returning the outcome.
 fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> TransactionOutcome {
+    let line = BankLine {
+        reference: &prepared.reference,
+        description: &prepared.description,
+        payee: prepared.payee.as_ref(),
+        date: prepared.date,
+        currency: prepared.currency,
+        bank: ctx.account_code,
+        direction: if prepared.is_inflow {
+            beankeeper::types::DebitOrCredit::Debit
+        } else {
+            beankeeper::types::DebitOrCredit::Credit
+        },
+        amount: prepared.amount_minor,
+        metadata: Some(&prepared.metadata),
+    };
+    match match_bank_import(ctx.db, ctx.actor, ctx.company, &line, ctx.matching) {
+        Ok(Some(matched)) => {
+            let id = (!ctx.dry_run).then_some(matched.transaction_id);
+            return TransactionOutcome::Imported(ImportedTransaction {
+                id,
+                date: prepared.date.to_string(),
+                description: prepared.description.clone(),
+                amount: prepared.amount(),
+                is_inflow: prepared.is_inflow,
+                settlement: Some((matched.settlement, matched.date)),
+            });
+        }
+        Ok(None) => {}
+        Err(error) => return failed(prepared, error),
+    }
     // Pre-check for duplicates; an early outcome means we must not post.
     if let Some(outcome) = check_conflict(ctx.reader, ctx.company, prepared, ctx.conflict_strategy)
     {
@@ -324,6 +366,7 @@ fn post_one(ctx: &StatementContext<'_>, prepared: &PreparedTransaction) -> Trans
             description: prepared.description.clone(),
             amount: prepared.amount(),
             is_inflow: prepared.is_inflow,
+            settlement: None,
         });
     }
 
@@ -341,7 +384,7 @@ fn check_conflict(
     prepared: &PreparedTransaction,
     conflict_strategy: transactions::ConflictStrategy,
 ) -> Option<TransactionOutcome> {
-    match transactions::reference_exists(conn, company, &prepared.reference) {
+    match transactions::reference_exists(conn, company, prepared.reference.as_str()) {
         Ok(true) => Some(match conflict_strategy {
             transactions::ConflictStrategy::Error => {
                 TransactionOutcome::Failed(FailedTransaction {
@@ -356,7 +399,7 @@ fn check_conflict(
                     date: prepared.date.to_string(),
                     description: prepared.description.clone(),
                     amount: prepared.amount(),
-                    reference: prepared.reference.clone(),
+                    reference: prepared.reference.to_string(),
                 })
             }
         }),
@@ -422,7 +465,7 @@ fn insert_transaction(
         date: prepared.date,
         entries,
         correlate: None,
-        reference: Some(&prepared.reference),
+        reference: Some(prepared.reference.as_str()),
         on_conflict: ctx.conflict_strategy,
         actor: ctx.actor,
     };
@@ -437,6 +480,7 @@ fn insert_transaction(
                 description: prepared.description.clone(),
                 amount: prepared.amount(),
                 is_inflow: prepared.is_inflow,
+                settlement: None,
             })
         }
         Ok(transactions::PostResult::Skipped(_)) => {
@@ -445,17 +489,23 @@ fn insert_transaction(
                 date: prepared.date.to_string(),
                 description: prepared.description.clone(),
                 amount: prepared.amount(),
-                reference: prepared.reference.clone(),
+                reference: prepared.reference.to_string(),
             })
         }
-        Err(error @ (CliError::Forbidden(_) | CliError::Unauthorized(_))) => {
+        Err(error) => failed(prepared, error),
+    }
+}
+
+fn failed(prepared: &PreparedTransaction, error: CliError) -> TransactionOutcome {
+    match error {
+        error @ (CliError::Forbidden(_) | CliError::Unauthorized(_)) => {
             TransactionOutcome::Denied(error)
         }
-        Err(e) => TransactionOutcome::Failed(FailedTransaction {
+        other => TransactionOutcome::Failed(FailedTransaction {
             date: prepared.date.to_string(),
             description: prepared.description.clone(),
             amount: prepared.amount(),
-            error: e.to_string(),
+            error: other.to_string(),
         }),
     }
 }
@@ -485,6 +535,7 @@ struct StatementContext<'a> {
     dry_run: bool,
     conflict_strategy: transactions::ConflictStrategy,
     verbose: bool,
+    matching: HoldMatchOptions,
 }
 
 /// Process all transactions from a single statement's transaction list.
@@ -594,13 +645,12 @@ pub fn run_import_ofx(
     cli: &Cli,
     db_handle: &Db,
     company: &str,
-    file: &InputSource,
     account_code: &str,
     suspense_code: &str,
-    dry_run: bool,
-    on_conflict: crate::cli::OnConflictArg,
+    args: &TxnImportArgs,
 ) -> Result<(), CliError> {
     let verbose = cli.verbosity.verbose;
+    let dry_run = args.dry_run;
     let actor = cli.principal();
     let rules = crate::db::rules::list_active_rules(&crate::db::companies::Company::bind(
         db_handle.read(),
@@ -608,7 +658,7 @@ pub fn run_import_ofx(
     )?)?;
     let format = crate::cli::resolve_format(None, cli);
 
-    let conflict_strategy = match on_conflict {
+    let conflict_strategy = match args.on_conflict {
         crate::cli::OnConflictArg::Error => transactions::ConflictStrategy::Error,
         crate::cli::OnConflictArg::Skip => transactions::ConflictStrategy::Skip,
     };
@@ -616,36 +666,45 @@ pub fn run_import_ofx(
     validate_accounts(db_handle.read(), company, account_code, suspense_code)?;
 
     // Read and parse OFX.
-    let content = file.read_text()?;
+    let content = args.file.read_text()?;
     let doc = parse_document(&content)?;
 
-    let mut result = ImportResult {
-        imported: Vec::new(),
-        skipped: Vec::new(),
-        errors: Vec::new(),
-    };
-
-    let company_slug = company.parse()?;
-    for stmt in statements(&doc) {
-        let currency = validate_currency(stmt.currency)?;
-        let ctx = StatementContext {
-            reader: db_handle.read(),
-            rules: &rules,
-            actor: &actor,
-            db: db_handle,
-            company: &company_slug,
-            account_code,
-            suspense_code,
-            ofx_account_id: stmt.account_id,
-            currency,
-            dry_run,
-            conflict_strategy,
-            verbose,
+    let import = || {
+        let mut result = ImportResult {
+            imported: Vec::new(),
+            skipped: Vec::new(),
+            errors: Vec::new(),
         };
-        if let Some(list) = stmt.transactions {
-            process_transactions(&ctx, list, &mut result)?;
+
+        let company_slug = company.parse()?;
+        for stmt in statements(&doc) {
+            let currency = validate_currency(stmt.currency)?;
+            let ctx = StatementContext {
+                reader: db_handle.read(),
+                rules: &rules,
+                actor: &actor,
+                db: db_handle,
+                company: &company_slug,
+                account_code,
+                suspense_code,
+                ofx_account_id: stmt.account_id,
+                currency,
+                dry_run,
+                conflict_strategy,
+                verbose,
+                matching: args.hold_matching,
+            };
+            if let Some(list) = stmt.transactions {
+                process_transactions(&ctx, list, &mut result)?;
+            }
         }
-    }
+        Ok(result)
+    };
+    let result = if dry_run {
+        db_handle.preview_write_batch(import)?
+    } else {
+        db_handle.in_write_batch(import)?
+    };
 
     // Render output.
     render_result(&result, cli, company, dry_run, format)?;
@@ -733,6 +792,16 @@ fn render_result(
             }
         }
         summary.push('.');
+
+        let matched = result
+            .imported
+            .iter()
+            .filter(|row| row.settlement.is_some())
+            .count();
+        if matched > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(summary, " Matched {matched} card holds to posted charges.");
+        }
 
         if !cli.verbosity.quiet {
             println!("{summary}");

@@ -12,7 +12,7 @@ use super::{
     openings::OpeningJournal,
     requests::{SetupReference, deserialize_parsed, digest},
     statement_batches::{StatementTransaction, match_prepared},
-    statements::{self, PreparedRow, StatementFormat, StatementInput},
+    statements::{self, PreparedRow, StatementFormat, StatementImport},
 };
 use crate::db::{
     Actor, Db,
@@ -23,6 +23,10 @@ use crate::db::{
         savepoint::AuditedTx,
     },
     companies::CompanySlug,
+    holds::{
+        SettlementResult,
+        matching::{self, BankMatch},
+    },
     ids::{ReceiptId, TransactionId},
     proposals::{self, ProposalId},
     transactions,
@@ -356,89 +360,174 @@ pub struct StatementProposal {
     /// ID to look up or resolve with the transaction proposal tools.
     #[serde(deserialize_with = "deserialize_parsed")]
     pub proposal_id: ProposalId,
+    /// Original hold when approval would settle a pending authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_hold_id: Option<TransactionId>,
 }
 
 pub(crate) fn import_statement(
     db: &Db,
     actor: &Actor,
     reference: &SetupReference,
-    request: &StatementInput,
+    request: &StatementImport,
 ) -> Result<StatementSubmission, CliError> {
     let company = request.company();
-    let fingerprint = request.fingerprint()?;
+    let fingerprint = request.input.fingerprint()?;
+    let fingerprint_input = |kind| {
+        if request.matching.is_default() {
+            // Keep exact retries of receipts written before matching was introduced.
+            json!([kind, fingerprint.as_str()])
+        } else {
+            json!([kind, fingerprint.as_str(), request.matching])
+        }
+    };
     OnboardingPostingGrant::with_db(db, actor, |grant| match grant {
         OnboardingPostingGrant::Direct(grant) => {
-            let input = json!(["statement-import-v1", fingerprint.as_str()]);
+            let input = fingerprint_input("statement-import-v1");
             apply_once(grant, company, reference, &input, |scope| {
-                let statement = statements::prepare(scope.tx.read(), request)?;
-                let mut receipts = Vec::new();
-                let (created, preexisting) =
-                    write_statement_rows(scope.tx.read(), company, statement.rows, |row| {
-                        let reference = row.reference.as_str();
-                        let transaction_id =
-                            transactions::post_onboarding(scope, company, &row.journal, reference)?;
-                        receipts.push(scope.latest_receipt()?);
-                        Ok(StatementTransaction {
-                            reference: reference.to_owned(),
-                            transaction_id,
-                        })
-                    })?;
-                let result = StatementImported {
-                    format: statement.format,
-                    source_sha256: statement.content_hash,
-                    created,
-                    preexisting,
-                };
-                Ok((result, Some(OnboardingEffect::Statement { receipts })))
+                post_statement(scope, request)
             })
             .map(StatementSubmission::Imported)
         }
         OnboardingPostingGrant::Proposal(grant) => {
-            let input = json!(["statement-propose-v1", fingerprint.as_str()]);
+            let input = fingerprint_input("statement-propose-v1");
             apply_once(grant, company, reference, &input, |scope| {
-                let statement = statements::prepare(scope.tx.read(), request)?;
-                let (proposals, preexisting) =
-                    write_statement_rows(scope.tx.read(), company, statement.rows, |row| {
-                        let reference = row.reference.as_str();
-                        let proposal_id =
-                            proposals::reserve_onboarding(scope, company, &row.journal, reference)?;
-                        Ok(StatementProposal {
-                            reference: reference.to_owned(),
-                            proposal_id,
-                        })
-                    })?;
-                Ok((
-                    StatementProposed {
-                        format: statement.format,
-                        source_sha256: statement.content_hash,
-                        proposals,
-                        preexisting,
-                    },
-                    None,
-                ))
+                propose_statement(scope, request)
             })
             .map(StatementSubmission::Proposed)
         }
     })
 }
 
+fn post_statement(
+    scope: &OnboardingWrite<'_, crate::db::audit::grant::OnboardingPost>,
+    request: &StatementImport,
+) -> Result<(StatementImported, Option<OnboardingEffect>), CliError> {
+    let company = request.company();
+    let statement = statements::prepare(scope.tx.read(), &request.input)?;
+    let mut receipts = Vec::new();
+    let (created, preexisting) =
+        write_statement_rows(scope.tx.read(), company, statement.rows, |row| {
+            let reference = row.reference.as_str();
+            let posting = matching::post_onboarding(
+                scope,
+                company,
+                &row.bank_line(&statement.bank),
+                request.matching,
+            )?;
+            let created = match posting {
+                Some(BankMatch::Existing(result)) => {
+                    return Ok(RowWrite::Preexisting(settled(reference, &result)));
+                }
+                Some(BankMatch::New(result)) => settled(reference, &result),
+                None if row.existing_transaction.is_some() => {
+                    return Ok(RowWrite::Unmatched);
+                }
+                None => StatementTransaction {
+                    reference: reference.to_owned(),
+                    transaction_id: transactions::post_onboarding(
+                        scope,
+                        company,
+                        &row.journal,
+                        reference,
+                    )?,
+                    settlement: None,
+                },
+            };
+            receipts.push(scope.latest_receipt()?);
+            Ok(RowWrite::Created(created))
+        })?;
+    let result = StatementImported {
+        format: statement.format,
+        source_sha256: statement.content_hash,
+        created,
+        preexisting,
+    };
+    Ok((result, Some(OnboardingEffect::Statement { receipts })))
+}
+
+fn propose_statement(
+    scope: &OnboardingWrite<'_, crate::db::audit::grant::OnboardingPropose>,
+    request: &StatementImport,
+) -> Result<(StatementProposed, Option<OnboardingEffect>), CliError> {
+    let company = request.company();
+    let statement = statements::prepare(scope.tx.read(), &request.input)?;
+    let (proposals, preexisting) =
+        write_statement_rows(scope.tx.read(), company, statement.rows, |row| {
+            let reference = row.reference.as_str();
+            let posting = matching::propose_onboarding(
+                scope,
+                company,
+                &row.bank_line(&statement.bank),
+                request.matching,
+            )?;
+            let (proposal_id, matched_hold_id) = match posting {
+                Some(BankMatch::Existing(result)) => {
+                    return Ok(RowWrite::Preexisting(settled(reference, &result)));
+                }
+                Some(BankMatch::New((id, hold))) => (id, Some(hold)),
+                None if row.existing_transaction.is_some() => {
+                    return Ok(RowWrite::Unmatched);
+                }
+                None => (
+                    proposals::reserve_onboarding(scope, company, &row.journal, reference)?,
+                    None,
+                ),
+            };
+            Ok(RowWrite::Created(StatementProposal {
+                reference: reference.to_owned(),
+                proposal_id,
+                matched_hold_id,
+            }))
+        })?;
+    Ok((
+        StatementProposed {
+            format: statement.format,
+            source_sha256: statement.content_hash,
+            proposals,
+            preexisting,
+        },
+        None,
+    ))
+}
+
+fn settled(reference: &str, result: &SettlementResult) -> StatementTransaction {
+    StatementTransaction {
+        reference: reference.to_owned(),
+        transaction_id: result.transaction_id,
+        settlement: Some(result.settlement),
+    }
+}
+
+enum RowWrite<T> {
+    Created(T),
+    Preexisting(StatementTransaction),
+    Unmatched,
+}
+
 fn write_statement_rows<T>(
     reader: crate::db::connection::ReadConn<'_>,
     company: &CompanySlug,
     rows: Vec<PreparedRow>,
-    mut write: impl FnMut(PreparedRow) -> Result<T, CliError>,
+    mut write: impl FnMut(&PreparedRow) -> Result<RowWrite<T>, CliError>,
 ) -> Result<(Vec<T>, Vec<StatementTransaction>), CliError> {
     let mut created = Vec::new();
     let mut preexisting = Vec::new();
     for row in rows {
-        if let Some(transaction_id) = row.existing_transaction {
-            match_prepared(reader, company, &row, transaction_id)?;
-            preexisting.push(StatementTransaction {
-                reference: row.reference.as_str().to_owned(),
-                transaction_id,
-            });
-        } else {
-            created.push(write(row)?);
+        match write(&row)? {
+            RowWrite::Created(result) => created.push(result),
+            RowWrite::Preexisting(result) => preexisting.push(result),
+            RowWrite::Unmatched => {
+                let transaction_id = row.existing_transaction.ok_or_else(|| {
+                    CliError::Database("statement writer omitted a new row".into())
+                })?;
+                match_prepared(reader, company, &row, transaction_id)?;
+                preexisting.push(StatementTransaction {
+                    reference: row.reference.into(),
+                    transaction_id,
+                    settlement: None,
+                });
+            }
         }
     }
     Ok((created, preexisting))

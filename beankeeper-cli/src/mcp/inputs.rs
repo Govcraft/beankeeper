@@ -27,7 +27,8 @@ use crate::db::audit::setup::{
     },
     openings::OpeningDescription,
     statements::{
-        StatementContent, StatementFormat, StatementInput, StatementRequest, StatementSource,
+        StatementContent, StatementFormat, StatementImport, StatementInput, StatementRequest,
+        StatementSource,
     },
 };
 use crate::db::audit::{AuditPageLimit, AuditPageOffset};
@@ -36,7 +37,7 @@ use crate::db::standing::{BookkeepingPolicy, InformPreference};
 use crate::db::{
     ActorLabel,
     companies::CompanyName,
-    holds::{EntryStatus, SettlementAmount},
+    holds::{EntryStatus, HoldMatchOptions, SettlementAmount, StaleHoldAge},
     ids::{EntryId, PartnerTransactionId, StatementBatchId, TransactionId},
     investments::LotId,
     metadata::{AnnotationKey, AnnotationKeys, AnnotationValues},
@@ -424,12 +425,20 @@ pub(crate) struct LedgerSetupStatementPreview {
     /// Active setup generation.
     generation: Generation,
     #[serde(flatten)]
-    statement: LedgerSetupStatementImport,
+    statement: LedgerStatementSource,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LedgerSetupStatementImport {
+    #[serde(flatten)]
+    statement: LedgerStatementSource,
+    #[serde(flatten)]
+    matching: HoldMatchOptions,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct LedgerStatementSource {
     /// Stable reference for exact retries.
     reference: Text<SetupReference>,
     /// Company slug of the book.
@@ -450,10 +459,10 @@ pub(crate) struct LedgerSetupStatementImport {
     csv: Option<CsvMapping>,
 }
 
-impl TryFrom<LedgerSetupStatementImport> for (SetupReference, StatementInput) {
+impl TryFrom<LedgerStatementSource> for (SetupReference, StatementInput) {
     type Error = CliError;
 
-    fn try_from(input: LedgerSetupStatementImport) -> Result<Self, Self::Error> {
+    fn try_from(input: LedgerStatementSource) -> Result<Self, Self::Error> {
         let request = StatementInput {
             company: input.company.into_inner(),
             accounts: (input.bank.into_inner(), input.suspense.into_inner()).try_into()?,
@@ -483,8 +492,14 @@ impl TryFrom<LedgerSetupStatementImport> for crate::commands::setup::SetupReques
     type Error = CliError;
 
     fn try_from(input: LedgerSetupStatementImport) -> Result<Self, Self::Error> {
-        let (reference, statement) = input.try_into()?;
-        Ok(Self::StatementImport(reference, statement))
+        let (reference, statement) = input.statement.try_into()?;
+        Ok(Self::StatementImport(
+            reference,
+            StatementImport {
+                input: statement,
+                matching: input.matching,
+            },
+        ))
     }
 }
 
@@ -1187,6 +1202,9 @@ pub(crate) struct SummaryOptions {
     /// Receivable asset accounts. Defaults to accounts named receivable.
     #[serde(default, deserialize_with = "deserialize_structured")]
     pub receivable_account: Vec<Account>,
+    /// Show open card holds older than this many days.
+    #[serde(default)]
+    pub stale_hold_age_days: StaleHoldAge,
     /// Payable liability accounts. Defaults to accounts named payable.
     #[serde(default, deserialize_with = "deserialize_structured")]
     pub payable_account: Vec<Account>,

@@ -25,6 +25,7 @@ use crate::db::{
     self, Actor, BalanceRow,
     companies::{Company, CompanySlug},
     connection::{Db, ReadConn},
+    holds::StaleHoldAge,
 };
 use crate::error::CliError;
 use crate::output::amounts::MoneyField;
@@ -55,6 +56,9 @@ pub struct SummaryArgs {
     /// Receivable asset account (repeatable). Defaults to names containing receivable.
     #[arg(long = "receivable-account")]
     pub receivable_account: Vec<String>,
+    /// Show open card holds older than this many days.
+    #[arg(long, default_value_t)]
+    pub stale_hold_age_days: StaleHoldAge,
     /// Payable liability account (repeatable). Defaults to names containing payable.
     #[arg(long = "payable-account")]
     pub payable_account: Vec<String>,
@@ -232,6 +236,7 @@ pub struct SummaryRequest {
     currency: Option<Currency>,
     accounts: SummaryAccounts,
     chart: ChartRequest,
+    stale_hold_age: StaleHoldAge,
 }
 
 /// Optional exact account selections, grouped by their role in the summary.
@@ -262,6 +267,7 @@ impl SummaryRequest {
         currency: Option<Currency>,
         accounts: SummaryAccounts,
         chart: ChartRequest,
+        stale_hold_age: StaleHoldAge,
     ) -> Result<Self, CliError> {
         Ok(Self {
             company,
@@ -269,6 +275,7 @@ impl SummaryRequest {
             currency,
             accounts,
             chart,
+            stale_hold_age,
         })
     }
 }
@@ -284,7 +291,14 @@ impl TryFrom<(CompanySlug, SummaryDates, Option<Currency>, SummaryAccounts)> for
             SummaryAccounts,
         ),
     ) -> Result<Self, Self::Error> {
-        Self::new(company, dates, currency, accounts, ChartRequest::default())
+        Self::new(
+            company,
+            dates,
+            currency,
+            accounts,
+            ChartRequest::default(),
+            StaleHoldAge::default(),
+        )
     }
 }
 
@@ -321,6 +335,7 @@ impl TryFrom<(&CompanySlug, &SummaryArgs, ChartRequest)> for SummaryRequest {
                 payables: accounts(&args.payable_account),
             },
             chart,
+            args.stale_hold_age_days,
         )
     }
 }
@@ -575,6 +590,7 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
         periods,
         currency,
         accounts,
+        stale_hold_age,
         ..
     } = request;
     let scope = Company::bind(reader, company.clone())?;
@@ -611,6 +627,7 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
         company,
         currency,
         as_of: periods.current.to,
+        stale_hold_age,
         cash: &cash,
         receivables: &receivables,
         payables: &payables,
@@ -619,6 +636,7 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
         company,
         currency,
         &periods,
+        stale_hold_age,
         &model::SelectedAccounts {
             cash: &cash,
             receivable: &receivables,

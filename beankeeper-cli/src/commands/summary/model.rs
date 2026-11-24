@@ -1,5 +1,6 @@
 //! Pure comparisons, stable view targets and brief factual wording.
 
+use crate::db::holds::StaleHoldAge;
 use beankeeper::types::{Currency, Money};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Number, Value, json};
@@ -154,6 +155,8 @@ struct ViewState<'a> {
     to: chrono::NaiveDate,
     compare_from: chrono::NaiveDate,
     compare_to: chrono::NaiveDate,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stale_hold_age_days: Option<StaleHoldAge>,
     #[serde(flatten)]
     accounts: &'a SelectedAccounts<'a>,
 }
@@ -168,6 +171,7 @@ pub(super) fn desktop_view(
     company: &str,
     currency: Currency,
     periods: &Periods,
+    stale_hold_age_days: StaleHoldAge,
     accounts: &SelectedAccounts<'_>,
 ) -> Value {
     let state = ViewState {
@@ -177,6 +181,8 @@ pub(super) fn desktop_view(
         to: periods.current.to,
         compare_from: periods.prior.from,
         compare_to: periods.prior.to,
+        stale_hold_age_days: (stale_hold_age_days != StaleHoldAge::default())
+            .then_some(stale_hold_age_days),
         accounts,
     };
     let uri = legacy_view_uri(&state);
@@ -205,6 +211,9 @@ fn legacy_view_uri(state: &ViewState<'_>) -> String {
         state.compare_from,
         state.compare_to,
     );
+    if let Some(age) = state.stale_hold_age_days {
+        let _ = write!(uri, "&stale_hold_age_days={age}");
+    }
     for (name, codes) in [
         ("cash_account", state.accounts.cash),
         ("receivable_account", state.accounts.receivable),

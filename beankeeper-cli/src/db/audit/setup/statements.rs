@@ -19,7 +19,17 @@ use crate::commands::{
     statement_source::{self, SourceRow},
     txn_import::{CsvMapping, read_csv_statement},
 };
-use crate::db::{accounts, companies::CompanySlug, ids::TransactionId, periods, rules};
+use crate::db::{
+    accounts,
+    amounts::PositiveMinorUnits,
+    companies::CompanySlug,
+    holds::{
+        HoldMatchOptions,
+        matching::{BankLine, PayeeKey},
+    },
+    ids::TransactionId,
+    periods, rules,
+};
 use crate::error::CliError;
 
 pub(crate) const MAX_CONTENT_BYTES: usize = 1024 * 1024;
@@ -245,6 +255,20 @@ impl StatementInput {
     }
 }
 
+/// A live statement import and its typed pending-hold matching policy.
+pub struct StatementImport {
+    pub(crate) input: StatementInput,
+    pub(crate) matching: HoldMatchOptions,
+}
+
+impl StatementImport {
+    /// The book to which the statement belongs.
+    #[must_use]
+    pub const fn company(&self) -> &CompanySlug {
+        self.input.company()
+    }
+}
+
 pub(super) struct StatementPreview {
     pub(super) company: CompanySlug,
     pub(super) bank: AccountCode,
@@ -259,6 +283,25 @@ pub(super) struct PreparedRow {
     pub(super) reference: TransactionReference,
     pub(super) journal: Transaction,
     pub(super) existing_transaction: Option<TransactionId>,
+    payee: Option<PayeeKey>,
+    bank_direction: DebitOrCredit,
+    bank_amount: PositiveMinorUnits,
+}
+
+impl PreparedRow {
+    pub(super) fn bank_line<'a>(&'a self, bank: &'a AccountCode) -> BankLine<'a> {
+        BankLine {
+            reference: &self.reference,
+            description: self.journal.description(),
+            payee: self.payee.as_ref(),
+            date: self.journal.date(),
+            currency: self.journal.currency(),
+            bank: bank.as_str(),
+            direction: self.bank_direction,
+            amount: self.bank_amount,
+            metadata: self.journal.metadata(),
+        }
+    }
 }
 
 pub(super) fn prepare_in_session(
@@ -399,5 +442,8 @@ fn prepare_row(
         reference: row.reference,
         journal: journal.post()?,
         existing_transaction,
+        payee: row.payee,
+        bank_direction: row.bank_direction,
+        bank_amount: row.amount.money().amount().try_into()?,
     })
 }

@@ -275,6 +275,7 @@ impl TryFrom<FinancialSummary> for SummaryRequest {
                 payables: accounts(options.payable_account),
             },
             ChartRequest::try_from((input.chart, input.chart_all))?,
+            options.stale_hold_age_days,
         )
     }
 }

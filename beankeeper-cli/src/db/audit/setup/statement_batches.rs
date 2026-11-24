@@ -128,6 +128,9 @@ pub struct StatementTransaction {
     pub reference: String,
     /// ID accepted by the standard transaction and reversal commands.
     pub transaction_id: TransactionId,
+    /// Original hold and signed minor-unit delta when the row settled a hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<crate::db::holds::SettlementLink>,
 }
 
 /// Provenance and idempotent outcome of a committed statement batch.
@@ -748,6 +751,7 @@ fn apply_batch(
         items.push(StatementTransaction {
             reference: row.reference.clone(),
             transaction_id,
+            settlement: None,
         });
     }
     Ok(receipt)

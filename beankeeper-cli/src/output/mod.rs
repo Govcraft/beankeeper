@@ -143,3 +143,37 @@ impl DesktopRegister {
         }
     }
 }
+
+/// Chartable delta and register target for a statement import settlement.
+#[derive(serde::Serialize)]
+pub(crate) struct ImportSettlement {
+    settlement: crate::db::holds::SettlementLink,
+    #[serde(serialize_with = "json::serialize_display")]
+    settlement_currency: beankeeper::types::Currency,
+    amount_delta_display: String,
+    desktop_view: DesktopRegister,
+}
+
+impl ImportSettlement {
+    pub(crate) fn new(
+        settlement: crate::db::holds::SettlementLink,
+        company: &str,
+        account: Option<&str>,
+        currency: beankeeper::types::Currency,
+        date: chrono::NaiveDate,
+    ) -> Self {
+        let delta =
+            beankeeper::types::Money::from_minor(i128::from(settlement.amount_delta()), currency);
+        Self {
+            settlement,
+            settlement_currency: currency,
+            amount_delta_display: amounts::format_money(delta),
+            desktop_view: DesktopRegister::new(
+                company,
+                currency,
+                account,
+                (Some(date), Some(date)),
+            ),
+        }
+    }
+}

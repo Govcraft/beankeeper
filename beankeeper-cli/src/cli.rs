@@ -2089,6 +2089,10 @@ pub struct TxnImportArgs {
     #[command(flatten)]
     pub options: crate::commands::txn_import::ImportOptions,
 
+    /// Pending-hold matching settings for CSV and OFX.
+    #[command(flatten)]
+    pub(crate) hold_matching: crate::db::holds::matching::HoldMatchOptions,
+
     /// Bank/asset account code (required for OFX and CSV import).
     #[arg(long)]
     pub account: Option<String>,

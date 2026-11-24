@@ -904,6 +904,8 @@ pub fn render_import_result(
         status: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(flatten, skip_serializing_if = "Option::is_none")]
+        settlement: Option<super::ImportSettlement>,
     }
 
     let mut transactions = Vec::new();
@@ -915,8 +917,19 @@ pub fn render_import_result(
             description: t.description.clone(),
             amount: MoneyField::new("amount", t.amount),
             currency: t.amount.currency(),
-            status: "imported".to_string(),
+            status: "imported".into(),
             reason: None,
+            settlement: t.settlement.and_then(|(settlement, date)| {
+                meta.company.as_deref().map(|company| {
+                    super::ImportSettlement::new(
+                        settlement,
+                        company,
+                        None,
+                        t.amount.currency(),
+                        date,
+                    )
+                })
+            }),
         });
     }
     for t in &result.skipped {
@@ -928,6 +941,7 @@ pub fn render_import_result(
             currency: t.amount.currency(),
             status: "skipped".to_string(),
             reason: Some("duplicate".to_string()),
+            settlement: None,
         });
     }
     for t in &result.errors {
@@ -939,6 +953,7 @@ pub fn render_import_result(
             currency: t.amount.currency(),
             status: "error".to_string(),
             reason: Some(t.error.clone()),
+            settlement: None,
         });
     }
 
