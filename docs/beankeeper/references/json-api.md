@@ -1173,7 +1173,7 @@ and SQLite high-water mark passed for the local snapshot.
 
 The full `checks` array includes schema version, audit chain, policy, period
 locks, proposal resolutions, spend limits, accounting, creation snapshots,
-relationship links, statement batches, foreign keys, SQLite integrity and row
+account archives, current renamed labels, relationship links, statement batches, foreign keys, SQLite integrity and row
 counts in execution order. Checks have outcome `passed` or `skipped` when the
 snapshot schema predates that check. A failure returns a `DATABASE` error
 instead of a success report. Its message begins with the failed check name.
