@@ -26,7 +26,7 @@ pub enum ReceiptTarget {
     Rule(RuleId),
     /// Immutable posting.
     Transaction(TransactionId),
-    /// A posting or account rename proposal.
+    /// A posting or ledger change proposal.
     Proposal(ProposalId),
     /// A posted journal entry.
     Entry(EntryId),
@@ -50,7 +50,9 @@ impl TryFrom<(AuditEntity, &str)> for ReceiptTarget {
                 .parse()
                 .map(Self::Transaction)
                 .map_err(invalid_stored_value),
-            AuditEntity::Proposal | AuditEntity::AccountRenameProposal => {
+            AuditEntity::Proposal
+            | AuditEntity::AccountRenameProposal
+            | AuditEntity::CorrectionProposal => {
                 id.parse().map(Self::Proposal).map_err(invalid_stored_value)
             }
             AuditEntity::Entry => id.parse().map(Self::Entry).map_err(invalid_stored_value),

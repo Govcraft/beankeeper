@@ -107,12 +107,12 @@ fn existing_direct_bookkeeper_can_onboard_and_owner_can_undo() -> TestResult {
     let (account, opening, imported) = post_and_import(&mut agent, &path, &passfile, token)?;
 
     let listed = agent.request("tools/list", &json!({}))?;
-    assert!(!tool_names(&listed)?.contains("audit_undo"));
+    assert!(tool_names(&listed)?.contains("audit_undo"));
     let receipt = imported["receipt_id"].to_string();
     cli(&path, &passfile, token)?
         .args(["--company", "home", "audit", "undo", &receipt])
         .assert()
-        .code(7);
+        .code(3);
     let reverted = undo(&mut owner, "home", &imported)?;
     assert_eq!(reverted["child_receipts"].as_array().map(Vec::len), Some(2));
     assert_eq!(

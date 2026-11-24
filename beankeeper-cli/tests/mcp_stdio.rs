@@ -4,6 +4,8 @@
 mod account_rename;
 #[path = "mcp_stdio/audit_receipts.rs"]
 mod audit_receipts;
+#[path = "mcp_stdio/corrections.rs"]
+mod corrections;
 
 #[path = "mcp_stdio/holds.rs"]
 mod holds;
@@ -2738,10 +2740,7 @@ fn rule_creation_undo_is_owner_only_and_identical_via_cli_and_mcp() -> TestResul
         let args = json!({"company":"acme", "id":id});
         let candidate = json!({"company":"acme", "description":pattern});
         assert_eq!(reader.success("rule_match", &candidate)?["rule"]["id"], id);
-        assert_eq!(
-            payload(&agent.call("rule_undo", &args)?)?["code"],
-            "FORBIDDEN"
-        );
+        assert_eq!(agent.call("rule_undo", &args)?["error"]["code"], -32602);
         cli(None)?.args(["rule", "undo", id]).assert().code(6);
         let wrong_company = json!({"company":"other", "id":id});
         assert_eq!(
@@ -2901,7 +2900,8 @@ fn posting_tool_follows_signed_write_mode_and_owner_undoes_direct_posts() -> Tes
         let names = tool_names(&tools)?;
         assert!(names.contains("txn_post"));
         assert!(!names.contains("txn_approve"));
-        assert!(!names.contains("txn_reverse"));
+        assert!(names.contains("txn_reverse"));
+        assert!(names.contains("audit_undo"));
 
         let posted = bookkeeper.success("txn_post", &posting(&format!("direct-{enforce}")))?;
         assert_eq!(posted["created"], true);
@@ -3252,13 +3252,9 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let listed = writer.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
     assert!(names.contains("txn_post"));
-    for forbidden in [
-        "txn_reverse",
-        "txn_reconcile",
-        "txn_clear",
-        "budget_set",
-        "account_create",
-    ] {
+    assert!(names.contains("txn_reverse"));
+    assert!(names.contains("audit_undo"));
+    for forbidden in ["txn_reconcile", "txn_clear", "budget_set", "account_create"] {
         assert!(!names.contains(forbidden));
     }
     let posted = writer.success("txn_post", &posting("enforced"))?;
@@ -5234,13 +5230,7 @@ fn same_company_correlation_suggests_audited_alternatives_without_posting() -> T
     let error = payload(&response)?;
     assert_eq!(error["code"], "VALIDATION");
     let message = error["message"].as_str().ok_or("missing validation text")?;
-    for guidance in [
-        "same company",
-        "txn_reverse",
-        "bk txn reverse",
-        "txn_meta_set",
-        "bk txn meta set",
-    ] {
+    for guidance in ["same company", "audited reversal", "annotation"] {
         assert!(message.contains(guidance), "{error}");
     }
     let transactions = client.success("txn_list", &json!({"company":"acme"}))?;

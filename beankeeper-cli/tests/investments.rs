@@ -677,7 +677,7 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
         assert!(
             error
                 .to_string()
-                .contains("investment trades cannot use txn reverse")
+                .contains("investment trades require a lot-aware correction")
         );
         assert_eq!(state(&db)?, before);
     }

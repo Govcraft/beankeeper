@@ -16,6 +16,8 @@ pub(crate) enum Permission {
     Chart,
     SetupOwner,
     OwnerUndo,
+    AgentUndo,
+    Reversal,
     Transport,
 }
 
@@ -24,6 +26,7 @@ impl Permission {
         match self {
             Self::Capability(capability) => Ok(capability),
             Self::Posting => Ok(Capability::Post),
+            Self::AgentUndo | Self::Reversal => Ok(Capability::Reverse),
             Self::ProposalList | Self::SetupStatus => Ok(Capability::Read),
             Self::SetupOrChart | Self::Chart => Ok(Capability::Chart),
             Self::SetupOwner | Self::OwnerUndo => Ok(Capability::Admin),
@@ -56,6 +59,12 @@ macro_rules! permission {
     };
     (SetupOwner) => {
         Permission::SetupOwner
+    };
+    (AgentUndo) => {
+        Permission::AgentUndo
+    };
+    (Reversal) => {
+        Permission::Reversal
     };
     (OwnerUndo) => {
         Permission::OwnerUndo

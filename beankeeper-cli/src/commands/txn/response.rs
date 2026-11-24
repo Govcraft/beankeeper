@@ -12,7 +12,12 @@ use super::{PostingOutcome, describe_posting, orphaned_correlations};
 use crate::cli::{Cli, OutputFormat, resolve_format};
 use crate::db::{
     AttachmentRow, EntryRow, OrphanedCorrelation, TransactionRow,
-    audit::{MetadataResult, account_rename::RenameProposal},
+    audit::{
+        MetadataResult,
+        account_rename::RenameProposal,
+        corrections::{AppliedReversal, CorrectionProposal, PendingCorrection},
+        receipts::{ReceiptId, desktop_receipt_path},
+    },
     clearings::Clearing,
     companies::CompanySlug,
     holds::{EntryStatus, SettlementOutcome, SettlementResult},
@@ -44,6 +49,7 @@ pub(super) struct TransactionDetails {
 pub(super) enum ReviewProposal {
     Posting(Box<Proposal>),
     Rename(Box<RenameProposal>),
+    Correction(Box<CorrectionProposal>),
 }
 
 impl From<Proposal> for ReviewProposal {
@@ -58,11 +64,18 @@ impl From<RenameProposal> for ReviewProposal {
     }
 }
 
+impl From<CorrectionProposal> for ReviewProposal {
+    fn from(proposal: CorrectionProposal) -> Self {
+        Self::Correction(Box::new(proposal))
+    }
+}
+
 impl Serialize for ReviewProposal {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Posting(proposal) => ProposalJson::from(proposal.as_ref()).serialize(serializer),
             Self::Rename(proposal) => proposal.serialize(serializer),
+            Self::Correction(proposal) => proposal.serialize(serializer),
         }
     }
 }
@@ -74,11 +87,12 @@ pub(super) enum TxnData {
     },
     Settled(SettlementOutcome),
     Proposed(ProposalCreation),
+    CorrectionProposed(PendingCorrection),
     Proposals(Vec<ReviewProposal>),
     Resolved(ReviewProposal),
     Reversed {
         id: TransactionId,
-        result: PostResult,
+        result: AppliedReversal,
     },
     List(ListPage),
     Count(i64),
@@ -115,7 +129,22 @@ impl Serialize for TxnResponse {
                 .serialize(serializer)
             }
             TxnData::Reversed { result, .. } => {
-                json::post_result_payload(*result).serialize(serializer)
+                #[derive(Serialize)]
+                struct ReversalJson<T> {
+                    #[serde(flatten)]
+                    posting: T,
+                    receipt: ReceiptId,
+                    desktop_path: Option<String>,
+                }
+                ReversalJson {
+                    posting: json::post_result_payload(result.result),
+                    receipt: result.receipt,
+                    desktop_path: self
+                        .company
+                        .as_ref()
+                        .map(|company| desktop_receipt_path(company, result.receipt)),
+                }
+                .serialize(serializer)
             }
             TxnData::Posted {
                 outcome: PostingOutcome::Proposed(result),
@@ -145,6 +174,7 @@ impl Serialize for TxnResponse {
                 }
                 .serialize(serializer)
             }
+            TxnData::CorrectionProposed(proposal) => proposal.serialize(serializer),
             TxnData::Proposals(proposals) => proposals.serialize(serializer),
             TxnData::Resolved(proposal) => proposal.serialize(serializer),
             TxnData::List(list) => {
@@ -242,6 +272,7 @@ impl TxnResponse {
         match &self.data {
             TxnData::Settled(SettlementOutcome::Proposed(_))
             | TxnData::Proposed(_)
+            | TxnData::CorrectionProposed(_)
             | TxnData::Proposals(_)
             | TxnData::Resolved(_) => {
                 let data = serde_json::to_string_pretty(self)
@@ -317,7 +348,7 @@ impl TxnResponse {
                     result.delta(),
                 );
             }
-            TxnData::Reversed { id, result } => match result {
+            TxnData::Reversed { id, result } => match result.result {
                 PostResult::Created(reversal_id) => {
                     eprintln!("[ok] transaction #{id} reversed by #{reversal_id}");
                 }

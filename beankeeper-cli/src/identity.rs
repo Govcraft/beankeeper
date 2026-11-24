@@ -16,7 +16,9 @@ use serde_json::{Value, json};
 
 use crate::capability::Capability;
 use crate::db::Actor;
-use crate::db::audit::grant::{self, Chart, OnboardingPost, OnboardingPropose};
+use crate::db::audit::grant::{
+    self, AgentUndo, Chart, CorrectionPropose, OnboardingPost, OnboardingPropose,
+};
 pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, OwnerUndo, Post, Propose, Reconcile, ResolveProposal, Reverse,
 };
@@ -108,6 +110,13 @@ impl VerifiedAgent {
                 WriteMode::Direct => grant::permits::<OnboardingPost>(self),
                 WriteMode::ProposeOnly => grant::permits::<OnboardingPropose>(self),
             },
+            Permission::AgentUndo | Permission::Reversal => match self.write_mode() {
+                WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
+                WriteMode::Direct if operation.permission() == Permission::AgentUndo => {
+                    Ok(grant::permits::<AgentUndo>(self)? || grant::permits::<OwnerUndo>(self)?)
+                }
+                WriteMode::Direct => grant::permits::<Reverse>(self),
+            },
             permission => self.allows(permission.primary()?),
         }
     }
@@ -117,7 +126,17 @@ impl VerifiedAgent {
         operation: Operation,
         ledger_enforced: bool,
     ) -> Result<bool, CliError> {
-        if self.enforces_permissions(ledger_enforced) || operation.requires_onboarding_grant() {
+        if self.enforces_permissions(ledger_enforced)
+            || operation.requires_onboarding_grant()
+            || matches!(operation.permission(), Permission::Capability(capability) if self.requires_explicit_capability(capability))
+            || matches!(
+                operation.permission(),
+                Permission::SetupOwner
+                    | Permission::OwnerUndo
+                    | Permission::AgentUndo
+                    | Permission::Reversal
+            )
+        {
             self.allows_known_operation(operation)
         } else {
             Ok(true)
@@ -133,6 +152,10 @@ impl VerifiedAgent {
             || self.delegation.is_some()
             || self.is_setup_credential()
             || self.write_mode().restricts_capabilities()
+    }
+
+    pub(crate) fn requires_explicit_capability(&self, capability: Capability) -> bool {
+        capability == Capability::Admin && self.grants.is_bookkeeper()
     }
 
     /// Whether the verified identity holds the requested ledger or UI grant.
@@ -228,7 +251,11 @@ pub fn authorize(
     match token {
         Some(token) => {
             let identity = verify_required(conn, token, enforce.then_some(required))?;
-            if !enforce && identity.enforces_permissions(false) && !identity.allows(required)? {
+            if !enforce
+                && (identity.enforces_permissions(false)
+                    || identity.requires_explicit_capability(required))
+                && !identity.allows(required)?
+            {
                 return Err(CliError::Forbidden(format!(
                     "operation requires capability {}",
                     required.path()
@@ -275,7 +302,9 @@ pub(crate) fn authorize_known_operation(
         })?;
         return verify_required(conn, token, Some(Capability::Admin)).map(Some);
     }
-    let enforce = crate::db::policy::get(conn)?.enforce || operation.requires_onboarding_grant();
+    let enforce = crate::db::policy::get(conn)?.enforce
+        || operation.requires_onboarding_grant()
+        || permission == Permission::AgentUndo;
     let identity = match token {
         Some(token) => Some(verify(conn, token)?),
         None if enforce => {
@@ -311,13 +340,24 @@ fn require_operation_grant(
     ledger_enforced: bool,
 ) -> Result<(), CliError> {
     let permission = operation.permission();
-    let required = if permission == Permission::Posting {
-        identity.write_mode().posting_capability()
-    } else {
-        permission.primary()?
+    let required = match permission {
+        Permission::Posting => identity.write_mode().posting_capability(),
+        Permission::AgentUndo | Permission::Reversal
+            if identity.write_mode() == WriteMode::ProposeOnly =>
+        {
+            Capability::Propose
+        }
+        _ => permission.primary()?,
     };
     let enforce = ledger_enforced
-        || matches!(permission, Permission::SetupOwner | Permission::OwnerUndo)
+        || matches!(permission, Permission::Capability(capability) if identity.requires_explicit_capability(capability))
+        || matches!(
+            permission,
+            Permission::SetupOwner
+                | Permission::OwnerUndo
+                | Permission::AgentUndo
+                | Permission::Reversal
+        )
         || operation.requires_onboarding_grant()
         || matches!(
             permission,
@@ -329,7 +369,9 @@ fn require_operation_grant(
     let alternative = match permission {
         Permission::ProposalList | Permission::ProposalReject => Some(Capability::Approve),
         Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
-        Permission::Chart if identity.write_mode() == WriteMode::Direct => Some(Capability::Admin),
+        Permission::Chart | Permission::AgentUndo if identity.write_mode() == WriteMode::Direct => {
+            Some(Capability::Admin)
+        }
         _ => None,
     };
     let requirement = match alternative {

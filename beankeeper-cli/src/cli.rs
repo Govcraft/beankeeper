@@ -1082,7 +1082,7 @@ pub enum AuditCommand {
     Log(AuditLogArgs),
     /// Read company changes from a saved cursor or continue an open receipt range.
     Receipts(AuditReceiptsArgs),
-    /// Undo a receipt immediately with a signed ledger/admin token.
+    /// Apply or propose an audited correction by receipt ID.
     Undo(AuditUndoArgs),
 }
 
@@ -1103,7 +1103,7 @@ pub struct AuditReceiptsArgs {
     pub limit: Option<ReceiptPageLimit>,
 }
 
-/// Scope and identifier for immediate owner undo.
+/// Scope and identifier for audited receipt undo.
 #[derive(Args, Debug)]
 pub struct AuditUndoArgs {
     /// Company slug.

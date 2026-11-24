@@ -54,6 +54,8 @@ pub enum ErrorCode {
     DuplicateAccountName,
     /// The receipt's change has no undo operation.
     UndoUnsupported,
+    /// This structural correction requires owner authority.
+    UndoOwnerOnly,
     /// Current ledger state prevents this receipt's undo.
     UndoIneligible,
     /// The ledger could not be read or written.
@@ -79,6 +81,7 @@ impl ErrorCode {
             Self::Validation => "VALIDATION",
             Self::DuplicateAccountName => "DUPLICATE_ACCOUNT_NAME",
             Self::UndoUnsupported => "UNDO_UNSUPPORTED",
+            Self::UndoOwnerOnly => "UNDO_OWNER_ONLY",
             Self::UndoIneligible => "UNDO_INELIGIBLE",
             Self::Database => "DATABASE",
             Self::NotFound => "NOT_FOUND",
@@ -93,6 +96,7 @@ impl ErrorCode {
             Self::Usage | Self::Unimplemented => 2,
             Self::Validation
             | Self::DuplicateAccountName
+            | Self::UndoOwnerOnly
             | Self::UndoUnsupported
             | Self::UndoIneligible => 3,
             Self::Database => 4,
@@ -131,6 +135,7 @@ impl CliError {
             | Self::PeriodLocked(_)
             | Self::ReversalBlocked(_) => ErrorCode::Validation,
             Self::DuplicateAccountName(_) => ErrorCode::DuplicateAccountName,
+            Self::ReceiptUndo(ReceiptUndoError::OwnerOnly { .. }) => ErrorCode::UndoOwnerOnly,
             Self::ReceiptUndo(ReceiptUndoError::Unsupported(_)) => ErrorCode::UndoUnsupported,
             Self::ReceiptUndo(ReceiptUndoError::Ineligible { .. }) => ErrorCode::UndoIneligible,
             Self::Database(_) | Self::Sqlite(_) => ErrorCode::Database,

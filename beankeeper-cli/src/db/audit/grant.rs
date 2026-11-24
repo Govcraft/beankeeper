@@ -12,6 +12,7 @@ pub(crate) mod sealed {
     pub trait GrantKind {
         const REQUIRED: crate::capability::Capability;
         const EXPLICIT: bool = false;
+        const SIGNED: bool = false;
         const ALTERNATE: Option<crate::capability::Capability> = None;
         const ADDITIONAL: Option<crate::capability::Capability> = None;
         const MODE: Option<crate::identity::WriteMode> = None;
@@ -85,6 +86,26 @@ pub enum Reverse {}
 
 impl sealed::GrantKind for Reverse {
     const REQUIRED: Capability = Capability::Reverse;
+    const SIGNED: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
+/// Signed authority to undo a non-structural audit receipt.
+pub(crate) enum AgentUndo {}
+
+impl sealed::GrantKind for AgentUndo {
+    const REQUIRED: Capability = Capability::Reverse;
+    const EXPLICIT: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
+/// Signed authority to request a correction under the existing approval policy.
+pub(crate) enum CorrectionPropose {}
+
+impl sealed::GrantKind for CorrectionPropose {
+    const REQUIRED: Capability = Capability::Propose;
+    const EXPLICIT: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::ProposeOnly);
 }
 
 /// Signed owner administration authority for undoing an audit receipt.
@@ -92,6 +113,14 @@ pub enum OwnerUndo {}
 
 impl sealed::GrantKind for OwnerUndo {
     const REQUIRED: Capability = Capability::Admin;
+    const EXPLICIT: bool = true;
+}
+
+/// Signed authority to apply a pending correction.
+pub(super) enum CorrectionApprove {}
+
+impl sealed::GrantKind for CorrectionApprove {
+    const REQUIRED: Capability = Capability::Approve;
     const EXPLICIT: bool = true;
 }
 
@@ -224,7 +253,11 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
         let enforce = crate::db::policy::get(reader)?.enforce || C::EXPLICIT;
         if let Some(agent) = actor.identity() {
             agent.check_live(reader)?;
-            if agent.enforces_permissions(enforce) && !permits::<C>(agent)? {
+            if (agent.enforces_permissions(enforce)
+                || C::SIGNED
+                || (C::ALTERNATE.is_none() && agent.requires_explicit_capability(C::REQUIRED)))
+                && !permits::<C>(agent)?
+            {
                 return Err(CliError::Forbidden(format!(
                     "operation requires capability {}",
                     C::REQUIRED.path()

@@ -7,7 +7,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = ACCOUNT_RENAME_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = CORRECTION_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -18,6 +18,7 @@ const DIRECT_SETUP_SCHEMA_VERSION: i64 = 29;
 const ANNOTATION_UNDO_SCHEMA_VERSION: i64 = 30;
 pub(super) const HOLDS_SCHEMA_VERSION: i64 = 31;
 pub(crate) const ACCOUNT_RENAME_SCHEMA_VERSION: i64 = 32;
+const CORRECTION_SCHEMA_VERSION: i64 = 33;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +187,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < ACCOUNT_RENAME_SCHEMA_VERSION {
         apply_v32(conn)?;
+    }
+    if version < CORRECTION_SCHEMA_VERSION {
+        migrate_hold_audit(conn, AuditTable::Correction, CORRECTION_SCHEMA_VERSION)?;
     }
 
     debug_assert_eq!(
@@ -1587,6 +1591,14 @@ fn apply_v31(conn: &Connection) -> Result<(), CliError> {
 
 /// Admit account rename events while preserving the hold rules built on `audit_log`.
 fn apply_v32(conn: &Connection) -> Result<(), CliError> {
+    migrate_hold_audit(
+        conn,
+        AuditTable::AccountRename,
+        ACCOUNT_RENAME_SCHEMA_VERSION,
+    )
+}
+
+fn migrate_hold_audit(conn: &Connection, table: AuditTable, version: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         // The index drops with audit_log. Drop its dependent views and
         // trigger explicitly so SQLite can rename the replacement table.
@@ -1595,11 +1607,7 @@ fn apply_v32(conn: &Connection) -> Result<(), CliError> {
              DROP VIEW hold_adjustments;
              DROP VIEW posting_reversals;",
         )?;
-        migrate_audit(
-            conn,
-            AuditTable::AccountRename,
-            ACCOUNT_RENAME_SCHEMA_VERSION,
-        )?;
+        migrate_audit(conn, table, version)?;
         conn.execute_batch(include_str!("schema/hold_audit.sql"))?;
         Ok(())
     })
@@ -1679,21 +1687,11 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             "protect_period_insert",
             "protect_period_update",
         ];
-        if matches!(
-            table,
-            AuditTable::StandingSettings
-                | AuditTable::RuleUndo
-                | AuditTable::DirectSetup
-                | AuditTable::AnnotationUndo
-                | AuditTable::AccountRename
-        ) {
+        if table >= AuditTable::StandingSettings {
             triggers.push("protect_account_archive");
             conn.execute_batch("DROP VIEW audit_receipt_postings")?;
         }
-        if matches!(
-            table,
-            AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename
-        ) {
+        if table >= AuditTable::DirectSetup {
             conn.execute_batch(
                 "DROP TRIGGER protect_deactivated_rule_insert;
                  DROP TRIGGER protect_deactivated_rule_update;
@@ -1717,29 +1715,13 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         for definition in definitions {
             conn.execute_batch(&definition)?;
         }
-        if matches!(
-            table,
-            AuditTable::StandingSettings
-                | AuditTable::RuleUndo
-                | AuditTable::DirectSetup
-                | AuditTable::AnnotationUndo
-                | AuditTable::AccountRename
-        ) {
+        if table >= AuditTable::StandingSettings {
             install_receipt_read_paths(conn)?;
         }
-        if matches!(
-            table,
-            AuditTable::RuleUndo
-                | AuditTable::DirectSetup
-                | AuditTable::AnnotationUndo
-                | AuditTable::AccountRename
-        ) {
+        if table >= AuditTable::RuleUndo {
             install_rule_undo_guards(conn)?;
         }
-        if matches!(
-            table,
-            AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename
-        ) {
+        if table >= AuditTable::DirectSetup {
             conn.execute_batch(
                 "CREATE UNIQUE INDEX idx_direct_setup_reference ON audit_log(company_slug, entity_id)
                      WHERE action = 'setup_apply';
@@ -1747,16 +1729,21 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
                      WHERE action = 'setup_revert';",
             )?;
         }
-        if matches!(
-            table,
-            AuditTable::AnnotationUndo | AuditTable::AccountRename
-        ) {
+        if table >= AuditTable::AnnotationUndo {
             install_annotation_undo_guard(conn)?;
         }
-        if table == AuditTable::AccountRename {
+        if table >= AuditTable::AccountRename {
             conn.execute_batch(
                 "CREATE UNIQUE INDEX idx_account_rename_proposal ON audit_log(entity_id, action)
                      WHERE entity = 'account_rename_proposal';",
+            )?;
+        }
+        if table == AuditTable::Correction {
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX idx_correction_proposal ON audit_log(entity_id, action)
+                     WHERE entity = 'correction_proposal';
+                 CREATE INDEX idx_correction_company ON audit_log(company_slug, agent_uri, id)
+                     WHERE action = 'correction_propose';",
             )?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
@@ -1768,7 +1755,7 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
     })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AuditTable {
     Periods,
     Demo,
@@ -1779,6 +1766,7 @@ enum AuditTable {
     DirectSetup,
     AnnotationUndo,
     AccountRename,
+    Correction,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1793,15 +1781,7 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             format!(",'{}'", AuditAction::DemoSeed),
         )
     };
-    if matches!(
-        table,
-        AuditTable::Receipts
-            | AuditTable::StandingSettings
-            | AuditTable::RuleUndo
-            | AuditTable::DirectSetup
-            | AuditTable::AnnotationUndo
-            | AuditTable::AccountRename
-    ) {
+    if table >= AuditTable::Receipts {
         let _ = write!(entity, ",'{}'", AuditEntity::Audit);
         let _ = write!(
             action,
@@ -1810,14 +1790,7 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::ReceiptLinkMigration
         );
     }
-    if matches!(
-        table,
-        AuditTable::StandingSettings
-            | AuditTable::RuleUndo
-            | AuditTable::DirectSetup
-            | AuditTable::AnnotationUndo
-            | AuditTable::AccountRename
-    ) {
+    if table >= AuditTable::StandingSettings {
         let _ = write!(
             entity,
             ",'{}','{}'",
@@ -1832,19 +1805,10 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::InformPreferenceSet
         );
     }
-    if matches!(
-        table,
-        AuditTable::RuleUndo
-            | AuditTable::DirectSetup
-            | AuditTable::AnnotationUndo
-            | AuditTable::AccountRename
-    ) {
+    if table >= AuditTable::RuleUndo {
         let _ = write!(action, ",'{}'", AuditAction::RuleDeactivate);
     }
-    if matches!(
-        table,
-        AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename
-    ) {
+    if table >= AuditTable::DirectSetup {
         let _ = write!(
             action,
             ",'{}','{}'",
@@ -1852,13 +1816,10 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::SetupRevert
         );
     }
-    if matches!(
-        table,
-        AuditTable::AnnotationUndo | AuditTable::AccountRename
-    ) {
+    if table >= AuditTable::AnnotationUndo {
         let _ = write!(action, ",'{}'", AuditAction::MetadataRestore);
     }
-    if table == AuditTable::AccountRename {
+    if table >= AuditTable::AccountRename {
         let _ = write!(entity, ",'{}'", AuditEntity::AccountRenameProposal);
         let _ = write!(
             action,
@@ -1868,14 +1829,20 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::AccountRenameResolve
         );
     }
+    if table == AuditTable::Correction {
+        let _ = write!(entity, ",'{}'", AuditEntity::CorrectionProposal);
+        let _ = write!(
+            action,
+            ",'{}','{}'",
+            AuditAction::CorrectionPropose,
+            AuditAction::CorrectionResolve
+        );
+    }
     (entity, action)
 }
 
 fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
-    if matches!(
-        table,
-        AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename
-    ) {
+    if table >= AuditTable::DirectSetup {
         (",'setup_revert'", ", CHECK(action <> 'setup_revert' OR (
              entity = 'company' AND undo_of IS NOT NULL AND hash_version = 7)),
              CHECK(action <> 'setup_apply' OR (
@@ -1886,13 +1853,7 @@ fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
 }
 
 fn receipt_audit_checks(table: AuditTable) -> String {
-    let (undo_action, rule_check) = if matches!(
-        table,
-        AuditTable::RuleUndo
-            | AuditTable::DirectSetup
-            | AuditTable::AnnotationUndo
-            | AuditTable::AccountRename
-    ) {
+    let (undo_action, rule_check) = if table >= AuditTable::RuleUndo {
         (
             ",'rule_deactivate'",
             ", CHECK(action <> 'rule_deactivate' OR (
@@ -1902,10 +1863,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
         ("", "")
     };
     let (setup_undo, setup_check) = setup_audit_checks(table);
-    let (annotation_undo, annotation_check) = if matches!(
-        table,
-        AuditTable::AnnotationUndo | AuditTable::AccountRename
-    ) {
+    let (annotation_undo, annotation_check) = if table >= AuditTable::AnnotationUndo {
         (
             ",'metadata_restore'",
             ", CHECK(action <> 'metadata_restore' OR (
@@ -1914,7 +1872,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     } else {
         ("", "")
     };
-    let (rename_undo, rename_check) = if table == AuditTable::AccountRename {
+    let (rename_undo, rename_check) = if table >= AuditTable::AccountRename {
         (",'account_rename'", ", CHECK(action <> 'account_rename' OR (
             entity = 'account' AND company_slug IS NOT NULL AND before IS NOT NULL AND after IS NOT NULL)),
             CHECK((action IN ('account_rename_propose', 'account_rename_resolve')) = (entity = 'account_rename_proposal')),
@@ -1925,6 +1883,13 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     } else {
         ("", "")
     };
+    let correction_check = if table == AuditTable::Correction {
+        ", CHECK((action IN ('correction_propose', 'correction_resolve')) = (entity = 'correction_proposal')),
+           CHECK(entity <> 'correction_proposal' OR (company_slug IS NOT NULL AND agent_uri IS NOT NULL
+                 AND after IS NOT NULL AND (action = 'correction_resolve' OR before IS NULL)))"
+    } else {
+        ""
+    };
     format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
                        AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo})
@@ -1934,13 +1899,13 @@ fn receipt_audit_checks(table: AuditTable) -> String {
                        AND action IN ('reverse', 'proposal_approve', 'correlate'))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}")
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}")
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -2655,7 +2620,7 @@ mod tests {
         apply_v30(&conn)?;
         assert_eq!(get_schema_version(reader)?, ANNOTATION_UNDO_SCHEMA_VERSION);
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(reader)?, ACCOUNT_RENAME_SCHEMA_VERSION);
+        assert_eq!(get_schema_version(reader)?, CORRECTION_SCHEMA_VERSION);
         let mut migrations =
             conn.prepare("SELECT version FROM schema_version WHERE version >= ?1 ORDER BY rowid")?;
         let versions = migrations
@@ -2667,6 +2632,7 @@ mod tests {
                 ANNOTATION_UNDO_SCHEMA_VERSION,
                 HOLDS_SCHEMA_VERSION,
                 ACCOUNT_RENAME_SCHEMA_VERSION,
+                CORRECTION_SCHEMA_VERSION,
             ]
         );
         assert_eq!(audit_head()?, before);
@@ -2760,7 +2726,7 @@ mod tests {
         conn.execute_batch("DROP TABLE audit_log_rebuild")?;
 
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(reader)?, ACCOUNT_RENAME_SCHEMA_VERSION);
+        assert_eq!(get_schema_version(reader)?, CORRECTION_SCHEMA_VERSION);
         assert_eq!(audit::verify_hash_chain(reader)?.length(), audit_length);
         assert_eq!(hold_adjustment()?, -250);
         ensure_schema(&conn)?;

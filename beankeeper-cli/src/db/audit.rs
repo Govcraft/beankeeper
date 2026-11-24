@@ -46,6 +46,7 @@ pub use hash_version::{HashVersion, UnsupportedHashVersion};
 mod posting;
 pub(super) use posting::persist_posting;
 pub(crate) mod account_rename;
+pub(crate) mod corrections;
 pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
 mod standing;
@@ -154,6 +155,7 @@ audit_labels! {
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
+        CorrectionProposal => "correction_proposal",
         Company => "company",
         Demo => "demo",
         Key => "key",
@@ -193,6 +195,8 @@ audit_labels! {
         AccountRename => "account_rename" | "account-rename",
         AccountRenamePropose => "account_rename_propose",
         AccountRenameResolve => "account_rename_resolve",
+        CorrectionPropose => "correction_propose",
+        CorrectionResolve => "correction_resolve",
         AccountArchive => "account_archive" | "account-archive",
         CompanyDelete => "company_delete" | "company-delete",
         DemoSeed => "demo_seed" | "demo-seed",
@@ -1724,7 +1728,7 @@ fn correlate_partner(
 
     if &partner_company == new_company {
         return Err(CliError::Validation(format!(
-            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'. Use txn_reverse (bk txn reverse) for an audited correction, or txn_meta_set (bk txn meta set) with a custom metadata key to record a related transaction"
+            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'. Use an audited reversal to correct a posting, or an annotation to record a related same-company transaction"
         )));
     }
 
@@ -1787,6 +1791,13 @@ pub enum ReversalBlock {
     Reconciled(TransactionId),
     /// The posting changed the investment lot ledger.
     InvestmentTrade,
+    /// A reversal is already a correction and cannot be reversed.
+    ReversalOfUndo(TransactionId),
+    /// A mirror cannot precede its original.
+    BeforeOriginal {
+        requested: chrono::NaiveDate,
+        original: chrono::NaiveDate,
+    },
 }
 
 impl std::fmt::Display for ReversalBlock {
@@ -1800,10 +1811,16 @@ impl std::fmt::Display for ReversalBlock {
             }
             Self::Reconciled(transaction) => write!(
                 formatter,
-                "transaction #{transaction} has reconciled clearings and cannot be reversed"
+                "transaction #{transaction} has reconciled clearings; verify it against the statement and arrange an audited reconciliation correction before retrying"
             ),
             Self::InvestmentTrade => formatter.write_str(
-                "investment trades cannot use txn reverse: a monetary reversal would not restore lot quantities; trade corrections are not supported yet",
+                "investment trades require a lot-aware correction; inspect the trade and its lot history before making any further entries",
+            ),
+            Self::BeforeOriginal { requested, original } => write!(
+                formatter, "reversal date {requested} must be on or after the original transaction date {original}; choose a later date"
+            ),
+            Self::ReversalOfUndo(id) => write!(
+                formatter, "transaction #{id} is itself a reversal; inspect the original and record any new activity separately"
             ),
         }
     }
@@ -1821,12 +1838,28 @@ pub struct ReverseTransactionParams<'a> {
     pub reference: Option<&'a str>,
 }
 
+#[derive(Clone, Copy)]
+enum ReversalSource {
+    Standalone,
+    AgentUndo(receipts::ReceiptId),
+    OwnerUndo(receipts::ReceiptId),
+}
+
+impl ReversalSource {
+    const fn receipt(self) -> Option<receipts::ReceiptId> {
+        match self {
+            Self::Standalone => None,
+            Self::AgentUndo(receipt) | Self::OwnerUndo(receipt) => Some(receipt),
+        }
+    }
+}
+
 /// A checked reverse request and its exact original, minted by the audited path.
 pub(super) struct ReversalPosting<'a> {
     tx: &'a savepoint::AuditedTx<'a>,
     original_id: TransactionId,
     status: super::holds::EntryStatus,
-    undo_of: Option<receipts::ReceiptId>,
+    source: ReversalSource,
     params: super::transactions::PostTransactionParams<'a>,
 }
 
@@ -1848,7 +1881,7 @@ impl<'a> ReversalPosting<'a> {
     }
 
     pub(super) const fn is_owner_undo(&self) -> bool {
-        self.undo_of.is_some()
+        matches!(self.source, ReversalSource::OwnerUndo(_))
     }
 }
 
@@ -1867,13 +1900,7 @@ pub fn reverse_transaction(
     p: &ReverseTransactionParams<'_>,
 ) -> Result<super::transactions::PostResult, CliError> {
     grant.mutate("sp_reverse", |tx, actor| {
-        reverse_in_scope(tx, actor, p, None).map_err(|error| match error {
-            CliError::ReversalBlocked(block @ ReversalBlock::PostingMissing { .. }) => {
-                CliError::NotFound(block.to_string())
-            }
-            CliError::ReversalBlocked(block) => CliError::Validation(block.to_string()),
-            error => error,
-        })
+        reverse_in_scope(tx, actor, p, ReversalSource::Standalone)
     })
 }
 
@@ -1881,7 +1908,7 @@ fn reverse_in_scope(
     tx: &savepoint::AuditedTx<'_>,
     actor: &Actor,
     p: &ReverseTransactionParams<'_>,
-    undo_of: Option<receipts::ReceiptId>,
+    source: ReversalSource,
 ) -> Result<super::transactions::PostResult, CliError> {
     use super::transactions::{PostResult, PostTransactionParams, find_transaction};
 
@@ -1905,6 +1932,12 @@ fn reverse_in_scope(
     if let Some(result) = existing_reversal(&company, p)? {
         return Ok(result);
     }
+    if is_reversal(tx.read(), p.company_slug, p.id)? {
+        return Err(CliError::ReversalBlocked(ReversalBlock::ReversalOfUndo(
+            p.id,
+        )));
+    }
+    let undo_of = source.receipt();
     let date = undo_of.map_or(p.date, |_| {
         receipts::UndoPostingDate::from((p.date, original.date)).into()
     });
@@ -1925,7 +1958,7 @@ fn reverse_in_scope(
         tx,
         original_id: p.id,
         status: original.status(),
-        undo_of,
+        source,
         params: PostTransactionParams {
             company_slug: p.company_slug,
             description: &description,
@@ -1977,6 +2010,19 @@ fn reverse_in_scope(
     Ok(result)
 }
 
+fn is_reversal(
+    reader: ReadConn<'_>,
+    company: &super::companies::CompanySlug,
+    id: TransactionId,
+) -> Result<bool, CliError> {
+    Ok(reader.query_row(
+        "SELECT EXISTS(SELECT 1 FROM audit_log
+         WHERE company_slug = ?1 AND action = 'reverse' AND related_posting = ?2)",
+        params![company, id],
+        |row| row.get(0),
+    )?)
+}
+
 /// Only a matching explicit reference can reuse the existing linked reversal.
 fn existing_reversal(
     company: &Company<'_>,
@@ -2016,9 +2062,10 @@ fn validate_reversal(
     original_date: chrono::NaiveDate,
 ) -> Result<(), CliError> {
     if date < original_date {
-        return Err(CliError::Validation(
-            "reversal date must be on or after the original transaction date".into(),
-        ));
+        return Err(CliError::ReversalBlocked(ReversalBlock::BeforeOriginal {
+            requested: date,
+            original: original_date,
+        }));
     }
     let reconciled: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM entries e LEFT JOIN entry_clearings c ON c.entry_id = e.id \

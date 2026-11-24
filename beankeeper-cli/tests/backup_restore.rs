@@ -74,7 +74,15 @@ fn seed(path: &Path, key: Option<&Path>) -> Result<Option<String>, Box<dyn Error
         let issued = data(
             path,
             key,
-            &["agent", "issue", "--name", "snapshot", "--generate-key"],
+            &[
+                "agent",
+                "issue",
+                "--name",
+                "snapshot",
+                "--generate-key",
+                "--caps",
+                "ledger/read,ledger/post,ledger/admin",
+            ],
         )?;
         Some(issued["token"].as_str().ok_or("missing token")?.to_owned())
     } else {
