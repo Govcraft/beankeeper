@@ -10,10 +10,7 @@ use super::{
 };
 use crate::cli;
 use crate::db::{
-    companies::CompanySlug,
-    holds::HoldSelector,
-    metadata::ValidatedMetadataEdit,
-    metadata_filter,
+    companies::CompanySlug, holds::HoldSelector, metadata::ValidatedMetadataEdit, metadata_filter,
     transactions::ConflictStrategy,
 };
 use crate::error::CliError;

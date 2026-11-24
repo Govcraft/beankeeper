@@ -150,7 +150,7 @@ fn pending_settlement_and_reversal_have_dated_balances_and_exact_retries() -> Te
 }
 
 #[test]
-fn propose_only_settlement_is_approved_then_undone_from_its_receipt() -> TestResult {
+fn annotation_and_settlement_receipts_can_be_undone_on_the_same_posting() -> TestResult {
     use beankeeper_cli::db::Db;
     let dir = tempdir()?;
     let path = dir.path().join("proposal.db");
@@ -225,11 +225,27 @@ fn propose_only_settlement_is_approved_then_undone_from_its_receipt() -> TestRes
         .iter()
         .find(|receipt| receipt["change"]["source_reference"] == "posted-proposed")
         .ok_or("missing settlement receipt")?;
+    let show = json!({"company":"acme", "id":posted["transaction_id"]});
+    let before = local.success("txn_show", &show)?;
+    let annotation = local.success(
+        "txn_meta_set",
+        &json!({"company":"acme", "reference":"posted-proposed", "values":{"status":"reviewed"}}),
+    )?;
+    assert!(annotation["receipt"].is_i64(), "{annotation}");
+    let restored = owner.success(
+        "audit_undo",
+        &json!({"company":"acme", "receipt":annotation["receipt"]}),
+    )?;
+    assert_eq!(restored["kind"], "annotations_restored");
+    assert_eq!(local.success("txn_show", &show)?, before);
+    balances(&mut local, -1_543, -1_543, "2026-03-02")?;
+
     let undone = owner.success(
         "audit_undo",
         &json!({"company":"acme", "receipt":receipt["id"]}),
     )?;
-    assert!(undone.is_object());
+    assert_eq!(undone["kind"], "reversed");
+    assert_eq!(undone["transaction"], posted["transaction_id"]);
     balances(&mut local, 0, -1_500, "9999-12-31")?;
     owner.success("verify", &json!({}))?;
     Ok(())

@@ -2537,7 +2537,7 @@ mod tests {
     }
 
     #[test]
-    fn v29_and_v30_preserve_setup_profiles_and_audit_chain() -> Result<(), CliError> {
+    fn v29_through_v31_preserve_setup_profiles_and_audit_chain() -> Result<(), CliError> {
         let conn = v17_connection()?;
         for migrate in [
             apply_v18, apply_v19, apply_v20, apply_v21, apply_v22, apply_v23, apply_v24, apply_v25,
@@ -2566,6 +2566,9 @@ mod tests {
         apply_v29(&conn)?;
         assert_eq!(get_schema_version(reader)?, DIRECT_SETUP_SCHEMA_VERSION);
         apply_v30(&conn)?;
+        assert_eq!(get_schema_version(reader)?, ANNOTATION_UNDO_SCHEMA_VERSION);
+        ensure_schema(&conn)?;
+        assert_eq!(get_schema_version(reader)?, HOLDS_SCHEMA_VERSION);
         assert_eq!(audit_head()?, before);
         super::super::audit::verify_hash_chain(reader)?;
         let preserved: (i64, i64, String) = conn.query_row(
@@ -2575,12 +2578,11 @@ mod tests {
         assert_eq!(preserved, (3, 1, "04-01".into()));
         let indexes: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
-             AND name IN ('idx_direct_setup_reference', 'idx_direct_setup_reverts')",
+             AND name IN ('idx_direct_setup_reference', 'idx_direct_setup_reverts', 'idx_hold_reversals')",
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(indexes, 2);
-        assert_eq!(get_schema_version(reader)?, ANNOTATION_UNDO_SCHEMA_VERSION);
+        assert_eq!(indexes, 3);
         Ok(())
     }
 
