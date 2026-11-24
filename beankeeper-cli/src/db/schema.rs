@@ -7,13 +7,14 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = RULE_UNDO_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = DIRECT_SETUP_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
 pub(crate) const RECEIPT_SCHEMA_VERSION: i64 = 26;
 pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: i64 = 27;
 const RULE_UNDO_SCHEMA_VERSION: i64 = 28;
+const DIRECT_SETUP_SCHEMA_VERSION: i64 = 29;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +185,9 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     if version < RULE_UNDO_SCHEMA_VERSION {
         apply_v28(conn)?;
+    }
+    if version < DIRECT_SETUP_SCHEMA_VERSION {
+        apply_v29(conn)?;
     }
 
     debug_assert_eq!(
@@ -1519,6 +1523,32 @@ fn apply_v28(conn: &Connection) -> Result<(), CliError> {
     migrate_audit(conn, AuditTable::RuleUndo, RULE_UNDO_SCHEMA_VERSION)
 }
 
+fn apply_v29(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        migrate_audit(conn, AuditTable::DirectSetup, DIRECT_SETUP_SCHEMA_VERSION)?;
+        conn.execute_batch(
+            "ALTER TABLE setup_book_profiles RENAME TO legacy_book_profiles;
+             CREATE TABLE setup_book_profiles (
+                revision INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_slug TEXT NOT NULL REFERENCES companies(slug) ON DELETE CASCADE,
+                purpose TEXT NOT NULL CHECK (purpose IN ('personal', 'business')),
+                base_currency TEXT NOT NULL,
+                fiscal_year_start TEXT NOT NULL,
+                supersedes INTEGER UNIQUE REFERENCES setup_book_profiles(revision),
+                generation INTEGER REFERENCES setup_sessions(generation)
+             );
+             INSERT INTO setup_book_profiles SELECT * FROM legacy_book_profiles ORDER BY revision;
+             DROP TABLE legacy_book_profiles;
+             CREATE INDEX idx_setup_book_revisions ON setup_book_profiles(company_slug, revision DESC);
+             CREATE UNIQUE INDEX idx_direct_setup_reference ON audit_log(company_slug, entity_id)
+                 WHERE action = 'setup_apply';
+             CREATE INDEX idx_direct_setup_reverts ON audit_log(company_slug)
+                 WHERE action = 'setup_revert';",
+        )?;
+        Ok(())
+    })
+}
+
 fn install_rule_undo_guards(conn: &Connection) -> Result<(), CliError> {
     conn.execute_batch(
         "CREATE TRIGGER protect_rule_deactivation BEFORE INSERT ON audit_log
@@ -1578,9 +1608,19 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             "protect_period_insert",
             "protect_period_update",
         ];
-        if matches!(table, AuditTable::StandingSettings | AuditTable::RuleUndo) {
+        if matches!(
+            table,
+            AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup
+        ) {
             triggers.push("protect_account_archive");
             conn.execute_batch("DROP VIEW audit_receipt_postings")?;
+        }
+        if table == AuditTable::DirectSetup {
+            conn.execute_batch(
+                "DROP TRIGGER protect_deactivated_rule_insert;
+                 DROP TRIGGER protect_deactivated_rule_update;
+                 DROP TRIGGER protect_deactivated_rule_delete;",
+            )?;
         }
         if table == AuditTable::StandingSettings {
             create_standing_settings(conn)?;
@@ -1599,10 +1639,13 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         for definition in definitions {
             conn.execute_batch(&definition)?;
         }
-        if matches!(table, AuditTable::StandingSettings | AuditTable::RuleUndo) {
+        if matches!(
+            table,
+            AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup
+        ) {
             install_receipt_read_paths(conn)?;
         }
-        if table == AuditTable::RuleUndo {
+        if matches!(table, AuditTable::RuleUndo | AuditTable::DirectSetup) {
             install_rule_undo_guards(conn)?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
@@ -1622,6 +1665,7 @@ enum AuditTable {
     Receipts,
     StandingSettings,
     RuleUndo,
+    DirectSetup,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1638,7 +1682,10 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
     };
     if matches!(
         table,
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo
+        AuditTable::Receipts
+            | AuditTable::StandingSettings
+            | AuditTable::RuleUndo
+            | AuditTable::DirectSetup
     ) {
         let _ = write!(entity, ",'{}'", AuditEntity::Audit);
         let _ = write!(
@@ -1648,7 +1695,10 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::ReceiptLinkMigration
         );
     }
-    if matches!(table, AuditTable::StandingSettings | AuditTable::RuleUndo) {
+    if matches!(
+        table,
+        AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup
+    ) {
         let _ = write!(
             entity,
             ",'{}','{}'",
@@ -1663,25 +1713,46 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::InformPreferenceSet
         );
     }
-    if table == AuditTable::RuleUndo {
+    if matches!(table, AuditTable::RuleUndo | AuditTable::DirectSetup) {
         let _ = write!(action, ",'{}'", AuditAction::RuleDeactivate);
+    }
+    if table == AuditTable::DirectSetup {
+        let _ = write!(
+            action,
+            ",'{}','{}'",
+            AuditAction::SetupApply,
+            AuditAction::SetupRevert
+        );
     }
     (entity, action)
 }
 
-fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
-    let (entity, action) = audit_extensions(table);
-    let (undo_action, rule_check) = if table == AuditTable::RuleUndo {
-        (
-            ",'rule_deactivate'",
-            ", CHECK(action <> 'rule_deactivate' OR (
-                   entity = 'rule' AND undo_of IS NOT NULL AND hash_version >= 7))",
-        )
+fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
+    if table == AuditTable::DirectSetup {
+        (",'setup_revert'", ", CHECK(action <> 'setup_revert' OR (
+             entity = 'company' AND undo_of IS NOT NULL AND hash_version = 7)),
+             CHECK(action <> 'setup_apply' OR (
+             entity = 'company' AND company_slug IS NOT NULL AND agent_uri IS NOT NULL AND hash_version = 7))")
     } else {
         ("", "")
-    };
+    }
+}
+
+fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+    let (entity, action) = audit_extensions(table);
+    let (undo_action, rule_check) =
+        if matches!(table, AuditTable::RuleUndo | AuditTable::DirectSetup) {
+            (
+                ",'rule_deactivate'",
+                ", CHECK(action <> 'rule_deactivate' OR (
+                   entity = 'rule' AND undo_of IS NOT NULL AND hash_version >= 7))",
+            )
+        } else {
+            ("", "")
+        };
+    let (setup_undo, setup_check) = setup_audit_checks(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -1695,14 +1766,14 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
                  related_posting INTEGER REFERENCES transactions(id),",
                 format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
-                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action})
+                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo})
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
                    CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
                        AND related_posting > 0 AND company_slug IS NOT NULL
                        AND action IN ('reverse', 'proposal_approve', 'correlate'))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}"),
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}"),
                 select_suffix,
             )
         }
@@ -2371,6 +2442,45 @@ mod tests {
             [rule]
         );
         assert_eq!(get_schema_version(reader)?, RULE_UNDO_SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[test]
+    fn v29_preserves_setup_profiles_and_audit_chain() -> Result<(), CliError> {
+        let conn = v17_connection()?;
+        for migrate in [
+            apply_v18, apply_v19, apply_v20, apply_v21, apply_v22, apply_v23, apply_v24, apply_v25,
+            apply_v26, apply_v27, apply_v28,
+        ] {
+            migrate(&conn)?;
+        }
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute_batch(
+            r#"INSERT INTO agent_tokens VALUES ('setup-token', 'setup-agent', 'key',
+                '["ledger/setup"]', 'issued', 'expires');
+             INSERT INTO setup_sessions VALUES (1, 'setup-token', 'active', NULL);
+             INSERT INTO setup_book_profiles VALUES
+                (3, 'legacy', 'personal', 'USD', '01-01', NULL, 1),
+                (7, 'legacy', 'personal', 'USD', '04-01', 3, 1);"#,
+        )?;
+        let reader = ReadConn::new(&conn);
+        let audit_head = || -> Result<String, CliError> {
+            Ok(conn.query_row(
+                "SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )?)
+        };
+        let before = audit_head()?;
+        apply_v29(&conn)?;
+        assert_eq!(audit_head()?, before);
+        super::super::audit::verify_hash_chain(reader)?;
+        let preserved: (i64, i64, String) = conn.query_row(
+            "SELECT supersedes, generation, fiscal_year_start FROM setup_book_profiles WHERE revision = 7",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(preserved, (3, 1, "04-01".into()));
+        assert_eq!(get_schema_version(reader)?, DIRECT_SETUP_SCHEMA_VERSION);
         Ok(())
     }
 

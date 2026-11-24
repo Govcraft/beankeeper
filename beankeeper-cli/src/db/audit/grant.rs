@@ -114,6 +114,15 @@ impl sealed::GrantKind for StatementApprover {
     const EXPLICIT: bool = true;
 }
 
+/// Direct onboarding authority without a setup session.
+pub(crate) enum Chart {}
+
+impl sealed::GrantKind for Chart {
+    const REQUIRED: Capability = Capability::Chart;
+    const EXPLICIT: bool = true;
+    const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+}
+
 pub(crate) enum SetupOwner {}
 
 impl sealed::GrantKind for SetupOwner {

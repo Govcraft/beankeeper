@@ -221,6 +221,12 @@ impl std::error::Error for CliError {
     }
 }
 
+impl From<crate::request::EmptyCollection> for CliError {
+    fn from(error: crate::request::EmptyCollection) -> Self {
+        Self::Validation(error.to_string())
+    }
+}
+
 impl From<rusqlite::Error> for CliError {
     fn from(err: rusqlite::Error) -> Self {
         Self::Sqlite(err)

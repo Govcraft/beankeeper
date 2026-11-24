@@ -199,6 +199,51 @@ pub(super) fn post_direct(
     post_with_source(tx, &Posting::Direct(params), source)
 }
 
+// Onboarding has already resolved active accounts and sealed a balanced journal.
+pub(super) fn post_onboarding(
+    scope: &audit::setup::direct::OnboardingWrite<'_>,
+    company: &CompanySlug,
+    journal: &Transaction,
+    reference: &str,
+) -> Result<TransactionId, CliError> {
+    let entries = journal
+        .entries()
+        .iter()
+        .map(|entry| {
+            Ok(PostEntryParams {
+                account_code: entry.account().code().as_str().to_owned(),
+                direction: entry.direction(),
+                amount: entry.amount().amount().try_into()?,
+                memo: None,
+                tax_category: None,
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    let params = PostTransactionParams {
+        company_slug: company,
+        description: journal.description(),
+        metadata: journal.metadata(),
+        currency: journal.currency(),
+        date: journal.date(),
+        entries: &entries,
+        correlate: None,
+        reference: Some(reference),
+        on_conflict: ConflictStrategy::Error,
+        actor: scope.actor(),
+    };
+    let result = post_with_source(
+        scope.tx(),
+        &Posting::Prepared(&params, journal),
+        PostingSource::Command,
+    )?;
+    match result {
+        PostResult::Created(id) => Ok(id),
+        PostResult::Skipped(_) => Err(CliError::Database(
+            "onboarding posting unexpectedly skipped".into(),
+        )),
+    }
+}
+
 pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<PostResult, CliError> {
     post_with_source(
         reversal.transaction(),
@@ -209,6 +254,7 @@ pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<Post
 
 enum Posting<'a> {
     Direct(&'a PostTransactionParams<'a>),
+    Prepared(&'a PostTransactionParams<'a>, &'a Transaction),
     Approved(super::proposals::ApprovedPosting<'a>),
     ApprovedStatement(audit::setup::statement_batches::ApprovedStatementPosting<'a>),
     Reversal(audit::ReversalPosting<'a>),
@@ -222,7 +268,7 @@ fn post_with_source(
     let reader = tx.read();
     let approved;
     let p = match posting {
-        Posting::Direct(params) => *params,
+        Posting::Direct(params) | Posting::Prepared(params, _) => *params,
         Posting::Reversal(reversal) => reversal.params(),
         Posting::Approved(approval) => {
             approved = approval.params();
@@ -235,9 +281,11 @@ fn post_with_source(
     };
     // Command and import diagnostics precede idempotency. Raw API retries
     // look up the existing reference before validating entries.
-    let prepared = (source != PostingSource::Storage)
-        .then(|| build_journal(reader, p, source))
-        .transpose()?;
+    let prepared = match posting {
+        Posting::Prepared(_, journal) => Some((*journal).clone()),
+        _ if source != PostingSource::Storage => Some(build_journal(reader, p, source)?),
+        _ => None,
+    };
     // Check for duplicate reference before inserting.
     if let Some(ref_str) = p.reference {
         let existing: Option<TransactionId> = reader
@@ -305,7 +353,7 @@ fn post_with_source(
         request: p,
     };
     let metadata = match posting {
-        Posting::Direct(_) | Posting::ApprovedStatement(_) => {
+        Posting::Direct(_) | Posting::Prepared(..) | Posting::ApprovedStatement(_) => {
             metadata::UserAnnotations::parse(p.metadata)?
                 .map(metadata::UserAnnotations::into_normalized)
         }

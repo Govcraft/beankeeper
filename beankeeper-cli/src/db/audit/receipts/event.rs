@@ -169,6 +169,10 @@ pub enum ReceiptChange {
     PostingReversed,
     /// The posting gained an intercompany link, exposed on the event.
     PostingCorrelated,
+    /// A setup action applied directly on the agent's normal connection.
+    OnboardingApplied,
+    /// The owner undid a direct setup action.
+    OnboardingReverted,
     /// The event has attribution and a target but has no typed summary.
     Other,
 }
@@ -390,6 +394,19 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
             }
             _ => Err(decode.invalid("rule deactivation", "expected active to deactivated")),
         },
+        (Entity::Company, Action::SetupApply) => {
+            decode.absent("before", row.before.as_deref())?;
+            decode.validate_other("after", row.after.as_deref())?;
+            Ok((
+                ReceiptChange::OnboardingApplied,
+                Some(row.entity_id.clone()),
+            ))
+        }
+        (Entity::Company, Action::SetupRevert) => {
+            decode.absent("before", row.before.as_deref())?;
+            decode.validate_other("after", row.after.as_deref())?;
+            Ok((ReceiptChange::OnboardingReverted, None))
+        }
         (Entity::Transaction, Action::Create) => {
             decode.absent("before", row.before.as_deref())?;
             let after: PostingSnapshot = decode.after()?;

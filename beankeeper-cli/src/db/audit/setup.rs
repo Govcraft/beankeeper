@@ -1,6 +1,7 @@
 //! Audited lifecycle for credentials limited to the active setup session.
 
 pub(crate) mod books;
+pub(crate) mod direct;
 pub(crate) mod openings;
 mod requests;
 pub(crate) mod statement_batches;

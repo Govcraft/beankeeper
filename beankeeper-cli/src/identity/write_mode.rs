@@ -79,6 +79,7 @@ impl WriteMode {
                     | Capability::Reverse
                     | Capability::Admin
                     | Capability::Setup
+                    | Capability::Chart
             )
     }
 }

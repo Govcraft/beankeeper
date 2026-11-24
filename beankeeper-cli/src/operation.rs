@@ -12,6 +12,8 @@ pub(crate) enum Permission {
     ProposalList,
     ProposalReject,
     SetupStatus,
+    SetupOrChart,
+    Chart,
     SetupOwner,
     OwnerUndo,
     Transport,
@@ -23,6 +25,7 @@ impl Permission {
             Self::Capability(capability) => Ok(capability),
             Self::Posting => Ok(Capability::Post),
             Self::ProposalList | Self::SetupStatus => Ok(Capability::Read),
+            Self::SetupOrChart | Self::Chart => Ok(Capability::Chart),
             Self::SetupOwner | Self::OwnerUndo => Ok(Capability::Admin),
             Self::ProposalReject => Ok(Capability::Propose),
             Self::Transport => Err(CliError::Usage(
@@ -44,6 +47,12 @@ macro_rules! permission {
     };
     (SetupStatus) => {
         Permission::SetupStatus
+    };
+    (SetupOrChart) => {
+        Permission::SetupOrChart
+    };
+    (Chart) => {
+        Permission::Chart
     };
     (SetupOwner) => {
         Permission::SetupOwner
@@ -184,6 +193,13 @@ impl Operation {
     /// Returns a usage error for transport operations with no ledger capability.
     pub fn primary_capability(self) -> Result<Capability, CliError> {
         self.permission().primary()
+    }
+
+    pub(crate) const fn requires_onboarding_grant(self) -> bool {
+        matches!(
+            self.permission(),
+            Permission::Chart | Permission::SetupOrChart
+        )
     }
 
     pub(crate) fn is_read_only(self) -> bool {

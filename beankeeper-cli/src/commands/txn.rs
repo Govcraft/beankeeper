@@ -152,6 +152,7 @@ pub(crate) fn parse_entry_arg(s: &str, currency: Currency) -> Result<PostingLine
 }
 
 /// An account and decimal line before applying the journal's currency.
+#[derive(Debug, Clone)]
 pub struct MajorPostingLine {
     account_code: AccountCode,
     amount: MajorAmount,

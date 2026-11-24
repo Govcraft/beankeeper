@@ -105,6 +105,9 @@ fn existing_databases_still_receive_schema_migrations() -> TestResult {
         connection.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
             row.get(0)
         })?;
-    assert_eq!(version, 28);
+    assert_eq!(
+        version,
+        i64::from(beankeeper_cli::db::current_schema_version())
+    );
     Ok(())
 }

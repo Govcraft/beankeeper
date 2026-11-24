@@ -296,18 +296,16 @@ impl ServerHandler for LedgerServer {
                 let identity = call.identity();
                 db.read_snapshot(|reader| {
                     identity.check_live(reader)?;
-                    if identity.enforces_permissions(crate::db::policy::get(reader)?.enforce) {
-                        let mut allowed = Vec::new();
-                        for tool in tools {
-                            if identity
-                                .allows_known_operation(catalog::operation_for_tool(&tool.name)?)?
-                            {
-                                allowed.push(tool);
-                            }
+                    let enforce = crate::db::policy::get(reader)?.enforce;
+                    let mut allowed = Vec::new();
+                    for tool in tools {
+                        if identity
+                            .can_discover(catalog::operation_for_tool(&tool.name)?, enforce)?
+                        {
+                            allowed.push(tool);
                         }
-                        return Ok(allowed);
                     }
-                    Ok(tools)
+                    Ok(allowed)
                 })
             })
             .await
@@ -371,11 +369,9 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         ActorLabel::configured(cli.actor.as_deref()),
     );
     server.show_client_hint_notice = !cli.verbosity.quiet;
-    if let Some(identity) = identity
-        && identity.enforces_permissions(enforce)
-    {
+    if let Some(identity) = identity {
         for tool in server.tool_router.list_all() {
-            if !identity.allows_known_operation(catalog::operation_for_tool(&tool.name)?)? {
+            if !identity.can_discover(catalog::operation_for_tool(&tool.name)?, enforce)? {
                 server.tool_router.remove_route(&tool.name);
             }
         }

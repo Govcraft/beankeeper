@@ -351,6 +351,22 @@ impl TextValue for FiscalYearStart {
     }
 }
 
+impl TextValue for crate::commands::setup::SetupAccountName {
+    const NAME: &'static str = "account name";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "minLength": 1})
+    }
+}
+
+impl TextValue for crate::commands::setup::OpeningDescription {
+    const NAME: &'static str = "opening description";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "minLength": 1})
+    }
+}
+
 impl TextValue for SetupReference {
     const NAME: &'static str = "setup reference";
 

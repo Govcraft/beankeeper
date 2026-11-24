@@ -358,80 +358,131 @@ pub(crate) fn apply(
     company: &CompanySlug,
     change: BookChange<'_>,
 ) -> Result<BookOutcome, CliError> {
-    with_active_setup_write(db, actor, generation, |session| match change {
-        BookChange::Create { name, settings } => {
-            let input = json!(["book-create-v1", company, name, settings.request_fields()]);
-            apply_once(session, reference, company, &input, || {
-                create_book(session, company, name, settings)
-            })
-            .map(BookOutcome::ProfileInitialized)
-        }
-        BookChange::Initialize(settings) => {
-            let input = json!(["book-initialize-v1", company, settings.request_fields()]);
-            apply_once(session, reference, company, &input, || {
-                initialize_book(session, company, settings)
-            })
-            .map(BookOutcome::ProfileInitialized)
-        }
-        BookChange::Supersede { revision, settings } => {
-            let input = json!([
-                "book-update-v1",
-                company,
-                revision,
-                settings.request_fields()
-            ]);
-            apply_once(session, reference, company, &input, || {
-                let previous = current_profile(session, company)?;
-                if previous.revision != revision {
-                    return Err(CliError::Validation(format!(
-                        "setup profile revision {revision} is stale for company '{company}'",
-                        revision = revision.get()
-                    )));
-                }
-                record_profile(session, company, Some(previous), settings)
-            })
-            .map(BookOutcome::ProfileUpdated)
-        }
-        BookChange::ApplyChart(template) => {
-            let input = json!(["chart-apply-v1", company, template]);
-            apply_once(session, reference, company, &input, || {
-                apply_chart(session, company, template)
-            })
-            .map(BookOutcome::ChartApplied)
-        }
-        BookChange::AddAccount {
-            code,
-            name,
-            account_type,
-        } => {
-            let input = json!([
-                "account-add-v1",
-                company,
-                code.as_str(),
-                name.as_ref(),
-                account_type.code()
-            ]);
-            apply_once(session, reference, company, &input, || {
-                current_profile(session, company)?;
-                create_setup_account(session, company, code, name, account_type)
-            })
-            .map(BookOutcome::AccountAdded)
-        }
+    with_active_setup_write(db, actor, generation, |session| {
+        let writer = BookWriter::from(session);
+        let input = change.fingerprint_input(company);
+        apply_once(session, reference, company, &input, || {
+            writer.apply(company, change)
+        })
     })
 }
 
+impl BookChange<'_> {
+    pub(super) fn fingerprint_input(&self, company: &CompanySlug) -> serde_json::Value {
+        match self {
+            Self::Create { name, settings } => {
+                json!(["book-create-v1", company, name, settings.request_fields()])
+            }
+            Self::Initialize(settings) => {
+                json!(["book-initialize-v1", company, settings.request_fields()])
+            }
+            Self::Supersede { revision, settings } => {
+                json!([
+                    "book-update-v1",
+                    company,
+                    revision,
+                    settings.request_fields()
+                ])
+            }
+            Self::ApplyChart(template) => json!(["chart-apply-v1", company, template]),
+            Self::AddAccount {
+                code,
+                name,
+                account_type,
+            } => {
+                json!([
+                    "account-add-v1",
+                    company,
+                    code.as_str(),
+                    name.as_ref(),
+                    account_type.code()
+                ])
+            }
+        }
+    }
+}
+
+/// A book writer bound to a checked setup session or direct chart grant.
+pub(super) struct BookWriter<'a> {
+    tx: &'a super::super::savepoint::AuditedTx<'a>,
+    actor: &'a Actor,
+    generation: Option<Generation>,
+}
+
+impl<'a> From<&'a ActiveSession<'a>> for BookWriter<'a> {
+    fn from(session: &'a ActiveSession<'a>) -> Self {
+        Self {
+            tx: session.audited_tx(),
+            actor: session.actor(),
+            generation: Some(session.session().generation),
+        }
+    }
+}
+
+impl<'a> From<&'a super::direct::OnboardingWrite<'a>> for BookWriter<'a> {
+    fn from(scope: &'a super::direct::OnboardingWrite<'a>) -> Self {
+        Self {
+            tx: scope.tx(),
+            actor: scope.actor(),
+            generation: None,
+        }
+    }
+}
+
+impl BookWriter<'_> {
+    pub(super) fn apply(
+        self,
+        company: &CompanySlug,
+        change: BookChange<'_>,
+    ) -> Result<BookOutcome, CliError> {
+        match change {
+            BookChange::Create { name, settings } => {
+                create_book(&self, company, name, settings).map(BookOutcome::ProfileInitialized)
+            }
+            BookChange::Initialize(settings) => {
+                initialize_book(&self, company, settings).map(BookOutcome::ProfileInitialized)
+            }
+            BookChange::Supersede { revision, settings } => {
+                let previous = current_profile(self.tx.read(), company)?;
+                if previous.revision != revision {
+                    return Err(CliError::Validation(format!(
+                        "setup profile revision {} is stale for company '{company}'",
+                        revision.get()
+                    )));
+                }
+                record_profile(&self, company, Some(previous), settings)
+                    .map(BookOutcome::ProfileUpdated)
+            }
+            BookChange::ApplyChart(template) => {
+                apply_chart(&self, company, template).map(BookOutcome::ChartApplied)
+            }
+            BookChange::AddAccount {
+                code,
+                name,
+                account_type,
+            } => {
+                if self.generation.is_some() {
+                    current_profile(self.tx.read(), company)?;
+                }
+                create_setup_account(&self, company, code, name, account_type)
+                    .map(BookOutcome::AccountAdded)
+            }
+        }
+    }
+}
+
 fn create_book(
-    session: &ActiveSession<'_>,
+    writer: &BookWriter<'_>,
     company: &CompanySlug,
     name: &CompanyName,
     settings: BookSettings,
 ) -> Result<ProfileInitialized, CliError> {
     let row = store_company(
-        session.audited_tx(),
-        session.actor(),
+        writer.tx,
+        writer.actor,
         CompanyCreation::new(company, name, None),
     )?;
-    let profile = record_profile(session, company, None, settings)?;
+    let profile = record_profile(writer, company, None, settings)?;
     Ok(ProfileInitialized {
         name: row.name,
         profile,
@@ -439,28 +490,29 @@ fn create_book(
 }
 
 fn initialize_book(
-    session: &ActiveSession<'_>,
+    writer: &BookWriter<'_>,
     company: &CompanySlug,
     settings: BookSettings,
 ) -> Result<ProfileInitialized, CliError> {
-    let row = get_company(session.read(), company)?;
-    if find_profile(session.read(), company)?.is_some() {
+    crate::db::companies::Company::bind(writer.tx.read(), company.clone())?;
+    let row = get_company(writer.tx.read(), company)?;
+    if find_profile(writer.tx.read(), company)?.is_some() {
         return Err(CliError::Validation(format!(
             "book '{company}' already has a setup profile"
         )));
     }
-    let profile = record_profile(session, company, None, settings)?;
+    let profile = record_profile(writer, company, None, settings)?;
     Ok(ProfileInitialized {
         name: row.name,
         profile,
     })
 }
 
-pub(super) fn current_profile(
-    session: &ActiveSession<'_>,
+pub(in crate::db::audit) fn current_profile(
+    reader: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<BookProfile, CliError> {
-    find_profile(session.read(), company)?
+    find_profile(reader, company)?
         .ok_or_else(|| CliError::NotFound(format!("setup book profile for '{company}' not found")))
 }
 
@@ -471,7 +523,11 @@ fn find_profile(
     let row = conn
         .query_row(
             "SELECT revision, supersedes, purpose, base_currency, fiscal_year_start
-         FROM setup_book_profiles WHERE company_slug = ?1 ORDER BY revision DESC LIMIT 1",
+         FROM setup_book_profiles p WHERE company_slug = ?1 AND NOT EXISTS (
+             SELECT 1 FROM audit_log event WHERE event.company_slug = p.company_slug
+               AND event.action = 'setup_revert'
+               AND json_extract(event.after, '$.profile_revision') = p.revision
+         ) ORDER BY revision DESC LIMIT 1",
             [company.as_str()],
             |row| {
                 Ok((
@@ -505,13 +561,13 @@ fn find_profile(
 }
 
 fn record_profile(
-    session: &ActiveSession<'_>,
+    writer: &BookWriter<'_>,
     company: &CompanySlug,
     previous: Option<BookProfile>,
     settings: BookSettings,
 ) -> Result<BookProfile, CliError> {
     let supersedes = previous.as_ref().map(|profile| profile.revision);
-    let revision = session
+    let revision = writer
         .tx
         .connection()
         .query_row(
@@ -524,7 +580,7 @@ fn record_profile(
                 settings.base_currency.code(),
                 settings.fiscal_year_start.to_string(),
                 supersedes.map(ProfileRevision::get),
-                session.session.generation.get(),
+                writer.generation.map(Generation::get),
             ],
             |row| row.get::<_, i64>(0),
         )?
@@ -538,8 +594,8 @@ fn record_profile(
     let before = previous.map(|profile| json!(profile).to_string());
     let after = json!(profile).to_string();
     record(
-        session.tx.connection(),
-        session.actor(),
+        writer.tx.connection(),
+        writer.actor,
         AuditChange {
             company_slug: Some(company),
             entity: AuditEntity::Company,
@@ -552,11 +608,11 @@ fn record_profile(
 }
 
 fn apply_chart(
-    session: &ActiveSession<'_>,
+    writer: &BookWriter<'_>,
     company: &CompanySlug,
     template: ChartTemplate,
 ) -> Result<ChartApplied, CliError> {
-    let profile = current_profile(session, company)?;
+    let profile = current_profile(writer.tx.read(), company)?;
     if profile.settings.purpose != template.purpose() {
         return Err(CliError::Validation(
             "chart template must match the book's purpose".into(),
@@ -567,7 +623,7 @@ fn apply_chart(
         .iter()
         .map(|&(code, name, account_type)| {
             create_setup_account(
-                session,
+                writer,
                 company,
                 &code
                     .parse()
@@ -587,15 +643,15 @@ fn apply_chart(
 }
 
 fn create_setup_account(
-    session: &ActiveSession<'_>,
+    writer: &BookWriter<'_>,
     company: &CompanySlug,
     code: &AccountCode,
     name: &SetupAccountName,
     account_type: AccountType,
 ) -> Result<SetupAccount, CliError> {
     let row = super::super::catalog::store_validated_account(
-        session.audited_tx(),
-        session.actor(),
+        writer.tx,
+        writer.actor,
         &crate::db::accounts::ValidatedAccountCreation {
             company_slug: company,
             code,
@@ -615,6 +671,12 @@ fn create_setup_account(
 /// A trimmed, nonempty account display name during setup.
 #[derive(Debug, Clone)]
 pub struct SetupAccountName(Box<str>);
+
+impl fmt::Display for SetupAccountName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.pad(self.as_ref())
+    }
+}
 
 impl AsRef<str> for SetupAccountName {
     fn as_ref(&self) -> &str {
@@ -683,7 +745,7 @@ enum AccountTypeWire {
 }
 
 /// Typed receipt for a setup mutation to a book.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BookOutcome {
     /// A first profile, including the name of the book.

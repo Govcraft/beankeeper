@@ -178,6 +178,8 @@ audit_labels! {
         BookkeepingPolicySet => "bookkeeping_policy_set" | "bookkeeping-policy-set",
         InformPreferenceSet => "inform_preference_set" | "inform-preference-set",
         Create => "create",
+        SetupApply => "setup_apply" | "setup-apply",
+        SetupRevert => "setup_revert" | "setup-revert",
         StatusChange => "status_change" | "status-change",
         Correlate => "correlate",
         Reverse => "reverse",

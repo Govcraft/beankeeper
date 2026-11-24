@@ -119,6 +119,20 @@ impl<'conn> Company<'conn> {
     /// Returns [`CliError::NotFound`] if the company does not exist or
     /// [`CliError::Sqlite`] if the lookup fails.
     pub fn bind(reader: ReadConn<'conn>, slug: CompanySlug) -> Result<Self, CliError> {
+        let scope = Self::bind_retained(reader, slug)?;
+        if company_archived(reader, scope.slug())? {
+            return Err(CliError::NotFound(format!(
+                "book '{}' is archived",
+                scope.slug()
+            )));
+        }
+        Ok(scope)
+    }
+
+    pub(in crate::db) fn bind_retained(
+        reader: ReadConn<'conn>,
+        slug: CompanySlug,
+    ) -> Result<Self, CliError> {
         if company_exists(reader, &slug)? {
             Ok(Self { reader, slug })
         } else {
@@ -196,14 +210,19 @@ pub fn create_company(
     })
 }
 
-/// Lists all companies ordered by slug.
+/// Lists active companies ordered by slug.
 ///
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_companies(conn: ReadConn<'_>) -> Result<Vec<CompanyRow>, CliError> {
     let mut stmt =
-        conn.prepare("SELECT slug, name, description, created_at FROM companies ORDER BY slug")?;
+        conn.prepare(
+            "SELECT slug, name, description, created_at FROM companies
+             WHERE NOT EXISTS (SELECT 1 FROM audit_log event WHERE event.company_slug = companies.slug
+               AND event.action = 'setup_revert' AND json_extract(event.after, '$.book_archived') = 1)
+             ORDER BY slug",
+        )?;
 
     let rows = stmt.query_map([], |row| {
         Ok(CompanyRow {
@@ -257,6 +276,17 @@ pub fn company_exists(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<bool, Cl
         |row| row.get(0),
     )?;
     Ok(exists)
+}
+
+// The signed undo is the archive marker. The company row and all receipts stay
+// available to history and undo retries.
+fn company_archived(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<bool, CliError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM audit_log WHERE company_slug = ?1
+             AND action = 'setup_revert' AND json_extract(after, '$.book_archived') = 1)",
+        [slug],
+        |row| row.get(0),
+    )?)
 }
 
 #[cfg(test)]
