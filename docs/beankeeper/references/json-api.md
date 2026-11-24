@@ -335,7 +335,9 @@ unknown company-scoped IDs or references fail with `NOT_FOUND`.
 ### `txn reverse` (alias `txn void`)
 
 The envelope uses `meta.command: "txn.reverse"`. A new mirror returns
-`id`, `created: true`, and `skipped: false`.
+`id`, `created: true`, and `skipped: false`, along with the audit `receipt`
+and optional `desktop_path`. A propose-only credential
+returns `status: "pending"` and `proposal_id`.
 Retrying with an explicit reference matching the linked reversal returns
 `existing_id`, `created: false`, `skipped: true`, without another audit row.
 Other repeat attempts fail with `VALIDATION` (exit 3). Missing or foreign
@@ -1528,7 +1530,7 @@ statement import returns the format, `source_sha256`, `created`, and
 `preexisting`. Each item in those arrays contains its statement reference
 and `transaction_id`.
 
-The owner can pass the receipt ID to `audit undo` or `audit_undo`.
+A signed bookkeeper can pass the receipt ID to `audit undo` or `audit_undo`.
 The response has `kind: "onboarding_reverted"` and an `undo_receipt`.
 `child_receipts` identifies the account archives or mirror postings.
 A profile undo returns its `profile_revision` and whether the book was
@@ -1588,19 +1590,27 @@ listener serving the same books. Desktop displays up to 50 receipts per view.
 ### `audit undo`
 
 Pass the positive receipt ID to `bk --company acme --json audit undo 52`, or
-call MCP `audit_undo` with `{"company":"acme","receipt":52}`. Both require a
-signed `ledger/admin` token regardless of the ledger's enforcement setting.
-The write applies immediately, and retries for the same receipt return the
-original result.
+call MCP `audit_undo` with `{"company":"acme","receipt":52}`. Both require
+a signed credential. A direct bookkeeper can reverse an eligible posting,
+restore annotations, or restore an account label. Account archiving and
+grouped setup undo require signed owner authority. Repeating an applied
+undo returns the same result.
 
-Successful undo results include `company`, `undo_receipt`, and the relative
-`desktop_path` to the new audit receipt:
+Applied results include `company`, the original `undo_of`, the new
+`undo_receipt`, and the relative `desktop_path`:
 
 - `kind: "reversed"` includes `transaction` (original ID) and `reversal` (new ID).
+- `kind: "annotations_restored"` includes the `transaction` ID.
+- `kind: "account_name_restored"` includes the `account` code and restored `name`.
 - `kind: "archived"` includes the archived `account` code.
 - `kind: "onboarding_reverted"` includes the [onboarding undo details](#direct-onboarding-receipts).
 
+A propose-only credential returns `status: "pending"`, `proposal_id`, and
+`undo_of`. Pending reversals and receipt undos appear in the proposal list.
+Approval applies the correction and records the approver atomically.
+
 Expect `NOT_FOUND` for a receipt missing from the selected company,
+`UNDO_OWNER_ONLY` for a change reserved for owner administration,
 `UNDO_UNSUPPORTED` when the change has no undo, and `UNDO_INELIGIBLE` when
 current state blocks an otherwise supported undo. CLI writes the error
 envelope to stderr. MCP uses `isError: true` and structured `{code, message}`.

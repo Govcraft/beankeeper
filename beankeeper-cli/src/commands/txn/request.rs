@@ -11,6 +11,7 @@ use super::{PostingRequest, account_code};
 use crate::cli::{
     TxnCommand, TxnListArgs, TxnPageLimit, TxnProposalCommand, TxnReverseArgs, TxnSettleHoldArgs,
 };
+use crate::db::audit::corrections::{self, Reversal, ReverseSubmission};
 use crate::db::{
     Actor, Db, attachments,
     audit::{self, account_rename, grant::PostingGrant},
@@ -22,7 +23,7 @@ use crate::db::{
     transactions::{self, ListTransactionParams, TransactionValueFilter},
 };
 use crate::error::CliError;
-use crate::identity::{Approve, Granted, ResolveProposal, Reverse};
+use crate::identity::{Approve, Granted, ResolveProposal};
 use crate::operation::Operation;
 use crate::output::json::Pagination;
 
@@ -108,26 +109,16 @@ impl TxnRequest {
                 db, &company, &request, actor,
             )?),
             Self::Proposals(company, include_rejected) => {
-                crate::db::get_company(db.read(), &company)?;
-                db.read_snapshot(|reader| {
-                    let mut proposals: Vec<_> =
-                        proposals::list(reader, &company, actor, include_rejected)?
-                            .into_iter()
-                            .map(super::response::ReviewProposal::from)
-                            .collect();
-                    proposals.extend(
-                        account_rename::list(reader, &company, actor, include_rejected)?
-                            .into_iter()
-                            .map(super::response::ReviewProposal::from),
-                    );
-                    Ok(TxnData::Proposals(proposals))
-                })?
+                list_review_proposals(db, actor, &company, include_rejected)?
             }
             Self::Approve(company, id) => {
                 crate::db::get_company(db.read(), &company)?;
                 let resolved = Granted::<Approve>::with_db(db, actor, |grant| {
                     if let Some(rename) = account_rename::approve(&grant, &company, &id)? {
                         return Ok(rename.into());
+                    }
+                    if let Some(correction) = corrections::approve(&grant, &company, &id)? {
+                        return Ok(correction.into());
                     }
                     audit::approve_proposal(grant, &company, &id).map(Into::into)
                 })?;
@@ -141,11 +132,22 @@ impl TxnRequest {
                     {
                         return Ok(rename.into());
                     }
+                    if let Some(correction) =
+                        corrections::reject(&grant, &company, &id, reason.as_deref())?
+                    {
+                        return Ok(correction.into());
+                    }
                     audit::reject_proposal(grant, &company, &id, reason.as_deref()).map(Into::into)
                 })?;
                 TxnData::Resolved(resolved)
             }
-            Self::Reverse(company, request) => request.execute(db, &company, actor)?,
+            Self::Reverse(company, request) => {
+                let id = request.id();
+                match corrections::reverse(db, actor, &company, request)? {
+                    ReverseSubmission::Applied(result) => TxnData::Reversed { id, result },
+                    ReverseSubmission::Proposed(proposal) => TxnData::CorrectionProposed(proposal),
+                }
+            }
             Self::SettleHold(company, request) => {
                 TxnData::Settled(PostingGrant::with_db(db, actor, |grant| match grant {
                     PostingGrant::Direct(grant) => holds::settle_direct(grant, &company, &request),
@@ -276,49 +278,48 @@ impl From<PostingDate> for NaiveDate {
     }
 }
 
-/// Reversal parameters after transport decoding.
-pub struct ReverseRequest {
-    pub(super) id: TransactionId,
-    pub(super) date: PostingDate,
-    pub(super) description: Option<String>,
-    pub(super) reference: Option<TransactionReference>,
+fn list_review_proposals(
+    db: &Db,
+    actor: &Actor,
+    company: &CompanySlug,
+    include_resolved: bool,
+) -> Result<TxnData, CliError> {
+    use super::response::ReviewProposal;
+
+    crate::db::get_company(db.read(), company)?;
+    db.read_snapshot(|reader| {
+        let mut pending: Vec<_> = proposals::list(reader, company, actor, include_resolved)?
+            .into_iter()
+            .map(ReviewProposal::from)
+            .collect();
+        pending.extend(
+            account_rename::list(reader, company, actor, include_resolved)?
+                .into_iter()
+                .map(ReviewProposal::from),
+        );
+        pending.extend(
+            corrections::list(reader, company, actor, include_resolved)?
+                .into_iter()
+                .map(ReviewProposal::from),
+        );
+        Ok(TxnData::Proposals(pending))
+    })
 }
 
-impl TryFrom<&TxnReverseArgs> for ReverseRequest {
+/// Reversal parameters after transport decoding.
+pub type ReverseRequest = Reversal;
+
+impl TryFrom<&TxnReverseArgs> for Reversal {
     type Error = CliError;
 
     fn try_from(args: &TxnReverseArgs) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: args.id,
-            date: args.date.map(Into::into).unwrap_or_default(),
-            description: args.description.clone(),
-            reference: args.reference.as_deref().map(str::parse).transpose()?,
-        })
-    }
-}
-
-impl ReverseRequest {
-    fn execute(self, db: &Db, company: &CompanySlug, actor: &Actor) -> Result<TxnData, CliError> {
-        crate::db::get_company(db.read(), company)?;
-        let Self {
-            id,
-            date,
-            description,
-            reference,
-        } = self;
-        let result = Granted::<Reverse>::with_db(db, actor, |grant| {
-            audit::reverse_transaction(
-                grant,
-                &audit::ReverseTransactionParams {
-                    company_slug: company,
-                    id,
-                    date: date.into(),
-                    description: description.as_deref(),
-                    reference: reference.as_ref().map(TransactionReference::as_str),
-                },
-            )
-        })?;
-        Ok(TxnData::Reversed { id, result })
+        Ok((
+            args.id,
+            args.date.map(Into::into),
+            args.description.clone(),
+            args.reference.as_deref().map(str::parse).transpose()?,
+        )
+            .into())
     }
 }
 

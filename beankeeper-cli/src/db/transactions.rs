@@ -361,7 +361,7 @@ fn post_with_source(
     };
     let period =
         super::periods::check_posting(tx, p.company_slug, journal.date()).map_err(|error| {
-            if owner_undo {
+            if matches!(posting, Posting::Reversal(_)) {
                 error
             } else {
                 super::periods::ClosedPostingPeriod::public_error(error)

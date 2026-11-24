@@ -12,9 +12,9 @@ use crate::db::audit::setup::{
     direct::{self, OnboardingEffect},
 };
 use crate::db::audit::{
-    AuditAction, AuditChange, AuditEntity, AuditLinks, ReversalBlock, ReverseTransactionParams,
-    audit_columns, read_audit_row, record_with_links, reverse_in_scope, savepoint::AuditedTx,
-    snapshot,
+    AuditAction, AuditChange, AuditEntity, AuditLinks, ReversalBlock, ReversalSource,
+    ReverseTransactionParams, audit_columns, read_audit_row, record_with_links, reverse_in_scope,
+    savepoint::AuditedTx, snapshot,
 };
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::ReadConn;
@@ -25,6 +25,8 @@ use crate::db::transactions::PostResult;
 use crate::db::{Actor, accounts};
 use crate::error::CliError;
 use crate::identity::{Granted, OwnerUndo};
+
+use super::super::grant::AgentUndo;
 use crate::request::LocalDate;
 
 /// A receipt exists in this company but cannot be undone.
@@ -32,6 +34,11 @@ use crate::request::LocalDate;
 pub enum ReceiptUndoError {
     /// This kind of change has no supported undo.
     Unsupported(ReceiptId),
+    /// An eligible structural change requires the owner.
+    OwnerOnly {
+        receipt: ReceiptId,
+        kind: OwnerUndoKind,
+    },
     /// The affected ledger state no longer allows a safe undo.
     Ineligible {
         receipt: ReceiptId,
@@ -42,7 +49,14 @@ pub enum ReceiptUndoError {
 impl fmt::Display for ReceiptUndoError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unsupported(id) => write!(formatter, "receipt #{id} does not support undo"),
+            Self::Unsupported(id) => write!(
+                formatter,
+                "receipt #{id} does not support undo. Inspect the original change to choose a correction"
+            ),
+            Self::OwnerOnly { receipt, kind } => write!(
+                formatter,
+                "receipt #{receipt} is owner-only: {kind}. Ask the owner to make the correction with their signed administration grant"
+            ),
             Self::Ineligible { receipt, reason } => {
                 write!(formatter, "receipt #{receipt} cannot be undone: {reason}")
             }
@@ -58,9 +72,34 @@ impl From<ReceiptUndoError> for CliError {
     }
 }
 
+/// A change reserved for the owner because it affects structure or access.
+#[derive(Debug)]
+pub enum OwnerUndoKind {
+    /// Reverting the creation would archive an account.
+    AccountArchive,
+    /// Setup can retire a whole book or archive multiple accounts.
+    Setup,
+    /// Changes to keys, grants or ledger enforcement are administrative.
+    Access,
+}
+
+impl fmt::Display for OwnerUndoKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::AccountArchive => {
+                "archiving an account changes which accounts can accept postings"
+            }
+            Self::Setup => "undoing setup can affect the book profile, chart, or an entire import",
+            Self::Access => "changing ledger access requires the owner's authority",
+        })
+    }
+}
+
 /// A current ledger condition that prevents immediate receipt undo.
 #[derive(Debug)]
 pub enum UndoIneligibility {
+    /// An undo or reversal cannot itself be undone.
+    AlreadyAnUndo,
     /// The mirror would land in a closed posting period.
     PeriodLocked(ClosedPostingPeriod),
     /// The posting itself cannot be reversed.
@@ -84,6 +123,9 @@ pub enum UndoIneligibility {
 impl fmt::Display for UndoIneligibility {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AlreadyAnUndo => formatter.write_str(
+                "this receipt already records an undo or reversal. Inspect the original change and record any new activity separately",
+            ),
             Self::PeriodLocked(error) => error.fmt(formatter),
             Self::ReversalBlocked(error) => error.fmt(formatter),
             Self::NewerAccountCreation(code) => {
@@ -228,14 +270,84 @@ impl RuleUndoOutcome {
 }
 
 enum UndoTarget {
-    Posting(TransactionId),
+    Agent(AgentUndoTarget),
     Account(AccountCode),
+}
+
+enum AgentUndoTarget {
+    Posting(TransactionId),
     Rename {
         code: AccountCode,
         before: AccountLabel,
         after: AccountLabel,
     },
     Annotations(AnnotationUndo),
+}
+
+pub(in crate::db::audit) struct AgentReceiptUndo {
+    receipt: ReceiptId,
+    target: AgentUndoTarget,
+}
+
+impl AgentReceiptUndo {
+    pub(in crate::db::audit) fn load(
+        scope: &Company<'_>,
+        receipt: ReceiptId,
+    ) -> Result<Self, CliError> {
+        let event = receipt_event(scope, receipt)?;
+        let restriction = match (event.target(), event.action()) {
+            (_, AuditAction::SetupApply) => Some(OwnerUndoKind::Setup),
+            (
+                _,
+                AuditAction::TokenIssue
+                | AuditAction::TokenRevoke
+                | AuditAction::KeyInit
+                | AuditAction::PolicyChange
+                | AuditAction::LimitSet,
+            ) => Some(OwnerUndoKind::Access),
+            _ => None,
+        };
+        if let Some(kind) = restriction {
+            return Err(ReceiptUndoError::OwnerOnly { receipt, kind }.into());
+        }
+        let UndoTarget::Agent(target) = resolve_event(scope, receipt, &event)? else {
+            return Err(ReceiptUndoError::OwnerOnly {
+                receipt,
+                kind: OwnerUndoKind::AccountArchive,
+            }
+            .into());
+        };
+        Ok(Self { receipt, target })
+    }
+
+    pub(in crate::db::audit) fn apply(
+        self,
+        tx: &AuditedTx<'_>,
+        actor: &Actor,
+        scope: &Company<'_>,
+        requested: chrono::NaiveDate,
+    ) -> Result<UndoOutcome, CliError> {
+        undo_single(
+            tx,
+            actor,
+            scope,
+            self.receipt,
+            &UndoTarget::Agent(self.target),
+            UndoAuthority::Agent(requested),
+        )
+    }
+
+    pub(in crate::db::audit) fn recorded(
+        self,
+        scope: &Company<'_>,
+    ) -> Result<Option<UndoOutcome>, CliError> {
+        recorded_outcome(
+            scope.read(),
+            scope.slug(),
+            self.receipt,
+            &UndoTarget::Agent(self.target),
+        )
+    }
 }
 
 struct AnnotationUndo {
@@ -296,7 +408,7 @@ pub fn undo_receipt(
     grant.mutate("sp_owner_undo_receipt", |tx, actor| {
         let scope = Company::bind_retained(tx.read(), company.clone())?;
         let target = resolve_target(&scope, receipt)?;
-        undo_single(tx, actor, &scope, receipt, &target)
+        undo_single(tx, actor, &scope, receipt, &target, UndoAuthority::Owner)
     })
 }
 
@@ -316,9 +428,44 @@ pub fn undo_change(
             undo_onboarding(tx, actor, &scope, receipt, effect).map(ReceiptUndoOutcome::Onboarding)
         } else {
             let target = resolve_target(&scope, receipt)?;
-            undo_single(tx, actor, &scope, receipt, &target).map(ReceiptUndoOutcome::Single)
+            undo_single(tx, actor, &scope, receipt, &target, UndoAuthority::Owner)
+                .map(ReceiptUndoOutcome::Single)
         }
     })
+}
+
+pub(crate) fn undo_as_agent(
+    grant: Granted<'_, AgentUndo>,
+    company: &CompanySlug,
+    receipt: ReceiptId,
+) -> Result<UndoOutcome, CliError> {
+    grant.mutate("sp_agent_undo_receipt", |tx, actor| {
+        let scope = Company::bind_retained(tx.read(), company.clone())?;
+        AgentReceiptUndo::load(&scope, receipt)?.apply(
+            tx,
+            actor,
+            &scope,
+            LocalDate::default().into(),
+        )
+    })
+}
+
+#[derive(Clone, Copy)]
+enum UndoAuthority {
+    Owner,
+    Agent(chrono::NaiveDate),
+}
+
+impl UndoAuthority {
+    fn reversal(self, receipt: ReceiptId) -> (ReversalSource, chrono::NaiveDate) {
+        match self {
+            Self::Owner => (
+                ReversalSource::OwnerUndo(receipt),
+                LocalDate::default().into(),
+            ),
+            Self::Agent(requested) => (ReversalSource::AgentUndo(receipt), requested),
+        }
+    }
 }
 
 fn undo_single(
@@ -327,20 +474,25 @@ fn undo_single(
     scope: &Company<'_>,
     receipt: ReceiptId,
     target: &UndoTarget,
+    authority: UndoAuthority,
 ) -> Result<UndoOutcome, CliError> {
     let company = scope.slug();
     if let Some(outcome) = recorded_outcome(tx.read(), company, receipt, target)? {
         return Ok(outcome);
     }
     match target {
-        UndoTarget::Posting(id) => reverse_posting(tx, actor, company, receipt, *id)?,
+        UndoTarget::Agent(AgentUndoTarget::Posting(id)) => {
+            reverse_posting(tx, actor, company, receipt, *id, authority)?;
+        }
         UndoTarget::Account(code) => archive_account(tx, actor, scope, receipt, code)?,
-        UndoTarget::Annotations(edit) => edit.restore(tx, actor, company, receipt)?,
-        UndoTarget::Rename {
+        UndoTarget::Agent(AgentUndoTarget::Annotations(edit)) => {
+            edit.restore(tx, actor, company, receipt)?;
+        }
+        UndoTarget::Agent(AgentUndoTarget::Rename {
             code,
             before,
             after,
-        } => {
+        }) => {
             account_rename::restore(tx, actor, scope, code, receipt, (before, after))?;
         }
     }
@@ -473,7 +625,8 @@ fn undo_onboarding_children(
             ));
         }
         let target = resolve_target(scope, member)?;
-        child_receipts.push(undo_single(tx, actor, scope, member, &target)?.receipt());
+        child_receipts
+            .push(undo_single(tx, actor, scope, member, &target, UndoAuthority::Owner)?.receipt());
     }
     Ok(OnboardingUndo {
         child_receipts,
@@ -483,9 +636,13 @@ fn undo_onboarding_children(
 }
 
 fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget, CliError> {
+    resolve_event(scope, receipt, &receipt_event(scope, receipt)?)
+}
+
+fn receipt_event(scope: &Company<'_>, receipt: ReceiptId) -> Result<ReceiptEvent, CliError> {
     let columns = audit_columns(crate::db::schema::CURRENT_VERSION);
     let reader = scope.read();
-    let event = reader
+    reader
         .query_row(
             &format!("SELECT {columns} FROM audit_log WHERE company_slug = ?1 AND id = ?2"),
             params![scope.slug(), receipt],
@@ -499,7 +656,18 @@ fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget,
                 "receipt #{receipt} not found in company '{}'",
                 scope.slug()
             ))
-        })?;
+        })
+}
+
+fn resolve_event(
+    scope: &Company<'_>,
+    receipt: ReceiptId,
+    event: &ReceiptEvent,
+) -> Result<UndoTarget, CliError> {
+    let reader = scope.read();
+    if event.undo_of().is_some() || event.action() == AuditAction::Reverse {
+        return Err(ineligible(receipt, UndoIneligibility::AlreadyAnUndo));
+    }
     match (event.target(), event.action()) {
         (ReceiptTarget::Account(code), AuditAction::Create) => {
             Ok(UndoTarget::Account(code.clone()))
@@ -508,21 +676,24 @@ fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget,
             let ReceiptChange::AccountRenamed { before, after } = event.summary() else {
                 return Err(invalid_stored_target("expected account rename"));
             };
-            Ok(UndoTarget::Rename {
+            Ok(UndoTarget::Agent(AgentUndoTarget::Rename {
                 code: code.clone(),
                 before: before.clone(),
                 after: after.clone(),
-            })
+            }))
         }
         (ReceiptTarget::Proposal(_), AuditAction::ProposalApprove) => {
             if let Some(id) = event.related_posting()
                 && posting_creation(reader, scope.slug(), id, event.id())?.is_some()
             {
-                return Ok(UndoTarget::Posting(id));
+                return Ok(UndoTarget::Agent(AgentUndoTarget::Posting(id)));
             }
             Err(ReceiptUndoError::Unsupported(receipt).into())
         }
         (ReceiptTarget::Transaction(id), AuditAction::Create) => {
+            if super::super::is_reversal(reader, scope.slug(), *id)? {
+                return Err(ineligible(receipt, UndoIneligibility::AlreadyAnUndo));
+            }
             let grouped = reader.query_row(
                 "SELECT EXISTS(SELECT 1 FROM audit_receipt_postings
                  WHERE company_slug = ?1 AND posting_id = ?2 AND id > ?3)",
@@ -532,17 +703,19 @@ fn resolve_target(scope: &Company<'_>, receipt: ReceiptId) -> Result<UndoTarget,
             if grouped {
                 return Err(ReceiptUndoError::Unsupported(receipt).into());
             }
-            Ok(UndoTarget::Posting(*id))
+            Ok(UndoTarget::Agent(AgentUndoTarget::Posting(*id)))
         }
         (ReceiptTarget::Transaction(id), AuditAction::MetadataSet | AuditAction::MetadataUnset) => {
             let ReceiptChange::AnnotationsEdited { before, after } = event.summary() else {
                 return Err(invalid_stored_target("missing annotation snapshots"));
             };
-            Ok(UndoTarget::Annotations(AnnotationUndo {
-                transaction: *id,
-                before: before.clone(),
-                after: after.clone(),
-            }))
+            Ok(UndoTarget::Agent(AgentUndoTarget::Annotations(
+                AnnotationUndo {
+                    transaction: *id,
+                    before: before.clone(),
+                    after: after.clone(),
+                },
+            )))
         }
         _ => Err(ReceiptUndoError::Unsupported(receipt).into()),
     }
@@ -583,7 +756,7 @@ fn recorded_outcome(
     let undo_receipt = ReceiptId::from(event.id());
     match (target, event.target(), event.action()) {
         (
-            UndoTarget::Posting(transaction),
+            UndoTarget::Agent(AgentUndoTarget::Posting(transaction)),
             ReceiptTarget::Transaction(recorded),
             AuditAction::Reverse,
         ) if recorded == transaction => {
@@ -605,7 +778,7 @@ fn recorded_outcome(
             undo_receipt,
         })),
         (
-            UndoTarget::Annotations(edit),
+            UndoTarget::Agent(AgentUndoTarget::Annotations(edit)),
             ReceiptTarget::Transaction(recorded),
             AuditAction::MetadataRestore,
         ) if *recorded == edit.transaction => Ok(Some(UndoOutcome::AnnotationsRestored {
@@ -613,7 +786,7 @@ fn recorded_outcome(
             undo_receipt,
         })),
         (
-            UndoTarget::Rename { code, .. },
+            UndoTarget::Agent(AgentUndoTarget::Rename { code, .. }),
             ReceiptTarget::Account(recorded),
             AuditAction::AccountRename,
         ) if recorded == code => {
@@ -743,23 +916,25 @@ fn reverse_posting(
     company: &CompanySlug,
     receipt: ReceiptId,
     id: TransactionId,
+    authority: UndoAuthority,
 ) -> Result<(), CliError> {
+    let (source, date) = authority.reversal(receipt);
     let result = reverse_in_scope(
         tx,
         actor,
         &ReverseTransactionParams {
             company_slug: company,
             id,
-            date: LocalDate::from(None).into(),
+            date,
             description: None,
             reference: None,
         },
-        Some(receipt),
+        source,
     );
     match result {
         Ok(PostResult::Created(_)) => Ok(()),
         Ok(PostResult::Skipped(_)) => Err(invalid_stored_target(
-            "owner reversal was unexpectedly skipped",
+            "receipt reversal was unexpectedly skipped",
         )),
         Err(CliError::PeriodLocked(error)) => {
             Err(ineligible(receipt, UndoIneligibility::PeriodLocked(error)))

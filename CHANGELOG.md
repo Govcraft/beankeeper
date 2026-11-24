@@ -22,6 +22,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Fixed
 
+- Let existing bookkeepers reverse postings and undo eligible receipts through CLI and MCP, with pending corrections only for propose-only credentials. ([#287](https://github.com/Govcraft/beankeeper/issues/287))
 - Existing propose-only bookkeepers can configure books and accounts directly and submit openings and statement rows through transaction sign-off on the CLI and MCP. ([#275](https://github.com/Govcraft/beankeeper/issues/275))
 - MCP tool schemas describe nested objects and arrays inline, and clients such as Claude Desktop can send those arguments as JSON text. ([#277](https://github.com/Govcraft/beankeeper/issues/277))
 - Tag posted transactions through MCP using an object such as `{"status":"pending"}`, with clear validation errors and one-step annotation undo through CLI or MCP. ([#279](https://github.com/Govcraft/beankeeper/issues/279))

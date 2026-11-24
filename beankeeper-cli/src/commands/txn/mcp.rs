@@ -4,10 +4,7 @@ use super::super::{
     txn_clear::{BatchLine, ClearOptions, ClearRequestTarget, ClearanceRequest, EntrySelector},
     txn_meta::MetadataSelector,
 };
-use super::{
-    ListRequest, PostingDraft, PostingLine, PostingRequest, ReverseRequest, TxnRequest,
-    parse_tax_args,
-};
+use super::{ListRequest, PostingDraft, PostingLine, PostingRequest, TxnRequest, parse_tax_args};
 use crate::cli;
 use crate::db::{
     companies::CompanySlug, holds::HoldSelector, metadata::ValidatedMetadataEdit, metadata_filter,
@@ -102,15 +99,13 @@ impl From<inputs::TxnReverse> for TxnRequest {
     fn from(input: inputs::TxnReverse) -> Self {
         Self::Reverse(
             input.company.into_inner(),
-            ReverseRequest {
-                id: input.id,
-                date: input
-                    .date
-                    .map(|date| date.into_inner().date().into())
-                    .unwrap_or_default(),
-                description: input.description,
-                reference: input.reference.map(Text::into_inner),
-            },
+            (
+                input.id,
+                input.date.map(|date| date.into_inner().date()),
+                input.description,
+                input.reference.map(Text::into_inner),
+            )
+                .into(),
         )
     }
 }

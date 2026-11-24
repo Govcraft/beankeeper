@@ -135,7 +135,7 @@ and free of double quotes and NUL.
 Each changed batch records a `receipt` with whole-object snapshots and returns
 a `desktop_path` for optional detail. Tell the owner what changed and give them
 the receipt for one-step undo with `bk audit undo --company ACME RECEIPT` or
-`audit_undo` using the owner's signed grant. Undo newer annotation edits first.
+`audit_undo` using your signed direct bookkeeper grant. Undo newer annotation edits first.
 No-op retries have a null receipt. Removing the last key leaves `{}`. Dates and
 financial fields stay unchanged, so tagging an original AR charge preserves
 its age under `report aging --filter-metadata status=disputed`.
@@ -150,11 +150,12 @@ detail link when one is available.
 If you omit currency, the posting uses `BEANKEEPER_CURRENCY` when set
 and USD otherwise.
 
-Use `bk txn reverse ID` or `txn_reverse` in the selected company to undo a
-posted transaction. The owner needs `ledger/reverse` when enforcement is on.
-This immediately appends an audited reversal linked to the original. Use
-`bk audit log --by-actor ACTOR` or the MCP `audit_log` filter `actor` to find the
-post or its undo.
+Use `bk txn reverse ID` or `txn_reverse` in the selected company to reverse a
+posting. Use `bk audit undo RECEIPT` or `audit_undo` when an eligible receipt
+identifies the change. The direct bookkeeper grant applies corrections
+immediately and preserves the audit link. Never create a hand-made offsetting
+entry to undo a posting. Tell the owner what changed and offer the Desktop
+detail link when available.
 
 For a card authorization, use `txn_post` with `status: "pending"` or
 `bk txn post --status pending`. Supply one debit and one credit on different
@@ -195,16 +196,17 @@ listener when its address is known.
 
 When the owner asks to undo a receipt, run
 `bk --company acme --json audit undo RECEIPT` or call `audit_undo` with
-`company` and the numeric `receipt` ID. Use the owner's signed `ledger/admin`
-credential even if enforcement is off. Undo acts immediately. It reverses an
-eligible posting or archives an opened account, recording a new linked receipt.
-Report the result and its `undo_receipt`. A repeat returns the same result.
-If the ledger returns `UNDO_UNSUPPORTED` or `UNDO_INELIGIBLE`, explain the
-reason supplied by the ledger. [Receipt commands and results](references/json-api.md#audit-receipts)
+`company` and the numeric `receipt` ID. Use your signed bookkeeper credential
+for a posting, annotation edit, or account rename. Report the result and its
+`undo_receipt`. A repeat returns the same result. If the ledger returns
+`UNDO_OWNER_ONLY`, explain the reason and ask the owner to have their signed
+administration credential perform the correction. For `UNDO_UNSUPPORTED` or
+`UNDO_INELIGIBLE`, explain the reason and the available next step in the
+conversation. [Receipt commands and results](references/json-api.md#audit-receipts)
 
 If the owner issued your credential with `--write-mode propose-only`, the same
-post operation returns `status: "pending"` and a proposal ID. Tell the owner
-what is pending. A separate reviewer with approval authority can post it.
+post or correction returns `status: "pending"` and a proposal ID. Tell the owner
+what is pending. A separate signed reviewer can apply it.
 Use the explicit `txn propose` or `txn_propose` operation for ad hoc sign-off
 when the owner requests it.
 
@@ -330,7 +332,7 @@ as `policy_change`; repeated state is a no-op. Missing tokens are `UNAUTHORIZED`
 | `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule mutations |
 | `ledger/propose` | Propose, list/withdraw owned pending requests |
 | `ledger/approve` | List all requests, approve, reject |
-| `ledger/reverse` | txn reverse |
+| `ledger/reverse` | Reverse postings and undo eligible audit receipts |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
 | `ledger/chart` | Rename account labels on the bookkeeper connection. Direct applies immediately, and propose-only uses sign-off. |
@@ -432,7 +434,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 - Use `company_create` with `slug`, `name`, and optional `description` to add a company. Use `ledger_setup_book_create` when the company also needs a setup profile. Both use the same audited company insert.
 - Call `company_delete` with `slug` when the owner asks to delete that company. The call confirms deletion, records the eligible company's prior state in the audit log, and returns `{"deleted":"slug"}`. On `VALIDATION` for retained data, explain that the company keeps its history and use `txn_reverse` for posting corrections. Both company tools require `ledger/admin` under enforcement and are hidden in read-only mode.
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Direct grants post immediately. Propose-only grants return a pending proposal. Supply a stable `reference` and `on_conflict: "skip"` for retries of posted references. Find a pending reference with `txn_proposals`. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
-- Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: {"status":"pending"}`. Legacy arrays such as `["status=pending"]` still work. `txn_meta_unset` takes the same selector and `keys: ["status"]`. Report the returned `receipt` to the owner, who can pass it with `company` to `audit_undo` using their signed grant. Read-only mode omits both write tools.
+- Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: {"status":"pending"}`. Legacy arrays such as `["status=pending"]` still work. `txn_meta_unset` takes the same selector and `keys: ["status"]`. Report the returned `receipt` to the owner. Pass it with `company` to `audit_undo` using your signed bookkeeper grant when they ask for a correction. Read-only mode omits both write tools.
 - Call `txn_reverse` with `company` and the original `id` to create a linked mirror posting; optional fields are `date`, `description`, and `reference`. Supply the same explicit `reference` on retries to get `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed. Existing clearings stay on the original; reversal entries start uncleared. This write tool is absent in read-only mode.
 - Call `txn_list` or `txn_show` to inspect posted entries. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
 - For `report` with `kind: "reconciliation"`, `mode` accepts `bank` (default) or `settlement`. Settlement mode requires `statement` and accepts `link_key` (default `applies_to`) for payment-to-charge metadata links.
@@ -513,7 +515,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk txn approve/reject` | Resolve a pending proposal; `withdraw` aliases rejection of an owned request |
 | `bk txn list` | Search and filter transactions |
 | `bk txn settle-hold` | Replace a card authorization with the actual posted charge and retain its history. |
-| `bk txn reverse ID` | Undo a posting immediately with a linked mirror transaction (alias `void`). Reconciled originals cannot be reversed. |
+| `bk txn reverse ID` | Apply or propose a linked mirror transaction (alias `void`). Reconciled originals cannot be reversed. |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
 | `bk schedule create/list/run/cancel` | Manage pending recurring templates and post due occurrences |
@@ -561,7 +563,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk report trend` | Show revenue, spending or net worth across periods |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
 | `bk audit receipts` | Read a company's grouped changes from a cursor |
-| `bk audit undo RECEIPT` | Undo an eligible change under the owner's signed grant |
+| `bk audit undo RECEIPT` | Apply or propose undo of an eligible receipt with a signed credential |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export accounting data as JSON or CSV |
 | `bk backup --output PATH` | Save and verify a full database snapshot, preserving encryption |

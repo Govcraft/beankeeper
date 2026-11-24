@@ -774,7 +774,13 @@ fn dated_token(ledger: &Ledger, issued: &Value, seconds: i64) -> Result<String, 
 #[test]
 fn posts_imports_reversals_and_mutations_all_record_verified_claims() -> TestResult {
     let ledger = Ledger::new()?;
-    let issued = ledger.issue()?;
+    ledger.run(&["key", "init"], None)?;
+    let issued = issue_write_grant(
+        &ledger,
+        "fixture_admin",
+        "ledger/read,ledger/post,ledger/reverse,ledger/admin",
+        &[],
+    )?;
     let token = text(&issued, "token")?;
     ledger.post("sale", Some(token))?;
     let imported = ledger.dir.path().join("batch.json");

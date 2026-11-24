@@ -88,6 +88,7 @@ impl WriteMode {
 pub(super) struct EffectiveGrants {
     mode: WriteMode,
     leaves: Vec<Capability>,
+    bookkeeper: bool,
 }
 
 impl From<&[String]> for EffectiveGrants {
@@ -98,10 +99,15 @@ impl From<&[String]> for EffectiveGrants {
             .filter_map(|path| Capability::from_path(path))
             .filter(|capability| mode.permits(*capability))
             .collect();
-        if let Ok(preset) = BookkeeperPreset::try_from(signed) {
-            leaves.extend(preset.onboarding_grants());
+        let preset = BookkeeperPreset::try_from(signed).ok();
+        if let Some(preset) = &preset {
+            leaves.extend(preset.additional_grants());
         }
-        Self { mode, leaves }
+        Self {
+            mode,
+            leaves,
+            bookkeeper: preset.is_some(),
+        }
     }
 }
 
@@ -110,12 +116,16 @@ impl EffectiveGrants {
         self.mode
     }
 
+    pub(super) const fn is_bookkeeper(&self) -> bool {
+        self.bookkeeper
+    }
+
     pub(super) fn contains(&self, capability: Capability) -> bool {
         self.leaves.contains(&capability)
     }
 }
 
-/// The exact signed presets issued before Chart was available to bookkeepers.
+/// The signed presets issued to bookkeepers, including existing credentials.
 enum BookkeeperPreset {
     Direct,
     ManagedDirect,
@@ -150,9 +160,10 @@ impl TryFrom<&[String]> for BookkeeperPreset {
 }
 
 impl BookkeeperPreset {
-    const fn onboarding_grants(self) -> [Capability; 1] {
+    const fn additional_grants(&self) -> &'static [Capability] {
         match self {
-            Self::Direct | Self::ManagedDirect | Self::ProposeOnly => [Capability::Chart],
+            Self::Direct | Self::ManagedDirect => &[Capability::Chart, Capability::Reverse],
+            Self::ProposeOnly => &[Capability::Chart],
         }
     }
 }

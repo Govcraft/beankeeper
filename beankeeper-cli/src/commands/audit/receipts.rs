@@ -4,14 +4,16 @@ use crate::{
     cli::{AuditReceiptsArgs, Cli, OutputFormat, resolve_format},
     db::{
         Actor, Db,
-        audit::receipts::{
-            ReceiptId, ReceiptPage, ReceiptQuery, ReceiptUndoOutcome, UndoOutcome, changes_path,
-            desktop_receipt_path, undo_change,
+        audit::{
+            corrections::{self, PendingCorrection, UndoSubmission},
+            receipts::{
+                ReceiptId, ReceiptPage, ReceiptQuery, ReceiptUndoOutcome, UndoOutcome,
+                changes_path, desktop_receipt_path,
+            },
         },
         companies::CompanySlug,
     },
     error::CliError,
-    identity::{Granted, OwnerUndo},
     operation::Operation,
     output::json,
 };
@@ -30,11 +32,11 @@ impl TryFrom<(&CompanySlug, &AuditReceiptsArgs)> for ReceiptQuery {
     }
 }
 
-/// A query or immediate owner undo of a company audit receipt.
+/// A query or correction of a company audit receipt.
 pub enum ReceiptRequest {
     /// Read a bounded page of receipts.
     List(ReceiptQuery),
-    /// Undo a receipt using the authenticated owner's authority.
+    /// Undo an eligible receipt or request a correction under a propose-only grant.
     Undo(CompanySlug, ReceiptId),
 }
 
@@ -53,15 +55,34 @@ impl ReceiptRequest {
             Self::List(query) => {
                 let page = query.read(db)?;
                 let path = changes_path(query.company(), page.after(), page.page_through());
-                (query.company().clone(), ReceiptResult::Page(page), path)
+                (
+                    query.company().clone(),
+                    ReceiptResult::Page(page),
+                    Some(path),
+                )
             }
             Self::Undo(company, receipt) => {
-                let outcome = Granted::<OwnerUndo>::with_db(db, actor, |grant| {
-                    undo_change(grant, &company, receipt)
-                })?;
-                let id = outcome.receipt();
-                let path = desktop_receipt_path(&company, id);
-                (company, ReceiptResult::Undo(outcome), path)
+                match corrections::undo(db, actor, &company, receipt)? {
+                    UndoSubmission::Applied(outcome) => {
+                        let path = desktop_receipt_path(&company, outcome.receipt());
+                        (
+                            company,
+                            ReceiptResult::Undo {
+                                undo_of: receipt,
+                                outcome,
+                            },
+                            Some(path),
+                        )
+                    }
+                    UndoSubmission::Proposed(proposal) => (
+                        company,
+                        ReceiptResult::Proposed {
+                            undo_of: receipt,
+                            proposal,
+                        },
+                        None,
+                    ),
+                }
             }
         };
         Ok(ReceiptResponse {
@@ -76,7 +97,16 @@ impl ReceiptRequest {
 #[serde(untagged)]
 enum ReceiptResult {
     Page(ReceiptPage),
-    Undo(ReceiptUndoOutcome),
+    Undo {
+        undo_of: ReceiptId,
+        #[serde(flatten)]
+        outcome: ReceiptUndoOutcome,
+    },
+    Proposed {
+        undo_of: ReceiptId,
+        #[serde(flatten)]
+        proposal: PendingCorrection,
+    },
 }
 
 /// Typed receipt payload shared by CLI JSON and MCP structured results.
@@ -85,7 +115,8 @@ pub struct ReceiptResponse {
     company: CompanySlug,
     #[serde(flatten)]
     result: ReceiptResult,
-    desktop_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desktop_path: Option<String>,
 }
 
 impl ReceiptResponse {
@@ -94,7 +125,7 @@ impl ReceiptResponse {
     pub const fn page(&self) -> Option<&ReceiptPage> {
         match &self.result {
             ReceiptResult::Page(page) => Some(page),
-            ReceiptResult::Undo(_) => None,
+            ReceiptResult::Undo { .. } | ReceiptResult::Proposed { .. } => None,
         }
     }
 
@@ -102,7 +133,10 @@ impl ReceiptResponse {
     #[must_use]
     pub const fn undo_outcome(&self) -> Option<&UndoOutcome> {
         match &self.result {
-            ReceiptResult::Undo(ReceiptUndoOutcome::Single(outcome)) => Some(outcome),
+            ReceiptResult::Undo {
+                outcome: ReceiptUndoOutcome::Single(outcome),
+                ..
+            } => Some(outcome),
             _ => None,
         }
     }
@@ -111,8 +145,8 @@ impl ReceiptResponse {
     #[must_use]
     pub const fn change_undo_outcome(&self) -> Option<&ReceiptUndoOutcome> {
         match &self.result {
-            ReceiptResult::Undo(outcome) => Some(outcome),
-            ReceiptResult::Page(_) => None,
+            ReceiptResult::Undo { outcome, .. } => Some(outcome),
+            ReceiptResult::Page(_) | ReceiptResult::Proposed { .. } => None,
         }
     }
 
@@ -121,7 +155,7 @@ impl ReceiptResponse {
         if format == OutputFormat::Json {
             let operation = match self.result {
                 ReceiptResult::Page(_) => Operation::AuditReceipts,
-                ReceiptResult::Undo(_) => Operation::AuditUndo,
+                ReceiptResult::Undo { .. } | ReceiptResult::Proposed { .. } => Operation::AuditUndo,
             };
             let meta = cli.meta(operation, Some(self.company.as_str()));
             println!("{}", json::envelope_ok(meta, self)?);
@@ -152,7 +186,13 @@ impl ReceiptResponse {
                     eprintln!("Next range: --cursor {}", page.through());
                 }
             }
-            ReceiptResult::Undo(outcome) => {
+            ReceiptResult::Proposed { undo_of, proposal } => {
+                println!(
+                    "Proposed undo of receipt #{undo_of}. Proposal {} is pending sign-off.",
+                    proposal.id()
+                );
+            }
+            ReceiptResult::Undo { outcome, .. } => {
                 let message = match outcome {
                     ReceiptUndoOutcome::Single(UndoOutcome::Reversed {
                         transaction,

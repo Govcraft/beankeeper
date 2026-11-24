@@ -263,6 +263,8 @@ impl LedgerServer {
     }
 }
 
+const SERVER_INSTRUCTIONS: &str = "Amounts in inputs use decimal major-unit strings. Results retain integer minor units and add decimal-string _display companions. Results with pagination include it in _meta.pagination. Use a stable reference and on_conflict=skip for safe posting retries. Tell the owner what changed and give them the receipt or transaction ID for an audited correction. Use the correction tools listed for your credential. Describe a proposal as pending until an approver applies it. Use company for company-scoped tools. Never pass database paths or secrets to tools.";
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for LedgerServer {
     async fn call_tool(
@@ -323,7 +325,7 @@ impl ServerHandler for LedgerServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("beankeeper", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Amounts in inputs use decimal major-unit strings; amounts in results retain integer minor units and add decimal-string _display companions. txn_list and audit_log return pagination in result _meta.pagination. Use txn_post with a stable reference and on_conflict=skip for posted retries. Direct is the default. Tell the owner what posted and give them the transaction ID for one-step undo with txn_reverse. A propose-only grant returns a pending proposal; report it as pending until an approver posts it with txn_approve. Company is required for company-scoped tools. Never pass database paths or secrets to tools.")
+            .with_instructions(SERVER_INSTRUCTIONS)
     }
 }
 

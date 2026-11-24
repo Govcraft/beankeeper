@@ -25,10 +25,11 @@ pub use event::{
 mod undo;
 pub(in crate::db) use links::{backfill_legacy_links, seal_legacy_links};
 pub(super) use links::{verify_legacy_links, verify_links};
-pub(super) use undo::UndoPostingDate;
+pub(crate) use undo::undo_as_agent;
 pub(in crate::db) use undo::verify_archives;
+pub(super) use undo::{AgentReceiptUndo, UndoPostingDate};
 pub use undo::{
-    OnboardingUndoOutcome, ReceiptUndoError, ReceiptUndoOutcome, RuleUndoOutcome,
+    OnboardingUndoOutcome, OwnerUndoKind, ReceiptUndoError, ReceiptUndoOutcome, RuleUndoOutcome,
     UndoIneligibility, UndoOutcome, undo_change, undo_receipt, undo_rule_creation,
 };
 

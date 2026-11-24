@@ -2,10 +2,13 @@
 
 use std::{fmt, str::FromStr};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::CliError;
 
 /// The original nonempty reference, trimmed once for storage and lookup.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct TransactionReference(Box<str>);
 
 impl TransactionReference {
@@ -13,6 +16,14 @@ impl TransactionReference {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for TransactionReference {
+    type Error = EmptyReference;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        raw.parse()
     }
 }
 

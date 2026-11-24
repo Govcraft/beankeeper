@@ -308,7 +308,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `investment_holdings` | `company`, optional `as_of` (default today); value positions at the latest price on or before the cutoff without posting |
 | `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`, `offset`; rows include `prev_hash` and `row_hash` |
 | `audit_receipts` | `company`, optional `cursor` or `continuation`, and optional `limit` |
-| `audit_undo` | `company` and numeric `receipt`. Applies immediately with a signed `ledger/admin` token |
+| `audit_undo` | `company` and numeric `receipt`. Direct signed bookkeepers undo eligible receipts immediately. Propose-only grants create a pending correction |
 
 `txn_post.debits` and `.credits` contain `{account, amount, memo?}` objects.
 `amount` is a decimal string in major units. `meta` is a string-to-string map;
@@ -316,7 +316,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 `on_conflict: "skip"` for safe retries returning the existing transaction ID.
 `error` preserves duplicate rejection. Only `error` and `skip` are accepted.
 
-`txn_reverse` creates a linked mirror posting with the CLI reversal rules. Its
+`txn_reverse` creates a linked mirror posting with the CLI reversal rules. Propose-only grants return a pending proposal. Its
 `date` defaults to today and must be on or after the original date. Description
 defaults to `Reversal of #ID: ORIGINAL DESCRIPTION`; reference defaults to
 `reversal-of-ID`. Safe retries require the same **explicit** `reference`, returning
@@ -858,7 +858,7 @@ whole-object `before`/`after` snapshots and the resolved actor, atomically with
 the edit. Removing the last key leaves `{}`. Setting an identical string or
 removing an absent key is a no-op with no audit row. Other keys and numeric
 precision survive. Use the returned `receipt` with
-`bk audit undo --company COMPANY RECEIPT` under the owner's signed grant to
+`bk audit undo --company COMPANY RECEIPT` with a signed direct bookkeeper grant to
 restore the exact prior metadata. Undo newer annotation edits first.
 Dates, entries, amounts, currency, references, and creation attribution stay
 unchanged. Tagging the original charge preserves its age and payment matching
@@ -1817,8 +1817,10 @@ bk --company acme --json audit undo 52
 ```
 
 Set `next` to the `continuation` from the previous page. Save `through` as
-the next cursor once `continuation` is null. Undo requires a signed
-`ledger/admin` token and records a linked reversal or archive immediately.
+the next cursor once `continuation` is null. A signed direct bookkeeper can
+reverse a posting or restore annotations or a prior account label. Account
+archiving and grouped setup undo require a signed `ledger/admin` credential.
+Propose-only bookkeepers submit eligible corrections for a signed approver.
 [Receipt paging, result fields, and error codes](json-api.md#audit-receipts)
 
 ## Agent spend limits
@@ -1926,7 +1928,7 @@ off; afterward all ledger commands require tokens and policy changes require
 | `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule create/amend/delete, bookkeeping-policy set, inform-preference set |
 | `ledger/propose` | txn propose, list/withdraw owned proposals |
 | `ledger/approve` | List all proposals, txn approve/reject |
-| `ledger/reverse` | txn reverse |
+| `ledger/reverse` | Reverse postings and undo eligible audit receipts |
 | `ledger/reconcile` | txn clear/reconcile |
 | `ledger/budget` | budget set/delete |
 | `ledger/admin` | company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
