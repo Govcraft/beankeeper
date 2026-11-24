@@ -274,11 +274,12 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
+| `account_rename` | `company`, existing account `code`, and the new display `name` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `status`, `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
 | `txn_settle_hold` | `company`, `hold` as `{"id":42}` or `{"reference":"hold-1"}`, positive decimal `amount`, posting `date`, posted `reference` |
 | `txn_propose` | Same posting arguments as `txn_post`; requires a verified proposer, reserves the reference and waits for approval without posting |
 | `txn_proposals` | `company`, optional `include_rejected` (includes all resolved statuses); visibility follows identity and grants |
-| `txn_approve`, `txn_reject` | `company`, proposal `id`; reject accepts optional `reason`; approval posts atomically, rejection also serves proposer withdrawal |
+| `txn_approve`, `txn_reject` | `company`, proposal `id`; reject accepts optional `reason`; approval applies a posting or rename atomically, rejection also serves proposer withdrawal |
 | `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: {"status":"pending"}` and accepts legacy `["status=pending"]`; unset takes `keys: ["status"]`. Both return `receipt` and `desktop_path` on changes. |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
@@ -513,7 +514,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 
-Read-only mode removes `company_create`, `company_delete`, `account_create`, `txn_post`, `txn_propose`, `txn_approve`,
+Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `txn_post`, `txn_propose`, `txn_approve`,
 `txn_reject`, `txn_reverse`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
@@ -640,6 +641,31 @@ bk --company acme account create 4000 "Revenue" --type revenue --default-tax-cat
 ```
 
 Types: `asset`, `liability`, `equity`, `revenue`, `expense`.
+
+### `bk account rename CODE NAME`
+
+```bash
+bk --company acme account rename 1000 "Operating Cash" --json
+```
+
+Use this command to relabel an existing account while preserving its code,
+postings, and balances. Names must contain at least one non-whitespace
+character. Surrounding whitespace is trimmed. A label already used by another
+account in that book is rejected with `DUPLICATE_ACCOUNT_NAME`. Label comparison
+is case-sensitive.
+
+Direct bookkeepers receive the previous label, a `receipt_id`, and a
+`desktop_path` for the change. Repeating the request while that rename is
+current returns the same receipt. If the name was already current with no
+matching rename receipt, the result is `unchanged`. Pass the receipt to
+`bk --company acme audit undo RECEIPT_ID` or MCP `audit_undo` with the signed
+owner grant to restore the previous label. Undo requires the rename to still
+be current and the previous label to be available.
+
+Propose-only bookkeepers receive a `proposal_id` on their normal connection.
+The reviewer can find it with `txn proposals` or `txn_proposals` and sign off
+with `txn approve` or `txn_approve`. Approval returns the undo receipt and
+Desktop link. If the account changes before approval, submit a new request.
 
 ### `bk account list`
 

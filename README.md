@@ -538,7 +538,7 @@ mutation tools are absent and cannot be called.
 | `company_list`, `company_show` | Inspect companies |
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
-| `account_list`, `account_show`, `account_create` | Inspect and create accounts |
+| `account_list`, `account_show`, `account_create`, `account_rename` | Inspect, create, and rename accounts |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Record transactions and holds, settle holds, undo postings, or edit annotations |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
@@ -1255,6 +1255,20 @@ transactions in the selected currency. A company with multiple transaction
 currencies requires `--currency` (MCP: `currency`). With no selection,
 `bk` uses the company's sole transaction currency, or USD if the company has
 no transactions. `BEANKEEPER_CURRENCY` does not select a currency for this query.
+
+When an existing account needs a different display name, rename it in place.
+Keep using its existing code for all transactions and reports.
+
+```sh
+bk --company personal account rename 1000 "Operating Cash" --json
+```
+
+The equivalent MCP call is `account_rename` with
+`{"company":"personal","code":"1000","name":"Operating Cash"}`.
+The bookkeeper's direct grant returns the previous name, an owner undo receipt,
+and a Desktop link to the change. A propose-only grant returns a proposal ID for
+`txn_approve`. Use `bk --company personal audit undo RECEIPT_ID` or `audit_undo` with the owner's
+signed grant to restore the previous name.
 
 Set `with_balances: true` in MCP `account_list` or pass `--with-balances`
 to `bk account list` for posted debit and credit totals, a posted balance,
