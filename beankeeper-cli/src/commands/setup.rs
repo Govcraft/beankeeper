@@ -86,7 +86,7 @@ pub enum SetupCommand {
     },
     /// Freeze balanced statement entries for the owner's review.
     StatementPreview(StatementPreviewArgs),
-    /// Import statement contents immediately from standard input.
+    /// Post or propose statement rows from standard input in the credential's write mode.
     StatementImport(StatementImportArgs),
     /// Approve and commit one exact reviewed batch with a live approval credential.
     StatementCommit {
@@ -135,7 +135,7 @@ pub enum SetupCommand {
     OpeningPreview(OpeningPreviewArgs),
     /// Reserve a previewed opening journal for approval.
     OpeningReserve(OpeningReserveArgs),
-    /// Post a balanced opening journal immediately.
+    /// Post or propose a balanced opening journal in the credential's write mode.
     OpeningPost(OpeningPostArgs),
     /// Cancel a setup generation and deactivate its credential.
     Revoke {
@@ -704,8 +704,7 @@ impl SetupRequest {
                     .map(SetupResponse::StatementPreview)
             }
             Self::StatementImport(reference, request) => {
-                direct::import_statement(db, actor, &reference, &request)
-                    .map(SetupResponse::StatementImported)
+                direct::import_statement(db, actor, &reference, &request).map(SetupResponse::from)
             }
             Self::StatementCommit(company, batch_id, digest) => {
                 statement_batches::commit(db, actor, &company, batch_id, &digest)
@@ -757,8 +756,7 @@ impl SetupRequest {
                 openings::preview(db, actor, &request).map(SetupResponse::OpeningPreview)
             }
             Self::OpeningPost(reference, request) => {
-                direct::post_opening(db, actor, &reference, &request)
-                    .map(SetupResponse::OpeningPosted)
+                direct::post_opening(db, actor, &reference, &request).map(SetupResponse::from)
             }
             Self::OpeningReserve(request, reference, fingerprint) => {
                 openings::reserve(db, actor, &request, &reference, &fingerprint)
@@ -781,6 +779,8 @@ pub enum SetupResponse {
     StatementReceipt(StatementReceipt),
     /// Audited direct import with newly created and preexisting postings.
     StatementImported(direct::OnboardingReceipt<direct::StatementImported>),
+    /// Statement proposals and their submission receipt.
+    StatementProposed(direct::OnboardingReceipt<direct::StatementProposed>),
     /// New setup session and its one-time credential.
     Started(Box<Started>),
     /// Finished or revoked setup session.
@@ -795,6 +795,26 @@ pub enum SetupResponse {
     OpeningReservation(Box<OpeningReservation>),
     /// Posted opening journal and the owner undo receipt.
     OpeningPosted(direct::OnboardingReceipt<direct::OpeningPosted>),
+    /// Opening journal proposal and its submission receipt.
+    OpeningProposed(direct::OnboardingReceipt<direct::OpeningProposed>),
+}
+
+impl From<direct::OpeningSubmission> for SetupResponse {
+    fn from(result: direct::OpeningSubmission) -> Self {
+        match result {
+            direct::OpeningSubmission::Posted(receipt) => Self::OpeningPosted(receipt),
+            direct::OpeningSubmission::Proposed(receipt) => Self::OpeningProposed(receipt),
+        }
+    }
+}
+
+impl From<direct::StatementSubmission> for SetupResponse {
+    fn from(result: direct::StatementSubmission) -> Self {
+        match result {
+            direct::StatementSubmission::Imported(receipt) => Self::StatementImported(receipt),
+            direct::StatementSubmission::Proposed(receipt) => Self::StatementProposed(receipt),
+        }
+    }
 }
 
 impl Serialize for SetupResponse {
@@ -812,6 +832,7 @@ impl Serialize for SetupResponse {
             Self::StatementPreview(review) => review.serialize(serializer),
             Self::StatementReceipt(receipt) => receipt.serialize(serializer),
             Self::StatementImported(receipt) => receipt.serialize(serializer),
+            Self::StatementProposed(receipt) => receipt.serialize(serializer),
             Self::Started(started) => StartedResponse {
                 session: &started.session,
                 credential: &started.credential,
@@ -823,6 +844,7 @@ impl Serialize for SetupResponse {
             Self::OpeningPreview(preview) => preview.serialize(serializer),
             Self::OpeningReservation(reservation) => reservation.serialize(serializer),
             Self::OpeningPosted(receipt) => receipt.serialize(serializer),
+            Self::OpeningProposed(receipt) => receipt.serialize(serializer),
         }
     }
 }

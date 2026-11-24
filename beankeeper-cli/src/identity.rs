@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::capability::Capability;
 use crate::db::Actor;
+use crate::db::audit::grant::{self, Chart, OnboardingPost, OnboardingPropose};
 pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, OwnerUndo, Post, Propose, Reconcile, ResolveProposal, Reverse,
 };
@@ -34,16 +35,15 @@ mod write_mode;
 use delegation::DelegatedTrust;
 pub(crate) use delegation::StartupAuthority;
 pub use rotation::{CredentialStatus, PreparedRotation, TokenId, credential_status};
-use write_mode::IssuanceGrants;
 pub use write_mode::WriteMode;
+use write_mode::{EffectiveGrants, IssuanceGrants};
 
 /// Identity claims accepted by the ledger's verifier.
 #[derive(Debug, Clone)]
 pub struct VerifiedAgent {
     uri: AgentUri,
     jti: MagicTypeId,
-    grants: Vec<Capability>,
-    write_mode: WriteMode,
+    grants: EffectiveGrants,
     signed_capabilities: Vec<String>,
     agent_key: String,
     issuer_key: String,
@@ -77,7 +77,7 @@ impl VerifiedAgent {
     /// Signed policy for ordinary transaction posts.
     #[must_use]
     pub const fn write_mode(&self) -> WriteMode {
-        self.write_mode
+        self.grants.mode()
     }
 
     /// Whether these signed grants allow a CLI operation or MCP tool.
@@ -90,7 +90,7 @@ impl VerifiedAgent {
 
     pub(crate) fn allows_known_operation(&self, operation: Operation) -> Result<bool, CliError> {
         match operation.permission() {
-            Permission::Posting => self.allows(self.write_mode.posting_capability()),
+            Permission::Posting => self.allows(self.write_mode().posting_capability()),
             Permission::ProposalList => Ok(self.allows(Capability::Read)?
                 || self.allows(Capability::Propose)?
                 || self.allows(Capability::Approve)?
@@ -101,12 +101,13 @@ impl VerifiedAgent {
             Permission::SetupStatus => {
                 Ok(self.allows(Capability::Read)? || self.allows(Capability::Setup)?)
             }
-            Permission::SetupOrChart => Ok(self.allows(Capability::Setup)?
-                || self.allows(Capability::Chart)?
-                || self.allows(Capability::Admin)?),
-            Permission::Chart => {
-                Ok(self.allows(Capability::Chart)? || self.allows(Capability::Admin)?)
+            Permission::SetupOrChart => {
+                Ok(self.allows(Capability::Setup)? || grant::permits::<Chart>(self)?)
             }
+            Permission::Chart => match self.write_mode() {
+                WriteMode::Direct => grant::permits::<OnboardingPost>(self),
+                WriteMode::ProposeOnly => grant::permits::<OnboardingPropose>(self),
+            },
             permission => self.allows(permission.primary()?),
         }
     }
@@ -131,7 +132,7 @@ impl VerifiedAgent {
         ledger_enforced
             || self.delegation.is_some()
             || self.is_setup_credential()
-            || self.write_mode.restricts_capabilities()
+            || self.write_mode().restricts_capabilities()
     }
 
     /// Whether the verified identity holds the requested ledger or UI grant.
@@ -139,19 +140,7 @@ impl VerifiedAgent {
     /// # Errors
     /// This method retains its fallible signature for existing callers.
     pub fn allows(&self, capability: Capability) -> Result<bool, CliError> {
-        Ok(self.grants.contains(&capability)
-            || (capability == Capability::Chart && self.is_compatible_bookkeeper()))
-    }
-
-    // Upgrade the exact signed Direct bookkeeper presets already issued by
-    // the CLI and managed Desktop. Custom grants and explicit restrictions
-    // retain their original capabilities.
-    fn is_compatible_bookkeeper(&self) -> bool {
-        self.write_mode == WriteMode::Direct
-            && matches!(self.signed_capabilities.len(), 2 | 3)
-            && self.grants.contains(&Capability::Read)
-            && self.grants.contains(&Capability::Post)
-            && (self.signed_capabilities.len() == 2 || self.grants.contains(&Capability::Propose))
+        Ok(self.grants.contains(capability))
     }
 }
 
@@ -323,7 +312,7 @@ fn require_operation_grant(
 ) -> Result<(), CliError> {
     let permission = operation.permission();
     let required = if permission == Permission::Posting {
-        identity.write_mode.posting_capability()
+        identity.write_mode().posting_capability()
     } else {
         permission.primary()?
     };
@@ -340,7 +329,7 @@ fn require_operation_grant(
     let alternative = match permission {
         Permission::ProposalList | Permission::ProposalReject => Some(Capability::Approve),
         Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
-        Permission::Chart => Some(Capability::Admin),
+        Permission::Chart if identity.write_mode() == WriteMode::Direct => Some(Capability::Admin),
         _ => None,
     };
     let requirement = match alternative {
@@ -394,18 +383,10 @@ fn verify_required(
     // The verifier has bound each signed grant to the URI's capability
     // path or a descendant. Ledger operations require explicit leaf grants,
     // and namespace-wide grants were rejected above.
-    let write_mode = WriteMode::from(claims.capabilities.as_slice());
-    let grants: Vec<_> = claims
-        .capabilities
-        .iter()
-        .filter_map(|path| Capability::from_path(path))
-        .filter(|capability| write_mode.permits(*capability))
-        .collect();
     let agent = VerifiedAgent {
         uri,
         jti: MagicTypeId::from_str(&claims.jti).map_err(|_| unauthorized())?,
-        grants,
-        write_mode,
+        grants: EffectiveGrants::from(claims.capabilities.as_slice()),
         signed_capabilities: claims.capabilities,
         agent_key: claims.agent_key,
         issuer_key: key,

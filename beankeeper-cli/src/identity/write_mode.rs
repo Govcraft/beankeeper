@@ -79,8 +79,81 @@ impl WriteMode {
                     | Capability::Reverse
                     | Capability::Admin
                     | Capability::Setup
-                    | Capability::Chart
             )
+    }
+}
+
+/// Effective permissions derived once from verified signed claims.
+#[derive(Debug, Clone)]
+pub(super) struct EffectiveGrants {
+    mode: WriteMode,
+    leaves: Vec<Capability>,
+}
+
+impl From<&[String]> for EffectiveGrants {
+    fn from(signed: &[String]) -> Self {
+        let mode = WriteMode::from(signed);
+        let mut leaves: Vec<_> = signed
+            .iter()
+            .filter_map(|path| Capability::from_path(path))
+            .filter(|capability| mode.permits(*capability))
+            .collect();
+        if let Ok(preset) = BookkeeperPreset::try_from(signed) {
+            leaves.extend(preset.onboarding_grants());
+        }
+        Self { mode, leaves }
+    }
+}
+
+impl EffectiveGrants {
+    pub(super) const fn mode(&self) -> WriteMode {
+        self.mode
+    }
+
+    pub(super) fn contains(&self, capability: Capability) -> bool {
+        self.leaves.contains(&capability)
+    }
+}
+
+/// The exact signed presets issued before Chart was available to bookkeepers.
+enum BookkeeperPreset {
+    Direct,
+    ManagedDirect,
+    ProposeOnly,
+}
+
+impl TryFrom<&[String]> for BookkeeperPreset {
+    type Error = ();
+
+    fn try_from(signed: &[String]) -> Result<Self, Self::Error> {
+        const READ: &str = Capability::Read.path();
+        const POST: &str = Capability::Post.path();
+        const PROPOSE: &str = Capability::Propose.path();
+        const MODE: &str = WriteMode::PROPOSAL_CLAIM;
+
+        let matches = |preset: &[&str]| {
+            signed.len() == preset.len()
+                && preset
+                    .iter()
+                    .all(|path| signed.iter().any(|claim| claim == path))
+        };
+        if matches(&[READ, POST]) {
+            Ok(Self::Direct)
+        } else if matches(&[READ, POST, PROPOSE]) {
+            Ok(Self::ManagedDirect)
+        } else if matches(&[READ, PROPOSE, MODE]) {
+            Ok(Self::ProposeOnly)
+        } else {
+            Err(())
+        }
+    }
+}
+
+impl BookkeeperPreset {
+    const fn onboarding_grants(self) -> [Capability; 1] {
+        match self {
+            Self::Direct | Self::ManagedDirect | Self::ProposeOnly => [Capability::Chart],
+        }
     }
 }
 

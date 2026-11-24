@@ -1,4 +1,6 @@
-//! Direct onboarding under a live chart grant, with durable retry and undo receipts.
+//! Onboarding on the normal connection, with durable retry and undo receipts.
+
+use std::marker::PhantomData;
 
 use beankeeper::types::Sha256Hex;
 use rusqlite::{OptionalExtension, params};
@@ -10,24 +12,35 @@ use super::{
     openings::OpeningJournal,
     requests::{SetupReference, deserialize_parsed, digest},
     statement_batches::{StatementTransaction, match_prepared},
-    statements::{self, StatementFormat, StatementInput},
+    statements::{self, PreparedRow, StatementFormat, StatementInput},
 };
 use crate::db::{
     Actor, Db,
-    audit::{AuditAction, AuditChange, AuditEntity, grant::Chart, record, savepoint::AuditedTx},
+    audit::{
+        AuditAction, AuditChange, AuditEntity,
+        grant::{Chart, OnboardingPostingGrant, sealed::GrantKind},
+        record,
+        savepoint::AuditedTx,
+    },
     companies::CompanySlug,
     ids::{ReceiptId, TransactionId},
+    proposals::{self, ProposalId},
     transactions,
 };
-use crate::{commands::setup::DirectBookChange, error::CliError, identity::Granted};
+use crate::{
+    commands::setup::DirectBookChange,
+    error::CliError,
+    identity::{Granted, WriteMode},
+};
 
 /// The checked write capability and transaction used by onboarding storage.
-pub(in crate::db) struct OnboardingWrite<'a> {
+pub(in crate::db) struct OnboardingWrite<'a, C> {
     tx: &'a AuditedTx<'a>,
     actor: &'a Actor,
+    capability: PhantomData<C>,
 }
 
-impl<'a> OnboardingWrite<'a> {
+impl<'a, C> OnboardingWrite<'a, C> {
     pub(in crate::db) const fn tx(&self) -> &'a AuditedTx<'a> {
         self.tx
     }
@@ -60,10 +73,10 @@ pub(in crate::db::audit) enum OnboardingEffect {
     },
 }
 
-/// The saved result of direct onboarding and the ID used for owner undo.
+/// The saved result of onboarding and its audit receipt.
 #[derive(Debug, Serialize)]
 pub struct OnboardingReceipt<T> {
-    /// ID accepted by the owner audit undo operation.
+    /// Audit receipt ID. A receipt for a completed write also supports owner undo.
     pub receipt_id: ReceiptId,
     /// Route of this audit receipt on a connected Desktop host.
     pub desktop_path: String,
@@ -89,7 +102,7 @@ struct Persisted<T> {
         deserialize_with = "deserialize_parsed"
     )]
     request_sha256: Sha256Hex,
-    effect: OnboardingEffect,
+    effect: Option<OnboardingEffect>,
     result: T,
 }
 
@@ -103,8 +116,9 @@ pub(in crate::db::audit) fn find_effect(
         params![receipt, company],
         |row| row.get(0),
     ).optional()?;
-    raw.map(|raw| decode::<Persisted<serde::de::IgnoredAny>>(&raw).map(|saved| saved.effect))
+    raw.map(|raw| decode::<Persisted<serde::de::IgnoredAny>>(&raw))
         .transpose()
+        .map(|saved| saved.and_then(|saved| saved.effect))
 }
 
 fn decode<T: DeserializeOwned>(stored: &str) -> Result<T, CliError> {
@@ -115,62 +129,65 @@ fn invalid_receipt(error: &serde_json::Error) -> CliError {
     CliError::Database(format!("invalid onboarding receipt: {error}"))
 }
 
-fn apply_once<T: Serialize + DeserializeOwned>(
-    db: &Db,
-    actor: &Actor,
+fn apply_once<T: Serialize + DeserializeOwned, C: GrantKind>(
+    grant: Granted<'_, C>,
     company: &CompanySlug,
     reference: &SetupReference,
     input: &Value,
-    apply: impl FnOnce(&OnboardingWrite<'_>) -> Result<(T, OnboardingEffect), CliError>,
+    apply: impl FnOnce(&OnboardingWrite<'_, C>) -> Result<(T, Option<OnboardingEffect>), CliError>,
 ) -> Result<OnboardingReceipt<T>, CliError> {
-    Granted::<Chart>::with_db(db, actor, |grant| {
-        grant.mutate("sp_direct_onboarding", |tx, actor| {
-            let request_sha256 = digest(input.to_string());
-            let existing: Option<(ReceiptId, String)> = tx
-                .read()
-                .query_row(
-                    "SELECT id, after FROM audit_log WHERE company_slug = ?1
+    grant.mutate("sp_onboarding", |tx, actor| {
+        let request_sha256 = digest(input.to_string());
+        let existing: Option<(ReceiptId, String, Option<String>)> = tx
+            .read()
+            .query_row(
+                "SELECT id, after, token_jti FROM audit_log WHERE company_slug = ?1
                  AND entity = 'company' AND entity_id = ?2 AND action = 'setup_apply'",
-                    params![company, reference.as_str()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let scope = OnboardingWrite { tx, actor };
-            if let Some((receipt_id, saved)) = existing {
-                let saved: Persisted<Value> = decode(&saved)?;
-                if saved.request_sha256 != request_sha256 {
-                    return Err(reference_conflict(reference));
-                }
-                let result = serde_json::from_value(saved.result)
-                    .map_err(|error| invalid_receipt(&error))?;
-                return Ok(OnboardingReceipt::new(company, receipt_id, result));
+                params![company, reference.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let scope = OnboardingWrite {
+            tx,
+            actor,
+            capability: PhantomData,
+        };
+        if let Some((receipt_id, saved, jti)) = existing {
+            let saved: Persisted<Value> = decode(&saved)?;
+            if saved.request_sha256 != request_sha256
+                || (C::MODE == Some(WriteMode::ProposeOnly) && actor.token_jti() != jti.as_deref())
+            {
+                return Err(reference_conflict(reference));
             }
+            let result =
+                serde_json::from_value(saved.result).map_err(|error| invalid_receipt(&error))?;
+            return Ok(OnboardingReceipt::new(company, receipt_id, result));
+        }
 
-            let (result, effect) = apply(&scope)?;
-            let saved = Persisted {
-                request_sha256,
-                effect,
-                result,
-            };
-            let after = serde_json::to_string(&saved)
-                .map_err(|error| CliError::General(error.to_string()))?;
-            record(
-                tx.connection(),
-                actor,
-                AuditChange {
-                    company_slug: Some(company),
-                    entity: AuditEntity::Company,
-                    entity_id: reference.as_str(),
-                    action: AuditAction::SetupApply,
-                    snapshots: (None, Some(&after)),
-                },
-            )?;
-            Ok(OnboardingReceipt::new(
-                company,
-                scope.latest_receipt()?,
-                saved.result,
-            ))
-        })
+        let (result, effect) = apply(&scope)?;
+        let saved = Persisted {
+            request_sha256,
+            effect,
+            result,
+        };
+        let after =
+            serde_json::to_string(&saved).map_err(|error| CliError::General(error.to_string()))?;
+        record(
+            tx.connection(),
+            actor,
+            AuditChange {
+                company_slug: Some(company),
+                entity: AuditEntity::Company,
+                entity_id: reference.as_str(),
+                action: AuditAction::SetupApply,
+                snapshots: (None, Some(&after)),
+            },
+        )?;
+        Ok(OnboardingReceipt::new(
+            company,
+            scope.latest_receipt()?,
+            saved.result,
+        ))
     })
 }
 
@@ -189,39 +206,43 @@ pub(crate) fn apply_book(
 ) -> Result<OnboardingReceipt<BookOutcome>, CliError> {
     let change = BookChange::from(change);
     let input = change.fingerprint_input(company);
-    apply_once(db, actor, company, reference, &input, |scope| {
-        let created_book = matches!(change, BookChange::Create { .. });
-        let outcome = BookWriter::from(scope).apply(company, change)?;
-        let effect = match &outcome {
-            BookOutcome::ProfileInitialized(book) => OnboardingEffect::Profile {
-                revision: book.profile.revision,
-                created_book,
-            },
-            BookOutcome::ProfileUpdated(profile) => OnboardingEffect::Profile {
-                revision: profile.revision,
-                created_book: false,
-            },
-            BookOutcome::AccountAdded(_) => OnboardingEffect::Accounts {
-                receipts: vec![scope.latest_receipt()?],
-            },
-            BookOutcome::ChartApplied(chart) => {
-                // The chart writes exactly one account-create event per account.
-                // Resolve their IDs by the actual account codes, not sequence arithmetic.
-                let mut lookup = scope.tx.read().prepare(
-                    "SELECT id FROM audit_log WHERE company_slug = ?1 AND entity = 'account'
+    Granted::<Chart>::with_db(db, actor, |grant| {
+        apply_once(grant, company, reference, &input, |scope| {
+            let created_book = matches!(change, BookChange::Create { .. });
+            let outcome = BookWriter::from(scope).apply(company, change)?;
+            let effect = match &outcome {
+                BookOutcome::ProfileInitialized(book) => OnboardingEffect::Profile {
+                    revision: book.profile.revision,
+                    created_book,
+                },
+                BookOutcome::ProfileUpdated(profile) => OnboardingEffect::Profile {
+                    revision: profile.revision,
+                    created_book: false,
+                },
+                BookOutcome::AccountAdded(_) => OnboardingEffect::Accounts {
+                    receipts: vec![scope.latest_receipt()?],
+                },
+                BookOutcome::ChartApplied(chart) => {
+                    // The chart writes exactly one account-create event per account.
+                    // Resolve their IDs by the actual account codes, not sequence arithmetic.
+                    let mut lookup = scope.tx.read().prepare(
+                        "SELECT id FROM audit_log WHERE company_slug = ?1 AND entity = 'account'
                      AND entity_id = ?2 AND action = 'create' ORDER BY id DESC LIMIT 1",
-                )?;
-                let receipts = chart
-                    .accounts
-                    .iter()
-                    .map(|account| {
-                        lookup.query_row(params![company, account.code.as_str()], |row| row.get(0))
-                    })
-                    .collect::<Result<_, _>>()?;
-                OnboardingEffect::Accounts { receipts }
-            }
-        };
-        Ok((outcome, effect))
+                    )?;
+                    let receipts = chart
+                        .accounts
+                        .iter()
+                        .map(|account| {
+                            lookup.query_row(params![company, account.code.as_str()], |row| {
+                                row.get(0)
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+                    OnboardingEffect::Accounts { receipts }
+                }
+            };
+            Ok((outcome, Some(effect)))
+        })
     })
 }
 
@@ -232,24 +253,56 @@ pub struct OpeningPosted {
     pub transaction_id: TransactionId,
 }
 
+/// Result of submitting a balanced opening journal in the signed write mode.
+pub(crate) enum OpeningSubmission {
+    /// The journal was posted immediately and can be undone by receipt.
+    Posted(OnboardingReceipt<OpeningPosted>),
+    /// The journal was submitted to the existing transaction proposal workflow.
+    Proposed(OnboardingReceipt<OpeningProposed>),
+}
+
+/// The proposal created for an opening journal.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OpeningProposed {
+    /// ID to look up or resolve with the transaction proposal tools.
+    #[serde(deserialize_with = "deserialize_parsed")]
+    pub proposal_id: ProposalId,
+}
+
 pub(crate) fn post_opening(
     db: &Db,
     actor: &Actor,
     reference: &SetupReference,
     request: &OpeningJournal,
-) -> Result<OnboardingReceipt<OpeningPosted>, CliError> {
+) -> Result<OpeningSubmission, CliError> {
     let company = request.company();
-    let input = request.fingerprint_input("opening-post-v1", None);
-    apply_once(db, actor, company, reference, &input, |scope| {
-        let journal = request.build(scope.tx.read())?;
-        let transaction_id =
-            transactions::post_onboarding(scope, company, &journal, reference.as_str())?;
-        Ok((
-            OpeningPosted { transaction_id },
-            OnboardingEffect::Opening {
-                receipt: scope.latest_receipt()?,
-            },
-        ))
+    OnboardingPostingGrant::with_db(db, actor, |grant| match grant {
+        OnboardingPostingGrant::Direct(grant) => {
+            let input = request.fingerprint_input("opening-post-v1", None);
+            apply_once(grant, company, reference, &input, |scope| {
+                let journal = request.build(scope.tx.read())?;
+                let transaction_id =
+                    transactions::post_onboarding(scope, company, &journal, reference.as_str())?;
+                Ok((
+                    OpeningPosted { transaction_id },
+                    Some(OnboardingEffect::Opening {
+                        receipt: scope.latest_receipt()?,
+                    }),
+                ))
+            })
+            .map(OpeningSubmission::Posted)
+        }
+        OnboardingPostingGrant::Proposal(grant) => {
+            let input = request.fingerprint_input("opening-propose-v1", None);
+            apply_once(grant, company, reference, &input, |scope| {
+                let journal = request.build(scope.tx.read())?;
+                crate::db::periods::ensure_open(scope.tx.read(), company, journal.date())?;
+                let proposal_id =
+                    proposals::reserve_onboarding(scope, company, &journal, reference.as_str())?;
+                Ok((OpeningProposed { proposal_id }, None))
+            })
+            .map(OpeningSubmission::Proposed)
+        }
     })
 }
 
@@ -270,38 +323,123 @@ pub struct StatementImported {
     pub preexisting: Vec<StatementTransaction>,
 }
 
+/// Result of submitting a statement in the signed write mode.
+pub(crate) enum StatementSubmission {
+    /// Newly created postings and their shared owner undo receipt.
+    Imported(OnboardingReceipt<StatementImported>),
+    /// Individual posting proposals and preexisting matches.
+    Proposed(OnboardingReceipt<StatementProposed>),
+}
+
+/// Statement provenance, proposal IDs, and matches already in the book.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StatementProposed {
+    /// Format of the supplied content.
+    pub format: StatementFormat,
+    /// SHA-256 digest of the source content.
+    #[serde(
+        serialize_with = "crate::output::json::serialize_display",
+        deserialize_with = "deserialize_parsed"
+    )]
+    pub source_sha256: Sha256Hex,
+    /// One existing transaction proposal per new row.
+    pub proposals: Vec<StatementProposal>,
+    /// Identical postings that were already in the book at submission.
+    pub preexisting: Vec<StatementTransaction>,
+}
+
+/// A statement row submitted as a transaction proposal.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StatementProposal {
+    /// Stable reference of the source row.
+    pub reference: String,
+    /// ID to look up or resolve with the transaction proposal tools.
+    #[serde(deserialize_with = "deserialize_parsed")]
+    pub proposal_id: ProposalId,
+}
+
 pub(crate) fn import_statement(
     db: &Db,
     actor: &Actor,
     reference: &SetupReference,
     request: &StatementInput,
-) -> Result<OnboardingReceipt<StatementImported>, CliError> {
+) -> Result<StatementSubmission, CliError> {
     let company = request.company();
-    let input = json!(["statement-import-v1", request.fingerprint()?.as_str()]);
-    apply_once(db, actor, company, reference, &input, |scope| {
-        let statement = statements::prepare(scope.tx.read(), request)?;
-        let mut result = StatementImported {
-            format: statement.format,
-            source_sha256: statement.content_hash,
-            created: Vec::new(),
-            preexisting: Vec::new(),
-        };
-        let mut receipts = Vec::new();
-        for row in statement.rows {
-            let reference = row.reference.as_str();
-            let (transaction_id, items) = if let Some(id) = row.existing_transaction {
-                match_prepared(scope.tx.read(), company, &row, id)?;
-                (id, &mut result.preexisting)
-            } else {
-                let id = transactions::post_onboarding(scope, company, &row.journal, reference)?;
-                receipts.push(scope.latest_receipt()?);
-                (id, &mut result.created)
-            };
-            items.push(StatementTransaction {
-                reference: reference.to_owned(),
+    let fingerprint = request.fingerprint()?;
+    OnboardingPostingGrant::with_db(db, actor, |grant| match grant {
+        OnboardingPostingGrant::Direct(grant) => {
+            let input = json!(["statement-import-v1", fingerprint.as_str()]);
+            apply_once(grant, company, reference, &input, |scope| {
+                let statement = statements::prepare(scope.tx.read(), request)?;
+                let mut receipts = Vec::new();
+                let (created, preexisting) =
+                    write_statement_rows(scope.tx.read(), company, statement.rows, |row| {
+                        let reference = row.reference.as_str();
+                        let transaction_id =
+                            transactions::post_onboarding(scope, company, &row.journal, reference)?;
+                        receipts.push(scope.latest_receipt()?);
+                        Ok(StatementTransaction {
+                            reference: reference.to_owned(),
+                            transaction_id,
+                        })
+                    })?;
+                let result = StatementImported {
+                    format: statement.format,
+                    source_sha256: statement.content_hash,
+                    created,
+                    preexisting,
+                };
+                Ok((result, Some(OnboardingEffect::Statement { receipts })))
+            })
+            .map(StatementSubmission::Imported)
+        }
+        OnboardingPostingGrant::Proposal(grant) => {
+            let input = json!(["statement-propose-v1", fingerprint.as_str()]);
+            apply_once(grant, company, reference, &input, |scope| {
+                let statement = statements::prepare(scope.tx.read(), request)?;
+                let (proposals, preexisting) =
+                    write_statement_rows(scope.tx.read(), company, statement.rows, |row| {
+                        let reference = row.reference.as_str();
+                        let proposal_id =
+                            proposals::reserve_onboarding(scope, company, &row.journal, reference)?;
+                        Ok(StatementProposal {
+                            reference: reference.to_owned(),
+                            proposal_id,
+                        })
+                    })?;
+                Ok((
+                    StatementProposed {
+                        format: statement.format,
+                        source_sha256: statement.content_hash,
+                        proposals,
+                        preexisting,
+                    },
+                    None,
+                ))
+            })
+            .map(StatementSubmission::Proposed)
+        }
+    })
+}
+
+fn write_statement_rows<T>(
+    reader: crate::db::connection::ReadConn<'_>,
+    company: &CompanySlug,
+    rows: Vec<PreparedRow>,
+    mut write: impl FnMut(PreparedRow) -> Result<T, CliError>,
+) -> Result<(Vec<T>, Vec<StatementTransaction>), CliError> {
+    let mut created = Vec::new();
+    let mut preexisting = Vec::new();
+    for row in rows {
+        if let Some(transaction_id) = row.existing_transaction {
+            match_prepared(reader, company, &row, transaction_id)?;
+            preexisting.push(StatementTransaction {
+                reference: row.reference.as_str().to_owned(),
                 transaction_id,
             });
+        } else {
+            created.push(write(row)?);
         }
-        Ok((result, OnboardingEffect::Statement { receipts }))
-    })
+    }
+    Ok((created, preexisting))
 }

@@ -419,8 +419,10 @@ impl<'a> From<&'a ActiveSession<'a>> for BookWriter<'a> {
     }
 }
 
-impl<'a> From<&'a super::direct::OnboardingWrite<'a>> for BookWriter<'a> {
-    fn from(scope: &'a super::direct::OnboardingWrite<'a>) -> Self {
+impl<'a> From<&'a super::direct::OnboardingWrite<'a, crate::db::audit::grant::Chart>>
+    for BookWriter<'a>
+{
+    fn from(scope: &'a super::direct::OnboardingWrite<'a, crate::db::audit::grant::Chart>) -> Self {
         Self {
             tx: scope.tx(),
             actor: scope.actor(),

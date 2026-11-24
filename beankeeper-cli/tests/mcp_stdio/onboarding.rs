@@ -79,6 +79,8 @@ fn existing_direct_bookkeeper_can_onboard_and_owner_can_undo() -> TestResult {
             "--name",
             "proposer",
             "--generate-key",
+            "--caps",
+            "ledger/post",
             "--write-mode",
             "propose-only",
         ])
@@ -139,6 +141,160 @@ fn existing_direct_bookkeeper_can_onboard_and_owner_can_undo() -> TestResult {
             .all(|event| event["entity_id"] != preexisting)
     );
     owner.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
+fn existing_propose_only_bookkeeper_can_onboard_and_owner_can_approve() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("propose-onboarding.db");
+    let passfile = dir.path().join("passphrase");
+    identity_ledger(&path, &passfile)?;
+    let passphrase = secrecy::SecretString::from("mcp-test-passphrase");
+    let db = Db::open_existing(&path, Some(&passphrase))?;
+    let owner = proposal_identity(
+        &db,
+        "owner",
+        &["ledger/admin", "ledger/read", "ledger/approve"],
+    )?;
+    let owner_token = owner["token"].as_str().ok_or("missing owner token")?;
+    let issued = cli(&path, &passfile, owner_token)?
+        .args([
+            "agent",
+            "issue",
+            "--name",
+            "managed_proposer",
+            "--generate-key",
+            "--caps",
+            "ledger/read,ledger/post,ledger/propose",
+            "--write-mode",
+            "propose-only",
+        ])
+        .assert()
+        .success();
+    let credential = serde_json::from_slice::<Value>(&issued.get_output().stdout)?;
+    assert_eq!(
+        credential["data"]["capabilities"],
+        json!([
+            "ledger/read",
+            "ledger/propose",
+            "ledger/propose/propose-only"
+        ])
+    );
+    let token = credential["data"]["token"]
+        .as_str()
+        .ok_or("missing bookkeeper token")?;
+    cli(&path, &passfile, owner_token)?
+        .args(["policy", "set", "--enforce", "on"])
+        .assert()
+        .success();
+    let mut reviewer = identity_client(&path, &passfile, Some(owner_token), false)?;
+    let mut agent = identity_client(&path, &passfile, Some(token), false)?;
+    assert_tool_access(&mut agent, true)?;
+
+    let settings: Value = serde_json::from_str(SETTINGS)?;
+    let home = agent.success(
+        "ledger_setup_book_create",
+        &json!({
+            "target": target("home", "create"), "name": "Home", "settings": settings
+        }),
+    )?;
+    assert_eq!(home["profile"]["company"], "home");
+    assert_catalog_and_profile_undo(&mut agent, &mut reviewer, &settings)?;
+    let account = agent.success("ledger_setup_account_add", &json!({
+        "target": target("home", "bank"), "code": "1234", "name": "Savings", "account_type": "asset"
+    }))?;
+    assert_eq!(account["name"], "Savings");
+    assert!(account["receipt_id"].is_i64());
+    assert_proposed_opening(&mut agent, &mut reviewer, cli(&path, &passfile, token)?)?;
+    assert_proposed_import(&mut agent, &mut reviewer, cli(&path, &passfile, token)?)?;
+    reviewer.success("verify", &json!({}))?;
+    Ok(())
+}
+
+fn assert_proposed_opening(agent: &mut Client, reviewer: &mut Client, cli: Command) -> TestResult {
+    let company = json!({"company": "home"});
+    let opened = agent.success("ledger_setup_opening_post", &opening())?;
+    assert!(opened["transaction_id"].is_null());
+    assert_eq!(opening_from_cli(cli)?, opened);
+    assert_eq!(agent.success("txn_list", &company)?, json!([]));
+    let pending = agent.success("txn_proposals", &company)?;
+    assert_eq!(pending[0]["id"], opened["proposal_id"]);
+    assert_eq!(pending[0]["status"], "pending");
+    let receipts = reviewer.success("audit_receipts", &company)?;
+    let receipts = receipts["receipts"].as_array().ok_or("missing receipts")?;
+    assert!(receipts.iter().any(|receipt| {
+        receipt["id"] == opened["receipt_id"]
+            && receipt["change"]["summary"]["kind"] == "onboarding_proposed"
+    }));
+    assert_eq!(
+        payload(&reviewer.call("audit_undo", &undo_args("home", &opened))?)?["code"],
+        "UNDO_INELIGIBLE"
+    );
+    let approval = json!({"company":"home", "id":opened["proposal_id"]});
+    let denied = agent.call("txn_approve", &approval)?;
+    assert!(denied.get("error").is_some() || denied["result"]["isError"] == true);
+    let approved = reviewer.success("txn_approve", &approval)?;
+    assert_eq!(approved["status"], "approved");
+    assert!(approved["transaction_id"].is_i64());
+    assert_eq!(
+        agent.success("ledger_setup_opening_post", &opening())?,
+        opened
+    );
+    Ok(())
+}
+
+fn assert_proposed_import(agent: &mut Client, reviewer: &mut Client, cli: Command) -> TestResult {
+    let company = json!({"company": "home"});
+    let first = agent.success("ledger_setup_statement_import", &import("first", FIRST_CSV))?;
+    let first_id = &first["proposals"][0]["proposal_id"];
+    let approved = reviewer.success("txn_approve", &json!({"company":"home", "id":first_id}))?;
+    let request = import("overlap", OVERLAP_CSV);
+    let before = agent.success("txn_list", &company)?;
+    let imported = agent.success("ledger_setup_statement_import", &request)?;
+    assert!(imported["created"].is_null());
+    assert_eq!(
+        imported["preexisting"],
+        json!([{
+            "reference": "bank-first", "transaction_id": approved["transaction_id"]
+        }])
+    );
+    assert_eq!(statement_from_cli(cli)?, imported);
+    assert_eq!(agent.success("txn_list", &company)?, before);
+
+    let conflict = import(
+        "conflict",
+        "date,description,amount,reference\n2026-01-02,Unused,9,new-first\n2026-01-03,Second deposit,3,bank-second\n",
+    );
+    assert_eq!(
+        payload(&agent.call("ledger_setup_statement_import", &conflict)?)?["code"],
+        "VALIDATION"
+    );
+    let pending = agent.success("txn_proposals", &company)?;
+    assert_eq!(pending.as_array().map(Vec::len), Some(2));
+    let proposals = imported["proposals"]
+        .as_array()
+        .ok_or("missing import proposals")?;
+    assert_eq!(proposals.len(), 2);
+    for (proposal, expected) in proposals.iter().zip(["bank-second", "bank-third"]) {
+        assert_eq!(proposal["reference"], expected);
+        let approval = json!({"company":"home", "id":proposal["proposal_id"]});
+        let approved = reviewer.success("txn_approve", &approval)?;
+        assert_eq!(approved["status"], "approved");
+        assert_eq!(approved["reference"], expected);
+    }
+    assert_eq!(
+        agent
+            .success("txn_list", &company)?
+            .as_array()
+            .map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(
+        agent.success("ledger_setup_statement_import", &request)?,
+        imported
+    );
+    assert_eq!(agent.success("txn_proposals", &company)?, json!([]));
     Ok(())
 }
 
@@ -240,7 +396,30 @@ fn post_and_import(
         "VALIDATION"
     );
     let opened = agent.success("ledger_setup_opening_post", &opening())?;
-    let retry = cli(path, passfile, token)?
+    assert_eq!(opening_from_cli(cli(path, passfile, token)?)?, opened);
+
+    let first = agent.success("ledger_setup_statement_import", &import("first", FIRST_CSV))?;
+    let imported = agent.success(
+        "ledger_setup_statement_import",
+        &import("overlap", OVERLAP_CSV),
+    )?;
+    assert_eq!(imported["created"].as_array().map(Vec::len), Some(2));
+    assert_eq!(imported["preexisting"][0], first["created"][0]);
+    assert_eq!(statement_from_cli(cli(path, passfile, token)?)?, imported);
+    assert_eq!(
+        payload(&agent.call(
+            "ledger_setup_statement_import",
+            &import("overlap", FIRST_CSV)
+        )?)?["code"],
+        "VALIDATION"
+    );
+    assert_conflicting_import_rolls_back(agent)?;
+    assert_ofx_import(agent)?;
+    Ok((account, opened, imported))
+}
+
+fn opening_from_cli(mut command: Command) -> Result<Value, Box<dyn Error>> {
+    let retry = command
         .args([
             "setup",
             "opening-post",
@@ -258,19 +437,10 @@ fn post_and_import(
         ])
         .assert()
         .success();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&retry.get_output().stdout)?["data"],
-        opened
-    );
+    Ok(serde_json::from_slice::<Value>(&retry.get_output().stdout)?["data"].clone())
+}
 
-    let first = agent.success("ledger_setup_statement_import", &import("first", FIRST_CSV))?;
-    let imported = agent.success(
-        "ledger_setup_statement_import",
-        &import("overlap", OVERLAP_CSV),
-    )?;
-    assert_eq!(imported["created"].as_array().map(Vec::len), Some(2));
-    assert_eq!(imported["preexisting"][0], first["created"][0]);
-    let mut command = cli(path, passfile, token)?;
+fn statement_from_cli(mut command: Command) -> Result<Value, Box<dyn Error>> {
     command.args([
         "setup",
         "statement-import",
@@ -292,20 +462,7 @@ fn post_and_import(
         .write_stdin(OVERLAP_CSV)
         .assert()
         .success();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&retry.get_output().stdout)?["data"],
-        imported
-    );
-    assert_eq!(
-        payload(&agent.call(
-            "ledger_setup_statement_import",
-            &import("overlap", FIRST_CSV)
-        )?)?["code"],
-        "VALIDATION"
-    );
-    assert_conflicting_import_rolls_back(agent)?;
-    assert_ofx_import(agent)?;
-    Ok((account, opened, imported))
+    Ok(serde_json::from_slice::<Value>(&retry.get_output().stdout)?["data"].clone())
 }
 
 fn assert_conflicting_import_rolls_back(agent: &mut Client) -> TestResult {
