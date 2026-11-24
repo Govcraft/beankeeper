@@ -6,6 +6,9 @@ mod audit_receipts;
 #[path = "mcp_stdio/onboarding.rs"]
 mod onboarding;
 
+#[path = "mcp_stdio/schema_compat.rs"]
+mod schema_compat;
+
 use beankeeper_cli::db::CreateAccountParams;
 use beankeeper_cli::identity::{Admin, Granted};
 use std::collections::BTreeSet;
