@@ -171,10 +171,17 @@ pub enum ReceiptChange {
     PostingCorrelated,
     /// A setup action applied directly on the agent's normal connection.
     OnboardingApplied,
+    /// Setup submitted transaction proposals through the agent's normal connection.
+    OnboardingProposed,
     /// The owner undid a direct setup action.
     OnboardingReverted,
     /// The event has attribution and a target but has no typed summary.
     Other,
+}
+
+#[derive(Deserialize)]
+struct SetupSnapshot {
+    effect: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -396,11 +403,13 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
         },
         (Entity::Company, Action::SetupApply) => {
             decode.absent("before", row.before.as_deref())?;
-            decode.validate_other("after", row.after.as_deref())?;
-            Ok((
-                ReceiptChange::OnboardingApplied,
-                Some(row.entity_id.clone()),
-            ))
+            let after: SetupSnapshot = decode.after()?;
+            let change = if after.effect.is_null() {
+                ReceiptChange::OnboardingProposed
+            } else {
+                ReceiptChange::OnboardingApplied
+            };
+            Ok((change, Some(row.entity_id.clone())))
         }
         (Entity::Company, Action::SetupRevert) => {
             decode.absent("before", row.before.as_deref())?;

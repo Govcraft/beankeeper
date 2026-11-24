@@ -201,7 +201,7 @@ pub(super) fn post_direct(
 
 // Onboarding has already resolved active accounts and sealed a balanced journal.
 pub(super) fn post_onboarding(
-    scope: &audit::setup::direct::OnboardingWrite<'_>,
+    scope: &audit::setup::direct::OnboardingWrite<'_, audit::grant::OnboardingPost>,
     company: &CompanySlug,
     journal: &Transaction,
     reference: &str,

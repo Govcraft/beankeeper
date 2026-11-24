@@ -13,7 +13,7 @@ pub enum Capability {
     Admin,
     /// Scoped authority for an active ledger setup session.
     Setup,
-    /// Record audited onboarding changes directly on the normal connection.
+    /// Configure books and accounts and submit onboarding postings in the signed write mode.
     Chart,
     /// Host navigation authority, issued to a separate UI-scoped identity.
     Navigate,
@@ -39,7 +39,7 @@ impl Capability {
     }
     /// The leaf path required by an operation.
     #[must_use]
-    pub fn path(self) -> &'static str {
+    pub const fn path(self) -> &'static str {
         match self {
             Self::Read => "ledger/read",
             Self::Propose => "ledger/propose",

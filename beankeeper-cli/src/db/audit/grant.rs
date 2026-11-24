@@ -8,11 +8,13 @@ use crate::db::{Actor, Db};
 use crate::error::CliError;
 use crate::identity::{VerifiedAgent, WriteMode};
 
-mod sealed {
+pub(crate) mod sealed {
     pub trait GrantKind {
         const REQUIRED: crate::capability::Capability;
         const EXPLICIT: bool = false;
         const ALTERNATE: Option<crate::capability::Capability> = None;
+        const ADDITIONAL: Option<crate::capability::Capability> = None;
+        const MODE: Option<crate::identity::WriteMode> = None;
     }
 }
 
@@ -114,13 +116,55 @@ impl sealed::GrantKind for StatementApprover {
     const EXPLICIT: bool = true;
 }
 
-/// Direct onboarding authority without a setup session.
+/// Authority for structural onboarding writes.
 pub(crate) enum Chart {}
 
 impl sealed::GrantKind for Chart {
     const REQUIRED: Capability = Capability::Chart;
     const EXPLICIT: bool = true;
     const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+}
+
+/// Authority to post onboarding journals with a direct credential.
+pub(crate) enum OnboardingPost {}
+
+impl sealed::GrantKind for OnboardingPost {
+    const REQUIRED: Capability = Capability::Chart;
+    const EXPLICIT: bool = true;
+    const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
+/// Authority to reserve onboarding journals with a propose-only credential.
+pub(crate) enum OnboardingPropose {}
+
+impl sealed::GrantKind for OnboardingPropose {
+    const REQUIRED: Capability = Capability::Chart;
+    const EXPLICIT: bool = true;
+    const ADDITIONAL: Option<Capability> = Some(Capability::Propose);
+    const MODE: Option<WriteMode> = Some(WriteMode::ProposeOnly);
+}
+
+pub(crate) enum OnboardingPostingGrant<'a> {
+    Direct(Granted<'a, OnboardingPost>),
+    Proposal(Granted<'a, OnboardingPropose>),
+}
+
+impl OnboardingPostingGrant<'_> {
+    pub(crate) fn with_db<T>(
+        db: &Db,
+        actor: &Actor,
+        run: impl for<'grant> FnOnce(OnboardingPostingGrant<'grant>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        match actor.identity().map(VerifiedAgent::write_mode) {
+            Some(WriteMode::ProposeOnly) => Granted::with_db(db, actor, |grant| {
+                run(OnboardingPostingGrant::Proposal(grant))
+            }),
+            _ => Granted::with_db(db, actor, |grant| {
+                run(OnboardingPostingGrant::Direct(grant))
+            }),
+        }
+    }
 }
 
 pub(crate) enum SetupOwner {}
@@ -180,13 +224,7 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
         let enforce = crate::db::policy::get(reader)?.enforce || C::EXPLICIT;
         if let Some(agent) = actor.identity() {
             agent.check_live(reader)?;
-            if agent.enforces_permissions(enforce)
-                && !agent.allows(C::REQUIRED)?
-                && !C::ALTERNATE
-                    .map(|capability| agent.allows(capability))
-                    .transpose()?
-                    .unwrap_or(false)
-            {
+            if agent.enforces_permissions(enforce) && !permits::<C>(agent)? {
                 return Err(CliError::Forbidden(format!(
                     "operation requires capability {}",
                     C::REQUIRED.path()
@@ -214,6 +252,22 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
     pub(crate) const fn actor(&self) -> &'a Actor {
         self.actor
     }
+}
+
+pub(crate) fn permits<C: sealed::GrantKind>(agent: &VerifiedAgent) -> Result<bool, CliError> {
+    if C::MODE.is_some_and(|mode| mode != agent.write_mode()) {
+        return Ok(false);
+    }
+    if let Some(additional) = C::ADDITIONAL
+        && !agent.allows(additional)?
+    {
+        return Ok(false);
+    }
+    Ok(agent.allows(C::REQUIRED)?
+        || C::ALTERNATE
+            .map(|capability| agent.allows(capability))
+            .transpose()?
+            .unwrap_or(false))
 }
 
 impl<'a> Granted<'a, SetupOwner> {

@@ -112,6 +112,38 @@ impl PostingPayload {
     }
 }
 
+impl TryFrom<(&beankeeper::core::Transaction, &str)> for PostingPayload {
+    type Error = CliError;
+
+    fn try_from(
+        (journal, reference): (&beankeeper::core::Transaction, &str),
+    ) -> Result<Self, CliError> {
+        let entries = journal
+            .entries()
+            .iter()
+            .map(|entry| {
+                Ok(PostEntryParams {
+                    account_code: entry.account().code().as_str().to_owned(),
+                    direction: entry.direction(),
+                    amount: entry.amount().amount().try_into()?,
+                    memo: entry.memo().map(str::to_owned),
+                    tax_category: entry.tax_category().map(str::to_owned),
+                })
+            })
+            .collect::<Result<_, CliError>>()?;
+        Ok(Self {
+            description: journal.description().to_owned(),
+            metadata: journal.metadata().map(str::to_owned),
+            currency: journal.currency(),
+            date: journal.date(),
+            entries,
+            correlate: None,
+            reference: Some(reference.to_owned()),
+            on_conflict: ConflictStrategy::default(),
+        })
+    }
+}
+
 /// Who resolved a proposal, preserving local resolutions made without a token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedBy {
@@ -666,7 +698,32 @@ pub(in crate::db) fn reserve_setup_opening(
     journal: &beankeeper::core::Transaction,
     reference: &str,
 ) -> Result<Proposal, CliError> {
-    let tx = session.audited_tx();
+    reserve_prepared(
+        session.audited_tx(),
+        session.actor(),
+        company,
+        journal,
+        reference,
+    )
+}
+
+pub(super) fn reserve_onboarding(
+    scope: &audit::setup::direct::OnboardingWrite<'_, audit::grant::OnboardingPropose>,
+    company: &CompanySlug,
+    journal: &beankeeper::core::Transaction,
+    reference: &str,
+) -> Result<ProposalId, CliError> {
+    reserve_prepared(scope.tx(), scope.actor(), company, journal, reference)
+        .map(|proposal| proposal.id)
+}
+
+fn reserve_prepared(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &CompanySlug,
+    journal: &beankeeper::core::Transaction,
+    reference: &str,
+) -> Result<Proposal, CliError> {
     let reader = tx.read();
     if let Some(id) = posted_reference(reader, company, reference)? {
         return Err(CliError::Validation(format!(
@@ -674,39 +731,12 @@ pub(in crate::db) fn reserve_setup_opening(
         )));
     }
     check_reference(reader, company, reference)?;
-    let identity = session.actor().identity().ok_or_else(|| {
-        CliError::Unauthorized("opening reservation requires an active setup credential".into())
+    let identity = actor.identity().ok_or_else(|| {
+        CliError::Unauthorized("onboarding proposals require a verified agent token".into())
     })?;
-    let minor = |money: beankeeper::types::Money| {
-        i64::try_from(money.amount().minor_units()).map_err(|_| {
-            CliError::Validation("opening amount exceeds proposal storage range".into())
-        })
-    };
-    let total = minor(journal.total())?;
-    let entries = journal
-        .entries()
-        .iter()
-        .map(|entry| {
-            Ok(PostEntryParams {
-                account_code: entry.account().code().to_string(),
-                direction: entry.direction(),
-                amount: minor(entry.amount())?.try_into()?,
-                memo: entry.memo().map(str::to_owned),
-                tax_category: entry.tax_category().map(str::to_owned),
-            })
-        })
-        .collect::<Result<_, CliError>>()?;
-    let payload = PostingPayload {
-        description: journal.description().to_owned(),
-        metadata: None,
-        currency: journal.currency(),
-        date: journal.date(),
-        entries,
-        correlate: None,
-        reference: Some(reference.to_owned()),
-        on_conflict: ConflictStrategy::Error,
-    };
-    insert_pending(tx, company, &payload, total, identity)
+    let total = super::amounts::PositiveMinorUnits::try_from(journal.total().amount())?;
+    let payload = PostingPayload::try_from((journal, reference))?;
+    insert_pending(tx, company, &payload, total.minor_units(), identity)
 }
 
 fn insert_pending(

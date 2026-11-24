@@ -17,6 +17,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 - Owners can undo categorization rule creation through the CLI or MCP. The rule and an audit receipt remain on record. ([#267](https://github.com/Govcraft/beankeeper/issues/267))
 - Read grouped audit receipts and undo eligible changes immediately from the CLI or MCP with the owner's signed grant. ([#262](https://github.com/Govcraft/beankeeper/issues/262))
 
+### Fixed
+
+- Existing propose-only bookkeepers can configure books and accounts directly and submit openings and statement rows through transaction sign-off on the CLI and MCP. ([#275](https://github.com/Govcraft/beankeeper/issues/275))
+
 ## [0.39.0] - Unreleased
 
 ### Added
