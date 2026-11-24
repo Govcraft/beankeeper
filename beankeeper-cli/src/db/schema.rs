@@ -178,6 +178,18 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     if version < CLIENT_HINT_SCHEMA_VERSION {
         apply_v25(conn)?;
     }
+    apply_receipt_migrations(conn, version)?;
+
+    debug_assert_eq!(
+        get_schema_version(ReadConn::new(conn)).unwrap_or(0),
+        CURRENT_VERSION,
+        "schema version mismatch after migrations"
+    );
+
+    Ok(())
+}
+
+fn apply_receipt_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
     if version < RECEIPT_SCHEMA_VERSION {
         apply_v26(conn)?;
     }
@@ -194,12 +206,6 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     if version < ANNOTATION_UNDO_SCHEMA_VERSION {
         apply_v30(conn)?;
     }
-
-    debug_assert_eq!(
-        get_schema_version(ReadConn::new(conn)).unwrap_or(0),
-        CURRENT_VERSION,
-        "schema version mismatch after migrations"
-    );
 
     Ok(())
 }
@@ -1794,8 +1800,7 @@ fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
     }
 }
 
-fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
-    let (entity, action) = audit_extensions(table);
+fn receipt_audit_checks(table: AuditTable) -> String {
     let (undo_action, rule_check) = if matches!(
         table,
         AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo
@@ -1818,6 +1823,20 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     } else {
         ("", "")
     };
+    format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
+                   CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
+                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo})
+                       AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
+                   CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
+                       AND related_posting > 0 AND company_slug IS NOT NULL
+                       AND action IN ('reverse', 'proposal_approve', 'correlate'))),
+                   CHECK(hash_version < 6 OR (
+                       (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}")
+}
+
+fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+    let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
         AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
@@ -1831,16 +1850,7 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
                 "client_hint TEXT,
                  undo_of INTEGER REFERENCES audit_log_rebuild(id),
                  related_posting INTEGER REFERENCES transactions(id),",
-                format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
-                   CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
-                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo})
-                       AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
-                   CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
-                       AND related_posting > 0 AND company_slug IS NOT NULL
-                       AND action IN ('reverse', 'proposal_approve', 'correlate'))),
-                   CHECK(hash_version < 6 OR (
-                       (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}"),
+                receipt_audit_checks(table),
                 select_suffix,
             )
         }

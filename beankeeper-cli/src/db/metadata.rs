@@ -536,26 +536,26 @@ impl fmt::Display for AnnotationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingEquals => {
-                f.write_str("annotation must be key=value, e.g. status=pending")?
+                f.write_str("annotation must be key=value, e.g. status=pending")?;
             }
             Self::InvalidKey(key) => write!(
                 f,
-                "invalid annotation key {key:?}; use a nonempty key without double quotes or NUL, e.g. status in status=pending"
+                "invalid annotation key {key:?}. Use a nonempty key without double quotes or NUL, e.g. status in status=pending"
             )?,
             Self::ReservedKey(key) => write!(
                 f,
-                "annotation key '{key}' is reserved; use a custom key, e.g. status in status=pending"
+                "annotation key '{key}' is reserved. Use a custom key, e.g. status in status=pending"
             )?,
             Self::EmptyBatch => f.write_str(
                 "provide at least one annotation, e.g. status=pending or the key status",
             )?,
             Self::DuplicateKey(key) => {
-                write!(f, "duplicate annotation key '{key}'; provide each key once")?
+                write!(f, "duplicate annotation key '{key}'. Provide each key once")?;
             }
         }
         write!(
             f,
-            "; reserved keys: {}",
+            ". Reserved keys include {}",
             AnnotationKey::reserved().collect::<Vec<_>>().join(", ")
         )
     }

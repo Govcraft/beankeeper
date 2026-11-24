@@ -437,26 +437,10 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
             let reference = after.reference.clone().or_else(|| before.reference.clone());
             Ok((ReceiptChange::ProposalResolved { before, after }, reference))
         }
-        (Entity::Transaction, Action::MetadataSet | Action::MetadataUnset) => {
-            let after = row
-                .after
-                .as_ref()
-                .ok_or_else(|| decode.invalid("after", "missing snapshot"))?;
-            decode.validate_other("before", row.before.as_deref())?;
-            decode.validate_other("after", Some(after))?;
-            Ok((
-                ReceiptChange::AnnotationsEdited {
-                    before: row.before.clone(),
-                    after: after.clone(),
-                },
-                None,
-            ))
-        }
-        (Entity::Transaction, Action::MetadataRestore) => {
-            decode.validate_other("before", row.before.as_deref())?;
-            decode.validate_other("after", row.after.as_deref())?;
-            Ok((ReceiptChange::AnnotationsRestored, None))
-        }
+        (
+            Entity::Transaction,
+            Action::MetadataSet | Action::MetadataUnset | Action::MetadataRestore,
+        ) => decode.annotation_change().map(|change| (change, None)),
         (Entity::Transaction, Action::Reverse | Action::Correlate) => {
             let before: PostingLinkSnapshot = decode.before()?;
             let after: PostingLinkSnapshot = decode.after()?;
@@ -507,6 +491,21 @@ impl Snapshots<'_> {
             return Err(self.invalid(which, "unexpected snapshot"));
         }
         Ok(())
+    }
+
+    fn annotation_change(&self) -> Result<ReceiptChange, CliError> {
+        let before = self.0.before.as_deref();
+        let after = self.0.after.as_deref();
+        self.validate_other("before", before)?;
+        self.validate_other("after", after)?;
+        if self.0.action == AuditAction::MetadataRestore {
+            return Ok(ReceiptChange::AnnotationsRestored);
+        }
+        let after = after.ok_or_else(|| self.invalid("after", "missing snapshot"))?;
+        Ok(ReceiptChange::AnnotationsEdited {
+            before: before.map(str::to_owned),
+            after: after.to_owned(),
+        })
     }
 
     fn validate_other(&self, which: &str, raw: Option<&str>) -> Result<(), CliError> {
