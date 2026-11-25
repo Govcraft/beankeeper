@@ -363,7 +363,11 @@ fn execute_confirmable(
 fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     if !matches!(
         cli.command,
-        Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. } | Command::Setup(_)
+        Command::Init { .. }
+            | Command::Mcp(_)
+            | Command::Backup { .. }
+            | Command::Restore { .. }
+            | Command::Setup(_)
     ) {
         // Preserve standalone loan calculation without an existing ledger.
         let standalone = matches!(&cli.command, Command::Loan(args) if matches!(args.command, crate::cli::LoanCommand::Schedule(_)))

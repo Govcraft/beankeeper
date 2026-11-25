@@ -223,8 +223,8 @@ fn stage_demo_ledger(
     if passphrase.is_some_and(|secret| secret.expose_secret().is_empty()) {
         return Err(CliError::Usage("passphrase cannot be empty".into()));
     }
-    super::backup::reject_sidecars(path)?;
-    let directory = super::backup::staging_directory(path)?;
+    crate::db::snapshot::files::reject_sidecars(path)?;
+    let directory = crate::db::snapshot::files::staging_directory(path)?;
     let staged = NamedTempFile::new_in(directory.path())?;
     let db = Db::open(staged.path(), passphrase)?;
     db.in_write_batch(|| {
@@ -234,8 +234,8 @@ fn stage_demo_ledger(
     VerifiedLedger::read(&db)?;
     // Close the only connection so SQLite checkpoints its WAL before publication.
     drop(db);
-    super::backup::reject_sidecars(staged.path())?;
-    super::backup::reject_sidecars(path)?;
+    crate::db::snapshot::files::reject_sidecars(staged.path())?;
+    crate::db::snapshot::files::reject_sidecars(path)?;
     staged.persist_noclobber(path).map_err(|error| {
         if error.error.kind() == std::io::ErrorKind::AlreadyExists {
             exists()

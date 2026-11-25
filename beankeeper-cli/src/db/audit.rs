@@ -1206,12 +1206,31 @@ fn record_creation(
 /// # Errors
 /// Returns a database error if an audited posting is changed or unrecorded.
 pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, company_slug FROM transactions WHERE posted_by IS NOT NULL OR agent_uri IS NOT NULL OR token_jti IS NOT NULL
+    verify_creations_at(conn, super::schema::get_schema_version(conn)?)
+}
+
+pub(super) fn verify_creations_at(conn: ReadConn<'_>, version: i64) -> Result<(), CliError> {
+    let has_identity = version >= super::schema::IDENTITY_SCHEMA_VERSION;
+    let attributed = if has_identity {
+        "posted_by IS NOT NULL OR agent_uri IS NOT NULL OR token_jti IS NOT NULL"
+    } else {
+        "posted_by IS NOT NULL"
+    };
+    let attribution = if has_identity {
+        "hash_version, agent_uri, token_jti"
+    } else {
+        "1, NULL, NULL"
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, company_slug FROM transactions WHERE {attributed}
          UNION SELECT CAST(entity_id AS INTEGER), company_slug FROM audit_log
              WHERE entity = 'transaction' AND action = 'create'
          ORDER BY 1",
-    )?;
+    ))?;
+    let mut creates = conn.prepare(&format!(
+        "SELECT actor, after, {attribution} FROM audit_log WHERE entity = 'transaction' AND action = 'create'
+             AND entity_id = ?1 AND company_slug = ?2 ORDER BY id",
+    ))?;
     let txns = stmt.query_map([], |r| {
         Ok((
             r.get::<_, TransactionId>(0)?,
@@ -1220,10 +1239,6 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
     })?;
     for txn in txns {
         let (id, company) = txn?;
-        let mut creates = conn.prepare(
-            "SELECT actor, after, hash_version, agent_uri, token_jti FROM audit_log WHERE entity = 'transaction' AND action = 'create'
-             AND entity_id = ?1 AND company_slug = ?2 ORDER BY id",
-        )?;
         let mut rows = creates.query(params![id.to_string(), company])?;
         let valid = if let Some(row) = rows.next()? {
             let actor: String = row.get(0)?;

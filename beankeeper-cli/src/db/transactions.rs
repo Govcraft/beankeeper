@@ -1029,9 +1029,8 @@ pub(super) fn find_transaction_row(
     id: TransactionId,
 ) -> Result<Option<TransactionRow>, CliError> {
     let reader = company.read();
-    let has_holds =
-        super::schema::get_schema_version(reader)? >= super::schema::HOLDS_SCHEMA_VERSION;
-    read_transaction_row_by(reader, company.slug(), id, has_holds, decode_transaction)
+    let version = super::schema::get_schema_version(reader)?;
+    read_transaction_row_by(reader, company.slug(), id, version, decode_transaction)
 }
 
 fn missing_transaction(company: &Company<'_>, id: TransactionId) -> CliError {
@@ -1077,11 +1076,16 @@ fn read_transaction_by<T>(
     id: TransactionId,
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Option<(T, Vec<EntryRow>)>, CliError> {
-    let has_holds = super::schema::get_schema_version(conn)? >= super::schema::HOLDS_SCHEMA_VERSION;
-    let Some(txn) = read_transaction_row_by(conn, company, id, has_holds, decode)? else {
+    let version = super::schema::get_schema_version(conn)?;
+    let Some(txn) = read_transaction_row_by(conn, company, id, version, decode)? else {
         return Ok(None);
     };
-    let entries = read_entries(conn, company, id, has_holds)?;
+    let entries = read_entries(
+        conn,
+        company,
+        id,
+        version >= super::schema::HOLDS_SCHEMA_VERSION,
+    )?;
     Ok(Some((txn, entries)))
 }
 
@@ -1089,16 +1093,21 @@ fn read_transaction_row_by<T>(
     conn: ReadConn<'_>,
     company: &CompanySlug,
     id: TransactionId,
-    has_holds: bool,
+    version: i64,
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Option<T>, CliError> {
-    let lifecycle = if has_holds {
+    let identity = if version >= super::schema::IDENTITY_SCHEMA_VERSION {
+        "agent_uri, token_jti"
+    } else {
+        "NULL, NULL"
+    };
+    let lifecycle = if version >= super::schema::HOLDS_SCHEMA_VERSION {
         "posting_status, settles_hold, amount_delta"
     } else {
         "'posted', NULL, NULL"
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, agent_uri, token_jti, {lifecycle} \
+        "SELECT id, company_slug, description, metadata, currency, date, posted_at, reference, posted_by, {identity}, {lifecycle} \
          FROM transactions WHERE company_slug = ?1 AND id = ?2"
     ))?;
 

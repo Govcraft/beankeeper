@@ -6,6 +6,14 @@ use super::connection::ReadConn;
 use super::metadata;
 use crate::error::CliError;
 
+pub(super) const AUDIT_LOG_SCHEMA_VERSION: i64 = 8;
+pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: i64 = 9;
+pub(super) const HASH_CHAIN_SCHEMA_VERSION: i64 = 12;
+pub(crate) const IDENTITY_SCHEMA_VERSION: i64 = 13;
+pub(crate) const POLICY_SCHEMA_VERSION: i64 = 18;
+pub(super) const PROPOSAL_SCHEMA_VERSION: i64 = 19;
+pub(super) const PERIOD_LOCK_SCHEMA_VERSION: i64 = 20;
+
 /// Current schema version. Bump this when adding migrations.
 pub(crate) const CURRENT_VERSION: i64 = FX_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
@@ -25,12 +33,35 @@ pub(crate) const STATEMENT_RECONCILIATION_SCHEMA_VERSION: i64 = 36;
 pub(super) const FX_SCHEMA_VERSION: i64 = 37;
 
 /// A ledger schema version supported by this Beankeeper build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
 pub struct SchemaVersion(i64);
+
+impl TryFrom<i64> for SchemaVersion {
+    type Error = CliError;
+
+    fn try_from(version: i64) -> Result<Self, Self::Error> {
+        match version {
+            1..=CURRENT_VERSION => Ok(Self(version)),
+            0 => Err(CliError::Database(
+                "file is not an initialized beankeeper ledger".into(),
+            )),
+            _ => Err(CliError::Database(format!(
+                "unsupported beankeeper schema version {version}; expected 1 through {CURRENT_VERSION}"
+            ))),
+        }
+    }
+}
+
+impl SchemaVersion {
+    pub(super) const fn get(self) -> i64 {
+        self.0
+    }
+}
 
 impl From<SchemaVersion> for i64 {
     fn from(version: SchemaVersion) -> Self {
-        version.0
+        version.get()
     }
 }
 
@@ -91,6 +122,15 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         )));
     }
 
+    ensure_schema_at(conn, version)
+}
+
+/// Apply migrations from a version read under the caller's writer reservation.
+pub(super) fn migrate_verified(conn: &Connection, version: SchemaVersion) -> Result<(), CliError> {
+    ensure_schema_at(conn, version.into())
+}
+
+fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
     if version == 0 {
         apply_v1(conn)?;
     }
@@ -203,15 +243,23 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
 fn apply_fx_migration(conn: &Connection) -> Result<(), CliError> {
     use rusqlite::{Transaction, TransactionBehavior};
 
+    if !conn.is_autocommit() {
+        return apply_fx_schema(conn);
+    }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     if get_schema_version(ReadConn::new(&tx))? < FX_SCHEMA_VERSION {
-        tx.execute_batch(include_str!("schema/fx.sql"))?;
-        tx.execute(
-            "INSERT INTO schema_version (version) VALUES (?1)",
-            [FX_SCHEMA_VERSION],
-        )?;
+        apply_fx_schema(&tx)?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+fn apply_fx_schema(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch(include_str!("schema/fx.sql"))?;
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        [FX_SCHEMA_VERSION],
+    )?;
     Ok(())
 }
 
@@ -3382,13 +3430,136 @@ mod tests {
 
     fn v12_connection() -> Result<Connection, CliError> {
         let conn = open_conn();
+        apply_through_v12(&conn)?;
+        Ok(conn)
+    }
+
+    fn apply_through_v12(conn: &Connection) -> Result<(), CliError> {
         for migration in [
             apply_v1, apply_v2, apply_v3, apply_v4, apply_v5, apply_v6, apply_v7, apply_v8,
             apply_v9, apply_v10, apply_v11, apply_v12,
         ] {
-            migration(&conn)?;
+            migration(conn)?;
         }
-        Ok(conn)
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_v12_snapshot_proves_legacy_postings_before_upgrade() -> Result<(), CliError> {
+        use super::super::{Db, SnapshotOverwrite, VerifiedSnapshot};
+        use secrecy::SecretString;
+
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("ledger.db");
+        let destination = directory.path().join("upgrade.bk-backup");
+        let passphrase = SecretString::from("legacy-test-secret");
+        let conn = super::super::connection::open_keyed(
+            &source,
+            Some(&passphrase),
+            rusqlite::OpenFlags::default(),
+        )?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        apply_through_v12(&conn)?;
+        seed_v12_creation(&conn)?;
+        let hashes = |reader: ReadConn<'_>| -> Result<Vec<String>, CliError> {
+            Ok(reader
+                .prepare("SELECT row_hash FROM audit_log ORDER BY id")?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        };
+        let before = hashes(ReadConn::new(&conn))?;
+
+        assert!(
+            VerifiedSnapshot::create(&source, None, &destination, SnapshotOverwrite::Refuse)
+                .is_err()
+        );
+        assert!(!destination.exists());
+        let proof = VerifiedSnapshot::create(
+            &source,
+            Some(&passphrase),
+            &destination,
+            SnapshotOverwrite::Refuse,
+        )?;
+        assert_eq!(i64::from(proof.schema_version()), 12);
+        assert_eq!(proof.path(), destination.canonicalize()?);
+        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 12);
+        assert!(proof.encrypted());
+        assert!(!std::fs::read(&destination)?.starts_with(b"SQLite format 3\0"));
+        let copy = Db::open_compatible_snapshot(&destination, Some(&passphrase), 12)?;
+        assert_eq!(hashes(copy.read())?, before);
+        assert_eq!(proof.verification().schema_version(), 12);
+        assert!(Db::open_compatible_snapshot(&destination, None, 12).is_err());
+        let upgraded = Db::open_after_snapshot(proof, Some(&passphrase))?;
+        assert_eq!(get_schema_version(upgraded.read())?, CURRENT_VERSION);
+        assert_eq!(hashes(upgraded.read())?, before);
+        assert_eq!(get_schema_version(copy.read())?, 12);
+        Ok(())
+    }
+
+    #[test]
+    fn v1_upgrade_requires_an_unchanged_source_and_published_copy() -> Result<(), CliError> {
+        use super::super::{Db, SnapshotOverwrite, VerifiedSnapshot};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("ledger.db");
+        let destination = directory.path().join("upgrade.bk-backup");
+        let source = Connection::open(&path)?;
+        apply_v1(&source)?;
+        let snapshot =
+            || VerifiedSnapshot::create(&path, None, &destination, SnapshotOverwrite::Replace);
+
+        let proof = snapshot()?;
+        source.execute(
+            "INSERT INTO companies (slug, name) VALUES ('later', 'Later')",
+            [],
+        )?;
+        assert!(Db::open_after_snapshot(proof, None).is_err());
+        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+
+        let proof = snapshot()?;
+        std::fs::remove_file(&destination)?;
+        assert!(Db::open_after_snapshot(proof, None).is_err());
+        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+
+        drop(source);
+        let upgraded = Db::open_after_snapshot(snapshot()?, None)?;
+        assert_eq!(get_schema_version(upgraded.read())?, CURRENT_VERSION);
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_failure_preserves_destination_and_migration_failure_keeps_snapshot()
+    -> Result<(), CliError> {
+        use super::super::{Db, SnapshotOverwrite, VerifiedSnapshot};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("ledger.db");
+        let destination = directory.path().join("upgrade.bk-backup");
+        let source = Connection::open(&path)?;
+        apply_v1(&source)?;
+        std::fs::write(&destination, b"keep this copy")?;
+        source.execute_batch(
+            "INSERT INTO companies (slug, name) VALUES ('legacy', 'Legacy');
+             INSERT INTO transactions (company_slug, description, date) VALUES ('legacy', 'Unbalanced', '2026-01-01');",
+        )?;
+        let snapshot =
+            || VerifiedSnapshot::create(&path, None, &destination, SnapshotOverwrite::Replace);
+        assert!(
+            matches!(snapshot(), Err(CliError::Database(message)) if message.contains("accounting failed"))
+        );
+        assert_eq!(std::fs::read(&destination)?, b"keep this copy");
+        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+        assert_eq!(std::fs::read_dir(directory.path())?.count(), 2);
+
+        source.execute_batch(
+            "DELETE FROM transactions; CREATE TABLE identity_root (collision TEXT);",
+        )?;
+        let proof = snapshot()?;
+        let published = std::fs::read(&destination)?;
+        assert!(Db::open_after_snapshot(proof, None).is_err());
+        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+        assert_eq!(std::fs::read(&destination)?, published);
+        Ok(())
     }
 
     fn seed_v12_creation(conn: &Connection) -> Result<(), CliError> {

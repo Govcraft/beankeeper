@@ -23,10 +23,10 @@ pub use accounting::{VerifiedAccounting, verify_accounting};
 /// ```
 #[derive(Debug, Serialize)]
 pub struct VerifiedLedger {
-    schema_version: i64,
+    schema_version: schema::SchemaVersion,
     status: Status,
     companies: VerifiedAccounting,
-    audit_chain: VerifiedAuditChain,
+    audit_chain: Option<VerifiedAuditChain>,
     row_counts: RowCounts,
     checks: Vec<CheckResult>,
     desktop_view: DesktopView,
@@ -100,6 +100,34 @@ impl Check {
         }
     }
 
+    fn pass(self, checks: &mut Vec<CheckResult>) {
+        checks.push(CheckResult {
+            name: self,
+            outcome: Outcome::Passed,
+        });
+    }
+
+    fn skip(self, checks: &mut Vec<CheckResult>) {
+        checks.push(CheckResult {
+            name: self,
+            outcome: Outcome::Skipped,
+        });
+    }
+
+    fn when(
+        self,
+        applicable: bool,
+        checks: &mut Vec<CheckResult>,
+        verify: impl FnOnce() -> Result<(), CliError>,
+    ) -> Result<(), CliError> {
+        if applicable {
+            self.record(verify(), checks)
+        } else {
+            self.skip(checks);
+            Ok(())
+        }
+    }
+
     fn record<T>(
         self,
         result: Result<T, CliError>,
@@ -107,10 +135,7 @@ impl Check {
     ) -> Result<T, CliError> {
         let evidence = result
             .map_err(|error| CliError::Database(format!("{} failed: {error}", self.name())))?;
-        checks.push(CheckResult {
-            name: self,
-            outcome: Outcome::Passed,
-        });
+        self.pass(checks);
         Ok(evidence)
     }
 }
@@ -140,58 +165,87 @@ impl VerifiedLedger {
     /// # Errors
     /// Returns a database error naming the first failing check and its source.
     pub fn read(db: &Db) -> Result<Self, CliError> {
-        db.read_snapshot(Self::from_snapshot)
+        db.read_snapshot(|reader| {
+            let version = schema::SchemaVersion::try_from(schema::get_schema_version(reader)?)?;
+            Self::verify_at(reader, version, |_| Ok(()))
+        })
     }
 
-    fn from_snapshot(reader: ReadConn<'_>) -> Result<Self, CliError> {
+    pub(super) fn verify_at(
+        reader: ReadConn<'_>,
+        version: schema::SchemaVersion,
+        authorize: impl FnOnce(Option<&policy::LedgerPolicy>) -> Result<(), CliError>,
+    ) -> Result<Self, CliError> {
         let mut checks = Vec::new();
-        let schema_version =
-            Check::SchemaVersion.record(schema::get_schema_version(reader), &mut checks)?;
-        let audit_chain = Check::AuditHashChain.record(
-            audit::verify_hash_chain_at(reader, schema_version),
+        Check::SchemaVersion.pass(&mut checks);
+        let schema_version = i64::from(version);
+        let audit_chain = if schema_version >= schema::HASH_CHAIN_SCHEMA_VERSION {
+            Some(Check::AuditHashChain.record(
+                audit::verify_hash_chain_at(reader, schema_version),
+                &mut checks,
+            )?)
+        } else {
+            Check::AuditHashChain.skip(&mut checks);
+            None
+        };
+        let policy = if schema_version >= schema::POLICY_SCHEMA_VERSION {
+            Some(Check::LedgerPolicy.record(policy::get(reader), &mut checks)?)
+        } else {
+            Check::LedgerPolicy.skip(&mut checks);
+            None
+        };
+        authorize(policy.as_ref())?;
+        Check::PeriodLocks.when(
+            schema_version >= schema::PERIOD_LOCK_SCHEMA_VERSION,
             &mut checks,
+            || periods::verify(reader),
         )?;
-        Check::LedgerPolicy.record(policy::get(reader), &mut checks)?;
-        Check::PeriodLocks.record(periods::verify(reader), &mut checks)?;
-        Check::ProposalResolutions.record(proposals::verify_resolutions(reader), &mut checks)?;
-        Check::SpendLimits.record(spend_limits::verify(reader), &mut checks)?;
+        let has_proposals = schema_version >= schema::PROPOSAL_SCHEMA_VERSION;
+        Check::ProposalResolutions.when(has_proposals, &mut checks, || {
+            proposals::verify_resolutions(reader)
+        })?;
+        Check::SpendLimits.when(has_proposals, &mut checks, || spend_limits::verify(reader))?;
         let companies = Check::Accounting.record(verify_accounting(reader), &mut checks)?;
-        Check::CreationSnapshots.record(audit::verify_creations(reader), &mut checks)?;
+        Check::CreationSnapshots.when(
+            schema_version >= schema::HASH_CHAIN_SCHEMA_VERSION,
+            &mut checks,
+            || audit::verify_creations_at(reader, schema_version),
+        )?;
         if schema_version >= schema::RECEIPT_SCHEMA_VERSION {
             Check::AccountArchives.record(audit::receipts::verify_archives(reader), &mut checks)?;
         }
         if schema_version >= schema::ACCOUNT_RENAME_SCHEMA_VERSION {
             Check::AccountLabels.record(audit::account_rename::verify(reader), &mut checks)?;
         }
-        Check::TransactionLinks.record(
-            verify_links(reader).and_then(|()| {
+        Check::TransactionLinks.when(
+            schema_version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,
+            &mut checks,
+            || {
+                verify_links_at(reader, has_proposals)?;
                 if schema_version >= schema::TXN_LINK_SCHEMA_VERSION {
                     audit::txn_links::verify(reader)?;
                 }
                 Ok(())
-            }),
-            &mut checks,
+            },
         )?;
-        if schema_version >= schema::STATEMENT_BATCH_SCHEMA_VERSION {
-            Check::StatementBatches
-                .record(audit::setup::statement_batches::verify(reader), &mut checks)?;
-        } else {
-            checks.push(CheckResult {
-                name: Check::StatementBatches,
-                outcome: Outcome::Skipped,
-            });
-        }
+        Check::StatementBatches.when(
+            schema_version >= schema::STATEMENT_BATCH_SCHEMA_VERSION,
+            &mut checks,
+            || audit::setup::statement_batches::verify(reader),
+        )?;
         if schema_version >= schema::STATEMENT_RECONCILIATION_SCHEMA_VERSION {
             Check::StatementReconciliations
                 .record(audit::statement::verify(reader), &mut checks)?;
         }
         Check::ForeignKeys.record(verify_foreign_keys(reader), &mut checks)?;
         Check::SqliteIntegrity.record(verify_integrity(reader), &mut checks)?;
-        let row_counts =
-            Check::RowCounts.record(row_counts(reader, &companies, &audit_chain), &mut checks)?;
+        let row_counts = Check::RowCounts.record(
+            row_counts(reader, version, &companies, audit_chain.as_ref()),
+            &mut checks,
+        )?;
 
         Ok(Self {
-            schema_version,
+            schema_version: version,
             status: Status::Healthy,
             companies,
             audit_chain,
@@ -206,6 +260,10 @@ impl VerifiedLedger {
     /// Schema version of the verified snapshot.
     #[must_use]
     pub const fn schema_version(&self) -> i64 {
+        self.schema_version.get()
+    }
+
+    pub(super) const fn typed_schema_version(&self) -> schema::SchemaVersion {
         self.schema_version
     }
 
@@ -221,7 +279,9 @@ impl VerifiedLedger {
             counts.entries,
         )?;
         self.companies.write_summary(output)?;
-        self.audit_chain.write_summary(output)?;
+        if let Some(audit_chain) = &self.audit_chain {
+            audit_chain.write_summary(output)?;
+        }
         write!(output, "Checks passed:")?;
         for check in &self.checks {
             if matches!(check.outcome, Outcome::Passed) {
@@ -240,9 +300,21 @@ impl VerifiedLedger {
 
 fn row_counts(
     reader: ReadConn<'_>,
+    version: schema::SchemaVersion,
     companies: &VerifiedAccounting,
-    audit_chain: &VerifiedAuditChain,
+    audit_chain: Option<&VerifiedAuditChain>,
 ) -> Result<RowCounts, CliError> {
+    let audit_rows = match audit_chain {
+        Some(chain) => chain.length(),
+        None if i64::from(version) >= schema::AUDIT_LOG_SCHEMA_VERSION => {
+            let count = reader.query_row("SELECT COUNT(*) FROM audit_log", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            u64::try_from(count)
+                .map_err(|error| CliError::Database(format!("invalid audit row count: {error}")))?
+        }
+        None => 0,
+    };
     Ok(reader.query_row(
         "SELECT (SELECT COUNT(*) FROM accounts),
                 (SELECT COUNT(*) FROM transactions),
@@ -254,7 +326,7 @@ fn row_counts(
                 accounts: row.get(0)?,
                 transactions: row.get(1)?,
                 entries: row.get(2)?,
-                audit_rows: audit_chain.length(),
+                audit_rows,
             })
         },
     )?)
@@ -305,6 +377,13 @@ fn verify_integrity(reader: ReadConn<'_>) -> Result<(), CliError> {
 /// # Errors
 /// Returns a database error identifying an invalid link or a missing target.
 pub fn verify_links(conn: ReadConn<'_>) -> Result<(), CliError> {
+    verify_links_at(
+        conn,
+        schema::get_schema_version(conn)? >= schema::PROPOSAL_SCHEMA_VERSION,
+    )
+}
+
+fn verify_links_at(conn: ReadConn<'_>, has_proposals: bool) -> Result<(), CliError> {
     use super::metadata::LinkKey;
 
     let mut transactions = conn.prepare(
@@ -326,7 +405,10 @@ pub fn verify_links(conn: ReadConn<'_>) -> Result<(), CliError> {
             let Some(kind) = LinkKey::classify(&key) else {
                 continue;
             };
-            if value.is_null() || kind == LinkKey::Settlement {
+            if value.is_null()
+                || kind == LinkKey::Settlement
+                || (!has_proposals && kind == LinkKey::Proposal)
+            {
                 continue;
             }
             let invalid = || {

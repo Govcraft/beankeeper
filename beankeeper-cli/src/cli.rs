@@ -246,6 +246,18 @@ impl Cli {
         Ok(())
     }
 
+    pub(crate) fn authorize_backup(
+        &self,
+        reader: crate::db::connection::ReadConn<'_>,
+        version: crate::db::SchemaVersion,
+        policy: Option<&crate::db::policy::LedgerPolicy>,
+    ) -> Result<(), CliError> {
+        let token = self.agent_token.as_ref().map(ExposeSecret::expose_secret);
+        crate::identity::authorize_backup(reader, token, version, policy, |identity| {
+            let _ = self.verified_agent.set(identity.clone());
+        })
+    }
+
     /// Principal for this command, retaining the named actor for compatibility.
     #[must_use]
     pub fn principal(&self) -> crate::db::Actor {
@@ -444,7 +456,7 @@ pub enum Command {
     #[command(subcommand)]
     Mcp(McpCommand),
 
-    /// Save a verified full database snapshot with its original encryption key.
+    /// Save a verified full database snapshot with its original schema and encryption.
     Backup {
         /// Snapshot file to create.
         #[arg(long)]
