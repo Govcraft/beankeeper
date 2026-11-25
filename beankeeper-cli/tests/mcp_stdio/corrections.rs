@@ -631,7 +631,10 @@ fn recategorization_proposals_use_existing_reviews_and_check_the_live_period() -
     let mut proposer = fixture.client(&credential)?;
     let mut owner = fixture.client(&fixture.owner)?;
     create_recategory(&mut owner)?;
-    let original = owner.success("txn_post", &posting("proposed-source"))?;
+    let depositor = fixture.issue("recategorization_depositor", "ledger/read,ledger/post", &[])?;
+    let original = fixture
+        .client(&depositor)?
+        .success("txn_post", &posting("proposed-source"))?;
     let mut args = json!({
         "company":"acme","id":original["id"],"from_account":"4000","to_account":"4100",
         "posting_reference":"approved-recategorization",
@@ -688,14 +691,20 @@ fn recategorization_proposals_use_existing_reviews_and_check_the_live_period() -
 fn recategorization_refuses_ambiguous_missing_and_reconciled_lines() -> TestResult {
     let fixture = Fixture::new(true)?;
     let mut owner = fixture.client(&fixture.owner)?;
+    let credential = fixture.issue(
+        "recategorization_guardrails",
+        "ledger/read,ledger/post",
+        &[],
+    )?;
+    let mut agent = fixture.client(&credential)?;
     create_recategory(&mut owner)?;
     let mut transaction = posting("split-credit");
     transaction["credits"] =
         json!([{"account":"4000","amount":"5"}, {"account":"4000","amount":"7.50"}]);
-    let original = owner.success("txn_post", &transaction)?;
-    let shown = owner.success("txn_show", &json!({"company":"acme","id":original["id"]}))?;
+    let original = agent.success("txn_post", &transaction)?;
+    let shown = agent.success("txn_show", &json!({"company":"acme","id":original["id"]}))?;
     let mut request = json!({"company":"acme","id":original["id"],"to_account":"4100"});
-    let ambiguous = payload(&owner.call("txn_recategorize", &request)?)?;
+    let ambiguous = payload(&agent.call("txn_recategorize", &request)?)?;
     assert_eq!(ambiguous["code"], "RECATEGORIZE_BLOCKED");
     assert!(
         ambiguous["message"]
@@ -706,12 +715,12 @@ fn recategorization_refuses_ambiguous_missing_and_reconciled_lines() -> TestResu
     request["entry_id"] = shown[0]["entries"][1]["id"].clone();
     request["from_account"] = json!("1000");
     assert_eq!(
-        payload(&owner.call("txn_recategorize", &request)?)?["code"],
+        payload(&agent.call("txn_recategorize", &request)?)?["code"],
         "NOT_FOUND"
     );
     request["from_account"] = json!("4000");
     request["to_account"] = json!("4000");
-    let same_account = payload(&owner.call("txn_recategorize", &request)?)?;
+    let same_account = payload(&agent.call("txn_recategorize", &request)?)?;
     assert!(
         same_account["message"]
             .as_str()
@@ -720,7 +729,7 @@ fn recategorization_refuses_ambiguous_missing_and_reconciled_lines() -> TestResu
     );
     request["to_account"] = json!("9999");
     assert_eq!(
-        payload(&owner.call("txn_recategorize", &request)?)?["code"],
+        payload(&agent.call("txn_recategorize", &request)?)?["code"],
         "NOT_FOUND"
     );
     request["to_account"] = json!("4100");
@@ -733,7 +742,7 @@ fn recategorization_refuses_ambiguous_missing_and_reconciled_lines() -> TestResu
             "status":"reconciled"
         }),
     )?;
-    let blocked = payload(&owner.call("txn_recategorize", &request)?)?;
+    let blocked = payload(&agent.call("txn_recategorize", &request)?)?;
     assert_eq!(blocked["code"], "RECATEGORIZE_BLOCKED");
     assert!(
         blocked["message"]
