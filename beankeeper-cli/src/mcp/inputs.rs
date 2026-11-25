@@ -30,7 +30,7 @@ use crate::db::audit::setup::{
         StatementSource,
     },
 };
-use crate::db::audit::{AuditPageLimit, AuditPageOffset};
+use crate::db::audit::{AuditPageLimit, AuditPageOffset, txn_links::TxnLinkKind};
 use crate::db::rules::{DescriptionPattern, RuleId, RulePriority};
 use crate::db::standing::{BookkeepingPolicy, InformPreference};
 use crate::db::{
@@ -249,6 +249,17 @@ pub(crate) struct TxnReverse {
     pub description: Option<String>,
     /// Pass the same explicit reference for safe retries.
     pub reference: Option<Reference>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TxnLink {
+    pub company: Company,
+    /// ID of the source transaction, such as a refund or payment.
+    pub source_id: TransactionId,
+    /// ID of the related transaction, such as the charge or invoice.
+    pub target_id: TransactionId,
+    pub kind: TxnLinkKind,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

@@ -119,6 +119,7 @@ pub fn operation(cmd: &Command) -> Operation {
             },
             TxnCommand::List(_) => Operation::TxnList,
             TxnCommand::Show { .. } => Operation::TxnShow,
+            TxnCommand::Link { .. } => Operation::TxnLink,
             TxnCommand::Reverse(_) => Operation::TxnReverse,
             TxnCommand::Recategorize(_) => Operation::TxnRecategorize,
             TxnCommand::SettleHold(_) => Operation::TxnSettleHold,

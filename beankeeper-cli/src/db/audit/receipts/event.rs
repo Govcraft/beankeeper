@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwn
 use super::AccountLabel;
 use crate::db::amounts::PositiveMinorUnits;
 use crate::db::audit::recategorize::{Movement, RecordedMove};
+use crate::db::audit::txn_links::{LinkSpec, TxnLinkId};
 use crate::db::audit::{ActorLabel, AuditAction, AuditEntity, AuditLogRow, ClientHint};
 use crate::db::ids::{AuditRowId, EntryId, ReceiptId, TransactionId};
 use crate::db::proposals::ProposalId;
@@ -27,6 +28,8 @@ pub enum ReceiptTarget {
     Rule(RuleId),
     /// Immutable posting.
     Transaction(TransactionId),
+    /// A same-book relationship.
+    TransactionLink(TxnLinkId),
     /// A posting or ledger change proposal.
     Proposal(ProposalId),
     /// A posted journal entry.
@@ -50,6 +53,10 @@ impl TryFrom<(AuditEntity, &str)> for ReceiptTarget {
             AuditEntity::Transaction => id
                 .parse()
                 .map(Self::Transaction)
+                .map_err(invalid_stored_value),
+            AuditEntity::TransactionLink => id
+                .parse()
+                .map(Self::TransactionLink)
                 .map_err(invalid_stored_value),
             AuditEntity::Proposal
             | AuditEntity::AccountRenameProposal
@@ -187,6 +194,16 @@ pub enum ReceiptChange {
     },
     /// The posting gained an intercompany link, exposed on the event.
     PostingCorrelated,
+    /// A relationship was recorded between two transactions in the same book.
+    TransactionLinkCreated {
+        /// The endpoints and purpose of the new link.
+        link: LinkSpec,
+    },
+    /// A new audit event removed a relationship from active use.
+    TransactionLinkUndone {
+        /// The relationship before it was undone.
+        link: LinkSpec,
+    },
     /// An edit to the transaction's annotations.
     AnnotationsEdited {
         /// Exact prior metadata text, when present.
@@ -450,6 +467,18 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
             decode.validate_other("after", row.after.as_deref())?;
             Ok((ReceiptChange::OnboardingReverted, None))
         }
+        (Entity::TransactionLink, Action::LinkCreate) => Ok((
+            ReceiptChange::TransactionLinkCreated {
+                link: decode.after()?,
+            },
+            None,
+        )),
+        (Entity::TransactionLink, Action::LinkUndo) => Ok((
+            ReceiptChange::TransactionLinkUndone {
+                link: decode.before()?,
+            },
+            None,
+        )),
         (Entity::Transaction, Action::Create) => {
             decode.absent("before", row.before.as_deref())?;
             let after: PostingSnapshot = decode.after()?;

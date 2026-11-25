@@ -7,7 +7,7 @@ use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, pars
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::db::audit::receipts::{AuditCursor, ReceiptContinuation, ReceiptId, ReceiptPageLimit};
-use crate::db::audit::{AuditPageLimit, AuditPageOffset};
+use crate::db::audit::{AuditPageLimit, AuditPageOffset, txn_links::TxnLinkKind};
 use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::rules::{DescriptionPattern, RuleId, RulePriority, RuleTerms};
@@ -1750,6 +1750,17 @@ EXAMPLES:\n  \
     Show {
         /// Transaction ID.
         id: TransactionId,
+    },
+
+    /// Link two transactions in the same book and return an undo receipt.
+    Link {
+        /// ID of the source transaction, such as a refund or payment.
+        source_id: TransactionId,
+        /// ID of the related transaction, such as the charge or invoice.
+        target_id: TransactionId,
+        /// Relationship: transfer, refund, payment, adjustment, recategorization, or related.
+        #[arg(long)]
+        kind: TxnLinkKind,
     },
 
     /// Undo a posted transaction immediately with a linked reversal (alias: void).

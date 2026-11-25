@@ -207,6 +207,13 @@ impl ReceiptResponse {
                     }) => {
                         format!("Restored the annotations on transaction {transaction}.")
                     }
+                    ReceiptUndoOutcome::Single(UndoOutcome::TransactionLinkUndone {
+                        link, ..
+                    }) => {
+                        format!(
+                            "Removed transaction link {link}. Its history is still in your books."
+                        )
+                    }
                     ReceiptUndoOutcome::Onboarding(_) => "Reverted the onboarding change.".into(),
                     ReceiptUndoOutcome::Single(UndoOutcome::AccountNameRestored {
                         account,

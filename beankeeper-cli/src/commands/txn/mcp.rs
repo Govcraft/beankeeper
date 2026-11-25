@@ -110,6 +110,17 @@ impl From<inputs::TxnReverse> for TxnRequest {
     }
 }
 
+impl TryFrom<inputs::TxnLink> for TxnRequest {
+    type Error = CliError;
+
+    fn try_from(input: inputs::TxnLink) -> Result<Self, Self::Error> {
+        Ok(Self::Link(
+            input.company.into_inner(),
+            (input.source_id, input.target_id, input.kind).try_into()?,
+        ))
+    }
+}
+
 impl TryFrom<inputs::TxnRecategorize> for TxnRequest {
     type Error = CliError;
 
