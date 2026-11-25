@@ -53,6 +53,47 @@ fn revaluation(account: &str, date: &str, rate: &str) -> Value {
     })
 }
 
+#[test]
+fn fx_mcp_rates_are_validated_decimal_strings() -> TestResult {
+    let temp = tempdir()?;
+    let path = temp.path().join("book.db");
+    seed(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?;
+
+    for (name, rate_type, mut input) in [
+        (
+            "fx_post",
+            json!("string"),
+            movement("1100", "debit", 1, "1"),
+        ),
+        (
+            "fx_revalue",
+            json!(["string", "null"]),
+            revaluation("1100", "2026-01-31", "1"),
+        ),
+    ] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).ok_or(name)?;
+        let rate = &tool["inputSchema"]["properties"]["rate"];
+        assert_eq!(rate["type"], rate_type, "{name}");
+        assert_eq!(rate["pattern"], r"^[0-9]+(\.[0-9]+)?$", "{name}");
+
+        for invalid in [json!(0.85), json!("0"), json!("1e-2")] {
+            input["rate"] = invalid;
+            let response = client.call(name, &input)?;
+            assert_eq!(response["result"]["isError"], true, "{response}");
+            assert_eq!(payload(&response)?["code"], "VALIDATION", "{response}");
+        }
+    }
+    Ok(())
+}
+
 fn balance(client: &mut Client, account: &str) -> Result<Value, Box<dyn Error>> {
     let accounts = client.success(
         "account_list",

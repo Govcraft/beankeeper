@@ -1184,9 +1184,9 @@ fn record_creation(
     actor: &Actor,
     company: &crate::db::companies::CompanySlug,
     id: TransactionId,
-) -> Result<(), CliError> {
+) -> Result<receipts::ReceiptId, CliError> {
     let posting = posting_snapshot(tx.read(), company, id, HashVersion::V2)?;
-    record(
+    append_with_links(
         tx.connection(),
         actor,
         AuditChange {
@@ -1196,6 +1196,7 @@ fn record_creation(
             action: AuditAction::Create,
             snapshots: (None, Some(&posting.to_string())),
         },
+        AuditLinks::None,
     )
 }
 

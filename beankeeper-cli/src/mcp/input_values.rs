@@ -5,7 +5,9 @@ use std::{borrow::Cow, fmt, str::FromStr};
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountName, AccountType, Currency, DebitOrCredit, Sha256Hex},
+    types::{
+        AccountCode, AccountName, AccountType, Currency, DebitOrCredit, ExchangeRate, Sha256Hex,
+    },
 };
 use chrono::NaiveDate;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -125,6 +127,18 @@ impl TextValue for Currency {
         json_schema!({
             "type": "string",
             "description": "A three-letter ISO 4217 currency code with a defined decimal minor unit, such as USD, KRW, or TND. Fund and special-purpose codes are excluded."
+        })
+    }
+}
+
+impl TextValue for ExchangeRate {
+    const NAME: &'static str = "ExchangeRate";
+
+    fn schema() -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "description": "Positive decimal functional major units per native major unit, e.g. 0.85"
         })
     }
 }

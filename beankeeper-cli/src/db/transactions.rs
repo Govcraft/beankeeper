@@ -15,7 +15,7 @@ use super::metadata;
 use super::metadata_filter;
 use super::{
     EntryRow, TransactionRow,
-    ids::{PartnerTransactionId, TransactionId},
+    ids::{PartnerTransactionId, ReceiptId, TransactionId},
 };
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
@@ -115,6 +115,20 @@ pub enum PostResult {
     /// A duplicate reference was found and the transaction was skipped.
     /// Contains the ID of the existing transaction.
     Skipped(TransactionId),
+}
+
+enum PostingOutcome {
+    Created(TransactionId, ReceiptId),
+    Skipped(TransactionId),
+}
+
+impl From<PostingOutcome> for PostResult {
+    fn from(outcome: PostingOutcome) -> Self {
+        match outcome {
+            PostingOutcome::Created(id, _) => Self::Created(id),
+            PostingOutcome::Skipped(id) => Self::Skipped(id),
+        }
+    }
 }
 
 /// Posts a new transaction with its entries inside a savepoint.
@@ -304,8 +318,11 @@ pub(super) fn post_settlement(ready: ReadySettlement<'_>) -> Result<PostResult, 
 pub(super) fn post_fx(
     tx: &AuditedTx<'_>,
     posting: &fx::Prepared<'_>,
-) -> Result<PostResult, CliError> {
-    post_with_source(tx, &Posting::Fx(posting), PostingSource::Storage)
+) -> Result<(TransactionId, ReceiptId), CliError> {
+    match post_with_receipt(tx, &Posting::Fx(posting), PostingSource::Storage)? {
+        PostingOutcome::Created(id, receipt) => Ok((id, receipt)),
+        PostingOutcome::Skipped(_) => Err(fx::stored_error("unexpected duplicate FX posting")),
+    }
 }
 
 enum Posting<'a> {
@@ -324,6 +341,14 @@ fn post_with_source(
     posting: &Posting<'_>,
     source: PostingSource,
 ) -> Result<PostResult, CliError> {
+    post_with_receipt(tx, posting, source).map(Into::into)
+}
+
+fn post_with_receipt(
+    tx: &AuditedTx<'_>,
+    posting: &Posting<'_>,
+    source: PostingSource,
+) -> Result<PostingOutcome, CliError> {
     let reader = tx.read();
     let approved;
     let p = match posting {
@@ -352,7 +377,7 @@ fn post_with_source(
         _ => None,
     };
     if let Some(id) = duplicate_reference(reader, p, posting.status())? {
-        return Ok(PostResult::Skipped(id));
+        return Ok(PostingOutcome::Skipped(id));
     }
 
     if !matches!(posting, Posting::Approved(_))
@@ -423,7 +448,8 @@ fn post_with_source(
         fx: evidence,
     };
     let metadata = posting_metadata(posting, p)?;
-    audit::persist_posting(validated, metadata.as_deref())
+    let (id, receipt) = audit::persist_posting(validated, metadata.as_deref())?;
+    Ok(PostingOutcome::Created(id, receipt))
 }
 
 fn posting_metadata(

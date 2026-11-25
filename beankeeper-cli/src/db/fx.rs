@@ -20,7 +20,7 @@ use super::{
     connection::ReadConn,
     ids::TransactionId,
     schema::{FX_SCHEMA_VERSION, get_schema_version},
-    transactions::{self, PostEntryParams, PostResult, PostTransactionParams},
+    transactions::{self, PostEntryParams, PostTransactionParams},
 };
 use crate::{
     error::{CliError, FxError},
@@ -248,7 +248,7 @@ pub(super) fn evidence(
         .transpose()
 }
 
-fn stored_error(error: impl std::fmt::Display) -> CliError {
+pub(super) fn stored_error(error: impl std::fmt::Display) -> CliError {
     CliError::Database(format!("invalid stored FX evidence: {error}"))
 }
 
@@ -566,16 +566,7 @@ impl Writer<'_> {
                 native_minor: change.native_minor,
             },
         };
-        let result = transactions::post_fx(self.tx, &prepared)?;
-        let PostResult::Created(id) = result else {
-            return Err(stored_error("unexpected duplicate FX posting"));
-        };
-        let receipt = self.tx.read().query_row(
-            "SELECT id FROM audit_log WHERE company_slug = ?1 AND entity = 'transaction'
-             AND action = 'create' AND entity_id = ?2",
-            params![self.company.slug(), id.to_string()],
-            |row| row.get(0),
-        )?;
+        let (id, receipt) = transactions::post_fx(self.tx, &prepared)?;
         posted.transaction_id = Some(id);
         posted.undo_receipt = Some(receipt);
         posted.desktop_path = Some(receipts::desktop_receipt_path(self.company.slug(), receipt));

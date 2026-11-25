@@ -2,7 +2,9 @@
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountName, AccountType, Currency, DebitOrCredit, Sha256Hex},
+    types::{
+        AccountCode, AccountName, AccountType, Currency, DebitOrCredit, ExchangeRate, Sha256Hex,
+    },
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -183,7 +185,8 @@ pub(crate) struct FxPostInput {
     pub direction: Text<DebitOrCredit>,
     #[schemars(with = "i64", range(min = 1))]
     pub native_minor: crate::db::amounts::PositiveMinorUnits,
-    pub rate: beankeeper::types::ExchangeRate,
+    #[schemars(with = "Text<ExchangeRate>")]
+    pub rate: ExchangeRate,
     pub date: crate::request::CalendarDateArg,
     pub description: String,
     pub reference: Reference,
@@ -196,7 +199,8 @@ pub(crate) struct FxRevalueInput {
     pub account: Option<Account>,
     pub fx_gain_loss_account: Account,
     pub as_of: crate::request::CalendarDateArg,
-    pub rate: Option<beankeeper::types::ExchangeRate>,
+    #[schemars(with = "Option<Text<ExchangeRate>>")]
+    pub rate: Option<ExchangeRate>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

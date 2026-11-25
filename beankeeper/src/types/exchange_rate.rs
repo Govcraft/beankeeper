@@ -1,7 +1,6 @@
 use core::{fmt, num::NonZeroU128, str::FromStr};
 
 use num_bigint::BigInt;
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
 use super::{Currency, Money};
 
@@ -74,20 +73,6 @@ impl fmt::Display for ExchangeRate {
                 width = self.scale as usize
             )
         }
-    }
-}
-
-impl JsonSchema for ExchangeRate {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "ExchangeRate".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "pattern": "^[0-9]+(\\.[0-9]+)?$",
-            "description": "Positive decimal functional major units per native major unit, e.g. 0.85"
-        })
     }
 }
 
