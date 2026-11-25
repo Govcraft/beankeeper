@@ -238,8 +238,8 @@ impl Serialize for StatementBalance {
 }
 
 impl StatementBalance {
-    pub(super) fn read(row: &Row<'_>, index: usize, currency: Currency) -> rusqlite::Result<Self> {
-        Ok(Self(row.get(index)?, currency))
+    pub(super) fn read(row: &Row<'_>, index: usize) -> rusqlite::Result<Self> {
+        Ok(Self(row.get(index)?, row.get("currency")?))
     }
 
     pub(super) fn sum(

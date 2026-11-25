@@ -321,18 +321,12 @@ fn timeline(
     let latest: Option<(ReceiptId, NaiveDate, StatementBalance)> = scope
         .read()
         .query_row(
-            "SELECT receipt, period_end, statement_ending_balance
+            "SELECT receipt, period_end, statement_ending_balance, currency
          FROM statement_reconciliations
          WHERE company_slug = ?1 AND account = ?2 AND currency = ?3 AND undo_receipt IS NULL
          ORDER BY period_end DESC LIMIT 1",
             params![scope.slug(), account.as_str(), currency.code()],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    StatementBalance::read(row, 2, currency)?,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, StatementBalance::read(row, 2)?)),
         )
         .optional()?;
     if let Some((receipt, end, opening)) = latest {
@@ -347,7 +341,7 @@ fn timeline(
         });
     }
     let mut stmt = scope.read().prepare(
-        "SELECT CASE WHEN e.direction = ?5 THEN c.amount ELSE -c.amount END
+        "SELECT CASE WHEN e.direction = ?5 THEN c.amount ELSE -c.amount END, t.currency
          FROM entry_clearings c
          JOIN entries e ON e.id = c.entry_id AND e.company_slug = c.company_slug
          JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug
@@ -362,7 +356,7 @@ fn timeline(
             month.start(),
             normal.code()
         ],
-        |row| StatementBalance::read(row, 0, currency),
+        |row| StatementBalance::read(row, 0),
     )?;
     Ok(Timeline {
         previous: None,
@@ -384,7 +378,7 @@ impl StatementMatch<'_> {
         let mut stmt = self.company.read().prepare(
             "SELECT c.id, e.id, CASE WHEN e.direction = ?6 THEN c.amount ELSE -c.amount END,
                     substr(c.cleared_date, 1, 10), substr(c.reconciled_date, 1, 10),
-                    t.reference, e.amount, substr(t.date, 1, 10)
+                    t.reference, e.amount, substr(t.date, 1, 10), t.currency
              FROM entry_clearings c
              JOIN entries e ON e.id = c.entry_id AND e.company_slug = c.company_slug
              JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug
@@ -413,7 +407,7 @@ impl StatementMatch<'_> {
                         member: MatchedClearing {
                             id: row.get(0)?,
                             entry_id: row.get(1)?,
-                            signed_amount: StatementBalance::read(row, 2, self.currency)?,
+                            signed_amount: StatementBalance::read(row, 2)?,
                             cleared_on: row.get(3)?,
                             posted_on: row.get(7)?,
                             previously_reconciled_on: row.get(4)?,
@@ -529,7 +523,6 @@ const SELECT_RECEIPT: &str = "SELECT s.receipt, s.undo_receipt, event.actor, eve
     FROM statement_reconciliations s JOIN audit_log event ON event.id = s.receipt";
 
 fn decode(row: &Row<'_>) -> rusqlite::Result<StatementReceipt> {
-    let currency = row.get(5)?;
     let period_end = row.get(7)?;
     let close_event: Option<ReceiptId> = row.get(15)?;
     let period_close = close_event
@@ -559,14 +552,14 @@ fn decode(row: &Row<'_>) -> rusqlite::Result<StatementReceipt> {
         reconciled_at: row.get(3)?,
         evidence: StatementEvidence {
             account: row.get(4)?,
-            currency,
+            currency: row.get("currency")?,
             period_start: row.get(6)?,
             period_end,
             statement_date: period_end,
             statement_ref,
-            opening_balance: StatementBalance::read(row, 9, currency)?,
-            statement_ending_balance: StatementBalance::read(row, 10, currency)?,
-            cleared_net: StatementBalance::read(row, 11, currency)?,
+            opening_balance: StatementBalance::read(row, 9)?,
+            statement_ending_balance: StatementBalance::read(row, 10)?,
+            cleared_net: StatementBalance::read(row, 11)?,
             prior_statement: row.get(12)?,
             period_close,
             matched: Vec::new(),
@@ -576,15 +569,18 @@ fn decode(row: &Row<'_>) -> rusqlite::Result<StatementReceipt> {
 
 fn read_members(reader: ReadConn<'_>, receipt: &mut StatementReceipt) -> Result<(), CliError> {
     let mut stmt = reader.prepare_cached(
-        "SELECT clearing_id, entry_id, signed_amount, cleared_on, posted_on, previously_reconciled_on
-         FROM statement_reconciliation_clearings WHERE statement_id = ?1 ORDER BY clearing_id",
+        "SELECT m.clearing_id, m.entry_id, m.signed_amount, m.cleared_on, m.posted_on,
+                m.previously_reconciled_on, s.currency
+         FROM statement_reconciliation_clearings m
+         JOIN statement_reconciliations s ON s.receipt = m.statement_id
+         WHERE m.statement_id = ?1 ORDER BY m.clearing_id",
     )?;
     receipt.evidence.matched = stmt
         .query_map([receipt.receipt], |row| {
             Ok(MatchedClearing {
                 id: row.get(0)?,
                 entry_id: row.get(1)?,
-                signed_amount: StatementBalance::read(row, 2, receipt.currency())?,
+                signed_amount: StatementBalance::read(row, 2)?,
                 cleared_on: row.get(3)?,
                 posted_on: row.get(4)?,
                 previously_reconciled_on: row.get(5)?,

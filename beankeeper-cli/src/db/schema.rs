@@ -185,25 +185,7 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         apply_v25(conn)?;
     }
     apply_receipt_migrations(conn, version)?;
-    apply_hold_migrations(conn, version)?;
-    if version < TXN_LINK_SCHEMA_VERSION {
-        super::audit::atomically(conn, || {
-            migrate_hold_audit(conn, AuditTable::TransactionLinks, TXN_LINK_SCHEMA_VERSION)?;
-            conn.execute_batch(include_str!("schema/transaction_links.sql"))?;
-            Ok(())
-        })?;
-    }
-    if version < STATEMENT_RECONCILIATION_SCHEMA_VERSION {
-        super::audit::atomically(conn, || {
-            migrate_hold_audit(
-                conn,
-                AuditTable::StatementReconciliation,
-                STATEMENT_RECONCILIATION_SCHEMA_VERSION,
-            )?;
-            conn.execute_batch(include_str!("schema/statement_reconciliation.sql"))?;
-            Ok(())
-        })?;
-    }
+    apply_hold_audit_migrations(conn, version)?;
 
     debug_assert_eq!(
         get_schema_version(ReadConn::new(conn)).unwrap_or(0),
@@ -214,7 +196,7 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
-fn apply_hold_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
+fn apply_hold_audit_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
     if version < HOLDS_SCHEMA_VERSION {
         apply_v31(conn)?;
     }
@@ -231,6 +213,20 @@ fn apply_hold_migrations(conn: &Connection, version: i64) -> Result<(), CliError
             AuditTable::Recategorization,
             RECATEGORIZATION_SCHEMA_VERSION,
         )?;
+    }
+    if version < TXN_LINK_SCHEMA_VERSION {
+        apply_v35(conn)?;
+    }
+    if version < STATEMENT_RECONCILIATION_SCHEMA_VERSION {
+        super::audit::atomically(conn, || {
+            migrate_hold_audit(
+                conn,
+                AuditTable::StatementReconciliation,
+                STATEMENT_RECONCILIATION_SCHEMA_VERSION,
+            )?;
+            conn.execute_batch(include_str!("schema/statement_reconciliation.sql"))?;
+            Ok(())
+        })?;
     }
 
     Ok(())
@@ -1634,6 +1630,14 @@ fn apply_v32(conn: &Connection) -> Result<(), CliError> {
     )
 }
 
+fn apply_v35(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        migrate_hold_audit(conn, AuditTable::TransactionLinks, TXN_LINK_SCHEMA_VERSION)?;
+        conn.execute_batch(include_str!("schema/transaction_links.sql"))?;
+        Ok(())
+    })
+}
+
 fn migrate_hold_audit(conn: &Connection, table: AuditTable, version: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         // The index drops with audit_log. Drop its dependent views and
@@ -1738,6 +1742,7 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             create_standing_settings(conn)?;
         }
         if table >= AuditTable::StatementReconciliation {
+            // Drop the triggers before their views and restore them in reverse order.
             dependents.extend([
                 ("trigger", "protect_transaction_link_insert"),
                 ("trigger", "protect_transaction_link_undo"),
@@ -2769,7 +2774,7 @@ mod tests {
     }
 
     #[test]
-    fn v34_upgrade_preserves_an_audited_pending_hold_and_its_schema() -> Result<(), CliError> {
+    fn v36_preserves_pending_holds_and_audited_links() -> Result<(), CliError> {
         use super::super::{
             Actor, audit,
             holds::EntryStatus,
@@ -2860,19 +2865,34 @@ mod tests {
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<Result<_, _>>()?)
         };
-        let history = hashes(reader)?;
+        let hold_history = hashes(reader)?;
         migrate_hold_audit(
             conn,
             AuditTable::Recategorization,
             RECATEGORIZATION_SCHEMA_VERSION,
         )?;
         assert_eq!(get_schema_version(reader)?, RECATEGORIZATION_SCHEMA_VERSION);
+        apply_v35(conn)?;
+        assert_eq!(get_schema_version(reader)?, TXN_LINK_SCHEMA_VERSION);
+        assert_eq!(hashes(reader)?, hold_history);
+        let link = seed_v35_link(conn)?;
+        let history = hashes(reader)?;
+        let active_link = |reader: ReadConn<'_>| -> Result<_, CliError> {
+            Ok(reader.query_row(
+                "SELECT receipt FROM active_transaction_links WHERE company_slug = 'legacy'",
+                [],
+                |row| row.get::<_, crate::db::ids::ReceiptId>(0),
+            )?)
+        };
+        assert_eq!(active_link(reader)?, link);
+
         // Failing after the audit rebuild must roll back both the schema version
         // and the audit rebuild, leaving the original ledger usable.
         conn.execute_batch("CREATE TABLE statement_reconciliation_clearings (collision TEXT)")?;
         assert!(ensure_schema(conn).is_err());
-        assert_eq!(get_schema_version(reader)?, RECATEGORIZATION_SCHEMA_VERSION);
+        assert_eq!(get_schema_version(reader)?, TXN_LINK_SCHEMA_VERSION);
         assert_eq!(hashes(reader)?, history);
+        assert_eq!(active_link(reader)?, link);
         let table_exists: bool = reader.query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'statement_reconciliations')",
             [],
@@ -2887,32 +2907,11 @@ mod tests {
         let migrated_reader = migrated.read();
         assert_eq!(get_schema_version(migrated_reader)?, CURRENT_VERSION);
         assert_eq!(hashes(migrated_reader)?, history);
-        for table in [
-            "statement_reconciliations",
-            "statement_reconciliation_clearings",
-        ] {
-            let empty: bool = migrated_reader.query_row(
-                &format!("SELECT NOT EXISTS (SELECT 1 FROM {table})"),
-                [],
-                |row| row.get(0),
-            )?;
-            assert!(empty);
-            let strict_table: bool = migrated_reader.query_row(
-                "SELECT strict = 1 AND type = 'table' FROM pragma_table_list WHERE name = ?1",
-                [table],
-                |row| row.get(0),
-            )?;
-            assert!(strict_table);
-        }
-        let foreign_key_violations: i64 = migrated_reader.query_row(
-            "SELECT COUNT(*) FROM pragma_foreign_key_check",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(foreign_key_violations, 0);
+        assert_eq!(active_link(migrated_reader)?, link);
+        assert_new_statement_tables(migrated_reader)?;
         assert_eq!(
             audit::verify_hash_chain(migrated_reader)?.length(),
-            audit_length
+            audit_length + 1
         );
         super::super::verification::VerifiedLedger::read(&migrated)?;
         let net: i64 = migrated_reader.query_row(
@@ -2938,6 +2937,7 @@ mod tests {
             "idx_correction_proposal",
             "idx_correction_company",
             "active_transaction_links",
+            "protect_transaction_link_insert",
             "protect_transaction_link_undo",
         ] {
             let present: bool = migrated_reader.query_row(
@@ -2949,6 +2949,62 @@ mod tests {
         }
         ensure_schema(migrated.conn())?;
         Ok(())
+    }
+
+    fn assert_new_statement_tables(reader: ReadConn<'_>) -> Result<(), CliError> {
+        for table in [
+            "statement_reconciliations",
+            "statement_reconciliation_clearings",
+        ] {
+            let empty: bool = reader.query_row(
+                &format!("SELECT NOT EXISTS (SELECT 1 FROM {table})"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(empty);
+            let strict_table: bool = reader.query_row(
+                "SELECT strict = 1 AND type = 'table' FROM pragma_table_list WHERE name = ?1",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert!(strict_table);
+        }
+        let foreign_key_violations: i64 =
+            reader.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(foreign_key_violations, 0);
+        Ok(())
+    }
+
+    fn seed_v35_link(conn: &Connection) -> Result<crate::db::ids::ReceiptId, CliError> {
+        use crate::db::{
+            Actor,
+            audit::{savepoint::with_audited_tx, txn_links},
+            ids::TransactionId,
+        };
+        use crate::identity::Post;
+
+        let transaction = |reference| {
+            conn.query_row(
+                "SELECT id FROM transactions WHERE company_slug = 'legacy' AND reference = ?1",
+                [reference],
+                |row| row.get::<_, TransactionId>(0),
+            )
+        };
+        let spec = (
+            transaction("old")?,
+            transaction("v31-hold")?,
+            txn_links::TxnLinkKind::Related,
+        )
+            .try_into()?;
+        let actor = Actor::new("bookkeeper".parse()?);
+        with_audited_tx(conn, "sp_link_fixture", |tx| {
+            Ok(
+                txn_links::create(Granted::<Post>::check(tx, &actor)?, "legacy".parse()?, spec)?
+                    .receipt(),
+            )
+        })
     }
 
     #[test]

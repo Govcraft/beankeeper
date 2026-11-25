@@ -496,17 +496,9 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
             },
             None,
         )),
-        (Entity::Transaction, Action::Create) => {
-            decode.absent("before", row.before.as_deref())?;
-            let after: PostingSnapshot = decode.after()?;
-            let reference = after.reference.clone();
-            Ok((ReceiptChange::PostingCreated { after }, reference))
-        }
+        (Entity::Transaction, Action::Create) => decode.posting_created(),
         (Entity::Proposal, Action::ProposalApprove | Action::ProposalReject) => {
-            let before: ProposalSnapshot = decode.before()?;
-            let after: ProposalSnapshot = decode.after()?;
-            let reference = after.reference.clone().or_else(|| before.reference.clone());
-            Ok((ReceiptChange::ProposalResolved { before, after }, reference))
+            decode.proposal_resolved()
         }
         (
             Entity::Transaction,
@@ -551,6 +543,20 @@ impl Snapshots<'_> {
             return Err(self.invalid(which, "unexpected snapshot"));
         }
         Ok(())
+    }
+
+    fn posting_created(&self) -> Result<(ReceiptChange, Option<String>), CliError> {
+        self.absent("before", self.0.before.as_deref())?;
+        let after: PostingSnapshot = self.after()?;
+        let reference = after.reference.clone();
+        Ok((ReceiptChange::PostingCreated { after }, reference))
+    }
+
+    fn proposal_resolved(&self) -> Result<(ReceiptChange, Option<String>), CliError> {
+        let before: ProposalSnapshot = self.before()?;
+        let after: ProposalSnapshot = self.after()?;
+        let reference = after.reference.clone().or_else(|| before.reference.clone());
+        Ok((ReceiptChange::ProposalResolved { before, after }, reference))
     }
 
     fn posting_link(&self) -> Result<(ReceiptChange, Option<String>), CliError> {
