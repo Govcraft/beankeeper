@@ -7,6 +7,9 @@ mod audit_receipts;
 #[path = "mcp_stdio/corrections.rs"]
 mod corrections;
 
+#[path = "mcp_stdio/fx.rs"]
+mod fx;
+
 #[path = "mcp_stdio/holds.rs"]
 mod holds;
 
