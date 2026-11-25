@@ -525,6 +525,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk txn list` | Search and filter transactions |
 | `bk txn settle-hold` | Replace a card authorization with the actual posted charge and retain its history. |
 | `bk txn reverse ID` | Apply or propose a linked mirror transaction (alias `void`). Reconciled originals cannot be reversed. |
+| `bk txn recategorize` | Move one posted line between accounts and return a receipt for one-step undo. |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
 | `bk schedule create/list/run/cancel` | Manage pending recurring templates and post due occurrences |
