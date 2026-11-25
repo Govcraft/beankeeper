@@ -559,6 +559,7 @@ mutation tools are absent and cannot be called.
 | `budget_list`, `budget_set`, `budget_delete` | Inspect and manage budgets |
 | `verify`, `audit_log` | Verify integrity and inspect the audit trail |
 | `audit_receipts`, `audit_undo` | Read grouped changes and apply or propose an eligible receipt undo |
+| `restore`, `restore_undo` | Restore a server-side backup or undo a restore on the selected ledger with `ledger/admin` |
 
 MCP discovery publishes input schemas and read-only hints from the ledger
 operation catalog. Input schemas describe nested fields inline. Send objects and
@@ -1771,46 +1772,44 @@ shared CLI and MCP error code, message, and structured details when present.
 
 ### Backup and restore
 
-Use `backup` for a consistent snapshot of the entire ledger, including committed
-writes from active connections. Encryption stays enabled with the original
-passphrase. Backup opens the source read-only and copies its existing schema
-version. Verification runs the checks available in that schema before publication.
-SQLite can create WAL sidecar files while reading a live ledger.
+`bk backup` writes a verified full snapshot, including committed WAL changes,
+at the source schema version and encryption. `--force` replaces an existing
+backup output. On an enforced ledger, backup requires `ledger/admin`.
 
 ```sh
-bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup
-bk restore --input ledger.bk-backup --db /data/restored.db --passphrase-file /secure/books.key
-bk --db /data/restored.db --passphrase-file /secure/books.key verify
+bk --db books.db backup --output ledger.bk-backup
+bk --db books.db restore --input ledger.bk-backup
+bk --db books.db restore-undo UNDO_ID
+bk --db recovered.db recover --input ledger.bk-backup
 ```
 
-Omit the passphrase option for unencrypted ledgers. `backup --output` and
-`restore --input` are required. Restore also requires an explicit `--db` flag,
-even when `BEANKEEPER_DB` is configured. Global `--company` is ignored.
-JSON success envelopes report `path`, `bytes`, `schema_version`, and `encrypted`.
+For encrypted books, supply the usual passphrase source. On an enforced ledger,
+restore and undo require a live signed `ledger/admin` credential. A caller who
+supplies a token must have that scope on any ledger. Use `--db` or a named ledger
+target. In MCP, call `restore` with `input` or
+`restore_undo` with `undo_id`. The input path is on the server. Both tools use
+the selected live ledger and are omitted in read-only mode.
 
-Existing destinations require `--force`. Close all connections to a destination
-before replacing it; SQLite `-wal`, `-shm`, or `-journal` files cause rejection.
-Source and destination must differ, including symlink and hard-link aliases.
-Destinations must be regular files or new paths. Failed verification leaves an
-existing destination untouched and removes temporary files. On Unix, published
-files have owner-only permissions (0600).
+Restore verifies the standalone backup and its audit lineage, upgrades an
+older backup in a private copy, and rejects newer schemas or backup files with
+SQLite sidecars. The live ledger must already use the running schema. Restore
+replaces bookkeeping rows in one transaction and appends a `ledger_restored`
+event. The identity registry, current revocations, enforcement policy, and
+existing audit rows stay in place. The audit log continues to show the full
+history. Bookkeeping reads use the history selected by the restore.
 
-Snapshots are standalone SQLCipher/SQLite databases, with no archive wrapper.
-Restore accepts only a valid current-schema ledger and runs the same accounting,
-audit-chain, foreign-key, and integrity checks as `bk verify`, without migrating
-it. The file carries no proof that `backup` created it; any complete ledger
-passing those checks is accepted. To restore an older snapshot, use its matching
-CLI version first. A lost
-passphrase cannot be recovered. Keep the backup and passphrase separately.
+Tell the owner what was restored and offer the returned `undo_id`. Undo puts
+back the books from the verified snapshot saved beside the ledger and appends a
+new receipt. Use the latest restore receipt before subsequent audited bookkeeping
+changes. Keep the adjacent undo snapshot files with the ledger. Results include
+the restore receipt, snapshot identifiers, and verification data with row counts
+and a Desktop review link.
 
-The snapshot includes all database tables: accounting, identity root, token
-registry, audit history, budgets, rules, schedules, investments, spend limits, proposals, and attachment
-records. Receipt and document **files** are stored outside SQLite in the
-`attachments/` directory beside the source database. Back up that directory
-separately and preserve the paths referenced by attachment records when moving
-machines. External attachment storage changes are outside these commands.
-`bk export` remains an accounting JSON/CSV export, not a recovery backup.
-Backup and restore are CLI commands and are not exposed over MCP.
+Use `bk recover` to open a full current-schema snapshot at a new file path.
+It carries the snapshot's identity and audit data into the new ledger. Backup
+and recovery use the CLI. Keep the passphrase and the external `attachments/`
+directory separately. Snapshots include attachment records. Receipt and
+document files live in that directory. Use `bk export` for accounting interchange.
 
 Rust hosts can require a verified local backup before an upgrade. Pass the same
 resolved secret to both calls.

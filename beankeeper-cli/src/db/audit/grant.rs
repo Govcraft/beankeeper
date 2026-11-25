@@ -48,6 +48,15 @@ impl sealed::GrantKind for Admin {
     const REQUIRED: Capability = Capability::Admin;
 }
 
+/// An admin for ledger restore. A signed caller must carry the admin scope
+/// even when the ledger admits local actors without credentials.
+pub(super) enum RestoreAdmin {}
+
+impl sealed::GrantKind for RestoreAdmin {
+    const REQUIRED: Capability = Capability::Admin;
+    const SIGNED: bool = true;
+}
+
 /// Authority to attach source documents and post ledger entries.
 pub enum Post {}
 

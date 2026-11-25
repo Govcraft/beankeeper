@@ -526,7 +526,7 @@ pub(in crate::db) fn find_profile(
         .query_row(
             "SELECT revision, supersedes, purpose, base_currency, fiscal_year_start
          FROM setup_book_profiles p WHERE company_slug = ?1 AND NOT EXISTS (
-             SELECT 1 FROM audit_log event WHERE event.company_slug = p.company_slug
+             SELECT 1 FROM bookkeeping_audit event WHERE event.company_slug = p.company_slug
                AND event.action = 'setup_revert'
                AND json_extract(event.after, '$.profile_revision') = p.revision
          ) ORDER BY revision DESC LIMIT 1",

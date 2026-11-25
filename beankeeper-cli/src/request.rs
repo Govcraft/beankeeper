@@ -31,7 +31,13 @@ use crate::{
         summary::{SummaryRequest, SummaryResponse},
         txn::{TxnRequest, TxnResponse},
     },
-    db::{Actor, Db, companies::CompanySlug, connection::ReadConn, verification::VerifiedLedger},
+    db::{
+        Actor, Db,
+        audit::restore::{RestoreReceipt, RestoreRequest},
+        companies::CompanySlug,
+        connection::ReadConn,
+        verification::VerifiedLedger,
+    },
     error::CliError,
     operation::Operation,
     output::json::Meta,
@@ -51,6 +57,7 @@ pub enum LedgerRequest {
     Reconcile(ReconcileRequest),
     Report(ReportRequest),
     Rule(RuleRequest),
+    Restore(RestoreRequest),
     Setup(SetupRequest),
     Standing(StandingRequest),
     Summary(SummaryRequest),
@@ -72,6 +79,7 @@ pub enum LedgerResponse {
     Reconcile(Operation, CompanySlug, ReconcileResponse),
     Report(ReportResponse),
     Rule(Operation, CompanySlug, RuleResponse),
+    Restore(Operation, RestoreReceipt),
     Setup(Operation, Option<CompanySlug>, SetupResponse),
     Standing(Operation, CompanySlug, StandingResponse),
     Summary(SummaryResponse),
@@ -95,6 +103,7 @@ impl LedgerRequest {
             Self::Reconcile(request) => request.operation(),
             Self::Report(request) => request.operation(),
             Self::Rule(request) => request.operation(),
+            Self::Restore(request) => request.operation(),
             Self::Setup(request) => request.operation(),
             Self::Standing(request) => request.operation(),
             Self::Summary(_) => Operation::Summary,
@@ -172,6 +181,9 @@ impl LedgerRequest {
                 Ok(LedgerResponse::Reconcile(operation, company, response))
             }
             Self::Report(request) => request.execute(db).map(LedgerResponse::Report),
+            Self::Restore(request) => request
+                .execute(db, actor)
+                .map(|result| LedgerResponse::Restore(operation, result)),
             Self::Rule(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -215,6 +227,19 @@ impl LedgerResponse {
                 response.render(cli, *operation, company)
             }
             Self::Report(response) => response.render(cli),
+            Self::Restore(operation, receipt) => {
+                if cli.is_json() {
+                    let meta = cli.meta(*operation, None);
+                    println!("{}", crate::output::json::envelope_ok(meta, receipt)?);
+                } else if !cli.verbosity.quiet {
+                    eprintln!(
+                        "{} Undo with `bk restore-undo {}` on this ledger.",
+                        receipt.summary(),
+                        receipt.restore_id()
+                    );
+                }
+                Ok(())
+            }
             Self::Rule(operation, company, response) => response.render(cli, *operation, company),
             Self::Setup(operation, company, response) => {
                 response.render(cli, *operation, company.as_ref().map(CompanySlug::as_str))

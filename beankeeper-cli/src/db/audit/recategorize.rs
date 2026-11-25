@@ -555,7 +555,7 @@ fn check_original(
     let corrected: bool = company.read().query_row(
         "SELECT EXISTS(SELECT 1 FROM posting_reversals
          WHERE company_slug = ?1 AND (original_id = CAST(?2 AS TEXT) OR reversal_id = ?2))
-         OR EXISTS(SELECT 1 FROM audit_log WHERE company_slug = ?1 AND action = 'recategorize'
+         OR EXISTS(SELECT 1 FROM bookkeeping_audit WHERE company_slug = ?1 AND action = 'recategorize'
                    AND related_posting = ?2)",
         params![company.slug(), id],
         |row| row.get(0),
@@ -594,7 +594,7 @@ impl MoveHistory {
         let latest = company
             .read()
             .query_row(
-                "SELECT reversal.date FROM audit_log event
+                "SELECT reversal.date FROM bookkeeping_audit event
              LEFT JOIN posting_reversals r ON r.company_slug = event.company_slug
                 AND r.original_id = CAST(event.related_posting AS TEXT)
              LEFT JOIN transactions reversal ON reversal.id = r.reversal_id
@@ -681,7 +681,7 @@ impl Recategorization {
         let (receipt, original, raw): (ReceiptId, TransactionId, String) = company
             .read()
             .query_row(
-                "SELECT id, CAST(entity_id AS INTEGER), after FROM audit_log
+                "SELECT id, CAST(entity_id AS INTEGER), after FROM bookkeeping_audit
              WHERE company_slug = ?1 AND action = 'recategorize' AND related_posting = ?2",
                 params![company.slug(), posting],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),

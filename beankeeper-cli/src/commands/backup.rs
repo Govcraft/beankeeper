@@ -12,7 +12,8 @@ use crate::db::snapshot::files::{
     publish, reject_sidecars, staging_directory, validate_destination,
 };
 use crate::db::{
-    Db, SchemaVersion, SnapshotOverwrite, VerifiedSnapshot, verification::VerifiedLedger,
+    Db, SchemaVersion, SnapshotOverwrite, VerifiedSnapshot, audit::restore::RestoreRequest,
+    verification::VerifiedLedger,
 };
 use crate::error::CliError;
 
@@ -48,16 +49,22 @@ pub fn backup(cli: &Cli, output: &Path, overwrite: SnapshotOverwrite) -> Result<
     )
 }
 
-/// Restore a full snapshot with its original passphrase and verify it in-process.
+/// Recover a full snapshot to a new file with its original passphrase.
 ///
 /// # Errors
 /// Returns an error without replacing the destination if validation fails.
-pub fn restore(cli: &Cli, input: &Path, overwrite: SnapshotOverwrite) -> Result<(), CliError> {
+pub fn recover(cli: &Cli, input: &Path) -> Result<(), CliError> {
+    let overwrite = SnapshotOverwrite::Refuse;
     let destination = cli.explicit_db()?.ok_or_else(|| {
         CliError::Usage(
-            "restore requires an explicit --db destination or named ledger target".into(),
+            "recover requires an explicit --db destination or named ledger target".into(),
         )
     })?;
+    if destination.try_exists()? {
+        return Err(CliError::Validation(
+            "recovery requires a new destination; use restore for an existing ledger".into(),
+        ));
+    }
     validate_destination(input, destination, overwrite)?;
     if !input.try_exists()? {
         return Err(CliError::NotFound(format!(
@@ -75,25 +82,10 @@ pub fn restore(cli: &Cli, input: &Path, overwrite: SnapshotOverwrite) -> Result<
     let verification = VerifiedLedger::read(&snapshot)?;
     let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
-    if destination.try_exists()? {
-        // Inspect a private copy: even read-only SQLite connections can create
-        // WAL sidecars on the original destination and prevent publication.
-        // The destination has its own trust boundary, independent of the snapshot.
-        let mut destination_copy = NamedTempFile::new_in(directory.path())?;
-        std::io::copy(
-            &mut File::open(destination)?,
-            destination_copy.as_file_mut(),
-        )?;
-        let existing = Db::open_snapshot(destination_copy.path(), cli.resolve_passphrase()?)
-            .or_else(|error| Db::open_snapshot(destination_copy.path(), None).map_err(|_| error))?;
-        if crate::db::policy::get(existing.read())?.enforce {
-            return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before restore".into()));
-        }
-    }
     publish(staged, input, destination, overwrite)?;
     report(
         cli,
-        Operation::Restore,
+        Operation::Recover,
         SnapshotInfo {
             path: destination,
             bytes: fs::metadata(destination)?.len(),
@@ -101,6 +93,27 @@ pub fn restore(cli: &Cli, input: &Path, overwrite: SnapshotOverwrite) -> Result<
             encrypted,
         },
     )
+}
+
+/// Run the same audited restore request served by MCP.
+///
+/// # Errors
+/// Returns errors for an unselected ledger, failed authorization or a failed restore.
+pub fn restore(cli: &Cli, request: RestoreRequest) -> Result<(), CliError> {
+    let destination = cli.explicit_db()?.ok_or_else(|| {
+        CliError::Usage(
+            "restore requires an explicit --db destination or named ledger target".into(),
+        )
+    })?;
+    let db = Db::open_for_restore(destination, cli.resolve_passphrase()?)?;
+    let request = crate::request::LedgerRequest::Restore(request);
+    request
+        .execute_with_actor(&db, |_| {
+            cli.verify_agent(&db)?;
+            Ok(cli.principal())
+        })?
+        .0
+        .render(cli, None)
 }
 
 fn report(cli: &Cli, command: Operation, info: SnapshotInfo<'_>) -> Result<(), CliError> {

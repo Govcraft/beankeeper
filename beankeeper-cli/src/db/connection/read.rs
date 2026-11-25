@@ -42,6 +42,17 @@ impl<'a> ReadConn<'a> {
         self.connection
     }
 
+    // Older snapshots have only one bookkeeping history. They are read
+    // without migrating or adding views to the source file.
+    pub(in crate::db) fn bookkeeping_audit(self) -> Result<&'static str, crate::error::CliError> {
+        let version = super::super::schema::get_schema_version(self)?;
+        Ok(if version >= super::super::schema::RESTORE_SCHEMA_VERSION {
+            "bookkeeping_audit"
+        } else {
+            "audit_log"
+        })
+    }
+
     pub(crate) fn belongs_to(self, id: &ConnectionId) -> bool {
         self.id.is_some_and(|current| current.matches(id))
     }

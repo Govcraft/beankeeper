@@ -91,6 +91,8 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Init { .. } => Operation::Init,
         Command::Backup { .. } => Operation::Backup,
         Command::Restore { .. } => Operation::Restore,
+        Command::RestoreUndo { .. } => Operation::RestoreUndo,
+        Command::Recover { .. } => Operation::Recover,
         Command::Verify => Operation::Verify,
         Command::Export { .. } => Operation::Export,
         Command::Company(sub) => match sub {
@@ -300,16 +302,7 @@ fn dispatch_ledger(
                 audit::ReceiptRequest::Undo(require_company(cli)?.clone(), args.receipt),
             )),
         },
-        Command::Agent(_)
-        | Command::Backup { .. }
-        | Command::Export { .. }
-        | Command::Init { .. }
-        | Command::Key(_)
-        | Command::Loan(_)
-        | Command::Mcp(_)
-        | Command::Policy(_)
-        | Command::Restore { .. }
-        | Command::Schedule(_) => None,
+        _ => None,
     };
     if let Some(request) = request {
         let db = cli.open_db()?;
@@ -367,6 +360,8 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             | Command::Mcp(_)
             | Command::Backup { .. }
             | Command::Restore { .. }
+            | Command::RestoreUndo { .. }
+            | Command::Recover { .. }
             | Command::Setup(_)
     ) {
         // Preserve standalone loan calculation without an existing ledger.
@@ -382,7 +377,15 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
         Command::Backup { output, overwrite } => backup::backup(cli, output, *overwrite),
-        Command::Restore { input, overwrite } => backup::restore(cli, input, *overwrite),
+        Command::Restore { input } => backup::restore(
+            cli,
+            crate::db::audit::restore::RestoreRequest::Backup(input.clone()),
+        ),
+        Command::RestoreUndo { undo_id } => backup::restore(
+            cli,
+            crate::db::audit::restore::RestoreRequest::Undo(*undo_id),
+        ),
+        Command::Recover { input } => backup::recover(cli, input),
         Command::Schedule(args) => {
             let company = require_company(cli)?.as_str();
             schedule::run(cli, company, &args.command)

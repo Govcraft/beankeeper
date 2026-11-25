@@ -280,3 +280,19 @@ Schema v28 extends the accepted audit actions and keeps the v7 hash payload.
 The migration retains existing rows, hashes, and receipt links. Verification
 checks that each deactivation references the same company's creation and that
 the rule row is still present.
+
+## Ledger restore events
+
+Schema v38 adds `ledger_restored` events. Each event extends the physical audit
+chain and records the selected backup's SHA-256 identifier, the audit ID where
+the restored bookkeeping history ends, and the ID and SHA-256 of the verified
+pre-restore snapshot. An undo records the original restore receipt in `undo_of`
+within the event payload and appends another restore event.
+
+Verification always checks the entire physical chain. Checks that reconcile the
+audit with current books follow the history selected by the last restore.
+Historical audit references to postings remain readable after those postings
+leave the live books. New posting references must resolve when appended, and
+verification checks references in the current bookkeeping history. Restoring
+keeps the live high-water marks for bookkeeping IDs so later writes cannot
+reuse IDs already present in history.

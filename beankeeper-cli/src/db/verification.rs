@@ -263,6 +263,10 @@ impl VerifiedLedger {
         self.schema_version
     }
 
+    pub(super) fn audit_head(&self) -> Option<(super::ids::AuditRowId, &str)> {
+        self.audit_chain.as_ref().and_then(VerifiedAuditChain::head)
+    }
+
     pub(crate) fn write_summary(&self, output: &mut impl Write) -> io::Result<()> {
         let counts = &self.row_counts;
         writeln!(
@@ -328,7 +332,7 @@ fn row_counts(
     )?)
 }
 
-fn verify_foreign_keys(reader: ReadConn<'_>) -> Result<(), CliError> {
+pub(super) fn verify_foreign_keys(reader: ReadConn<'_>) -> Result<(), CliError> {
     let first = reader
         .query_row(
             "SELECT \"table\", rowid, parent, fkid

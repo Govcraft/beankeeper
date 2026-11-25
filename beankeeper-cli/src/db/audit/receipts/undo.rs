@@ -534,7 +534,7 @@ fn undo_onboarding(
     let saved: Option<(ReceiptId, String)> = tx
         .read()
         .query_row(
-            "SELECT id, after FROM audit_log WHERE undo_of = ?1 AND company_slug = ?2
+            "SELECT id, after FROM bookkeeping_audit WHERE undo_of = ?1 AND company_slug = ?2
          AND action = 'setup_revert'",
             params![receipt, company],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -647,7 +647,7 @@ fn undo_onboarding_children(
     let mut child_receipts = Vec::with_capacity(members.len());
     for member in members {
         let belongs = tx.read().query_row(
-            "SELECT EXISTS (SELECT 1 FROM audit_log WHERE id = ?1 AND id < ?2
+            "SELECT EXISTS (SELECT 1 FROM bookkeeping_audit WHERE id = ?1 AND id < ?2
              AND company_slug = ?3 AND entity = ?4 AND action = 'create')",
             params![member, receipt, scope.slug(), entity.as_str()],
             |row| row.get::<_, bool>(0),
@@ -677,7 +677,7 @@ fn receipt_event(scope: &Company<'_>, receipt: ReceiptId) -> Result<ReceiptEvent
     let reader = scope.read();
     reader
         .query_row(
-            &format!("SELECT {columns} FROM audit_log WHERE company_slug = ?1 AND id = ?2"),
+            &format!("SELECT {columns} FROM bookkeeping_audit WHERE company_slug = ?1 AND id = ?2"),
             params![scope.slug(), receipt],
             read_audit_row,
         )
@@ -740,8 +740,9 @@ fn resolve_event(
                 return Err(ineligible(receipt, UndoIneligibility::AlreadyAnUndo));
             }
             let grouped = reader.query_row(
-                "SELECT EXISTS(SELECT 1 FROM audit_receipt_postings
-                 WHERE company_slug = ?1 AND posting_id = ?2 AND id > ?3)",
+                "SELECT EXISTS(SELECT 1 FROM bookkeeping_audit
+                 WHERE company_slug = ?1 AND related_posting = ?2 AND id > ?3
+                   AND action IN ('reverse', 'proposal_approve', 'recategorize'))",
                 params![scope.slug(), id, receipt],
                 |row| row.get::<_, bool>(0),
             )?;
@@ -779,7 +780,7 @@ fn recorded_undo_event(
     reader
         .query_row(
             &format!(
-                "SELECT {columns} FROM audit_log
+                "SELECT {columns} FROM bookkeeping_audit
          WHERE company_slug = ?1 AND undo_of = ?2"
             ),
             params![company, receipt],
@@ -878,11 +879,11 @@ impl AnnotationUndo {
             "UPDATE transactions SET metadata = ?1
              WHERE company_slug = ?2 AND id = ?3 AND metadata IS ?4
                AND NOT EXISTS (
-                 SELECT 1 FROM audit_log newer
+                 SELECT 1 FROM bookkeeping_audit newer
                  WHERE newer.company_slug = ?2 AND newer.entity = 'transaction'
                    AND newer.entity_id = ?5 AND newer.id > ?6
                    AND newer.action IN ('metadata_set', 'metadata_unset')
-                   AND NOT EXISTS (SELECT 1 FROM audit_log restored WHERE restored.undo_of = newer.id)
+                   AND NOT EXISTS (SELECT 1 FROM bookkeeping_audit restored WHERE restored.undo_of = newer.id)
                )",
             params![self.before, company, self.transaction, self.after, target, receipt],
         )?;
@@ -922,7 +923,7 @@ pub fn undo_rule_creation(
         let (receipt, action): (ReceiptId, AuditAction) = tx
             .read()
             .query_row(
-                "SELECT id, action FROM audit_log WHERE company_slug = ?1 AND entity = 'rule'
+                "SELECT id, action FROM bookkeeping_audit WHERE company_slug = ?1 AND entity = 'rule'
                  AND entity_id = ?2 AND action IN ('create', 'rule_supersede')",
                 params![company, id.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1019,7 +1020,7 @@ fn archive_account(
     let latest_creation: Option<ReceiptId> = tx
         .read()
         .query_row(
-            "SELECT id FROM audit_log WHERE company_slug = ?1 AND entity = 'account'
+            "SELECT id FROM bookkeeping_audit WHERE company_slug = ?1 AND entity = 'account'
          AND entity_id = ?2 AND action = 'create' ORDER BY id DESC LIMIT 1",
             params![company, code.as_str()],
             |row| row.get(0),
@@ -1068,25 +1069,28 @@ fn ineligible(receipt: ReceiptId, reason: UndoIneligibility) -> CliError {
 pub(in crate::db) fn verify_archives(reader: ReadConn<'_>) -> Result<(), CliError> {
     let mismatch: Option<String> = reader
         .query_row(
-            "SELECT a.company_slug || '/' || a.code
-             FROM accounts a LEFT JOIN audit_log event ON event.company_slug = a.company_slug
+            &format!(
+                "SELECT a.company_slug || '/' || a.code
+             FROM accounts a LEFT JOIN {audit} event ON event.company_slug = a.company_slug
                  AND event.entity = 'account' AND event.entity_id = a.code
                  AND event.action = 'account_archive'
              WHERE a.archived <> (event.id IS NOT NULL)
          UNION ALL
          SELECT event.company_slug || '/' || event.entity_id
-             FROM audit_log event LEFT JOIN accounts a ON a.company_slug = event.company_slug
+             FROM {audit} event LEFT JOIN accounts a ON a.company_slug = event.company_slug
                  AND a.code = event.entity_id
              WHERE event.action = 'account_archive' AND (
                  a.code IS NULL OR event.agent_uri IS NULL
                  OR NOT EXISTS (
-                     SELECT 1 FROM audit_log original
+                     SELECT 1 FROM {audit} original
                      WHERE original.id = event.undo_of
                        AND original.id < event.id AND original.company_slug = event.company_slug
                        AND original.entity = 'account' AND original.entity_id = event.entity_id
                        AND original.action = 'create'
                  )
              ) LIMIT 1",
+                audit = reader.bookkeeping_audit()?
+            ),
             [],
             |row| row.get(0),
         )

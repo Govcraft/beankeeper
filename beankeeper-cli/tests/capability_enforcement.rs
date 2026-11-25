@@ -601,7 +601,7 @@ fn signed_grants_ignore_registry_edits_and_descendants_do_not_grant_parent_opera
 }
 
 #[test]
-fn snapshots_require_admin_and_preserve_enforcement_on_restore() -> TestResult {
+fn snapshots_require_admin_and_preserve_enforcement_on_recovery() -> TestResult {
     let ledger = Ledger::new()?;
     let read = ledger.issue(&["ledger/read"])?;
     let admin = ledger.issue(&["ledger/admin"])?;
@@ -631,7 +631,7 @@ fn snapshots_require_admin_and_preserve_enforcement_on_restore() -> TestResult {
             command.args(["--agent-token", token]);
         }
         denied(
-            &command.args(["restore", "--input", output]).output()?,
+            &command.args(["recover", "--input", output]).output()?,
             code,
             exit,
             capability,
@@ -640,7 +640,7 @@ fn snapshots_require_admin_and_preserve_enforcement_on_restore() -> TestResult {
     }
     let restored = ledger
         .command_at(&destination)?
-        .args(["--agent-token", &admin, "restore", "--input", output])
+        .args(["--agent-token", &admin, "recover", "--input", output])
         .output()?;
     assert!(
         restored.status.success(),
@@ -658,5 +658,44 @@ fn snapshots_require_admin_and_preserve_enforcement_on_restore() -> TestResult {
         )
         .is_ok()
     );
+    Ok(())
+}
+
+#[test]
+fn failed_restore_rolls_back_rows_and_keeps_live_enforcement_dependencies() -> TestResult {
+    let ledger = Ledger::new()?;
+    let admin = ledger.issue(&["ledger/admin"])?;
+    let bookkeeper = ledger.issue(&["ledger/post"])?;
+    ledger.enable()?;
+    let snapshot = ledger.dir.path().join("snapshot.db");
+    let input = snapshot.to_str().ok_or("snapshot path")?;
+    ledger.run(&["backup", "--output", input], Some(&admin))?;
+    ledger.run(&["company", "create", "new-book", "New Book"], Some(&admin))?;
+    let key = SecretString::from("capability-test-passphrase");
+    let db = Db::open_existing(&ledger.path, Some(&key))?;
+    let actor = identity::verify(db.read(), &bookkeeper)?;
+    let uri = actor.uri();
+    ledger.run(
+        &[
+            "agent",
+            "limit",
+            "set",
+            uri,
+            "--company",
+            "new-book",
+            "--currency",
+            "USD",
+            "--max-post",
+            "10",
+        ],
+        Some(&admin),
+    )?;
+    let audit_rows = ledger.count("audit_log")?;
+    let result = ledger.call(&["restore", "--input", input], Some(&admin))?;
+    denied(&result, "DATABASE", 4, None)?;
+    assert_eq!(ledger.count("audit_log")?, audit_rows);
+    assert_eq!(ledger.count("agent_spend_limits")?, 1);
+    assert_eq!(ledger.count("companies")?, 2);
+    assert!(beankeeper_cli::db::policy::get(db.read())?.enforce);
     Ok(())
 }

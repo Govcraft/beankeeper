@@ -11,6 +11,7 @@ pub use super::audit::{amend_rule, create_rule};
 use super::{
     accounts,
     companies::{Company, CompanySlug},
+    connection::ReadConn,
 };
 use crate::error::CliError;
 
@@ -245,9 +246,14 @@ pub(super) enum RuleActivation {
 }
 
 // The immutable audit event is the source of truth for deactivation.
-const CURRENT_RULE: &str = "NOT EXISTS (SELECT 1 FROM audit_log event
-    WHERE event.company_slug = r.company_slug AND event.entity = 'rule'
-      AND event.entity_id = r.id AND event.action = 'rule_deactivate')";
+fn current_rule(reader: ReadConn<'_>) -> Result<String, CliError> {
+    Ok(format!(
+        "NOT EXISTS (SELECT 1 FROM {} event
+         WHERE event.company_slug = r.company_slug AND event.entity = 'rule'
+           AND event.entity_id = r.id AND event.action = 'rule_deactivate')",
+        reader.bookkeeping_audit()?
+    ))
+}
 
 const RULE_COLUMNS: &str = "id, company_slug, contains, account_code, priority, supersedes";
 
@@ -272,21 +278,23 @@ pub fn list_active_rules(scope: &Company<'_>) -> Result<Vec<Rule>, CliError> {
 }
 
 fn read_rules(scope: &Company<'_>, filter: &str) -> Result<Vec<Rule>, CliError> {
+    let current_rule = current_rule(scope.read())?;
     let mut stmt = scope.read().prepare(&format!(
         "SELECT {RULE_COLUMNS} FROM categorization_rules r
-         WHERE company_slug = ?1 AND {CURRENT_RULE}{filter} ORDER BY priority DESC, id ASC"
+         WHERE company_slug = ?1 AND {current_rule}{filter} ORDER BY priority DESC, id ASC"
     ))?;
     let rows = stmt.query_map([scope.slug()], StoredRule::read)?;
     rows.map(|row| row?.try_into()).collect()
 }
 
 pub(super) fn get_rule(scope: &Company<'_>, id: &RuleId) -> Result<Rule, CliError> {
+    let current_rule = current_rule(scope.read())?;
     scope
         .read()
         .query_row(
             &format!(
                 "SELECT {RULE_COLUMNS} FROM categorization_rules r
-                  WHERE company_slug = ?1 AND id = ?2 AND {CURRENT_RULE}"
+                  WHERE company_slug = ?1 AND id = ?2 AND {current_rule}"
             ),
             params![scope.slug(), id.to_string()],
             StoredRule::read,

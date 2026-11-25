@@ -819,10 +819,11 @@ pub(crate) fn check_reference(
 /// # Errors
 /// Returns database errors for missing, changed or unaudited resolutions.
 pub(crate) fn verify_resolutions(conn: ReadConn<'_>) -> Result<(), CliError> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT company_slug, id FROM txn_proposals WHERE status != 'pending'
-         UNION SELECT company_slug, entity_id FROM audit_log WHERE entity = 'proposal'",
-    )?;
+         UNION SELECT company_slug, entity_id FROM {audit} WHERE entity = 'proposal'",
+        audit = conn.bookkeeping_audit()?
+    ))?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, CompanySlug>(0)?, row.get::<_, ProposalId>(1)?))
     })?;
@@ -840,7 +841,7 @@ pub(crate) fn verify_resolutions(conn: ReadConn<'_>) -> Result<(), CliError> {
             ProposalState::Approved { .. } => "proposal_approve",
             ProposalState::Rejected { .. } | ProposalState::Withdrawn { .. } => "proposal_reject",
         };
-        let mut audits = conn.prepare("SELECT action, after FROM audit_log WHERE entity = 'proposal' AND company_slug = ?1 AND entity_id = ?2")?;
+        let mut audits = conn.prepare(&format!("SELECT action, after FROM {audit} WHERE entity = 'proposal' AND company_slug = ?1 AND entity_id = ?2", audit = conn.bookkeeping_audit()?))?;
         let mut audits = audits.query(params![company, id])?;
         let valid = if let Some(row) = audits.next()? {
             let stored_action: String = row.get(0)?;

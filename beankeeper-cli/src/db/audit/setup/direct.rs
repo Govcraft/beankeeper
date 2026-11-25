@@ -116,7 +116,7 @@ pub(in crate::db::audit) fn find_effect(
     receipt: ReceiptId,
 ) -> Result<Option<OnboardingEffect>, CliError> {
     let raw: Option<String> = reader.query_row(
-        "SELECT after FROM audit_log WHERE id = ?1 AND company_slug = ?2 AND action = 'setup_apply'",
+        "SELECT after FROM bookkeeping_audit WHERE id = ?1 AND company_slug = ?2 AND action = 'setup_apply'",
         params![receipt, company],
         |row| row.get(0),
     ).optional()?;
@@ -145,7 +145,7 @@ fn apply_once<T: Serialize + DeserializeOwned, C: GrantKind>(
         let existing: Option<(ReceiptId, String, Option<String>)> = tx
             .read()
             .query_row(
-                "SELECT id, after, token_jti FROM audit_log WHERE company_slug = ?1
+                "SELECT id, after, token_jti FROM bookkeeping_audit WHERE company_slug = ?1
                  AND entity = 'company' AND entity_id = ?2 AND action = 'setup_apply'",
                 params![company, reference.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -230,7 +230,7 @@ pub(crate) fn apply_book(
                     // The chart writes exactly one account-create event per account.
                     // Resolve their IDs by the actual account codes, not sequence arithmetic.
                     let mut lookup = scope.tx.read().prepare(
-                        "SELECT id FROM audit_log WHERE company_slug = ?1 AND entity = 'account'
+                        "SELECT id FROM bookkeeping_audit WHERE company_slug = ?1 AND entity = 'account'
                      AND entity_id = ?2 AND action = 'create' ORDER BY id DESC LIMIT 1",
                     )?;
                     let receipts = chart

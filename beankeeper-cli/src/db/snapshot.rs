@@ -223,7 +223,7 @@ impl Db {
         source.connection.close().map_err(|(_, error)| error)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         tighten_permissions(&source.path);
-        Ok(Self::from_connection(connection))
+        Ok(Self::from_keyed_connection(connection, passphrase))
     }
 }
 
@@ -232,13 +232,13 @@ fn data_version(connection: &Connection) -> rusqlite::Result<i64> {
 }
 
 #[cfg(unix)]
-fn same_file(first: &Metadata, second: &Metadata) -> bool {
+pub(super) fn same_file(first: &Metadata, second: &Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     first.dev() == second.dev() && first.ino() == second.ino()
 }
 
 #[cfg(not(unix))]
-fn same_file(first: &Metadata, second: &Metadata) -> bool {
+pub(super) fn same_file(first: &Metadata, second: &Metadata) -> bool {
     first
         .created()
         .is_ok_and(|created| second.created().is_ok_and(|other| other == created))

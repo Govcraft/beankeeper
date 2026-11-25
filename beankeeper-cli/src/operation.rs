@@ -16,6 +16,7 @@ pub(crate) enum Permission {
     Chart,
     SetupOwner,
     OwnerUndo,
+    RestoreAdmin,
     AgentUndo,
     Reversal,
     Transport,
@@ -29,7 +30,7 @@ impl Permission {
             Self::AgentUndo | Self::Reversal => Ok(Capability::Reverse),
             Self::ProposalList | Self::SetupStatus => Ok(Capability::Read),
             Self::SetupOrChart | Self::Chart => Ok(Capability::Chart),
-            Self::SetupOwner | Self::OwnerUndo => Ok(Capability::Admin),
+            Self::SetupOwner | Self::OwnerUndo | Self::RestoreAdmin => Ok(Capability::Admin),
             Self::ProposalReject => Ok(Capability::Propose),
             Self::Transport => Err(CliError::Usage(
                 "operation has no capability mapping".into(),
@@ -68,6 +69,9 @@ macro_rules! permission {
     };
     (OwnerUndo) => {
         Permission::OwnerUndo
+    };
+    (RestoreAdmin) => {
+        Permission::RestoreAdmin
     };
     (Transport) => {
         Permission::Transport
@@ -224,7 +228,7 @@ impl Operation {
                 | Permission::Transport
         ) && !matches!(
             self,
-            Self::LedgerSetupOpeningPreview | Self::TxnReconcile | Self::Backup | Self::Restore
+            Self::LedgerSetupOpeningPreview | Self::TxnReconcile | Self::Backup | Self::Recover
         )
     }
 }

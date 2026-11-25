@@ -27,6 +27,7 @@ struct Ledger {
     secret: PathBuf,
     reader: Value,
     writer: Value,
+    admin: Value,
     owner: Actor,
 }
 
@@ -95,6 +96,7 @@ impl Ledger {
             secret,
             reader,
             writer,
+            admin,
             owner,
         })
     }
@@ -1979,4 +1981,162 @@ fn demo_host_tool_provisions_only_the_host_managed_path() -> TestResult {
             Ok(())
         },
     )
+}
+
+#[test]
+fn encrypted_startup_restore_and_cli_undo_keep_live_identity_and_audit() -> TestResult {
+    use assert_cmd::prelude::OutputAssertExt;
+
+    let ledger = Ledger::new()?;
+    let admin = token(&ledger.admin)?;
+    let writer = token(&ledger.writer)?;
+    let revoked = token(&ledger.reader)?;
+    let backup = ledger.dir.path().join("earlier.bk-backup");
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(admin), "Restore integration")?;
+    assert_eq!(
+        payload(&server.call("txn_post", posting("before-backup"), Some(writer))?)?["created"],
+        true
+    );
+    db::VerifiedSnapshot::create(
+        &ledger.path,
+        Some(&SecretString::from(PASSPHRASE)),
+        &backup,
+        db::SnapshotOverwrite::Refuse,
+    )?;
+    let input = json!({"input": backup});
+    let original = std::fs::read(&backup)?;
+    ledger.enforce()?;
+    assert_eq!(
+        payload(&server.call("txn_post", posting("after-backup"), Some(writer))?)?["created"],
+        true
+    );
+    let cutoff = json!({"company":"acme", "through":"2026-11-20"});
+    let close = server.call("period_close", cutoff, Some(admin))?;
+    assert_ne!(close["result"]["isError"], true, "{close}");
+    ledger.revoke(ledger.reader["token_jti"].as_str().ok_or("jti")?)?;
+
+    let observer = ledger.db()?;
+    let audit = |db: &Db| -> TestResult<Vec<(i64, String)>> {
+        let mut rows = db
+            .read()
+            .prepare("SELECT id, row_hash FROM audit_log ORDER BY id")?;
+        Ok(rows
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    let before = audit(&observer)?;
+    let denied = server.call("restore", input.clone(), Some(writer))?;
+    assert_eq!(payload(&denied)?["code"], "FORBIDDEN");
+
+    let response = server.call("restore", input.clone(), Some(admin))?;
+    let restored = payload(&response)?;
+    assert_ne!(response["result"]["isError"], true, "{restored}");
+    let undo = restored["undo_id"].as_i64().ok_or("missing undo id")?;
+    assert_eq!(restored["restore_id"], undo);
+    assert_eq!(restored["verification"]["row_counts"]["transactions"], 1);
+    assert_eq!(
+        restored["verification"]["desktop_view"]["link"]["view_id"],
+        "review"
+    );
+    assert_eq!(std::fs::read(&backup)?, original);
+    assert_eq!(&audit(&observer)?[..before.len()], &before);
+    assert!(db::policy::get(observer.read())?.enforce);
+    assert_eq!(
+        server
+            .request("tools/list", json!({}), Some(revoked))?
+            .status(),
+        401
+    );
+
+    reject_unsupported_restore_inputs(&ledger, &mut server, admin, &backup)?;
+    assert_eq!(audit(&observer)?.len(), before.len() + 1);
+
+    let undo_output = ledger
+        .command()
+        .args([
+            "--agent-token",
+            admin,
+            "--json",
+            "restore-undo",
+            &undo.to_string(),
+        ])
+        .output()?
+        .assert()
+        .success();
+    let undone: Value = serde_json::from_slice(&undo_output.get_output().stdout)?;
+    assert_eq!(undone["data"]["undo_of"], undo);
+    assert_eq!(
+        undone["data"]["verification"]["row_counts"]["transactions"],
+        2
+    );
+    let all = audit(&observer)?;
+    assert_eq!(&all[..before.len()], &before);
+    assert_eq!(all.len(), before.len() + 2);
+    assert!(db::policy::get(observer.read())?.enforce);
+    assert_eq!(
+        server
+            .request("tools/list", json!({}), Some(revoked))?
+            .status(),
+        401
+    );
+
+    let redo_id = &undone["data"]["undo_id"];
+    assert_restore_redo(&mut server, &observer, admin, writer, redo_id)?;
+    server.finish(&[admin, writer, revoked])
+}
+
+fn reject_unsupported_restore_inputs(
+    ledger: &Ledger,
+    server: &mut Server,
+    admin: &str,
+    backup: &std::path::Path,
+) -> TestResult {
+    let newer = ledger.dir.path().join("newer.bk-backup");
+    std::fs::copy(backup, &newer)?;
+    let future = rusqlite::Connection::open(&newer)?;
+    future.pragma_update(None, "key", PASSPHRASE)?;
+    future.execute(
+        "INSERT INTO schema_version VALUES (?1)",
+        [i64::from(db::current_schema_version()) + 1],
+    )?;
+    drop(future);
+    let denied = server.call("restore", json!({"input": newer}), Some(admin))?;
+    assert_eq!(payload(&denied)?["code"], "DATABASE");
+
+    let mut read_only = Server::start(ledger, true, None)?;
+    read_only.initialize(Some(admin), "Read-only restore test")?;
+    let tools = read_only.tools(Some(admin))?;
+    for tool in ["restore", "restore_undo"] {
+        assert!(!tools.iter().any(|name| name == tool));
+    }
+    read_only.finish(&[admin])
+}
+
+fn assert_restore_redo(
+    server: &mut Server,
+    observer: &Db,
+    admin: &str,
+    writer: &str,
+    redo_id: &Value,
+) -> TestResult {
+    let redo = server.call("restore_undo", json!({"undo_id": redo_id}), Some(admin))?;
+    assert_eq!(
+        payload(&redo)?["verification"]["row_counts"]["transactions"],
+        1
+    );
+    let posted = server.call("txn_post", posting("after-redo"), Some(writer))?;
+    assert_eq!(payload(&posted)?["created"], true);
+    let abandoned: i64 = observer.read().query_row(
+        "SELECT CAST(entity_id AS INTEGER) FROM audit_log WHERE action = 'create' AND entity = 'transaction' ORDER BY id LIMIT 1 OFFSET 1",
+        [], |row| row.get(0),
+    )?;
+    let fresh: i64 = observer.read().query_row(
+        "SELECT id FROM transactions WHERE reference = 'after-redo'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(fresh > abandoned);
+    db::verification::VerifiedLedger::read(observer)?;
+    Ok(())
 }

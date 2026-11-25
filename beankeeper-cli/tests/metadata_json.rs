@@ -334,6 +334,8 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
              DROP TABLE statement_reconciliations;
              DROP TRIGGER protect_transaction_link_undo;
              DROP TABLE transaction_links;
+             DROP TRIGGER protect_bookkeeping_receipt_uniqueness;
+             DROP TRIGGER protect_audit_related_posting;
              DROP VIEW active_transaction_links;
              DROP VIEW transaction_link_creations;
              DROP INDEX idx_transaction_company_id;
@@ -366,6 +368,7 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
              DROP TABLE schedules;
              DROP TRIGGER protect_rule_deactivation;
              DROP TABLE categorization_rules;
+             DROP VIEW bookkeeping_audit;
              DROP TRIGGER protect_transaction_identity;
              DROP TABLE agent_revocations;
              DROP TABLE agent_tokens;

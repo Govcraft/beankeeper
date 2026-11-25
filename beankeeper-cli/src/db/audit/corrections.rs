@@ -162,7 +162,7 @@ impl AppliedReversal {
     ) -> Result<Self, CliError> {
         let (PostResult::Created(id) | PostResult::Skipped(id)) = result;
         let receipt = reader.query_row(
-            "SELECT id FROM audit_log WHERE company_slug = ?1 AND related_posting = ?2 AND action = 'reverse'",
+            "SELECT id FROM bookkeeping_audit WHERE company_slug = ?1 AND related_posting = ?2 AND action = 'reverse'",
             params![company, id],
             |row| row.get(0),
         )?;
@@ -425,8 +425,8 @@ impl StoredProposal {
 
 const SELECT: &str = "SELECT proposed.entity_id, proposed.agent_uri, proposed.changed_at,
        proposed.after, resolved.after
-     FROM audit_log proposed
-     LEFT JOIN audit_log resolved ON resolved.company_slug = proposed.company_slug
+     FROM bookkeeping_audit proposed
+     LEFT JOIN bookkeeping_audit resolved ON resolved.company_slug = proposed.company_slug
        AND resolved.entity = proposed.entity AND resolved.entity_id = proposed.entity_id
        AND resolved.action = 'correction_resolve'
      WHERE proposed.company_slug = ?1 AND proposed.action = 'correction_propose'";

@@ -1542,3 +1542,29 @@ impl From<ReconcileList> for crate::commands::reconcile::ReconcileRequest {
         )
     }
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Restore {
+    /// Path to a standalone backup on the server.
+    input: crate::db::audit::restore::BackupPath,
+}
+
+impl From<Restore> for crate::db::audit::restore::RestoreRequest {
+    fn from(input: Restore) -> Self {
+        Self::Backup(input.input)
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RestoreUndo {
+    /// Undo ID returned by restore.
+    undo_id: ReceiptId,
+}
+
+impl From<RestoreUndo> for crate::db::audit::restore::RestoreRequest {
+    fn from(input: RestoreUndo) -> Self {
+        Self::Undo(input.undo_id)
+    }
+}

@@ -129,11 +129,11 @@ pub(super) fn reserve(
     let existing = tx
         .read()
         .query_row(
-            "SELECT proposed.entity_id FROM audit_log proposed
+            "SELECT proposed.entity_id FROM bookkeeping_audit proposed
          WHERE proposed.company_slug = ?1 AND proposed.action = 'account_rename_propose'
            AND proposed.agent_uri = ?2 AND proposed.after = ?3
            AND NOT EXISTS (
-               SELECT 1 FROM audit_log resolved WHERE resolved.company_slug = proposed.company_slug
+               SELECT 1 FROM bookkeeping_audit resolved WHERE resolved.company_slug = proposed.company_slug
                AND resolved.entity = proposed.entity AND resolved.entity_id = proposed.entity_id
                AND resolved.action = 'account_rename_resolve'
            )
@@ -168,8 +168,8 @@ pub(super) fn reserve(
 
 const SELECT: &str = "SELECT proposed.entity_id, proposed.agent_uri, proposed.changed_at,
        proposed.after, resolved.after
-     FROM audit_log proposed
-     LEFT JOIN audit_log resolved ON resolved.company_slug = proposed.company_slug
+     FROM bookkeeping_audit proposed
+     LEFT JOIN bookkeeping_audit resolved ON resolved.company_slug = proposed.company_slug
        AND resolved.entity = proposed.entity AND resolved.entity_id = proposed.entity_id
        AND resolved.action = 'account_rename_resolve'
      WHERE proposed.company_slug = ?1 AND proposed.action = 'account_rename_propose'";

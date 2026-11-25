@@ -615,7 +615,9 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export accounting data as JSON or CSV |
 | `bk backup --output PATH` | Save and verify a full database snapshot at its existing schema version and encryption |
-| `bk restore --input PATH --db DEST` | Restore a snapshot and verify it before publishing |
+| `bk restore --db PATH --input BACKUP` | Restore the selected ledger's books and return an undo ID |
+| `bk restore-undo UNDO_ID --db PATH` | Undo the latest restore before subsequent audited bookkeeping changes |
+| `bk recover --db NEW_PATH --input BACKUP` | Recover a verified full snapshot into a new ledger file |
 
 For the full command reference with all flags and examples, see [`references/commands.md`](references/commands.md).
 
@@ -623,28 +625,23 @@ For the full command reference with all flags and examples, see [`references/com
 
 ### Back up and restore a ledger
 
-```sh
-bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup
-bk restore --input ledger.bk-backup --db restored.db --passphrase-file /secure/books.key
-bk --db restored.db --passphrase-file /secure/books.key verify
-```
+Use `bk backup --output PATH` to save a verified full snapshot. For an existing
+ledger, use `bk --db PATH restore --input BACKUP` or MCP `restore` with a server
+local `input` path. Use a signed `ledger/admin` credential if the selected
+live ledger enforces credentials. The command updates its bookkeeping rows, preserves live
+credentials and revocations, and records the change in its audit history.
 
-Omit passphrase flags for plaintext databases. Backups preserve the original key,
-root, token registry, audit chain, schedules, investments, and all other tables.
-Backup opens the source read-only and verifies the checks available in its schema
-before publishing. Rust hosts can pass the proof from `VerifiedSnapshot::create`
-to `Db::open_after_snapshot` to require a verified backup before upgrading.
-Restore verifies its staged copy before publishing. `--output`,
-`--input`, and restore's explicit `--db` are required; the environment/default DB
-is not a restore destination. `--company` is ignored. Add `--force` to replace an
-offline destination. Close its connections first: SQLite sidecars cause rejection.
-Same-file aliases and symlink destinations are rejected. Failed validation keeps
-existing destinations intact. Restore requires the current schema and performs
-no migrations. JSON data has `path`, `bytes`, `schema_version`, and `encrypted`.
+Tell the owner what was restored and offer one-step undo with the returned
+`undo_id`. Use `bk --db PATH restore-undo UNDO_ID` or MCP `restore_undo` with
+that ID before any later audited bookkeeping changes. Keep the undo snapshot
+files beside the ledger. Use the response's verification data and Desktop review
+link if the owner wants details.
 
-Back up receipt files in the external `attachments/` directory separately;
-snapshots contain attachment records, not those files. Keep the original
-passphrase separately. Use `bk export` for accounting interchange, not recovery.
+Restore accepts standalone backups that match the ledger's audit history.
+Older backups upgrade in a private copy. A newer backup or a backup with SQLite
+sidecars is rejected. Use `bk recover` at a new path to recover a full
+current-schema snapshot, including its identity and audit history. Preserve the
+passphrase and the external `attachments/` directory separately.
 See the [backup reference](references/commands.md#backup-and-restore).
 
 ### Set up a new ledger

@@ -14,6 +14,7 @@ pub use read::{ReadConn, ReadStatement};
 pub struct Db {
     conn: Connection,
     id: ConnectionId,
+    passphrase: Option<SecretString>,
 }
 
 /// Process-local identity of one open connection, including in-memory ledgers.
@@ -31,7 +32,22 @@ impl Db {
         Self {
             conn,
             id: ConnectionId::default(),
+            passphrase: None,
         }
+    }
+
+    pub(super) fn from_keyed_connection(
+        conn: Connection,
+        passphrase: Option<&SecretString>,
+    ) -> Self {
+        Self {
+            passphrase: passphrase.cloned(),
+            ..Self::from_connection(conn)
+        }
+    }
+
+    pub(super) fn snapshot_key(&self) -> Option<&SecretString> {
+        self.passphrase.as_ref()
     }
 
     pub(crate) fn id(&self) -> &ConnectionId {
@@ -116,6 +132,30 @@ impl Db {
         )
     }
 
+    // Restore targets must already be at the running schema. In particular, an
+    // unauthorized or failed restore must never migrate the live ledger.
+    pub(crate) fn open_for_restore(
+        path: &Path,
+        passphrase: Option<&SecretString>,
+    ) -> Result<Self, CliError> {
+        require_existing_file(path)?;
+        let conn = open_keyed(
+            path,
+            passphrase,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let reader = ReadConn::new(&conn);
+        let version = super::schema::get_schema_version(reader)?;
+        if version != super::schema::CURRENT_VERSION {
+            return Err(CliError::Database(format!(
+                "restore target schema version {version}; expected {}",
+                super::schema::CURRENT_VERSION
+            )));
+        }
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        Ok(Self::from_keyed_connection(conn, passphrase))
+    }
+
     fn open_with_flags(
         path: &Path,
         passphrase: Option<&SecretString>,
@@ -126,7 +166,7 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         super::schema::ensure_schema(&conn)?;
         tighten_permissions(path);
-        Ok(Self::from_connection(conn))
+        Ok(Self::from_keyed_connection(conn, passphrase))
     }
 
     /// Opens an in-memory database (useful for tests).

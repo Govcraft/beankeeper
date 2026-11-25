@@ -184,10 +184,10 @@ pub(crate) fn summary(
         "WITH imports (legacy_id, result) AS (
              SELECT b.id, a.after
              FROM setup_statement_batches b
-             JOIN audit_log a ON a.company_slug = b.company_slug AND a.entity_id = (?2 || b.id)
+             JOIN bookkeeping_audit a ON a.company_slug = b.company_slug AND a.entity_id = (?2 || b.id)
              WHERE b.company_slug = ?1 AND a.entity = 'company' AND a.action = 'create'
              UNION ALL
-             SELECT NULL, json_extract(after, '$.result') FROM audit_log
+             SELECT NULL, json_extract(after, '$.result') FROM bookkeeping_audit
              WHERE company_slug = ?1 AND action = 'setup_apply'
                AND json_extract(after, '$.effect.kind') = 'statement'
          )
@@ -274,11 +274,12 @@ fn audit_snapshot<T: DeserializeOwned>(
     event: &str,
 ) -> Result<Option<AuditSnapshot<T>>, CliError> {
     let id = format!("{event}{batch_id}");
-    let mut statement = reader.prepare(
-        "SELECT after, agent_uri, token_jti FROM audit_log
+    let mut statement = reader.prepare(&format!(
+        "SELECT after, agent_uri, token_jti FROM {audit}
          WHERE company_slug = ?1 AND entity = 'company' AND entity_id = ?2 AND action = 'create'
          LIMIT 2",
-    )?;
+        audit = reader.bookkeeping_audit()?
+    ))?;
     let mut rows = statement.query(params![company, id])?;
     let result = rows
         .next()?
@@ -634,15 +635,16 @@ fn receipt_for(
 }
 
 pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
-    let mut statement = reader.prepare(
+    let mut statement = reader.prepare(&format!(
         "SELECT company_slug, id FROM setup_statement_batches
          UNION
          SELECT company_slug, CAST(SUBSTR(entity_id, LENGTH(?1) + 1) AS INTEGER)
-         FROM audit_log WHERE entity = 'company' AND action = 'create' AND entity_id GLOB ?1 || '*'
+         FROM {audit} WHERE entity = 'company' AND action = 'create' AND entity_id GLOB ?1 || '*'
          UNION
          SELECT company_slug, CAST(SUBSTR(entity_id, LENGTH(?2) + 1) AS INTEGER)
-         FROM audit_log WHERE entity = 'company' AND action = 'create' AND entity_id GLOB ?2 || '*'",
-    )?;
+         FROM {audit} WHERE entity = 'company' AND action = 'create' AND entity_id GLOB ?2 || '*'",
+        audit = reader.bookkeeping_audit()?
+    ))?;
     let rows = statement.query_map([PREVIEW_EVENT, COMMIT_EVENT], |row| {
         Ok((
             row.get::<_, CompanySlug>(0)?,

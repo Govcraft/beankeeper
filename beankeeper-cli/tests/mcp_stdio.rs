@@ -833,6 +833,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "audit_log",
     "audit_receipts",
     "audit_undo",
+    "restore",
+    "restore_undo",
 ];
 
 #[test]

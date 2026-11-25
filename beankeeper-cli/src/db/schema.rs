@@ -15,7 +15,7 @@ pub(super) const PROPOSAL_SCHEMA_VERSION: i64 = 19;
 pub(super) const PERIOD_LOCK_SCHEMA_VERSION: i64 = 20;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = FX_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = RESTORE_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -31,6 +31,7 @@ const RECATEGORIZATION_SCHEMA_VERSION: i64 = 34;
 pub(super) const TXN_LINK_SCHEMA_VERSION: i64 = 35;
 pub(crate) const STATEMENT_RECONCILIATION_SCHEMA_VERSION: i64 = 36;
 pub(super) const FX_SCHEMA_VERSION: i64 = 37;
+pub(super) const RESTORE_SCHEMA_VERSION: i64 = 38;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -225,6 +226,10 @@ fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
         apply_fx_migration(conn)?;
     }
 
+    if version < RESTORE_SCHEMA_VERSION {
+        apply_restore_migration(conn)?;
+    }
+
     debug_assert_eq!(
         get_schema_version(ReadConn::new(conn)).unwrap_or(0),
         CURRENT_VERSION,
@@ -234,15 +239,40 @@ fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
     Ok(())
 }
 
+fn apply_restore_migration(conn: &Connection) -> Result<(), CliError> {
+    migrate_with_writer(conn, RESTORE_SCHEMA_VERSION, apply_restore_schema)
+}
+
+fn apply_restore_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        // The statement tables keep their receipt IDs across the audit table
+        // rebuild. Verify the repaired foreign keys before clearing SQLite's
+        // deferred violations from dropping the original parent table.
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        migrate_hold_audit(conn, AuditTable::LedgerRestore, RESTORE_SCHEMA_VERSION)?;
+        super::verification::verify_foreign_keys(ReadConn::new(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
+}
+
 fn apply_fx_migration(conn: &Connection) -> Result<(), CliError> {
+    migrate_with_writer(conn, FX_SCHEMA_VERSION, apply_fx_schema)
+}
+
+fn migrate_with_writer(
+    conn: &Connection,
+    version: i64,
+    apply: impl FnOnce(&Connection) -> Result<(), CliError>,
+) -> Result<(), CliError> {
     use rusqlite::{Transaction, TransactionBehavior};
 
     if !conn.is_autocommit() {
-        return apply_fx_schema(conn);
+        return apply(conn);
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    if get_schema_version(ReadConn::new(&tx))? < FX_SCHEMA_VERSION {
-        apply_fx_schema(&tx)?;
+    if get_schema_version(ReadConn::new(&tx))? < version {
+        apply(&tx)?;
     }
     tx.commit()?;
     Ok(())
@@ -1709,7 +1739,14 @@ fn migrate_hold_audit(conn: &Connection, table: AuditTable, version: i64) -> Res
              DROP VIEW posting_reversals;",
         )?;
         migrate_audit(conn, table, version)?;
-        conn.execute_batch(include_str!("schema/hold_audit.sql"))?;
+        let holds = include_str!("schema/hold_audit.sql");
+        if table >= AuditTable::LedgerRestore {
+            conn.execute_batch(
+                &holds.replace("FROM audit_log WHERE", "FROM bookkeeping_audit WHERE"),
+            )?;
+        } else {
+            conn.execute_batch(holds)?;
+        }
         Ok(())
     })
 }
@@ -1729,8 +1766,13 @@ fn install_annotation_undo_guard(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
-fn install_rule_undo_guards(conn: &Connection) -> Result<(), CliError> {
-    conn.execute_batch(
+fn install_rule_undo_guards(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+    let audit = if table >= AuditTable::LedgerRestore {
+        "bookkeeping_audit"
+    } else {
+        "audit_log"
+    };
+    conn.execute_batch(&format!(
         "CREATE TRIGGER protect_rule_deactivation BEFORE INSERT ON audit_log
          WHEN NEW.action = 'rule_deactivate' AND (
              NOT EXISTS (SELECT 1 FROM audit_log original
@@ -1742,21 +1784,21 @@ fn install_rule_undo_guards(conn: &Connection) -> Result<(), CliError> {
                    AND rule.supersedes IS NULL)
          ) BEGIN SELECT RAISE(ABORT, 'rule deactivation requires an original creation'); END;
          CREATE TRIGGER protect_deactivated_rule_insert BEFORE INSERT ON categorization_rules
-         WHEN EXISTS (SELECT 1 FROM audit_log event
+         WHEN EXISTS (SELECT 1 FROM {audit} event
              WHERE event.entity = 'rule' AND event.entity_id = NEW.id
                AND event.action = 'rule_deactivate')
          BEGIN SELECT RAISE(ABORT, 'deactivated rules cannot be replaced'); END;
          CREATE TRIGGER protect_deactivated_rule_update BEFORE UPDATE ON categorization_rules
-         WHEN EXISTS (SELECT 1 FROM audit_log event
+         WHEN EXISTS (SELECT 1 FROM {audit} event
              WHERE event.company_slug = OLD.company_slug AND event.entity = 'rule'
                AND event.entity_id = OLD.id AND event.action = 'rule_deactivate')
          BEGIN SELECT RAISE(ABORT, 'deactivated rules are immutable'); END;
          CREATE TRIGGER protect_deactivated_rule_delete BEFORE DELETE ON categorization_rules
-         WHEN EXISTS (SELECT 1 FROM audit_log event
+         WHEN EXISTS (SELECT 1 FROM {audit} event
              WHERE event.company_slug = OLD.company_slug AND event.entity = 'rule'
                AND event.entity_id = OLD.id AND event.action = 'rule_deactivate')
-         BEGIN SELECT RAISE(ABORT, 'deactivated rules cannot be deleted'); END;",
-    )?;
+         BEGIN SELECT RAISE(ABORT, 'deactivated rules cannot be deleted'); END;"
+    ))?;
     Ok(())
 }
 
@@ -1782,45 +1824,7 @@ fn create_standing_settings(conn: &Connection) -> Result<(), CliError> {
 fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
-        let mut dependents = vec![
-            ("trigger", "protect_policy_update"),
-            ("trigger", "protect_proposal_resolution"),
-            ("trigger", "protect_period_insert"),
-            ("trigger", "protect_period_update"),
-        ];
-        if table >= AuditTable::StandingSettings {
-            dependents.push(("trigger", "protect_account_archive"));
-            conn.execute_batch("DROP VIEW audit_receipt_postings")?;
-        }
-        if table >= AuditTable::DirectSetup {
-            conn.execute_batch(
-                "DROP TRIGGER protect_deactivated_rule_insert;
-                 DROP TRIGGER protect_deactivated_rule_update;
-                 DROP TRIGGER protect_deactivated_rule_delete;",
-            )?;
-        }
-        if table == AuditTable::StandingSettings {
-            create_standing_settings(conn)?;
-        }
-        if table >= AuditTable::StatementReconciliation {
-            // Drop the triggers before their views and restore them in reverse order.
-            dependents.extend([
-                ("trigger", "protect_transaction_link_insert"),
-                ("trigger", "protect_transaction_link_undo"),
-                ("view", "active_transaction_links"),
-                ("view", "transaction_link_creations"),
-            ]);
-        }
-        let mut definitions = Vec::with_capacity(dependents.len());
-        for (kind, name) in dependents {
-            let definition: String = conn.query_row(
-                "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
-                [kind, name],
-                |row| row.get(0),
-            )?;
-            definitions.push(definition);
-            conn.execute_batch(&format!("DROP {kind} {name}"))?;
-        }
+        let definitions = take_audit_dependents(conn, table)?;
         rebuild_audit(conn, table)?;
         for definition in definitions.into_iter().rev() {
             conn.execute_batch(&definition)?;
@@ -1829,7 +1833,7 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             install_receipt_read_paths(conn, table)?;
         }
         if table >= AuditTable::RuleUndo {
-            install_rule_undo_guards(conn)?;
+            install_rule_undo_guards(conn, table)?;
         }
         if table >= AuditTable::DirectSetup {
             conn.execute_batch(
@@ -1864,6 +1868,9 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
                     ON audit_log(company_slug, entity_id) WHERE action = 'recategorize';",
             )?;
         }
+        if table == AuditTable::LedgerRestore {
+            conn.execute_batch(include_str!("schema/restore.sql"))?;
+        }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
         if table == AuditTable::Receipts {
             super::audit::receipts::seal_legacy_links(conn)?;
@@ -1871,6 +1878,65 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
         Ok(())
     })
+}
+
+fn take_audit_dependents(conn: &Connection, table: AuditTable) -> Result<Vec<String>, CliError> {
+    let mut dependents = vec![
+        ("trigger", "protect_policy_update"),
+        ("trigger", "protect_proposal_resolution"),
+        ("trigger", "protect_period_insert"),
+        ("trigger", "protect_period_update"),
+    ];
+    if table >= AuditTable::StandingSettings {
+        dependents.push(("trigger", "protect_account_archive"));
+        conn.execute_batch("DROP VIEW audit_receipt_postings")?;
+    }
+    if table >= AuditTable::DirectSetup {
+        conn.execute_batch(
+            "DROP TRIGGER protect_deactivated_rule_insert;
+             DROP TRIGGER protect_deactivated_rule_update;
+             DROP TRIGGER protect_deactivated_rule_delete;",
+        )?;
+    }
+    if table == AuditTable::StandingSettings {
+        create_standing_settings(conn)?;
+    }
+    if table >= AuditTable::StatementReconciliation {
+        // Drop the triggers before their views and restore them in reverse order.
+        dependents.extend([
+            ("trigger", "protect_transaction_link_insert"),
+            ("trigger", "protect_transaction_link_undo"),
+            ("view", "active_transaction_links"),
+            ("view", "transaction_link_creations"),
+        ]);
+    }
+    if table >= AuditTable::LedgerRestore {
+        dependents.extend([
+            ("trigger", "protect_statement_insert"),
+            ("trigger", "protect_statement_update"),
+            ("trigger", "protect_statement_undo"),
+        ]);
+    }
+    let mut definitions = Vec::with_capacity(dependents.len());
+    for (kind, name) in dependents {
+        let definition: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            [kind, name],
+            |row| row.get(0),
+        )?;
+        let definition = if table >= AuditTable::LedgerRestore
+            && matches!(
+                name,
+                "active_transaction_links" | "transaction_link_creations"
+            ) {
+            definition.replace("FROM audit_log", "FROM bookkeeping_audit")
+        } else {
+            definition
+        };
+        definitions.push(definition);
+        conn.execute_batch(&format!("DROP {kind} {name}"))?;
+    }
+    Ok(definitions)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1888,6 +1954,7 @@ enum AuditTable {
     Recategorization,
     TransactionLinks,
     StatementReconciliation,
+    LedgerRestore,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1977,6 +2044,10 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::StatementReconcile,
             AuditAction::StatementUnreconcile
         );
+    }
+    if table >= AuditTable::LedgerRestore {
+        let _ = write!(entity, ",'{}'", AuditEntity::Ledger);
+        let _ = write!(action, ",'{}'", AuditAction::LedgerRestored);
     }
     (entity, action)
 }
@@ -2069,6 +2140,17 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     } else {
         ("", "")
     };
+    let restore_check = if table >= AuditTable::LedgerRestore {
+        ", CHECK((action = 'ledger_restored') = (entity = 'ledger')),
+           CHECK(entity <> 'ledger' OR (
+                company_slug IS NULL AND hash_version = 7 AND undo_of IS NULL AND before IS NULL
+                AND after IS NOT NULL AND json_valid(after)
+                AND (json_type(after, '$.source_audit_id') IS 'null'
+                     OR (json_type(after, '$.source_audit_id') IS 'integer'
+                        AND json_extract(after, '$.source_audit_id') BETWEEN 1 AND id - 1))))"
+    } else {
+        ""
+    };
     format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
                        AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo}{link_undo}{statement_undo})
@@ -2078,13 +2160,13 @@ fn receipt_audit_checks(table: AuditTable) -> String {
                        AND action IN ('reverse', 'proposal_approve', 'correlate'{recategorize}))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate'{recategorize})) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}{link_check}{statement_check}")
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}{link_check}{statement_check}{restore_check}")
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -2093,9 +2175,14 @@ fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
             (
                 hash_version,
                 version_suffix,
-                "client_hint TEXT,
-                 undo_of INTEGER REFERENCES audit_log_rebuild(id),
-                 related_posting INTEGER REFERENCES transactions(id),",
+                if table >= AuditTable::LedgerRestore {
+                    // Historical posting IDs may refer to a superseded set of books.
+                    "client_hint TEXT, undo_of INTEGER REFERENCES audit_log_rebuild(id),
+                     related_posting INTEGER,"
+                } else {
+                    "client_hint TEXT, undo_of INTEGER REFERENCES audit_log_rebuild(id),
+                     related_posting INTEGER REFERENCES transactions(id),"
+                },
                 receipt_audit_checks(table),
                 select_suffix,
             )
@@ -2816,6 +2903,7 @@ mod tests {
                 TXN_LINK_SCHEMA_VERSION,
                 STATEMENT_RECONCILIATION_SCHEMA_VERSION,
                 FX_SCHEMA_VERSION,
+                RESTORE_SCHEMA_VERSION,
             ]
         );
         assert_eq!(audit_head()?, before);
@@ -3436,6 +3524,110 @@ mod tests {
             migration(conn)?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn restore_migrates_a_v37_copy_and_keeps_a_statement_receipt() -> Result<(), CliError> {
+        use crate::db::{
+            Actor, Db, SnapshotOverwrite, VerifiedSnapshot,
+            audit::restore::RestoreRequest,
+            audit::statement::{StatementInput, reconcile},
+            statement::{StatementClose, StatementSelection},
+            verification::VerifiedLedger,
+        };
+        use crate::identity::{self, Reconcile};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("books.db");
+        let backup = directory.path().join("old.bk-backup");
+        let key = secrecy::SecretString::from("legacy-restore-test");
+        let conn = super::super::connection::open_keyed(
+            &path,
+            Some(&key),
+            rusqlite::OpenFlags::default(),
+        )?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        apply_through_v12(&conn)?;
+        seed_v12_creation(&conn)?;
+        ensure_schema_at_before_restore(&conn)?;
+        let old = Db::from_connection(conn);
+        let owner = Actor::new("owner".parse()?);
+        let company = "legacy".parse()?;
+        Granted::<Reconcile>::with_db(&old, &owner, |grant| {
+            reconcile(
+                grant,
+                &company,
+                StatementInput {
+                    account: "1000".parse().map_err(beankeeper::error::BeanError::from)?,
+                    month: "2026-01-31".parse()?,
+                    ending: 0_u32.into(),
+                    currency: Some(beankeeper::types::Currency::USD),
+                    statement_ref: None,
+                    selection: StatementSelection::default(),
+                    close: StatementClose::default(),
+                },
+            )
+        })?;
+        Granted::<Admin>::with_db(&old, &owner, identity::init_root)?;
+        let credential = Granted::<Admin>::with_db(&old, &owner, |grant| {
+            identity::issue(
+                grant,
+                &identity::IssueRequest {
+                    name: "restore",
+                    capabilities: &["ledger/admin".into()],
+                    ttl: Duration::from_secs(3600),
+                    public_key: None,
+                    generate_key: true,
+                },
+            )
+        })?;
+        drop(old);
+
+        let proof =
+            VerifiedSnapshot::create(&path, Some(&key), &backup, SnapshotOverwrite::Refuse)?;
+        assert_eq!(i64::from(proof.schema_version()), FX_SCHEMA_VERSION);
+        let original = std::fs::read(&backup)?;
+        let live = Db::open_after_snapshot(proof, Some(&key))?;
+        let token = credential["token"]
+            .as_str()
+            .ok_or_else(|| CliError::Database("missing test token".into()))?;
+        let owner = owner.with_identity(identity::verify(live.read(), token)?);
+        Granted::<Admin>::with_db(&live, &owner, |grant| {
+            super::super::create_company(grant, &"extra".parse()?, &"Extra".parse()?, None)
+        })?;
+        let request = RestoreRequest::Backup(backup.clone().try_into()?);
+        let receipt = request.execute(&live, &owner)?;
+        assert_eq!(std::fs::read(backup)?, original);
+        let count: i64 = live.read().query_row(
+            "SELECT COUNT(*) FROM statement_reconciliations",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        assert!(!super::super::company_exists(
+            live.read(),
+            &"extra".parse()?
+        )?);
+        RestoreRequest::Undo(receipt.restore_id()).execute(&live, &owner)?;
+        assert!(super::super::company_exists(
+            live.read(),
+            &"extra".parse()?
+        )?);
+        VerifiedLedger::read(&live)?;
+        Ok(())
+    }
+
+    fn ensure_schema_at_before_restore(conn: &Connection) -> Result<(), CliError> {
+        for migrate in [
+            apply_v13, apply_v14, apply_v15, apply_v16, apply_v17, apply_v18, apply_v19, apply_v20,
+            apply_v21, apply_v22, apply_v23, apply_v24, apply_v25,
+        ] {
+            migrate(conn)?;
+        }
+        apply_receipt_migrations(conn, CLIENT_HINT_SCHEMA_VERSION)?;
+        apply_hold_audit_migrations(conn, ANNOTATION_UNDO_SCHEMA_VERSION)?;
+        apply_fx_migration(conn)
     }
 
     #[test]
