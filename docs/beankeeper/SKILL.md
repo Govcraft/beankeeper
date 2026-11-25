@@ -469,7 +469,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 - Use `budget_list`, `budget_set`, `budget_delete`, and `txn_clear` for their CLI equivalents. Budget deletion is confirmed by calling the tool. `txn_clear.batch` accepts an in-memory array of `{reference, amount?}` rows with an `account`; it never reads a file or stdin.
 - Pass `with_balances: true` to `account_list` (`bk account list --with-balances`) for debit, credit, and balance totals. Choose a currency when a company uses more than one.
 - Use `as_of` or `to` for `report` kinds `trial-balance`, `balance`, `balance-sheet`, and `reconciliation` (CLI: `--as-of` or `--to`). Aging uses `as_of`. For date-range reports such as `income-statement`, use `from` and `to`.
-- For a same-company correction, use `txn_reverse` (`bk txn reverse`) to create an audited reversal. For a related posting, use `txn_meta_set` (`bk txn meta set`) with a custom metadata key such as `related_transaction`. Correlation links connect different companies.
+- Use `txn_reverse` (`bk txn reverse`) to correct a mistaken posting. Use `txn_link` (`bk txn link`) to record a relationship within one book. Use `correlate` when creating an intercompany posting.
 - `txn_reconcile` checks for orphaned intercompany links without changing data. `verify` checks accounting and audit integrity. `audit_log` accepts `actor` for the exact recorded label, `agent` for the verified URI, and `action: "create"` for postings. Audit rows include `prev_hash` and `row_hash`. MCP uses a sanitized `mcp:<client>` label when neither a configured label nor a verified agent is available, with `mcp:unknown` as the final fallback. The verified URI and token ID are recorded even when a configured label supplies the actor.
 
 Successful results contain the CLI JSON **data payload**, without its envelope.
@@ -551,6 +551,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk txn proposals` | List visible pending requests, optionally including resolved proposals |
 | `bk txn approve/reject` | Resolve a pending proposal; `withdraw` aliases rejection of an owned request |
 | `bk txn list` | Search and filter transactions |
+| `bk txn link SOURCE TARGET --kind KIND` | Record a same-book relationship and return a receipt for one-step undo |
 | `bk txn settle-hold` | Replace a card authorization with the actual posted charge and retain its history. |
 | `bk txn reverse ID` | Apply or propose a linked mirror transaction (alias `void`). Reconciled originals cannot be reversed. |
 | `bk txn recategorize` | Move one posted line between accounts and return a receipt for one-step undo. |

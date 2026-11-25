@@ -539,6 +539,7 @@ mutation tools are absent and cannot be called.
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create`, `account_rename` | Inspect, create, and rename accounts |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |
+| `txn_link` | Record an undoable relationship between two transactions in the same book |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
@@ -569,9 +570,8 @@ For `trial-balance`, `balance`, `balance-sheet`, and `reconciliation`, use
 `txn_clear` and `bk txn clear` accept signed major-unit statement amounts such
 as `-95.40` for a withdrawal (credit) or `+95.40` for a deposit (debit) on
 the selected account. An unsigned amount clears an entry on either side.
-For same-company corrections, use `txn_reverse` / `bk txn reverse`. For a
-reference to a related posting, use `txn_meta_set` / `bk txn meta set` with a
-custom metadata key such as `related_transaction`.
+Use `txn_reverse` or `bk txn reverse` to correct a mistaken posting. Use
+`txn_link` or `bk txn link` to record a relationship within the same book.
 
 Tool schemas describe the accepted arguments. For example, `txn_post` takes:
 

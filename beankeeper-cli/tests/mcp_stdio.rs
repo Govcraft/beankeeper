@@ -782,6 +782,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_reject",
     "txn_reverse",
     "txn_recategorize",
+    "txn_link",
     "txn_settle_hold",
     "txn_meta_set",
     "txn_meta_unset",
