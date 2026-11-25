@@ -22,6 +22,7 @@ use crate::{
         company::{CompanyRequest, CompanyResponse},
         investment::{InvestmentRequest, InvestmentResponse},
         period::{PeriodRequest, PeriodResponse},
+        reconcile::{ReconcileRequest, ReconcileResponse},
         report::{ReportRequest, ReportResponse},
         rule::{RuleRequest, RuleResponse},
         setup::{SetupRequest, SetupResponse},
@@ -45,6 +46,7 @@ pub enum LedgerRequest {
     Company(CompanyRequest),
     Investment(InvestmentRequest),
     Period(PeriodRequest),
+    Reconcile(ReconcileRequest),
     Report(ReportRequest),
     Rule(RuleRequest),
     Setup(SetupRequest),
@@ -64,6 +66,7 @@ pub enum LedgerResponse {
     Company(CompanyResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
     Period(Operation, CompanySlug, PeriodResponse),
+    Reconcile(Operation, CompanySlug, ReconcileResponse),
     Report(ReportResponse),
     Rule(Operation, CompanySlug, RuleResponse),
     Setup(Operation, Option<CompanySlug>, SetupResponse),
@@ -85,6 +88,7 @@ impl LedgerRequest {
             Self::Company(request) => request.operation(),
             Self::Investment(request) => request.operation(),
             Self::Period(request) => request.operation(),
+            Self::Reconcile(request) => request.operation(),
             Self::Report(request) => request.operation(),
             Self::Rule(request) => request.operation(),
             Self::Setup(request) => request.operation(),
@@ -157,6 +161,11 @@ impl LedgerRequest {
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::Period(operation, company, response))
             }
+            Self::Reconcile(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Reconcile(operation, company, response))
+            }
             Self::Report(request) => request.execute(db).map(LedgerResponse::Report),
             Self::Rule(request) => {
                 let company = request.company().clone();
@@ -195,6 +204,9 @@ impl LedgerResponse {
             }
             Self::Period(operation, company, response) => {
                 response.render(cli, *operation, company.as_str())
+            }
+            Self::Reconcile(operation, company, response) => {
+                response.render(cli, *operation, company)
             }
             Self::Report(response) => response.render(cli),
             Self::Rule(operation, company, response) => response.render(cli, *operation, company),

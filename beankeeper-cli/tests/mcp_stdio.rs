@@ -767,6 +767,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "period_close",
     "period_reopen",
     "period_list",
+    "reconcile_statement",
+    "reconcile_list",
     "company_list",
     "company_show",
     "company_create",
@@ -1543,7 +1545,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 25);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -1551,6 +1553,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(names.contains("ledger_setup_book_show"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
+    assert!(names.contains("reconcile_list"));
+    assert!(!names.contains("reconcile_statement"));
     assert!(!names.contains("period_close"));
     assert!(!names.contains("period_reopen"));
     for name in [
@@ -3191,7 +3195,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 25);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3199,6 +3203,8 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     assert!(names.contains("ledger_setup_book_show"));
     assert!(names.contains("financial_summary"));
     assert!(names.contains("period_list"));
+    assert!(names.contains("reconcile_list"));
+    assert!(!names.contains("reconcile_statement"));
     assert!(!names.contains("period_close"));
     assert!(!names.contains("period_reopen"));
     for name in names {
@@ -3355,7 +3361,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 25);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));

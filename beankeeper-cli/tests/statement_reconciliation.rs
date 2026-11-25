@@ -1283,3 +1283,226 @@ fn rerunning_a_cleared_statement_is_still_a_skip() {
         "already_cleared_by_statement"
     );
 }
+
+fn complete_month(ledger: &Ledger, end: &str, ending: &str, extra: &[&str]) -> Value {
+    let mut flags = vec![
+        "reconcile",
+        "statement",
+        "--account",
+        "1200",
+        "--period-end",
+        end,
+        "--statement-ending-balance",
+        ending,
+    ];
+    flags.extend_from_slice(extra);
+    ledger.json(&flags, None)
+}
+
+#[test]
+fn monthly_proof_preserves_outstanding_clearings_and_carries_forward_the_balance() {
+    let ledger = seeded();
+    ledger.clear_ref(
+        "POL-1",
+        &[
+            "--date",
+            "2026-01-31",
+            "--statement",
+            "JAN",
+            "--amount",
+            "40",
+        ],
+    );
+    ledger.clear_ref("POL-1", &["--date", "2026-02-03", "--statement", "FEB"]);
+    ledger.clear_ref("POL-2", &["--date", "2026-01-31", "--statement", "JAN"]);
+    let january = complete_month(
+        &ledger,
+        "2026-01-31",
+        "40",
+        &["--reference", "POL-1", "--statement-ref", "JAN"],
+    );
+    assert_eq!(january["statement_ending_balance"], 4000);
+    assert_eq!(january["opening_balance"], 0);
+    assert_eq!(january["cleared_net"], 4000);
+    assert_eq!(january["matched"].as_array().map(Vec::len), Some(1));
+    assert_eq!(january["desktop_view"]["view_id"], "transactions");
+
+    let february = complete_month(&ledger, "2026-02-28", "100", &[]);
+    assert_eq!(february["prior_statement"], january["receipt"]);
+    assert_eq!(february["opening_balance"], 4000);
+    assert_eq!(february["cleared_net"], 6000);
+    assert_eq!(ledger.report(&[])["reconciled_balance"], 10000);
+
+    let locked = ledger.co_run(
+        &[
+            "txn",
+            "clear",
+            "--reference",
+            "POL-1",
+            "--account",
+            "1200",
+            "--status",
+            "uncleared",
+            "--statement",
+            "JAN",
+        ],
+        None,
+    );
+    assert_eq!(locked.code, Some(3));
+    assert!(locked.stderr.contains("completed statement receipt"));
+    let repeat = ledger.co_run(
+        &[
+            "reconcile",
+            "statement",
+            "--account",
+            "1200",
+            "--period-end",
+            "2026-02-28",
+            "--statement-ending-balance",
+            "100",
+        ],
+        None,
+    );
+    assert_eq!(repeat.code, Some(3));
+    let history = ledger.json(&["reconcile", "list", "--account", "1200"], None);
+    assert_eq!(history["statements"].as_array().map(Vec::len), Some(2));
+    assert_eq!(history["unreconciled_months"], serde_json::json!([]));
+    assert_eq!(ledger.json(&["verify"], None)["status"], "healthy");
+}
+
+#[test]
+fn monthly_discrepancy_changes_neither_clearings_nor_cutoff() {
+    let ledger = seeded();
+    ledger.clear_ref("POL-1", &["--date", "2026-01-30"]);
+    let outcome = ledger.co_run(
+        &[
+            "--json",
+            "reconcile",
+            "statement",
+            "--account",
+            "1200",
+            "--period-end",
+            "2026-01-31",
+            "--statement-ending-balance",
+            "99.99",
+            "--close-period",
+        ],
+        None,
+    );
+    assert_eq!(outcome.code, Some(3));
+    let error: Value =
+        serde_json::from_str(&outcome.stderr).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(error["error"]["code"], "STATEMENT_DISCREPANCY");
+    assert_eq!(
+        error["error"]["details"],
+        serde_json::json!({
+            "expected_ending_balance": 10000, "actual_ending_balance": 9999, "delta": 1, "currency": "USD"
+        })
+    );
+    assert_eq!(
+        ledger.json(&["period", "list"], None),
+        serde_json::json!([])
+    );
+    assert_eq!(ledger.report(&[])["reconciled_balance"], 0);
+    let report = ledger.json(
+        &["summary", "--from", "2026-01-01", "--to", "2026-02-01"],
+        None,
+    );
+    assert_eq!(
+        report["needs_attention"]["items"]["unreconciled_months"]["count"],
+        1
+    );
+    let receipt = complete_month(&ledger, "2026-01-31", "100", &["--close-period"]);
+    assert!(receipt["period_close"].is_object());
+    let report = ledger.json(
+        &["summary", "--from", "2026-01-01", "--to", "2026-02-01"],
+        None,
+    );
+    assert_eq!(
+        report["needs_attention"]["items"]["unreconciled_months"]["count"],
+        0
+    );
+    assert_eq!(
+        ledger.json(&["period", "list"], None)[0]["closed_through"],
+        "2026-01-31"
+    );
+}
+
+#[test]
+fn monthly_statement_uses_prior_legacy_reconciliation_and_locks_evidence() -> rusqlite::Result<()> {
+    let ledger = seeded();
+    ledger.clear_ref("POL-1", &["--date", "2026-01-30", "--status", "reconciled"]);
+    ledger.clear_ref("POL-2", &["--date", "2026-02-02"]);
+    let completed = complete_month(&ledger, "2026-02-28", "300", &[]);
+    assert_eq!(completed["opening_balance"], 10000);
+    assert_eq!(completed["cleared_net"], 20000);
+    assert_eq!(completed["statement_ending_balance"], 30000);
+    assert!(
+        completed["desktop_view"]["url"]
+            .as_str()
+            .is_some_and(|url| url.contains("from=2026-01-10"))
+    );
+
+    let conn = rusqlite::Connection::open(&ledger.db)?;
+    let tamper = "UPDATE entry_clearings SET status = 'cleared', reconciled_date = NULL
+                  WHERE cleared_date = '2026-02-02'";
+    assert!(conn.execute(tamper, []).is_err());
+    conn.execute_batch("DROP TRIGGER protect_statement_clearing_update")?;
+    assert_eq!(conn.execute(tamper, [])?, 1);
+    let verification = ledger.co_run(&["verify"], None);
+    assert_eq!(verification.code, Some(4));
+    assert!(
+        verification
+            .stderr
+            .contains("does not match its locked clearings")
+    );
+    Ok(())
+}
+
+#[test]
+fn typed_proof_locks_clearings_and_carries_forward_without_the_audit_snapshot()
+-> rusqlite::Result<()> {
+    let ledger = seeded();
+    ledger.clear_ref("POL-1", &["--date", "2026-01-31", "--statement", "JAN"]);
+    let january = complete_month(&ledger, "2026-01-31", "100", &["--statement-ref", "JAN"]);
+    let receipt = int(&january, "receipt");
+    let conn = rusqlite::Connection::open(&ledger.db)?;
+    // Exercise the guards independently of foreign keys and the JSON snapshot.
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    conn.execute_batch("DROP TRIGGER protect_audit_update")?;
+    conn.execute("UPDATE audit_log SET after = '{}' WHERE id = ?1", [receipt])?;
+    let clearing: i64 = conn.query_row(
+        "SELECT clearing_id FROM statement_reconciliation_clearings WHERE statement_id = ?1",
+        [receipt],
+        |row| row.get(0),
+    )?;
+    for mutation in [
+        "UPDATE entry_clearings SET status = 'cleared', reconciled_date = NULL WHERE id = ?1",
+        "DELETE FROM entry_clearings WHERE id = ?1",
+        "INSERT OR REPLACE INTO entry_clearings SELECT * FROM entry_clearings WHERE id = ?1",
+        "INSERT OR REPLACE INTO entry_clearings
+         (entry_id, company_slug, amount, cleared_date, statement_ref)
+         SELECT entry_id, company_slug, amount, cleared_date, statement_ref FROM entry_clearings WHERE id = ?1",
+    ] {
+        let error = conn.execute(mutation, [clearing]).expect_err("table must hold the lock");
+        assert!(error.to_string().contains("clearing belongs to a completed statement"), "{error}");
+    }
+    for mutation in [
+        "UPDATE statement_reconciliations SET opening_balance = 1, cleared_net = cleared_net - 1 WHERE receipt = ?1",
+        "UPDATE statement_reconciliations SET undo_receipt = receipt WHERE receipt = ?1",
+        "DELETE FROM statement_reconciliations WHERE receipt = ?1",
+        "INSERT OR REPLACE INTO statement_reconciliations SELECT * FROM statement_reconciliations WHERE receipt = ?1",
+        "UPDATE statement_reconciliation_clearings SET locked_clearing_id = NULL WHERE statement_id = ?1",
+        "DELETE FROM statement_reconciliation_clearings WHERE statement_id = ?1",
+        "INSERT OR REPLACE INTO statement_reconciliation_clearings
+         SELECT * FROM statement_reconciliation_clearings WHERE statement_id = ?1",
+    ] {
+        assert!(conn.execute(mutation, [receipt]).is_err(), "{mutation}");
+    }
+    let history = ledger.json(&["reconcile", "list", "--account", "1200"], None);
+    assert_eq!(history["statements"][0]["matched"], january["matched"]);
+    let february = complete_month(&ledger, "2026-02-28", "100", &[]);
+    assert_eq!(february["prior_statement"], receipt);
+    assert_eq!(february["opening_balance"], 10_000);
+    Ok(())
+}

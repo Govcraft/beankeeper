@@ -7,7 +7,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = TXN_LINK_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = STATEMENT_RECONCILIATION_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -21,6 +21,7 @@ pub(crate) const ACCOUNT_RENAME_SCHEMA_VERSION: i64 = 32;
 const CORRECTION_SCHEMA_VERSION: i64 = 33;
 const RECATEGORIZATION_SCHEMA_VERSION: i64 = 34;
 pub(super) const TXN_LINK_SCHEMA_VERSION: i64 = 35;
+pub(crate) const STATEMENT_RECONCILIATION_SCHEMA_VERSION: i64 = 36;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,14 +185,7 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         apply_v25(conn)?;
     }
     apply_receipt_migrations(conn, version)?;
-    apply_hold_migrations(conn, version)?;
-    if version < TXN_LINK_SCHEMA_VERSION {
-        super::audit::atomically(conn, || {
-            migrate_hold_audit(conn, AuditTable::TransactionLinks, TXN_LINK_SCHEMA_VERSION)?;
-            conn.execute_batch(include_str!("schema/transaction_links.sql"))?;
-            Ok(())
-        })?;
-    }
+    apply_hold_audit_migrations(conn, version)?;
 
     debug_assert_eq!(
         get_schema_version(ReadConn::new(conn)).unwrap_or(0),
@@ -202,7 +196,7 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
-fn apply_hold_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
+fn apply_hold_audit_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
     if version < HOLDS_SCHEMA_VERSION {
         apply_v31(conn)?;
     }
@@ -219,6 +213,20 @@ fn apply_hold_migrations(conn: &Connection, version: i64) -> Result<(), CliError
             AuditTable::Recategorization,
             RECATEGORIZATION_SCHEMA_VERSION,
         )?;
+    }
+    if version < TXN_LINK_SCHEMA_VERSION {
+        apply_v35(conn)?;
+    }
+    if version < STATEMENT_RECONCILIATION_SCHEMA_VERSION {
+        super::audit::atomically(conn, || {
+            migrate_hold_audit(
+                conn,
+                AuditTable::StatementReconciliation,
+                STATEMENT_RECONCILIATION_SCHEMA_VERSION,
+            )?;
+            conn.execute_batch(include_str!("schema/statement_reconciliation.sql"))?;
+            Ok(())
+        })?;
     }
 
     Ok(())
@@ -1622,6 +1630,14 @@ fn apply_v32(conn: &Connection) -> Result<(), CliError> {
     )
 }
 
+fn apply_v35(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        migrate_hold_audit(conn, AuditTable::TransactionLinks, TXN_LINK_SCHEMA_VERSION)?;
+        conn.execute_batch(include_str!("schema/transaction_links.sql"))?;
+        Ok(())
+    })
+}
+
 fn migrate_hold_audit(conn: &Connection, table: AuditTable, version: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         // The index drops with audit_log. Drop its dependent views and
@@ -1705,14 +1721,14 @@ fn create_standing_settings(conn: &Connection) -> Result<(), CliError> {
 fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         super::audit::verify_hash_chain(ReadConn::new(conn))?;
-        let mut triggers = vec![
-            "protect_policy_update",
-            "protect_proposal_resolution",
-            "protect_period_insert",
-            "protect_period_update",
+        let mut dependents = vec![
+            ("trigger", "protect_policy_update"),
+            ("trigger", "protect_proposal_resolution"),
+            ("trigger", "protect_period_insert"),
+            ("trigger", "protect_period_update"),
         ];
         if table >= AuditTable::StandingSettings {
-            triggers.push("protect_account_archive");
+            dependents.push(("trigger", "protect_account_archive"));
             conn.execute_batch("DROP VIEW audit_receipt_postings")?;
         }
         if table >= AuditTable::DirectSetup {
@@ -1725,18 +1741,27 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
         if table == AuditTable::StandingSettings {
             create_standing_settings(conn)?;
         }
-        let mut definitions = Vec::with_capacity(triggers.len());
-        for name in triggers {
+        if table >= AuditTable::StatementReconciliation {
+            // Drop the triggers before their views and restore them in reverse order.
+            dependents.extend([
+                ("trigger", "protect_transaction_link_insert"),
+                ("trigger", "protect_transaction_link_undo"),
+                ("view", "active_transaction_links"),
+                ("view", "transaction_link_creations"),
+            ]);
+        }
+        let mut definitions = Vec::with_capacity(dependents.len());
+        for (kind, name) in dependents {
             let definition: String = conn.query_row(
-                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
-                [name],
+                "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                [kind, name],
                 |row| row.get(0),
             )?;
             definitions.push(definition);
-            conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
+            conn.execute_batch(&format!("DROP {kind} {name}"))?;
         }
         rebuild_audit(conn, table)?;
-        for definition in definitions {
+        for definition in definitions.into_iter().rev() {
             conn.execute_batch(&definition)?;
         }
         if table >= AuditTable::StandingSettings {
@@ -1801,6 +1826,7 @@ enum AuditTable {
     Correction,
     Recategorization,
     TransactionLinks,
+    StatementReconciliation,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1880,6 +1906,15 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             ",'{}','{}'",
             AuditAction::LinkCreate,
             AuditAction::LinkUndo
+        );
+    }
+    if table >= AuditTable::StatementReconciliation {
+        let _ = write!(entity, ",'{}'", AuditEntity::StatementReconciliation);
+        let _ = write!(
+            action,
+            ",'{}','{}'",
+            AuditAction::StatementReconcile,
+            AuditAction::StatementUnreconcile
         );
     }
     (entity, action)
@@ -1964,22 +1999,31 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     } else {
         ("", "")
     };
+    let (statement_undo, statement_check) = if table >= AuditTable::StatementReconciliation {
+        (",'statement_unreconcile'",
+         ", CHECK((action IN ('statement_reconcile', 'statement_unreconcile')) = (entity = 'statement_reconciliation')),
+            CHECK(entity <> 'statement_reconciliation' OR (company_slug IS NOT NULL AND
+                hash_version = 7 AND before IS NULL AND after IS NOT NULL AND json_valid(after)
+                AND (action = 'statement_unreconcile') = (undo_of IS NOT NULL)))")
+    } else {
+        ("", "")
+    };
     format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
-                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo}{link_undo})
+                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo}{link_undo}{statement_undo})
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
                    CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
                        AND related_posting > 0 AND company_slug IS NOT NULL
                        AND action IN ('reverse', 'proposal_approve', 'correlate'{recategorize}))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate'{recategorize})) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}{link_check}")
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}{link_check}{statement_check}")
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -2709,6 +2753,7 @@ mod tests {
                 CORRECTION_SCHEMA_VERSION,
                 RECATEGORIZATION_SCHEMA_VERSION,
                 TXN_LINK_SCHEMA_VERSION,
+                STATEMENT_RECONCILIATION_SCHEMA_VERSION,
             ]
         );
         assert_eq!(audit_head()?, before);
@@ -2729,7 +2774,7 @@ mod tests {
     }
 
     #[test]
-    fn v34_upgrade_preserves_an_audited_pending_hold_and_its_schema() -> Result<(), CliError> {
+    fn v36_preserves_pending_holds_and_audited_links() -> Result<(), CliError> {
         use super::super::{
             Actor, audit,
             holds::EntryStatus,
@@ -2804,10 +2849,10 @@ mod tests {
         apply_v32(&conn)?;
         migrate_hold_audit(&conn, AuditTable::Correction, CORRECTION_SCHEMA_VERSION)?;
         assert_eq!(get_schema_version(reader)?, CORRECTION_SCHEMA_VERSION);
-        assert_v34_preserves_hold_history(&conn, audit_length)
+        assert_statement_upgrade_preserves_hold_history(&conn, audit_length)
     }
 
-    fn assert_v34_preserves_hold_history(
+    fn assert_statement_upgrade_preserves_hold_history(
         conn: &Connection,
         audit_length: u64,
     ) -> Result<(), CliError> {
@@ -2820,17 +2865,53 @@ mod tests {
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<Result<_, _>>()?)
         };
+        let hold_history = hashes(reader)?;
+        migrate_hold_audit(
+            conn,
+            AuditTable::Recategorization,
+            RECATEGORIZATION_SCHEMA_VERSION,
+        )?;
+        assert_eq!(get_schema_version(reader)?, RECATEGORIZATION_SCHEMA_VERSION);
+        apply_v35(conn)?;
+        assert_eq!(get_schema_version(reader)?, TXN_LINK_SCHEMA_VERSION);
+        assert_eq!(hashes(reader)?, hold_history);
+        let link = seed_v35_link(conn)?;
         let history = hashes(reader)?;
+        let active_link = |reader: ReadConn<'_>| -> Result<_, CliError> {
+            Ok(reader.query_row(
+                "SELECT receipt FROM active_transaction_links WHERE company_slug = 'legacy'",
+                [],
+                |row| row.get::<_, crate::db::ids::ReceiptId>(0),
+            )?)
+        };
+        assert_eq!(active_link(reader)?, link);
+
+        // Failing after the audit rebuild must roll back both the schema version
+        // and the audit rebuild, leaving the original ledger usable.
+        conn.execute_batch("CREATE TABLE statement_reconciliation_clearings (collision TEXT)")?;
+        assert!(ensure_schema(conn).is_err());
+        assert_eq!(get_schema_version(reader)?, TXN_LINK_SCHEMA_VERSION);
+        assert_eq!(hashes(reader)?, history);
+        assert_eq!(active_link(reader)?, link);
+        let table_exists: bool = reader.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'statement_reconciliations')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!table_exists);
+        conn.execute_batch("DROP TABLE statement_reconciliation_clearings")?;
         let directory = tempfile::tempdir()?;
-        let path = directory.path().join("v33.db");
+        let path = directory.path().join("before-statement-reconciliation.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
         let migrated = super::super::Db::open_existing(&path, None)?;
         let migrated_reader = migrated.read();
         assert_eq!(get_schema_version(migrated_reader)?, CURRENT_VERSION);
         assert_eq!(hashes(migrated_reader)?, history);
+        assert_eq!(active_link(migrated_reader)?, link);
+        assert_new_statement_tables(migrated_reader)?;
         assert_eq!(
             audit::verify_hash_chain(migrated_reader)?.length(),
-            audit_length
+            audit_length + 1
         );
         super::super::verification::VerifiedLedger::read(&migrated)?;
         let net: i64 = migrated_reader.query_row(
@@ -2856,6 +2937,7 @@ mod tests {
             "idx_correction_proposal",
             "idx_correction_company",
             "active_transaction_links",
+            "protect_transaction_link_insert",
             "protect_transaction_link_undo",
         ] {
             let present: bool = migrated_reader.query_row(
@@ -2867,6 +2949,62 @@ mod tests {
         }
         ensure_schema(migrated.conn())?;
         Ok(())
+    }
+
+    fn assert_new_statement_tables(reader: ReadConn<'_>) -> Result<(), CliError> {
+        for table in [
+            "statement_reconciliations",
+            "statement_reconciliation_clearings",
+        ] {
+            let empty: bool = reader.query_row(
+                &format!("SELECT NOT EXISTS (SELECT 1 FROM {table})"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(empty);
+            let strict_table: bool = reader.query_row(
+                "SELECT strict = 1 AND type = 'table' FROM pragma_table_list WHERE name = ?1",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert!(strict_table);
+        }
+        let foreign_key_violations: i64 =
+            reader.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(foreign_key_violations, 0);
+        Ok(())
+    }
+
+    fn seed_v35_link(conn: &Connection) -> Result<crate::db::ids::ReceiptId, CliError> {
+        use crate::db::{
+            Actor,
+            audit::{savepoint::with_audited_tx, txn_links},
+            ids::TransactionId,
+        };
+        use crate::identity::Post;
+
+        let transaction = |reference| {
+            conn.query_row(
+                "SELECT id FROM transactions WHERE company_slug = 'legacy' AND reference = ?1",
+                [reference],
+                |row| row.get::<_, TransactionId>(0),
+            )
+        };
+        let spec = (
+            transaction("old")?,
+            transaction("v31-hold")?,
+            txn_links::TxnLinkKind::Related,
+        )
+            .try_into()?;
+        let actor = Actor::new("bookkeeper".parse()?);
+        with_audited_tx(conn, "sp_link_fixture", |tx| {
+            Ok(
+                txn_links::create(Granted::<Post>::check(tx, &actor)?, "legacy".parse()?, spec)?
+                    .receipt(),
+            )
+        })
     }
 
     #[test]

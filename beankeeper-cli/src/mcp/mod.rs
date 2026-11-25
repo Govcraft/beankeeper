@@ -232,7 +232,7 @@ impl LedgerServer {
 }
 
 fn tool_error(error: &CliError) -> CallToolResult {
-    CallToolResult::structured_error(json!({"code":error.code(), "message":error.to_string()}))
+    CallToolResult::structured_error(json!(error.payload()))
 }
 
 fn summary_error(company: Option<&str>, error: Option<&serde_json::Value>) -> CallToolResult {

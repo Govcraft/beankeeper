@@ -534,6 +534,8 @@ mutation tools are absent and cannot be called.
 | `ledger_setup_statement_commit` | Post the reviewed batch with a separate live approval credential |
 | `ledger_setup_statement_receipt` | Read statement provenance and the transaction IDs the batch created |
 | `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
+| `reconcile_statement` | Match and lock a monthly statement using existing clearings. Provide `company`, `account`, `period_end` and `statement_ending_balance`. Returns an audited undo receipt. |
+| `reconcile_list` | List statement receipts and outstanding account months. Provide `company` and optionally filter by `account` or `currency`. |
 | `company_list`, `company_show` | Inspect companies |
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
@@ -1487,9 +1489,46 @@ printf 'POL-123,40\nPOL-124\n' | bk --json --company agency txn clear \
 
 Batches are atomic (all lines or none) and report what was cleared and what was skipped. Each entry is cleared at most once per statement, so re-running a statement batch is a no-op. Clearing more than the remaining amount is rejected, and so is a `--date` before the transaction's date. Every clearing is recorded in the audit trail.
 
-Reconciling records a **reconciled date**: with `--status reconciled`, `--date` (default today) is the day the clearings were locked in. Promoting a statement's clearings keeps their cleared date and sets the reconciled date (it may not be before the cleared date); a clearing created directly as reconciled gets the same cleared and reconciled date. Reconciled clearings are locked: `--status cleared` on them is an error. To redo one, remove it with `--status uncleared` (plus `--statement`), then clear it again.
+Reconciling records a **reconciled date**: with `--status reconciled`, `--date` (default today) is the day the clearings were locked in. Promoting a statement's clearings keeps their cleared date and sets the reconciled date (it may not be before the cleared date); a clearing created directly as reconciled gets the same cleared and reconciled date. Reconciled clearings are locked: `--status cleared` on them is an error. To redo an individual clearing, use `--status uncleared` with its `--statement`. For a clearing linked to a completed monthly statement, undo the statement receipt first.
 
 An entry's status is derived from its clearings: `cleared` once fully cleared, `reconciled` once fully cleared by reconciled clearings, `uncleared` otherwise (including partially cleared items). Status indicators (`*C*` for cleared, `*R*` for reconciled) appear in `bk txn show` and `bk txn list` table views. In JSON mode, every entry includes a `status` field. `bk txn show` also lists each entry's id, cleared and remaining amounts, and individual clearings (amount, cleared date, reconciled date, statement, status).
+
+Complete the month once its deposits, withdrawals, or card activity have been
+matched with `txn clear`.
+
+```sh
+bk --company personal --json reconcile statement --account 1000 \
+  --period-end 2026-03-31 --statement-ending-balance 4210.33 \
+  --statement-ref BANK-2026-03
+bk --company personal --json reconcile list --account 1000
+```
+
+Use the balance printed on the statement, in major currency units. Beankeeper
+adds the month's signed clearings to the last completed statement's ending
+balance. For the first statement, the opening balance is the signed total of
+earlier reconciled clearings, or zero when there are none. Use `--currency` if
+the company has multiple currencies. Amounts follow the account's normal
+balance, so a positive credit-card balance means money owed.
+
+Beankeeper counts existing clearings dated in the statement month. An earlier
+posting can count if it cleared during that month. Use `--statement-ref` to
+limit the clearings to a statement identifier and repeat `--entry-id` or
+`--reference` to select particular entries or transactions. A difference
+returns `STATEMENT_DISCREPANCY` with the computed ending balance, the supplied
+ending balance and their difference in minor units. The statement stays open
+and the clearings stay as they were.
+
+A match locks the included clearings and returns a receipt. `--close-period`
+also advances the company-wide posting cutoff to that month-end and requires
+the same authority as `period close`. Pass the receipt to `bk audit undo` to
+restore the promoted clearings and, with admin authority, restore the prior
+cutoff if the statement still controls it. Undo later statements for the same
+account and currency first. Statement history remains available in
+`reconcile list`, which also shows account months that still need a statement.
+
+Agents can use the equivalent `reconcile_statement`, `reconcile_list` and
+`audit_undo` MCP tools. Results include exact amounts and optional links to
+the account's activity in Desktop.
 
 ### Financial Summary
 
@@ -1568,7 +1607,7 @@ bk --company personal report income-statement --from 2026-04-01 --to 2026-06-30 
 
 Each cell is the account's net activity on its normal side. Periods are labelled `2026-01`, `2026-Q1` or `2026`, and the first and last periods are clipped to `--from`/`--to`. Comparisons add `Change` and `Change %` columns (`n/a` when the prior amount is 0). Table, JSON (`report.income-statement.periods`, `report.income-statement.compare`, ...) and CSV output are supported.
 
-`bk report reconciliation` uses those clearings to reconcile an account against a statement. It reports the book balance (all entries), the cleared balance, and the reconciled balance on the account's normal side, lists the outstanding entries (including partially cleared ones, with their reference, metadata, cleared and remaining amounts) with their total (book - cleared = uncleared total), and, given `--statement-balance`, shows the difference (statement - cleared) and whether the account is reconciled:
+`bk report reconciliation` compares those clearings with an account statement. It reports the book balance (all entries), the cleared balance, and the reconciled balance on the account's normal side, lists the outstanding entries (including partially cleared ones, with their reference, metadata, cleared and remaining amounts) with their total (book - cleared = uncleared total), and, given `--statement-balance`, shows the difference (statement - cleared) and whether the account is reconciled:
 
 ```sh
 bk --company personal report reconciliation --account 1000 --to 2026-03-31 --statement-balance 4210.33

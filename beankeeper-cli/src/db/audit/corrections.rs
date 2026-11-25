@@ -257,6 +257,11 @@ pub(crate) fn undo(
             });
         }
         if identity.write_mode() == WriteMode::ProposeOnly {
+            if super::statement::is_statement_receipt(db.read(), company, receipt)? {
+                return Err(CliError::Forbidden(
+                    "statement undo requires direct receipt undo authority".into(),
+                ));
+            }
             return Granted::<CorrectionPropose>::with_db(db, actor, |grant| {
                 grant.mutate("sp_propose_undo", |tx, actor| {
                     let scope = Company::bind_retained(tx.read(), company.clone())?;

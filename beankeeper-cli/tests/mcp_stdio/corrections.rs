@@ -797,3 +797,175 @@ fn recategorization_refuses_ambiguous_missing_and_reconciled_lines() -> TestResu
     );
     Ok(())
 }
+
+#[test]
+fn statement_tools_share_cli_evidence_and_undo_only_under_existing_grants() -> TestResult {
+    let fixture = Fixture::new(true)?;
+    let credential = fixture.issue(
+        "reconciler",
+        "ledger/read,ledger/post,ledger/reconcile,ledger/reverse",
+        &[],
+    )?;
+    let mut agent = fixture.client(&credential)?;
+    let mut owner = fixture.client(&fixture.owner)?;
+    create_recategory(&mut owner)?;
+    owner.success(
+        "period_close",
+        &json!({"company":"acme","through":"2026-02-28"}),
+    )?;
+    let posted = agent.success("txn_post", &posting("statement-sale"))?;
+    let details = agent.success("txn_show", &json!({"company":"acme","id":posted["id"]}))?;
+    let entry = &details[0]["entries"][0]["id"];
+    agent.success("txn_clear", &json!({
+        "company":"acme","target":"entry","transaction_id":posted["id"],"entry":entry,"date":"2026-03-02"
+    }))?;
+    let mut input = json!({
+        "company":"acme","account":"1000","period_end":"2026-03-31",
+        "statement_ending_balance":"12.49","entry_ids":[entry]
+    });
+    let disagreement = payload(&agent.call("reconcile_statement", &input)?)?;
+    assert_eq!(disagreement["code"], "STATEMENT_DISCREPANCY");
+    assert_eq!(disagreement["details"]["delta"], 1);
+    let cli = require_exit(
+        fixture.command(&credential)?.args([
+            "reconcile",
+            "statement",
+            "--account",
+            "1000",
+            "--period-end",
+            "2026-03-31",
+            "--statement-ending-balance",
+            "12.49",
+        ]),
+        3,
+    )?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli.stderr)?["error"],
+        disagreement
+    );
+
+    input["statement_ending_balance"] = json!("12.50");
+    input["close_period"] = json!(true);
+    assert_eq!(
+        payload(&agent.call("reconcile_statement", &input)?)?["code"],
+        "FORBIDDEN"
+    );
+    input["close_period"] = json!(false);
+    let completed = agent.success("reconcile_statement", &input)?;
+    assert_eq!(completed["matched"][0]["entry_id"], *entry);
+    let filters = json!({"company":"acme", "account":"1000", "currency":"USD"});
+    let reports = agent.success("reconcile_list", &filters)?;
+    let cli_list = cli_data(fixture.command(&credential)?.args([
+        "reconcile",
+        "list",
+        "--account",
+        "1000",
+        "--currency",
+        "USD",
+    ]))?;
+    assert_eq!(cli_list, reports);
+    assert_eq!(reports["statements"][0], completed);
+
+    let reverse = payload(&agent.call(
+        "txn_reverse",
+        &json!({
+            "company":"acme","id":posted["id"]
+        }),
+    )?)?;
+    assert!(
+        reverse["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("reconciled"))
+    );
+    let move_line = payload(&agent.call(
+        "txn_recategorize",
+        &json!({
+            "company":"acme","id":posted["id"],"to_account":"4100"
+        }),
+    )?)?;
+    assert_eq!(move_line["code"], "RECATEGORIZE_BLOCKED");
+    assert!(
+        move_line["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("reconciled"))
+    );
+
+    let undo = json!({"company":"acme","receipt":completed["receipt"]});
+    assert_eq!(
+        agent.success("audit_undo", &undo)?["kind"],
+        "statement_unreconciled"
+    );
+
+    check_statement_cutoff_undo(&mut owner, &mut agent, input, &filters, &posted["id"])
+}
+
+fn check_statement_cutoff_undo(
+    owner: &mut Client,
+    agent: &mut Client,
+    mut input: Value,
+    filters: &Value,
+    transaction_id: &Value,
+) -> TestResult {
+    input["close_period"] = json!(true);
+    let closed = owner.success("reconcile_statement", &input)?;
+    let cutoff = owner.success("period_list", &json!({"company":"acme"}))?;
+    assert_eq!(cutoff[0]["closed_through"], "2026-03-31");
+    let closed_undo = json!({"company":"acme","receipt":closed["receipt"]});
+    assert_eq!(
+        payload(&agent.call("audit_undo", &closed_undo)?)?["code"],
+        "FORBIDDEN"
+    );
+    let restored = owner.success("audit_undo", &closed_undo)?;
+    assert_eq!(restored["kind"], "statement_unreconciled");
+    assert_eq!(owner.success("audit_undo", &closed_undo)?, restored);
+    let cutoff = owner.success("period_list", &json!({"company":"acme"}))?;
+    assert_eq!(cutoff[0]["closed_through"], "2026-02-28");
+    let history = owner.success("reconcile_list", filters)?;
+    assert_eq!(
+        history["statements"][0]["undo_receipt"],
+        restored["undo_receipt"]
+    );
+    assert_eq!(
+        history["unreconciled_months"][0]["period_end"],
+        "2026-03-31"
+    );
+    let replaced = owner.success("reconcile_statement", &input)?;
+    owner.success(
+        "period_reopen",
+        &json!({"company":"acme","reason":"Reopened independently"}),
+    )?;
+    owner.success(
+        "period_close",
+        &json!({"company":"acme","through":"2026-03-31"}),
+    )?;
+    let preserved_cutoff = owner.success(
+        "audit_undo",
+        &json!({
+            "company":"acme","receipt":replaced["receipt"]
+        }),
+    )?;
+    assert_eq!(preserved_cutoff["kind"], "statement_unreconciled");
+    let cutoff = owner.success("period_list", &json!({"company":"acme"}))?;
+    assert_eq!(cutoff[0]["closed_through"], "2026-03-31");
+    let cleared = agent.success(
+        "txn_clear",
+        &json!({
+            "company":"acme","target":"entry","transaction_id":transaction_id,
+            "entry":input["entry_ids"][0],"status":"uncleared"
+        }),
+    )?;
+    assert_eq!(cleared["action"], "uncleared");
+    let history = agent.success("reconcile_list", filters)?;
+    let undone = history["statements"]
+        .as_array()
+        .and_then(|statements| {
+            statements
+                .iter()
+                .find(|s| s["receipt"] == closed["receipt"])
+        })
+        .ok_or("history must retain the undone statement")?;
+    assert_eq!(undone["matched"], closed["matched"]);
+    assert_eq!(undone["undo_receipt"], restored["undo_receipt"]);
+    assert_eq!(owner.success("verify", &json!({}))?["status"], "healthy");
+    Ok(())
+}

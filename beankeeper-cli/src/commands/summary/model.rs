@@ -312,6 +312,12 @@ pub(super) fn plain(report: &SummaryReport) -> String {
                 amount_with_currency(total),
                 item.reason,
             ));
+        } else if let Some(count) = item.count.filter(|count| *count > 0) {
+            lines.push(format!(
+                "{count} {}. {}",
+                name.replace('_', " "),
+                item.reason
+            ));
         }
     }
     lines.push("Payment due dates are unavailable; older open items do not prove that a payment is overdue.".into());

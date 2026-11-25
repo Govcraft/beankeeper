@@ -624,7 +624,7 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
     let movers = model::movers(&current, &prior, currency)?;
     let attention = attention::compute(&attention::AttentionContext {
         conn: reader,
-        company,
+        company: scope.slug(),
         currency,
         as_of: periods.current.to,
         stale_hold_age,

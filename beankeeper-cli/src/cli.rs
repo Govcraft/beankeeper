@@ -436,6 +436,10 @@ pub enum Command {
     #[command(subcommand)]
     Period(PeriodCommand),
 
+    /// Reconcile account statements and list months that need attention.
+    #[command(subcommand)]
+    Reconcile(crate::commands::reconcile::ReconcileCommand),
+
     /// Expose this ledger to AI agents over MCP.
     #[command(subcommand)]
     Mcp(McpCommand),

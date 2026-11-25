@@ -58,6 +58,7 @@ pub(super) mod investment;
 pub mod receipts;
 pub(super) mod savepoint;
 pub mod setup;
+pub(crate) mod statement;
 pub mod txn_links;
 
 pub(super) use attachment::store_attachment;
@@ -142,6 +143,7 @@ audit_labels! {
     /// The entity classification stored in the audit trail.
     AuditEntity, "entity" {
         Period => "period",
+        StatementReconciliation => "statement_reconciliation",
         Proposal => "proposal",
         SpendLimit => "spend_limit" | "spend-limit",
         Policy => "policy",
@@ -170,6 +172,8 @@ audit_labels! {
 audit_labels! {
     /// The action classification stored in the audit trail.
     AuditAction, "action" {
+        StatementReconcile => "statement_reconcile",
+        StatementUnreconcile => "statement_unreconcile",
         PeriodClose => "period_close" | "period-close",
         PeriodReopen => "period_reopen" | "period-reopen",
         ProposalApprove => "proposal_approve" | "proposal-approve",
@@ -863,61 +867,67 @@ pub fn change_period(
     company: &crate::db::companies::CompanySlug,
     change: super::periods::PeriodChange,
 ) -> Result<super::periods::PeriodLock, CliError> {
-    use super::periods::PeriodLock;
-
     grant.mutate("sp_period_change", |tx, actor| {
-        let conn = tx.connection();
-        let reader = tx.read();
-        super::companies::get_company(reader, company)?;
-        let before = super::periods::get(&crate::db::companies::Company::bind(reader, company.clone())?)?;
-        let previous = before.as_ref().and_then(PeriodLock::closed_through);
+        let scope = Company::bind(tx.read(), company.clone())?;
+        let before = super::periods::get(&scope)?;
+        let previous = before
+            .as_ref()
+            .and_then(super::periods::PeriodLock::closed_through);
         let (state, action) = resolve_period_change(change, previous)?;
-        let changed_at =
-            reader.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+        store_period_state(tx, actor, company, before.as_ref(), state, action)
+    })
+}
+
+fn store_period_state(
+    tx: &savepoint::AuditedTx<'_>,
+    actor: &Actor,
+    company: &crate::db::companies::CompanySlug,
+    before: Option<&super::periods::PeriodLock>,
+    state: super::periods::PeriodState,
+    action: AuditAction,
+) -> Result<super::periods::PeriodLock, CliError> {
+    let conn = tx.connection();
+    let changed_at =
+        tx.read()
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
                 row.get(0)
             })?;
-        let after = PeriodLock {
-            company_slug: company.clone(),
-            state,
-            changed_at,
-            actor: actor.name().to_owned(),
-        };
-        let through = after.closed_through().map(|date| date.to_string());
-        record(
-            conn,
-            actor,
-            AuditChange {
-                company_slug: Some(company),
-                entity: AuditEntity::Period,
-                entity_id: company.as_str(),
-                action,
-                snapshots: (
-                    before.as_ref().map(snapshot).as_deref(),
-                    Some(&snapshot(&after)),
-                ),
-            },
-        )?;
-        if before.is_some() {
-            conn.execute(
-                "UPDATE period_locks SET closed_through = ?2, changed_at = ?3, actor = ?4, reason = ?5
-                 WHERE company_slug = ?1",
-                params![company, through, after.changed_at, after.actor, after.reason()],
-            )?;
-        } else {
-            conn.execute(
-                "INSERT INTO period_locks (company_slug, closed_through, changed_at, actor, reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    company,
-                    through,
-                    after.changed_at,
-                    after.actor,
-                    after.reason()
-                ],
-            )?;
-        }
-        Ok(after)
-    })
+    let after = super::periods::PeriodLock {
+        company_slug: company.clone(),
+        state,
+        changed_at,
+        actor: actor.name().to_owned(),
+    };
+    let through = after.closed_through().map(|date| date.to_string());
+    record(
+        conn,
+        actor,
+        AuditChange {
+            company_slug: Some(company),
+            entity: AuditEntity::Period,
+            entity_id: company.as_str(),
+            action,
+            snapshots: (before.map(snapshot).as_deref(), Some(&snapshot(&after))),
+        },
+    )?;
+    let sql = if before.is_some() {
+        "UPDATE period_locks SET closed_through = ?2, changed_at = ?3, actor = ?4, reason = ?5
+         WHERE company_slug = ?1"
+    } else {
+        "INSERT INTO period_locks (company_slug, closed_through, changed_at, actor, reason)
+         VALUES (?1, ?2, ?3, ?4, ?5)"
+    };
+    conn.execute(
+        sql,
+        params![
+            company,
+            through,
+            after.changed_at,
+            after.actor,
+            after.reason()
+        ],
+    )?;
+    Ok(after)
 }
 
 fn resolve_period_change(
@@ -1679,6 +1689,7 @@ impl Reconciliation<'_> {
             });
         }
 
+        statement::check_can_unclear(self.tx.read(), company_slug, &ids)?;
         let removed: Vec<Clearing> = existing
             .into_iter()
             .filter(|c| ids.contains(&c.id))
