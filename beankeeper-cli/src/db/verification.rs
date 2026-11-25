@@ -166,7 +166,7 @@ impl VerifiedLedger {
     /// Returns a database error naming the first failing check and its source.
     pub fn read(db: &Db) -> Result<Self, CliError> {
         db.read_snapshot(|reader| {
-            let version = schema::SchemaVersion::try_from(schema::get_schema_version(reader)?)?;
+            let version = schema::stored_schema(reader)?;
             Self::verify_at(reader.at_schema(version), version, |_| Ok(()))
         })
     }
@@ -178,17 +178,16 @@ impl VerifiedLedger {
     ) -> Result<Self, CliError> {
         let mut checks = Vec::new();
         Check::SchemaVersion.pass(&mut checks);
-        let schema_version = i64::from(version);
-        let audit_chain = if schema_version >= schema::HASH_CHAIN_SCHEMA_VERSION {
-            Some(Check::AuditHashChain.record(
-                audit::verify_hash_chain_at(reader, schema_version),
-                &mut checks,
-            )?)
+        let audit_chain = if version >= schema::HASH_CHAIN_SCHEMA_VERSION {
+            Some(
+                Check::AuditHashChain
+                    .record(audit::verify_hash_chain_at(reader, version), &mut checks)?,
+            )
         } else {
             Check::AuditHashChain.skip(&mut checks);
             None
         };
-        let policy = if schema_version >= schema::POLICY_SCHEMA_VERSION {
+        let policy = if version >= schema::POLICY_SCHEMA_VERSION {
             Some(Check::LedgerPolicy.record(policy::get(reader), &mut checks)?)
         } else {
             Check::LedgerPolicy.skip(&mut checks);
@@ -196,44 +195,44 @@ impl VerifiedLedger {
         };
         authorize(policy.as_ref())?;
         Check::PeriodLocks.when(
-            schema_version >= schema::PERIOD_LOCK_SCHEMA_VERSION,
+            version >= schema::PERIOD_LOCK_SCHEMA_VERSION,
             &mut checks,
             || periods::verify(reader),
         )?;
-        let has_proposals = schema_version >= schema::PROPOSAL_SCHEMA_VERSION;
+        let has_proposals = version >= schema::PROPOSAL_SCHEMA_VERSION;
         Check::ProposalResolutions.when(has_proposals, &mut checks, || {
             proposals::verify_resolutions(reader)
         })?;
         Check::SpendLimits.when(has_proposals, &mut checks, || spend_limits::verify(reader))?;
         let companies = Check::Accounting.record(verify_accounting(reader), &mut checks)?;
         Check::CreationSnapshots.when(
-            schema_version >= schema::HASH_CHAIN_SCHEMA_VERSION,
+            version >= schema::HASH_CHAIN_SCHEMA_VERSION,
             &mut checks,
-            || audit::verify_creations_at(reader, schema_version),
+            || audit::verify_creations_at(reader, version),
         )?;
-        if schema_version >= schema::RECEIPT_SCHEMA_VERSION {
+        if version >= schema::RECEIPT_SCHEMA_VERSION {
             Check::AccountArchives.record(audit::receipts::verify_archives(reader), &mut checks)?;
         }
-        if schema_version >= schema::ACCOUNT_RENAME_SCHEMA_VERSION {
+        if version >= schema::ACCOUNT_RENAME_SCHEMA_VERSION {
             Check::AccountLabels.record(audit::account_rename::verify(reader), &mut checks)?;
         }
         Check::TransactionLinks.when(
-            schema_version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,
+            version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,
             &mut checks,
             || {
                 verify_links_at(reader, has_proposals)?;
-                if schema_version >= schema::TXN_LINK_SCHEMA_VERSION {
+                if version >= schema::TXN_LINK_SCHEMA_VERSION {
                     audit::txn_links::verify(reader)?;
                 }
                 Ok(())
             },
         )?;
         Check::StatementBatches.when(
-            schema_version >= schema::STATEMENT_BATCH_SCHEMA_VERSION,
+            version >= schema::STATEMENT_BATCH_SCHEMA_VERSION,
             &mut checks,
             || audit::setup::statement_batches::verify(reader),
         )?;
-        if schema_version >= schema::STATEMENT_RECONCILIATION_SCHEMA_VERSION {
+        if version >= schema::STATEMENT_RECONCILIATION_SCHEMA_VERSION {
             Check::StatementReconciliations
                 .record(audit::statement::verify(reader), &mut checks)?;
         }
@@ -306,7 +305,7 @@ fn row_counts(
 ) -> Result<RowCounts, CliError> {
     let audit_rows = match audit_chain {
         Some(chain) => chain.length(),
-        None if i64::from(version) >= schema::AUDIT_LOG_SCHEMA_VERSION => {
+        None if version >= schema::AUDIT_LOG_SCHEMA_VERSION => {
             let count = reader.query_row("SELECT COUNT(*) FROM audit_log", [], |row| {
                 row.get::<_, i64>(0)
             })?;
@@ -379,7 +378,7 @@ fn verify_integrity(reader: ReadConn<'_>) -> Result<(), CliError> {
 pub fn verify_links(conn: ReadConn<'_>) -> Result<(), CliError> {
     verify_links_at(
         conn,
-        schema::get_schema_version(conn)? >= schema::PROPOSAL_SCHEMA_VERSION,
+        conn.schema_version()? >= schema::PROPOSAL_SCHEMA_VERSION,
     )
 }
 

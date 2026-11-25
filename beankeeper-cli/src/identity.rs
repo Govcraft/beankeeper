@@ -259,7 +259,7 @@ pub(crate) fn authorize_backup(
     policy: Option<&crate::db::policy::LedgerPolicy>,
     on_verified: impl FnOnce(&VerifiedAgent),
 ) -> Result<(), CliError> {
-    if token.is_some() && i64::from(version) < crate::db::schema::IDENTITY_SCHEMA_VERSION {
+    if token.is_some() && version < crate::db::schema::IDENTITY_SCHEMA_VERSION {
         return Err(unauthorized());
     }
     let enforce = policy.is_some_and(|policy| policy.enforce);

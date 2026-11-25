@@ -74,8 +74,6 @@ pub fn statement_import_summary(
     })
 }
 
-const OLDEST_SETUP_READ_SCHEMA: i64 = 20;
-
 /// Ledger setup operations.
 #[derive(Debug, Subcommand)]
 pub enum SetupCommand {
@@ -398,7 +396,7 @@ pub(crate) fn open_setup_snapshot(cli: &Cli) -> Result<Db, CliError> {
     Db::open_compatible_snapshot(
         cli.db_path()?,
         cli.resolve_passphrase()?,
-        OLDEST_SETUP_READ_SCHEMA,
+        crate::db::schema::OLDEST_SETUP_READ_SCHEMA,
     )
 }
 

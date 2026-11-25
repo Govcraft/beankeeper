@@ -13,9 +13,11 @@ Merge the result into the host's axum router and cancel the transport's
 Path-based router factories require the running ledger schema. For an older
 supported schema, match `CliError::SchemaMismatch { stored, expected }` and use
 `VerifiedSnapshot::create` followed by `Db::open_after_snapshot`. Pass the opened
-connection to `mcp::serve_with_db` for stdio or put it in `LedgerTargets` for
-HTTP. Use `serve_http_with_targets` when core should own the HTTP listener or
-`http_router_with_ledger_targets` when your application owns it.
+connection to `mcp::serve_with_db` for stdio. When your application owns the
+HTTP listener, pass the `Db` directly to `http_router_with_ledger_targets` for
+a single ledger with SSE replay, or pass `LedgerTargets` for a switchable
+endpoint. Use `serve_http_with_targets` when core should own the listener for
+switchable targets.
 
 For a parsed CLI ledger command, use `commands::dispatch_with_db(&mut cli, db, meta)`.
 The supplied connection selects the ledger and the parsed CLI still supplies the

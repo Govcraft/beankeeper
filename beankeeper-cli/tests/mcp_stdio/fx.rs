@@ -334,11 +334,21 @@ fn fx_schema_upgrade_preserves_historical_postings() -> TestResult {
     command.args(["mcp", "serve", "--read-only"]);
     let mut client = Client::spawn(command)?;
     client.initialize()?;
-    let show = client.success(
+    let response = client.call(
         "txn_show",
         &json!({"company": "acme", "id": expected["id"]}),
     )?;
+    assert!(response.get("error").is_none(), "{response}");
+    let show = payload(&response)?;
     assert_eq!(show[0]["currency"], "MXN");
+    let notice = &response["result"]["_meta"][beankeeper_cli::mcp::LEDGER_UPGRADE_META_KEY];
+    assert_eq!(notice["from"], 36);
+    assert_eq!(
+        notice["to"],
+        json!(beankeeper_cli::db::current_schema_version())
+    );
+    let reported =
+        std::path::PathBuf::from(notice["backup"].as_str().ok_or("missing backup path")?);
 
     let backups = temp
         .path()
@@ -350,11 +360,13 @@ fn fx_schema_upgrade_preserves_historical_postings() -> TestResult {
                 .to_string_lossy()
                 .starts_with(".bk-pre-migration-")
         })
-        .collect::<Vec<_>>();
+        .map(|entry| entry.path().join("books.bk-backup").canonicalize())
+        .collect::<std::io::Result<Vec<_>>>()?;
     assert_eq!(backups.len(), 2);
+    assert!(backups.contains(&reported));
     for backup in backups {
         let raw = rusqlite::Connection::open_with_flags(
-            backup.path().join("books.bk-backup"),
+            backup,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         let version: i64 = raw.query_row("SELECT MAX(version) FROM schema_version", [], |row| {

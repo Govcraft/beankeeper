@@ -8,7 +8,7 @@ use super::audit::{
     restore::ExistingRestoreTarget,
     savepoint::{AuditedTx, with_rolled_back_audited_tx},
 };
-use super::schema::{self, AuditHistory, SchemaVersion, current_schema_version};
+use super::schema::{self, SchemaVersion, current_schema_version, stored_schema};
 use crate::error::CliError;
 
 mod read;
@@ -20,7 +20,6 @@ pub struct Db {
     id: ConnectionId,
     passphrase: Option<SecretString>,
     schema_version: SchemaVersion,
-    audit_history: AuditHistory,
 }
 
 impl std::fmt::Debug for Db {
@@ -50,7 +49,6 @@ impl Db {
             id: ConnectionId::default(),
             passphrase: passphrase.cloned(),
             schema_version,
-            audit_history: AuditHistory::from(schema_version),
         }
     }
 
@@ -84,24 +82,16 @@ impl Db {
     /// Returns [`CliError::SchemaMismatch`] for a supported older schema, or a
     /// database error for an invalid, unsupported, or unreadable snapshot.
     pub fn open_snapshot(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
-        Self::open_snapshot_at_least(path, passphrase, current_schema_version())
+        Self::open_compatible_snapshot(path, passphrase, current_schema_version())
     }
 
     pub(crate) fn open_compatible_snapshot(
         path: &Path,
         passphrase: Option<&SecretString>,
-        minimum: i64,
-    ) -> Result<Self, CliError> {
-        Self::open_snapshot_at_least(path, passphrase, minimum.try_into()?)
-    }
-
-    fn open_snapshot_at_least(
-        path: &Path,
-        passphrase: Option<&SecretString>,
         minimum: SchemaVersion,
     ) -> Result<Self, CliError> {
         let conn = open_snapshot_file(path, passphrase)?;
-        let version = stored_schema(&conn)?.require_at_least(minimum)?;
+        let version = stored_schema(ReadConn::physical(&conn))?.require_at_least(minimum)?;
         Ok(Self::from_keyed_connection(conn, None, version))
     }
 
@@ -110,7 +100,7 @@ impl Db {
         passphrase: Option<&SecretString>,
     ) -> Result<Self, CliError> {
         let conn = open_snapshot_file(path, passphrase)?;
-        let version = stored_schema(&conn)?;
+        let version = stored_schema(ReadConn::physical(&conn))?;
         Ok(Self::from_keyed_connection(conn, None, version))
     }
 
@@ -146,12 +136,11 @@ impl Db {
         path: &Path,
         passphrase: Option<&SecretString>,
     ) -> Result<Self, CliError> {
-        let version = schema::get_schema_version(ReadConn::physical(&conn))?;
-        if version == 0 {
+        if let Some(version) = schema::read_schema(ReadConn::physical(&conn))? {
+            version.require_at_least(current_schema_version())?;
+        } else {
             conn.pragma_update(None, "foreign_keys", "ON")?;
             schema::initialize(&conn)?;
-        } else {
-            SchemaVersion::try_from(version)?.require_at_least(current_schema_version())?;
         }
         Self::finish_file_open(conn, path, passphrase)
     }
@@ -162,7 +151,7 @@ impl Db {
         passphrase: Option<&SecretString>,
     ) -> Result<Self, CliError> {
         let conn = open_existing_keyed(target.as_ref(), passphrase)?;
-        stored_schema(&conn)?.require_at_least(current_schema_version())?;
+        stored_schema(ReadConn::physical(&conn))?.require_at_least(current_schema_version())?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Self::from_keyed_connection(
             conn,
@@ -317,10 +306,6 @@ pub(super) fn open_keyed(
     Ok(conn)
 }
 
-fn stored_schema(conn: &Connection) -> Result<SchemaVersion, CliError> {
-    SchemaVersion::try_from(schema::get_schema_version(ReadConn::physical(conn))?)
-}
-
 pub(super) fn open_existing_keyed(
     path: &Path,
     passphrase: Option<&SecretString>,
@@ -412,7 +397,7 @@ mod tests {
         let Some(db) = db.ok() else {
             return;
         };
-        let version = super::super::schema::get_schema_version(db.read());
+        let version = stored_schema(db.read());
         assert!(version.is_ok());
         assert_eq!(version.ok(), Some(super::super::schema::CURRENT_VERSION));
     }

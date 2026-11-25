@@ -180,7 +180,6 @@ fn report_operation(command: &ReportCommand) -> Operation {
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     dispatch_command(cli, meta)?;
-    cli.report_command_migration();
     if !cli.verbosity.quiet
         && can_append_audit(&cli.command)
         && let Some(notice) = cli.principal().unverified_hint_notice()

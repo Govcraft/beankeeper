@@ -3,6 +3,11 @@ use std::fmt;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use serde::{Serialize, Serializer};
 
+use crate::db::schema::{
+    CLIENT_HINT_SCHEMA_VERSION, PERIOD_LOCK_SCHEMA_VERSION, POLICY_SCHEMA_VERSION,
+    RECEIPT_SCHEMA_VERSION, STANDING_SETTINGS_SCHEMA_VERSION, SchemaVersion,
+};
+
 /// The canonical payload format used to hash an audit row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashVersion {
@@ -47,14 +52,19 @@ impl HashVersion {
         matches!(self, Self::V6 | Self::V7)
     }
 
-    pub(super) const fn for_schema(version: i64) -> Self {
-        match version {
-            super::super::schema::STANDING_SETTINGS_SCHEMA_VERSION.. => Self::V7,
-            super::super::schema::RECEIPT_SCHEMA_VERSION.. => Self::V6,
-            super::super::schema::CLIENT_HINT_SCHEMA_VERSION.. => Self::V5,
-            20.. => Self::V4,
-            18.. => Self::V3,
-            _ => Self::V2,
+    pub(super) fn for_schema(version: SchemaVersion) -> Self {
+        if version >= STANDING_SETTINGS_SCHEMA_VERSION {
+            Self::V7
+        } else if version >= RECEIPT_SCHEMA_VERSION {
+            Self::V6
+        } else if version >= CLIENT_HINT_SCHEMA_VERSION {
+            Self::V5
+        } else if version >= PERIOD_LOCK_SCHEMA_VERSION {
+            Self::V4
+        } else if version >= POLICY_SCHEMA_VERSION {
+            Self::V3
+        } else {
+            Self::V2
         }
     }
 }

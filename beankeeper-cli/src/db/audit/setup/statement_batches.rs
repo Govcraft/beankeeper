@@ -175,9 +175,9 @@ pub(crate) fn summary(
     reader: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<StatementImportSummary, CliError> {
-    use crate::db::schema::{STATEMENT_BATCH_SCHEMA_VERSION, get_schema_version};
+    use crate::db::schema::STATEMENT_BATCH_SCHEMA_VERSION;
 
-    if get_schema_version(reader)? < STATEMENT_BATCH_SCHEMA_VERSION {
+    if reader.schema_version()? < STATEMENT_BATCH_SCHEMA_VERSION {
         return Ok(StatementImportSummary::default());
     }
     let (summary, valid) = reader.query_row(

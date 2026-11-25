@@ -2,6 +2,9 @@ use beankeeper_cli::db::{Db, SchemaVersion, current_schema_version, get_schema_v
 use beankeeper_cli::error::CliError;
 use secrecy::SecretString;
 
+#[path = "support/legacy_schema.rs"]
+mod legacy_schema;
+
 #[test]
 fn linked_schema_version_matches_an_encrypted_snapshot() -> Result<(), CliError> {
     const EXPECTED: SchemaVersion = current_schema_version();
@@ -90,6 +93,67 @@ fn standalone_upgrade_refuses_an_older_ledger_that_cannot_be_verified()
         assert_eq!(std::fs::read(&path)?, before);
         assert_eq!(directory.path().read_dir()?.count(), 1);
     }
+    Ok(())
+}
+
+#[test]
+fn standalone_cli_reports_the_upgrade_in_the_selected_format()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("older.db");
+    let human_path = directory.path().join("older-human.db");
+    let command = |path: &std::path::Path| {
+        let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("bk"));
+        command
+            .arg("--db")
+            .arg(path)
+            .env_remove("BEANKEEPER_PASSPHRASE_CMD")
+            .env_remove("BK_AGENT_TOKEN");
+        command
+    };
+    let db = Db::open(&path, None)?;
+    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
+        &db,
+        &beankeeper_cli::db::Actor::new("fixture".parse()?),
+        |grant| beankeeper_cli::db::create_company(grant, &"acme".parse()?, &"Acme".parse()?, None),
+    )?;
+    drop(db);
+    let raw = rusqlite::Connection::open(&path)?;
+    legacy_schema::before_restore(&raw)?;
+    drop(raw);
+    std::fs::copy(&path, &human_path)?;
+
+    let summary = || {
+        command(&path)
+            .args(["--json", "--company", "acme", "summary"])
+            .output()
+    };
+    let output = summary()?;
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stderr, Vec::<u8>::new());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let upgrade = &response["meta"]["ledger_upgrade"];
+    assert_eq!(upgrade["from"], 37);
+    assert_eq!(upgrade["to"], serde_json::json!(current_schema_version()));
+    let backup = std::path::Path::new(upgrade["backup"].as_str().ok_or("missing backup path")?);
+    assert!(matches!(
+        Db::open_snapshot(backup, None),
+        Err(CliError::SchemaMismatch { stored, .. }) if i64::from(stored) == 37
+    ));
+
+    let output = summary()?;
+    assert!(output.status.success(), "{output:?}");
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert!(response["meta"].get("ledger_upgrade").is_none());
+
+    let output = command(&human_path).args(["company", "list"]).output()?;
+    assert!(output.status.success(), "{output:?}");
+    let stderr = std::str::from_utf8(&output.stderr)?;
+    let backup_line = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("[ok] Upgraded ledger schema. Verified backup: "))
+        .ok_or("missing human upgrade notice")?;
+    assert!(std::path::Path::new(backup_line).is_file(), "{stderr}");
     Ok(())
 }
 

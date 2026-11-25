@@ -110,7 +110,7 @@ pub(super) fn run_selected(
         // An unreadable encrypted source must fail closed, never be erased.
         let existing = Db::open_supported_snapshot(db_path, passphrase.as_ref())
             .or_else(|error| Db::open_supported_snapshot(db_path, None).map_err(|_| error))?;
-        if i64::from(existing.schema_version()) >= crate::db::schema::POLICY_SCHEMA_VERSION
+        if existing.schema_version() >= crate::db::schema::POLICY_SCHEMA_VERSION
             && crate::db::policy::get(existing.read())?.enforce
         {
             return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before initialization".into()));

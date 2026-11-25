@@ -23,7 +23,7 @@ use crate::db::{
     companies::{CompanyName, CompanySlug},
     connection::ReadConn,
     get_company, list_accounts,
-    schema::{BOOK_PROFILE_SCHEMA_VERSION, get_schema_version},
+    schema::BOOK_PROFILE_SCHEMA_VERSION,
 };
 use crate::error::CliError;
 
@@ -247,7 +247,7 @@ impl Serialize for BookAccount {
 pub fn book_facts(db: &Db, company: &CompanySlug) -> Result<BookFacts, CliError> {
     db.read_snapshot(|reader| {
         let named = get_company(reader, company)?;
-        let profile = if get_schema_version(reader)? >= BOOK_PROFILE_SCHEMA_VERSION {
+        let profile = if reader.schema_version()? >= BOOK_PROFILE_SCHEMA_VERSION {
             find_profile(reader, company)?
         } else {
             None

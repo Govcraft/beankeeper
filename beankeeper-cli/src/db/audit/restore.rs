@@ -422,7 +422,7 @@ impl CompatibleBackup {
                 &directory.path().join("before-upgrade.db"),
                 SnapshotOverwrite::Refuse,
             )?;
-            let has_original_chain = i64::from(version) >= HASH_CHAIN_SCHEMA_VERSION;
+            let has_original_chain = version >= HASH_CHAIN_SCHEMA_VERSION;
             let original_anchor = matching_audit_head(live.read(), proof.verification())?;
             let migrated = Db::open_after_snapshot(proof, key)?;
             let verification = VerifiedLedger::read(&migrated)?;

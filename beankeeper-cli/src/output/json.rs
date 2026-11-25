@@ -20,7 +20,7 @@ use crate::db::clearings::Clearing;
 use crate::db::ids::{AttachmentId, EntryId, TransactionId};
 use crate::db::{
     AccountRow, AccountWithBalanceRow, AttachmentRow, BalanceRow, ClearingState, CompanyRow,
-    EntryRow, EntryStatus, PostResult, TransactionRow,
+    EntryRow, EntryStatus, LedgerUpgrade, PostResult, TransactionRow,
 };
 use crate::error::{CliError, ErrorCode};
 use crate::ledger_target::NamedLedgerTarget;
@@ -50,6 +50,9 @@ pub struct Meta {
     /// The selected ledger when the command used a named target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ledger_target: Option<NamedLedgerTarget>,
+    /// The schema upgrade performed while opening this ledger, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ledger_upgrade: Option<LedgerUpgrade>,
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pagination: Option<Pagination>,
@@ -197,6 +200,7 @@ pub fn meta(command: Operation, company: Option<&str>) -> Meta {
         agent: None,
         company: company.map(str::to_string),
         ledger_target: None,
+        ledger_upgrade: None,
         timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         pagination: None,
         currency: None,
@@ -211,6 +215,7 @@ pub fn meta_with_timestamp(command: Operation, company: Option<&str>, timestamp:
         agent: None,
         company: company.map(str::to_string),
         ledger_target: None,
+        ledger_upgrade: None,
         timestamp,
         pagination: None,
         currency: None,

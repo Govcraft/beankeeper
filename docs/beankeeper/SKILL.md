@@ -633,8 +633,12 @@ For the full command reference with all flags and examples, see [`references/com
 ### Back up and restore a ledger
 
 Standalone `bk` and MCP startup save a verified pre-upgrade copy of an older
-ledger at `.bk-pre-migration-*/books.bk-backup` beside that ledger. Tell the
-owner where it was saved when reporting a successful upgrade.
+ledger at `.bk-pre-migration-*/books.bk-backup` beside that ledger. Read
+`meta.ledger_upgrade` in CLI JSON or `_meta["beankeeper/ledgerUpgrade"]` in
+successful MCP ledger tool results. Use `from` and `to` to tell the owner which
+schema changed and `backup` to tell them where the verified copy was saved.
+MCP repeats the same notice for the upgraded ledger while the server is
+running. Report it once.
 
 Use `bk backup --output PATH` to save a verified full snapshot. For an existing
 ledger, use `bk --db PATH restore --input BACKUP` or MCP `restore` with a server

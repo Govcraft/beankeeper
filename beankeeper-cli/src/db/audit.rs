@@ -29,6 +29,9 @@ use super::clearings::{
 use super::companies::Company;
 use super::connection::ReadConn;
 use super::metadata;
+use super::schema::{
+    CLIENT_HINT_SCHEMA_VERSION, IDENTITY_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION, SchemaVersion,
+};
 use super::{AccountRow, BudgetRow, CompanyRow, SetAnnualBudgetParams, SetBudgetParams};
 use crate::confirmation::Confirmed;
 use crate::db::ids::{
@@ -453,16 +456,15 @@ const AUDIT_V1_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, ent
 
 const AUDIT_COLUMNS: &str = "id, changed_at, actor, company_slug, entity, entity_id, action, before, after, prev_hash, row_hash, agent_uri, token_jti, hash_version";
 
-fn audit_columns(schema: i64) -> String {
-    match schema {
-        super::schema::RECEIPT_SCHEMA_VERSION.. => {
-            format!("{AUDIT_COLUMNS}, client_hint, undo_of, related_posting")
-        }
-        super::schema::CLIENT_HINT_SCHEMA_VERSION.. => {
-            format!("{AUDIT_COLUMNS}, client_hint, NULL, NULL")
-        }
-        13.. => format!("{AUDIT_COLUMNS}, NULL, NULL, NULL"),
-        _ => format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1, NULL, NULL, NULL"),
+fn audit_columns(schema: SchemaVersion) -> String {
+    if schema >= RECEIPT_SCHEMA_VERSION {
+        format!("{AUDIT_COLUMNS}, client_hint, undo_of, related_posting")
+    } else if schema >= CLIENT_HINT_SCHEMA_VERSION {
+        format!("{AUDIT_COLUMNS}, client_hint, NULL, NULL")
+    } else if schema >= IDENTITY_SCHEMA_VERSION {
+        format!("{AUDIT_COLUMNS}, NULL, NULL, NULL")
+    } else {
+        format!("{AUDIT_V1_COLUMNS}, NULL, NULL, 1, NULL, NULL, NULL")
     }
 }
 
@@ -540,12 +542,12 @@ impl Serialize for VerifiedAuditChain {
 /// # Errors
 /// Returns a database error for altered, missing, or unlinked audit records.
 pub fn verify_hash_chain(reader: ReadConn<'_>) -> Result<VerifiedAuditChain, CliError> {
-    verify_hash_chain_at(reader, super::schema::get_schema_version(reader)?)
+    verify_hash_chain_at(reader, reader.schema_version()?)
 }
 
 pub(super) fn verify_hash_chain_at(
     reader: ReadConn<'_>,
-    version: i64,
+    version: SchemaVersion,
 ) -> Result<VerifiedAuditChain, CliError> {
     let columns = audit_columns(version);
     let mut stmt = reader.prepare(&format!("SELECT {columns} FROM audit_log ORDER BY id"))?;
@@ -588,7 +590,7 @@ pub(super) fn verify_hash_chain_at(
             "audit hash chain tail missing after row #{last_id} (expected row #{sequence})"
         )));
     }
-    if version >= super::schema::RECEIPT_SCHEMA_VERSION {
+    if version >= RECEIPT_SCHEMA_VERSION {
         receipts::verify_legacy_links(reader)?;
         receipts::verify_links(reader)?;
     }
@@ -678,8 +680,7 @@ fn append_with_links(
         )
         .optional()?
         .unwrap_or_else(|| GENESIS_HASH.to_string());
-    let version =
-        HashVersion::for_schema(super::schema::get_schema_version(ReadConn::physical(conn))?);
+    let version = HashVersion::for_schema(ReadConn::physical(conn).schema_version()?);
     let has_client_hint_column = version.includes_client_hint();
     let has_link_columns = version.includes_receipt_links();
     let (undo_of, related_posting) = links.columns();
@@ -1253,12 +1254,15 @@ fn record_creation(
 /// # Errors
 /// Returns a database error if an audited posting is changed or unrecorded.
 pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
-    verify_creations_at(conn, super::schema::get_schema_version(conn)?)
+    verify_creations_at(conn, conn.schema_version()?)
 }
 
-pub(super) fn verify_creations_at(conn: ReadConn<'_>, version: i64) -> Result<(), CliError> {
+pub(super) fn verify_creations_at(
+    conn: ReadConn<'_>,
+    version: SchemaVersion,
+) -> Result<(), CliError> {
     let audit = conn.bookkeeping_audit();
-    let has_identity = version >= super::schema::IDENTITY_SCHEMA_VERSION;
+    let has_identity = version >= IDENTITY_SCHEMA_VERSION;
     let attributed = if has_identity {
         "posted_by IS NOT NULL OR agent_uri IS NOT NULL OR token_jti IS NOT NULL"
     } else {
@@ -3102,7 +3106,7 @@ pub fn list_audit(
     params: &ListAuditParams<'_>,
 ) -> Result<Vec<AuditLogRow>, CliError> {
     let (filter, mut values) = audit_filter(params);
-    let columns = audit_columns(super::schema::get_schema_version(conn)?);
+    let columns = audit_columns(conn.schema_version()?);
     let sql = format!("SELECT {columns}{filter} ORDER BY id DESC LIMIT ? OFFSET ?");
     values.push(rusqlite::types::Value::Integer(i64::from(
         params.limit.get(),

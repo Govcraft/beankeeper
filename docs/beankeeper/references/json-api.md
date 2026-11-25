@@ -66,6 +66,25 @@ The `companies` array contains the exported companies with their accounts and tr
 | `GENERAL` | Other error |
 | `IO` | File I/O error |
 
+### Automatic ledger upgrades
+
+When a standalone command upgrades an older ledger, its JSON envelope includes
+`meta.ledger_upgrade`. The backup is a verified copy that retains the ledger's
+previous schema and encryption. The `from` and `to` fields are integer schema
+versions. The `backup` field gives the path on the machine running Beankeeper.
+
+```json
+{"meta":{"ledger_upgrade":{"from":37,"to":38,"backup":"/books/.bk-pre-migration-example/books.bk-backup"}}}
+```
+
+Both stdio and HTTP MCP use the same object in the tool result's
+`_meta["beankeeper/ledgerUpgrade"]`. After a standalone server upgrades a
+ledger at startup, all successful ledger tool results for that ledger include
+the notice for the lifetime of the server. For HTTP, a named ledger's upgrade
+appears only in results for that target. Tell the owner about the upgrade once
+and include the backup path. Human CLI output reports the path on stderr unless
+`--quiet` is set.
+
 ## Amount Conventions
 
 Monetary fields retain their **raw integer minor units** and add a sibling named

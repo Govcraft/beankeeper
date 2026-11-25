@@ -20,8 +20,8 @@ use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
 use super::targets::OpenedLedger;
 use super::{LedgerServer, LedgerTarget, LedgerTargets};
 use crate::cli::Cli;
-use crate::db::ActorLabel;
 use crate::db::connection::Db;
+use crate::db::{ActorLabel, LedgerUpgrade};
 use crate::error::CliError;
 use crate::identity::VerifiedAgent;
 use crate::output::json::EnvelopeError;
@@ -44,10 +44,7 @@ enum HttpTargets {
 
 impl From<Db> for HttpLedgerTargets {
     fn from(db: Db) -> Self {
-        Self(HttpTargets::StartupOnly(OpenedLedger::new(
-            LedgerTarget::default(),
-            db,
-        )))
+        Self::startup_only(db, None)
     }
 }
 
@@ -58,6 +55,14 @@ impl From<LedgerTargets> for HttpLedgerTargets {
 }
 
 impl HttpLedgerTargets {
+    fn startup_only(db: Db, upgrade: Option<LedgerUpgrade>) -> Self {
+        Self(HttpTargets::StartupOnly(OpenedLedger::new(
+            LedgerTarget::default(),
+            db,
+            upgrade,
+        )))
+    }
+
     fn resolve(&self, target: &LedgerTarget) -> Result<OpenedLedger, CliError> {
         match &self.0 {
             HttpTargets::StartupOnly(startup) => match target.named() {
@@ -362,22 +367,25 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
     host: H,
 ) -> Result<Router, CliError> {
     let server = host_server(cli, read_only, host)?;
-    let targets = open_targets(cli, |path| Db::open_existing(path, passphrase))?;
+    let targets = open_targets(cli, |path| {
+        Db::open_existing(path, passphrase).map(|db| (db, None))
+    })?;
     Ok(build_router(cli, targets, config, server))
 }
 
 fn open_targets(
     cli: &Cli,
-    mut open: impl FnMut(&Path) -> Result<Db, CliError>,
+    mut open: impl FnMut(&Path) -> Result<(Db, Option<LedgerUpgrade>), CliError>,
 ) -> Result<HttpLedgerTargets, CliError> {
     let paths = cli.ledger_bindings()?;
-    let startup = open(&cli.db)?;
+    let (startup, upgrade) = open(&cli.db)?;
     if paths.len() == 0 {
-        return Ok(startup.into());
+        return Ok(HttpLedgerTargets::startup_only(startup, upgrade));
     }
-    let targets = LedgerTargets::new(startup);
+    let targets = LedgerTargets::with_upgrade(startup, upgrade);
     for (target, path) in paths {
-        targets.register(target.clone().into(), open(path.as_ref())?)?;
+        let (db, upgrade) = open(path.as_ref())?;
+        targets.register_with_upgrade(target.clone(), db, upgrade)?;
     }
     Ok(targets.into())
 }

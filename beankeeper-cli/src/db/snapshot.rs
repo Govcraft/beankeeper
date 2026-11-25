@@ -14,6 +14,42 @@ use crate::error::CliError;
 
 pub(crate) mod files;
 
+/// Evidence of a completed standalone upgrade and its retained backup.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LedgerUpgrade {
+    from: SchemaVersion,
+    to: SchemaVersion,
+    #[serde(serialize_with = "serialize_backup_path")]
+    backup: PathBuf,
+}
+
+fn serialize_backup_path<S: serde::Serializer>(
+    path: &Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&path.display())
+}
+
+impl LedgerUpgrade {
+    /// Schema version preserved in the verified backup.
+    #[must_use]
+    pub const fn from(&self) -> SchemaVersion {
+        self.from
+    }
+
+    /// Schema version reached by the upgrade.
+    #[must_use]
+    pub const fn to(&self) -> SchemaVersion {
+        self.to
+    }
+
+    /// Local path to the retained pre-upgrade backup.
+    #[must_use]
+    pub fn backup(&self) -> &Path {
+        &self.backup
+    }
+}
+
 /// Whether publication may replace an existing backup file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SnapshotOverwrite {
@@ -193,7 +229,7 @@ impl VerifiedSnapshot {
             .is_some_and(|metadata| same_file(&metadata, &source.metadata));
         if !same_source
             || data_version(&source.connection)? != source.data_version
-            || schema::get_schema_version(ReadConn::physical(tx))? != i64::from(version)
+            || schema::stored_schema(ReadConn::physical(tx))? != version
         {
             return Err(CliError::Database(
                 "the ledger changed; take a new verified snapshot before migrating".into(),
@@ -235,8 +271,7 @@ impl Db {
     pub(crate) fn open_standalone(
         path: &Path,
         passphrase: Option<&SecretString>,
-        on_upgrade: impl FnOnce(&Path),
-    ) -> Result<Self, CliError> {
+    ) -> Result<(Self, Option<LedgerUpgrade>), CliError> {
         match Self::open_existing(path, passphrase) {
             Err(CliError::SchemaMismatch { .. }) => {
                 let source = path.canonicalize()?;
@@ -252,15 +287,24 @@ impl Db {
                     &backup.path().join("books.bk-backup"),
                     SnapshotOverwrite::Refuse,
                 )?;
+                let from = snapshot.schema_version();
+                if from == schema::current_schema_version() {
+                    // Another process finished the upgrade before this snapshot began.
+                    return Self::open_existing(&source, passphrase).map(|db| (db, None));
+                }
                 let backup_path = snapshot.path().to_owned();
                 files::sync_directory(parent)?;
                 // Retain the published copy even if migration fails or is interrupted.
                 let _ = backup.keep();
                 let db = Self::open_after_snapshot(snapshot, passphrase)?;
-                on_upgrade(&backup_path);
-                Ok(db)
+                let upgrade = LedgerUpgrade {
+                    from,
+                    to: db.schema_version(),
+                    backup: backup_path,
+                };
+                Ok((db, Some(upgrade)))
             }
-            result => result,
+            result => result.map(|db| (db, None)),
         }
     }
 }

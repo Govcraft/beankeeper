@@ -1029,7 +1029,7 @@ pub(super) fn find_transaction_row(
     id: TransactionId,
 ) -> Result<Option<TransactionRow>, CliError> {
     let reader = company.read();
-    let version = super::schema::get_schema_version(reader)?;
+    let version = reader.schema_version()?;
     read_transaction_row_by(reader, company.slug(), id, version, decode_transaction)
 }
 
@@ -1076,7 +1076,7 @@ fn read_transaction_by<T>(
     id: TransactionId,
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Option<(T, Vec<EntryRow>)>, CliError> {
-    let version = super::schema::get_schema_version(conn)?;
+    let version = conn.schema_version()?;
     let Some(txn) = read_transaction_row_by(conn, company, id, version, decode)? else {
         return Ok(None);
     };
@@ -1093,7 +1093,7 @@ fn read_transaction_row_by<T>(
     conn: ReadConn<'_>,
     company: &CompanySlug,
     id: TransactionId,
-    version: i64,
+    version: super::SchemaVersion,
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Option<T>, CliError> {
     let identity = if version >= super::schema::IDENTITY_SCHEMA_VERSION {
