@@ -13,6 +13,7 @@ pub mod loan;
 pub mod period;
 pub mod policy;
 mod posting_output;
+pub mod reconcile;
 pub mod reference;
 pub mod report;
 pub mod report_aging;
@@ -69,6 +70,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
+        Command::Reconcile(command) => command.operation(),
         Command::Mcp(_) => Operation::McpServe,
         Command::Policy(sub) => match sub {
             crate::cli::PolicyCommand::Show => Operation::PolicyShow,
@@ -223,6 +225,9 @@ fn dispatch_ledger(
             (require_company(cli)?, args, chart).try_into()?,
         )),
         Command::Period(command) => Some(LedgerRequest::Period(
+            (require_company(cli)?.clone(), command).try_into()?,
+        )),
+        Command::Reconcile(command) => Some(LedgerRequest::Reconcile(
             (require_company(cli)?.clone(), command).try_into()?,
         )),
         Command::Security(args) => Some(LedgerRequest::Investment(
@@ -412,6 +417,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         Command::Setup(_)
         | Command::Summary(_)
         | Command::Period(_)
+        | Command::Reconcile(_)
         | Command::Security(_)
         | Command::Investment(_)
         | Command::Verify

@@ -1440,3 +1440,73 @@ mod company_scope_tests {
         );
     }
 }
+
+/// Match existing clearings to one calendar-month statement.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReconcileStatement {
+    company: Company,
+    account: Account,
+    /// Last calendar day of the statement month (YYYY-MM-DD).
+    period_end: Text<crate::db::statement::StatementMonth>,
+    /// Ending balance in decimal major units.
+    statement_ending_balance: Amount,
+    #[schemars(with = "Option<Text<Currency>>")]
+    currency: Option<Currency>,
+    statement_ref: Option<Text<crate::db::statement::StatementRef>>,
+    /// Select clearing entries by ID. Mutually exclusive with references.
+    #[serde(default, deserialize_with = "deserialize_structured")]
+    entry_ids: Option<Vec<EntryId>>,
+    /// Select clearings by transaction reference. Mutually exclusive with `entry_ids`.
+    #[serde(default, deserialize_with = "deserialize_structured")]
+    references: Option<Vec<Reference>>,
+    /// Also advance the company posting cutoff, with ledger/admin.
+    close_period: Option<bool>,
+}
+
+impl TryFrom<ReconcileStatement> for crate::commands::reconcile::ReconcileRequest {
+    type Error = CliError;
+
+    fn try_from(input: ReconcileStatement) -> Result<Self, Self::Error> {
+        use crate::commands::reconcile::StatementInput;
+
+        Ok(Self::Statement(
+            input.company.into_inner(),
+            StatementInput {
+                account: input.account.into_inner(),
+                month: input.period_end.into_inner(),
+                ending: input.statement_ending_balance.into_inner(),
+                currency: crate::request::CurrencySetting::from(input.currency).try_into()?,
+                statement_ref: input.statement_ref.map(Text::into_inner),
+                selection: (
+                    input.entry_ids,
+                    input
+                        .references
+                        .map(|refs| refs.into_iter().map(Text::into_inner).collect()),
+                )
+                    .try_into()?,
+                close: input.close_period.into(),
+            },
+        ))
+    }
+}
+
+/// List statement receipts and completed months that still need statements.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReconcileList {
+    company: Company,
+    account: Option<Account>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    currency: Option<Currency>,
+}
+
+impl From<ReconcileList> for crate::commands::reconcile::ReconcileRequest {
+    fn from(input: ReconcileList) -> Self {
+        Self::List(
+            input.company.into_inner(),
+            input.account.map(Text::into_inner),
+            input.currency,
+        )
+    }
+}

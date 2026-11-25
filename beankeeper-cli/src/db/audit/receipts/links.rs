@@ -142,6 +142,12 @@ pub(in crate::db::audit) fn verify_links(reader: ReadConn<'_>) -> Result<(), Cli
                      AND original.entity_id = event.entity_id AND original.undo_of IS NULL
                      AND original.before IS event.after AND original.after IS event.before
                  ))
+                 OR (event.action = 'statement_unreconcile' AND NOT (
+                     original.entity = 'statement_reconciliation'
+                     AND original.action = 'statement_reconcile'
+                     AND original.entity_id = event.entity_id
+                     AND original.id IS json_extract(event.after, '$.receipt')
+                 ))
                  OR (event.action = 'setup_revert' AND NOT (
                      event.entity = 'company' AND original.entity = 'company'
                      AND original.action = 'setup_apply'

@@ -11,12 +11,13 @@ use serde::Serialize;
 use crate::commands::report_aging::{self, Movement};
 use crate::db::{
     self,
-    companies::Company,
+    companies::{Company, CompanySlug},
     connection::ReadConn,
     holds::{
         StaleHoldAge,
         matching::{StaleHold, stale_holds},
     },
+    statement::{UnreconciledMonth, unreconciled_months},
 };
 use crate::error::CliError;
 use crate::output::amounts::OptionalMoneyField;
@@ -26,7 +27,7 @@ use super::{add, sub};
 /// The already-resolved company, currency, as-of date and account selections.
 pub(super) struct AttentionContext<'a> {
     pub conn: ReadConn<'a>,
-    pub company: &'a str,
+    pub company: &'a CompanySlug,
     pub currency: Currency,
     pub as_of: NaiveDate,
     pub stale_hold_age: StaleHoldAge,
@@ -79,6 +80,9 @@ impl AttentionItem {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum Details {
+    StatementMonths {
+        months: Vec<UnreconciledMonth>,
+    },
     Entries {
         entry_count: usize,
     },
@@ -111,6 +115,7 @@ pub(super) fn compute(context: &AttentionContext<'_>) -> Result<Attention, CliEr
     Ok(BTreeMap::from([
         ("uncategorized", uncategorized(context)?),
         ("unreconciled_accounts", unreconciled(context)?),
+        ("unreconciled_months", statement_months(context)?),
         ("recurring_due", recurring(context)?),
         (
             "aged_receivables",
@@ -123,10 +128,29 @@ pub(super) fn compute(context: &AttentionContext<'_>) -> Result<Attention, CliEr
     ]))
 }
 
+fn statement_months(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
+    let months = unreconciled_months(
+        context.conn,
+        context.company,
+        None,
+        Some(context.currency),
+        context.as_of,
+    )?;
+    Ok(AttentionItem {
+        id: Some("unreconciled_months"),
+        available: true,
+        count: Some(months.len()),
+        total: OptionalMoneyField("total", None),
+        basis: Some("finished-calendar-months-with-asset-or-liability-postings"),
+        reason: "These account months had postings and still need a completed statement reconciliation.",
+        details: Some(Details::StatementMonths { months }),
+    })
+}
+
 fn stale(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> {
     let holds = stale_holds(
         context.conn,
-        context.company,
+        context.company.as_str(),
         context.currency,
         context.as_of,
         context.stale_hold_age,
@@ -237,7 +261,7 @@ fn recurring(context: &AttentionContext<'_>) -> Result<AttentionItem, CliError> 
         .checked_add_days(Days::new(14))
         .ok_or_else(date_overflow)?;
     let schedules =
-        db::schedules::list_schedules(&Company::bind(context.conn, context.company.parse()?)?)?;
+        db::schedules::list_schedules(&Company::bind(context.conn, context.company.clone())?)?;
     let mut count = 0_usize;
     let mut schedule_count = 0_usize;
     let mut total = 0;
@@ -487,7 +511,7 @@ mod tests {
     fn attention(db: &Db, as_of: &str) -> Result<Value, CliError> {
         let facts = compute(&AttentionContext {
             conn: db.read(),
-            company: "co",
+            company: &"co".parse()?,
             currency: Currency::USD,
             as_of: as_of
                 .parse()

@@ -94,6 +94,7 @@ convert! {
     inform_preference_show(CompanyScope) => Standing(input => StandingRequest::ShowInform(input.company.into_inner())),
     inform_preference_set(InformPreferenceSet) => Standing(input => StandingRequest::SetInform(input.company.into_inner(), input.preference)),
     period_close(PeriodClose) => Period(input => input.into()),
+    reconcile_list(ReconcileList) => Reconcile(input => input.into()),
     period_list(CompanyScope) => Period(input => PeriodRequest::List(input.company.into_inner())),
     audit_log(AuditLog) => AuditLog(input => input.into()),
     audit_undo(AuditUndo) => AuditReceipts(input => ReceiptRequest::Undo(input.company.into_inner(), input.receipt)),
@@ -101,6 +102,7 @@ convert! {
 
 try_convert! {
     txn_link(TxnLink) => Transaction(input => input.try_into()?),
+    reconcile_statement(ReconcileStatement) => Reconcile(input => input.try_into()?),
     txn_recategorize(TxnRecategorize) => Transaction(input => input.try_into()?),
     period_reopen(PeriodReopen) => Period(input => input.try_into()?),
     financial_summary(FinancialSummary) => Summary(input => input.try_into()?),
@@ -193,6 +195,7 @@ pub(super) fn response(
         LedgerResponse::Company(response) => (encode(response)?, None),
         LedgerResponse::Investment(_, _, response) => (encode(response)?, None),
         LedgerResponse::Period(_, _, response) => (encode(response)?, None),
+        LedgerResponse::Reconcile(_, _, response) => (encode(response)?, None),
         LedgerResponse::Report(response) => (response.data()?, None),
         LedgerResponse::Rule(_, _, response) => (encode(response)?, None),
         LedgerResponse::Standing(_, _, response) => (encode(response)?, None),

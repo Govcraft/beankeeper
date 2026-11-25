@@ -111,7 +111,7 @@ fn rejection(error: &CliError) -> Response {
         CliError::NotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    let body = json!({"code": error.code(), "message": error.to_string()}).to_string();
+    let body = json!(error.payload()).to_string();
     let mut response = (status, [(header::CONTENT_TYPE, "application/json")], body).into_response();
     if status == StatusCode::UNAUTHORIZED {
         response.headers_mut().insert(
@@ -123,10 +123,7 @@ fn rejection(error: &CliError) -> Response {
 }
 
 pub(super) fn protocol_error(error: &CliError) -> rmcp::ErrorData {
-    rmcp::ErrorData::internal_error(
-        error.error_code(),
-        Some(json!({"code": error.code(), "message": error.to_string()})),
-    )
+    rmcp::ErrorData::internal_error(error.error_code(), Some(json!(error.payload())))
 }
 
 async fn authenticate(

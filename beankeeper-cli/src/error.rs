@@ -5,7 +5,7 @@ use crate::db::audit::{
     DuplicateAccountName, ReversalBlock, recategorize::RecategorizeBlock,
     receipts::ReceiptUndoError,
 };
-use crate::db::periods::ClosedPostingPeriod;
+use crate::db::{periods::ClosedPostingPeriod, statement::StatementDiscrepancy};
 
 /// CLI error type with semantic exit codes.
 #[derive(Debug)]
@@ -28,6 +28,8 @@ pub enum CliError {
     ReversalBlocked(ReversalBlock),
     /// A posting line cannot be recategorized.
     RecategorizeBlocked(RecategorizeBlock),
+    /// Cleared entries do not match the statement ending balance.
+    StatementDiscrepancy(StatementDiscrepancy),
     /// Database error (I/O, corruption). Exit code 4.
     Database(String),
     /// Not found (account, transaction, company does not exist). Exit code 5.
@@ -59,6 +61,8 @@ pub enum ErrorCode {
     DuplicateAccountName,
     /// A recategorization was refused by a ledger invariant.
     RecategorizeBlocked,
+    /// Cleared entries do not match the statement ending balance.
+    StatementDiscrepancy,
     /// The receipt's change has no undo operation.
     UndoUnsupported,
     /// This structural correction requires owner authority.
@@ -88,6 +92,7 @@ impl ErrorCode {
             Self::Validation => "VALIDATION",
             Self::DuplicateAccountName => "DUPLICATE_ACCOUNT_NAME",
             Self::RecategorizeBlocked => "RECATEGORIZE_BLOCKED",
+            Self::StatementDiscrepancy => "STATEMENT_DISCREPANCY",
             Self::UndoUnsupported => "UNDO_UNSUPPORTED",
             Self::UndoOwnerOnly => "UNDO_OWNER_ONLY",
             Self::UndoIneligible => "UNDO_INELIGIBLE",
@@ -105,6 +110,7 @@ impl ErrorCode {
             Self::Validation
             | Self::DuplicateAccountName
             | Self::RecategorizeBlocked
+            | Self::StatementDiscrepancy
             | Self::UndoOwnerOnly
             | Self::UndoUnsupported
             | Self::UndoIneligible => 3,
@@ -144,6 +150,7 @@ impl CliError {
             | Self::PeriodLocked(_)
             | Self::ReversalBlocked(_) => ErrorCode::Validation,
             Self::DuplicateAccountName(_) => ErrorCode::DuplicateAccountName,
+            Self::StatementDiscrepancy(_) => ErrorCode::StatementDiscrepancy,
             Self::RecategorizeBlocked(
                 RecategorizeBlock::TransactionMissing
                 | RecategorizeBlock::EntryMissing
@@ -167,6 +174,18 @@ impl CliError {
         self.code().as_str()
     }
 
+    pub(crate) fn payload(&self) -> crate::output::json::EnvelopeError {
+        let details = match self {
+            Self::StatementDiscrepancy(error) => Some(error.details()),
+            _ => None,
+        };
+        crate::output::json::EnvelopeError {
+            code: self.code(),
+            message: self.to_string(),
+            details,
+        }
+    }
+
     /// Report the error to stderr.
     ///
     /// In JSON mode with a `Meta`, outputs an enveloped JSON error object.
@@ -174,18 +193,12 @@ impl CliError {
     /// Otherwise, writes a human-readable `error: <message>` line.
     pub fn report(&self, json_mode: bool, meta: Option<crate::output::json::Meta>) {
         if json_mode {
-            let message = self.to_string();
-            let code = self.code();
-
             if let Some(m) = meta {
                 let env = crate::output::json::Envelope {
                     ok: false,
                     meta: m,
                     data: None::<()>,
-                    error: Some(crate::output::json::EnvelopeError {
-                        code,
-                        message: message.clone(),
-                    }),
+                    error: Some(self.payload()),
                 };
                 if let Ok(json) = serde_json::to_string_pretty(&env) {
                     eprintln!("{json}");
@@ -196,10 +209,7 @@ impl CliError {
             // Fallback: minimal JSON without envelope
             let json = serde_json::json!({
                 "ok": false,
-                "error": {
-                    "code": code,
-                    "message": message,
-                }
+                "error": self.payload()
             });
             eprintln!("{json}");
         } else {
@@ -225,6 +235,7 @@ impl fmt::Display for CliError {
             Self::PeriodLocked(e) => write!(f, "{e}"),
             Self::ReversalBlocked(e) => write!(f, "{e}"),
             Self::RecategorizeBlocked(e) => write!(f, "{e}"),
+            Self::StatementDiscrepancy(e) => write!(f, "{e}"),
             Self::Sqlite(e) => write!(f, "database error: {e}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
         }
@@ -240,6 +251,7 @@ impl std::error::Error for CliError {
             Self::PeriodLocked(e) => Some(e),
             Self::ReversalBlocked(e) => Some(e),
             Self::RecategorizeBlocked(e) => Some(e),
+            Self::StatementDiscrepancy(e) => Some(e),
             Self::Sqlite(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Usage(_)

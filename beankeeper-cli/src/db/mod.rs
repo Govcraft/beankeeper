@@ -22,6 +22,7 @@ pub mod schedules;
 pub mod schema;
 pub mod spend_limits;
 pub mod standing;
+pub mod statement;
 pub mod transactions;
 mod txn_link_id;
 mod txn_link_kind;

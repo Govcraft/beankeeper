@@ -23,6 +23,7 @@ use crate::db::connection::ReadConn;
 use crate::db::ids::TransactionId;
 use crate::db::periods::ClosedPostingPeriod;
 use crate::db::rules::{self, RuleActivation, RuleId};
+use crate::db::statement::StatementKey;
 use crate::db::transactions::PostResult;
 use crate::db::{Actor, accounts};
 use crate::error::CliError;
@@ -188,6 +189,11 @@ pub enum UndoOutcome {
         link: TxnLinkId,
         undo_receipt: ReceiptId,
     },
+    /// An audited correction unlocked the statement's promoted clearings.
+    StatementUnreconciled {
+        statement: StatementKey,
+        undo_receipt: ReceiptId,
+    },
     /// The account remains in the ledger and rejects ordinary new postings.
     Archived {
         account: AccountCode,
@@ -210,7 +216,8 @@ impl UndoOutcome {
             | Self::AnnotationsRestored { undo_receipt, .. }
             | Self::TransactionLinkUndone { undo_receipt, .. }
             | Self::Archived { undo_receipt, .. }
-            | Self::AccountNameRestored { undo_receipt, .. } => undo_receipt,
+            | Self::AccountNameRestored { undo_receipt, .. }
+            | Self::StatementUnreconciled { undo_receipt, .. } => undo_receipt,
         }
     }
 }
@@ -283,6 +290,7 @@ enum UndoTarget {
 }
 
 enum AgentUndoTarget {
+    Statement(StatementKey),
     Posting(TransactionId),
     Rename {
         code: AccountCode,
@@ -490,6 +498,9 @@ fn undo_single(
         return Ok(outcome);
     }
     match target {
+        UndoTarget::Agent(AgentUndoTarget::Statement(key)) => {
+            super::super::statement::undo(tx, actor, scope, receipt, key)?;
+        }
         UndoTarget::Agent(AgentUndoTarget::Posting(id)) => {
             reverse_posting(tx, actor, company, receipt, *id, authority)?;
         }
@@ -684,6 +695,9 @@ fn resolve_event(
         (ReceiptTarget::TransactionLink(id), AuditAction::LinkCreate) => {
             Ok(UndoTarget::Agent(AgentUndoTarget::Link(id.clone())))
         }
+        (ReceiptTarget::StatementReconciliation(key), AuditAction::StatementReconcile) => {
+            Ok(UndoTarget::Agent(AgentUndoTarget::Statement(key.clone())))
+        }
         (ReceiptTarget::Account(code), AuditAction::Create) => {
             Ok(UndoTarget::Account(code.clone()))
         }
@@ -776,6 +790,14 @@ fn recorded_outcome(
     let Some(event) = event else { return Ok(None) };
     let undo_receipt = ReceiptId::from(event.id());
     match (target, event.target(), event.action()) {
+        (
+            UndoTarget::Agent(AgentUndoTarget::Statement(key)),
+            ReceiptTarget::StatementReconciliation(original),
+            AuditAction::StatementUnreconcile,
+        ) if key == original => Ok(Some(UndoOutcome::StatementUnreconciled {
+            statement: key.clone(),
+            undo_receipt,
+        })),
         (
             UndoTarget::Agent(AgentUndoTarget::Posting(transaction)),
             ReceiptTarget::Transaction(recorded),

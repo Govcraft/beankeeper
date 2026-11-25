@@ -767,6 +767,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "period_close",
     "period_reopen",
     "period_list",
+    "reconcile_statement",
+    "reconcile_list",
     "company_list",
     "company_show",
     "company_create",

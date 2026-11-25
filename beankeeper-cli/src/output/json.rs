@@ -153,6 +153,8 @@ impl<T: Serialize> Serialize for Envelope<T> {
 pub struct EnvelopeError {
     pub code: ErrorCode,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 /// Construct a `Meta` with the current UTC timestamp.

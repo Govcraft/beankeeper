@@ -470,3 +470,19 @@ impl<T: JsonSchema> JsonSchema for NonEmpty<T> {
         json_schema!({"type": "array", "minItems": 1, "items": generator.subschema_for::<T>()})
     }
 }
+
+impl TextValue for crate::db::statement::StatementMonth {
+    const NAME: &'static str = "statement month-end";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "format": "date"})
+    }
+}
+
+impl TextValue for crate::db::statement::StatementRef {
+    const NAME: &'static str = "statement reference";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "minLength": 1})
+    }
+}

@@ -16,6 +16,7 @@ use crate::db::audit::{ActorLabel, AuditAction, AuditEntity, AuditLogRow, Client
 use crate::db::ids::{AuditRowId, EntryId, ReceiptId, TransactionId};
 use crate::db::proposals::ProposalId;
 use crate::db::rules::{RuleActivation, RuleId};
+use crate::db::statement::StatementKey;
 use crate::error::CliError;
 
 /// The audited target. Other audit kinds retain their exact historical key.
@@ -34,6 +35,8 @@ pub enum ReceiptTarget {
     Proposal(ProposalId),
     /// A posted journal entry.
     Entry(EntryId),
+    /// A statement for one account, currency and month.
+    StatementReconciliation(StatementKey),
     /// An audit event outside the receipt change summaries.
     Other {
         /// Audit entity classification.
@@ -63,6 +66,10 @@ impl TryFrom<(AuditEntity, &str)> for ReceiptTarget {
             | AuditEntity::CorrectionProposal => {
                 id.parse().map(Self::Proposal).map_err(invalid_stored_value)
             }
+            AuditEntity::StatementReconciliation => id
+                .parse()
+                .map(Self::StatementReconciliation)
+                .map_err(invalid_stored_value),
             AuditEntity::Entry => id.parse().map(Self::Entry).map_err(invalid_stored_value),
             _ => Ok(Self::Other {
                 entity,
@@ -169,6 +176,10 @@ pub enum ReceiptChange {
     },
     /// The account went from active to archived.
     AccountArchived,
+    /// A monthly statement matched and locked its clearings.
+    StatementReconciled,
+    /// A completed monthly statement was undone.
+    StatementUnreconciled,
     /// An original categorization rule was created.
     RuleCreated,
     /// The rule was deactivated by an owner undo.
@@ -408,6 +419,12 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
     use AuditEntity as Entity;
     let decode = Snapshots(row);
     match (row.entity, row.action) {
+        (Entity::StatementReconciliation, Action::StatementReconcile) => {
+            Ok((ReceiptChange::StatementReconciled, None))
+        }
+        (Entity::StatementReconciliation, Action::StatementUnreconcile) => {
+            Ok((ReceiptChange::StatementUnreconciled, None))
+        }
         (Entity::Account, Action::Create) => {
             decode.absent("before", row.before.as_deref())?;
             Ok((

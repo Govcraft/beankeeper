@@ -214,6 +214,12 @@ impl ReceiptResponse {
                             "Removed transaction link {link}. Its history is still in your books."
                         )
                     }
+                    ReceiptUndoOutcome::Single(UndoOutcome::StatementUnreconciled {
+                        statement,
+                        ..
+                    }) => {
+                        format!("Undid statement reconciliation for {statement}.")
+                    }
                     ReceiptUndoOutcome::Onboarding(_) => "Reverted the onboarding change.".into(),
                     ReceiptUndoOutcome::Single(UndoOutcome::AccountNameRestored {
                         account,

@@ -72,6 +72,7 @@ enum Check {
     AccountLabels,
     TransactionLinks,
     StatementBatches,
+    StatementReconciliations,
     ForeignKeys,
     SqliteIntegrity,
     RowCounts,
@@ -92,6 +93,7 @@ impl Check {
             Self::AccountLabels => "account_labels",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
+            Self::StatementReconciliations => "statement_reconciliations",
             Self::ForeignKeys => "foreign_keys",
             Self::SqliteIntegrity => "sqlite_integrity",
             Self::RowCounts => "row_counts",
@@ -178,6 +180,10 @@ impl VerifiedLedger {
                 name: Check::StatementBatches,
                 outcome: Outcome::Skipped,
             });
+        }
+        if schema_version >= schema::STATEMENT_RECONCILIATION_SCHEMA_VERSION {
+            Check::StatementReconciliations
+                .record(audit::statement::verify(reader), &mut checks)?;
         }
         Check::ForeignKeys.record(verify_foreign_keys(reader), &mut checks)?;
         Check::SqliteIntegrity.record(verify_integrity(reader), &mut checks)?;
