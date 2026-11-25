@@ -149,7 +149,7 @@ pub(super) fn check_posting(
     }
     if !mirror
         && evidence.is_none()
-        && let Some(functional) = functional_currency(company.read(), company.slug())?
+        && let Some(functional) = accounts.first().map(|account| account.functional)
         && journal.currency() != functional
     {
         return Err(FxError::FunctionalCurrencyRequired(functional).into());

@@ -795,6 +795,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_show",
     "report",
     "financial_summary",
+    "fx_post",
+    "fx_revalue",
     "ledger_setup_status",
     "ledger_setup_book_show",
     "ledger_setup_begin",

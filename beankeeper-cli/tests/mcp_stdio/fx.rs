@@ -155,6 +155,8 @@ fn fx_cli_mcp_balance_and_audit_undo_agree() -> TestResult {
     let mut mcp = identity_client(&mcp_path, &key_file, None, false)?;
     let mut signed = identity_client(&mcp_path, &key_file, Some(owner_token), false)?;
     create(&mut mcp, "1100", "EUR", "asset")?;
+    let wrong_currency = mcp.call("txn_post", &posting("wrong-currency"))?;
+    assert_eq!(payload(&wrong_currency)?["code"], "FX_INVALID");
     let posted = mcp.success("fx_post", &movement("1100", "debit", 10_000, "0.8"))?;
     let input = revaluation("1100", "2026-01-31", "0.85");
     let marked = mcp.success("fx_revalue", &input)?;

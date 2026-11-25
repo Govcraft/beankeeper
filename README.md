@@ -547,6 +547,8 @@ mutation tools are absent and cannot be called.
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
 | `investment_buy`, `investment_sell`, `investment_lots`, `investment_holdings` | Trade, inspect lots and value holdings |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
+| `fx_post` | Record native minor units and their functional value with a rate and unique reference |
+| `fx_revalue` | Revalue one or all foreign accounts as of a date and return an undo receipt for each adjustment |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `ledger_setup_book_show` | Read a book's current profile, fiscal year, base currency, and named accounts |
 | `report` | Run CLI reports |
@@ -1918,7 +1920,9 @@ Legacy books without a profile infer the currency from their postings, and requi
 After setting the book's functional currency through setup, declare the native
 currency of an asset or liability. The following example assumes a GBP book with
 a functional-currency cash account (1000) and an FX gain/loss account (4900).
-Omit the native currency for accounts that use the book's currency.
+Omit the native currency for accounts that use the book's currency. Once a book
+has a foreign-currency account, ordinary postings use the functional currency.
+Supply it explicitly when it differs from your CLI or MCP posting default.
 
 ```bash
 bk --company personal account create 1100 "Euro cash" --type asset --native-currency EUR
