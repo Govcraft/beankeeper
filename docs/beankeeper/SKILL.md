@@ -157,6 +157,15 @@ immediately and preserves the audit link. Never create a hand-made offsetting
 entry to undo a posting. Tell the owner what changed and offer the Desktop
 detail link when available.
 
+To correct the account on a posted line, use `bk txn recategorize` or
+`txn_recategorize`. Supply the original transaction's ID or reference and
+the destination account. If the tool cannot infer a single source line,
+inspect the transaction and supply its entry ID or a source account with
+one matching line. After the move, explain what changed using the returned
+amount and account codes, offer the optional `desktop_path`, and offer
+one-step undo with `audit_undo` and the returned `receipt_id`. For exact
+retries, reuse `posting_reference` and set `on_conflict` to `skip`.
+
 For a card authorization, use `txn_post` with `status: "pending"` or
 `bk txn post --status pending`. Supply one debit and one credit on different
 accounts and use a stable authorization reference. A CSV or OFX/QFX import can
