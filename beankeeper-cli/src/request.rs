@@ -20,6 +20,7 @@ use crate::{
         audit::{AuditQuery, AuditResponse, ReceiptRequest, ReceiptResponse},
         budget::{BudgetRequest, BudgetResponse},
         company::{CompanyRequest, CompanyResponse},
+        fx::{FxRequest, FxResponse},
         investment::{InvestmentRequest, InvestmentResponse},
         period::{PeriodRequest, PeriodResponse},
         reconcile::{ReconcileRequest, ReconcileResponse},
@@ -40,6 +41,7 @@ use crate::{
 #[non_exhaustive]
 pub enum LedgerRequest {
     Account(AccountRequest),
+    Fx(FxRequest),
     AuditLog(AuditQuery),
     AuditReceipts(ReceiptRequest),
     Budget(BudgetRequest),
@@ -60,6 +62,7 @@ pub enum LedgerRequest {
 #[non_exhaustive]
 pub enum LedgerResponse {
     Account(AccountResponse),
+    Fx(FxResponse),
     AuditLog(AuditResponse),
     AuditReceipts(ReceiptResponse),
     Budget(BudgetResponse),
@@ -82,6 +85,7 @@ impl LedgerRequest {
     pub fn operation(&self) -> Operation {
         match self {
             Self::Account(request) => request.operation(),
+            Self::Fx(request) => request.operation(),
             Self::AuditLog(_) => Operation::AuditLog,
             Self::AuditReceipts(request) => request.operation(),
             Self::Budget(request) => request.operation(),
@@ -145,6 +149,7 @@ impl LedgerRequest {
     ) -> Result<LedgerResponse, CliError> {
         match self {
             Self::Account(request) => request.execute(db, actor).map(LedgerResponse::Account),
+            Self::Fx(request) => request.execute(db, actor).map(LedgerResponse::Fx),
             Self::AuditLog(request) => request.execute(db).map(LedgerResponse::AuditLog),
             Self::AuditReceipts(request) => request
                 .execute(db, actor)
@@ -195,6 +200,7 @@ impl LedgerResponse {
     pub(crate) fn render(&self, cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         match self {
             Self::Account(response) => response.render(cli),
+            Self::Fx(response) => response.render(cli),
             Self::AuditLog(response) => response.render(cli),
             Self::AuditReceipts(response) => response.render(cli),
             Self::Budget(response) => response.render(cli),

@@ -202,11 +202,13 @@ pub(crate) fn envelope_ok<T: Serialize>(meta: Meta, data: T) -> Result<String, C
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-pub struct AccountJson {
+pub struct AccountJson<'a> {
     code: String,
     name: String,
     r#type: String,
     normal_balance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fx: Option<&'a crate::db::fx::Balance>,
 }
 
 #[derive(Serialize)]
@@ -401,7 +403,14 @@ pub fn render_accounts(accounts: &[AccountRow], meta: Meta) -> Result<String, Cl
     envelope_ok(meta, account_rows(accounts))
 }
 
-pub(crate) fn account_rows(accounts: &[AccountRow]) -> Vec<AccountJson> {
+pub(crate) fn account_rows(accounts: &[AccountRow]) -> Vec<AccountJson<'static>> {
+    account_rows_with_fx(accounts, &[])
+}
+
+pub(crate) fn account_rows_with_fx<'a>(
+    accounts: &[AccountRow],
+    balances: &'a [crate::db::fx::Balance],
+) -> Vec<AccountJson<'a>> {
     accounts
         .iter()
         .map(|a| AccountJson {
@@ -409,6 +418,9 @@ pub(crate) fn account_rows(accounts: &[AccountRow]) -> Vec<AccountJson> {
             name: a.name.clone(),
             r#type: a.account_type.code().to_owned(),
             normal_balance: a.account_type.normal_balance().code().to_string(),
+            fx: balances
+                .iter()
+                .find(|balance| balance.account.as_str() == a.code),
         })
         .collect()
 }
@@ -706,12 +718,23 @@ struct AccountWithBalanceJson<'a> {
     available_balance: MoneyField,
     #[serde(skip_serializing_if = "Option::is_none")]
     desktop_view: Option<super::DesktopRegister>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fx: Option<&'a crate::db::fx::Balance>,
 }
 
 pub(crate) fn account_balance_rows<'a>(
     rows: &'a [AccountWithBalanceRow],
     company: Option<&str>,
     window: crate::db::AccountBalanceWindow,
+) -> impl Serialize + 'a {
+    account_balance_rows_with_fx(rows, company, window, &[])
+}
+
+pub(crate) fn account_balance_rows_with_fx<'a>(
+    rows: &'a [AccountWithBalanceRow],
+    company: Option<&str>,
+    window: crate::db::AccountBalanceWindow,
+    balances: &'a [crate::db::fx::Balance],
 ) -> impl Serialize + 'a {
     rows.iter()
         .map(|row| AccountWithBalanceJson {
@@ -721,6 +744,9 @@ pub(crate) fn account_balance_rows<'a>(
             normal_balance: row.account_type.normal_balance().code(),
             default_tax_category: row.default_tax_category.as_deref(),
             currency: row.debit_total.currency(),
+            fx: balances
+                .iter()
+                .find(|balance| balance.account.as_str() == row.code),
             debit_total: MoneyField::new("debit_total", row.debit_total),
             credit_total: MoneyField::new("credit_total", row.credit_total),
             posted_balance: MoneyField::new("posted_balance", row.posted_balance),

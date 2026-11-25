@@ -7,6 +7,109 @@ use crate::db::audit::{
 };
 use crate::db::{periods::ClosedPostingPeriod, statement::StatementDiscrepancy};
 
+/// A foreign-currency posting or account configuration could not be applied.
+#[derive(Debug)]
+pub enum FxError {
+    /// A book profile must provide the functional currency.
+    MissingProfile,
+    /// Foreign denomination requires an asset or liability.
+    NonMonetaryAccount,
+    /// The account is not configured to carry a foreign currency.
+    ForeignAccountRequired(beankeeper::types::AccountCode),
+    /// The offset must use the functional currency.
+    FunctionalOffsetRequired,
+    /// The valuation offset must be a revenue or expense account.
+    GainLossAccountRequired,
+    /// A direct posting would omit required native-currency evidence.
+    NativeMovementRequired(beankeeper::types::AccountCode),
+    /// A functional-only posting used a different denomination.
+    FunctionalCurrencyRequired(beankeeper::types::Currency),
+    /// The book's functional currency is already used by a foreign account.
+    FunctionalCurrencyInUse,
+    /// No rate was recorded for the pair and date.
+    MissingRate {
+        /// Native currency of the account.
+        native: beankeeper::types::Currency,
+        /// Functional currency of the book.
+        functional: beankeeper::types::Currency,
+        /// Requested effective date.
+        date: chrono::NaiveDate,
+    },
+    /// An explicit rate can only apply to one currency pair.
+    AmbiguousRate,
+    /// A later valuation already uses the balance that would change.
+    LaterValuation(chrono::NaiveDate),
+    /// A native movement rounds to zero functional minor units.
+    ZeroMovement,
+    /// The conversion could not be performed.
+    Conversion(beankeeper::types::ExchangeRateError),
+}
+
+impl fmt::Display for FxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingProfile => {
+                f.write_str("set the book's functional currency with setup first")
+            }
+            Self::NonMonetaryAccount => {
+                f.write_str("only asset and liability accounts can carry a foreign currency")
+            }
+            Self::ForeignAccountRequired(code) => {
+                write!(f, "account '{code}' does not carry a foreign currency")
+            }
+            Self::FunctionalOffsetRequired => {
+                f.write_str("an FX offset must be a functional-currency account")
+            }
+            Self::GainLossAccountRequired => {
+                f.write_str("FX gain/loss account must be a revenue or expense account")
+            }
+            Self::NativeMovementRequired(code) => write!(
+                f,
+                "account '{code}' requires native movement evidence; use fx post"
+            ),
+            Self::FunctionalCurrencyRequired(currency) => write!(
+                f,
+                "posting requires the book's functional currency {currency}; use fx post for native movements"
+            ),
+            Self::FunctionalCurrencyInUse => f.write_str(
+                "functional currency is fixed while the book has foreign-currency accounts",
+            ),
+            Self::MissingRate {
+                native,
+                functional,
+                date,
+            } => write!(
+                f,
+                "no recorded rate from {native} to {functional} on {date}; supply a rate"
+            ),
+            Self::AmbiguousRate => {
+                f.write_str("supply an explicit rate for one currency pair at a time")
+            }
+            Self::LaterValuation(date) => {
+                write!(f, "a valuation on {date} already uses this account balance")
+            }
+            Self::ZeroMovement => {
+                f.write_str("native movement rounds to zero functional minor units")
+            }
+            Self::Conversion(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for FxError {}
+
+impl From<FxError> for CliError {
+    fn from(error: FxError) -> Self {
+        Self::Fx(error)
+    }
+}
+
+impl From<beankeeper::types::ExchangeRateError> for CliError {
+    fn from(error: beankeeper::types::ExchangeRateError) -> Self {
+        FxError::Conversion(error).into()
+    }
+}
+
 /// CLI error type with semantic exit codes.
 #[derive(Debug)]
 pub enum CliError {
@@ -18,6 +121,8 @@ pub enum CliError {
     Forbidden(String),
     /// Validation error (unbalanced transaction, invalid account). Exit code 3.
     Validation(String),
+    /// Foreign-currency configuration or posting error. Exit code 3.
+    Fx(FxError),
     /// A requested account label is already in use in the book.
     DuplicateAccountName(DuplicateAccountName),
     /// Unsupported or ineligible receipt undo. Exit code 3.
@@ -57,6 +162,10 @@ pub enum ErrorCode {
     Forbidden,
     /// Inputs violate a domain rule.
     Validation,
+    /// Foreign-currency posting or account configuration error.
+    FxInvalid,
+    /// No recorded rate exists for the requested pair.
+    FxRateMissing,
     /// A requested account label is already in use in the book.
     DuplicateAccountName,
     /// A recategorization was refused by a ledger invariant.
@@ -90,6 +199,8 @@ impl ErrorCode {
             Self::Unauthorized => "UNAUTHORIZED",
             Self::Forbidden => "FORBIDDEN",
             Self::Validation => "VALIDATION",
+            Self::FxInvalid => "FX_INVALID",
+            Self::FxRateMissing => "FX_RATE_MISSING",
             Self::DuplicateAccountName => "DUPLICATE_ACCOUNT_NAME",
             Self::RecategorizeBlocked => "RECATEGORIZE_BLOCKED",
             Self::StatementDiscrepancy => "STATEMENT_DISCREPANCY",
@@ -108,6 +219,8 @@ impl ErrorCode {
         match self {
             Self::Usage | Self::Unimplemented => 2,
             Self::Validation
+            | Self::FxInvalid
+            | Self::FxRateMissing
             | Self::DuplicateAccountName
             | Self::RecategorizeBlocked
             | Self::StatementDiscrepancy
@@ -145,6 +258,8 @@ impl CliError {
             Self::NotFound(_) | Self::ReversalBlocked(ReversalBlock::PostingMissing { .. }) => {
                 ErrorCode::NotFound
             }
+            Self::Fx(FxError::MissingRate { .. }) => ErrorCode::FxRateMissing,
+            Self::Fx(_) => ErrorCode::FxInvalid,
             Self::Validation(_)
             | Self::Bean(_)
             | Self::PeriodLocked(_)
@@ -230,6 +345,7 @@ impl fmt::Display for CliError {
             | Self::General(msg)
             | Self::Unimplemented(msg) => write!(f, "{msg}"),
             Self::Bean(e) => write!(f, "{e}"),
+            Self::Fx(e) => write!(f, "{e}"),
             Self::DuplicateAccountName(e) => write!(f, "{e}"),
             Self::ReceiptUndo(e) => write!(f, "{e}"),
             Self::PeriodLocked(e) => write!(f, "{e}"),
@@ -246,6 +362,7 @@ impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Bean(e) => Some(e),
+            Self::Fx(e) => Some(e),
             Self::DuplicateAccountName(e) => Some(e),
             Self::ReceiptUndo(e) => Some(e),
             Self::PeriodLocked(e) => Some(e),

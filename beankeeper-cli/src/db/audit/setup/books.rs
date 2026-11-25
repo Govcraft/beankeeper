@@ -518,7 +518,7 @@ pub(in crate::db::audit) fn current_profile(
         .ok_or_else(|| CliError::NotFound(format!("setup book profile for '{company}' not found")))
 }
 
-fn find_profile(
+pub(in crate::db) fn find_profile(
     conn: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<Option<BookProfile>, CliError> {
@@ -568,6 +568,7 @@ fn record_profile(
     previous: Option<BookProfile>,
     settings: BookSettings,
 ) -> Result<BookProfile, CliError> {
+    crate::db::fx::guard_profile(writer.tx.read(), company, Some(settings.base_currency))?;
     let supersedes = previous.as_ref().map(|profile| profile.revision);
     let revision = writer
         .tx
@@ -660,6 +661,7 @@ fn create_setup_account(
             name,
             account_type,
             default_tax_category: None,
+            native_currency: None,
         },
     )?;
     Ok(SetupAccount {

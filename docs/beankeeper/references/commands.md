@@ -289,6 +289,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_recategorize` | `company`, exactly one of the original transaction's `id` or `reference`, and `to_account`; optional `from_account`, `entry_id`, `date`, `tax_category`, `description`, `posting_reference`, `on_conflict` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, `include_reversed`, and repeated `meta` filters; show accepts `id` |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
+| `fx_post` | Record native minor units and their functional value with a rate and unique reference |
+| `fx_revalue` | Revalue one or all foreign accounts as of a date and return an undo receipt for each adjustment |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `ledger_setup_book_show` | `company`; returns the current profile and chart of accounts |
 | `report` | `company`, `kind`, and that report's CLI options in snake_case; reconciliation accepts `mode` (`bank` default or `settlement`), `statement`, and settlement `link_key` (default `applies_to`) |
@@ -531,7 +533,8 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 ### Read-only tools
 
 Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `txn_post`, `txn_propose`, `txn_approve`,
-`txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
+`fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
+`txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,

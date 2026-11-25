@@ -497,6 +497,7 @@ struct SummaryReport {
     attention: attention::Attention,
     highlights: Vec<String>,
     view: Value,
+    fx_balances: Vec<db::fx::Balance>,
 }
 
 #[derive(Serialize)]
@@ -548,6 +549,8 @@ struct SummaryJson<'a> {
     highlights: &'a [String],
     desktop_view: &'a Value,
     basis: Value,
+    #[serde(skip_serializing_if = "<[db::fx::Balance]>::is_empty")]
+    fx_balances: &'a [db::fx::Balance],
 }
 
 impl SummaryReport {
@@ -573,6 +576,7 @@ impl SummaryReport {
                 desktop_view: &self.view,
             },
             highlights: &self.highlights,
+            fx_balances: &self.fx_balances,
             desktop_view: &self.view,
             basis: json!({
                 "activity":"Posted revenue and net expenses, including refunds; leftover is income minus spending, not cash flow.",
@@ -664,7 +668,9 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
         receivable_accounts: receivables,
         payable_accounts: payables,
     };
-    let highlights = model::highlights(&standing, &comparison, &movers);
+    let mut highlights = model::highlights(&standing, &comparison, &movers);
+    let fx_balances = db::fx::balances(&scope, Some(periods.current.to))?;
+    highlights.extend(fx_balances.iter().map(ToString::to_string));
     Ok(SummaryReport {
         currency,
         periods,
@@ -674,6 +680,7 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
         attention,
         highlights,
         view,
+        fx_balances,
     })
 }
 

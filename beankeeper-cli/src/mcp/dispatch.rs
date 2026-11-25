@@ -65,7 +65,17 @@ convert! {
     account_create(AccountCreate) => Account(input => AccountRequest::Create {
         company: input.company.into_inner(), code: input.code.into_inner(), name: input.name.into_inner(),
         account_type: input.account_type, default_tax_category: input.default_tax_category,
+        native_currency: input.native_currency,
     }),
+    fx_post(FxPostInput) => Fx(input => (input.company.into_inner(), crate::db::fx::Movement {
+        account: input.account.into_inner(), offset: input.offset_account.into_inner(),
+        direction: input.direction.into_inner(), native_minor: input.native_minor, rate: input.rate,
+        date: input.date.into(), description: input.description, reference: input.reference.into_inner(),
+    }).into()),
+    fx_revalue(FxRevalueInput) => Fx(input => (input.company.into_inner(), crate::db::fx::Revalue {
+        account: input.account.map(Text::into_inner), offset: input.fx_gain_loss_account.into_inner(),
+        rate: input.rate, date: input.as_of.into(),
+    }).into()),
     account_rename(AccountRename) => Account(input => AccountRequest::Rename(
         input.company.into_inner(), input.code.into_inner(), input.name.into_inner(),
     )),
@@ -187,6 +197,7 @@ pub(super) fn response(
 
     let (data, pagination): (Value, Option<&Pagination>) = match response {
         LedgerResponse::Account(response) => (encode(response)?, None),
+        LedgerResponse::Fx(response) => (encode(response)?, None),
         LedgerResponse::AuditLog(response) => {
             (encode(response.data())?, Some(response.pagination()))
         }

@@ -11,7 +11,8 @@ use crate::error::CliError;
 /// Resolve the currency a report should be computed and displayed in.
 ///
 /// - If `requested` is `Some`, it is used as-is.
-/// - Otherwise the distinct currencies of the company's transactions are
+/// - Otherwise use the saved functional currency when a book profile exists.
+/// - For legacy books without a profile, the distinct currencies of the company's transactions are
 ///   inspected: exactly one is used; none falls back to USD; several is an
 ///   error asking the user to pass `--currency`.
 ///
@@ -39,6 +40,11 @@ pub(super) fn infer_company_currency(
     company: &str,
     ambiguous: fn(String) -> CliError,
 ) -> Result<Currency, CliError> {
+    if let Ok(slug) = company.parse()
+        && let Some(currency) = crate::db::fx::functional_currency(conn, &slug)?
+    {
+        return Ok(currency);
+    }
     let currencies = company_currencies(conn, company)?;
     match currencies.as_slice() {
         [] => Ok(Currency::default()),

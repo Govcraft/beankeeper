@@ -323,7 +323,9 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "DROP TRIGGER protect_statement_clearing_update;
+            "DROP TABLE fx_postings;
+             DROP TABLE fx_accounts;
+             DROP TRIGGER protect_statement_clearing_update;
              DROP TRIGGER protect_statement_clearing_delete;
              DROP TRIGGER protect_statement_clearing_replace;
              DROP TRIGGER protect_statement_undo;

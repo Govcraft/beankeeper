@@ -548,6 +548,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/rename/delete` | Manage chart of accounts |
+| `bk fx post/revalue` | Record native movements and audited carrying-value adjustments |
 | `bk txn post` | Record a balanced journal entry |
 | `bk txn meta set/unset` | Annotate posted transactions by ID or reference without changing financial fields |
 | `bk txn propose` | Submit a balanced posting for approval without posting it |
@@ -886,10 +887,17 @@ are net on each account's normal side. JSON command ids are
 [`references/commands.md`](references/commands.md) and
 [`references/json-api.md`](references/json-api.md).
 
-Reports never mix currencies. Without `--currency`, the report currency is
-inferred from the company's transactions (USD if there are none); if the
-company uses more than one currency the command fails with a `VALIDATION`
-error listing them, and `--currency CODE` is required.
+Reports total one currency. A configured book defaults to the functional currency
+in its profile. Legacy books without a profile infer the currency from postings
+and require `--currency CODE` when several currencies are present.
+
+### Foreign-currency balances
+
+- Use `account_create` with `native_currency` (`bk account create --native-currency CODE`) for a foreign-currency asset or liability in a book with a functional currency.
+- Record movement with `fx_post` (`bk fx post`). Supply the foreign `account`, functional `offset_account`, `direction`, positive integer `native_minor`, decimal-string `rate`, `date`, `description`, and unique `reference`. The rate expresses functional major units per native major unit. A movement must round to a positive functional minor-unit magnitude.
+- Use `fx_revalue` (`bk fx revalue`) with `as_of`, a revenue or expense `fx_gain_loss_account`, and optionally `account` and `rate`. Omit `account` for all active foreign accounts. Omit `rate` to reuse the latest rate recorded for each pair as of that date. A supplied rate applies to a single currency pair.
+- Tell the owner what changed in plain words. Include the functional gain or loss, original native balance, and returned Desktop link when helpful. Read the account's `fx` object in `account_list`, or `fx_balances` in a balance sheet or `financial_summary`, for exact amounts and the last active revaluation.
+- Use the returned `undo_receipt` with `audit_undo` to reverse a posted adjustment in one step. A no-change revaluation returns no receipt. A closed period or reconciled entry can block a reversal. Use a new rate when `FX_RATE_MISSING` is returned.
 
 ### Tax-oriented exports
 

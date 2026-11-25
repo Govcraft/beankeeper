@@ -7,6 +7,9 @@ mod audit_receipts;
 #[path = "mcp_stdio/corrections.rs"]
 mod corrections;
 
+#[path = "mcp_stdio/fx.rs"]
+mod fx;
+
 #[path = "mcp_stdio/holds.rs"]
 mod holds;
 
@@ -792,6 +795,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_show",
     "report",
     "financial_summary",
+    "fx_post",
+    "fx_revalue",
     "ledger_setup_status",
     "ledger_setup_book_show",
     "ledger_setup_begin",
