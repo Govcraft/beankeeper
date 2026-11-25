@@ -1753,6 +1753,10 @@ JSON command responses follow a uniform envelope contract for reliable programma
 
 For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `IO`, `GENERAL`.
 
+Embedded Rust hosts can use `beankeeper_cli::output::json::EnvelopeError::from(&error)`
+to render a `CliError` with their own response metadata. This preserves the
+shared CLI and MCP error code, message, and structured details when present.
+
 ### Environment Variables
 
 | Variable | Purpose |

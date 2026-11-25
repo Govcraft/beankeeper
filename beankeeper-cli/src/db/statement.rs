@@ -401,3 +401,31 @@ pub(crate) fn unreconciled_months(
         .collect::<Result<_, _>>()
         .map_err(Into::into)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{error::ErrorCode, output::json::EnvelopeError};
+
+    #[test]
+    fn envelope_error_preserves_statement_discrepancy_details() {
+        let expected = StatementBalance(10_000, Currency::USD);
+        let actual = StatementBalance(9_999, Currency::USD);
+        let Err(error) = expected.check_ending(actual) else {
+            panic!("different statement balances should produce an error");
+        };
+
+        let payload = EnvelopeError::from(&error);
+        assert_eq!(payload.code, ErrorCode::StatementDiscrepancy);
+        assert_eq!(payload.message, error.to_string());
+        assert_eq!(
+            payload.details,
+            Some(serde_json::json!({
+                "currency": "USD",
+                "expected_ending_balance": 10000,
+                "actual_ending_balance": 9999,
+                "delta": 1,
+            })),
+        );
+    }
+}

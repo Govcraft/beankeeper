@@ -23,6 +23,7 @@ use crate::db::ActorLabel;
 use crate::db::connection::Db;
 use crate::error::CliError;
 use crate::identity::VerifiedAgent;
+use crate::output::json::EnvelopeError;
 
 /// Header selecting a registered ledger for one HTTP MCP request.
 pub const LEDGER_TARGET_HEADER: &str = "beankeeper-ledger-target";
@@ -111,7 +112,7 @@ fn rejection(error: &CliError) -> Response {
         CliError::NotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    let body = json!(error.payload()).to_string();
+    let body = json!(EnvelopeError::from(error)).to_string();
     let mut response = (status, [(header::CONTENT_TYPE, "application/json")], body).into_response();
     if status == StatusCode::UNAUTHORIZED {
         response.headers_mut().insert(
@@ -123,7 +124,7 @@ fn rejection(error: &CliError) -> Response {
 }
 
 pub(super) fn protocol_error(error: &CliError) -> rmcp::ErrorData {
-    rmcp::ErrorData::internal_error(error.error_code(), Some(json!(error.payload())))
+    rmcp::ErrorData::internal_error(error.error_code(), Some(json!(EnvelopeError::from(error))))
 }
 
 async fn authenticate(

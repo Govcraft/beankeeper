@@ -43,6 +43,7 @@ use crate::db::{
 };
 use crate::error::CliError;
 pub use crate::ledger_target::{LedgerTarget, NamedLedgerTarget};
+use crate::output::json::EnvelopeError;
 use crate::request::LedgerRequest;
 use targets::OpenedLedger;
 
@@ -232,7 +233,7 @@ impl LedgerServer {
 }
 
 fn tool_error(error: &CliError) -> CallToolResult {
-    CallToolResult::structured_error(json!(error.payload()))
+    CallToolResult::structured_error(json!(EnvelopeError::from(error)))
 }
 
 fn summary_error(company: Option<&str>, error: Option<&serde_json::Value>) -> CallToolResult {

@@ -8,6 +8,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Added
 
+- Embedded Rust hosts can convert `&CliError` to `EnvelopeError` and preserve the CLI and MCP error code, message, and structured details. ([#303](https://github.com/Govcraft/beankeeper/issues/303))
 - Track native foreign-currency balances and post auditable, undoable revaluations through the CLI and MCP. ([#292](https://github.com/Govcraft/beankeeper/issues/292))
 - Post, import, and report in active ISO 4217 currencies with defined decimal minor units through the CLI and MCP. ([#296](https://github.com/Govcraft/beankeeper/issues/296))
 - Link related transactions in the same book with a typed relationship through the CLI or MCP and undo it with one audit receipt. ([#291](https://github.com/Govcraft/beankeeper/issues/291))
