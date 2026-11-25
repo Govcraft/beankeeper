@@ -218,7 +218,7 @@ fn show_transaction(db: &Db, company: CompanySlug, id: TransactionId) -> Result<
         let scope = Company::bind(reader, company)?;
         let (row, entries) = transactions::get_transaction(&scope, id)?;
         let attachments = attachments::list_attachments(&scope, id)?;
-        let links = txn_links::for_transaction(&scope, id)?;
+        let links = txn_links::for_transaction(&scope, id, ReversalVisibility::Include)?;
         let clearings = entries
             .iter()
             .map(|entry| {
@@ -465,7 +465,10 @@ impl ListRequest {
                 .collect::<Result<_, _>>()?;
             let links = rows
                 .iter()
-                .map(|row| txn_links::for_transaction(&scope, row.id).map(|links| (row.id, links)))
+                .map(|row| {
+                    txn_links::for_transaction(&scope, row.id, params.include_reversed)
+                        .map(|links| (row.id, links))
+                })
                 .collect::<Result<_, _>>()?;
             let pagination = Pagination::new(params.limit, params.offset, rows.len(), total);
             Ok(TxnData::List(ListPage {

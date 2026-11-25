@@ -1007,7 +1007,10 @@ charge or a payment to its invoice. The kinds are `transfer`, `refund`,
 must be in the selected book. Duplicate active links of the same kind,
 self-links, and directed cycles are rejected. Links leave balances and entries
 unchanged. Either transaction shows the active link, and JSON transaction lists
-include a `links` array per transaction.
+include a `links` array per transaction. Lists hide links to either side of an
+audited reversal by default. Use `--include-reversed` on the CLI or
+`include_reversed: true` in MCP to include them. Inspect a transaction by ID to
+see its active links regardless of reversal status.
 
 MCP exposes the same operation as `txn_link` with `company`, `source_id`,
 `target_id`, and `kind`. The result includes a `receipt` and an optional

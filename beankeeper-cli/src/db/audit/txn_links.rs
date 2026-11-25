@@ -12,6 +12,7 @@ use crate::db::{
     companies::{Company, CompanySlug},
     connection::ReadConn,
     ids::{ReceiptId, TransactionId},
+    transactions::ReversalVisibility,
 };
 pub use crate::db::{txn_link_id::TxnLinkId, txn_link_kind::TxnLinkKind};
 use crate::error::CliError;
@@ -212,12 +213,16 @@ pub(super) fn undo(
 pub(crate) fn for_transaction(
     scope: &Company<'_>,
     id: TransactionId,
+    visibility: ReversalVisibility,
 ) -> Result<Vec<TxnLink>, CliError> {
-    let mut statement = scope.read().prepare_cached(
+    let mut sql = String::from(
         "SELECT id, source_id, target_id, link_kind, receipt FROM active_transaction_links
-         WHERE company_slug = ?1 AND (source_id = ?2 OR target_id = ?2)
-         ORDER BY receipt",
-    )?;
+         WHERE company_slug = ?1 AND (source_id = ?2 OR target_id = ?2)",
+    );
+    visibility.exclude_reversed(&mut sql, "source_id");
+    visibility.exclude_reversed(&mut sql, "target_id");
+    sql.push_str(" ORDER BY receipt");
+    let mut statement = scope.read().prepare_cached(&sql)?;
     let mut rows = statement.query(params![scope.slug(), id])?;
     let mut links = Vec::new();
     while let Some(row) = rows.next()? {

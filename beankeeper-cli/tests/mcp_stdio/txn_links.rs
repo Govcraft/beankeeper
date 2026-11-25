@@ -30,6 +30,63 @@ fn open_client(path: &Path) -> Result<Client, Box<dyn Error>> {
 }
 
 #[test]
+fn lists_hide_links_to_either_side_of_a_reversal_unless_requested() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("links.db");
+    seed(&path)?;
+    let mut client = open_client(&path)?;
+    let original = client.success("txn_post", &posting("mistaken-charge"))?["id"].clone();
+    let current = client.success("txn_post", &posting("current-charge"))?["id"].clone();
+    let payment = client.success("txn_post", &posting("payment"))?["id"].clone();
+    let to_original = client.success("txn_link", &link_request(&current, &original, "related"))?;
+    let to_payment = client.success("txn_link", &link_request(&current, &payment, "related"))?;
+    let reversed = client.success(
+        "txn_reverse",
+        &json!({"company":"acme", "id":original, "date":"2026-03-02"}),
+    )?;
+    let reversal = &reversed["id"];
+    let from_reversal = client.success("txn_link", &link_request(reversal, &current, "related"))?;
+
+    for include_reversed in [false, true] {
+        let listed = client.success(
+            "txn_list",
+            &json!({
+                "company":"acme", "reference":"current-charge", "include_reversed":include_reversed
+            }),
+        )?;
+        let mut command = bk(&path)?;
+        let mut args = vec![
+            "--json",
+            "--company",
+            "acme",
+            "txn",
+            "list",
+            "--reference",
+            "current-charge",
+        ];
+        if include_reversed {
+            args.push("--include-reversed");
+        }
+        assert_eq!(listed, data(&mut command, &args)?);
+        assert_eq!(listed.as_array().map(Vec::len), Some(1));
+        let links = listed[0]["links"].as_array().ok_or("missing links")?;
+        let ids: Vec<_> = links.iter().map(|link| &link["id"]).collect();
+        let expected = if include_reversed {
+            vec![&to_original["id"], &to_payment["id"], &from_reversal["id"]]
+        } else {
+            vec![&to_payment["id"]]
+        };
+        assert_eq!(ids, expected);
+    }
+
+    for (id, link) in [(&original, &to_original), (reversal, &from_reversal)] {
+        let shown = client.success("txn_show", &json!({"company":"acme", "id":id}))?;
+        assert_eq!(shown[0]["links"][0]["id"], link["id"]);
+    }
+    Ok(())
+}
+
+#[test]
 fn signed_bookkeeper_links_and_undoes_from_either_transport() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("links.db");

@@ -147,6 +147,9 @@ with `{"company":"acme","source_id":43,"target_id":42,"kind":"refund"}`.
 Point a refund at its original charge or a payment at its invoice. Other
 kinds are `transfer`, `adjustment`, `recategorization`, and `related`.
 Use the `links` array from either transaction in `txn_show` or `txn_list`.
+Lists hide links to either side of a reversed pair unless you pass
+`"include_reversed": true` (`--include-reversed` on the CLI). To inspect all
+active links for a transaction by ID, use `txn_show`.
 For transactions in different books, use `txn_post` with `correlate`.
 
 Tell the owner which transactions you linked and why. Offer the result's
