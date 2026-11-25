@@ -323,10 +323,15 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "DROP TRIGGER protect_transaction_link_undo;
+            "DROP TRIGGER protect_statement_clearing_update;
+             DROP TRIGGER protect_statement_clearing_delete;
+             DROP TRIGGER protect_statement_clearing_replace;
+             DROP VIEW statement_locked_clearings;
+             DROP VIEW statement_reconciliations;
+             DROP TRIGGER protect_transaction_link_undo;
+             DROP TABLE transaction_links;
              DROP VIEW active_transaction_links;
              DROP VIEW transaction_link_creations;
-             DROP TABLE transaction_links;
              DROP INDEX idx_transaction_company_id;
              DROP VIEW hold_adjustments;
              DROP VIEW posting_reversals;

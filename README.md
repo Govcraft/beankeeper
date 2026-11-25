@@ -534,6 +534,8 @@ mutation tools are absent and cannot be called.
 | `ledger_setup_statement_commit` | Post the reviewed batch with a separate live approval credential |
 | `ledger_setup_statement_receipt` | Read statement provenance and the transaction IDs the batch created |
 | `period_close`, `period_reopen`, `period_list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
+| `reconcile_statement` | Match and lock a monthly statement using existing clearings. Provide `company`, `account`, `period_end` and `statement_ending_balance`. Returns an audited undo receipt. |
+| `reconcile_list` | List statement receipts and outstanding account months. Provide `company` and optionally filter by `account` or `currency`. |
 | `company_list`, `company_show` | Inspect companies |
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |

@@ -594,7 +594,7 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
     Ok(())
 }
 
-const VERIFICATION_CHECKS: [&str; 15] = [
+const VERIFICATION_CHECKS: [&str; 16] = [
     "schema_version",
     "audit_hash_chain",
     "ledger_policy",
@@ -607,6 +607,7 @@ const VERIFICATION_CHECKS: [&str; 15] = [
     "account_labels",
     "transaction_links",
     "statement_batches",
+    "statement_reconciliations",
     "foreign_keys",
     "sqlite_integrity",
     "row_counts",

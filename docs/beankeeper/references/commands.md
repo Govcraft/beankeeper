@@ -270,6 +270,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `ledger_setup_statement_commit` | Approve the exact batch with `company`, `batch_id`, and `preview_sha256` |
 | `ledger_setup_statement_receipt` | Read audited import provenance with `company` and `batch_id` |
 | `period_close`, `period_reopen`, `period_list` | `company`; close requires `through` (YYYY-MM-DD), reopen requires nonempty `reason`; close/reopen require `ledger/admin` under enforcement |
+| `reconcile_statement` | Match and lock a monthly statement using existing clearings. Provide `company`, `account`, `period_end` and `statement_ending_balance`. Returns an audited undo receipt. |
+| `reconcile_list` | List statement receipts and outstanding account months. Provide `company` and optionally filter by `account` or `currency`. |
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
@@ -538,7 +540,7 @@ Read-only mode removes `company_create`, `company_delete`, `account_create`, `ac
 `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
 `ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
 `rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
-`inform_preference_set` and `audit_undo` from the router.
+`inform_preference_set`, `reconcile_statement` and `audit_undo` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
