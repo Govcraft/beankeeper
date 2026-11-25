@@ -76,16 +76,20 @@ impl std::fmt::Display for LinkSpec {
     }
 }
 
-// Binds both IDs to the same company in the authorized write transaction.
+// Both endpoints were resolved using the write scope that will record the link.
 struct CompanyLink<'a> {
-    company: &'a CompanySlug,
+    tx: &'a AuditedTx<'a>,
+    scope: Company<'a>,
     spec: LinkSpec,
 }
 
-impl<'a> TryFrom<(&'a Company<'_>, LinkSpec)> for CompanyLink<'a> {
+impl<'a> TryFrom<(&'a AuditedTx<'a>, CompanySlug, LinkSpec)> for CompanyLink<'a> {
     type Error = CliError;
 
-    fn try_from((scope, spec): (&'a Company<'_>, LinkSpec)) -> Result<Self, Self::Error> {
+    fn try_from(
+        (tx, company, spec): (&'a AuditedTx<'a>, CompanySlug, LinkSpec),
+    ) -> Result<Self, Self::Error> {
+        let scope = Company::bind(tx.read(), company)?;
         for id in spec.endpoints() {
             let found = scope.read().query_row(
                 "SELECT EXISTS (SELECT 1 FROM transactions WHERE company_slug = ?1 AND id = ?2)",
@@ -99,10 +103,7 @@ impl<'a> TryFrom<(&'a Company<'_>, LinkSpec)> for CompanyLink<'a> {
                 )));
             }
         }
-        Ok(Self {
-            company: scope.slug(),
-            spec,
-        })
+        Ok(Self { tx, scope, spec })
     }
 }
 
@@ -135,21 +136,22 @@ pub fn create(
     spec: LinkSpec,
 ) -> Result<TxnLink, CliError> {
     grant.mutate("sp_txn_link", |tx, actor| {
-        let scope = Company::bind(tx.read(), company)?;
-        CompanyLink::try_from((&scope, spec))?.record(tx, actor)
+        CompanyLink::try_from((tx, company, spec))?.record(actor)
     })
 }
 
 impl CompanyLink<'_> {
-    fn record(self, tx: &AuditedTx<'_>, actor: &Actor) -> Result<TxnLink, CliError> {
+    fn record(self, actor: &Actor) -> Result<TxnLink, CliError> {
+        let company = self.scope.slug();
+        let conn = self.tx.connection();
         let id = TxnLinkId::generate();
         let key = id.to_string();
         let after = super::snapshot(&self.spec);
         let receipt = append_with_links(
-            tx.connection(),
+            conn,
             actor,
             AuditChange {
-                company_slug: Some(self.company),
+                company_slug: Some(company),
                 entity: AuditEntity::TransactionLink,
                 entity_id: &key,
                 action: AuditAction::LinkCreate,
@@ -157,10 +159,10 @@ impl CompanyLink<'_> {
             },
             AuditLinks::None,
         )?;
-        tx.connection().execute(
+        conn.execute(
             "INSERT INTO transaction_links (id, company_slug, source_id, target_id, link_kind, receipt)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![key, self.company, self.spec.source_id, self.spec.target_id, self.spec.kind.as_str(), receipt],
+            params![key, company, self.spec.source_id, self.spec.target_id, self.spec.kind.as_str(), receipt],
         )
         .map_err(|error| match &error {
             rusqlite::Error::SqliteFailure(_, Some(message))
