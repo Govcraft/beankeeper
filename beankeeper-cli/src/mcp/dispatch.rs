@@ -100,6 +100,7 @@ convert! {
 }
 
 try_convert! {
+    txn_recategorize(TxnRecategorize) => Transaction(input => input.try_into()?),
     period_reopen(PeriodReopen) => Period(input => input.try_into()?),
     financial_summary(FinancialSummary) => Summary(input => input.try_into()?),
     ledger_setup_statement_preview(LedgerSetupStatementPreview) => Setup(input => input.try_into()?),

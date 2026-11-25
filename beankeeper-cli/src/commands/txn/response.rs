@@ -16,6 +16,7 @@ use crate::db::{
         MetadataResult,
         account_rename::RenameProposal,
         corrections::{AppliedReversal, CorrectionProposal, PendingCorrection},
+        recategorize,
         receipts::{ReceiptId, desktop_receipt_path},
     },
     clearings::Clearing,
@@ -94,6 +95,7 @@ pub(super) enum TxnData {
         id: TransactionId,
         result: AppliedReversal,
     },
+    Recategorized(recategorize::Applied),
     List(ListPage),
     Count(i64),
     Details(Box<TransactionDetails>),
@@ -177,6 +179,22 @@ impl Serialize for TxnResponse {
             TxnData::CorrectionProposed(proposal) => proposal.serialize(serializer),
             TxnData::Proposals(proposals) => proposals.serialize(serializer),
             TxnData::Resolved(proposal) => proposal.serialize(serializer),
+            TxnData::Recategorized(result) => {
+                #[derive(Serialize)]
+                struct RecategorizationJson<'a> {
+                    #[serde(flatten)]
+                    result: &'a recategorize::Applied,
+                    desktop_path: Option<String>,
+                }
+                RecategorizationJson {
+                    result,
+                    desktop_path: self
+                        .company
+                        .as_ref()
+                        .map(|company| result.desktop_path(company)),
+                }
+                .serialize(serializer)
+            }
             TxnData::List(list) => {
                 json::transaction_list_data(&list.rows, &list.entries).serialize(serializer)
             }
@@ -330,6 +348,7 @@ impl TxnResponse {
             TxnData::Posted { .. }
             | TxnData::Settled(_)
             | TxnData::Reversed { .. }
+            | TxnData::Recategorized(_)
             | TxnData::Metadata(_)
             | TxnData::Clear(_)
             | TxnData::Reconciled(_) => {}
@@ -346,6 +365,13 @@ impl TxnResponse {
                     result.settlement.hold_id(),
                     result.transaction_id,
                     result.delta(),
+                );
+            }
+            TxnData::Recategorized(result) => {
+                eprintln!(
+                    "{} Use receipt #{} to undo this change.",
+                    result.summary(),
+                    result.receipt()
                 );
             }
             TxnData::Reversed { id, result } => match result.result() {

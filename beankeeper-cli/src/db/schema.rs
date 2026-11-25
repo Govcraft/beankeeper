@@ -7,7 +7,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = CORRECTION_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = RECATEGORIZATION_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -19,6 +19,7 @@ const ANNOTATION_UNDO_SCHEMA_VERSION: i64 = 30;
 pub(super) const HOLDS_SCHEMA_VERSION: i64 = 31;
 pub(crate) const ACCOUNT_RENAME_SCHEMA_VERSION: i64 = 32;
 const CORRECTION_SCHEMA_VERSION: i64 = 33;
+const RECATEGORIZATION_SCHEMA_VERSION: i64 = 34;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +183,18 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         apply_v25(conn)?;
     }
     apply_receipt_migrations(conn, version)?;
+    apply_hold_migrations(conn, version)?;
+
+    debug_assert_eq!(
+        get_schema_version(ReadConn::new(conn)).unwrap_or(0),
+        CURRENT_VERSION,
+        "schema version mismatch after migrations"
+    );
+
+    Ok(())
+}
+
+fn apply_hold_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
     if version < HOLDS_SCHEMA_VERSION {
         apply_v31(conn)?;
     }
@@ -192,11 +205,13 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         migrate_hold_audit(conn, AuditTable::Correction, CORRECTION_SCHEMA_VERSION)?;
     }
 
-    debug_assert_eq!(
-        get_schema_version(ReadConn::new(conn)).unwrap_or(0),
-        CURRENT_VERSION,
-        "schema version mismatch after migrations"
-    );
+    if version < RECATEGORIZATION_SCHEMA_VERSION {
+        migrate_hold_audit(
+            conn,
+            AuditTable::Recategorization,
+            RECATEGORIZATION_SCHEMA_VERSION,
+        )?;
+    }
 
     Ok(())
 }
@@ -1511,23 +1526,24 @@ fn apply_v26(conn: &Connection) -> Result<(), CliError> {
                  )
                  BEGIN SELECT RAISE(ABORT, 'account archive requires an owner undo audit record'); END;",
         )?;
-        install_receipt_read_paths(conn)?;
+        install_receipt_read_paths(conn, AuditTable::Receipts)?;
         conn.execute_batch("DROP TRIGGER protect_proposal_resolution;")?;
         install_proposal_resolution_trigger(conn, ProposalAuditLink::Column)?;
         Ok(())
     })
 }
 
-fn install_receipt_read_paths(conn: &Connection) -> Result<(), CliError> {
-    conn.execute_batch(
+fn install_receipt_read_paths(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
+    let recategorize = recategorization_action(table);
+    conn.execute_batch(&format!(
         "CREATE INDEX idx_receipt_company ON audit_log(company_slug, id);
          CREATE UNIQUE INDEX idx_receipt_undo ON audit_log(undo_of) WHERE undo_of IS NOT NULL;
          CREATE INDEX idx_receipt_posting ON audit_log(company_slug, related_posting)
-             WHERE action IN ('reverse', 'proposal_approve');
+             WHERE action IN ('reverse', 'proposal_approve'{recategorize});
          CREATE VIEW audit_receipt_postings AS
              SELECT id, company_slug, related_posting AS posting_id
-             FROM audit_log WHERE action IN ('reverse', 'proposal_approve');",
-    )?;
+             FROM audit_log WHERE action IN ('reverse', 'proposal_approve'{recategorize});"
+    ))?;
     Ok(())
 }
 
@@ -1716,7 +1732,7 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             conn.execute_batch(&definition)?;
         }
         if table >= AuditTable::StandingSettings {
-            install_receipt_read_paths(conn)?;
+            install_receipt_read_paths(conn, table)?;
         }
         if table >= AuditTable::RuleUndo {
             install_rule_undo_guards(conn)?;
@@ -1738,12 +1754,20 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
                      WHERE entity = 'account_rename_proposal';",
             )?;
         }
-        if table == AuditTable::Correction {
+        if table >= AuditTable::Correction {
             conn.execute_batch(
                 "CREATE UNIQUE INDEX idx_correction_proposal ON audit_log(entity_id, action)
                      WHERE entity = 'correction_proposal';
                  CREATE INDEX idx_correction_company ON audit_log(company_slug, agent_uri, id)
                      WHERE action = 'correction_propose';",
+            )?;
+        }
+        if table >= AuditTable::Recategorization {
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX idx_recategorization_posting
+                    ON audit_log(company_slug, related_posting) WHERE action = 'recategorize';
+                 CREATE INDEX idx_recategorization_source
+                    ON audit_log(company_slug, entity_id) WHERE action = 'recategorize';",
             )?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
@@ -1767,6 +1791,7 @@ enum AuditTable {
     AnnotationUndo,
     AccountRename,
     Correction,
+    Recategorization,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1829,7 +1854,7 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::AccountRenameResolve
         );
     }
-    if table == AuditTable::Correction {
+    if table >= AuditTable::Correction {
         let _ = write!(entity, ",'{}'", AuditEntity::CorrectionProposal);
         let _ = write!(
             action,
@@ -1838,7 +1863,16 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
             AuditAction::CorrectionResolve
         );
     }
+    action.push_str(recategorization_action(table));
     (entity, action)
+}
+
+fn recategorization_action(table: AuditTable) -> &'static str {
+    if table >= AuditTable::Recategorization {
+        ",'recategorize'"
+    } else {
+        ""
+    }
 }
 
 fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
@@ -1883,10 +1917,18 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     } else {
         ("", "")
     };
-    let correction_check = if table == AuditTable::Correction {
+    let correction_check = if table >= AuditTable::Correction {
         ", CHECK((action IN ('correction_propose', 'correction_resolve')) = (entity = 'correction_proposal')),
            CHECK(entity <> 'correction_proposal' OR (company_slug IS NOT NULL AND agent_uri IS NOT NULL
                  AND after IS NOT NULL AND (action = 'correction_resolve' OR before IS NULL)))"
+    } else {
+        ""
+    };
+    let recategorize = recategorization_action(table);
+    let recategorize_check = if table >= AuditTable::Recategorization {
+        ", CHECK(action <> 'recategorize' OR (
+            entity = 'transaction' AND company_slug IS NOT NULL AND before IS NULL
+            AND after IS NOT NULL AND related_posting IS NOT NULL AND hash_version = 7))"
     } else {
         ""
     };
@@ -1896,16 +1938,16 @@ fn receipt_audit_checks(table: AuditTable) -> String {
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
                    CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
                        AND related_posting > 0 AND company_slug IS NOT NULL
-                       AND action IN ('reverse', 'proposal_approve', 'correlate'))),
+                       AND action IN ('reverse', 'proposal_approve', 'correlate'{recategorize}))),
                    CHECK(hash_version < 6 OR (
-                       (action IN ('reverse', 'proposal_approve', 'correlate')) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}")
+                       (action IN ('reverse', 'proposal_approve', 'correlate'{recategorize})) = (related_posting IS NOT NULL)
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}")
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -2620,7 +2662,7 @@ mod tests {
         apply_v30(&conn)?;
         assert_eq!(get_schema_version(reader)?, ANNOTATION_UNDO_SCHEMA_VERSION);
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(reader)?, CORRECTION_SCHEMA_VERSION);
+        assert_eq!(get_schema_version(reader)?, CURRENT_VERSION);
         let mut migrations =
             conn.prepare("SELECT version FROM schema_version WHERE version >= ?1 ORDER BY rowid")?;
         let versions = migrations
@@ -2633,6 +2675,7 @@ mod tests {
                 HOLDS_SCHEMA_VERSION,
                 ACCOUNT_RENAME_SCHEMA_VERSION,
                 CORRECTION_SCHEMA_VERSION,
+                RECATEGORIZATION_SCHEMA_VERSION,
             ]
         );
         assert_eq!(audit_head()?, before);
@@ -2653,7 +2696,7 @@ mod tests {
     }
 
     #[test]
-    fn v31_upgrade_preserves_an_audited_pending_hold() -> Result<(), CliError> {
+    fn v34_upgrade_preserves_an_audited_pending_hold_and_its_schema() -> Result<(), CliError> {
         use super::super::{
             Actor, audit,
             holds::EntryStatus,
@@ -2725,11 +2768,72 @@ mod tests {
         assert_eq!(hold_adjustment()?, -250);
         conn.execute_batch("DROP TABLE audit_log_rebuild")?;
 
-        ensure_schema(&conn)?;
+        apply_v32(&conn)?;
+        migrate_hold_audit(&conn, AuditTable::Correction, CORRECTION_SCHEMA_VERSION)?;
         assert_eq!(get_schema_version(reader)?, CORRECTION_SCHEMA_VERSION);
-        assert_eq!(audit::verify_hash_chain(reader)?.length(), audit_length);
-        assert_eq!(hold_adjustment()?, -250);
-        ensure_schema(&conn)?;
+        assert_v34_preserves_hold_history(&conn, audit_length)
+    }
+
+    fn assert_v34_preserves_hold_history(
+        conn: &Connection,
+        audit_length: u64,
+    ) -> Result<(), CliError> {
+        use super::super::audit;
+        let reader = ReadConn::new(conn);
+        let hashes = |reader: ReadConn<'_>| -> Result<Vec<(String, String)>, CliError> {
+            let mut stmt =
+                reader.prepare("SELECT prev_hash, row_hash FROM audit_log ORDER BY id")?;
+            Ok(stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?)
+        };
+        let history = hashes(reader)?;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("v33.db");
+        conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
+        let migrated = super::super::Db::open_existing(&path, None)?;
+        let migrated_reader = migrated.read();
+        assert_eq!(
+            get_schema_version(migrated_reader)?,
+            RECATEGORIZATION_SCHEMA_VERSION
+        );
+        assert_eq!(hashes(migrated_reader)?, history);
+        assert_eq!(
+            audit::verify_hash_chain(migrated_reader)?.length(),
+            audit_length
+        );
+        super::super::verification::VerifiedLedger::read(&migrated)?;
+        let net: i64 = migrated_reader.query_row(
+            "SELECT net FROM hold_adjustments WHERE company_slug='legacy' AND account_code='1000'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(net, -250);
+        assert!(
+            migrated
+                .conn()
+                .execute(
+                    "UPDATE entries SET amount = 1 WHERE transaction_id IN (
+                SELECT id FROM transactions WHERE reference = 'v31-hold')",
+                    [],
+                )
+                .is_err()
+        );
+        for name in [
+            "protect_hold_settlement",
+            "posting_reversals",
+            "audit_receipt_postings",
+            "idx_correction_proposal",
+            "idx_correction_company",
+        ] {
+            let present: bool = migrated_reader.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",
+                [name],
+                |row| row.get(0),
+            )?;
+            assert!(present, "{name} was lost in migration");
+        }
+        ensure_schema(migrated.conn())?;
         Ok(())
     }
 

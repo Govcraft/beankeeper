@@ -682,6 +682,12 @@ fn resolve_event(
                 after: after.clone(),
             }))
         }
+        (ReceiptTarget::Transaction(_), AuditAction::Recategorize) => {
+            let posting = event
+                .related_posting()
+                .ok_or_else(|| invalid_stored_target("missing recategorization posting"))?;
+            Ok(UndoTarget::Agent(AgentUndoTarget::Posting(posting)))
+        }
         (ReceiptTarget::Proposal(_), AuditAction::ProposalApprove) => {
             if let Some(id) = event.related_posting()
                 && posting_creation(reader, scope.slug(), id, event.id())?.is_some()

@@ -273,6 +273,17 @@ pub(super) fn post_onboarding(
     }
 }
 
+pub(super) fn post_recategorization(
+    posting: &audit::recategorize::RecategorizationPosting<'_>,
+) -> Result<PostResult, CliError> {
+    let (tx, params, journal) = posting.parts();
+    post_with_source(
+        tx,
+        &Posting::Recategorization(params, journal),
+        PostingSource::Storage,
+    )
+}
+
 pub(super) fn post_reversal(reversal: audit::ReversalPosting<'_>) -> Result<PostResult, CliError> {
     post_with_source(
         reversal.transaction(),
@@ -296,6 +307,7 @@ enum Posting<'a> {
     Approved(super::proposals::ApprovedPosting<'a>),
     ApprovedStatement(audit::setup::statement_batches::ApprovedStatementPosting<'a>),
     Reversal(audit::ReversalPosting<'a>),
+    Recategorization(&'a PostTransactionParams<'a>, &'a Transaction),
 }
 
 fn post_with_source(
@@ -306,7 +318,9 @@ fn post_with_source(
     let reader = tx.read();
     let approved;
     let p = match posting {
-        Posting::Direct(params, _) | Posting::Prepared(params, _) => *params,
+        Posting::Direct(params, _)
+        | Posting::Prepared(params, _)
+        | Posting::Recategorization(params, _) => *params,
         Posting::Settlement(ready) => ready.params(),
         Posting::Reversal(reversal) => reversal.params(),
         Posting::Approved(approval) => {
@@ -321,7 +335,9 @@ fn post_with_source(
     // Command and import diagnostics precede idempotency. Raw API retries
     // look up the existing reference before validating entries.
     let prepared = match posting {
-        Posting::Prepared(_, journal) => Some((*journal).clone()),
+        Posting::Prepared(_, journal) | Posting::Recategorization(_, journal) => {
+            Some((*journal).clone())
+        }
         _ if source != PostingSource::Storage => Some(build_journal(reader, p, source)?),
         _ => None,
     };
@@ -361,7 +377,10 @@ fn post_with_source(
     };
     let period =
         super::periods::check_posting(tx, p.company_slug, journal.date()).map_err(|error| {
-            if matches!(posting, Posting::Reversal(_)) {
+            if matches!(
+                posting,
+                Posting::Reversal(_) | Posting::Recategorization(..)
+            ) {
                 error
             } else {
                 super::periods::ClosedPostingPeriod::public_error(error)
@@ -377,6 +396,7 @@ fn post_with_source(
     let metadata = match posting {
         Posting::Direct(..)
         | Posting::Prepared(..)
+        | Posting::Recategorization(..)
         | Posting::ApprovedStatement(_)
         | Posting::Settlement(..) => metadata::UserAnnotations::parse(p.metadata)?
             .map(metadata::UserAnnotations::into_normalized),
@@ -894,6 +914,16 @@ pub(super) fn find_transaction(
     read_transaction_by(company.read(), company.slug(), id, decode_transaction)
 }
 
+pub(super) fn find_transaction_row(
+    company: &Company<'_>,
+    id: TransactionId,
+) -> Result<Option<TransactionRow>, CliError> {
+    let reader = company.read();
+    let has_holds =
+        super::schema::get_schema_version(reader)? >= super::schema::HOLDS_SCHEMA_VERSION;
+    read_transaction_row_by(reader, company.slug(), id, has_holds, decode_transaction)
+}
+
 fn missing_transaction(company: &Company<'_>, id: TransactionId) -> CliError {
     CliError::NotFound(format!(
         "transaction {id} not found in company '{}'",
@@ -937,8 +967,21 @@ fn read_transaction_by<T>(
     id: TransactionId,
     decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Option<(T, Vec<EntryRow>)>, CliError> {
-    let company_slug = company.as_str();
     let has_holds = super::schema::get_schema_version(conn)? >= super::schema::HOLDS_SCHEMA_VERSION;
+    let Some(txn) = read_transaction_row_by(conn, company, id, has_holds, decode)? else {
+        return Ok(None);
+    };
+    let entries = read_entries(conn, company, id, has_holds)?;
+    Ok(Some((txn, entries)))
+}
+
+fn read_transaction_row_by<T>(
+    conn: ReadConn<'_>,
+    company: &CompanySlug,
+    id: TransactionId,
+    has_holds: bool,
+    decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Option<T>, CliError> {
     let lifecycle = if has_holds {
         "posting_status, settles_hold, amount_delta"
     } else {
@@ -949,14 +992,7 @@ fn read_transaction_by<T>(
          FROM transactions WHERE company_slug = ?1 AND id = ?2"
     ))?;
 
-    let mut rows = stmt.query_map(params![company_slug, id], decode)?;
-
-    let Some(row) = rows.next() else {
-        return Ok(None);
-    };
-    let txn = row?;
-    let entries = read_entries(conn, company, id, has_holds)?;
-    Ok(Some((txn, entries)))
+    Ok(stmt.query_row(params![company, id], decode).optional()?)
 }
 
 /// Fetches the entries for a transaction in this company.

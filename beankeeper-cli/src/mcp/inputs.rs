@@ -235,6 +235,30 @@ pub(crate) struct TxnReverse {
     pub reference: Option<Reference>,
 }
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TxnRecategorize {
+    pub company: Company,
+    /// Source transaction ID. Supply exactly one of id or reference.
+    pub id: Option<TransactionId>,
+    /// Reference of the original transaction.
+    pub reference: Option<Reference>,
+    /// Active account to receive the selected line.
+    pub to_account: Account,
+    /// Source account. If it occurs more than once, provide `entry_id` as well.
+    pub from_account: Option<Account>,
+    /// ID of the original entry to move.
+    pub entry_id: Option<EntryId>,
+    /// YYYY-MM-DD, on or after the original date, which is the default.
+    pub date: Option<Date>,
+    /// Tax category for the destination line. Defaults to the source line's category.
+    pub tax_category: Option<String>,
+    pub description: Option<String>,
+    /// Idempotency reference for the new posting. Use `on_conflict` "skip" for an exact retry.
+    pub posting_reference: Option<Reference>,
+    pub on_conflict: Option<OnConflictArg>,
+}
+
 /// Exactly one way to identify the original authorization.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]

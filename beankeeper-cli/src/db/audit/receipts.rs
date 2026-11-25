@@ -505,11 +505,13 @@ fn read_page(
         let change = ReceiptEvent::try_from(row)?;
         let id = ReceiptId::from(change.id());
         let posting = match change.action() {
-            AuditAction::Reverse | AuditAction::ProposalApprove => change
-                .related_posting()
-                .map(|posting| posting_creation(reader, company, posting, change.id()))
-                .transpose()?
-                .flatten(),
+            AuditAction::Reverse | AuditAction::ProposalApprove | AuditAction::Recategorize => {
+                change
+                    .related_posting()
+                    .map(|posting| posting_creation(reader, company, posting, change.id()))
+                    .transpose()?
+                    .flatten()
+            }
             _ => None,
         };
         receipts.push(AuditReceipt {

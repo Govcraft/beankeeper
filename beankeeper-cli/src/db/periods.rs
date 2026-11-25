@@ -341,7 +341,7 @@ pub fn ensure_open(
     check_open_date(conn, company, date).map_err(ClosedPostingPeriod::public_error)
 }
 
-fn check_open_date(
+pub(super) fn check_open_date(
     conn: ReadConn<'_>,
     company: &crate::db::companies::CompanySlug,
     date: NaiveDate,

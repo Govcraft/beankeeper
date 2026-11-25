@@ -120,6 +120,7 @@ pub fn operation(cmd: &Command) -> Operation {
             TxnCommand::List(_) => Operation::TxnList,
             TxnCommand::Show { .. } => Operation::TxnShow,
             TxnCommand::Reverse(_) => Operation::TxnReverse,
+            TxnCommand::Recategorize(_) => Operation::TxnRecategorize,
             TxnCommand::SettleHold(_) => Operation::TxnSettleHold,
             TxnCommand::Import(_) => Operation::TxnImport,
             TxnCommand::Attach(_) => Operation::TxnAttach,

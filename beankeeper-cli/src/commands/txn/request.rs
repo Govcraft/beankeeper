@@ -9,9 +9,13 @@ use super::super::{
 use super::response::{ListPage, TransactionDetails, TxnData, TxnResponse};
 use super::{PostingRequest, account_code};
 use crate::cli::{
-    TxnCommand, TxnListArgs, TxnPageLimit, TxnProposalCommand, TxnReverseArgs, TxnSettleHoldArgs,
+    TxnCommand, TxnListArgs, TxnPageLimit, TxnProposalCommand, TxnRecategorizeArgs, TxnReverseArgs,
+    TxnSettleHoldArgs,
 };
-use crate::db::audit::corrections::{self, Reversal, ReverseSubmission};
+use crate::db::audit::{
+    corrections::{self, RecategorizeSubmission, Reversal, ReverseSubmission},
+    recategorize::{self, Recategorization},
+};
 use crate::db::{
     Actor, Db, attachments,
     audit::{self, account_rename, grant::PostingGrant},
@@ -41,6 +45,8 @@ pub enum TxnRequest {
     Reject(CompanySlug, ProposalId, Option<String>),
     /// Reverse a transaction through a new audited posting.
     Reverse(CompanySlug, ReverseRequest),
+    /// Move one immutable line to another account with a new audited posting.
+    Recategorize(CompanySlug, Recategorization),
     /// Replace a pending hold with its actual posted charge.
     SettleHold(CompanySlug, SettlementRequest),
     /// Read or count transactions under a shared set of filters.
@@ -66,6 +72,7 @@ impl TxnRequest {
             Self::Approve(..) => Operation::TxnApprove,
             Self::Reject(..) => Operation::TxnReject,
             Self::Reverse(..) => Operation::TxnReverse,
+            Self::Recategorize(..) => Operation::TxnRecategorize,
             Self::SettleHold(..) => Operation::TxnSettleHold,
             Self::List(..) => Operation::TxnList,
             Self::Show(..) => Operation::TxnShow,
@@ -83,6 +90,7 @@ impl TxnRequest {
             | Self::Approve(company, _)
             | Self::Reject(company, ..)
             | Self::Reverse(company, _)
+            | Self::Recategorize(company, _)
             | Self::SettleHold(company, _)
             | Self::List(company, _)
             | Self::Show(company, _)
@@ -146,6 +154,14 @@ impl TxnRequest {
                 match corrections::reverse(db, actor, &company, request)? {
                     ReverseSubmission::Applied(result) => TxnData::Reversed { id, result },
                     ReverseSubmission::Proposed(proposal) => TxnData::CorrectionProposed(proposal),
+                }
+            }
+            Self::Recategorize(company, request) => {
+                match corrections::recategorize(db, actor, &company, request)? {
+                    RecategorizeSubmission::Applied(result) => TxnData::Recategorized(result),
+                    RecategorizeSubmission::Proposed(proposal) => {
+                        TxnData::CorrectionProposed(proposal)
+                    }
                 }
             }
             Self::SettleHold(company, request) => {
@@ -229,6 +245,7 @@ impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
                 }
             },
             TxnCommand::Reverse(args) => Ok(Self::Reverse(company, args.try_into()?)),
+            TxnCommand::Recategorize(args) => Ok(Self::Recategorize(company, args.try_into()?)),
             TxnCommand::SettleHold(args) => Ok(Self::SettleHold(company, args.try_into()?)),
             TxnCommand::List(args) => Ok(Self::List(company, args.try_into()?)),
             TxnCommand::Show { id } => Ok(Self::Show(company, *id)),
@@ -239,6 +256,26 @@ impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
                 "transaction file operations require a local source".into(),
             )),
         }
+    }
+}
+
+impl TryFrom<&TxnRecategorizeArgs> for Recategorization {
+    type Error = CliError;
+
+    fn try_from(args: &TxnRecategorizeArgs) -> Result<Self, Self::Error> {
+        recategorize::Input {
+            id: args.id,
+            reference: args.reference.clone(),
+            to_account: args.to_account.clone(),
+            from_account: args.from_account.clone(),
+            entry_id: args.entry_id,
+            date: args.date.map(Into::into),
+            tax_category: args.tax_category.clone(),
+            description: args.description.clone(),
+            posting_reference: args.posting_reference.clone(),
+            on_conflict: args.on_conflict.map(Into::into),
+        }
+        .try_into()
     }
 }
 

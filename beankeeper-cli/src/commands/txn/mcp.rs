@@ -110,6 +110,27 @@ impl From<inputs::TxnReverse> for TxnRequest {
     }
 }
 
+impl TryFrom<inputs::TxnRecategorize> for TxnRequest {
+    type Error = CliError;
+
+    fn try_from(input: inputs::TxnRecategorize) -> Result<Self, Self::Error> {
+        let request = crate::db::audit::recategorize::Input {
+            id: input.id,
+            reference: input.reference.map(Text::into_inner),
+            to_account: input.to_account.into_inner(),
+            from_account: input.from_account.map(Text::into_inner),
+            entry_id: input.entry_id,
+            date: input.date.map(|date| date.into_inner().date().into()),
+            tax_category: input.tax_category,
+            description: input.description,
+            posting_reference: input.posting_reference.map(Text::into_inner),
+            on_conflict: input.on_conflict.map(Into::into),
+        }
+        .try_into()?;
+        Ok(Self::Recategorize(input.company.into_inner(), request))
+    }
+}
+
 impl From<inputs::HoldTarget> for HoldSelector {
     fn from(input: inputs::HoldTarget) -> Self {
         match input {
