@@ -111,7 +111,7 @@ mod tests {
 }
 
 /// A navigation target for Desktop hosts that expose the transaction register.
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct DesktopRegister {
     view_id: &'static str,
     url: String,

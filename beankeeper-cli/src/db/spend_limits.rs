@@ -376,7 +376,10 @@ fn daily_used(
         "SELECT t.date, e.amount FROM posted_transactions t JOIN entries e ON e.transaction_id = t.id
          LEFT JOIN txn_proposals p ON p.transaction_id = t.id AND p.status = 'approved'
          WHERE t.company_slug = ?1 AND t.currency = ?2
-           AND COALESCE(p.proposer_uri, t.agent_uri) = ?3 AND e.direction = 'debit'",
+           AND COALESCE(p.proposer_uri, t.agent_uri) = ?3 AND e.direction = 'debit'
+           AND NOT EXISTS (
+               SELECT 1 FROM fx_postings f WHERE f.transaction_id = t.id AND f.native_minor IS NULL
+           )",
     )?;
     let mut used = 0_i128;
     for row in stmt.query_map(params![company, currency, uri], |row| {

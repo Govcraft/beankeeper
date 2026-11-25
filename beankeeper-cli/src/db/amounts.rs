@@ -21,6 +21,17 @@ impl PositiveMinorUnits {
     }
 }
 
+impl std::str::FromStr for PositiveMinorUnits {
+    type Err = CliError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<i64>()
+            .map_err(|error| CliError::Validation(format!("invalid minor units: {error}")))?
+            .try_into()
+    }
+}
+
 impl TryFrom<i64> for PositiveMinorUnits {
     type Error = CliError;
 

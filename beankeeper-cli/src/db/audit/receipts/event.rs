@@ -89,6 +89,9 @@ pub struct AccountSnapshot {
     pub account_type: AccountType,
     /// Recorded tax classification, if assigned.
     pub default_tax_category: Option<String>,
+    /// Explicit account denomination, when supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_currency: Option<Currency>,
 }
 
 /// Immutable details of a posting, in the journal's currency.
@@ -105,6 +108,8 @@ pub struct PostingSnapshot {
     pub reference: Option<String>,
     /// Entries in their recorded order.
     pub entries: Vec<PostingEntrySnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fx: Option<crate::db::fx::Evidence>,
 }
 
 /// One entry within a recorded posting.

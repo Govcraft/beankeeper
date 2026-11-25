@@ -576,6 +576,9 @@ EXAMPLES:\n  \
     /// Manage chart of accounts.
     Account(AccountArgs),
 
+    /// Record native currency movements and revalue foreign balances.
+    Fx(crate::commands::fx::FxArgs),
+
     /// Record and query transactions.
     Txn(TxnArgs),
 
@@ -1577,6 +1580,9 @@ EXAMPLES:\n  \
         /// Default tax category for entries posted to this account.
         #[arg(long)]
         default_tax_category: Option<String>,
+        /// Native ISO 4217 currency. Defaults to the book functional currency.
+        #[arg(long)]
+        native_currency: Option<Currency>,
     },
 
     /// Rename an account (for example, 1000 "Operating Cash").
@@ -2975,6 +2981,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Loan(args) => args.company.as_ref(),
         Command::Rule(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
+        Command::Fx(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),
         Command::Budget(args) => args.company.as_ref(),
         Command::Report(args) => args.company.as_ref(),

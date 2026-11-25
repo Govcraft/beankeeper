@@ -169,6 +169,34 @@ pub(crate) struct AccountCreate {
     #[schemars(with = "Text<AccountType>")]
     pub account_type: AccountType,
     pub default_tax_category: Option<String>,
+    #[schemars(with = "Option<Text<Currency>>")]
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
+    pub native_currency: Option<Currency>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FxPostInput {
+    pub company: Company,
+    pub account: Account,
+    pub offset_account: Account,
+    pub direction: Text<DebitOrCredit>,
+    #[schemars(with = "i64", range(min = 1))]
+    pub native_minor: crate::db::amounts::PositiveMinorUnits,
+    pub rate: beankeeper::types::ExchangeRate,
+    pub date: crate::request::CalendarDateArg,
+    pub description: String,
+    pub reference: Reference,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FxRevalueInput {
+    pub company: Company,
+    pub account: Option<Account>,
+    pub fx_gain_loss_account: Account,
+    pub as_of: crate::request::CalendarDateArg,
+    pub rate: Option<beankeeper::types::ExchangeRate>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

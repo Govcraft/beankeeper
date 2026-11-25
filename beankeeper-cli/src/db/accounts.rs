@@ -59,6 +59,7 @@ pub fn create_account(
             name: &name,
             account_type: params.account_type,
             default_tax_category: params.default_tax_category,
+            native_currency: None,
         },
     )
 }
@@ -69,6 +70,7 @@ pub(crate) struct ValidatedAccountCreation<'a> {
     pub(crate) name: &'a AccountName,
     pub(crate) account_type: AccountType,
     pub(crate) default_tax_category: Option<&'a str>,
+    pub(crate) native_currency: Option<beankeeper::types::Currency>,
 }
 
 pub(crate) fn create_validated_account(

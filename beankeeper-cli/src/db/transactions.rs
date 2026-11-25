@@ -9,6 +9,7 @@ use super::amounts::PositiveMinorUnits;
 use super::audit::{self, Actor, savepoint::AuditedTx};
 use super::companies::{AllCompanies, Company, CompanySlug};
 use super::connection::ReadConn;
+use super::fx;
 use super::holds::{self, EntryStatus, HoldJournal, PostingPurpose, PostingState, ReadySettlement};
 use super::metadata;
 use super::metadata_filter;
@@ -300,7 +301,15 @@ pub(super) fn post_settlement(ready: ReadySettlement<'_>) -> Result<PostResult, 
     )
 }
 
+pub(super) fn post_fx(
+    tx: &AuditedTx<'_>,
+    posting: &fx::Prepared<'_>,
+) -> Result<PostResult, CliError> {
+    post_with_source(tx, &Posting::Fx(posting), PostingSource::Storage)
+}
+
 enum Posting<'a> {
+    Fx(&'a fx::Prepared<'a>),
     Direct(&'a PostTransactionParams<'a>, EntryStatus),
     Settlement(ReadySettlement<'a>),
     Prepared(&'a PostTransactionParams<'a>, &'a Transaction),
@@ -322,6 +331,7 @@ fn post_with_source(
         | Posting::Prepared(params, _)
         | Posting::Recategorization(params, _) => *params,
         Posting::Settlement(ready) => ready.params(),
+        Posting::Fx(prepared) => prepared.params(),
         Posting::Reversal(reversal) => reversal.params(),
         Posting::Approved(approval) => {
             approved = approval.params();
@@ -350,11 +360,22 @@ fn post_with_source(
     {
         super::proposals::check_reference(reader, p.company_slug, reference)?;
     }
+    let reversal_fx = match posting {
+        Posting::Reversal(reversal) => {
+            fx::evidence(reader, p.company_slug, reversal.original_id())?
+        }
+        _ => None,
+    };
+    let evidence = match posting {
+        Posting::Fx(prepared) => Some(prepared.evidence()),
+        _ => reversal_fx.as_ref(),
+    };
     let owner_undo = matches!(posting, Posting::Reversal(reversal) if reversal.is_owner_undo());
     if !matches!(
         posting,
         Posting::Approved(_) | Posting::ApprovedStatement(_)
     ) && !owner_undo
+        && !evidence.is_some_and(fx::Evidence::is_revaluation)
         && posting.status() == EntryStatus::Posted
     {
         super::spend_limits::check(reader, p)?;
@@ -375,6 +396,13 @@ fn post_with_source(
         };
         build_journal_with_accounts(reader, p, source, accounts)?
     };
+    let company = Company::bind(reader, p.company_slug.clone())?;
+    fx::check_posting(
+        &company,
+        &journal,
+        evidence,
+        matches!(posting, Posting::Reversal(_)),
+    )?;
     let period =
         super::periods::check_posting(tx, p.company_slug, journal.date()).map_err(|error| {
             if matches!(
@@ -392,7 +420,16 @@ fn post_with_source(
         journal,
         period,
         request: p,
+        fx: evidence,
     };
+    let metadata = posting_metadata(posting, p)?;
+    audit::persist_posting(validated, metadata.as_deref())
+}
+
+fn posting_metadata(
+    posting: &Posting<'_>,
+    p: &PostTransactionParams<'_>,
+) -> Result<Option<String>, CliError> {
     let metadata = match posting {
         Posting::Direct(..)
         | Posting::Prepared(..)
@@ -401,17 +438,17 @@ fn post_with_source(
         | Posting::Settlement(..) => metadata::UserAnnotations::parse(p.metadata)?
             .map(metadata::UserAnnotations::into_normalized),
         Posting::Approved(_) => p.metadata.and_then(metadata::normalize),
+        Posting::Fx(_) => None,
         Posting::Reversal(reversal) => Some(metadata::reversal_link(reversal.original_id())?),
     };
     let metadata = match p.actor.transaction_source() {
         Some(source) => Some(metadata::with_transaction_source(metadata, source)?),
         None => metadata,
     };
-    let effective_metadata = match p.correlate {
-        None => metadata.map(metadata::NormalizedMetadata::into_string),
-        Some(partner_id) => Some(metadata::with_correlation(metadata, partner_id)?),
-    };
-    audit::persist_posting(validated, effective_metadata.as_deref())
+    match p.correlate {
+        None => Ok(metadata.map(metadata::NormalizedMetadata::into_string)),
+        Some(partner_id) => metadata::with_correlation(metadata, partner_id).map(Some),
+    }
 }
 
 impl Posting<'_> {
@@ -489,9 +526,14 @@ pub(super) struct ValidatedPosting<'a> {
     journal: Transaction,
     period: super::periods::OpenPeriod<'a>,
     request: &'a PostTransactionParams<'a>,
+    fx: Option<&'a fx::Evidence>,
 }
 
 impl<'a> ValidatedPosting<'a> {
+    pub(super) fn fx(&self) -> Option<&'a fx::Evidence> {
+        self.fx
+    }
+
     pub(super) fn into_parts(
         self,
     ) -> (

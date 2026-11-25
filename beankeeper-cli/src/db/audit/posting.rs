@@ -11,6 +11,7 @@ pub(in crate::db) fn persist_posting(
     posting: ValidatedPosting<'_>,
     effective_metadata: Option<&str>,
 ) -> Result<PostResult, CliError> {
+    let evidence = posting.fx();
     let (state, journal, period, p) = posting.into_parts();
     let (tx, company, date) = period.into_parts();
     let txn_id = tx.insert(
@@ -58,6 +59,9 @@ pub(in crate::db) fn persist_posting(
         correlate_partner(tx, p.actor, company, txn_id, partner_id)?;
     }
 
+    if let Some(evidence) = evidence {
+        crate::db::fx::persist(tx, company, txn_id, evidence)?;
+    }
     record_creation(tx, p.actor, company, txn_id)?;
 
     Ok(PostResult::Created(txn_id))

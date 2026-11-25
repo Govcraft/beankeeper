@@ -251,6 +251,7 @@ pub struct BalanceSheet {
     /// Total liabilities plus total equity.
     total_liabilities_and_equity: Money,
     difference: Money,
+    pub(crate) fx_balances: Vec<crate::db::fx::Balance>,
 }
 
 impl BalanceSheet {
@@ -435,6 +436,7 @@ pub(crate) fn build_balance_sheet(inputs: BalanceSheetInputs) -> Result<BalanceS
         computed_earnings,
         total_liabilities_and_equity: report_money(total_liabilities_and_equity, currency)?,
         difference: report_money(difference, currency)?,
+        fx_balances: Vec::new(),
     })
 }
 
@@ -647,6 +649,8 @@ impl Serialize for BalanceSheet {
             #[serde(flatten)]
             difference: MoneyField,
             balanced: bool,
+            #[serde(skip_serializing_if = "<[crate::db::fx::Balance]>::is_empty")]
+            fx_balances: &'a [crate::db::fx::Balance],
         }
 
         Data {
@@ -662,6 +666,7 @@ impl Serialize for BalanceSheet {
             ),
             difference: MoneyField::new("difference", self.difference()),
             balanced: self.balanced(),
+            fx_balances: &self.fx_balances,
         }
         .serialize(serializer)
     }

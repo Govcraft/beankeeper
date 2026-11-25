@@ -79,13 +79,14 @@ pub(in crate::db) fn store_validated_account(
         name,
         account_type,
         default_tax_category,
+        native_currency,
     } = *params;
     let conn = tx.connection();
     let reader = tx.read();
-    let code = code.as_str();
+    let code_text = code.as_str();
     let company = Company::bind(reader, company_slug.clone())?;
 
-    if account_exists(&company, code)? {
+    if account_exists(&company, code_text)? {
         return Err(CliError::Validation(format!(
             "account '{code}' already exists in company '{company_slug}'"
         )));
@@ -96,28 +97,35 @@ pub(in crate::db) fn store_validated_account(
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             company_slug,
-            code,
+            code_text,
             name.as_ref(),
             account_type.code(),
             default_tax_category
         ],
     )?;
 
-    let row = get_account(&company, code)?;
+    if let Some(native) = native_currency {
+        crate::db::fx::declare_account(tx, company_slug, code, account_type, native)?;
+    }
+    let row = get_account(&company, code_text)?;
+    let mut recorded = serde_json::json!({
+        "code": row.code,
+        "name": row.name,
+        "type": row.account_type.code(),
+        "company_slug": row.company_slug,
+        "default_tax_category": row.default_tax_category,
+        "created_at": row.created_at,
+    });
+    if let Some(native) = native_currency {
+        recorded["native_currency"] = serde_json::json!(native);
+    }
     record_insert(
         conn,
         actor,
         company_slug,
         Creation::Account,
-        code,
-        &serde_json::json!({
-            "code": row.code,
-            "name": row.name,
-            "type": row.account_type.code(),
-            "company_slug": row.company_slug,
-            "default_tax_category": row.default_tax_category,
-            "created_at": row.created_at,
-        }),
+        code_text,
+        &recorded,
     )?;
     Ok(row)
 }

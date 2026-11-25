@@ -6,6 +6,7 @@ pub mod backup;
 pub mod budget;
 pub mod company;
 pub mod export;
+pub mod fx;
 pub mod import_ofx;
 pub mod init;
 pub mod investment;
@@ -98,6 +99,7 @@ pub fn operation(cmd: &Command) -> Operation {
             CompanyCommand::Show { .. } => Operation::CompanyShow,
             CompanyCommand::Delete { .. } => Operation::CompanyDelete,
         },
+        Command::Fx(args) => args.command.operation(),
         Command::Account(args) => match &args.command {
             AccountCommand::Create { .. } => Operation::AccountCreate,
             AccountCommand::Rename { .. } => Operation::AccountRename,
@@ -243,6 +245,9 @@ fn dispatch_ledger(
                 Ok(request.map(LedgerRequest::Company))
             });
         }
+        Command::Fx(args) => Some(LedgerRequest::Fx(
+            (require_company(cli)?, &args.command).into(),
+        )),
         Command::Account(args) => {
             return execute_confirmable(cli, meta, "Aborted.", || {
                 let request: Option<account::AccountRequest> =
@@ -423,6 +428,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Verify
         | Command::Company(_)
         | Command::Account(_)
+        | Command::Fx(_)
         | Command::Budget(_)
         | Command::Rule(_)
         | Command::BookkeepingPolicy(_)

@@ -840,6 +840,9 @@ fn render_balance_sheet(
             let rendered =
                 output::statements::render_balance_sheet_table(sheet, &title, output.use_color);
             writeln!(output.writer, "{rendered}")?;
+            for balance in &sheet.fx_balances {
+                writeln!(output.writer, "{balance}")?;
+            }
         }
         OutputFormat::Json => {
             let meta = context.meta().with_currency(sheet.currency());
@@ -880,15 +883,18 @@ fn compute_balance_sheet_on(
     let load = |kind: AccountType| {
         db::compute_trial_balance(scope, Some(kind), None, Some(as_of), currency)
     };
-    output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
-        as_of,
-        currency,
-        assets: load(AccountType::Asset)?,
-        liabilities: load(AccountType::Liability)?,
-        equity: load(AccountType::Equity)?,
-        revenue: load(AccountType::Revenue)?,
-        expenses: load(AccountType::Expense)?,
-    })
+    let mut sheet =
+        output::statements::build_balance_sheet(output::statements::BalanceSheetInputs {
+            as_of,
+            currency,
+            assets: load(AccountType::Asset)?,
+            liabilities: load(AccountType::Liability)?,
+            equity: load(AccountType::Equity)?,
+            revenue: load(AccountType::Revenue)?,
+            expenses: load(AccountType::Expense)?,
+        })?;
+    sheet.fx_balances = db::fx::balances(scope, Some(as_of))?;
+    Ok(sheet)
 }
 
 /// Replace a renderer's plain heading with its effective date window.

@@ -50,6 +50,7 @@ pub enum AccountRequest {
         name: AccountName,
         account_type: AccountType,
         default_tax_category: Option<String>,
+        native_currency: Option<Currency>,
     },
     List {
         company: CompanySlug,
@@ -84,6 +85,7 @@ impl AccountRequest {
                 name,
                 account_type,
                 default_tax_category,
+                native_currency,
             } => {
                 let row = Granted::<Admin>::with_db(db, actor, |grant| {
                     accounts::create_validated_account(
@@ -94,6 +96,7 @@ impl AccountRequest {
                             name: &name,
                             account_type,
                             default_tax_category: default_tax_category.as_deref(),
+                            native_currency,
                         },
                     )
                 })?;
@@ -148,10 +151,22 @@ impl AccountRequest {
                 (company, AccountData::Deleted(code))
             }
         };
+        let balances = match &data {
+            AccountData::Rows(_) | AccountData::Balances(..) => {
+                let scope = Company::bind(db.read(), company.clone())?;
+                let as_of = match &data {
+                    AccountData::Balances(_, window) => window.bounds().1,
+                    _ => None,
+                };
+                db::fx::balances(&scope, as_of)?
+            }
+            _ => Vec::new(),
+        };
         Ok(AccountResponse {
             operation,
             company,
             data,
+            balances,
         })
     }
 }
@@ -168,16 +183,22 @@ pub struct AccountResponse {
     operation: Operation,
     company: CompanySlug,
     data: AccountData,
+    balances: Vec<db::fx::Balance>,
 }
 
 impl Serialize for AccountResponse {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match &self.data {
-            AccountData::Rows(rows) => output::json::account_rows(rows).serialize(serializer),
-            AccountData::Balances(rows, window) => {
-                output::json::account_balance_rows(rows, Some(self.company.as_str()), *window)
-                    .serialize(serializer)
+            AccountData::Rows(rows) => {
+                output::json::account_rows_with_fx(rows, &self.balances).serialize(serializer)
             }
+            AccountData::Balances(rows, window) => output::json::account_balance_rows_with_fx(
+                rows,
+                Some(self.company.as_str()),
+                *window,
+                &self.balances,
+            )
+            .serialize(serializer),
             AccountData::Rename(result) => result.serialize(serializer),
             AccountData::Deleted(code) => {
                 output::json::deleted_data(code.as_str()).serialize(serializer)
@@ -199,14 +220,26 @@ impl AccountResponse {
             ),
             (OutputFormat::Table, AccountData::Rows(rows)) => {
                 println!("{}", output::table::render_accounts(rows, color));
+                for balance in &self.balances {
+                    if rows.iter().any(|row| row.code == balance.account.as_str()) {
+                        println!("{balance}");
+                    }
+                }
             }
             (OutputFormat::Csv, AccountData::Rows(rows)) => {
                 print!("{}", output::csv::render_accounts(rows)?);
             }
-            (OutputFormat::Table, AccountData::Balances(rows, _)) => println!(
-                "{}",
-                output::table::render_accounts_with_balances(rows, color)
-            ),
+            (OutputFormat::Table, AccountData::Balances(rows, _)) => {
+                println!(
+                    "{}",
+                    output::table::render_accounts_with_balances(rows, color)
+                );
+                for balance in &self.balances {
+                    if rows.iter().any(|row| row.code == balance.account.as_str()) {
+                        println!("{balance}");
+                    }
+                }
+            }
             (OutputFormat::Csv, AccountData::Balances(rows, _)) => {
                 print!("{}", output::csv::render_accounts_with_balances(rows)?);
             }
@@ -262,12 +295,14 @@ impl TryFrom<AccountCliInput<'_>> for Option<AccountRequest> {
                 name,
                 account_type,
                 default_tax_category,
+                native_currency,
             } => AccountRequest::Create {
                 company,
                 code: parse_code(code)?,
                 name: name.clone(),
                 account_type: *account_type,
                 default_tax_category: default_tax_category.clone(),
+                native_currency: *native_currency,
             },
             AccountCommand::List {
                 account_type,

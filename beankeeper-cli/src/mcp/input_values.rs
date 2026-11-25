@@ -5,7 +5,7 @@ use std::{borrow::Cow, fmt, str::FromStr};
 use agent_uri::AgentUri;
 use beankeeper::{
     core::investments::PositiveQuantity,
-    types::{AccountCode, AccountName, AccountType, Currency, Sha256Hex},
+    types::{AccountCode, AccountName, AccountType, Currency, DebitOrCredit, Sha256Hex},
 };
 use chrono::NaiveDate;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -107,6 +107,14 @@ impl TextValue for AccountType {
 
     fn schema() -> Schema {
         json_schema!({"type": "string", "enum": ["asset", "liability", "equity", "revenue", "expense"]})
+    }
+}
+
+impl TextValue for DebitOrCredit {
+    const NAME: &'static str = "entry direction";
+
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "enum": [Self::Debit.code(), Self::Credit.code()]})
     }
 }
 

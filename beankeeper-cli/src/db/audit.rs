@@ -1168,6 +1168,9 @@ fn posting_snapshot(
     if let Some(link) = txn.settlement() {
         result["settlement"] = serde_json::json!(link);
     }
+    if let Some(evidence) = super::fx::evidence(conn, company, id)? {
+        result["fx"] = serde_json::json!(evidence);
+    }
     if hash_version.includes_identity() {
         result["agent_uri"] = serde_json::json!(txn.agent_uri);
         result["token_jti"] = serde_json::json!(txn.token_jti);
@@ -1981,6 +1984,9 @@ fn reverse_in_scope(
     recategorize::MoveHistory::load(&company, p.id, None)?.check_reversal(p.id, date)?;
     super::holds::check_reversal(tx, &original, date)?;
     validate_reversal(conn, p.id, date, original.date)?;
+    if super::fx::evidence(tx.read(), p.company_slug, p.id)?.is_some() {
+        super::periods::check_open_date(tx.read(), p.company_slug, original.date)?;
+    }
     let description = p.description.map_or_else(
         || format!("Reversal of #{}: {}", p.id, original.description),
         str::to_string,

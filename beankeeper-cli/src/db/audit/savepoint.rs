@@ -44,7 +44,7 @@ impl<'a> AuditedTx<'a> {
         self.reader
     }
 
-    pub(super) fn insert(&self, sql: &str, params: impl Params) -> Result<i64, CliError> {
+    pub(in crate::db) fn insert(&self, sql: &str, params: impl Params) -> Result<i64, CliError> {
         self.connection().execute(sql, params)?;
         Ok(self.connection().last_insert_rowid())
     }

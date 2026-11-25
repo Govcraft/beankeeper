@@ -598,8 +598,8 @@ fn check_profile_undo(
     revision: ProfileRevision,
     created_book: bool,
 ) -> Result<OnboardingUndo, CliError> {
-    match current_profile(reader, company) {
-        Ok(profile) if profile.revision == revision => (),
+    let previous = match current_profile(reader, company) {
+        Ok(profile) if profile.revision == revision => profile.supersedes,
         Ok(_) | Err(CliError::NotFound(_)) => {
             return Err(ineligible(
                 receipt,
@@ -607,7 +607,17 @@ fn check_profile_undo(
             ));
         }
         Err(error) => return Err(error),
-    }
+    };
+    let previous_currency = previous
+        .map(|previous| {
+            reader.query_row(
+                "SELECT base_currency FROM setup_book_profiles WHERE company_slug = ?1 AND revision = ?2",
+                params![company, previous.get()],
+                |row| row.get(0),
+            )
+        })
+        .transpose()?;
+    crate::db::fx::guard_profile(reader, company, previous_currency)?;
     if created_book {
         let in_use = reader.query_row(
             "SELECT EXISTS (SELECT 1 FROM accounts WHERE company_slug = ?1 AND archived = 0)

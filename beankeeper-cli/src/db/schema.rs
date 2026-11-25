@@ -7,7 +7,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = STATEMENT_RECONCILIATION_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = FX_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -22,6 +22,7 @@ const CORRECTION_SCHEMA_VERSION: i64 = 33;
 const RECATEGORIZATION_SCHEMA_VERSION: i64 = 34;
 pub(super) const TXN_LINK_SCHEMA_VERSION: i64 = 35;
 pub(crate) const STATEMENT_RECONCILIATION_SCHEMA_VERSION: i64 = 36;
+pub(super) const FX_SCHEMA_VERSION: i64 = 37;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +187,15 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     apply_receipt_migrations(conn, version)?;
     apply_hold_audit_migrations(conn, version)?;
+    if version < FX_SCHEMA_VERSION {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(include_str!("schema/fx.sql"))?;
+        tx.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            [FX_SCHEMA_VERSION],
+        )?;
+        tx.commit()?;
+    }
 
     debug_assert_eq!(
         get_schema_version(ReadConn::new(conn)).unwrap_or(0),
@@ -2754,6 +2764,7 @@ mod tests {
                 RECATEGORIZATION_SCHEMA_VERSION,
                 TXN_LINK_SCHEMA_VERSION,
                 STATEMENT_RECONCILIATION_SCHEMA_VERSION,
+                FX_SCHEMA_VERSION,
             ]
         );
         assert_eq!(audit_head()?, before);
