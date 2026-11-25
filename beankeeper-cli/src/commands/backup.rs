@@ -12,7 +12,8 @@ use crate::db::snapshot::files::{
     publish, reject_sidecars, staging_directory, validate_destination,
 };
 use crate::db::{
-    Db, SchemaVersion, SnapshotOverwrite, VerifiedSnapshot, audit::restore::RestoreRequest,
+    Db, SchemaVersion, SnapshotOverwrite, VerifiedSnapshot,
+    audit::restore::{ExistingRestoreTarget, RestoreRequest},
     verification::VerifiedLedger,
 };
 use crate::error::CliError;
@@ -105,7 +106,12 @@ pub fn restore(cli: &Cli, request: RestoreRequest) -> Result<(), CliError> {
             "restore requires an explicit --db destination or named ledger target".into(),
         )
     })?;
-    let db = Db::open_for_restore(destination, cli.resolve_passphrase()?)?;
+    let target = ExistingRestoreTarget::try_from((
+        destination,
+        &request,
+        cli.passphrase.passphrase_file.as_deref(),
+    ))?;
+    let db = Db::open_for_restore(&target, cli.resolve_passphrase()?)?;
     let request = crate::request::LedgerRequest::Restore(request);
     request
         .execute_with_actor(&db, |_| {

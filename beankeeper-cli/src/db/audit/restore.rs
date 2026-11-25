@@ -68,6 +68,60 @@ pub enum RestoreRequest {
     Undo(ReceiptId),
 }
 
+/// A restore destination whose existence was checked before opening it.
+pub(crate) struct ExistingRestoreTarget<'a>(&'a Path);
+
+impl<'a> TryFrom<(&'a Path, &RestoreRequest, Option<&Path>)> for ExistingRestoreTarget<'a> {
+    type Error = CliError;
+
+    fn try_from(
+        (path, request, passphrase_file): (&'a Path, &RestoreRequest, Option<&Path>),
+    ) -> Result<Self, Self::Error> {
+        if path.try_exists()? {
+            return Ok(Self(path));
+        }
+        let destination = shell_path(path);
+        let error = match request {
+            RestoreRequest::Backup(input) => {
+                let input = shell_path(input.as_ref());
+                let passphrase = passphrase_file.map_or_else(String::new, |file| {
+                    format!(" --passphrase-file {}", shell_path(file))
+                });
+                CliError::Usage(format!(
+                    "restore destination {destination} does not exist. Recover to a new ledger with `bk --db {destination} recover --input {input}{passphrase}`."
+                ))
+            }
+            RestoreRequest::Undo(_) => CliError::NotFound(format!(
+                "restore destination {destination} does not exist. Select the ledger that issued the undo receipt."
+            )),
+        };
+        Err(error)
+    }
+}
+
+impl AsRef<Path> for ExistingRestoreTarget<'_> {
+    fn as_ref(&self) -> &Path {
+        self.0
+    }
+}
+
+fn shell_path(path: &Path) -> String {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    // A quoted leading hyphen can still be interpreted as a flag by the CLI.
+    let prefix = if bytes.starts_with(b"-") { "./" } else { "" };
+    if let Some(path) = path.to_str() {
+        format!("'{prefix}{}'", path.replace('\'', "'\\''"))
+    } else {
+        let escaped: String = bytes
+            .iter()
+            .copied()
+            .flat_map(std::ascii::escape_default)
+            .map(char::from)
+            .collect();
+        format!("$'{prefix}{escaped}'")
+    }
+}
+
 impl RestoreRequest {
     /// Operation used by the CLI and MCP authorization catalogs.
     #[must_use]
@@ -88,11 +142,20 @@ impl RestoreRequest {
                 let undo = PendingUndo::new(db, &ledger)?;
                 let backup = CompatibleBackup::open(db, &ledger, &input)?;
                 tables::replace(tx, &backup)?;
+                let (undo_of, summary) = match input {
+                    RestoreInput::Backup { .. } => {
+                        (None, "Restored the books from the chosen backup.")
+                    }
+                    RestoreInput::Undo { receipt, .. } => (
+                        Some(receipt),
+                        "Restored the books from before the previous restore.",
+                    ),
+                };
                 let event = RestoreEvent {
                     backup_id: SnapshotDigest(backup.digest),
                     source_audit_id: backup.source_audit_id,
                     undo: undo.reference.clone(),
-                    undo_of: input.undo_of,
+                    undo_of,
                 };
                 let after = serde_json::to_string(&event).map_err(invalid_event)?;
                 let restore_id = append_with_links(
@@ -113,11 +176,7 @@ impl RestoreRequest {
                 Ok(RestoreReceipt {
                     restore_id,
                     undo_id: restore_id,
-                    summary: if event.undo_of.is_some() {
-                        "Restored the books from before the previous restore."
-                    } else {
-                        "Restored the books from the chosen backup."
-                    },
+                    summary,
                     event,
                     verification,
                 })
@@ -232,10 +291,15 @@ impl From<UndoSnapshotId> for String {
     }
 }
 
-struct RestoreInput {
-    path: PathBuf,
-    expected_digest: Option<SnapshotDigest>,
-    undo_of: Option<ReceiptId>,
+enum RestoreInput {
+    Backup {
+        path: BackupPath,
+    },
+    Undo {
+        receipt: ReceiptId,
+        path: PathBuf,
+        digest: SnapshotDigest,
+    },
 }
 
 impl RestoreInput {
@@ -246,13 +310,7 @@ impl RestoreInput {
     ) -> Result<Self, CliError> {
         let receipt = match request {
             RestoreRequest::Undo(receipt) => receipt,
-            RestoreRequest::Backup(path) => {
-                return Ok(Self {
-                    path: path.0,
-                    expected_digest: None,
-                    undo_of: None,
-                });
-            }
+            RestoreRequest::Backup(path) => return Ok(Self::Backup { path }),
         };
         let event: String = reader
             .query_row(
@@ -282,11 +340,30 @@ impl RestoreInput {
                 "restore receipt #{receipt} is superseded by a later bookkeeping change"
             )));
         }
-        Ok(Self {
+        Ok(Self::Undo {
+            receipt,
             path: event.undo.snapshot_id.path(ledger),
-            expected_digest: Some(event.undo.sha256),
-            undo_of: Some(receipt),
+            digest: event.undo.sha256,
         })
+    }
+
+    fn verify_digest(&self, actual: &Sha256Hex) -> Result<(), CliError> {
+        match self {
+            Self::Backup { .. } => Ok(()),
+            Self::Undo { digest, .. } if &digest.0 == actual => Ok(()),
+            Self::Undo { .. } => Err(CliError::Validation(
+                "undo snapshot does not match its recorded SHA-256".into(),
+            )),
+        }
+    }
+}
+
+impl AsRef<Path> for RestoreInput {
+    fn as_ref(&self) -> &Path {
+        match self {
+            Self::Backup { path } => path.as_ref(),
+            Self::Undo { path, .. } => path,
+        }
     }
 }
 
@@ -308,9 +385,10 @@ struct CompatibleBackup {
 
 impl CompatibleBackup {
     fn open(live: &Db, ledger: &Path, input: &RestoreInput) -> Result<Self, CliError> {
-        let source = input.path.canonicalize().map_err(|error| {
+        let path = input.as_ref();
+        let source = path.canonicalize().map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
-                CliError::NotFound(format!("snapshot '{}' not found", input.path.display()))
+                CliError::NotFound(format!("snapshot '{}' not found", path.display()))
             } else {
                 error.into()
             }
@@ -326,15 +404,7 @@ impl CompatibleBackup {
         let mut staged = tempfile::NamedTempFile::new_in(directory.path())?;
         let digest = copy_and_hash(&mut File::open(&source)?, staged.as_file_mut())?;
         files::reject_sidecars(&source)?;
-        if input
-            .expected_digest
-            .as_ref()
-            .is_some_and(|expected| expected.0 != digest)
-        {
-            return Err(CliError::Validation(
-                "undo snapshot does not match its recorded SHA-256".into(),
-            ));
-        }
+        input.verify_digest(&digest)?;
 
         let key = live.snapshot_key();
         let read_only = Db::open_supported_snapshot(staged.path(), key)?;

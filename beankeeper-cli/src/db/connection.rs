@@ -4,7 +4,10 @@ use std::sync::Arc;
 use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 
-use super::audit::savepoint::{AuditedTx, with_rolled_back_audited_tx};
+use super::audit::{
+    restore::ExistingRestoreTarget,
+    savepoint::{AuditedTx, with_rolled_back_audited_tx},
+};
 use super::schema::{self, AuditHistory, SchemaVersion, current_schema_version};
 use crate::error::CliError;
 
@@ -147,12 +150,12 @@ impl Db {
     // Restore targets must already be at the running schema. In particular, an
     // unauthorized or failed restore must never migrate the live ledger.
     pub(crate) fn open_for_restore(
-        path: &Path,
+        target: &ExistingRestoreTarget<'_>,
         passphrase: Option<&SecretString>,
     ) -> Result<Self, CliError> {
-        require_existing_file(path)?;
+        // Omit SQLITE_OPEN_CREATE in case the file disappeared after the check.
         let conn = open_keyed(
-            path,
+            target.as_ref(),
             passphrase,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;

@@ -648,6 +648,63 @@ fn backup_keeps_the_source_and_copy_at_the_older_schema() -> TestResult {
 }
 
 #[test]
+fn issued_restore_command_points_to_full_recovery_for_a_missing_ledger() -> TestResult {
+    let dir = tempdir()?;
+    let source = dir.path().join("source.db");
+    let backup = dir.path().join("owner's backup.bk-backup");
+    let passphrase = dir.path().join("kit passphrase.txt");
+    std::fs::write(&passphrase, "recovery kit passphrase\n")?;
+    let recovery_dir = tempdir()?;
+    let destination = recovery_dir.path().join("new ledger.db");
+    data(&source, Some(&passphrase), &["init", "--encrypt", "--demo"])?;
+    bk(&source, Some(&passphrase))?
+        .args(["backup", "--output"])
+        .arg(&backup)
+        .assert()
+        .success();
+
+    let command = format!(
+        "bk --db '{}' recover --input '{}/owner'\\''s backup.bk-backup'",
+        destination.display(),
+        dir.path().display()
+    );
+    let encrypted_command = format!("{command} --passphrase-file '{}'", passphrase.display());
+    for (key, command) in [
+        (None, command),
+        (Some(passphrase.as_path()), encrypted_command),
+    ] {
+        let refusal = bk(&destination, key)?
+            .args(["restore", "--input"])
+            .arg(&backup)
+            .assert()
+            .code(2)
+            .stdout("");
+        let error: Value = serde_json::from_slice(&refusal.get_output().stderr)?;
+        assert_eq!(error["error"]["code"], "USAGE");
+        assert_eq!(
+            error["error"]["message"],
+            format!(
+                "restore destination '{}' does not exist. Recover to a new ledger with `{command}`.",
+                destination.display(),
+            )
+        );
+        assert!(!destination.try_exists()?);
+        assert_eq!(std::fs::read_dir(recovery_dir.path())?.count(), 0);
+    }
+
+    bk(&destination, Some(&passphrase))?
+        .args(["recover", "--input"])
+        .arg(&backup)
+        .assert()
+        .success();
+    assert_eq!(
+        data(&destination, Some(&passphrase), &["verify"])?,
+        data(&source, Some(&passphrase), &["verify"])?
+    );
+    Ok(())
+}
+
+#[test]
 fn plaintext_restore_and_undo_use_the_local_admin_grant() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("plain.db");
@@ -658,11 +715,35 @@ fn plaintext_restore_and_undo_use_the_local_admin_grant() -> TestResult {
     data(&path, None, &["company", "create", "acme", "Acme"])?;
     let restored = data(&path, None, &["restore", "--input", input])?;
     assert_eq!(restored["verification"]["row_counts"]["companies"], 0);
-    let undone = data(
-        &path,
-        None,
-        &["restore-undo", &restored["undo_id"].to_string()],
-    )?;
+    assert!(restored["undo_of"].is_null());
+    assert_eq!(
+        restored["summary"],
+        "Restored the books from the chosen backup."
+    );
+    let snapshot_id = restored["undo"]["snapshot_id"]
+        .as_str()
+        .ok_or("missing undo snapshot ID")?;
+    let snapshot = dir.path().join(format!(".{snapshot_id}.bk-backup"));
+    let original = std::fs::read(&snapshot)?;
+    let mut altered = original.clone();
+    altered.push(0);
+    std::fs::write(&snapshot, altered)?;
+    let receipt = restored["undo_id"].to_string();
+    let undo = ["restore-undo", &receipt];
+    let refused = bk(&path, None)?.args(undo).assert().code(3);
+    let error: Value = serde_json::from_slice(&refused.get_output().stderr)?;
+    assert_eq!(error["error"]["code"], "VALIDATION");
+    assert_eq!(
+        error["error"]["message"],
+        "undo snapshot does not match its recorded SHA-256"
+    );
+    std::fs::write(&snapshot, original)?;
+    let undone = data(&path, None, &undo)?;
     assert_eq!(undone["verification"]["row_counts"]["companies"], 1);
+    assert_eq!(undone["undo_of"], restored["undo_id"]);
+    assert_eq!(
+        undone["summary"],
+        "Restored the books from before the previous restore."
+    );
     Ok(())
 }

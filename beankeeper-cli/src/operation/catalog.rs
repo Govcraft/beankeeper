@@ -127,7 +127,7 @@ Use only one of as_of and to. For date-range reports without as_of, use from and
             PolicySet => ("policy.set", Admin, cli_only(LocalAdministration)),
             Init => ("init", Admin, cli_only(LocalBootstrap)),
             Backup => ("backup", Admin, cli_only(LocalFiles)),
-            Restore => ("restore", RestoreAdmin, tool(restore, Restore, "Restore the selected live ledger's bookkeeping rows from a compatible standalone backup on the server. Requires ledger/admin. Tell the owner what changed and offer the returned undo_id.")),
+            Restore => ("restore", RestoreAdmin, tool(restore, Restore, "Restore the selected live ledger's bookkeeping rows from a compatible standalone backup on the server. Requires ledger/admin. Tell the owner what changed and offer the returned undo_id. For full recovery to a new database file, use the local command bk --db <path> recover --input <backup>.")),
             RestoreUndo => ("restore-undo", RestoreAdmin, tool(restore_undo, RestoreUndo, "Restore the books from before a restore by its undo_id. Requires ledger/admin. Returns a new audited receipt.")),
             Recover => ("recover", Admin, cli_only(LocalFiles)),
             AgentLimitSet => ("agent.limit.set", Admin, cli_only(LocalAdministration)),
