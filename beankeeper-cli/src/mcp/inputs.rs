@@ -54,6 +54,17 @@ type Amount = Text<DecimalAmount>;
 type Reference = Text<TransactionReference>;
 type Comparison = Text<CompareArg>;
 
+// MCP arguments use the same human-facing parser as CLI flags.
+fn deserialize_currency<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Currency, D::Error> {
+    Text::<Currency>::deserialize(deserializer).map(Text::into_inner)
+}
+
+fn deserialize_optional_currency<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Currency>, D::Error> {
+    Option::<Text<Currency>>::deserialize(deserializer).map(|value| value.map(Text::into_inner))
+}
+
 /// Decode JSON text only at fields whose wire shape is an object or array.
 fn deserialize_structured<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
@@ -182,6 +193,7 @@ pub(crate) struct AccountList {
     pub from: Option<Date>,
     pub to: Option<Date>,
     /// Currency of balance totals. Required when the company uses multiple currencies.
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
 }
@@ -210,6 +222,7 @@ pub(crate) struct TxnList {
     /// Exact entry amount in major units.
     pub amount_eq: Option<Amount>,
     /// Currency code. Required with an amount filter if the company uses multiple currencies.
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub reference: Option<Reference>,
@@ -395,6 +408,7 @@ pub(crate) struct BudgetSet {
     pub month: Option<Month>,
     pub amount: Option<Amount>,
     pub annual: Option<Amount>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub notes: Option<String>,
@@ -407,6 +421,7 @@ pub(crate) struct BudgetDelete {
     pub account: Account,
     pub year: i32,
     pub month: Option<Month>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
 }
@@ -480,6 +495,7 @@ struct LedgerStatementSource {
     /// Contra account used when no categorization rule matches.
     suspense: Account,
     /// Currency of the statement. For OFX it must match the embedded currency.
+    #[serde(deserialize_with = "deserialize_currency")]
     #[schemars(with = "Text<Currency>")]
     currency: Currency,
     /// CSV or OFX. QFX is accepted as OFX.
@@ -579,6 +595,7 @@ pub(crate) struct SetupTarget<G = Option<Generation>> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SetupSettings {
     pub purpose: BookPurpose,
+    #[serde(deserialize_with = "deserialize_currency")]
     #[schemars(with = "Text<Currency>")]
     pub base_currency: Currency,
     pub fiscal_year_start: Text<FiscalYearStart>,
@@ -672,6 +689,7 @@ pub(crate) struct LedgerSetupOpeningPost {
 pub(crate) struct OpeningInput {
     pub company: Company,
     pub date: Date,
+    #[serde(deserialize_with = "deserialize_currency")]
     #[schemars(with = "Text<Currency>")]
     pub currency: Currency,
     pub description: Option<Text<OpeningDescription>>,
@@ -701,6 +719,7 @@ pub(crate) struct TxnPost {
     #[serde(default)]
     pub status: EntryStatus,
     pub metadata: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub date: Option<Date>,
@@ -867,6 +886,7 @@ pub(crate) struct TrendInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
     pub period: Option<PeriodArg>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
@@ -896,6 +916,7 @@ pub(crate) struct TrialBalanceInput {
     pub to: Option<Date>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub period: Option<PeriodArg>,
@@ -912,6 +933,7 @@ pub(crate) struct BalanceInput {
     /// Inclusive end date. Supply either `to` or `as_of`.
     #[serde(alias = "as_of")]
     pub to: Option<Date>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
@@ -923,6 +945,7 @@ pub(crate) struct BalanceInput {
 pub(crate) struct IncomeStatementInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub period: Option<PeriodArg>,
@@ -937,6 +960,7 @@ pub(crate) struct BalanceSheetInput {
     /// Inclusive end date. Supply either `to` or `as_of`.
     #[serde(alias = "as_of")]
     pub to: Option<Date>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
@@ -948,6 +972,7 @@ pub(crate) struct BalanceSheetInput {
 pub(crate) struct TaxPeriodInput {
     pub from: Option<Date>,
     pub to: Option<Date>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
 }
@@ -957,6 +982,7 @@ pub(crate) struct TaxPeriodInput {
 pub(crate) struct Vendor1099Input {
     pub from: Option<Date>,
     pub to: Option<Date>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     /// Nonnegative decimal in major currency units; defaults to "600".
@@ -970,6 +996,7 @@ pub(crate) struct LedgerInput {
     pub account: Vec<Account>,
     pub from: Option<Date>,
     pub to: Option<Date>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     #[serde(default, deserialize_with = "deserialize_structured")]
@@ -985,6 +1012,7 @@ pub(crate) struct BudgetVarianceInput {
     pub to: Option<Month>,
     #[schemars(with = "Option<Text<AccountType>>")]
     pub account_type: Option<AccountType>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     #[serde(default)]
@@ -1001,6 +1029,7 @@ pub(crate) struct AgingInput {
     pub as_of: Option<Date>,
     pub buckets: Option<String>,
     pub group_by_metadata: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub method: Option<AgingMethodArg>,
@@ -1030,6 +1059,7 @@ pub(crate) struct ReconciliationInput {
     #[serde(default, deserialize_with = "deserialize_structured")]
     pub filter_metadata: Vec<String>,
     pub group_by_metadata: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
 }
@@ -1041,6 +1071,7 @@ pub(crate) struct CashFlowInput {
     pub to: Option<Date>,
     #[serde(default, deserialize_with = "deserialize_structured")]
     pub cash_account: Vec<Account>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     pub compare: Option<Comparison>,
@@ -1117,6 +1148,7 @@ pub(crate) struct SecurityCreate {
     pub company: Company,
     pub symbol: Text<SecuritySymbol>,
     pub name: String,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
 }
@@ -1226,6 +1258,7 @@ pub(crate) struct SummaryOptions {
     /// Last date in the comparison period. Requires `compare_from`.
     pub compare_to: Option<Date>,
     /// Required when the company uses multiple currencies.
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
     /// Cash asset accounts. Defaults to named cash/bank/checking/savings accounts.

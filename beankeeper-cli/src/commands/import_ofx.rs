@@ -7,7 +7,7 @@ use crate::operation::Operation;
 use std::fmt;
 use std::path::Path;
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{Currency, CurrencyError, Money};
 use chrono::NaiveDate;
 use ofx_rs::{
     OfxDocument,
@@ -42,8 +42,8 @@ pub enum OfxImportError {
     MissingSuspenseFlag,
     /// The specified account code does not exist.
     AccountNotFound { code: String },
-    /// The OFX statement currency is not recognized by beankeeper.
-    UnsupportedCurrency { code: String },
+    /// The OFX statement currency is malformed, unknown, or unsupported.
+    UnsupportedCurrency(CurrencyError),
     /// An OFX amount could not be converted to minor units.
     AmountConversion { fit_id: String, detail: String },
     /// Format auto-detection failed.
@@ -66,11 +66,7 @@ impl fmt::Display for OfxImportError {
                 f,
                 "account '{code}' not found; create it first with 'bk account create'"
             ),
-            Self::UnsupportedCurrency { code } => write!(
-                f,
-                "OFX statement currency '{code}' is not supported by beankeeper; \
-                 supported currencies: USD, EUR, GBP, JPY, CHF, CAD, AUD, BHD, KWD, MXN"
-            ),
+            Self::UnsupportedCurrency(error) => write!(f, "OFX statement currency: {error}"),
             Self::AmountConversion { fit_id, detail } => write!(
                 f,
                 "amount conversion failed for transaction '{fit_id}': {detail}"
@@ -83,7 +79,14 @@ impl fmt::Display for OfxImportError {
     }
 }
 
-impl std::error::Error for OfxImportError {}
+impl std::error::Error for OfxImportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnsupportedCurrency(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl From<OfxImportError> for CliError {
     fn from(e: OfxImportError) -> Self {
@@ -580,9 +583,7 @@ fn process_transactions(
 
 /// Validate a currency code from OFX against beankeeper's currency table.
 pub(crate) fn validate_currency(code: &str) -> Result<Currency, OfxImportError> {
-    Currency::from_code(code).map_err(|_| OfxImportError::UnsupportedCurrency {
-        code: code.to_string(),
-    })
+    Currency::try_from(code).map_err(OfxImportError::UnsupportedCurrency)
 }
 
 pub(crate) fn parse_document(content: &str) -> Result<OfxDocument, OfxImportError> {

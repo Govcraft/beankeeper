@@ -25,6 +25,12 @@ where
 
 macro_rules! text_codec {
     ($type:ty, $code:ident) => {
+        text_codec!($type, $code, |text| parse_canonical(
+            text,
+            |value: &$type| value.$code()
+        ));
+    };
+    ($type:ty, $code:ident, $parse:expr) => {
         #[cfg(feature = "serde")]
         impl serde::Serialize for $type {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -36,8 +42,7 @@ macro_rules! text_codec {
         impl<'de> serde::Deserialize<'de> for $type {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 let text = String::deserialize(deserializer)?;
-                parse_canonical(&text, |value: &Self| value.$code())
-                    .map_err(serde::de::Error::custom)
+                ($parse)(&text).map_err(serde::de::Error::custom)
             }
         }
 
@@ -46,8 +51,7 @@ macro_rules! text_codec {
             fn column_result(
                 value: rusqlite::types::ValueRef<'_>,
             ) -> rusqlite::types::FromSqlResult<Self> {
-                parse_canonical(value.as_str()?, |value: &Self| value.$code())
-                    .map_err(rusqlite::types::FromSqlError::Other)
+                ($parse)(value.as_str()?).map_err(rusqlite::types::FromSqlError::Other)
             }
         }
 
@@ -63,7 +67,8 @@ macro_rules! text_codec {
 text_codec!(AccountCode, as_str);
 text_codec!(AccountType, code);
 text_codec!(ClearanceStatus, as_str);
-text_codec!(Currency, code);
+text_codec!(Currency, code, |text: &str| Currency::try_from(text)
+    .map_err(CodecError::from));
 text_codec!(DebitOrCredit, code);
 text_codec!(DocumentType, as_str);
 text_codec!(Frequency, code);
@@ -155,6 +160,10 @@ mod tests {
                 .is_err()
         );
         assert!(
+            conn.query_row("SELECT ' krw '", [], |row| row.get::<_, Currency>(0))
+                .is_err()
+        );
+        assert!(
             conn.query_row("SELECT -1", [], |row| row.get::<_, Quantity>(0))
                 .is_err()
         );
@@ -164,7 +173,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn serde_uses_storage_codes_instead_of_display_labels() {
-        use super::DebitOrCredit;
+        use super::{Currency, DebitOrCredit};
         use serde::Deserialize as _;
         use serde::de::value::{Error, StrDeserializer};
 
@@ -173,5 +182,12 @@ mod tests {
             Some(DebitOrCredit::Debit),
         );
         assert!(DebitOrCredit::deserialize(StrDeserializer::<Error>::new("Debit")).is_err());
+        assert_eq!(
+            Currency::deserialize(StrDeserializer::<Error>::new("TND"))
+                .ok()
+                .map(|currency| currency.minor_units()),
+            Some(3)
+        );
+        assert!(Currency::deserialize(StrDeserializer::<Error>::new(" tnd ")).is_err());
     }
 }
