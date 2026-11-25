@@ -188,13 +188,7 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     apply_receipt_migrations(conn, version)?;
     apply_hold_audit_migrations(conn, version)?;
     if version < FX_SCHEMA_VERSION {
-        let tx = conn.unchecked_transaction()?;
-        tx.execute_batch(include_str!("schema/fx.sql"))?;
-        tx.execute(
-            "INSERT INTO schema_version (version) VALUES (?1)",
-            [FX_SCHEMA_VERSION],
-        )?;
-        tx.commit()?;
+        apply_fx_migration(conn)?;
     }
 
     debug_assert_eq!(
@@ -203,6 +197,21 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
         "schema version mismatch after migrations"
     );
 
+    Ok(())
+}
+
+fn apply_fx_migration(conn: &Connection) -> Result<(), CliError> {
+    use rusqlite::{Transaction, TransactionBehavior};
+
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if get_schema_version(ReadConn::new(&tx))? < FX_SCHEMA_VERSION {
+        tx.execute_batch(include_str!("schema/fx.sql"))?;
+        tx.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            [FX_SCHEMA_VERSION],
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
