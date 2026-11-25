@@ -734,6 +734,11 @@ current request's verified grants, revocations, and read-only ceiling. Navigatio
 uses an explicit `ui/navigate` grant on a separate UI-scoped token. See the
 [host tool API and example](docs/mcp-host-tools.md).
 
+If the host already opened the startup ledger, pass its `Db` directly to
+`http_router_with_ledger_targets` to keep Streamable HTTP resumption via
+`Last-Event-ID`. Hosts that prepare additional ledger files can read the
+validated names and paths with `Cli::ledger_bindings()`.
+
 ### Select a ledger by name
 
 Bind an existing ledger to a name with `--ledger TARGET=PATH`. To use it in a

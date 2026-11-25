@@ -28,6 +28,52 @@ use crate::output::json::EnvelopeError;
 /// Header selecting a registered ledger for one HTTP MCP request.
 pub const LEDGER_TARGET_HEADER: &str = "beankeeper-ledger-target";
 
+/// The ledgers an HTTP router can serve.
+///
+/// Convert an opened [`Db`] for a startup-only endpoint with SSE replay, or
+/// [`LedgerTargets`] for an endpoint that can switch ledgers on each request.
+#[derive(Clone)]
+pub struct HttpLedgerTargets(HttpTargets);
+
+#[derive(Clone)]
+enum HttpTargets {
+    StartupOnly(OpenedLedger),
+    Switchable(LedgerTargets),
+}
+
+impl From<Db> for HttpLedgerTargets {
+    fn from(db: Db) -> Self {
+        Self(HttpTargets::StartupOnly(OpenedLedger::new(
+            LedgerTarget::default(),
+            db,
+        )))
+    }
+}
+
+impl From<LedgerTargets> for HttpLedgerTargets {
+    fn from(targets: LedgerTargets) -> Self {
+        Self(HttpTargets::Switchable(targets))
+    }
+}
+
+impl HttpLedgerTargets {
+    fn resolve(&self, target: &LedgerTarget) -> Result<OpenedLedger, CliError> {
+        match &self.0 {
+            HttpTargets::StartupOnly(startup) => match target.named() {
+                None => Ok(startup.clone()),
+                Some(name) => Err(name.not_registered()),
+            },
+            HttpTargets::Switchable(targets) => targets.resolve(target),
+        }
+    }
+
+    fn supports_replay(&self) -> bool {
+        // rmcp's legacy SSE cache is scoped to a session. A replayable
+        // endpoint must use one ledger for the entire session.
+        matches!(self.0, HttpTargets::StartupOnly(_))
+    }
+}
+
 /// An opened ledger paired with a bearer verified by its configured authority.
 #[derive(Clone)]
 pub(super) struct AuthenticatedLedger {
@@ -65,9 +111,8 @@ pub(super) fn authenticated_ledger(
 
 #[derive(Clone)]
 struct Authentication {
-    targets: LedgerTargets,
+    targets: HttpLedgerTargets,
     fallback: Option<SecretString>,
-    allow_event_replay: bool,
 }
 
 fn credential(
@@ -152,9 +197,7 @@ async fn authenticate(
         tokio::task::spawn_blocking(move || AuthenticatedLedger::verify(ledger, &token)).await;
     match result {
         Ok(Ok(call)) => {
-            // rmcp's legacy SSE cache is scoped to the session, not the ledger
-            // or bearer that authorized the original POST.
-            if !state.allow_event_replay
+            if !state.targets.supports_replay()
                 && request.method() == Method::GET
                 && request.headers().contains_key("last-event-id")
             {
@@ -318,17 +361,27 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
     host: H,
 ) -> Result<Router, CliError> {
     let server = host_server(cli, read_only, host)?;
-    let paths = cli.ledger_paths()?;
-    let targets = LedgerTargets::new(Db::open_existing(&cli.db, passphrase)?);
-    for (target, path) in paths {
-        targets.register(target.clone().into(), Db::open_existing(path, passphrase)?)?;
+    let paths = cli.ledger_bindings()?;
+    let startup = Db::open_existing(&cli.db, passphrase)?;
+    if paths.len() == 0 {
+        return Ok(build_router(cli, startup.into(), config, server));
     }
-    Ok(build_router(cli, targets, config, server, paths.is_empty()))
+    let targets = LedgerTargets::new(startup);
+    for (target, path) in paths {
+        targets.register(
+            target.clone().into(),
+            Db::open_existing(path.as_ref(), passphrase)?,
+        )?;
+    }
+    Ok(build_router(cli, targets.into(), config, server))
 }
 
 /// Serve already-opened ledgers and application tools on one authenticated HTTP MCP endpoint.
 ///
-/// Keep a clone of `targets` to register or detach ledgers at runtime.
+/// Pass a single [`Db`] for a startup-only endpoint with the same SSE replay
+/// via `Last-Event-ID` as [`http_router_with_host_tools`] without named bindings.
+///
+/// Pass [`LedgerTargets`] and keep a clone to register or detach ledgers at runtime.
 /// Clients select a ledger with [`LEDGER_TARGET_HEADER`] on each request, including
 /// discovery. A host can insert a typed [`LedgerTarget`] in axum request
 /// extensions to override header selection. With neither selector, the router
@@ -337,8 +390,8 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
 /// The CLI token fallback and application host tools are available on the
 /// startup ledger. A single MCP session can send calls to
 /// different registered ledgers with their respective credentials.
-/// SSE replay via `Last-Event-ID` is disabled because the transport cache is
-/// scoped to the session and could replay a response from a different ledger.
+/// Endpoints with switchable targets disable SSE replay because the session
+/// cache can contain responses from different ledgers.
 ///
 /// This factory reads the actor and fallback token from `cli`. It uses the
 /// connections supplied in `targets` and starts no listener or runtime.
@@ -347,13 +400,13 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
 /// Returns a CLI error for an invalid host tool catalog.
 pub fn http_router_with_ledger_targets<H: HostToolHandler>(
     cli: &Cli,
-    targets: LedgerTargets,
+    targets: impl Into<HttpLedgerTargets>,
     read_only: bool,
     config: StreamableHttpServerConfig,
     host: H,
 ) -> Result<Router, CliError> {
     let server = host_server(cli, read_only, host)?;
-    Ok(build_router(cli, targets, config, server, false))
+    Ok(build_router(cli, targets.into(), config, server))
 }
 
 fn host_server<H: HostToolHandler>(
@@ -374,15 +427,13 @@ fn host_server<H: HostToolHandler>(
 
 fn build_router<H: HostToolHandler>(
     cli: &Cli,
-    targets: LedgerTargets,
+    targets: HttpLedgerTargets,
     config: StreamableHttpServerConfig,
     server: HostServer<H>,
-    allow_event_replay: bool,
 ) -> Router {
     let authentication = Authentication {
         targets,
         fallback: cli.agent_token.clone(),
-        allow_event_replay,
     };
     let service = StreamableHttpService::new(
         move || {

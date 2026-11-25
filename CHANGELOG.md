@@ -8,6 +8,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Added
 
+- Embedded MCP hosts can read typed CLI ledger bindings and resume SSE streams when serving a single preopened ledger. ([#310](https://github.com/Govcraft/beankeeper/issues/310))
 - Restore and undo bookkeeping snapshots through `bk` and MCP while preserving live identity, revocations, enforcement, and audit history. `bk restore` updates an existing ledger in place. Use `bk recover` to restore a full snapshot to a new file. ([#306](https://github.com/Govcraft/beankeeper/issues/306))
 - Embedded Rust hosts can require a verified pre-migration snapshot before upgrading a ledger, and `bk backup` preserves the source schema version. ([#305](https://github.com/Govcraft/beankeeper/issues/305))
 - Embedded Rust hosts can convert `&CliError` to `EnvelopeError` and preserve the CLI and MCP error code, message, and structured details. ([#303](https://github.com/Govcraft/beankeeper/issues/303))

@@ -19,7 +19,9 @@ use crate::db::standing::{BookkeepingPolicy, InformPreference};
 use crate::db::{ActorLabel, BlankActorLabel, SnapshotOverwrite};
 use crate::error::CliError;
 use crate::identity::WriteMode;
-use crate::ledger_target::{LedgerPath, LedgerPaths, LedgerTarget};
+use crate::ledger_target::{
+    LedgerBinding, LedgerPath, LedgerPaths, LedgerTarget, NamedLedgerTarget,
+};
 use crate::operation::Operation;
 pub use crate::request::CalendarDateArg;
 use crate::request::LocalDate;
@@ -54,7 +56,7 @@ pub struct Cli {
 
     /// Bind a ledger name to a local path (TARGET=PATH, repeatable).
     #[arg(long = "ledger", global = true, value_name = "TARGET=PATH")]
-    ledger_bindings: Vec<LedgerPath>,
+    ledger_bindings: Vec<LedgerBinding>,
 
     /// Select a ledger for local commands and stdio MCP.
     #[arg(long, global = true)]
@@ -181,6 +183,18 @@ pub struct PassphraseOptions {
 }
 
 impl Cli {
+    /// Iterate over the configured named ledger bindings in name order.
+    ///
+    /// The startup database path is available separately in `self.db`.
+    ///
+    /// # Errors
+    /// Returns a validation error if a name is duplicated or reserved for startup.
+    pub fn ledger_bindings(
+        &self,
+    ) -> Result<impl ExactSizeIterator<Item = (&NamedLedgerTarget, &LedgerPath)>, CliError> {
+        Ok(self.ledger_paths()?.iter())
+    }
+
     /// Resolve the selected ledger to its operator-configured local path.
     ///
     /// # Errors
@@ -194,7 +208,7 @@ impl Cli {
         self.ledger_target.clone().unwrap_or_default()
     }
 
-    pub(crate) fn ledger_paths(&self) -> Result<&LedgerPaths, CliError> {
+    fn ledger_paths(&self) -> Result<&LedgerPaths, CliError> {
         if let Some(paths) = self.ledger_paths.get() {
             return Ok(paths);
         }
