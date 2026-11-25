@@ -260,6 +260,7 @@ dependencies = [
  "data-encoding",
  "num-bigint",
  "rusqlite",
+ "schemars",
  "serde",
  "sha2 0.10.9",
 ]

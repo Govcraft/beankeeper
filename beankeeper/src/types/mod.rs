@@ -13,6 +13,7 @@ pub mod currency;
 pub mod debit_credit;
 pub mod document;
 pub mod entry;
+pub mod exchange_rate;
 pub mod idempotency;
 pub mod money;
 
@@ -28,5 +29,6 @@ pub use document::{
     DocumentType, DocumentTypeError, Sha256Hex, Sha256HexError, SourceDocument, SourceDocumentError,
 };
 pub use entry::{ClearedEntry, Entry, EntryError};
+pub use exchange_rate::{ConvertedMoney, ExchangeRate, ExchangeRateError};
 pub use idempotency::{IdempotencyKey, IdempotencyKeyError};
 pub use money::{Money, MoneyError, NonNegativeMoney, PositiveMoney};
