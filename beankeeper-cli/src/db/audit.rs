@@ -47,6 +47,7 @@ mod posting;
 pub(super) use posting::persist_posting;
 pub(crate) mod account_rename;
 pub(crate) mod corrections;
+pub mod recategorize;
 pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
 mod standing;
@@ -197,6 +198,7 @@ audit_labels! {
         AccountRenameResolve => "account_rename_resolve",
         CorrectionPropose => "correction_propose",
         CorrectionResolve => "correction_resolve",
+        Recategorize => "recategorize",
         AccountArchive => "account_archive" | "account-archive",
         CompanyDelete => "company_delete" | "company-delete",
         DemoSeed => "demo_seed" | "demo-seed",
@@ -1787,6 +1789,10 @@ pub enum ReversalBlock {
         transaction: TransactionId,
         reversal: TransactionId,
     },
+    /// An active recategorization must be undone before its original is reversed.
+    HasRecategorization(TransactionId),
+    /// The original cannot be reversed while its prior correction was still effective.
+    BeforeRecategorizationUndo(chrono::NaiveDate),
     /// An original entry or clearing is reconciled.
     Reconciled(TransactionId),
     /// The posting changed the investment lot ledger.
@@ -1809,6 +1815,13 @@ impl std::fmt::Display for ReversalBlock {
             Self::AlreadyReversed { transaction, reversal } => {
                 write!(formatter, "transaction #{transaction} is already reversed by #{reversal}")
             }
+            Self::HasRecategorization(transaction) => write!(
+                formatter,
+                "transaction #{transaction} has an active recategorization. Undo its receipt before reversing the original"
+            ),
+            Self::BeforeRecategorizationUndo(date) => write!(
+                formatter, "choose a reversal date on or after the last recategorization undo on {date}"
+            ),
             Self::Reconciled(transaction) => write!(
                 formatter,
                 "transaction #{transaction} has reconciled clearings. Verify it against the statement and arrange an audited reconciliation correction before retrying"
@@ -1941,6 +1954,7 @@ fn reverse_in_scope(
     let date = undo_of.map_or(p.date, |_| {
         receipts::UndoPostingDate::from((p.date, original.date)).into()
     });
+    recategorize::MoveHistory::load(&company, p.id, None)?.check_reversal(p.id, date)?;
     super::holds::check_reversal(tx, &original, date)?;
     validate_reversal(conn, p.id, date, original.date)?;
     let description = p.description.map_or_else(
@@ -2067,16 +2081,19 @@ fn validate_reversal(
             original: original_date,
         }));
     }
-    let reconciled: bool = conn.query_row(
+    if has_reconciled_entries(conn, id)? {
+        return Err(CliError::ReversalBlocked(ReversalBlock::Reconciled(id)));
+    }
+    Ok(())
+}
+
+fn has_reconciled_entries(conn: &Connection, id: TransactionId) -> Result<bool, CliError> {
+    Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM entries e LEFT JOIN entry_clearings c ON c.entry_id = e.id \
              WHERE e.transaction_id = ?1 AND (e.status = 'reconciled' OR c.status = 'reconciled'))",
         params![id],
         |row| row.get(0),
-    )?;
-    if reconciled {
-        return Err(CliError::ReversalBlocked(ReversalBlock::Reconciled(id)));
-    }
-    Ok(())
+    )?)
 }
 
 /// Mirror the original entries. The sealed writer validates the resulting journal.
@@ -3139,16 +3156,19 @@ fn edited_metadata(
 }
 
 fn reject_investment_reversal(conn: &Connection, id: TransactionId) -> Result<(), CliError> {
-    let investment: bool = conn.query_row(
+    if is_investment_trade(conn, id)? {
+        return Err(CliError::ReversalBlocked(ReversalBlock::InvestmentTrade));
+    }
+    Ok(())
+}
+
+fn is_investment_trade(conn: &Connection, id: TransactionId) -> Result<bool, CliError> {
+    Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM investment_lots WHERE transaction_id = ?1)
          OR EXISTS(SELECT 1 FROM lot_reliefs WHERE transaction_id = ?1)",
         [id],
         |row| row.get(0),
-    )?;
-    if investment {
-        return Err(CliError::ReversalBlocked(ReversalBlock::InvestmentTrade));
-    }
-    Ok(())
+    )?)
 }
 
 #[cfg(test)]

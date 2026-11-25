@@ -283,6 +283,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_approve`, `txn_reject` | `company`, proposal `id`; reject accepts optional `reason`; approval applies a posting or rename atomically, rejection also serves proposer withdrawal |
 | `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: {"status":"pending"}` and accepts legacy `["status=pending"]`; unset takes `keys: ["status"]`. Both return `receipt` and `desktop_path` on changes. |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
+| `txn_recategorize` | `company`, exactly one of the original transaction's `id` or `reference`, and `to_account`; optional `from_account`, `entry_id`, `date`, `tax_category`, `description`, `posting_reference`, `on_conflict` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
@@ -324,6 +325,13 @@ defaults to `Reversal of #ID: ORIGINAL DESCRIPTION`; reference defaults to
 `{created: true, skipped: false, id}`. Reconciled originals cannot be reversed;
 existing clearings stay on the original and reversal entries start uncleared.
 Use `audit_log` with `action: "reverse"` to inspect the audit record.
+
+`txn_recategorize` shares the CLI's selection and date rules. It returns the
+new transaction `id`, `original_id`, `receipt_id`, structured movement data,
+a plain-language summary, and a Desktop receipt path. An exact retry with the
+same `posting_reference` and `on_conflict: "skip"` returns the same IDs with
+`skipped: true`. Use `audit_undo` with `receipt_id` as its `receipt`.
+Propose-only bookkeepers use the existing proposal flow.
 
 MCP monetary results include the same `_display` companions as CLI JSON.
 `txn_list` and `audit_log` expose pagination in the tool result’s `_meta.pagination`
@@ -520,7 +528,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 ### Read-only tools
 
 Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `txn_post`, `txn_propose`, `txn_approve`,
-`txn_reject`, `txn_reverse`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
+`txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
@@ -894,6 +902,29 @@ Direct mode settles in one write. Propose-only mode uses the existing
 `txn approve` path. An exact retry with the same posted reference reuses the
 settled transaction. Reverse that transaction to restore the hold. Use a fresh
 reference if you settle the restored hold again.
+
+### `bk txn recategorize`
+
+Move a posted line to a different account with one audited journal.
+
+```bash
+bk --company acme txn recategorize --id 42 --to-account 5100
+bk --company acme txn recategorize --reference BANK-42 --entry-id 85 \
+  --to-account 5100 --posting-reference FIX-42-85 --on-conflict skip
+```
+
+Supply exactly one of `--id` or `--reference`. Without `--from-account`
+or `--entry-id`, inference requires a single line outside the destination
+whose account is neither an asset nor a liability. Specify `--entry-id`
+to distinguish multiple lines on the same account. The posting reverses the
+selected line's amount on its source account and applies the same amount on
+the destination. Use `--tax-category` to override the destination tax
+category. The date defaults to the original transaction date. To correct a
+line again after an undo, choose an open date on or after that undo.
+
+The command refuses reconciled originals, reversals, pending holds,
+settlements, and investment trades. Use the returned receipt with
+`bk audit undo RECEIPT` to reverse the new posting in one step.
 
 ### `bk txn reverse ID`
 

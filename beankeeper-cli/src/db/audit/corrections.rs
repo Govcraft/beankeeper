@@ -8,9 +8,10 @@ use super::{
     Actor, AuditAction, AuditChange, AuditEntity, Company, ReadConn, ReversalSource,
     ReverseTransactionParams,
     grant::{
-        AgentUndo, Approve, CorrectionApprove, CorrectionPropose, Granted, OwnerUndo,
+        AgentUndo, Approve, CorrectionApprove, CorrectionPropose, Granted, OwnerUndo, PostingGrant,
         ResolveProposal, Reverse,
     },
+    recategorize::{self, Recategorization},
     receipts::{self, AgentReceiptUndo, ReceiptId, ReceiptUndoOutcome},
     record, reverse_in_scope, reverse_transaction,
     savepoint::AuditedTx,
@@ -88,7 +89,17 @@ impl Reversal {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Correction {
     Reverse(Reversal),
+    Recategorize(Recategorization),
     Undo { receipt: ReceiptId },
+}
+
+impl Correction {
+    fn same_intent(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Recategorize(left), Self::Recategorize(right)) => left.same_intent(right),
+            _ => self == other,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -173,6 +184,37 @@ impl AppliedReversal {
     }
 }
 
+pub(crate) enum RecategorizeSubmission {
+    Applied(recategorize::Applied),
+    Proposed(PendingCorrection),
+}
+
+pub(crate) fn recategorize(
+    db: &Db,
+    actor: &Actor,
+    company: &CompanySlug,
+    request: Recategorization,
+) -> Result<RecategorizeSubmission, CliError> {
+    PostingGrant::with_db(db, actor, |grant| match grant {
+        PostingGrant::Direct(grant) => grant.mutate("sp_recategorize", |tx, actor| {
+            let scope = Company::bind(tx.read(), company.clone())?;
+            request
+                .apply(tx, actor, &scope)
+                .map(RecategorizeSubmission::Applied)
+        }),
+        PostingGrant::Proposal(grant) => {
+            grant.mutate("sp_propose_recategorization", |tx, actor| {
+                let scope = Company::bind(tx.read(), company.clone())?;
+                if let Some(applied) = request.preview(tx, &scope)? {
+                    return Ok(RecategorizeSubmission::Applied(applied));
+                }
+                reserve(tx, actor, &scope, &Correction::Recategorize(request).into())
+                    .map(RecategorizeSubmission::Proposed)
+            })
+        }
+    })
+}
+
 pub(crate) enum UndoSubmission {
     Applied(ReceiptUndoOutcome),
     Proposed(PendingCorrection),
@@ -238,6 +280,7 @@ pub(crate) fn undo(
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
 enum Applied {
+    Recategorized(Box<recategorize::Applied>),
     Reversed {
         transaction: TransactionId,
         reversal: TransactionId,
@@ -252,6 +295,7 @@ enum Applied {
 impl Applied {
     fn desktop_path(&self, company: &CompanySlug) -> String {
         let receipt = match *self {
+            Self::Recategorized(ref applied) => return applied.desktop_path(company),
             Self::Undone { undo_receipt, .. } => undo_receipt,
             Self::Reversed { receipt, .. } => receipt,
         };
@@ -393,7 +437,7 @@ fn reserve(
     ))?;
     for row in statement.query_map(params![scope.slug(), actor.agent_uri()], read_row)? {
         let proposal = StoredProposal::try_from(row?)?;
-        if proposal.request.correction == request.correction {
+        if proposal.request.correction.same_intent(&request.correction) {
             return Ok(proposal.id.into());
         }
     }
@@ -479,6 +523,9 @@ pub(crate) fn approve(
                         reversal: applied.reversal_id(),
                         receipt: applied.receipt,
                     }
+                }
+                Correction::Recategorize(request) => {
+                    Applied::Recategorized(Box::new(request.apply(tx, actor, &scope)?))
                 }
                 Correction::Undo { receipt } => {
                     let outcome = AgentReceiptUndo::load(&scope, *receipt)?.apply(

@@ -1,7 +1,10 @@
 use core::fmt;
 use std::io;
 
-use crate::db::audit::{DuplicateAccountName, ReversalBlock, receipts::ReceiptUndoError};
+use crate::db::audit::{
+    DuplicateAccountName, ReversalBlock, recategorize::RecategorizeBlock,
+    receipts::ReceiptUndoError,
+};
 use crate::db::periods::ClosedPostingPeriod;
 
 /// CLI error type with semantic exit codes.
@@ -23,6 +26,8 @@ pub enum CliError {
     PeriodLocked(ClosedPostingPeriod),
     /// Current posting state disallows a reversal.
     ReversalBlocked(ReversalBlock),
+    /// A posting line cannot be recategorized.
+    RecategorizeBlocked(RecategorizeBlock),
     /// Database error (I/O, corruption). Exit code 4.
     Database(String),
     /// Not found (account, transaction, company does not exist). Exit code 5.
@@ -52,6 +57,8 @@ pub enum ErrorCode {
     Validation,
     /// A requested account label is already in use in the book.
     DuplicateAccountName,
+    /// A recategorization was refused by a ledger invariant.
+    RecategorizeBlocked,
     /// The receipt's change has no undo operation.
     UndoUnsupported,
     /// This structural correction requires owner authority.
@@ -80,6 +87,7 @@ impl ErrorCode {
             Self::Forbidden => "FORBIDDEN",
             Self::Validation => "VALIDATION",
             Self::DuplicateAccountName => "DUPLICATE_ACCOUNT_NAME",
+            Self::RecategorizeBlocked => "RECATEGORIZE_BLOCKED",
             Self::UndoUnsupported => "UNDO_UNSUPPORTED",
             Self::UndoOwnerOnly => "UNDO_OWNER_ONLY",
             Self::UndoIneligible => "UNDO_INELIGIBLE",
@@ -96,6 +104,7 @@ impl ErrorCode {
             Self::Usage | Self::Unimplemented => 2,
             Self::Validation
             | Self::DuplicateAccountName
+            | Self::RecategorizeBlocked
             | Self::UndoOwnerOnly
             | Self::UndoUnsupported
             | Self::UndoIneligible => 3,
@@ -135,6 +144,12 @@ impl CliError {
             | Self::PeriodLocked(_)
             | Self::ReversalBlocked(_) => ErrorCode::Validation,
             Self::DuplicateAccountName(_) => ErrorCode::DuplicateAccountName,
+            Self::RecategorizeBlocked(
+                RecategorizeBlock::TransactionMissing
+                | RecategorizeBlock::EntryMissing
+                | RecategorizeBlock::DestinationMissing(_),
+            ) => ErrorCode::NotFound,
+            Self::RecategorizeBlocked(_) => ErrorCode::RecategorizeBlocked,
             Self::ReceiptUndo(ReceiptUndoError::OwnerOnly { .. }) => ErrorCode::UndoOwnerOnly,
             Self::ReceiptUndo(ReceiptUndoError::Unsupported(_)) => ErrorCode::UndoUnsupported,
             Self::ReceiptUndo(ReceiptUndoError::Ineligible { .. }) => ErrorCode::UndoIneligible,
@@ -209,6 +224,7 @@ impl fmt::Display for CliError {
             Self::ReceiptUndo(e) => write!(f, "{e}"),
             Self::PeriodLocked(e) => write!(f, "{e}"),
             Self::ReversalBlocked(e) => write!(f, "{e}"),
+            Self::RecategorizeBlocked(e) => write!(f, "{e}"),
             Self::Sqlite(e) => write!(f, "database error: {e}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
         }
@@ -223,6 +239,7 @@ impl std::error::Error for CliError {
             Self::ReceiptUndo(e) => Some(e),
             Self::PeriodLocked(e) => Some(e),
             Self::ReversalBlocked(e) => Some(e),
+            Self::RecategorizeBlocked(e) => Some(e),
             Self::Sqlite(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Usage(_)

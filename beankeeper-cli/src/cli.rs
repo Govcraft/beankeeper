@@ -1754,6 +1754,12 @@ EXAMPLES:\n  \
     )]
     Reverse(TxnReverseArgs),
 
+    /// Move one line to a different account with an audited, undoable posting.
+    #[command(
+        after_help = "EXAMPLES:\n  bk --company acme txn recategorize --id 42 --to-account 5100\n  bk --company acme txn recategorize --reference BANK-42 --entry-id 85 --to-account 5100"
+    )]
+    Recategorize(TxnRecategorizeArgs),
+
     /// Settle a pending card hold with the actual amount from the bank.
     SettleHold(TxnSettleHoldArgs),
 
@@ -2041,6 +2047,41 @@ pub struct TxnReverseArgs {
     /// Idempotency reference. Defaults to reversal-of-ID.
     #[arg(short, long)]
     pub reference: Option<String>,
+}
+
+/// Arguments accepted by `bk txn recategorize`.
+#[derive(Args, Debug)]
+pub struct TxnRecategorizeArgs {
+    /// Source transaction ID. Supply exactly one of --id or --reference.
+    #[arg(long)]
+    pub id: Option<TransactionId>,
+    /// Reference of the original transaction.
+    #[arg(long)]
+    pub reference: Option<crate::commands::reference::TransactionReference>,
+    /// Account to receive the selected line.
+    #[arg(long)]
+    pub to_account: AccountCode,
+    /// Source account. If it occurs more than once, supply --entry-id too.
+    #[arg(long)]
+    pub from_account: Option<AccountCode>,
+    /// ID of the original entry to move.
+    #[arg(long)]
+    pub entry_id: Option<EntryId>,
+    /// Posting date (YYYY-MM-DD). Defaults to the source transaction date.
+    #[arg(long)]
+    pub date: Option<CalendarDateArg>,
+    /// Tax category for the destination line. Defaults to the source line's category.
+    #[arg(long)]
+    pub tax_category: Option<String>,
+    /// Description for the recategorization posting.
+    #[arg(short, long)]
+    pub description: Option<String>,
+    /// Idempotency reference for the new posting.
+    #[arg(long)]
+    pub posting_reference: Option<crate::commands::reference::TransactionReference>,
+    /// How to handle an existing posting reference.
+    #[arg(long, value_enum)]
+    pub on_conflict: Option<OnConflictArg>,
 }
 
 /// Arguments accepted by `bk txn settle-hold`.

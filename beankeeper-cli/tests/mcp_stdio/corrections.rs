@@ -462,3 +462,300 @@ fn agent_undo_reports_closed_and_reconciled_postings_without_changing_them() -> 
     );
     Ok(())
 }
+
+fn create_recategory(owner: &mut Client) -> TestResult {
+    owner.success(
+        "account_create",
+        &json!({"company":"acme","code":"4100","name":"Services","account_type":"revenue"}),
+    )?;
+    Ok(())
+}
+
+fn assert_recategorization_receipt(
+    agent: &mut Client,
+    original: &Value,
+    result: &Value,
+) -> TestResult {
+    let receipts = agent.success("audit_receipts", &json!({"company":"acme"}))?;
+    let receipts = receipts["receipts"].as_array().ok_or("missing receipts")?;
+    let change = receipts
+        .iter()
+        .find(|receipt| receipt["id"] == result["receipt_id"])
+        .ok_or("missing recategorization receipt")?;
+    assert_eq!(change["change"]["action"], "recategorize");
+    assert_eq!(change["change"]["target"]["id"], *original);
+    assert_eq!(change["change"]["related_posting"], result["id"]);
+    assert_eq!(change["change"]["source_reference"], "original-category");
+    assert_eq!(change["posting"]["target"]["id"], result["id"]);
+    Ok(())
+}
+
+fn assert_recategorization_entries(agent: &mut Client, id: &Value) -> TestResult {
+    let moved_args = json!({"company":"acme","id":id});
+    let moved = agent.success("txn_show", &moved_args)?;
+    let lines = moved[0]["entries"]
+        .as_array()
+        .ok_or("missing posted lines")?;
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["account_code"], "4000");
+    assert_eq!(lines[0]["direction"], "debit");
+    assert_eq!(lines[0]["amount"], 1250);
+    assert_eq!(lines[0]["tax_category"], "old-tax");
+    assert_eq!(lines[1]["account_code"], "4100");
+    assert_eq!(lines[1]["direction"], "credit");
+    assert_eq!(lines[1]["amount"], 1250);
+    assert_eq!(lines[1]["tax_category"], "new-tax");
+    Ok(())
+}
+
+fn post_partially_cleared_sale(
+    agent: &mut Client,
+    owner: &mut Client,
+) -> Result<Value, Box<dyn Error>> {
+    let mut input = posting("original-category");
+    input["tax"] = json!(["4000=old-tax"]);
+    let original = agent.success("txn_post", &input)?;
+    let selector = json!({"company":"acme","id":original["id"]});
+    let shown = agent.success("txn_show", &selector)?;
+    owner.success(
+        "txn_clear",
+        &json!({
+            "company":"acme","target":"entry","transaction_id":original["id"],
+            "entry":shown[0]["entries"][0]["id"],"amount":"2.00","date":"2026-03-02",
+            "status":"cleared"
+        }),
+    )?;
+    Ok(original)
+}
+
+#[test]
+fn recategorization_posts_directly_and_undoes_with_one_receipt_across_cli_and_mcp() -> TestResult {
+    let fixture = Fixture::new(true)?;
+    let credential = fixture.issue("recategorizer", "ledger/read,ledger/post", &[])?;
+    let mut agent = fixture.client(&credential)?;
+    let mut owner = fixture.client(&fixture.owner)?;
+    create_recategory(&mut owner)?;
+    let original = post_partially_cleared_sale(&mut agent, &mut owner)?;
+    let original_selector = json!({"company":"acme","id":original["id"]});
+    let before = agent.success("txn_show", &original_selector)?;
+
+    let result = cli_data(fixture.command(&credential)?.args([
+        "txn",
+        "recategorize",
+        "--reference",
+        "original-category",
+        "--to-account",
+        "4100",
+        "--posting-reference",
+        "category-fix",
+        "--tax-category",
+        "new-tax",
+    ]))?;
+    assert_eq!(result["original_id"], original["id"]);
+    assert_eq!(result["date"], "2026-03-01");
+    assert_eq!(result["amount"], 1250);
+    assert_eq!(result["currency"], "USD");
+    assert_eq!(result["direction"], "credit");
+    assert_eq!(result["from_account"], "4000");
+    assert_eq!(result["to_account"], "4100");
+    assert_eq!(result["skipped"], false);
+    assert!(result["desktop_path"].is_string());
+
+    assert_recategorization_entries(&mut agent, &result["id"])?;
+    assert_eq!(agent.success("txn_show", &original_selector)?, before);
+
+    let mut retry = json!({
+        "company":"acme","reference":"original-category","to_account":"4100",
+        "posting_reference":"category-fix","tax_category":"new-tax","on_conflict":"skip",
+    });
+    let retry_result = agent.success("txn_recategorize", &retry)?;
+    assert_eq!(retry_result["id"], result["id"]);
+    assert_eq!(retry_result["receipt_id"], result["receipt_id"]);
+    assert_eq!(retry_result["skipped"], true);
+    retry["description"] = json!("different intent");
+    assert_eq!(
+        payload(&agent.call("txn_recategorize", &retry)?)?["code"],
+        "RECATEGORIZE_BLOCKED"
+    );
+
+    assert_recategorization_receipt(&mut agent, &original["id"], &result)?;
+
+    let repeated = json!({"company":"acme","id":original["id"],"to_account":"4100"});
+    let blocked = payload(&agent.call("txn_recategorize", &repeated)?)?;
+    assert!(
+        blocked["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("active recategorization")
+    );
+    let blocked = payload(&agent.call("txn_reverse", &original_selector)?)?;
+    assert!(
+        blocked["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("active recategorization")
+    );
+
+    let undo_args = json!({"company":"acme","receipt":result["receipt_id"]});
+    let undo = agent.success("audit_undo", &undo_args)?;
+    assert_eq!(undo["kind"], "reversed");
+    assert_eq!(undo["transaction"], result["id"]);
+    assert_eq!(
+        cli_data(fixture.command(&credential)?.args([
+            "audit",
+            "undo",
+            &result["receipt_id"].to_string(),
+        ]))?,
+        undo,
+    );
+    assert_eq!(agent.success("txn_show", &original_selector)?, before);
+    let reversed = agent.success("txn_show", &json!({"company":"acme","id":undo["reversal"]}))?;
+    let blocked = payload(&agent.call("txn_recategorize", &repeated)?)?;
+    assert!(
+        blocked["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("last undo")
+    );
+    let mut corrected = repeated;
+    corrected["date"] = reversed[0]["date"].clone();
+    agent.success("txn_recategorize", &corrected)?;
+    agent.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
+fn recategorization_proposals_use_existing_reviews_and_check_the_live_period() -> TestResult {
+    let fixture = Fixture::new(true)?;
+    let credential = fixture.proposer()?;
+    let mut proposer = fixture.client(&credential)?;
+    let mut owner = fixture.client(&fixture.owner)?;
+    create_recategory(&mut owner)?;
+    let depositor = fixture.issue("recategorization_depositor", "ledger/read,ledger/post", &[])?;
+    let original = fixture
+        .client(&depositor)?
+        .success("txn_post", &posting("proposed-source"))?;
+    let mut args = json!({
+        "company":"acme","id":original["id"],"from_account":"4000","to_account":"4100",
+        "posting_reference":"approved-recategorization",
+    });
+    let proposal = proposer.success("txn_recategorize", &args)?;
+    assert_eq!(proposal["status"], "pending");
+    args["on_conflict"] = json!("skip");
+    assert_eq!(proposer.success("txn_recategorize", &args)?, proposal);
+    let book = json!({"company":"acme"});
+    assert_eq!(
+        owner.success("txn_list", &book)?.as_array().map(Vec::len),
+        Some(1)
+    );
+
+    owner.success(
+        "period_close",
+        &json!({"company":"acme","through":"2026-03-01"}),
+    )?;
+    let approval = json!({"company":"acme","id":proposal["proposal_id"]});
+    let blocked = payload(&owner.call("txn_approve", &approval)?)?;
+    assert!(
+        blocked["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("closed period")
+    );
+    assert_eq!(
+        owner.success("txn_proposals", &book)?[0]["status"],
+        "pending"
+    );
+    owner.success(
+        "period_reopen",
+        &json!({"company":"acme","reason":"Test approval"}),
+    )?;
+
+    let applied = owner.success("txn_approve", &approval)?;
+    assert_eq!(applied["status"], "approved");
+    assert_eq!(applied["effect"], "recategorized");
+    assert!(applied["receipt_id"].is_number());
+    assert_eq!(owner.success("txn_approve", &approval)?, applied);
+    assert_eq!(
+        owner.success("txn_list", &book)?.as_array().map(Vec::len),
+        Some(2)
+    );
+    owner.success(
+        "audit_undo",
+        &json!({"company":"acme","receipt":applied["receipt_id"]}),
+    )?;
+    owner.success("verify", &json!({}))?;
+    Ok(())
+}
+
+#[test]
+fn recategorization_refuses_ambiguous_missing_and_reconciled_lines() -> TestResult {
+    let fixture = Fixture::new(true)?;
+    let mut owner = fixture.client(&fixture.owner)?;
+    let credential = fixture.issue(
+        "recategorization_guardrails",
+        "ledger/read,ledger/post",
+        &[],
+    )?;
+    let mut agent = fixture.client(&credential)?;
+    create_recategory(&mut owner)?;
+    let mut transaction = posting("split-credit");
+    transaction["credits"] =
+        json!([{"account":"4000","amount":"5"}, {"account":"4000","amount":"7.50"}]);
+    let original = agent.success("txn_post", &transaction)?;
+    let shown = agent.success("txn_show", &json!({"company":"acme","id":original["id"]}))?;
+    let mut request = json!({"company":"acme","id":original["id"],"to_account":"4100"});
+    let ambiguous = payload(&agent.call("txn_recategorize", &request)?)?;
+    assert_eq!(ambiguous["code"], "RECATEGORIZE_BLOCKED");
+    assert!(
+        ambiguous["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("entry ID")
+    );
+    request["entry_id"] = shown[0]["entries"][1]["id"].clone();
+    request["from_account"] = json!("1000");
+    assert_eq!(
+        payload(&agent.call("txn_recategorize", &request)?)?["code"],
+        "NOT_FOUND"
+    );
+    request["from_account"] = json!("4000");
+    request["to_account"] = json!("4000");
+    let same_account = payload(&agent.call("txn_recategorize", &request)?)?;
+    assert!(
+        same_account["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must differ")
+    );
+    request["to_account"] = json!("9999");
+    assert_eq!(
+        payload(&agent.call("txn_recategorize", &request)?)?["code"],
+        "NOT_FOUND"
+    );
+    request["to_account"] = json!("4100");
+
+    owner.success(
+        "txn_clear",
+        &json!({
+            "company":"acme","target":"entry","transaction_id":original["id"],
+            "entry":shown[0]["entries"][0]["id"],"amount":"2.00","date":"2026-03-02",
+            "status":"reconciled"
+        }),
+    )?;
+    let blocked = payload(&agent.call("txn_recategorize", &request)?)?;
+    assert_eq!(blocked["code"], "RECATEGORIZE_BLOCKED");
+    assert!(
+        blocked["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("reconciled")
+    );
+    assert_eq!(
+        owner
+            .success("txn_list", &json!({"company":"acme"}))?
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    Ok(())
+}

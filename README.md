@@ -538,7 +538,7 @@ mutation tools are absent and cannot be called.
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create`, `account_rename` | Inspect, create, and rename accounts |
-| `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_meta_set`, `txn_meta_unset` | Record transactions and holds, settle holds, undo postings, or edit annotations |
+| `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
@@ -630,6 +630,16 @@ pending proposal.
 Supply the same explicit `reference` on retries to return the existing reversal
 with `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed;
 existing clearings stay on the original and reversal entries start uncleared.
+
+To move an imported line to a different account, call `txn_recategorize` with
+`company`, exactly one of the original transaction's `id` or `reference`, and
+`to_account`. On the CLI, use `bk txn recategorize --id 42 --to-account 5100`.
+Add `entry_id` or `from_account` when more than one line could match.
+A direct bookkeeper receives a summary, amounts and account codes, a
+`desktop_path`, and a `receipt_id` for one-step undo with `audit_undo` or
+`bk audit undo RECEIPT`. The new journal offsets the source account and
+posts the same amount to the destination. The original bank entry and
+statement history stay intact.
 
 See the [MCP command reference](docs/beankeeper/references/commands.md#mcp) for
 tool arguments and the [intentional CLI-only mutations](docs/beankeeper/references/commands.md#intentional-cli-only-mutations)

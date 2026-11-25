@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwn
 
 use super::AccountLabel;
 use crate::db::amounts::PositiveMinorUnits;
+use crate::db::audit::recategorize::{Movement, RecordedMove};
 use crate::db::audit::{ActorLabel, AuditAction, AuditEntity, AuditLogRow, ClientHint};
 use crate::db::ids::{AuditRowId, EntryId, ReceiptId, TransactionId};
 use crate::db::proposals::ProposalId;
@@ -179,6 +180,11 @@ pub enum ReceiptChange {
     },
     /// The posting gained a reversal link, exposed on the event.
     PostingReversed,
+    /// A new posting moved one original line between accounts.
+    PostingRecategorized {
+        /// The original line and the accounts, amount, and date of the move.
+        movement: Movement,
+    },
     /// The posting gained an intercompany link, exposed on the event.
     PostingCorrelated,
     /// An edit to the transaction's annotations.
@@ -460,19 +466,8 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
             Entity::Transaction,
             Action::MetadataSet | Action::MetadataUnset | Action::MetadataRestore,
         ) => decode.annotation_change().map(|change| (change, None)),
-        (Entity::Transaction, Action::Reverse | Action::Correlate) => {
-            let before: PostingLinkSnapshot = decode.before()?;
-            let after: PostingLinkSnapshot = decode.after()?;
-            let reference = after
-                .source_reference
-                .or(after.reference)
-                .or(before.source_reference)
-                .or(before.reference);
-            let summary = match row.action {
-                Action::Reverse => ReceiptChange::PostingReversed,
-                _ => ReceiptChange::PostingCorrelated,
-            };
-            Ok((summary, reference))
+        (Entity::Transaction, Action::Recategorize | Action::Reverse | Action::Correlate) => {
+            decode.posting_link()
         }
         _ => {
             decode.validate_other("before", row.before.as_deref())?;
@@ -510,6 +505,28 @@ impl Snapshots<'_> {
             return Err(self.invalid(which, "unexpected snapshot"));
         }
         Ok(())
+    }
+
+    fn posting_link(&self) -> Result<(ReceiptChange, Option<String>), CliError> {
+        if self.0.action == AuditAction::Recategorize {
+            self.absent("before", self.0.before.as_deref())?;
+            let recorded: RecordedMove = self.after()?;
+            let (movement, reference) = recorded.into_receipt();
+            return Ok((ReceiptChange::PostingRecategorized { movement }, reference));
+        }
+        let before: PostingLinkSnapshot = self.before()?;
+        let after: PostingLinkSnapshot = self.after()?;
+        let reference = after
+            .source_reference
+            .or(after.reference)
+            .or(before.source_reference)
+            .or(before.reference);
+        let summary = if self.0.action == AuditAction::Reverse {
+            ReceiptChange::PostingReversed
+        } else {
+            ReceiptChange::PostingCorrelated
+        };
+        Ok((summary, reference))
     }
 
     fn annotation_change(&self) -> Result<ReceiptChange, CliError> {

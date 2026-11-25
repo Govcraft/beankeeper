@@ -118,6 +118,14 @@ pub(in crate::db::audit) fn verify_links(reader: ReadConn<'_>) -> Result<(), Cli
              WHERE (event.related_posting IS NOT NULL AND (
                  posting.id IS NULL
                  OR (event.action = 'correlate') = (posting.company_slug IS event.company_slug)
+             )) OR (event.action = 'recategorize' AND (
+                 event.entity_id IS CAST(event.related_posting AS TEXT)
+                 OR NOT EXISTS (
+                     SELECT 1 FROM entries source
+                     WHERE source.company_slug = event.company_slug
+                       AND CAST(source.transaction_id AS TEXT) = event.entity_id
+                       AND source.id = json_extract(event.after, '$.movement.entry_id')
+                 )
              )) OR (event.undo_of IS NOT NULL AND (
                  original.id IS NULL OR original.id >= event.id
                  OR original.company_slug IS NOT event.company_slug
@@ -125,6 +133,8 @@ pub(in crate::db::audit) fn verify_links(reader: ReadConn<'_>) -> Result<(), Cli
                      (original.entity = 'transaction' AND original.action = 'create'
                          AND original.entity_id = event.entity_id)
                      OR (original.entity = 'proposal' AND original.action = 'proposal_approve'
+                         AND original.related_posting IS CAST(event.entity_id AS INTEGER))
+                     OR (original.entity = 'transaction' AND original.action = 'recategorize'
                          AND original.related_posting IS CAST(event.entity_id AS INTEGER))
                  ))
                  OR (event.action = 'account_rename' AND NOT (
