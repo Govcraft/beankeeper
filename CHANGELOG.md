@@ -10,6 +10,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 - Post, import, and report in active ISO 4217 currencies with defined decimal minor units through the CLI and MCP. ([#296](https://github.com/Govcraft/beankeeper/issues/296))
 - Link related transactions in the same book with a typed relationship through the CLI or MCP and undo it with one audit receipt. ([#291](https://github.com/Govcraft/beankeeper/issues/291))
+- Reconcile monthly account statements through CLI and MCP, undo with an audit receipt, and see outstanding months in financial summaries. ([#290](https://github.com/Govcraft/beankeeper/issues/290))
 - Move a posted line between accounts through the CLI or MCP and undo the move with one audit receipt. ([#289](https://github.com/Govcraft/beankeeper/issues/289))
 - Generate verified synthetic demo books tailored to a typed profile from the CLI or an authenticated MCP host. ([#293](https://github.com/Govcraft/beankeeper/issues/293))
 - Settle unique pending card holds during bank imports and flag stale authorizations in financial summaries through the CLI and MCP. ([#281](https://github.com/Govcraft/beankeeper/issues/281))

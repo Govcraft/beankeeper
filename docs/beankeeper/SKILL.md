@@ -600,6 +600,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk report budget-variance` | Budget vs actual comparison |
 | `bk report ledger` | General ledger / account statement with running balances |
 | `bk report aging` | Receivables/payables aging buckets (FIFO or specific invoice matching, by transaction date) |
+| `bk reconcile statement/list` | Match and lock monthly statements, get an undo receipt, and list account months that still need statements |
 | `bk report reconciliation` | Bank balances by default; `--mode settlement --statement ID` compares AR/AP charge applications with statement net, listing short pays, overpays and linked/unmatched credits. Supports metadata filters/grouping |
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk report trend` | Show revenue, spending or net worth across periods |
@@ -948,6 +949,32 @@ keep their original age; unapplied credit is not shown under a filter.
 
 ### Reconcile an account against a statement
 
+After marking the statement's entries as cleared, use
+`bk reconcile statement --account CODE --period-end YYYY-MM-DD --statement-ending-balance AMOUNT`
+or the `reconcile_statement` tool. The ending balance is in decimal major
+units and `period_end` is the last calendar day of the month. For MCP, pass
+`company`, `account`, `period_end` and `statement_ending_balance`. Specify
+`currency` for a company with multiple currencies. Optional `statement_ref`
+limits the clearings to that reference. Use `entry_ids` or `references` to
+limit the selection further. The CLI equivalents are repeatable `--entry-id`
+or `--reference`.
+
+The workflow adds the selected signed clearings dated in the statement month
+to the prior completed statement balance. The first run uses net reconciled
+clearings dated before the month as the opening. If a match succeeds, tell the
+owner the ending balance and receipt. Offer the Desktop link if they want to
+inspect the activity. Use `audit_undo` or `bk audit undo RECEIPT` to unlock a
+completed statement. The `close_period` option also locks posting for the
+company and requires `ledger/admin` both to set and to restore its cutoff.
+
+On `STATEMENT_DISCREPANCY`, use the expected and actual ending balances and
+the exact delta in `details` to help locate unmatched activity. Beankeeper
+preserves the original clearings. Use `reconcile_list` or `bk reconcile list`
+for completed receipts and outstanding months. Summary exposes those gaps
+as `needs_attention.items.unreconciled_months`.
+
+Use the balance report to inspect clearings before completing the statement.
+
 ```bash
 # Mark the entries that appear on the statement as cleared
 bk --company acme txn clear 42 --entry 5
@@ -994,8 +1021,9 @@ JSON retains existing status values and adds `partially_cleared` and each itemâ€
 and as reconciled only when also reconciled on or before it (`--status reconciled
 --date D` records reconciled date `D`). Over-clearing, a `--date` before the
 transaction date, and a reconciled date before the cleared date are `VALIDATION`
-errors. Reconciled clearings are locked: `--status cleared` on them fails; undo
-with `--status uncleared`, then clear again. Outstanding items carry `reference`,
+errors. Undo a completed monthly statement by receipt before editing its
+clearings. Individual clearings outside completed statements can still be
+reset with `--status uncleared`. Outstanding items carry `reference`,
 `metadata`, `cleared_amount`, `reconciled_amount`, `remaining_amount` and
 `clearings`; `bk txn show` lists every entry's clearings. See the statement-reconciliation recipe
 in [`references/workflows.md`](references/workflows.md).
