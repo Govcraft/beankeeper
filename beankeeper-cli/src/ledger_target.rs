@@ -178,36 +178,66 @@ impl<T> NamedTargets<Option<T>> {
     }
 }
 
-/// An operator-supplied CLI binding, in `TARGET=PATH` form.
-#[derive(Debug, Clone)]
-pub(crate) struct LedgerPath {
-    target: LedgerTarget,
-    path: PathBuf,
+/// A nonempty path supplied for a named ledger binding.
+///
+/// Opening the database checks whether the path exists and is usable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerPath(PathBuf);
+
+impl TryFrom<PathBuf> for LedgerPath {
+    type Error = CliError;
+
+    fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
+        if path.as_os_str().is_empty() {
+            return Err(CliError::Validation("ledger path must not be empty".into()));
+        }
+        Ok(Self(path))
+    }
 }
 
 impl FromStr for LedgerPath {
     type Err = CliError;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::try_from(PathBuf::from(raw))
+    }
+}
+
+impl AsRef<Path> for LedgerPath {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// An operator-supplied CLI binding, in `TARGET=PATH` form.
+#[derive(Debug, Clone)]
+pub(crate) struct LedgerBinding {
+    target: LedgerTarget,
+    path: LedgerPath,
+}
+
+impl FromStr for LedgerBinding {
+    type Err = CliError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         let (target, path) = raw
             .split_once('=')
-            .filter(|(_, path)| !path.is_empty())
             .ok_or_else(|| CliError::Validation("ledger binding must be TARGET=PATH".into()))?;
         Ok(Self {
             target: target.parse()?,
-            path: path.into(),
+            path: path.parse()?,
         })
     }
 }
 
-pub(crate) type LedgerPaths = NamedTargets<PathBuf>;
+pub(crate) type LedgerPaths = NamedTargets<LedgerPath>;
 
-impl TryFrom<&[LedgerPath]> for LedgerPaths {
+impl TryFrom<&[LedgerBinding]> for LedgerPaths {
     type Error = CliError;
 
-    fn try_from(paths: &[LedgerPath]) -> Result<Self, Self::Error> {
+    fn try_from(paths: &[LedgerBinding]) -> Result<Self, Self::Error> {
         let mut named = Self::default();
-        for LedgerPath { target, path } in paths {
+        for LedgerBinding { target, path } in paths {
             named.register(target.clone().try_into()?, path.clone())?;
         }
         Ok(named)
@@ -215,8 +245,8 @@ impl TryFrom<&[LedgerPath]> for LedgerPaths {
 }
 
 impl LedgerPaths {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = (&NamedLedgerTarget, &LedgerPath)> {
+        self.0.iter()
     }
 
     pub(crate) fn resolve<'a>(
@@ -224,18 +254,9 @@ impl LedgerPaths {
         target: &LedgerTarget,
         startup: &'a Path,
     ) -> Result<&'a Path, CliError> {
-        target.named().map_or(Ok(startup), |name| {
-            self.registered(name).map(PathBuf::as_path)
-        })
-    }
-}
-
-impl<'a> IntoIterator for &'a LedgerPaths {
-    type Item = (&'a NamedLedgerTarget, &'a PathBuf);
-    type IntoIter = std::collections::btree_map::Iter<'a, NamedLedgerTarget, PathBuf>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        target
+            .named()
+            .map_or(Ok(startup), |name| self.registered(name).map(AsRef::as_ref))
     }
 }
 

@@ -17,7 +17,7 @@ mod targets;
 pub use demo::DemoLedgerTool;
 pub use host::{HostTool, HostToolEffect, HostToolHandler};
 pub use http::{
-    LEDGER_TARGET_HEADER, http_router, http_router_with_host_tools,
+    HttpLedgerTargets, LEDGER_TARGET_HEADER, http_router, http_router_with_host_tools,
     http_router_with_ledger_targets, http_router_with_passphrase, serve_http,
 };
 /// Transport options for the HTTP router factories, including host rules and cancellation.

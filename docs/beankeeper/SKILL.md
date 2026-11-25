@@ -462,6 +462,12 @@ Ledger grants do not authorize navigation, and mixed ledger/UI grant lists are
 rejected. Navigation is a mutation and is removed by the read-only ceiling.
 See [the host API contract and example](../mcp-host-tools.md).
 
+An embedded host serving a single already-opened ledger can pass its `Db`
+directly to `http_router_with_ledger_targets` for SSE resumption via
+`Last-Event-ID`. The `LedgerTargets` registry supports switching ledgers and
+returns HTTP 405 for replay requests. Use `Cli::ledger_bindings()` to read the
+validated names and paths supplied through `--ledger`.
+
 - Pass `company` explicitly for account, transaction, report, and budget tools.
 - Use `company_list` / `company_show` and `account_list` / `account_show` to inspect the ledger before posting. `account_create` can add an account.
 - When the owner asks to change an existing account's label, rename the account by its current code. Use `account_rename` with `{"company":"acme","code":"1000","name":"Operating Cash"}` or `bk --company acme account rename 1000 "Operating Cash"`. This keeps its identity, balance, and posting history together. Tell the owner the new label and share the returned undo receipt and optional Desktop link. With a propose-only grant, report the proposal ID for `txn_approve` instead.

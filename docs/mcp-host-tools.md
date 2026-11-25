@@ -63,6 +63,27 @@ arguments, and implement only the named authorized action. The host callback is
 async and runs outside the ledger transaction; the identity is a snapshot at
 dispatch, so do not cache it as authority for later requests.
 
+## Serve an already-opened startup ledger
+
+Pass the opened `Db` directly to the router when the endpoint serves one ledger.
+Clients can resume an SSE stream with `Last-Event-ID` using the same transport
+configuration as `http_router_with_host_tools`.
+
+```rust
+let router = http_router_with_ledger_targets(&cli, startup_db, false, config, host)?;
+```
+
+If the host also prepares files configured through `--ledger`, read the
+validated bindings from `Cli`. The startup path is available in `cli.db`.
+`ledger_bindings()` returns an error for duplicate names or the reserved
+`startup` binding.
+
+```rust
+for (name, path) in cli.ledger_bindings()? {
+    prepare_named_ledger(name, path.as_ref())?;
+}
+```
+
 ## Dispatch to another ledger
 
 Use `http_router_with_ledger_targets` to serve built-in tools against multiple
@@ -116,8 +137,10 @@ ledger needs a fresh name. If removing a file, first release any other host
 connections to it and use the file path on the detach proof.
 
 Use startup credentials and select the startup ledger for application host tools.
-The configured token fallback also applies there. Multi-ledger endpoints disable
-SSE replay with `Last-Event-ID` because the transport cache is session-scoped.
+The configured token fallback also applies there. Endpoints configured with
+`LedgerTargets` return HTTP 405 for `Last-Event-ID` because the session cache can
+contain responses from different ledgers. This applies even while the registry
+has only the startup ledger.
 For a lost response to a write, use the tool's existing idempotency mechanism
 or check the selected ledger before retrying.
 

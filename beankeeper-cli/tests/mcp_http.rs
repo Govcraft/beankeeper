@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use beankeeper_cli::db::{self, Actor, Db};
 use beankeeper_cli::identity::{self, Admin, Granted, IssueRequest};
+use beankeeper_cli::ledger_target::{LedgerPath, NamedLedgerTarget};
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -1298,6 +1299,140 @@ fn resolved_http_router_rejects_missing_and_incorrect_keys_without_creating_a_le
 
 struct TestHost {
     calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[test]
+fn preopened_startup_ledger_replays_missed_sse_response() -> TestResult {
+    use beankeeper_cli::mcp::{HostTool, HostToolHandler, http_router_with_ledger_targets};
+    use rmcp::model::{CallToolRequestParams, CallToolResult};
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    struct ReplayHost {
+        host: TestHost,
+        release: Arc<Notify>,
+    }
+
+    impl HostToolHandler for ReplayHost {
+        fn tools(&self) -> Vec<HostTool> {
+            self.host.tools()
+        }
+
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            identity: identity::VerifiedAgent,
+        ) -> Result<CallToolResult, rmcp::ErrorData> {
+            self.release.notified().await;
+            self.host.call_tool(request, identity).await
+        }
+    }
+
+    let ledger = Ledger::new()?;
+    let release = Arc::new(Notify::new());
+    let calls = Arc::default();
+    exercise_router_with_check(
+        &ledger,
+        false,
+        |cli, config| {
+            let host = ReplayHost {
+                host: TestHost {
+                    calls: Arc::clone(&calls),
+                },
+                release: Arc::clone(&release),
+            };
+            Ok(http_router_with_ledger_targets(
+                cli,
+                ledger.db()?,
+                false,
+                config,
+                host,
+            )?)
+        },
+        |client, endpoint| {
+            let session = initialize_embedded_router(client, endpoint)?;
+            let original = embedded_request(
+                client,
+                endpoint,
+                Some(&session),
+                None,
+                "tools/call",
+                json!({"name":"host_post", "arguments":{}}),
+            )?;
+            assert_eq!(original.status(), 200);
+            let mut lines = BufReader::new(original).lines();
+            let last_event_id = loop {
+                let line = lines.next().ok_or("missing SSE event ID")??;
+                if let Some(id) = line.strip_prefix("id:") {
+                    break id.trim().to_owned();
+                }
+            };
+            drop(lines);
+
+            let resume = || {
+                client
+                    .get(endpoint)
+                    .header("Accept", "text/event-stream")
+                    .header("MCP-Protocol-Version", "2025-11-25")
+                    .header("Mcp-Session-Id", &session)
+                    .header("Last-Event-ID", &last_event_id)
+            };
+            assert_eq!(resume().bearer_auth("invalid").send()?.status(), 401);
+            let resumed = resume().send()?;
+            assert_eq!(resumed.status(), 200);
+            // Keep the call in flight until the resumed stream is attached.
+            release.notify_one();
+            let response = rpc(resumed)?;
+            assert_eq!(response["id"], 1);
+            assert_eq!(payload(&response)?["tool"], "host_post");
+            assert_eq!(calls.lock().map_err(|_| "host calls lock")?.len(), 1);
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn cli_exposes_validated_ledger_bindings_to_hosts() -> TestResult {
+    use beankeeper_cli::{cli::Cli, error::CliError};
+    use clap::Parser;
+    use std::path::Path;
+
+    let cli = Cli::try_parse_from([
+        "host",
+        "--db",
+        "startup.db",
+        "--ledger",
+        "zebra=relative=a.db",
+        "--ledger",
+        "demo=/tmp/demo.db",
+        "--ledger-target",
+        "zebra",
+        "mcp",
+        "serve",
+    ])?;
+    let bindings: Vec<(&NamedLedgerTarget, &LedgerPath)> = cli.ledger_bindings()?.collect();
+    let [(demo, demo_path), (zebra, zebra_path)] = bindings.as_slice() else {
+        return Err("expected two named bindings".into());
+    };
+    assert_eq!(demo.as_ref(), "demo");
+    assert_eq!(demo_path.as_ref(), Path::new("/tmp/demo.db"));
+    assert_eq!(zebra.as_ref(), "zebra");
+    assert_eq!(zebra_path.as_ref(), Path::new("relative=a.db"));
+    assert_eq!(cli.db_path()?, zebra_path.as_ref());
+
+    let duplicate =
+        Cli::try_parse_from(["host", "--ledger", "demo=a", "--ledger", "demo=b", "verify"])?;
+    assert!(matches!(
+        duplicate.ledger_bindings(),
+        Err(CliError::Validation(_))
+    ));
+    let reserved = Cli::try_parse_from(["host", "--ledger", "startup=a", "verify"])?;
+    assert!(matches!(
+        reserved.ledger_bindings(),
+        Err(CliError::Validation(_))
+    ));
+    assert!(Cli::try_parse_from(["host", "--ledger", "demo=", "verify"]).is_err());
+    Ok(())
 }
 
 #[test]
