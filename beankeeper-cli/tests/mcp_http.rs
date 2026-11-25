@@ -1886,3 +1886,97 @@ fn composed_router_rejects_duplicate_and_reserved_tool_names() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn demo_host_tool_provisions_only_the_host_managed_path() -> TestResult {
+    use beankeeper_cli::mcp::{DemoLedgerTool, http_router_with_host_tools};
+
+    let ledger = Ledger::new()?;
+    let destination = ledger.dir.path().join("tailored.db");
+    let startup_admin = Granted::<Admin>::with_db(&ledger.db()?, &ledger.owner, |grant| {
+        identity::issue(
+            grant,
+            &IssueRequest {
+                name: "synthetic_demo_initializer",
+                capabilities: &["ledger/admin".into()],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    })?;
+    let admin = token(&startup_admin)?;
+    exercise_router_with_check(
+        &ledger,
+        false,
+        |cli, config| {
+            Ok(http_router_with_host_tools(
+                cli,
+                Some(&PASSPHRASE.into()),
+                false,
+                config,
+                DemoLedgerTool::new(destination.clone(), Some(PASSPHRASE.into())),
+            )?)
+        },
+        |client, endpoint| {
+            let session = HostSession {
+                client,
+                endpoint,
+                session: initialize_embedded_router(client, endpoint)?,
+            };
+            let list = rpc(session.request(Some(admin), "tools/list", json!({}))?)?;
+            let tools = list["result"]["tools"]
+                .as_array()
+                .ok_or("missing tool list")?;
+            let demo = tools
+                .iter()
+                .find(|tool| tool["name"] == DemoLedgerTool::NAME)
+                .ok_or("missing demo tool")?;
+            assert_eq!(demo["inputSchema"]["additionalProperties"], false);
+            assert_eq!(demo["inputSchema"]["properties"]["books"]["minItems"], 1);
+            let schema = demo["inputSchema"].to_string();
+            assert!(schema.contains("credit_card"));
+            assert!(!schema.contains("\"$ref\""));
+
+            let not_allowed = session.call(Some(token(&ledger.writer)?), DemoLedgerTool::NAME)?;
+            assert_eq!(payload(&not_allowed)?["code"], "FORBIDDEN");
+            let call = |arguments| {
+                let result = rpc(session.request(
+                    Some(admin),
+                    "tools/call",
+                    json!({
+                        "name": DemoLedgerTool::NAME, "arguments": arguments
+                    }),
+                )?)?;
+                payload(&result)
+            };
+            assert_eq!(call(json!({"path":"ignored.db"}))?["code"], "VALIDATION");
+            assert_eq!(call(json!({"books":[]}))?["code"], "VALIDATION");
+            assert!(!destination.exists());
+            let result = call(json!({"country":"CA", "books":[{"kind":"sole_proprietorship"}]}))?;
+            assert_eq!(result["is_demo"], true);
+            assert_eq!(result["books"], 1);
+            assert_eq!(call(json!({}))?["code"], "VALIDATION");
+
+            let demo = Db::open_existing(&destination, Some(&PASSPHRASE.into()))?;
+            db::verification::VerifiedLedger::read(&demo)?;
+            let companies = db::list_companies(demo.read())?;
+            assert_eq!(companies[0].name, "Fictional Juniper Workshop 1");
+            let seeds = db::list_audit(
+                demo.read(),
+                &db::ListAuditParams {
+                    action: Some(db::audit::AuditAction::DemoSeed),
+                    actor: None,
+                    agent_uri: None,
+                    company_slug: None,
+                    entity: None,
+                    limit: Default::default(),
+                    offset: Default::default(),
+                },
+            )?;
+            assert_eq!(seeds[0].actor, startup_admin["agent_uri"]);
+            assert_eq!(db::list_companies(ledger.db()?.read())?.len(), 1);
+            Ok(())
+        },
+    )
+}

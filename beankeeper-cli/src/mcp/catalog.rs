@@ -8,7 +8,7 @@ use rmcp::{
 };
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::Arc;
 
 use super::{
@@ -29,11 +29,7 @@ pub(crate) fn operation_for_tool(name: &str) -> Result<Operation, CliError> {
         .ok_or_else(|| CliError::Usage("operation has no capability mapping".into()))
 }
 
-fn tool<Input: JsonSchema>(
-    operation: Operation,
-    name: &'static str,
-    description: &'static str,
-) -> Tool {
+pub(super) fn input_schema<Input: JsonSchema>(name: &str) -> Map<String, Value> {
     // Some MCP clients do not resolve references when assembling tool arguments.
     let mut settings = SchemaSettings::draft2020_12();
     settings.inline_subschemas = true;
@@ -51,7 +47,15 @@ fn tool<Input: JsonSchema>(
     );
     schema.remove("title");
     schema.remove("description");
-    Tool::new(name, description, Arc::new(schema))
+    schema
+}
+
+fn tool<Input: JsonSchema>(
+    operation: Operation,
+    name: &'static str,
+    description: &'static str,
+) -> Tool {
+    Tool::new(name, description, Arc::new(input_schema::<Input>(name)))
         .with_annotations(ToolAnnotations::new().read_only(operation.is_read_only()))
 }
 
