@@ -2920,15 +2920,18 @@ mod tests {
         )?;
         assert!(!table_exists);
         conn.execute_batch("DROP TABLE statement_reconciliation_clearings")?;
+        assert_failed_fx_migration_preserves_statement_schema(conn)?;
+        assert_eq!(hashes(reader)?, history);
+        assert_eq!(active_link(reader)?, link);
         let directory = tempfile::tempdir()?;
-        let path = directory.path().join("before-statement-reconciliation.db");
+        let path = directory.path().join("before-fx.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
         let migrated = super::super::Db::open_existing(&path, None)?;
         let migrated_reader = migrated.read();
         assert_eq!(get_schema_version(migrated_reader)?, CURRENT_VERSION);
         assert_eq!(hashes(migrated_reader)?, history);
         assert_eq!(active_link(migrated_reader)?, link);
-        assert_new_statement_tables(migrated_reader)?;
+        assert_new_statement_and_fx_tables(migrated_reader)?;
         assert_eq!(
             audit::verify_hash_chain(migrated_reader)?.length(),
             audit_length + 1
@@ -2971,10 +2974,38 @@ mod tests {
         Ok(())
     }
 
-    fn assert_new_statement_tables(reader: ReadConn<'_>) -> Result<(), CliError> {
+    fn assert_failed_fx_migration_preserves_statement_schema(
+        conn: &Connection,
+    ) -> Result<(), CliError> {
+        // The second FX table fails to create. Its migration must roll back
+        // without undoing the preceding statement reconciliation migration.
+        conn.execute_batch("CREATE TABLE fx_postings (collision TEXT)")?;
+        assert!(ensure_schema(conn).is_err());
+        let reader = ReadConn::new(conn);
+        assert_eq!(
+            get_schema_version(reader)?,
+            STATEMENT_RECONCILIATION_SCHEMA_VERSION
+        );
+        let table_exists = |table: &str| {
+            reader.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get::<_, bool>(0),
+            )
+        };
+        assert!(table_exists("statement_reconciliations")?);
+        assert!(table_exists("statement_reconciliation_clearings")?);
+        assert!(!table_exists("fx_accounts")?);
+        conn.execute_batch("DROP TABLE fx_postings")?;
+        Ok(())
+    }
+
+    fn assert_new_statement_and_fx_tables(reader: ReadConn<'_>) -> Result<(), CliError> {
         for table in [
             "statement_reconciliations",
             "statement_reconciliation_clearings",
+            "fx_accounts",
+            "fx_postings",
         ] {
             let empty: bool = reader.query_row(
                 &format!("SELECT NOT EXISTS (SELECT 1 FROM {table})"),
