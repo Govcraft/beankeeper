@@ -2,13 +2,19 @@
 
 use std::{fmt, str::FromStr};
 
-use beankeeper::types::{AccountCode, Currency};
+use beankeeper::types::{AccountCode, Currency, Money};
 use chrono::{Datelike, NaiveDate};
-use rusqlite::params;
+use rusqlite::{
+    Row, params,
+    types::{ToSql, ToSqlOutput},
+};
 use serde::{Deserialize, Serialize};
 
 use super::{companies::CompanySlug, connection::ReadConn, ids::EntryId, periods::PeriodDate};
-use crate::{commands::reference::TransactionReference, error::CliError};
+use crate::{
+    commands::{reference::TransactionReference, txn::MajorAmount},
+    error::CliError,
+};
 
 /// An inclusive calendar month-end in the ledger's date format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,19 +197,105 @@ impl From<Option<bool>> for StatementClose {
     }
 }
 
+/// A signed statement balance in the ledger's integer range, with its currency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct StatementBalance(i64, Currency);
+
+impl TryFrom<(MajorAmount, Currency)> for StatementBalance {
+    type Error = CliError;
+
+    fn try_from((amount, currency): (MajorAmount, Currency)) -> Result<Self, Self::Error> {
+        Ok(Self(amount.minor_units(currency)?, currency))
+    }
+}
+
+impl TryFrom<Money> for StatementBalance {
+    type Error = CliError;
+
+    fn try_from(money: Money) -> Result<Self, Self::Error> {
+        let minor = i64::try_from(money.amount().minor_units()).map_err(|_| Self::overflow())?;
+        Ok(Self(minor, money.currency()))
+    }
+}
+
+impl From<StatementBalance> for Money {
+    fn from(balance: StatementBalance) -> Self {
+        Self::from_minor(balance.0.into(), balance.1)
+    }
+}
+
+impl ToSql for StatementBalance {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        self.0.to_sql()
+    }
+}
+
+// The receipt wire format uses a single statement currency and integer amounts.
+impl Serialize for StatementBalance {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i64(self.0)
+    }
+}
+
+impl StatementBalance {
+    pub(super) fn read(row: &Row<'_>, index: usize, currency: Currency) -> rusqlite::Result<Self> {
+        Ok(Self(row.get(index)?, currency))
+    }
+
+    pub(super) fn sum(
+        currency: Currency,
+        values: impl IntoIterator<Item = Result<Self, CliError>>,
+    ) -> Result<Self, CliError> {
+        let total =
+            values
+                .into_iter()
+                .try_fold(Money::from_minor(0, currency), |total, value| {
+                    total
+                        .checked_add(value?.into())
+                        .map_err(|error| Self::arithmetic_error(&error))
+                })?;
+        total.try_into()
+    }
+
+    pub(super) fn check_ending(self, actual: Self) -> Result<(), CliError> {
+        if self == actual {
+            return Ok(());
+        }
+        let delta = Money::from(self)
+            .checked_sub(actual.into())
+            .map_err(|error| Self::arithmetic_error(&error))?;
+        Err(CliError::StatementDiscrepancy(StatementDiscrepancy {
+            expected: self,
+            actual,
+            delta,
+        }))
+    }
+
+    fn arithmetic_error(error: &beankeeper::types::MoneyError) -> CliError {
+        match error {
+            beankeeper::types::MoneyError::Overflow => Self::overflow(),
+            _ => CliError::Validation(error.to_string()),
+        }
+    }
+
+    fn overflow() -> CliError {
+        CliError::Validation("statement balance exceeds the ledger's minor-unit range".into())
+    }
+}
+
 /// An exact balance discrepancy in the statement's minor units.
 #[derive(Clone, Copy, Debug)]
 pub struct StatementDiscrepancy {
-    pub(super) currency: Currency,
-    pub(super) expected: i64,
-    pub(super) actual: i64,
+    expected: StatementBalance,
+    actual: StatementBalance,
+    delta: Money,
 }
 
 impl StatementDiscrepancy {
     /// Expected minus the actual ending balance.
     #[must_use]
     pub fn delta(self) -> i128 {
-        i128::from(self.expected) - i128::from(self.actual)
+        self.delta.amount().minor_units()
     }
 
     pub(crate) fn details(self) -> serde_json::Value {
@@ -212,7 +304,7 @@ impl StatementDiscrepancy {
             serde_json::Value::from,
         );
         serde_json::json!({
-            "currency": self.currency,
+            "currency": self.delta.currency(),
             "expected_ending_balance": self.expected,
             "actual_ending_balance": self.actual,
             "delta": delta,
@@ -226,9 +318,9 @@ impl fmt::Display for StatementDiscrepancy {
             f,
             "statement ending balance differs by {} {} minor units (expected {}, actual {})",
             self.delta(),
-            self.currency,
-            self.expected,
-            self.actual,
+            self.delta.currency(),
+            self.expected.0,
+            self.actual.0,
         )
     }
 }

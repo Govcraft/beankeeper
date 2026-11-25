@@ -896,7 +896,7 @@ fn statement_tools_share_cli_evidence_and_undo_only_under_existing_grants() -> T
         "statement_unreconciled"
     );
 
-    check_statement_cutoff_undo(&mut owner, &mut agent, input, &filters)
+    check_statement_cutoff_undo(&mut owner, &mut agent, input, &filters, &posted["id"])
 }
 
 fn check_statement_cutoff_undo(
@@ -904,6 +904,7 @@ fn check_statement_cutoff_undo(
     agent: &mut Client,
     mut input: Value,
     filters: &Value,
+    transaction_id: &Value,
 ) -> TestResult {
     input["close_period"] = json!(true);
     let closed = owner.success("reconcile_statement", &input)?;
@@ -946,6 +947,25 @@ fn check_statement_cutoff_undo(
     assert_eq!(preserved_cutoff["kind"], "statement_unreconciled");
     let cutoff = owner.success("period_list", &json!({"company":"acme"}))?;
     assert_eq!(cutoff[0]["closed_through"], "2026-03-31");
+    let cleared = agent.success(
+        "txn_clear",
+        &json!({
+            "company":"acme","target":"entry","transaction_id":transaction_id,
+            "entry":input["entry_ids"][0],"status":"uncleared"
+        }),
+    )?;
+    assert_eq!(cleared["action"], "uncleared");
+    let history = agent.success("reconcile_list", filters)?;
+    let undone = history["statements"]
+        .as_array()
+        .and_then(|statements| {
+            statements
+                .iter()
+                .find(|s| s["receipt"] == closed["receipt"])
+        })
+        .ok_or("history must retain the undone statement")?;
+    assert_eq!(undone["matched"], closed["matched"]);
+    assert_eq!(undone["undo_receipt"], restored["undo_receipt"]);
     assert_eq!(owner.success("verify", &json!({}))?["status"], "healthy");
     Ok(())
 }

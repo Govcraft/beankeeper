@@ -5,7 +5,7 @@ use std::{borrow::Borrow, collections::BTreeMap};
 use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, Row, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{
     Actor, AuditAction, AuditChange, AuditEntity, AuditLinks, grant::Granted, record_with_links,
@@ -20,7 +20,7 @@ use crate::db::{
     ids::{ClearingId, EntryId, ReceiptId},
     periods::{self, PeriodChange, PeriodDate},
     statement::{
-        StatementClose, StatementDiscrepancy, StatementKey, StatementMonth, StatementRef,
+        StatementBalance, StatementClose, StatementKey, StatementMonth, StatementRef,
         StatementSelection,
     },
 };
@@ -39,11 +39,11 @@ pub struct StatementInput {
     pub close: StatementClose,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 struct MatchedClearing {
     id: ClearingId,
     entry_id: EntryId,
-    signed_amount: i64,
+    signed_amount: StatementBalance,
     cleared_on: NaiveDate,
     posted_on: NaiveDate,
     previously_reconciled_on: Option<NaiveDate>,
@@ -55,7 +55,7 @@ struct Candidate {
     entry_amount: PositiveMinorUnits,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize)]
 struct StatementEvidence {
     account: AccountCode,
     currency: Currency,
@@ -63,15 +63,15 @@ struct StatementEvidence {
     period_end: NaiveDate,
     statement_date: NaiveDate,
     statement_ref: Option<StatementRef>,
-    opening_balance: i64,
-    statement_ending_balance: i64,
-    cleared_net: i64,
+    opening_balance: StatementBalance,
+    statement_ending_balance: StatementBalance,
+    cleared_net: StatementBalance,
     prior_statement: Option<ReceiptId>,
     period_close: Option<PeriodClose>,
     matched: Vec<MatchedClearing>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize)]
 struct PeriodClose {
     previous_cutoff: Option<NaiveDate>,
     previous_event: Option<ReceiptId>,
@@ -131,10 +131,7 @@ impl StatementReceipt {
     }
 
     pub(crate) fn ending_balance(&self) -> Money {
-        Money::from_minor(
-            self.evidence.statement_ending_balance.into(),
-            self.currency(),
-        )
+        self.evidence.statement_ending_balance.into()
     }
 
     pub(crate) const fn undo_receipt(&self) -> Option<ReceiptId> {
@@ -142,19 +139,9 @@ impl StatementReceipt {
     }
 }
 
-struct StatementBalance(i64);
-
-impl TryFrom<(MajorAmount, Currency)> for StatementBalance {
-    type Error = CliError;
-
-    fn try_from((amount, currency): (MajorAmount, Currency)) -> Result<Self, Self::Error> {
-        Ok(Self(amount.minor_units(currency)?))
-    }
-}
-
 struct Timeline {
     previous: Option<ReceiptId>,
-    opening: i64,
+    opening: StatementBalance,
 }
 
 // Only checking the actual scoped clearings inside this write scope can
@@ -198,16 +185,11 @@ impl<'a> StatementBalanceProof<'a> {
             statement_ref: input.statement_ref.as_ref(),
         };
         let selected = scope.select(input.selection)?;
-        let net = total(selected.iter().map(|item| item.member.signed_amount))?;
-        let expected = total([timeline.opening, net])?;
-        let actual = ending.0;
-        if expected != actual {
-            return Err(CliError::StatementDiscrepancy(StatementDiscrepancy {
-                currency,
-                expected,
-                actual,
-            }));
-        }
+        let net = StatementBalance::sum(
+            currency,
+            selected.iter().map(|item| Ok(item.member.signed_amount)),
+        )?;
+        StatementBalance::sum(currency, [Ok(timeline.opening), Ok(net)])?.check_ending(ending)?;
 
         Ok(Self {
             tx,
@@ -225,7 +207,7 @@ impl<'a> StatementBalanceProof<'a> {
                 statement_date: period_end,
                 statement_ref: input.statement_ref,
                 opening_balance: timeline.opening,
-                statement_ending_balance: actual,
+                statement_ending_balance: ending,
                 cleared_net: net,
                 prior_statement: timeline.previous,
                 period_close: None,
@@ -275,6 +257,7 @@ impl<'a> StatementBalanceProof<'a> {
             },
         )?;
         let receipt: ReceiptId = conn.last_insert_rowid().try_into()?;
+        store_proof(self.tx, company, receipt, &self.evidence)?;
         let (reconciled_by, reconciled_at) = self.tx.read().query_row(
             "SELECT actor, changed_at FROM audit_log WHERE id = ?1",
             [receipt],
@@ -328,16 +311,6 @@ pub(crate) fn reconcile(
     })
 }
 
-fn total(values: impl IntoIterator<Item = i64>) -> Result<i64, CliError> {
-    checked_minor(values.into_iter().map(i128::from).sum())
-}
-
-fn checked_minor(value: i128) -> Result<i64, CliError> {
-    i64::try_from(value).map_err(|_| {
-        CliError::Validation("statement balance exceeds the ledger's minor-unit range".into())
-    })
-}
-
 fn timeline(
     scope: &Company<'_>,
     account: &AccountCode,
@@ -345,15 +318,21 @@ fn timeline(
     normal: DebitOrCredit,
     month: StatementMonth,
 ) -> Result<Timeline, CliError> {
-    let latest: Option<(ReceiptId, NaiveDate, i64)> = scope
+    let latest: Option<(ReceiptId, NaiveDate, StatementBalance)> = scope
         .read()
         .query_row(
-            "SELECT receipt, period_end, json_extract(evidence, '$.statement_ending_balance')
+            "SELECT receipt, period_end, statement_ending_balance
          FROM statement_reconciliations
          WHERE company_slug = ?1 AND account = ?2 AND currency = ?3 AND undo_receipt IS NULL
          ORDER BY period_end DESC LIMIT 1",
             params![scope.slug(), account.as_str(), currency.code()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    StatementBalance::read(row, 2, currency)?,
+                ))
+            },
         )
         .optional()?;
     if let Some((receipt, end, opening)) = latest {
@@ -375,8 +354,7 @@ fn timeline(
          WHERE t.company_slug = ?1 AND e.account_code = ?2 AND t.currency = ?3
            AND c.status = 'reconciled' AND substr(c.reconciled_date, 1, 10) < ?4",
     )?;
-    let opening = sum_rows(
-        &mut stmt,
+    let cleared = stmt.query_map(
         params![
             scope.slug(),
             account.as_str(),
@@ -384,23 +362,12 @@ fn timeline(
             month.start(),
             normal.code()
         ],
+        |row| StatementBalance::read(row, 0, currency),
     )?;
     Ok(Timeline {
         previous: None,
-        opening,
+        opening: StatementBalance::sum(currency, cleared.map(|value| value.map_err(Into::into)))?,
     })
-}
-
-fn sum_rows(
-    stmt: &mut crate::db::connection::ReadStatement<'_>,
-    bindings: impl rusqlite::Params,
-) -> Result<i64, CliError> {
-    let sum = stmt
-        .query_map(bindings, |row| row.get::<_, i64>(0))?
-        .try_fold(0_i128, |total, value| {
-            value.map(|value| total + i128::from(value))
-        })?;
-    checked_minor(sum)
 }
 
 struct StatementMatch<'a> {
@@ -446,7 +413,7 @@ impl StatementMatch<'_> {
                         member: MatchedClearing {
                             id: row.get(0)?,
                             entry_id: row.get(1)?,
-                            signed_amount: row.get(2)?,
+                            signed_amount: StatementBalance::read(row, 2, self.currency)?,
                             cleared_on: row.get(3)?,
                             posted_on: row.get(7)?,
                             previously_reconciled_on: row.get(4)?,
@@ -504,18 +471,127 @@ where
     Ok(())
 }
 
+fn store_proof(
+    tx: &AuditedTx<'_>,
+    company: &CompanySlug,
+    receipt: ReceiptId,
+    evidence: &StatementEvidence,
+) -> Result<(), CliError> {
+    let conn = tx.connection();
+    for member in &evidence.matched {
+        conn.execute(
+            "INSERT INTO statement_reconciliation_clearings
+                 (statement_id, clearing_id, locked_clearing_id, entry_id, signed_amount,
+                  cleared_on, posted_on, previously_reconciled_on)
+             VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                receipt,
+                member.id,
+                member.entry_id,
+                member.signed_amount,
+                member.cleared_on,
+                member.posted_on,
+                member.previously_reconciled_on,
+            ],
+        )?;
+    }
+    let close = evidence.period_close.as_ref();
+    conn.execute(
+        "INSERT INTO statement_reconciliations
+             (receipt, company_slug, account, currency, period_start, period_end, statement_ref,
+              opening_balance, statement_ending_balance, cleared_net, prior_statement,
+              previous_cutoff, previous_period_event, close_event)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            receipt,
+            company,
+            evidence.account,
+            evidence.currency,
+            evidence.period_start,
+            evidence.period_end,
+            evidence.statement_ref.as_ref().map(AsRef::as_ref),
+            evidence.opening_balance,
+            evidence.statement_ending_balance,
+            evidence.cleared_net,
+            evidence.prior_statement,
+            close.and_then(|c| c.previous_cutoff),
+            close.and_then(|c| c.previous_event),
+            close.map(|c| c.close_event),
+        ],
+    )?;
+    Ok(())
+}
+
+const SELECT_RECEIPT: &str = "SELECT s.receipt, s.undo_receipt, event.actor, event.changed_at,
+    s.account, s.currency, s.period_start, s.period_end, s.statement_ref,
+    s.opening_balance, s.statement_ending_balance, s.cleared_net, s.prior_statement,
+    s.previous_cutoff, s.previous_period_event, s.close_event
+    FROM statement_reconciliations s JOIN audit_log event ON event.id = s.receipt";
+
 fn decode(row: &Row<'_>) -> rusqlite::Result<StatementReceipt> {
-    let raw: String = row.get(4)?;
-    let evidence = serde_json::from_str(&raw).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error))
-    })?;
+    let currency = row.get(5)?;
+    let period_end = row.get(7)?;
+    let close_event: Option<ReceiptId> = row.get(15)?;
+    let period_close = close_event
+        .map(|close_event| -> rusqlite::Result<_> {
+            Ok(PeriodClose {
+                previous_cutoff: row.get(13)?,
+                previous_event: row.get(14)?,
+                close_event,
+            })
+        })
+        .transpose()?;
+    let statement_ref = row
+        .get::<_, Option<String>>(8)?
+        .map(StatementRef::try_from)
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
     Ok(StatementReceipt {
         receipt: row.get(0)?,
         undo_receipt: row.get(1)?,
         reconciled_by: row.get(2)?,
         reconciled_at: row.get(3)?,
-        evidence,
+        evidence: StatementEvidence {
+            account: row.get(4)?,
+            currency,
+            period_start: row.get(6)?,
+            period_end,
+            statement_date: period_end,
+            statement_ref,
+            opening_balance: StatementBalance::read(row, 9, currency)?,
+            statement_ending_balance: StatementBalance::read(row, 10, currency)?,
+            cleared_net: StatementBalance::read(row, 11, currency)?,
+            prior_statement: row.get(12)?,
+            period_close,
+            matched: Vec::new(),
+        },
     })
+}
+
+fn read_members(reader: ReadConn<'_>, receipt: &mut StatementReceipt) -> Result<(), CliError> {
+    let mut stmt = reader.prepare_cached(
+        "SELECT clearing_id, entry_id, signed_amount, cleared_on, posted_on, previously_reconciled_on
+         FROM statement_reconciliation_clearings WHERE statement_id = ?1 ORDER BY clearing_id",
+    )?;
+    receipt.evidence.matched = stmt
+        .query_map([receipt.receipt], |row| {
+            Ok(MatchedClearing {
+                id: row.get(0)?,
+                entry_id: row.get(1)?,
+                signed_amount: StatementBalance::read(row, 2, receipt.currency())?,
+                cleared_on: row.get(3)?,
+                posted_on: row.get(4)?,
+                previously_reconciled_on: row.get(5)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(())
 }
 
 pub(crate) fn list(
@@ -526,22 +602,19 @@ pub(crate) fn list(
     if let Some(account) = account {
         get_account(scope, account.as_str())?;
     }
-    let mut stmt = scope.read().prepare(
-        "SELECT receipt, undo_receipt, reconciled_by, reconciled_at, evidence
-         FROM statement_reconciliations WHERE company_slug = ?1
-           AND (?2 IS NULL OR account = ?2) AND (?3 IS NULL OR currency = ?3)
-         ORDER BY period_end DESC, receipt DESC",
-    )?;
-    stmt.query_map(
-        params![
-            scope.slug(),
-            account.map(AccountCode::as_str),
-            currency.as_ref().map(Currency::code)
-        ],
-        decode,
-    )?
-    .collect::<Result<_, _>>()
-    .map_err(Into::into)
+    let reader = scope.read();
+    let mut stmt = reader.prepare(&format!(
+        "{SELECT_RECEIPT} WHERE s.company_slug = ?1
+           AND (?2 IS NULL OR s.account = ?2) AND (?3 IS NULL OR s.currency = ?3)
+         ORDER BY s.period_end DESC, s.receipt DESC",
+    ))?;
+    let mut receipts = stmt
+        .query_map(params![scope.slug(), account, currency], decode)?
+        .collect::<Result<Vec<_>, _>>()?;
+    for receipt in &mut receipts {
+        read_members(reader, receipt)?;
+    }
+    Ok(receipts)
 }
 
 pub(super) fn is_statement_receipt(
@@ -563,12 +636,12 @@ pub(super) fn undo(
     receipt: ReceiptId,
     key: &StatementKey,
 ) -> Result<(), CliError> {
-    let original = tx.read().query_row(
-        "SELECT receipt, undo_receipt, reconciled_by, reconciled_at, evidence
-         FROM statement_reconciliations WHERE company_slug = ?1 AND receipt = ?2",
+    let mut original = tx.read().query_row(
+        &format!("{SELECT_RECEIPT} WHERE s.company_slug = ?1 AND s.receipt = ?2"),
         params![scope.slug(), receipt],
         decode,
     )?;
+    read_members(tx.read(), &mut original)?;
     let evidence = original.evidence;
     ensure_latest(tx.read(), scope.slug(), &evidence)?;
     let period_restore = evidence
@@ -592,6 +665,17 @@ pub(super) fn undo(
             snapshots: (None, Some(&snapshot(&undo))),
         },
         AuditLinks::Undo(receipt),
+    )?;
+    let undo_receipt: ReceiptId = tx.connection().last_insert_rowid().try_into()?;
+    tx.connection().execute(
+        "UPDATE statement_reconciliations SET undo_receipt = ?2, restore_event = ?3,
+             restored_period_event = ?4 WHERE receipt = ?1",
+        params![
+            receipt,
+            undo_receipt,
+            undo.period_restore.as_ref().map(|r| r.event),
+            undo.period_restore.as_ref().and_then(|r| r.restored_event),
+        ],
     )?;
 
     let mut entries = BTreeMap::new();
@@ -695,7 +779,7 @@ fn ensure_no_cutoff_dependents(
     let dependent: Option<ReceiptId> = reader
         .query_row(
             "SELECT receipt FROM statement_reconciliations WHERE company_slug = ?1
-           AND undo_receipt IS NULL AND json_extract(evidence, '$.period_close.previous_event') = ?2
+           AND undo_receipt IS NULL AND previous_period_event = ?2
          ORDER BY receipt DESC LIMIT 1",
             params![company, close.close_event],
             |row| row.get(0),
@@ -726,11 +810,9 @@ fn effective_period_event(
 ) -> Result<Option<ReceiptId>, CliError> {
     let active: Option<Option<ReceiptId>> = reader
         .query_row(
-            "SELECT CASE WHEN undo.id IS NULL THEN period.id
-                     ELSE json_extract(undo.after, '$.period_restore.restored_event') END
-         FROM audit_log period LEFT JOIN audit_log undo ON undo.company_slug = period.company_slug
-           AND undo.action = 'statement_unreconcile'
-           AND json_extract(undo.after, '$.period_restore.event') = period.id
+            "SELECT CASE WHEN s.receipt IS NULL THEN period.id ELSE s.restored_period_event END
+         FROM audit_log period LEFT JOIN statement_reconciliations s ON s.restore_event = period.id
+           AND s.company_slug = period.company_slug
          WHERE period.entity = 'period' AND period.company_slug = ?1 AND period.entity_id = ?1
          ORDER BY period.id DESC LIMIT 1",
             [company],
@@ -766,26 +848,26 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
     verify_balances(reader)?;
     let invalid: Option<ReceiptId> = reader.query_row(
         "SELECT s.receipt
-         FROM statement_reconciliations s, json_each(s.evidence, '$.matched') member
-         LEFT JOIN entry_clearings c ON c.id = json_extract(member.value, '$.id')
+         FROM statement_reconciliations s
+         JOIN statement_reconciliation_clearings member ON member.statement_id = s.receipt
+         LEFT JOIN entry_clearings c ON c.id = member.locked_clearing_id
                                      AND c.company_slug = s.company_slug
          LEFT JOIN entries e ON e.id = c.entry_id AND e.company_slug = c.company_slug
          LEFT JOIN accounts a ON a.company_slug = e.company_slug AND a.code = e.account_code
          LEFT JOIN posted_transactions t ON t.id = e.transaction_id AND t.company_slug = e.company_slug
-         WHERE s.undo_receipt IS NULL AND (
+         WHERE (s.undo_receipt IS NOT NULL AND member.locked_clearing_id IS NOT NULL)
+            OR (s.undo_receipt IS NULL AND (
              c.id IS NULL OR c.status <> 'reconciled'
-             OR e.id IS NOT json_extract(member.value, '$.entry_id')
+             OR e.id IS NOT member.entry_id
              OR e.account_code IS NOT s.account OR t.currency IS NOT s.currency
              OR a.type IS NULL OR a.type NOT IN ('asset', 'liability')
-             OR substr(c.cleared_date, 1, 10) IS NOT json_extract(member.value, '$.cleared_on')
-             OR substr(t.date, 1, 10) IS NOT json_extract(member.value, '$.posted_on')
-             OR substr(c.reconciled_date, 1, 10) IS NOT
-                 COALESCE(json_extract(member.value, '$.previously_reconciled_on'), s.period_end)
-             OR (json_extract(s.evidence, '$.statement_ref') IS NOT NULL
-                 AND c.statement_ref IS NOT json_extract(s.evidence, '$.statement_ref'))
+             OR substr(c.cleared_date, 1, 10) IS NOT member.cleared_on
+             OR substr(t.date, 1, 10) IS NOT member.posted_on
+             OR substr(c.reconciled_date, 1, 10) IS NOT COALESCE(member.previously_reconciled_on, s.period_end)
+             OR (s.statement_ref IS NOT NULL AND c.statement_ref IS NOT s.statement_ref)
              OR (CASE WHEN (a.type = 'asset') = (e.direction = 'debit')
-                      THEN c.amount ELSE -c.amount END) IS NOT json_extract(member.value, '$.signed_amount')
-         ) LIMIT 1",
+                      THEN c.amount ELSE -c.amount END) IS NOT member.signed_amount
+         )) LIMIT 1",
         [], |row| row.get(0),
     ).optional()?;
     if let Some(receipt) = invalid {
@@ -799,32 +881,29 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
 fn verify_balances(reader: ReadConn<'_>) -> Result<(), CliError> {
     use std::collections::BTreeSet;
 
-    let mut stmt = reader.prepare(
-        "SELECT s.receipt, s.undo_receipt, s.reconciled_by, s.reconciled_at, s.evidence,
-                s.company_slug, event.entity_id
-         FROM statement_reconciliations s JOIN audit_log event ON event.id = s.receipt
-         ORDER BY s.receipt",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            decode(row)?,
-            row.get::<_, CompanySlug>(5)?,
-            row.get::<_, String>(6)?,
-        ))
-    })?;
+    verify_receipt_links(reader)?;
+    let mut stmt = reader.prepare(&format!("{SELECT_RECEIPT} ORDER BY s.receipt"))?;
+    let rows = stmt.query_map([], decode)?;
     let mut active = BTreeMap::new();
     let mut matched = BTreeSet::new();
     for row in rows {
-        let (row, company, key) = row?;
+        let mut row = row?;
+        read_members(reader, &mut row)?;
+        let company = verify_snapshot(reader, &row)?;
         let evidence = row.evidence;
         let month = StatementMonth::try_from(PeriodDate::try_from(evidence.period_end)?)?;
-        let recorded_key = StatementKey::from((evidence.account.clone(), evidence.currency, month));
-        let net = total(evidence.matched.iter().map(|member| member.signed_amount))?;
+        let net = StatementBalance::sum(
+            evidence.currency,
+            evidence
+                .matched
+                .iter()
+                .map(|member| Ok(member.signed_amount)),
+        )?;
+        let ending =
+            StatementBalance::sum(evidence.currency, [Ok(evidence.opening_balance), Ok(net)])?;
         if net != evidence.cleared_net
-            || total([evidence.opening_balance, net])? != evidence.statement_ending_balance
+            || ending != evidence.statement_ending_balance
             || evidence.period_start != month.start()
-            || evidence.statement_date != month.end()
-            || recorded_key.to_string() != key
             || evidence.matched.iter().any(|member| {
                 !(month.start()..=month.end()).contains(&member.cleared_on)
                     || member.posted_on > member.cleared_on
@@ -859,6 +938,80 @@ fn verify_balances(reader: ReadConn<'_>) -> Result<(), CliError> {
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+// Audit evidence attests to the typed state. It is read here only for integrity checking.
+fn verify_snapshot(reader: ReadConn<'_>, row: &StatementReceipt) -> Result<CompanySlug, CliError> {
+    let (company, key, snapshot): (CompanySlug, String, String) = reader.query_row(
+        "SELECT company_slug, entity_id, after FROM audit_log WHERE id = ?1",
+        [row.receipt],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let month = StatementMonth::try_from(PeriodDate::try_from(row.period_end())?)?;
+    let recorded = StatementKey::from((row.account().clone(), row.currency(), month));
+    if recorded.to_string() != key || !snapshot_matches(&row.evidence, &snapshot) {
+        return Err(CliError::Database(format!(
+            "typed proof does not match audit evidence on statement receipt {}",
+            row.receipt
+        )));
+    }
+    if let Some(undo) = row.undo_receipt {
+        verify_undo_snapshot(reader, row.receipt, undo)?;
+    }
+    Ok(company)
+}
+
+fn verify_undo_snapshot(
+    reader: ReadConn<'_>,
+    receipt: ReceiptId,
+    undo: ReceiptId,
+) -> Result<(), CliError> {
+    let (restore, restored, audited): (Option<ReceiptId>, _, String) = reader.query_row(
+        "SELECT s.restore_event, s.restored_period_event, event.after
+         FROM statement_reconciliations s JOIN audit_log event ON event.id = s.undo_receipt
+         WHERE s.receipt = ?1",
+        [receipt],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let evidence = StatementUndo {
+        receipt,
+        period_restore: restore.map(|event| PeriodRestore {
+            event,
+            restored_event: restored,
+        }),
+    };
+    if !snapshot_matches(&evidence, &audited) {
+        return Err(CliError::Database(format!(
+            "typed undo does not match audit evidence on statement receipt {receipt} (undo {undo})"
+        )));
+    }
+    Ok(())
+}
+
+fn snapshot_matches(evidence: &impl Serialize, audited: &str) -> bool {
+    matches!(
+        (serde_json::to_value(evidence), serde_json::from_str::<serde_json::Value>(audited)),
+        (Ok(expected), Ok(actual)) if expected == actual
+    )
+}
+
+fn verify_receipt_links(reader: ReadConn<'_>) -> Result<(), CliError> {
+    let invalid: Option<ReceiptId> = reader.query_row(
+        "SELECT event.id FROM audit_log event
+         LEFT JOIN statement_reconciliations s
+            ON s.receipt = CASE WHEN event.action = 'statement_reconcile' THEN event.id ELSE event.undo_of END
+         WHERE event.action IN ('statement_reconcile', 'statement_unreconcile')
+           AND (s.receipt IS NULL OR s.company_slug IS NOT event.company_slug
+                OR (event.action = 'statement_unreconcile' AND s.undo_receipt IS NOT event.id))
+         LIMIT 1",
+        [], |row| row.get(0),
+    ).optional()?;
+    if let Some(receipt) = invalid {
+        return Err(CliError::Database(format!(
+            "statement receipt {receipt} has no matching typed proof"
+        )));
     }
     Ok(())
 }

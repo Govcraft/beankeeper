@@ -326,8 +326,10 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
             "DROP TRIGGER protect_statement_clearing_update;
              DROP TRIGGER protect_statement_clearing_delete;
              DROP TRIGGER protect_statement_clearing_replace;
+             DROP TRIGGER protect_statement_undo;
              DROP VIEW statement_locked_clearings;
-             DROP VIEW statement_reconciliations;
+             DROP TABLE statement_reconciliation_clearings;
+             DROP TABLE statement_reconciliations;
              DROP TRIGGER protect_transaction_link_undo;
              DROP TABLE transaction_links;
              DROP VIEW active_transaction_links;

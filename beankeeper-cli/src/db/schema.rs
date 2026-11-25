@@ -2867,6 +2867,19 @@ mod tests {
             RECATEGORIZATION_SCHEMA_VERSION,
         )?;
         assert_eq!(get_schema_version(reader)?, RECATEGORIZATION_SCHEMA_VERSION);
+        // Failing after the audit rebuild must roll back both the schema version
+        // and the audit rebuild, leaving the original ledger usable.
+        conn.execute_batch("CREATE TABLE statement_reconciliation_clearings (collision TEXT)")?;
+        assert!(ensure_schema(conn).is_err());
+        assert_eq!(get_schema_version(reader)?, RECATEGORIZATION_SCHEMA_VERSION);
+        assert_eq!(hashes(reader)?, history);
+        let table_exists: bool = reader.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'statement_reconciliations')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!table_exists);
+        conn.execute_batch("DROP TABLE statement_reconciliation_clearings")?;
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("before-statement-reconciliation.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
@@ -2874,6 +2887,29 @@ mod tests {
         let migrated_reader = migrated.read();
         assert_eq!(get_schema_version(migrated_reader)?, CURRENT_VERSION);
         assert_eq!(hashes(migrated_reader)?, history);
+        for table in [
+            "statement_reconciliations",
+            "statement_reconciliation_clearings",
+        ] {
+            let empty: bool = migrated_reader.query_row(
+                &format!("SELECT NOT EXISTS (SELECT 1 FROM {table})"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(empty);
+            let strict_table: bool = migrated_reader.query_row(
+                "SELECT strict = 1 AND type = 'table' FROM pragma_table_list WHERE name = ?1",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert!(strict_table);
+        }
+        let foreign_key_violations: i64 = migrated_reader.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_check",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(foreign_key_violations, 0);
         assert_eq!(
             audit::verify_hash_chain(migrated_reader)?.length(),
             audit_length

@@ -1458,3 +1458,51 @@ fn monthly_statement_uses_prior_legacy_reconciliation_and_locks_evidence() -> ru
     );
     Ok(())
 }
+
+#[test]
+fn typed_proof_locks_clearings_and_carries_forward_without_the_audit_snapshot()
+-> rusqlite::Result<()> {
+    let ledger = seeded();
+    ledger.clear_ref("POL-1", &["--date", "2026-01-31", "--statement", "JAN"]);
+    let january = complete_month(&ledger, "2026-01-31", "100", &["--statement-ref", "JAN"]);
+    let receipt = int(&january, "receipt");
+    let conn = rusqlite::Connection::open(&ledger.db)?;
+    // Exercise the guards independently of foreign keys and the JSON snapshot.
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    conn.execute_batch("DROP TRIGGER protect_audit_update")?;
+    conn.execute("UPDATE audit_log SET after = '{}' WHERE id = ?1", [receipt])?;
+    let clearing: i64 = conn.query_row(
+        "SELECT clearing_id FROM statement_reconciliation_clearings WHERE statement_id = ?1",
+        [receipt],
+        |row| row.get(0),
+    )?;
+    for mutation in [
+        "UPDATE entry_clearings SET status = 'cleared', reconciled_date = NULL WHERE id = ?1",
+        "DELETE FROM entry_clearings WHERE id = ?1",
+        "INSERT OR REPLACE INTO entry_clearings SELECT * FROM entry_clearings WHERE id = ?1",
+        "INSERT OR REPLACE INTO entry_clearings
+         (entry_id, company_slug, amount, cleared_date, statement_ref)
+         SELECT entry_id, company_slug, amount, cleared_date, statement_ref FROM entry_clearings WHERE id = ?1",
+    ] {
+        let error = conn.execute(mutation, [clearing]).expect_err("table must hold the lock");
+        assert!(error.to_string().contains("clearing belongs to a completed statement"), "{error}");
+    }
+    for mutation in [
+        "UPDATE statement_reconciliations SET opening_balance = 1, cleared_net = cleared_net - 1 WHERE receipt = ?1",
+        "UPDATE statement_reconciliations SET undo_receipt = receipt WHERE receipt = ?1",
+        "DELETE FROM statement_reconciliations WHERE receipt = ?1",
+        "INSERT OR REPLACE INTO statement_reconciliations SELECT * FROM statement_reconciliations WHERE receipt = ?1",
+        "UPDATE statement_reconciliation_clearings SET locked_clearing_id = NULL WHERE statement_id = ?1",
+        "DELETE FROM statement_reconciliation_clearings WHERE statement_id = ?1",
+        "INSERT OR REPLACE INTO statement_reconciliation_clearings
+         SELECT * FROM statement_reconciliation_clearings WHERE statement_id = ?1",
+    ] {
+        assert!(conn.execute(mutation, [receipt]).is_err(), "{mutation}");
+    }
+    let history = ledger.json(&["reconcile", "list", "--account", "1200"], None);
+    assert_eq!(history["statements"][0]["matched"], january["matched"]);
+    let february = complete_month(&ledger, "2026-02-28", "100", &[]);
+    assert_eq!(february["prior_statement"], receipt);
+    assert_eq!(february["opening_balance"], 10_000);
+    Ok(())
+}
