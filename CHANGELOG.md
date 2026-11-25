@@ -8,6 +8,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Added
 
+- Track native foreign-currency balances and post auditable, undoable revaluations through the CLI and MCP. ([#292](https://github.com/Govcraft/beankeeper/issues/292))
 - Post, import, and report in active ISO 4217 currencies with defined decimal minor units through the CLI and MCP. ([#296](https://github.com/Govcraft/beankeeper/issues/296))
 - Link related transactions in the same book with a typed relationship through the CLI or MCP and undo it with one audit receipt. ([#291](https://github.com/Govcraft/beankeeper/issues/291))
 - Reconcile monthly account statements through CLI and MCP, undo with an audit receipt, and see outstanding months in financial summaries. ([#290](https://github.com/Govcraft/beankeeper/issues/290))

@@ -1909,7 +1909,42 @@ minor-unit precision.
 
 Each journal chooses its currency at construction. Debit and credit amounts are minor units in that currency. Adding a prebuilt entry with a different currency returns `EntryError::CurrencyMismatch`. Posting validates the count and balance, then retains the currency and balanced total in the resulting `Transaction`.
 
-Reports (`trial-balance`, `balance`, `income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `budget-variance`) are always computed in a single currency and never add amounts across currencies. Pass `--currency CODE` to choose it; otherwise it is inferred from the company's transactions (USD when there are none). If a company has transactions in more than one currency, a report without `--currency` fails with a validation error listing the currencies found.
+Reports total one currency. A configured book defaults to its functional currency.
+Legacy books without a profile infer the currency from their postings, and require
+`--currency CODE` when those postings use several currencies.
+
+#### Foreign-currency balances and revaluation
+
+After setting the book's functional currency through setup, declare the native
+currency of an asset or liability. The following example assumes a GBP book with
+a functional-currency cash account (1000) and an FX gain/loss account (4900).
+Omit the native currency for accounts that use the book's currency.
+
+```bash
+bk --company personal account create 1100 "Euro cash" --type asset --native-currency EUR
+bk --company personal fx post --account 1100 --offset-account 1000 --direction debit \
+  --native-minor 10000 --rate 0.8 --date 2026-01-01 --description "Bought euros" --reference fx-1
+bk --company personal fx revalue --account 1100 --as-of 2026-01-31 \
+  --rate 0.85 --fx-gain-loss-account 4900 --json
+```
+
+This records EUR 100.00 at GBP 80.00. Revaluation raises the carrying value to
+GBP 85.00 and records a GBP 5.00 unrealized gain while the account still holds
+EUR 100.00. Rates are exact decimal functional major units per native major unit,
+and the conversion rounds ties to even at the functional currency's precision.
+The movement's functional value must round to at least one minor unit.
+
+Each revaluation that changes the carrying value returns an `undo_receipt`.
+Use `bk audit undo RECEIPT` to post the opposite adjustment, subject to the
+ledger's period and reconciliation rules. Omit `--account` to revalue all active
+foreign accounts and omit `--rate` to reuse the latest rate recorded for each
+currency pair on or before the requested date. An all-account request with an
+explicit rate must cover a single pair.
+
+The matching MCP tools are `account_create` with `native_currency`, `fx_post`,
+`fx_revalue`, and `audit_undo`. Account listings, balance sheets, and summaries
+return the native balance, functional carrying value, and last active revaluation
+in structured output, with links to the account register in Desktop.
 
 ### Error Handling
 
