@@ -94,6 +94,10 @@ impl DemoAccountProfile {
     pub fn currency(&self) -> Option<Currency> {
         self.currency.as_ref().map(Text::as_ref).copied()
     }
+
+    pub(crate) fn currency_with_primary(&self, primary: Currency) -> Currency {
+        self.currency().unwrap_or(primary)
+    }
 }
 
 /// One requested book. Account order is preserved, including repeated kinds.
@@ -141,6 +145,12 @@ impl DemoCurrencyChoices {
             primary: primary.map(Text::from),
             secondary: secondary.into_iter().map(Text::from).collect(),
         }
+    }
+
+    fn primary_for(&self, country: CountryCode) -> Currency {
+        self.primary
+            .as_ref()
+            .map_or_else(|| country.default_currency(), |value| *value.as_ref())
     }
 }
 
@@ -224,7 +234,7 @@ impl Default for DemoProfile {
     fn default() -> Self {
         let interview = DemoInterview::default();
         Self {
-            primary: interview.country.default_currency(),
+            primary: interview.currencies.primary_for(interview.country),
             interview,
         }
     }
@@ -237,10 +247,7 @@ impl TryFrom<DemoInterview> for DemoProfile {
         if !(1..=MAX_BOOKS).contains(&interview.books.len()) {
             return Err(InvalidDemoProfile::BookCount);
         }
-        let primary = interview.currencies.primary.as_ref().map_or_else(
-            || interview.country.default_currency(),
-            |value| *value.as_ref(),
-        );
+        let primary = interview.currencies.primary_for(interview.country);
         if interview.currencies.secondary.len() > MAX_SECONDARY {
             return Err(InvalidDemoProfile::CurrencyCount);
         }

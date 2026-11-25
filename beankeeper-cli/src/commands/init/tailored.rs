@@ -2,7 +2,7 @@
 
 use beankeeper::{
     error::BeanError,
-    types::{AccountType, Currency, Money, PositiveMoney},
+    types::{AccountType, Currency, Money, NonNegativeMoney, PositiveMoney},
 };
 use chrono::NaiveDate;
 
@@ -173,7 +173,7 @@ impl Book<'_> {
         let primary = profile.primary_currency();
         let mut accounts = Vec::new();
         for (index, account) in book.accounts.iter().enumerate() {
-            if account.currency().unwrap_or(primary) == self.currency {
+            if account.currency_with_primary(primary) == self.currency {
                 accounts.push(self.financial_account(account.kind(), Some(index + 1))?);
             }
         }
@@ -341,8 +341,7 @@ impl Book<'_> {
                 },
             )
         })?;
-        let cost = PositiveMoney::new(Money::new(self.amount(296)?.into(), self.currency))
-            .map_err(BeanError::from)?;
+        let cost = PositiveMoney::new(self.money(296)).map_err(BeanError::from)?;
         Granted::<Post>::with_db(db, actor, |grant| {
             investments::buy(
                 grant,
@@ -358,9 +357,7 @@ impl Book<'_> {
                 },
             )
         })?;
-        let price = PositiveMoney::new(Money::new(self.amount(81)?.into(), self.currency))
-            .map_err(BeanError::from)?
-            .nonnegative();
+        let price = NonNegativeMoney::new(self.money(81)).map_err(BeanError::from)?;
         Granted::<Post>::with_db(db, actor, |grant| {
             investments::record_price(
                 grant,
@@ -396,12 +393,20 @@ impl Book<'_> {
     }
 
     fn amount(&self, major: u16) -> Result<PositiveMinorUnits, CliError> {
+        self.minor_units(major).try_into()
+    }
+
+    fn money(&self, major: u16) -> Money {
+        Money::from_minor(i128::from(self.minor_units(major)), self.currency)
+    }
+
+    fn minor_units(&self, major: u16) -> i64 {
         let scale = match self.currency {
             Currency::JPY => 100,
             Currency::MXN => 15,
             _ => 1,
         };
-        (i64::from(major) * scale * 10_i64.pow(u32::from(self.currency.minor_units()))).try_into()
+        i64::from(major) * scale * 10_i64.pow(u32::from(self.currency.minor_units()))
     }
 
     fn post(
