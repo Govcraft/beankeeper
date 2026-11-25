@@ -203,6 +203,10 @@ fn round_trip(encrypted: bool) -> TestResult {
     let result = success(&output)?;
     assert_eq!(result["meta"]["command"], "restore");
     assert_eq!(result["data"]["encrypted"], encrypted);
+    assert_eq!(
+        result["data"]["schema_version"],
+        snapshot["data"]["schema_version"]
+    );
     for output in [&snapshot_output, &output] {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -452,12 +456,24 @@ fn force_rejects_sqlite_sidecars_and_source_aliases() -> TestResult {
         .arg(&backup)
         .assert()
         .code(3);
-    let wal = dir.path().join("source.db-wal");
-    bk(&source, None)?
-        .args(["backup", "--force", "--output"])
-        .arg(&wal)
-        .assert()
-        .code(3);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let source_sidecar = dir.path().join(format!("source.db{suffix}"));
+        bk(&source, None)?
+            .args(["backup", "--force", "--output"])
+            .arg(source_sidecar)
+            .assert()
+            .code(3);
+
+        let destination_sidecar = dir.path().join(format!("backup{suffix}"));
+        std::fs::write(&destination_sidecar, b"keep this")?;
+        bk(&source, None)?
+            .args(["backup", "--force", "--output"])
+            .arg(&backup)
+            .assert()
+            .code(3);
+        assert_eq!(std::fs::read(&destination_sidecar)?, b"keep this");
+        std::fs::remove_file(destination_sidecar)?;
+    }
     data(&source, None, &["verify"])?;
     drop(live);
     #[cfg(unix)]
@@ -544,6 +560,10 @@ fn verification_rejects_audit_tampering_on_both_backup_and_restore() -> TestResu
         "DROP TRIGGER protect_audit_update; UPDATE audit_log SET actor = 'tampered' WHERE id = 1",
     )?;
     drop(conn);
+    // Restore accepts a standalone file. The read-only backup connection may
+    // leave SQLite WAL sidecars on the live source, so isolate the restore input.
+    let restore_input = dir.path().join("tampered.db");
+    std::fs::copy(&source, &restore_input)?;
     let good_backup = std::fs::read(&backup)?;
     bk(&source, None)?
         .args(["backup", "--force", "--output"])
@@ -554,7 +574,7 @@ fn verification_rejects_audit_tampering_on_both_backup_and_restore() -> TestResu
     std::fs::write(&destination, b"keep destination")?;
     bk(&destination, None)?
         .args(["restore", "--force", "--input"])
-        .arg(&source)
+        .arg(&restore_input)
         .assert()
         .code(4);
     assert_eq!(std::fs::read(&destination)?, b"keep destination");
@@ -647,5 +667,41 @@ fn restore_cannot_replace_an_enforced_destination_with_an_unenforced_snapshot() 
             "cannot overwrite an enforced ledger",
         ));
     assert_eq!(std::fs::read(&destination)?, original);
+    Ok(())
+}
+
+#[test]
+fn backup_keeps_the_source_and_copy_at_the_older_schema() -> TestResult {
+    let dir = tempdir()?;
+    let source = dir.path().join("source.db");
+    let snapshot = dir.path().join("upgrade.bk-backup");
+    seed(&source, None)?;
+    // Remove exactly the schema change added in v37 to model an existing v36 ledger.
+    let connection = rusqlite::Connection::open(&source)?;
+    connection.execute_batch(
+        "DROP TABLE fx_postings;
+         DROP TABLE fx_accounts;
+         DELETE FROM schema_version WHERE version = 37;",
+    )?;
+    let result = success(
+        &bk(&source, None)?
+            .args(["backup", "--output"])
+            .arg(&snapshot)
+            .output()?,
+    )?;
+    assert_eq!(result["data"]["schema_version"], 36);
+    for path in [&source, &snapshot] {
+        let db = rusqlite::Connection::open(path)?;
+        let version: i64 = db.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(version, 36);
+        let fx_exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'fx_accounts')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!fx_exists);
+    }
     Ok(())
 }

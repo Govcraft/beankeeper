@@ -363,7 +363,11 @@ fn execute_confirmable(
 fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     if !matches!(
         cli.command,
-        Command::Init { .. } | Command::Mcp(_) | Command::Restore { .. } | Command::Setup(_)
+        Command::Init { .. }
+            | Command::Mcp(_)
+            | Command::Backup { .. }
+            | Command::Restore { .. }
+            | Command::Setup(_)
     ) {
         // Preserve standalone loan calculation without an existing ledger.
         let standalone = matches!(&cli.command, Command::Loan(args) if matches!(args.command, crate::cli::LoanCommand::Schedule(_)))
@@ -377,8 +381,8 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
-        Command::Backup { output, force } => backup::backup(cli, output, *force),
-        Command::Restore { input, force } => backup::restore(cli, input, *force),
+        Command::Backup { output, overwrite } => backup::backup(cli, output, *overwrite),
+        Command::Restore { input, overwrite } => backup::restore(cli, input, *overwrite),
         Command::Schedule(args) => {
             let company = require_company(cli)?.as_str();
             schedule::run(cli, company, &args.command)

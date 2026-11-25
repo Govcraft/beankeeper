@@ -2,20 +2,25 @@
 
 use crate::operation::Operation;
 use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
 use tempfile::NamedTempFile;
 
 use crate::cli::Cli;
-use crate::db::{Db, verification::VerifiedLedger};
+use crate::db::snapshot::files::{
+    publish, reject_sidecars, staging_directory, validate_destination,
+};
+use crate::db::{
+    Db, SchemaVersion, SnapshotOverwrite, VerifiedSnapshot, verification::VerifiedLedger,
+};
 use crate::error::CliError;
 
 #[derive(Serialize)]
 struct SnapshotInfo<'a> {
     path: &'a Path,
     bytes: u64,
-    schema_version: i64,
+    schema_version: SchemaVersion,
     encrypted: bool,
 }
 
@@ -23,24 +28,23 @@ struct SnapshotInfo<'a> {
 ///
 /// # Errors
 /// Returns an error for an unsafe destination, failed snapshot or invalid ledger.
-pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
-    let source = cli.db_path()?;
-    validate_destination(source, output, force)?;
-    let db = cli.open_db()?;
-    let directory = staging_directory(output)?;
-    let staged = NamedTempFile::new_in(directory.path())?;
-    db.snapshot_into(staged.path())?;
-    let snapshot = Db::open_snapshot(staged.path(), cli.resolve_passphrase()?)?;
-    let verification = VerifiedLedger::read(&snapshot)?;
-    let encrypted = snapshot.has_cipher_salt();
-    drop(snapshot);
-    publish(staged, source, output, force)?;
+pub fn backup(cli: &Cli, output: &Path, overwrite: SnapshotOverwrite) -> Result<(), CliError> {
+    let snapshot = VerifiedSnapshot::create_authorized(
+        cli.db_path()?,
+        cli.resolve_passphrase()?,
+        output,
+        overwrite,
+        |reader, version, policy| cli.authorize_backup(reader, version, policy),
+    )?;
     report(
         cli,
         Operation::Backup,
-        output,
-        verification.schema_version(),
-        encrypted,
+        SnapshotInfo {
+            path: output,
+            bytes: snapshot.bytes(),
+            schema_version: snapshot.schema_version(),
+            encrypted: snapshot.encrypted(),
+        },
     )
 }
 
@@ -48,13 +52,13 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
 ///
 /// # Errors
 /// Returns an error without replacing the destination if validation fails.
-pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
+pub fn restore(cli: &Cli, input: &Path, overwrite: SnapshotOverwrite) -> Result<(), CliError> {
     let destination = cli.explicit_db()?.ok_or_else(|| {
         CliError::Usage(
             "restore requires an explicit --db destination or named ledger target".into(),
         )
     })?;
-    validate_destination(input, destination, force)?;
+    validate_destination(input, destination, overwrite)?;
     if !input.try_exists()? {
         return Err(CliError::NotFound(format!(
             "snapshot '{}' not found",
@@ -86,142 +90,21 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
             return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before restore".into()));
         }
     }
-    publish(staged, input, destination, force)?;
+    publish(staged, input, destination, overwrite)?;
     report(
         cli,
         Operation::Restore,
-        destination,
-        verification.schema_version(),
-        encrypted,
+        SnapshotInfo {
+            path: destination,
+            bytes: fs::metadata(destination)?.len(),
+            schema_version: verification.schema_version(),
+            encrypted,
+        },
     )
 }
 
-pub(super) fn staging_directory(destination: &Path) -> Result<tempfile::TempDir, CliError> {
-    Ok(tempfile::Builder::new()
-        .prefix(".bk-snapshot-")
-        .tempdir_in(parent(destination))?)
-}
-
-fn parent(path: &Path) -> &Path {
-    path.parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-
-pub(super) fn reject_sidecars(path: &Path) -> Result<(), CliError> {
-    for suffix in ["-wal", "-shm", "-journal"] {
-        let mut name = path.as_os_str().to_os_string();
-        name.push(suffix);
-        if PathBuf::from(name).try_exists()? {
-            return Err(CliError::Validation(format!(
-                "'{}' has SQLite sidecar files; close all connections and checkpoint it first",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_destination(source: &Path, destination: &Path, force: bool) -> Result<(), CliError> {
-    reject_source_sidecar(source, destination)?;
-    match fs::symlink_metadata(destination) {
-        Ok(metadata) => {
-            if !metadata.is_file() {
-                return Err(CliError::Validation(
-                    "destination must be a regular file, not a symlink or directory".into(),
-                ));
-            }
-            if let Ok(source_metadata) = fs::metadata(source) {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    if source_metadata.dev() == metadata.dev()
-                        && source_metadata.ino() == metadata.ino()
-                    {
-                        return Err(CliError::Validation(
-                            "source and destination must be different files".into(),
-                        ));
-                    }
-                }
-                #[cfg(not(unix))]
-                if source_metadata.is_file()
-                    && source.canonicalize()? == destination.canonicalize()?
-                {
-                    return Err(CliError::Validation(
-                        "source and destination must be different files".into(),
-                    ));
-                }
-            }
-            if !force {
-                return Err(CliError::Validation(format!(
-                    "destination '{}' already exists; use --force to replace it",
-                    destination.display()
-                )));
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    reject_sidecars(destination)
-}
-
-fn reject_source_sidecar(source: &Path, destination: &Path) -> Result<(), CliError> {
-    let Ok(source) = source.canonicalize() else {
-        return Ok(());
-    };
-    let destination = parent(destination).canonicalize()?.join(
-        destination
-            .file_name()
-            .ok_or_else(|| CliError::Usage("destination must name a file".into()))?,
-    );
-    for suffix in ["-wal", "-shm", "-journal"] {
-        let mut name = source.as_os_str().to_os_string();
-        name.push(suffix);
-        if destination.as_os_str() == name {
-            return Err(CliError::Validation(
-                "destination must not be a SQLite sidecar of the source".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn publish(
-    staged: NamedTempFile,
-    source: &Path,
-    destination: &Path,
-    force: bool,
-) -> Result<(), CliError> {
-    // Recheck after the potentially long snapshot/verification operation.
-    validate_destination(source, destination, force)?;
-    staged.as_file().sync_all()?;
-    if force {
-        staged
-            .persist(destination)
-            .map_err(|error| CliError::Io(error.error))?;
-    } else {
-        staged
-            .persist_noclobber(destination)
-            .map_err(|error| CliError::Io(error.error))?;
-    }
-    #[cfg(unix)]
-    File::open(parent(destination))?.sync_all()?;
-    Ok(())
-}
-
-fn report(
-    cli: &Cli,
-    command: Operation,
-    path: &Path,
-    version: i64,
-    encrypted: bool,
-) -> Result<(), CliError> {
-    let info = SnapshotInfo {
-        path,
-        bytes: fs::metadata(path)?.len(),
-        schema_version: version,
-        encrypted,
-    };
+fn report(cli: &Cli, command: Operation, info: SnapshotInfo<'_>) -> Result<(), CliError> {
+    let path = info.path;
     if cli.is_json() {
         println!(
             "{}",

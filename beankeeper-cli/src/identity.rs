@@ -248,12 +248,36 @@ pub fn authorize(
 ) -> Result<Option<VerifiedAgent>, CliError> {
     let enforce = crate::db::policy::get(conn)?.enforce
         || matches!(required, Capability::Navigate | Capability::Setup);
+    authorize_with_policy(conn, token, required, enforce, |_| {})
+}
+
+pub(crate) fn authorize_backup(
+    conn: ReadConn<'_>,
+    token: Option<&str>,
+    version: crate::db::SchemaVersion,
+    policy: Option<&crate::db::policy::LedgerPolicy>,
+    on_verified: impl FnOnce(&VerifiedAgent),
+) -> Result<(), CliError> {
+    if token.is_some() && i64::from(version) < crate::db::schema::IDENTITY_SCHEMA_VERSION {
+        return Err(unauthorized());
+    }
+    let enforce = policy.is_some_and(|policy| policy.enforce);
+    authorize_with_policy(conn, token, Capability::Admin, enforce, on_verified).map(|_| ())
+}
+
+fn authorize_with_policy(
+    conn: ReadConn<'_>,
+    token: Option<&str>,
+    required: Capability,
+    enforce: bool,
+    on_verified: impl FnOnce(&VerifiedAgent),
+) -> Result<Option<VerifiedAgent>, CliError> {
     match token {
         Some(token) => {
-            let identity = verify_required(conn, token, enforce.then_some(required))?;
-            if !enforce
-                && (identity.enforces_permissions(false)
-                    || identity.requires_explicit_capability(required))
+            let identity = verify_required(conn, token, None)?;
+            on_verified(&identity);
+            if (identity.enforces_permissions(enforce)
+                || identity.requires_explicit_capability(required))
                 && !identity.allows(required)?
             {
                 return Err(CliError::Forbidden(format!(

@@ -27,7 +27,7 @@ impl ConnectionId {
 }
 
 impl Db {
-    fn from_connection(conn: Connection) -> Self {
+    pub(super) fn from_connection(conn: Connection) -> Self {
         Self {
             conn,
             id: ConnectionId::default(),
@@ -64,13 +64,11 @@ impl Db {
         passphrase: Option<&SecretString>,
         minimum: i64,
     ) -> Result<Self, CliError> {
-        let conn = Connection::open_with_flags(
+        let conn = open_keyed(
             path,
+            passphrase,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        if let Some(pp) = passphrase {
-            conn.pragma_update(None, "key", pp.expose_secret())?;
-        }
         let version = super::schema::get_schema_version(ReadConn::new(&conn))?;
         let current = super::schema::CURRENT_VERSION;
         if !(minimum..=current).contains(&version) {
@@ -108,13 +106,7 @@ impl Db {
     /// Returns [`CliError::NotFound`] with initialization instructions when the
     /// path does not exist, or a database error if it cannot be opened.
     pub fn open_existing(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
-        if !path.try_exists()? {
-            return Err(CliError::NotFound(format!(
-                "database '{}' not found; run `bk init --path '{}'` to create it",
-                path.display(),
-                path.display()
-            )));
-        }
+        require_existing_file(path)?;
         // Omit SQLITE_OPEN_CREATE so a file removed after the existence check
         // cannot be silently recreated.
         Self::open_with_flags(
@@ -129,25 +121,11 @@ impl Db {
         passphrase: Option<&SecretString>,
         flags: OpenFlags,
     ) -> Result<Self, CliError> {
-        let conn = Connection::open_with_flags(path, flags)?;
-
-        if let Some(pp) = passphrase {
-            conn.pragma_update(None, "key", pp.expose_secret())?;
-        }
-
+        let conn = open_keyed(path, passphrase, flags)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-
         super::schema::ensure_schema(&conn)?;
-
-        // Best-effort permission tightening on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(path, perms).ok();
-        }
-
+        tighten_permissions(path);
         Ok(Self::from_connection(conn))
     }
 
@@ -203,16 +181,6 @@ impl Db {
         })
     }
 
-    /// Write a consistent copy, including committed WAL contents.
-    pub(crate) fn snapshot_into(&self, path: &Path) -> Result<(), CliError> {
-        let path = path
-            .to_str()
-            .ok_or_else(|| CliError::Usage("snapshot destination must be a UTF-8 path".into()))?;
-        // SQLCipher inherits the main database key for the attached copy.
-        self.conn.execute("VACUUM INTO ?1", [path])?;
-        Ok(())
-    }
-
     pub(crate) fn has_cipher_salt(&self) -> bool {
         self.conn
             .query_row("PRAGMA cipher_salt", [], |row| row.get::<_, String>(0))
@@ -264,6 +232,39 @@ impl Db {
         super::audit::atomically(&self.conn, || run(self.read()))
     }
 }
+
+pub(super) fn require_existing_file(path: &Path) -> Result<(), CliError> {
+    if !path.try_exists()? {
+        return Err(CliError::NotFound(format!(
+            "database '{}' not found; run `bk init --path '{}'` to create it",
+            path.display(),
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn open_keyed(
+    path: &Path,
+    passphrase: Option<&SecretString>,
+    flags: OpenFlags,
+) -> Result<Connection, CliError> {
+    let conn = Connection::open_with_flags(path, flags)?;
+    if let Some(pp) = passphrase {
+        conn.pragma_update(None, "key", pp.expose_secret())?;
+    }
+    Ok(conn)
+}
+
+#[cfg(unix)]
+pub(super) fn tighten_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(path, perms).ok();
+}
+
+#[cfg(not(unix))]
+pub(super) fn tighten_permissions(_: &Path) {}
 
 #[cfg(test)]
 mod tests {
