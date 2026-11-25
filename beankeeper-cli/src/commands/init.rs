@@ -30,7 +30,7 @@ impl TryFrom<(bool, bool, Option<&OsStr>)> for DemoSelection {
         match (demo, force, profile) {
             (true, false, Some(input)) => DemoProfile::try_from(input).map(Self::Profile),
             (true, true, Some(_)) => Err(CliError::Usage(
-                "tailored demo books require a fresh path; omit --force".into(),
+                "omit --force to create tailored demo books at a fresh path".into(),
             )),
             (true, force, None) => Ok(Self::Walkthrough { force }),
             (false, force, None) => Ok(Self::Off { force }),

@@ -325,7 +325,7 @@ impl DemoProfile {
     fn invalid_json(error: &serde_json::Error) -> CliError {
         // Serde's messages can contain input values. Report only the location.
         CliError::Validation(format!(
-            "invalid demo profile at line {}, column {}; check the documented fields and currency choices",
+            "invalid demo profile at line {}, column {}. Check the documented fields and currency choices.",
             error.line(),
             error.column()
         ))

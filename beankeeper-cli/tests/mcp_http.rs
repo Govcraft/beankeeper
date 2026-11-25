@@ -1970,8 +1970,8 @@ fn demo_host_tool_provisions_only_the_host_managed_path() -> TestResult {
                     agent_uri: None,
                     company_slug: None,
                     entity: None,
-                    limit: Default::default(),
-                    offset: Default::default(),
+                    limit: db::audit::AuditPageLimit::default(),
+                    offset: db::audit::AuditPageOffset::default(),
                 },
             )?;
             assert_eq!(seeds[0].actor, startup_admin["agent_uri"]);

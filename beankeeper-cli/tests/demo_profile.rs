@@ -10,7 +10,12 @@ use std::{
 use beankeeper::types::Currency;
 use beankeeper_cli::{
     commands::init::create_demo_ledger_from_profile,
-    db::{self, Actor, Db, audit::AuditAction, companies::Company, verification::VerifiedLedger},
+    db::{
+        self, Actor, Db,
+        audit::{AuditAction, AuditPageLimit, AuditPageOffset},
+        companies::Company,
+        verification::VerifiedLedger,
+    },
     demo::{CountryCode, DemoProfile},
 };
 use serde_json::{Value, json};
@@ -158,8 +163,8 @@ fn generated_books_have_synthetic_charts_currencies_and_linked_draws() -> TestRe
             agent_uri: None,
             company_slug: None,
             entity: None,
-            limit: Default::default(),
-            offset: Default::default(),
+            limit: AuditPageLimit::default(),
+            offset: AuditPageOffset::default(),
         },
     )?;
     assert_eq!(seeds.len(), 1);
