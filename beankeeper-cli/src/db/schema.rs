@@ -66,6 +66,34 @@ impl fmt::Display for SchemaVersion {
     }
 }
 
+/// The relation that contains bookkeeping evidence for a schema.
+///
+/// Before restores, every physical event belongs to the only history.
+#[derive(Clone, Copy)]
+pub(super) enum AuditHistory {
+    Physical,
+    Bookkeeping,
+}
+
+impl From<SchemaVersion> for AuditHistory {
+    fn from(version: SchemaVersion) -> Self {
+        if i64::from(version) >= RESTORE_SCHEMA_VERSION {
+            Self::Bookkeeping
+        } else {
+            Self::Physical
+        }
+    }
+}
+
+impl fmt::Display for AuditHistory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Physical => "audit_log",
+            Self::Bookkeeping => "bookkeeping_audit",
+        })
+    }
+}
+
 /// Returns the schema version expected by [`Db::open_snapshot`](super::Db::open_snapshot).
 ///
 /// This is a property of the linked build and requires no database connection.
@@ -109,7 +137,7 @@ pub fn get_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
-    let version = get_schema_version(ReadConn::new(conn))?;
+    let version = get_schema_version(ReadConn::physical(conn))?;
 
     if version > CURRENT_VERSION {
         return Err(CliError::Database(format!(
@@ -231,7 +259,7 @@ fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
     }
 
     debug_assert_eq!(
-        get_schema_version(ReadConn::new(conn)).unwrap_or(0),
+        get_schema_version(ReadConn::physical(conn)).unwrap_or(0),
         CURRENT_VERSION,
         "schema version mismatch after migrations"
     );
@@ -250,7 +278,7 @@ fn apply_restore_schema(conn: &Connection) -> Result<(), CliError> {
         // deferred violations from dropping the original parent table.
         conn.pragma_update(None, "defer_foreign_keys", true)?;
         migrate_hold_audit(conn, AuditTable::LedgerRestore, RESTORE_SCHEMA_VERSION)?;
-        super::verification::verify_foreign_keys(ReadConn::new(conn))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
         conn.pragma_update(None, "defer_foreign_keys", false)?;
         Ok(())
     })
@@ -271,7 +299,7 @@ fn migrate_with_writer(
         return apply(conn);
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    if get_schema_version(ReadConn::new(&tx))? < version {
+    if get_schema_version(ReadConn::physical(&tx))? < version {
         apply(&tx)?;
     }
     tx.commit()?;
@@ -891,7 +919,7 @@ fn apply_v13(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'posted transaction identity is immutable'); END;
             INSERT INTO schema_version (version) VALUES (13);"
         )?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -899,7 +927,7 @@ fn apply_v13(conn: &Connection) -> Result<(), CliError> {
 /// Add bank categorization rules without changing any historical audit hash.
 fn apply_v14(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         conn.execute_batch(
             "CREATE TABLE categorization_rules (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -952,7 +980,7 @@ fn apply_v14(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
             INSERT INTO schema_version (version) VALUES (14);"
         )?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -960,7 +988,7 @@ fn apply_v14(conn: &Connection) -> Result<(), CliError> {
 /// Allow audited annotation actions while preserving historical hashes and triggers.
 fn apply_v15(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         conn.execute_batch(
             "CREATE TABLE audit_log_v15 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1003,7 +1031,7 @@ fn apply_v15(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
             INSERT INTO schema_version (version) VALUES (15);"
         )?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -1011,7 +1039,7 @@ fn apply_v15(conn: &Connection) -> Result<(), CliError> {
 /// Store pending schedules and extend auditing without changing historical hashes.
 fn apply_v16(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         conn.execute_batch(
             "CREATE TABLE schedules (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -1082,7 +1110,7 @@ fn apply_v16(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'audit record must extend the hash chain'); END;
             INSERT INTO schema_version (version) VALUES (16);"
         )?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -1090,7 +1118,7 @@ fn apply_v16(conn: &Connection) -> Result<(), CliError> {
 /// Add append-only investment records, preserving all historical audit bytes.
 fn apply_v17(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         conn.execute_batch(
             "CREATE TABLE securities (
                 company_slug TEXT NOT NULL REFERENCES companies(slug),
@@ -1166,7 +1194,7 @@ fn apply_v17(conn: &Connection) -> Result<(), CliError> {
             ))?;
         }
         conn.execute("INSERT INTO schema_version (version) VALUES (17)", [])?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -1220,7 +1248,7 @@ fn extend_investment_audit(conn: &Connection) -> Result<(), CliError> {
 /// Enable explicit grants without changing historical audit hashes or snapshots.
 fn apply_v18(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         extend_policy_audit(conn)?;
         conn.execute_batch(
             "CREATE TABLE ledger_policy (
@@ -1248,7 +1276,7 @@ fn apply_v18(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'ledger policy change requires an audit record'); END;",
         )?;
         conn.execute("INSERT INTO schema_version (version) VALUES (18)", [])?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -1302,7 +1330,7 @@ fn extend_policy_audit(conn: &Connection) -> Result<(), CliError> {
 /// Add pending proposals and spend buckets, preserving the complete v18 audit chain.
 fn apply_v19(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         // Temporarily remove the trigger that references the rebuilt audit table.
         let policy_trigger: String = conn.query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'protect_policy_update'",
@@ -1363,7 +1391,7 @@ fn apply_v19(conn: &Connection) -> Result<(), CliError> {
             INSERT INTO schema_version(version) VALUES (19);",
         )?;
         install_proposal_resolution_trigger(conn, ProposalAuditLink::Snapshot)?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -1452,7 +1480,7 @@ fn extend_proposal_audit(conn: &Connection) -> Result<(), CliError> {
 /// Add company cutoffs without rewriting historical hashes or audit snapshots.
 fn apply_v20(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         // These triggers reference the audit table while it is being rebuilt.
         let triggers: Vec<(String, String)> = conn
             .prepare(
@@ -1521,7 +1549,7 @@ fn apply_v20(conn: &Connection) -> Result<(), CliError> {
             BEGIN SELECT RAISE(ABORT, 'transaction date is in a closed period'); END;
             INSERT INTO schema_version(version) VALUES (20);",
         )?;
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
@@ -1703,7 +1731,7 @@ fn apply_v30(conn: &Connection) -> Result<(), CliError> {
 fn apply_v31(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         conn.execute_batch(include_str!("schema/holds.sql"))?;
-        conn.execute_batch(include_str!("schema/hold_audit.sql"))?;
+        install_hold_audit(conn, AuditHistory::Physical)?;
         conn.execute(
             "INSERT INTO schema_version(version) VALUES (?1)",
             [HOLDS_SCHEMA_VERSION],
@@ -1725,7 +1753,7 @@ fn apply_v35(conn: &Connection) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         migrate_hold_audit(conn, AuditTable::TransactionLinks, TXN_LINK_SCHEMA_VERSION)?;
         conn.execute_batch(include_str!("schema/transaction_links.sql"))?;
-        Ok(())
+        install_transaction_link_views(conn, AuditHistory::from(AuditTable::TransactionLinks))
     })
 }
 
@@ -1739,16 +1767,34 @@ fn migrate_hold_audit(conn: &Connection, table: AuditTable, version: i64) -> Res
              DROP VIEW posting_reversals;",
         )?;
         migrate_audit(conn, table, version)?;
-        let holds = include_str!("schema/hold_audit.sql");
-        if table >= AuditTable::LedgerRestore {
-            conn.execute_batch(
-                &holds.replace("FROM audit_log WHERE", "FROM bookkeeping_audit WHERE"),
-            )?;
-        } else {
-            conn.execute_batch(holds)?;
-        }
-        Ok(())
+        install_hold_audit(conn, table.into())
     })
+}
+
+fn install_hold_audit(conn: &Connection, audit: AuditHistory) -> Result<(), CliError> {
+    conn.execute_batch(&format!(
+        include_str!("schema/hold_audit.sql"),
+        audit = audit
+    ))?;
+    Ok(())
+}
+
+fn install_transaction_link_views(conn: &Connection, audit: AuditHistory) -> Result<(), CliError> {
+    conn.execute_batch(&format!(
+        "CREATE VIEW transaction_link_creations AS
+             SELECT id AS receipt, entity_id AS id, company_slug,
+                    json_extract(after, '$.source_id') AS source_id,
+                    json_extract(after, '$.target_id') AS target_id,
+                    json_extract(after, '$.kind') AS link_kind
+             FROM {audit} WHERE action = 'link_create';
+         CREATE VIEW active_transaction_links AS
+             SELECT link.* FROM transaction_links link
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM {audit} undo
+                 WHERE undo.undo_of = link.receipt AND undo.action = 'link_undo'
+             );"
+    ))?;
+    Ok(())
 }
 
 fn install_annotation_undo_guard(conn: &Connection) -> Result<(), CliError> {
@@ -1766,12 +1812,7 @@ fn install_annotation_undo_guard(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
-fn install_rule_undo_guards(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
-    let audit = if table >= AuditTable::LedgerRestore {
-        "bookkeeping_audit"
-    } else {
-        "audit_log"
-    };
+fn install_rule_undo_guards(conn: &Connection, audit: AuditHistory) -> Result<(), CliError> {
     conn.execute_batch(&format!(
         "CREATE TRIGGER protect_rule_deactivation BEFORE INSERT ON audit_log
          WHEN NEW.action = 'rule_deactivate' AND (
@@ -1823,9 +1864,13 @@ fn create_standing_settings(conn: &Connection) -> Result<(), CliError> {
 
 fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        let audit = AuditHistory::from(table);
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         let definitions = take_audit_dependents(conn, table)?;
         rebuild_audit(conn, table)?;
+        if table >= AuditTable::StatementReconciliation {
+            install_transaction_link_views(conn, audit)?;
+        }
         for definition in definitions.into_iter().rev() {
             conn.execute_batch(&definition)?;
         }
@@ -1833,7 +1878,7 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             install_receipt_read_paths(conn, table)?;
         }
         if table >= AuditTable::RuleUndo {
-            install_rule_undo_guards(conn, table)?;
+            install_rule_undo_guards(conn, audit)?;
         }
         if table >= AuditTable::DirectSetup {
             conn.execute_batch(
@@ -1869,26 +1914,26 @@ fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<()
             )?;
         }
         if table == AuditTable::LedgerRestore {
-            conn.execute_batch(include_str!("schema/restore.sql"))?;
+            conn.execute_batch(&format!(include_str!("schema/restore.sql"), audit = audit))?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
         if table == AuditTable::Receipts {
             super::audit::receipts::seal_legacy_links(conn)?;
         }
-        super::audit::verify_hash_chain(ReadConn::new(conn))?;
+        super::audit::verify_hash_chain(ReadConn::physical(conn))?;
         Ok(())
     })
 }
 
 fn take_audit_dependents(conn: &Connection, table: AuditTable) -> Result<Vec<String>, CliError> {
     let mut dependents = vec![
-        ("trigger", "protect_policy_update"),
-        ("trigger", "protect_proposal_resolution"),
-        ("trigger", "protect_period_insert"),
-        ("trigger", "protect_period_update"),
+        "protect_policy_update",
+        "protect_proposal_resolution",
+        "protect_period_insert",
+        "protect_period_update",
     ];
     if table >= AuditTable::StandingSettings {
-        dependents.push(("trigger", "protect_account_archive"));
+        dependents.push("protect_account_archive");
         conn.execute_batch("DROP VIEW audit_receipt_postings")?;
     }
     if table >= AuditTable::DirectSetup {
@@ -1902,39 +1947,33 @@ fn take_audit_dependents(conn: &Connection, table: AuditTable) -> Result<Vec<Str
         create_standing_settings(conn)?;
     }
     if table >= AuditTable::StatementReconciliation {
-        // Drop the triggers before their views and restore them in reverse order.
+        // The insert trigger must be removed before its views can be rebuilt.
         dependents.extend([
-            ("trigger", "protect_transaction_link_insert"),
-            ("trigger", "protect_transaction_link_undo"),
-            ("view", "active_transaction_links"),
-            ("view", "transaction_link_creations"),
+            "protect_transaction_link_insert",
+            "protect_transaction_link_undo",
         ]);
     }
     if table >= AuditTable::LedgerRestore {
         dependents.extend([
-            ("trigger", "protect_statement_insert"),
-            ("trigger", "protect_statement_update"),
-            ("trigger", "protect_statement_undo"),
+            "protect_statement_insert",
+            "protect_statement_update",
+            "protect_statement_undo",
         ]);
     }
     let mut definitions = Vec::with_capacity(dependents.len());
-    for (kind, name) in dependents {
+    for name in dependents {
         let definition: String = conn.query_row(
-            "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
-            [kind, name],
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+            [name],
             |row| row.get(0),
         )?;
-        let definition = if table >= AuditTable::LedgerRestore
-            && matches!(
-                name,
-                "active_transaction_links" | "transaction_link_creations"
-            ) {
-            definition.replace("FROM audit_log", "FROM bookkeeping_audit")
-        } else {
-            definition
-        };
         definitions.push(definition);
-        conn.execute_batch(&format!("DROP {kind} {name}"))?;
+        conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
+    }
+    if table >= AuditTable::StatementReconciliation {
+        conn.execute_batch(
+            "DROP VIEW active_transaction_links; DROP VIEW transaction_link_creations;",
+        )?;
     }
     Ok(definitions)
 }
@@ -1955,6 +1994,27 @@ enum AuditTable {
     TransactionLinks,
     StatementReconciliation,
     LedgerRestore,
+}
+
+impl From<AuditTable> for AuditHistory {
+    fn from(table: AuditTable) -> Self {
+        match table {
+            AuditTable::LedgerRestore => Self::Bookkeeping,
+            AuditTable::Periods
+            | AuditTable::Demo
+            | AuditTable::ClientHints
+            | AuditTable::Receipts
+            | AuditTable::StandingSettings
+            | AuditTable::RuleUndo
+            | AuditTable::DirectSetup
+            | AuditTable::AnnotationUndo
+            | AuditTable::AccountRename
+            | AuditTable::Correction
+            | AuditTable::Recategorization
+            | AuditTable::TransactionLinks
+            | AuditTable::StatementReconciliation => Self::Physical,
+        }
+    }
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -2345,16 +2405,17 @@ mod tests {
         assert_eq!(history(migrated.conn())?, before);
         crate::db::verification::VerifiedLedger::read(&migrated)?;
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        let reader = ReadConn::physical(&conn).at_schema(current_schema_version());
+        assert_eq!(get_schema_version(reader)?, CURRENT_VERSION);
         assert_eq!(history(&conn)?, before);
-        assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
+        assert!(super::super::policy::get(reader)?.enforce);
         assert_eq!(
-            proposals::get(ReadConn::new(&conn), &"legacy".parse()?, &id.parse()?)?
+            proposals::get(reader, &"legacy".parse()?, &id.parse()?)?
                 .state
                 .reason(),
             Some("v19 review")
         );
-        proposals::verify_resolutions(ReadConn::new(&conn))?;
+        proposals::verify_resolutions(reader)?;
         // The existing policy and proposal protection triggers survive rebuilding audit_log.
         assert!(
             conn.execute("UPDATE ledger_policy SET enforce = 0", [])
@@ -2384,7 +2445,7 @@ mod tests {
         })?;
         assert!(
             periods::ensure_open(
-                ReadConn::new(&conn),
+                reader,
                 &"legacy".parse()?,
                 periods::parse_date("2026-01-31")?
             )
@@ -2392,10 +2453,10 @@ mod tests {
         );
         let forged_reopen = conn.execute("UPDATE period_locks SET closed_through = NULL", []);
         assert!(forged_reopen.is_err());
-        audit::verify_hash_chain(ReadConn::new(&conn))?;
-        audit::verify_creations(ReadConn::new(&conn))?;
-        verification::verify_accounting(super::super::connection::ReadConn::new(&conn))?;
-        periods::verify(ReadConn::new(&conn))?;
+        audit::verify_hash_chain(reader)?;
+        audit::verify_creations(reader)?;
+        verification::verify_accounting(reader)?;
+        periods::verify(reader)?;
         assert_eq!(history(&conn)?.last().map(|row| row.0), Some(7));
         ensure_schema(&conn)?;
         Ok(())
@@ -2431,7 +2492,7 @@ mod tests {
                 _ => conn.execute_batch("CREATE TABLE period_locks (collision TEXT)")?,
             }
             assert!(apply_v20(&conn).is_err());
-            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 19);
+            assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 19);
             assert!(conn.prepare("SELECT * FROM audit_log_v20").is_err());
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('protect_policy_update', 'protect_proposal_resolution')", [], |row| row.get(0),
@@ -2443,7 +2504,7 @@ mod tests {
                     &super::super::Actor::new("owner".parse()?),
                     |grant| super::super::audit::set_policy(grant, true),
                 )?;
-                super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
+                super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
             }
         }
         Ok(())
@@ -2465,14 +2526,14 @@ mod tests {
         };
         let before = history(&conn)?;
         apply_v19(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 19);
+        assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 19);
         assert_eq!(history(&conn)?, before);
-        assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
+        assert!(super::super::policy::get(ReadConn::physical(&conn))?.enforce);
         super::super::audit::change_legacy_policy_fixture(&conn, &owner, false)?;
-        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(ReadConn::new(&conn))?;
+        super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        super::super::audit::verify_creations(ReadConn::physical(&conn))?;
         assert_eq!(
-            super::super::spend_limits::list(ReadConn::new(&conn), "unconfigured", None)?,
+            super::super::spend_limits::list(ReadConn::physical(&conn), "unconfigured", None)?,
             Vec::new()
         );
         ensure_schema(&conn)?;
@@ -2490,7 +2551,7 @@ mod tests {
                 _ => conn.execute_batch("CREATE TABLE agent_spend_limits (collision TEXT)")?,
             }
             assert!(apply_v19(&conn).is_err());
-            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 18);
+            assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 18);
             assert!(conn.prepare("SELECT * FROM txn_proposals").is_err());
             assert!(conn.prepare("SELECT * FROM audit_log_v19").is_err());
             if corruption == "collision" {
@@ -2499,8 +2560,8 @@ mod tests {
                     &super::super::Actor::new("owner".parse()?),
                     |grant| super::super::audit::set_policy(grant, true),
                 )?;
-                assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
-                super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
+                assert!(super::super::policy::get(ReadConn::physical(&conn))?.enforce);
+                super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
             }
         }
         Ok(())
@@ -2573,7 +2634,10 @@ mod tests {
         let mixed = history()?;
         assert_eq!(&mixed[..before.len()], before);
         assert_eq!(mixed.last().map(|row| row.0), Some(5));
-        assert_eq!(audit::verify_hash_chain(ReadConn::new(&conn))?.length(), 5);
+        assert_eq!(
+            audit::verify_hash_chain(ReadConn::physical(&conn))?.length(),
+            5
+        );
         with_admin_fixture(&conn, &owner, |grant| {
             crate::db::create_account(
                 grant,
@@ -2589,12 +2653,13 @@ mod tests {
         let v25 = history()?;
         apply_v26(&conn)?;
         assert_eq!(history()?, v25);
-        let company = crate::db::companies::Company::bind(ReadConn::new(&conn), "legacy".parse()?)?;
+        let company =
+            crate::db::companies::Company::bind(ReadConn::physical(&conn), "legacy".parse()?)?;
         assert_eq!(
             crate::db::accounts::account_status(&company, "1200")?,
             crate::db::accounts::AccountStatus::Active
         );
-        audit::receipts::verify_archives(ReadConn::new(&conn))?;
+        audit::receipts::verify_archives(ReadConn::physical(&conn))?;
         Ok(())
     }
 
@@ -2675,7 +2740,7 @@ mod tests {
             )?;
             assert_eq!(persisted, (after, hash, posting));
         }
-        let reader = ReadConn::new(&conn);
+        let reader = ReadConn::physical(&conn);
         assert_eq!(crate::db::audit::verify_hash_chain(reader)?.length(), 6);
         let tail: (i64, String) = conn.query_row(
             "SELECT hash_version, action FROM audit_log ORDER BY id DESC LIMIT 1",
@@ -2743,7 +2808,7 @@ mod tests {
         conn.execute_batch("CREATE TABLE audit_log_rebuild (collision TEXT)")?;
         assert!(apply_v27(&conn).is_err());
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn))?,
+            get_schema_version(ReadConn::physical(&conn))?,
             RECEIPT_SCHEMA_VERSION
         );
         assert!(
@@ -2756,11 +2821,11 @@ mod tests {
 
         apply_v27(&conn)?;
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn))?,
+            get_schema_version(ReadConn::physical(&conn))?,
             STANDING_SETTINGS_SCHEMA_VERSION
         );
         assert_eq!(tail()?, v26_tail);
-        let scope = Company::bind(ReadConn::new(&conn), company)?;
+        let scope = Company::bind(ReadConn::physical(&conn), company)?;
         let active = rules::list_rules(&scope)?;
         let rule = rules::matching_rule(&active, "Retail SALE").expect("migrated match");
         assert_eq!(rule.id(), &id);
@@ -2788,7 +2853,7 @@ mod tests {
              FROM audit_log ORDER BY id DESC LIMIT 1",
             [],
         ).is_err());
-        let reader = ReadConn::new(&conn);
+        let reader = ReadConn::physical(&conn);
         let old_chain = audit::verify_hash_chain(reader)?;
         audit::savepoint::with_audited_tx(&conn, "sp_standing_fixture", |tx| {
             audit::set_inform_preference(
@@ -2833,7 +2898,7 @@ mod tests {
                     .into(),
             )
         })?;
-        let reader = ReadConn::new(&conn);
+        let reader = ReadConn::physical(&conn);
         let rule_hash = || -> Result<String, CliError> {
             Ok(conn.query_row(
                 "SELECT row_hash FROM audit_log WHERE entity = 'rule' AND entity_id = ?1",
@@ -2872,7 +2937,7 @@ mod tests {
                 (3, 'legacy', 'personal', 'USD', '01-01', NULL, 1),
                 (7, 'legacy', 'personal', 'USD', '04-01', 3, 1);"#,
         )?;
-        let reader = ReadConn::new(&conn);
+        let reader = ReadConn::physical(&conn);
         let audit_head = || -> Result<String, CliError> {
             Ok(conn.query_row(
                 "SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1",
@@ -2944,7 +3009,7 @@ mod tests {
         ] {
             migrate(&conn)?;
         }
-        let reader = ReadConn::new(&conn);
+        let reader = ReadConn::physical(&conn);
         assert_eq!(get_schema_version(reader)?, HOLDS_SCHEMA_VERSION);
         let actor = Actor::new("v31-bookkeeper".parse()?);
         let amount = 250_i64.try_into()?;
@@ -3007,7 +3072,7 @@ mod tests {
         audit_length: u64,
     ) -> Result<(), CliError> {
         use super::super::audit;
-        let reader = ReadConn::new(conn);
+        let reader = ReadConn::physical(conn);
         let hashes = |reader: ReadConn<'_>| -> Result<Vec<(String, String)>, CliError> {
             let mut stmt =
                 reader.prepare("SELECT prev_hash, row_hash FROM audit_log ORDER BY id")?;
@@ -3062,6 +3127,7 @@ mod tests {
         assert_eq!(hashes(migrated_reader)?, history);
         assert_eq!(active_link(migrated_reader)?, link);
         assert_new_statement_and_fx_tables(migrated_reader)?;
+        assert_restore_sql_uses_bookkeeping_history(migrated_reader)?;
         assert_eq!(
             audit::verify_hash_chain(migrated_reader)?.length(),
             audit_length + 1
@@ -3104,6 +3170,27 @@ mod tests {
         Ok(())
     }
 
+    fn assert_restore_sql_uses_bookkeeping_history(reader: ReadConn<'_>) -> Result<(), CliError> {
+        for name in [
+            "posting_reversals",
+            "transaction_link_creations",
+            "active_transaction_links",
+            "protect_deactivated_rule_insert",
+            "protect_deactivated_rule_update",
+            "protect_deactivated_rule_delete",
+            "protect_bookkeeping_receipt_uniqueness",
+        ] {
+            let sql: String = reader.query_row(
+                "SELECT sql FROM sqlite_schema WHERE name = ?1",
+                [name],
+                |row| row.get(0),
+            )?;
+            assert!(sql.contains("FROM bookkeeping_audit"), "{name}: {sql}");
+            assert!(!sql.contains("FROM audit_log"), "{name}: {sql}");
+        }
+        Ok(())
+    }
+
     fn assert_failed_fx_migration_preserves_statement_schema(
         conn: &Connection,
     ) -> Result<(), CliError> {
@@ -3111,7 +3198,7 @@ mod tests {
         // without undoing the preceding statement reconciliation migration.
         conn.execute_batch("CREATE TABLE fx_postings (collision TEXT)")?;
         assert!(ensure_schema(conn).is_err());
-        let reader = ReadConn::new(conn);
+        let reader = ReadConn::physical(conn);
         assert_eq!(
             get_schema_version(reader)?,
             STATEMENT_RECONCILIATION_SCHEMA_VERSION
@@ -3201,9 +3288,12 @@ mod tests {
         let before = hashes(&conn)?;
         assert_eq!(before.iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2]);
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        assert_eq!(
+            get_schema_version(ReadConn::physical(&conn))?,
+            CURRENT_VERSION
+        );
         assert_eq!(hashes(&conn)?, before);
-        assert!(!super::super::policy::get(ReadConn::new(&conn))?.enforce);
+        assert!(!super::super::policy::get(ReadConn::physical(&conn))?.enforce);
         // Simulate the explicit v2 insert emitted by a v17 binary.
         let result = conn.execute("INSERT INTO audit_log (id, actor, entity, entity_id, action, prev_hash, row_hash, hash_version)
             SELECT id + 1, 'old-writer', 'company', 'legacy', 'create', row_hash, row_hash, 2 FROM audit_log ORDER BY id DESC LIMIT 1", []);
@@ -3214,8 +3304,8 @@ mod tests {
             |grant| super::super::audit::set_policy(grant, true),
         )?;
         assert_eq!(hashes(&conn)?.last().map(|row| row.0), Some(7));
-        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(ReadConn::new(&conn))?;
+        super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        super::super::audit::verify_creations(ReadConn::physical(&conn))?;
         for sql in [
             "DELETE FROM audit_log",
             "UPDATE audit_log SET actor = 'tampered'",
@@ -3232,7 +3322,7 @@ mod tests {
         )?;
         assert_eq!(indexes, 4);
         ensure_schema(&conn)?;
-        assert!(super::super::policy::get(ReadConn::new(&conn))?.enforce);
+        assert!(super::super::policy::get(ReadConn::physical(&conn))?.enforce);
         Ok(())
     }
 
@@ -3246,7 +3336,7 @@ mod tests {
                 _ => conn.execute_batch("CREATE TABLE ledger_policy (collision TEXT)")?,
             }
             assert!(apply_v18(&conn).is_err());
-            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 17);
+            assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 17);
             assert!(conn.prepare("SELECT * FROM audit_log_v18").is_err());
             if corruption == "collision" {
                 // Rebuild had already run before the collision; its trigger change rolls back.
@@ -3268,8 +3358,11 @@ mod tests {
     fn fresh_schema_defaults_off_without_inventing_policy_history() -> Result<(), CliError> {
         let conn = open_conn();
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
-        assert!(!super::super::policy::get(ReadConn::new(&conn))?.enforce);
+        assert_eq!(
+            get_schema_version(ReadConn::physical(&conn))?,
+            CURRENT_VERSION
+        );
+        assert!(!super::super::policy::get(ReadConn::physical(&conn))?.enforce);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row
                 .get::<_, i64>(0))?,
@@ -3295,7 +3388,7 @@ mod tests {
         // Fail after creating the investment tables, while rebuilding auditing.
         conn.execute_batch("CREATE TABLE audit_log_v17 (collision TEXT)")?;
         assert!(apply_v17(&conn).is_err());
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 16);
+        assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 16);
         let tables: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('securities','security_prices','investment_lots','lot_reliefs')",
             [], |r| r.get(0),
@@ -3311,8 +3404,8 @@ mod tests {
                 .collect::<Result<_, _>>()?
         };
         assert_eq!(before, after);
-        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(ReadConn::new(&conn))?;
+        super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        super::super::audit::verify_creations(ReadConn::physical(&conn))?;
         for sql in [
             "DELETE FROM audit_log",
             "UPDATE audit_log SET actor = 'tampered'",
@@ -3324,7 +3417,10 @@ mod tests {
             assert!(conn.execute(sql, []).is_err(), "unprotected: {sql}");
         }
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        assert_eq!(
+            get_schema_version(ReadConn::physical(&conn))?,
+            CURRENT_VERSION
+        );
         Ok(())
     }
 
@@ -3342,7 +3438,7 @@ mod tests {
         )?;
         conn.execute_batch("CREATE TABLE schedules (collision TEXT)")?;
         assert!(apply_v16(&conn).is_err());
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 15);
+        assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 15);
         conn.execute_batch("DROP TABLE schedules")?;
         apply_v16(&conn)?;
         let retained: String = conn.query_row(
@@ -3351,15 +3447,18 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(historical, retained);
-        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(ReadConn::new(&conn))?;
+        super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        super::super::audit::verify_creations(ReadConn::physical(&conn))?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
             conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
                 .is_err()
         );
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        assert_eq!(
+            get_schema_version(ReadConn::physical(&conn))?,
+            CURRENT_VERSION
+        );
         Ok(())
     }
 
@@ -3401,15 +3500,18 @@ mod tests {
             })?;
             assert!(changed.changed);
         }
-        audit::verify_hash_chain(ReadConn::new(&conn))?;
-        audit::verify_creations(ReadConn::new(&conn))?;
+        audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        audit::verify_creations(ReadConn::physical(&conn))?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
             conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
                 .is_err()
         );
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        assert_eq!(
+            get_schema_version(ReadConn::physical(&conn))?,
+            CURRENT_VERSION
+        );
         Ok(())
     }
 
@@ -3426,7 +3528,7 @@ mod tests {
                 conn.execute_batch("CREATE TABLE audit_log_v15 (collision TEXT);")?;
             }
             assert!(apply_v15(&conn).is_err());
-            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 14);
+            assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 14);
         }
         Ok(())
     }
@@ -3454,7 +3556,10 @@ mod tests {
         };
         let before = hashes(&conn)?;
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        assert_eq!(
+            get_schema_version(ReadConn::physical(&conn))?,
+            CURRENT_VERSION
+        );
         assert_eq!(hashes(&conn)?, before);
         let actor = Actor::new("v14".parse()?);
         let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
@@ -3480,8 +3585,8 @@ mod tests {
             )
         })?;
         assert_eq!(&hashes(&conn)?[..2], before.as_slice());
-        audit::verify_hash_chain(ReadConn::new(&conn))?;
-        audit::verify_creations(ReadConn::new(&conn))?;
+        audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        audit::verify_creations(ReadConn::physical(&conn))?;
         assert!(conn.execute("DELETE FROM audit_log", []).is_err());
         assert!(
             conn.execute("UPDATE audit_log SET actor = 'tampered'", [])
@@ -3504,7 +3609,7 @@ mod tests {
                 conn.execute_batch("CREATE TABLE audit_log_v14 (collision TEXT);")?;
             }
             assert!(apply_v14(&conn).is_err());
-            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 13);
+            assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 13);
             assert!(conn.prepare("SELECT * FROM categorization_rules").is_err());
         }
         Ok(())
@@ -3551,7 +3656,7 @@ mod tests {
         apply_through_v12(&conn)?;
         seed_v12_creation(&conn)?;
         ensure_schema_at_before_restore(&conn)?;
-        let old = Db::from_connection(conn);
+        let old = Db::from_keyed_connection(conn, None, SchemaVersion(FX_SCHEMA_VERSION));
         let owner = Actor::new("owner".parse()?);
         let company = "legacy".parse()?;
         Granted::<Reconcile>::with_db(&old, &owner, |grant| {
@@ -3653,7 +3758,7 @@ mod tests {
                 .query_map([], |row| row.get(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         };
-        let before = hashes(ReadConn::new(&conn))?;
+        let before = hashes(ReadConn::physical(&conn))?;
 
         assert!(
             VerifiedSnapshot::create(&source, None, &destination, SnapshotOverwrite::Refuse)
@@ -3668,7 +3773,7 @@ mod tests {
         )?;
         assert_eq!(i64::from(proof.schema_version()), 12);
         assert_eq!(proof.path(), destination.canonicalize()?);
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 12);
+        assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 12);
         assert!(proof.encrypted());
         assert!(!std::fs::read(&destination)?.starts_with(b"SQLite format 3\0"));
         let copy = Db::open_compatible_snapshot(&destination, Some(&passphrase), 12)?;
@@ -3703,12 +3808,12 @@ mod tests {
             [],
         )?;
         assert!(Db::open_after_snapshot(proof, None).is_err());
-        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+        assert_eq!(get_schema_version(ReadConn::physical(&source))?, 1);
 
         let proof = snapshot()?;
         std::fs::remove_file(&destination)?;
         assert!(Db::open_after_snapshot(proof, None).is_err());
-        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+        assert_eq!(get_schema_version(ReadConn::physical(&source))?, 1);
 
         drop(source);
         let upgraded = Db::open_after_snapshot(snapshot()?, None)?;
@@ -3737,7 +3842,7 @@ mod tests {
             matches!(snapshot(), Err(CliError::Database(message)) if message.contains("accounting failed"))
         );
         assert_eq!(std::fs::read(&destination)?, b"keep this copy");
-        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+        assert_eq!(get_schema_version(ReadConn::physical(&source))?, 1);
         assert_eq!(std::fs::read_dir(directory.path())?.count(), 2);
 
         source.execute_batch(
@@ -3746,7 +3851,7 @@ mod tests {
         let proof = snapshot()?;
         let published = std::fs::read(&destination)?;
         assert!(Db::open_after_snapshot(proof, None).is_err());
-        assert_eq!(get_schema_version(ReadConn::new(&source))?, 1);
+        assert_eq!(get_schema_version(ReadConn::physical(&source))?, 1);
         assert_eq!(std::fs::read(&destination)?, published);
         Ok(())
     }
@@ -3817,8 +3922,8 @@ mod tests {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         assert_eq!(tail, (old_hash, 2));
-        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
-        super::super::audit::verify_creations(ReadConn::new(&conn))?;
+        super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        super::super::audit::verify_creations(ReadConn::physical(&conn))?;
         ensure_schema(&conn)?;
         Ok(())
     }
@@ -3833,7 +3938,7 @@ mod tests {
             seed_v12_creation(&conn)?;
             conn.execute_batch(corruption)?;
             assert!(apply_v13(&conn).is_err());
-            assert_eq!(get_schema_version(ReadConn::new(&conn))?, 12);
+            assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 12);
             assert!(conn.prepare("SELECT agent_uri FROM transactions").is_err());
             assert!(conn.prepare("SELECT * FROM identity_root").is_err());
         }
@@ -3863,7 +3968,7 @@ mod tests {
         apply_v12(&conn)?;
         let after: String = conn.query_row(query, [], |r| r.get(0))?;
         assert_eq!(before, after);
-        super::super::audit::verify_hash_chain(ReadConn::new(&conn))?;
+        super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
         let first_hash: String =
             conn.query_row("SELECT row_hash FROM audit_log WHERE id = 7", [], |r| {
                 r.get(0)
@@ -3886,7 +3991,10 @@ mod tests {
         let poster: Option<String> =
             conn.query_row("SELECT posted_by FROM transactions", [], |r| r.get(0))?;
         assert_eq!(poster, None);
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, CURRENT_VERSION);
+        assert_eq!(
+            get_schema_version(ReadConn::physical(&conn))?,
+            CURRENT_VERSION
+        );
         Ok(())
     }
 
@@ -3901,7 +4009,7 @@ mod tests {
         }
         conn.execute_batch("CREATE TABLE audit_log_v12 (collision TEXT);")?;
         assert!(apply_v12(&conn).is_err());
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 11);
+        assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 11);
         assert!(conn.prepare("SELECT posted_by FROM transactions").is_err());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))?;
         assert_eq!(count, 0);
@@ -3946,7 +4054,7 @@ mod tests {
             |r| r.get(0),
         )?;
         assert_eq!(indices, 3);
-        assert_eq!(get_schema_version(ReadConn::new(&conn))?, 11);
+        assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 11);
         Ok(())
     }
 
@@ -3961,7 +4069,7 @@ mod tests {
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
         apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
         apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(8));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(8));
 
         // A v8-shaped ledger: one transaction with a cleared, a reconciled,
         // and an uncleared entry.
@@ -3984,7 +4092,7 @@ mod tests {
 
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4052,7 +4160,7 @@ mod tests {
     #[test]
     fn fresh_db_has_version_zero() {
         let conn = open_conn();
-        let v = get_schema_version(ReadConn::new(&conn));
+        let v = get_schema_version(ReadConn::physical(&conn));
         assert_eq!(v.ok(), Some(0));
     }
 
@@ -4062,7 +4170,7 @@ mod tests {
         let result = ensure_schema(&conn);
         assert!(result.is_ok());
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
     }
@@ -4073,7 +4181,7 @@ mod tests {
         assert!(ensure_schema(&conn).is_ok());
         assert!(ensure_schema(&conn).is_ok());
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
     }
@@ -4154,12 +4262,12 @@ mod tests {
         // Apply v1 and v2 first
         apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
         apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(2));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(2));
 
         // Now run ensure_schema which should apply v3
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4187,12 +4295,12 @@ mod tests {
         apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
         apply_v2(&conn).unwrap_or_else(|e| panic!("v2 failed: {e}"));
         apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(3));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(3));
 
         // Now run ensure_schema which should apply v4
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4234,12 +4342,12 @@ mod tests {
         let conn = open_conn();
         // Apply only v1
         apply_v1(&conn).unwrap_or_else(|e| panic!("v1 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(1));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(1));
 
         // Now run ensure_schema which should apply v2
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4264,12 +4372,12 @@ mod tests {
         apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
         apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(6));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(6));
 
         // Now run ensure_schema which should apply v7
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4309,12 +4417,12 @@ mod tests {
         apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
         apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(7));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(7));
 
         // Now run ensure_schema which should apply v8.
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4341,7 +4449,7 @@ mod tests {
         apply_v6(&conn).unwrap_or_else(|e| panic!("v6 failed: {e}"));
         apply_v7(&conn).unwrap_or_else(|e| panic!("v7 failed: {e}"));
         apply_v8(&conn).unwrap_or_else(|e| panic!("v8 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(8));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(8));
 
         conn.execute(
             "INSERT INTO companies (slug, name) VALUES ('acme', 'Acme')",
@@ -4368,7 +4476,7 @@ mod tests {
 
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4423,12 +4531,12 @@ mod tests {
         apply_v3(&conn).unwrap_or_else(|e| panic!("v3 failed: {e}"));
         apply_v4(&conn).unwrap_or_else(|e| panic!("v4 failed: {e}"));
         apply_v5(&conn).unwrap_or_else(|e| panic!("v5 failed: {e}"));
-        assert_eq!(get_schema_version(ReadConn::new(&conn)).ok(), Some(5));
+        assert_eq!(get_schema_version(ReadConn::physical(&conn)).ok(), Some(5));
 
         // Now run ensure_schema which should apply v6
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::new(&conn)).ok(),
+            get_schema_version(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 

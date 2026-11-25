@@ -181,13 +181,14 @@ pub(crate) fn summary(
         return Ok(StatementImportSummary::default());
     }
     let (summary, valid) = reader.query_row(
-        "WITH imports (legacy_id, result) AS (
+        &format!(
+            "WITH imports (legacy_id, result) AS (
              SELECT b.id, a.after
              FROM setup_statement_batches b
-             JOIN bookkeeping_audit a ON a.company_slug = b.company_slug AND a.entity_id = (?2 || b.id)
+             JOIN {audit} a ON a.company_slug = b.company_slug AND a.entity_id = (?2 || b.id)
              WHERE b.company_slug = ?1 AND a.entity = 'company' AND a.action = 'create'
              UNION ALL
-             SELECT NULL, json_extract(after, '$.result') FROM bookkeeping_audit
+             SELECT NULL, json_extract(after, '$.result') FROM {audit}
              WHERE company_slug = ?1 AND action = 'setup_apply'
                AND json_extract(after, '$.effect.kind') = 'statement'
          )
@@ -198,6 +199,8 @@ pub(crate) fn summary(
                     WHEN json_type(result, '$.created') = 'array'
                      AND json_type(result, '$.preexisting') = 'array' THEN 1 END)
          FROM imports",
+            audit = reader.bookkeeping_audit()
+        ),
         params![company.as_str(), COMMIT_EVENT],
         |row| {
             let count = |index| {
@@ -278,7 +281,7 @@ fn audit_snapshot<T: DeserializeOwned>(
         "SELECT after, agent_uri, token_jti FROM {audit}
          WHERE company_slug = ?1 AND entity = 'company' AND entity_id = ?2 AND action = 'create'
          LIMIT 2",
-        audit = reader.bookkeeping_audit()?
+        audit = reader.bookkeeping_audit()
     ))?;
     let mut rows = statement.query(params![company, id])?;
     let result = rows
@@ -385,7 +388,7 @@ fn reserve(
     prepare: impl FnOnce() -> Result<FrozenBatch, CliError>,
 ) -> Result<StatementReview, CliError> {
     let conn = session.tx.connection();
-    let reader = ReadConn::new(conn);
+    let reader = session.tx.read();
     let generation = session.session.generation;
     let previous = reader
         .query_row(
@@ -643,7 +646,7 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
          UNION
          SELECT company_slug, CAST(SUBSTR(entity_id, LENGTH(?2) + 1) AS INTEGER)
          FROM {audit} WHERE entity = 'company' AND action = 'create' AND entity_id GLOB ?2 || '*'",
-        audit = reader.bookkeeping_audit()?
+        audit = reader.bookkeeping_audit()
     ))?;
     let rows = statement.query_map([PREVIEW_EVENT, COMMIT_EVENT], |row| {
         Ok((

@@ -251,7 +251,7 @@ pub fn get(scope: &super::companies::Company<'_>) -> Result<Option<PeriodLock>, 
             &format!(
                 "SELECT after FROM {audit} WHERE entity = 'period' AND company_slug = ?1
          AND entity_id = ?1 ORDER BY id DESC LIMIT 1",
-                audit = conn.bookkeeping_audit()?
+                audit = conn.bookkeeping_audit()
             ),
             [company],
             |row| row.get(0),
@@ -369,7 +369,7 @@ pub fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT company_slug FROM period_locks
          UNION SELECT company_slug FROM {audit} WHERE entity = 'period'",
-        audit = conn.bookkeeping_audit()?
+        audit = conn.bookkeeping_audit()
     ))?;
     for slug in stmt.query_map([], |row| row.get(0))? {
         let scope = super::companies::Company::bind(conn, slug?)?;

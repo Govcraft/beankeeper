@@ -116,13 +116,9 @@ impl VerifiedSnapshot {
         let directory = files::staging_directory(&path)?;
         let staged = tempfile::NamedTempFile::new_in(directory.path())?;
         source.copy_into(staged.path())?;
-        let snapshot = Db::from_connection(open_keyed(
-            staged.path(),
-            passphrase,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?);
+        let snapshot = Db::open_supported_snapshot(staged.path(), passphrase)?;
+        let version = snapshot.schema_version();
         let (verification, encrypted) = snapshot.read_snapshot(|reader| {
-            let version = SchemaVersion::try_from(schema::get_schema_version(reader)?)?;
             let verification = VerifiedLedger::verify_at(reader, version, |policy| {
                 authorize(reader, version, policy)
             })?;
@@ -211,7 +207,7 @@ impl Db {
         let transaction = Transaction::new_unchecked(&connection, TransactionBehavior::Immediate)?;
         if !same_file(&fs::metadata(&source.path)?, &source.metadata)
             || data_version(&source.connection)? != source.data_version
-            || schema::get_schema_version(ReadConn::new(&transaction))? != i64::from(version)
+            || schema::get_schema_version(ReadConn::physical(&transaction))? != i64::from(version)
         {
             return Err(CliError::Database(
                 "the ledger changed; take a new verified snapshot before migrating".into(),
@@ -223,7 +219,11 @@ impl Db {
         source.connection.close().map_err(|(_, error)| error)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         tighten_permissions(&source.path);
-        Ok(Self::from_keyed_connection(connection, passphrase))
+        Ok(Self::from_keyed_connection(
+            connection,
+            passphrase,
+            schema::current_schema_version(),
+        ))
     }
 }
 

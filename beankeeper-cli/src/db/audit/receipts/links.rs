@@ -78,7 +78,7 @@ fn legacy_digest(reader: ReadConn<'_>) -> Result<Option<String>, CliError> {
 }
 
 pub(in crate::db) fn seal_legacy_links(conn: &Connection) -> Result<(), CliError> {
-    if let Some(digest) = legacy_digest(ReadConn::new(conn))? {
+    if let Some(digest) = legacy_digest(ReadConn::physical(conn))? {
         record(
             conn,
             &Actor::new("migration".parse()?),
@@ -173,7 +173,7 @@ pub(in crate::db::audit) fn verify_links(reader: ReadConn<'_>) -> Result<(), Cli
                      AND original.after IS event.before AND original.before IS event.after
                  ))
              )) LIMIT 1",
-                audit = reader.bookkeeping_audit()?
+                audit = reader.bookkeeping_audit()
             ),
             [],
             |row| row.get(0),

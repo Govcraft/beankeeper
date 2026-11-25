@@ -12,7 +12,7 @@ use std::{
 
 use beankeeper::types::Sha256Hex;
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
-use rusqlite::{OpenFlags, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params, params_from_iter};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,10 +23,10 @@ use super::{
 use crate::{
     db::{
         Actor, Db, SnapshotOverwrite, VerifiedSnapshot,
-        connection::{ReadConn, open_keyed},
+        connection::ReadConn,
         current_schema_version,
         ids::{AuditRowId, ReceiptId},
-        schema::{HASH_CHAIN_SCHEMA_VERSION, SchemaVersion, get_schema_version},
+        schema::HASH_CHAIN_SCHEMA_VERSION,
         snapshot::{files, same_file},
         verification::VerifiedLedger,
     },
@@ -263,15 +263,18 @@ impl RestoreInput {
             .optional()?
             .ok_or_else(|| CliError::NotFound(format!("restore receipt #{receipt} not found")))?;
         let event: RestoreEvent = serde_json::from_str(&event).map_err(invalid_event)?;
+        // Only known non-bookkeeping entities can be ignored when checking
+        // for later events in the physical chain.
+        let ignored: Vec<_> = AuditEntity::ALL
+            .iter()
+            .copied()
+            .filter(|entity| !entity.affects_books())
+            .map(AuditEntity::as_str)
+            .collect();
+        let placeholders = vec!["?"; ignored.len()].join(", ");
         let latest: ReceiptId = reader.query_row(
-            "SELECT MAX(id) FROM audit_log WHERE entity NOT IN (?1, ?2, ?3, ?4, ?5)",
-            params![
-                AuditEntity::Key.as_str(),
-                AuditEntity::Agent.as_str(),
-                AuditEntity::Policy.as_str(),
-                AuditEntity::SpendLimit.as_str(),
-                AuditEntity::Audit.as_str()
-            ],
+            &format!("SELECT MAX(id) FROM audit_log WHERE entity NOT IN ({placeholders})"),
+            params_from_iter(ignored),
             |row| row.get(0),
         )?;
         if latest != receipt {
@@ -334,12 +337,8 @@ impl CompatibleBackup {
         }
 
         let key = live.snapshot_key();
-        let read_only = Db::from_connection(open_keyed(
-            staged.path(),
-            key,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?);
-        let version = SchemaVersion::try_from(get_schema_version(read_only.read())?)?;
+        let read_only = Db::open_supported_snapshot(staged.path(), key)?;
+        let version = read_only.schema_version();
         let (db, verification, source_audit_id) = if version == current_schema_version() {
             let verification = read_only
                 .read_snapshot(|reader| VerifiedLedger::verify_at(reader, version, |_| Ok(())))?;

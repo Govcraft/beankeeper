@@ -162,7 +162,7 @@ impl AppliedReversal {
     ) -> Result<Self, CliError> {
         let (PostResult::Created(id) | PostResult::Skipped(id)) = result;
         let receipt = reader.query_row(
-            "SELECT id FROM bookkeeping_audit WHERE company_slug = ?1 AND related_posting = ?2 AND action = 'reverse'",
+            &format!("SELECT id FROM {audit} WHERE company_slug = ?1 AND related_posting = ?2 AND action = 'reverse'", audit = reader.bookkeeping_audit()),
             params![company, id],
             |row| row.get(0),
         )?;
@@ -423,13 +423,19 @@ impl StoredProposal {
     }
 }
 
-const SELECT: &str = "SELECT proposed.entity_id, proposed.agent_uri, proposed.changed_at,
+fn select_proposals(reader: ReadConn<'_>, filter: &str) -> String {
+    let audit = reader.bookkeeping_audit();
+    format!(
+        "SELECT proposed.entity_id, proposed.agent_uri, proposed.changed_at,
        proposed.after, resolved.after
-     FROM bookkeeping_audit proposed
-     LEFT JOIN bookkeeping_audit resolved ON resolved.company_slug = proposed.company_slug
+     FROM {audit} proposed
+     LEFT JOIN {audit} resolved ON resolved.company_slug = proposed.company_slug
        AND resolved.entity = proposed.entity AND resolved.entity_id = proposed.entity_id
        AND resolved.action = 'correction_resolve'
-     WHERE proposed.company_slug = ?1 AND proposed.action = 'correction_propose'";
+     WHERE proposed.company_slug = ?1 AND proposed.action = 'correction_propose'
+       {filter}"
+    )
+}
 
 fn reserve(
     tx: &AuditedTx<'_>,
@@ -437,8 +443,10 @@ fn reserve(
     scope: &Company<'_>,
     request: &Request,
 ) -> Result<PendingCorrection, CliError> {
-    let mut statement = tx.read().prepare(&format!(
-        "{SELECT} AND resolved.id IS NULL AND proposed.agent_uri = ?2 ORDER BY proposed.id"
+    let reader = tx.read();
+    let mut statement = reader.prepare(&select_proposals(
+        reader,
+        "AND resolved.id IS NULL AND proposed.agent_uri = ?2 ORDER BY proposed.id",
     ))?;
     for row in statement.query_map(params![scope.slug(), actor.agent_uri()], read_row)? {
         let proposal = StoredProposal::try_from(row?)?;
@@ -468,9 +476,10 @@ pub(crate) fn list(
     include_resolved: bool,
 ) -> Result<Vec<CorrectionProposal>, CliError> {
     let all = proposals::can_review_all(reader, actor)?;
-    let mut statement = reader.prepare(&format!(
-        "{SELECT} AND (?2 OR resolved.id IS NULL) AND (?3 OR proposed.agent_uri = ?4)
-         ORDER BY proposed.id"
+    let mut statement = reader.prepare(&select_proposals(
+        reader,
+        "AND (?2 OR resolved.id IS NULL) AND (?3 OR proposed.agent_uri = ?4)
+         ORDER BY proposed.id",
     ))?;
     statement
         .query_map(
@@ -486,9 +495,10 @@ fn find(
     company: &CompanySlug,
     id: &ProposalId,
 ) -> Result<Option<StoredProposal>, CliError> {
-    tx.read()
+    let reader = tx.read();
+    reader
         .query_row(
-            &format!("{SELECT} AND proposed.entity_id = ?2"),
+            &select_proposals(reader, "AND proposed.entity_id = ?2"),
             params![company, id],
             read_row,
         )

@@ -2082,7 +2082,7 @@ fn encrypted_startup_restore_and_cli_undo_keep_live_identity_and_audit() -> Test
     );
 
     let redo_id = &undone["data"]["undo_id"];
-    assert_restore_redo(&mut server, &observer, admin, writer, redo_id)?;
+    assert_restore_redo(&mut server, &observer, &ledger, redo_id)?;
     server.finish(&[admin, writer, revoked])
 }
 
@@ -2116,10 +2116,24 @@ fn reject_unsupported_restore_inputs(
 fn assert_restore_redo(
     server: &mut Server,
     observer: &Db,
-    admin: &str,
-    writer: &str,
+    ledger: &Ledger,
     redo_id: &Value,
 ) -> TestResult {
+    let admin = token(&ledger.admin)?;
+    let writer = token(&ledger.writer)?;
+    Granted::<Admin>::with_db(observer, &ledger.owner, |grant| {
+        identity::issue(
+            grant,
+            &IssueRequest {
+                name: "post_restore_reader",
+                capabilities: &["ledger/read".into()],
+                ttl: Duration::from_secs(3600),
+                public_key: None,
+                generate_key: true,
+            },
+        )
+    })?;
+
     let redo = server.call("restore_undo", json!({"undo_id": redo_id}), Some(admin))?;
     assert_eq!(
         payload(&redo)?["verification"]["row_counts"]["transactions"],
@@ -2127,6 +2141,12 @@ fn assert_restore_redo(
     );
     let posted = server.call("txn_post", posting("after-redo"), Some(writer))?;
     assert_eq!(payload(&posted)?["created"], true);
+    let blocked = server.call(
+        "restore_undo",
+        json!({"undo_id": payload(&redo)?["undo_id"]}),
+        Some(admin),
+    )?;
+    assert_eq!(payload(&blocked)?["code"], "VALIDATION");
     let abandoned: i64 = observer.read().query_row(
         "SELECT CAST(entity_id AS INTEGER) FROM audit_log WHERE action = 'create' AND entity = 'transaction' ORDER BY id LIMIT 1 OFFSET 1",
         [], |row| row.get(0),

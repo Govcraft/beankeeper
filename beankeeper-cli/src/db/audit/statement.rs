@@ -791,8 +791,8 @@ fn ensure_no_cutoff_dependents(
 
 fn latest_period_event(reader: ReadConn<'_>, company: &CompanySlug) -> Result<ReceiptId, CliError> {
     Ok(reader.query_row(
-        "SELECT id FROM bookkeeping_audit WHERE entity = 'period' AND company_slug = ?1 AND entity_id = ?1
-         ORDER BY id DESC LIMIT 1",
+        &format!("SELECT id FROM {audit} WHERE entity = 'period' AND company_slug = ?1 AND entity_id = ?1
+         ORDER BY id DESC LIMIT 1", audit = reader.bookkeeping_audit()),
         [company],
         |row| row.get(0),
     )?)
@@ -806,11 +806,14 @@ fn effective_period_event(
 ) -> Result<Option<ReceiptId>, CliError> {
     let active: Option<Option<ReceiptId>> = reader
         .query_row(
-            "SELECT CASE WHEN s.receipt IS NULL THEN period.id ELSE s.restored_period_event END
-         FROM bookkeeping_audit period LEFT JOIN statement_reconciliations s ON s.restore_event = period.id
+            &format!(
+                "SELECT CASE WHEN s.receipt IS NULL THEN period.id ELSE s.restored_period_event END
+         FROM {audit} period LEFT JOIN statement_reconciliations s ON s.restore_event = period.id
            AND s.company_slug = period.company_slug
          WHERE period.entity = 'period' AND period.company_slug = ?1 AND period.entity_id = ?1
          ORDER BY period.id DESC LIMIT 1",
+                audit = reader.bookkeeping_audit()
+            ),
             [company],
             |row| row.get(0),
         )
@@ -1001,7 +1004,7 @@ fn verify_receipt_links(reader: ReadConn<'_>) -> Result<(), CliError> {
          WHERE event.action IN ('statement_reconcile', 'statement_unreconcile')
            AND (s.receipt IS NULL OR s.company_slug IS NOT event.company_slug
                 OR (event.action = 'statement_unreconcile' AND s.undo_receipt IS NOT event.id))
-         LIMIT 1", audit = reader.bookkeeping_audit()?),
+         LIMIT 1", audit = reader.bookkeeping_audit()),
         [], |row| row.get(0),
     ).optional()?;
     if let Some(receipt) = invalid {

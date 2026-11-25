@@ -16,20 +16,6 @@ CREATE TABLE transaction_links (
 CREATE INDEX idx_transaction_links_source ON transaction_links(company_slug, source_id, target_id, link_kind);
 CREATE INDEX idx_transaction_links_target ON transaction_links(company_slug, target_id);
 
-CREATE VIEW transaction_link_creations AS
-    SELECT id AS receipt, entity_id AS id, company_slug,
-           json_extract(after, '$.source_id') AS source_id,
-           json_extract(after, '$.target_id') AS target_id,
-           json_extract(after, '$.kind') AS link_kind
-      FROM audit_log WHERE action = 'link_create';
-
-CREATE VIEW active_transaction_links AS
-    SELECT link.* FROM transaction_links link
-    WHERE NOT EXISTS (
-        SELECT 1 FROM audit_log undo
-        WHERE undo.undo_of = link.receipt AND undo.action = 'link_undo'
-    );
-
 CREATE TRIGGER protect_transaction_link_insert BEFORE INSERT ON transaction_links
 BEGIN
     SELECT RAISE(ABORT, 'transaction link requires a matching creation receipt')

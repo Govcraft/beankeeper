@@ -3,6 +3,7 @@
 use rusqlite::{CachedStatement, Connection, MappedRows, Params, Result, Row, Rows, Statement};
 
 use super::{ConnectionId, Db};
+use crate::db::schema::{AuditHistory, SchemaVersion};
 
 /// A query-only borrow of a ledger connection.
 ///
@@ -21,13 +22,16 @@ use super::{ConnectionId, Db};
 pub struct ReadConn<'a> {
     connection: &'a Connection,
     id: Option<&'a ConnectionId>,
+    audit_history: AuditHistory,
 }
 
 impl<'a> ReadConn<'a> {
-    pub(in crate::db) const fn new(connection: &'a Connection) -> Self {
+    /// Raw connections are used for schema metadata and physical-chain operations.
+    pub(in crate::db) const fn physical(connection: &'a Connection) -> Self {
         Self {
             connection,
             id: None,
+            audit_history: AuditHistory::Physical,
         }
     }
 
@@ -35,6 +39,7 @@ impl<'a> ReadConn<'a> {
         Self {
             connection: &db.conn,
             id: Some(&db.id),
+            audit_history: db.audit_history,
         }
     }
 
@@ -42,15 +47,17 @@ impl<'a> ReadConn<'a> {
         self.connection
     }
 
+    pub(in crate::db) fn at_schema(self, version: SchemaVersion) -> Self {
+        Self {
+            audit_history: version.into(),
+            ..self
+        }
+    }
+
     // Older snapshots have only one bookkeeping history. They are read
     // without migrating or adding views to the source file.
-    pub(in crate::db) fn bookkeeping_audit(self) -> Result<&'static str, crate::error::CliError> {
-        let version = super::super::schema::get_schema_version(self)?;
-        Ok(if version >= super::super::schema::RESTORE_SCHEMA_VERSION {
-            "bookkeeping_audit"
-        } else {
-            "audit_log"
-        })
+    pub(in crate::db) const fn bookkeeping_audit(self) -> AuditHistory {
+        self.audit_history
     }
 
     pub(crate) fn belongs_to(self, id: &ConnectionId) -> bool {

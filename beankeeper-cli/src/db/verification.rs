@@ -167,7 +167,7 @@ impl VerifiedLedger {
     pub fn read(db: &Db) -> Result<Self, CliError> {
         db.read_snapshot(|reader| {
             let version = schema::SchemaVersion::try_from(schema::get_schema_version(reader)?)?;
-            Self::verify_at(reader, version, |_| Ok(()))
+            Self::verify_at(reader.at_schema(version), version, |_| Ok(()))
         })
     }
 

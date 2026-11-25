@@ -129,15 +129,18 @@ pub(super) fn reserve(
     let existing = tx
         .read()
         .query_row(
-            "SELECT proposed.entity_id FROM bookkeeping_audit proposed
+            &format!(
+                "SELECT proposed.entity_id FROM {audit} proposed
          WHERE proposed.company_slug = ?1 AND proposed.action = 'account_rename_propose'
            AND proposed.agent_uri = ?2 AND proposed.after = ?3
            AND NOT EXISTS (
-               SELECT 1 FROM bookkeeping_audit resolved WHERE resolved.company_slug = proposed.company_slug
+               SELECT 1 FROM {audit} resolved WHERE resolved.company_slug = proposed.company_slug
                AND resolved.entity = proposed.entity AND resolved.entity_id = proposed.entity_id
                AND resolved.action = 'account_rename_resolve'
            )
          ORDER BY proposed.id DESC LIMIT 1",
+                audit = tx.read().bookkeeping_audit()
+            ),
             params![scope.slug(), actor.agent_uri(), raw],
             |row| row.get(0),
         )
@@ -166,13 +169,19 @@ pub(super) fn reserve(
     })
 }
 
-const SELECT: &str = "SELECT proposed.entity_id, proposed.agent_uri, proposed.changed_at,
+fn select_proposals(reader: ReadConn<'_>, filter: &str) -> String {
+    let audit = reader.bookkeeping_audit();
+    format!(
+        "SELECT proposed.entity_id, proposed.agent_uri, proposed.changed_at,
        proposed.after, resolved.after
-     FROM bookkeeping_audit proposed
-     LEFT JOIN bookkeeping_audit resolved ON resolved.company_slug = proposed.company_slug
+     FROM {audit} proposed
+     LEFT JOIN {audit} resolved ON resolved.company_slug = proposed.company_slug
        AND resolved.entity = proposed.entity AND resolved.entity_id = proposed.entity_id
        AND resolved.action = 'account_rename_resolve'
-     WHERE proposed.company_slug = ?1 AND proposed.action = 'account_rename_propose'";
+     WHERE proposed.company_slug = ?1 AND proposed.action = 'account_rename_propose'
+       {filter}"
+    )
+}
 
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProposalRow> {
     Ok((
@@ -191,9 +200,10 @@ pub(crate) fn list(
     include_resolved: bool,
 ) -> Result<Vec<RenameProposal>, CliError> {
     let all = proposals::can_review_all(reader, actor)?;
-    let mut stmt = reader.prepare(&format!(
-        "{SELECT} AND (?2 OR resolved.id IS NULL) AND (?3 OR proposed.agent_uri = ?4)
-         ORDER BY proposed.id"
+    let mut stmt = reader.prepare(&select_proposals(
+        reader,
+        "AND (?2 OR resolved.id IS NULL) AND (?3 OR proposed.agent_uri = ?4)
+         ORDER BY proposed.id",
     ))?;
     stmt.query_map(
         params![company, include_resolved, all, actor.agent_uri()],
@@ -208,9 +218,10 @@ fn find(
     company: &CompanySlug,
     id: &ProposalId,
 ) -> Result<Option<StoredProposal>, CliError> {
-    tx.read()
+    let reader = tx.read();
+    reader
         .query_row(
-            &format!("{SELECT} AND proposed.entity_id = ?2"),
+            &select_proposals(reader, "AND proposed.entity_id = ?2"),
             params![company, id],
             read_row,
         )

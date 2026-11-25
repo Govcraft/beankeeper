@@ -216,7 +216,7 @@ pub fn create_company(
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_companies(conn: ReadConn<'_>) -> Result<Vec<CompanyRow>, CliError> {
-    let audit = conn.bookkeeping_audit()?;
+    let audit = conn.bookkeeping_audit();
     let mut stmt =
         conn.prepare(
             &format!("SELECT slug, name, description, created_at FROM companies
@@ -282,7 +282,7 @@ pub fn company_exists(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<bool, Cl
 // The signed undo is the archive marker. The company row and all receipts stay
 // available to history and undo retries.
 fn company_archived(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<bool, CliError> {
-    let audit = conn.bookkeeping_audit()?;
+    let audit = conn.bookkeeping_audit();
     Ok(conn.query_row(
         &format!(
             "SELECT EXISTS (SELECT 1 FROM {audit} WHERE company_slug = ?1

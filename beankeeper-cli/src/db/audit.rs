@@ -88,10 +88,16 @@ impl std::error::Error for AuditLabelError {}
 // Use the same canonical label for signed rows, SQL, and all output formats.
 // Parser aliases retain the forms existing CLI and MCP callers can send.
 macro_rules! audit_labels {
+    (@variants $name:ident [$($variant:ident),+] $all:ident) => {
+        impl $name {
+            const $all: &'static [Self] = &[$(Self::$variant),+];
+        }
+    };
+    (@variants $name:ident [$($variant:ident),+]) => {};
     (
         $(#[$meta:meta])* $name:ident, $kind:literal {
             $($variant:ident => $label:literal $(| $alias:literal)?),+ $(,)?
-        }
+        } $($all:ident)?
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, clap::ValueEnum)]
@@ -102,6 +108,8 @@ macro_rules! audit_labels {
                 $variant,
             )+
         }
+
+        audit_labels!(@variants $name [$($variant),+] $($all)?);
 
         impl $name {
             /// Canonical label stored in SQLite and used in audit hashes and output.
@@ -168,6 +176,35 @@ audit_labels! {
         Agent => "agent",
         Audit => "audit",
         Ledger => "ledger",
+    } ALL
+}
+
+impl AuditEntity {
+    /// Whether an event can affect the bookkeeping restored by a snapshot.
+    const fn affects_books(self) -> bool {
+        match self {
+            Self::Key | Self::Agent | Self::Policy | Self::SpendLimit | Self::Audit => false,
+            Self::Period
+            | Self::StatementReconciliation
+            | Self::Proposal
+            | Self::Security
+            | Self::Lot
+            | Self::Price
+            | Self::Schedule
+            | Self::Rule
+            | Self::BookkeepingPolicy
+            | Self::InformPreference
+            | Self::Entry
+            | Self::Transaction
+            | Self::TransactionLink
+            | Self::Budget
+            | Self::Account
+            | Self::AccountRenameProposal
+            | Self::CorrectionProposal
+            | Self::Company
+            | Self::Demo
+            | Self::Ledger => true,
+        }
     }
 }
 
@@ -641,7 +678,8 @@ fn append_with_links(
         )
         .optional()?
         .unwrap_or_else(|| GENESIS_HASH.to_string());
-    let version = HashVersion::for_schema(super::schema::get_schema_version(ReadConn::new(conn))?);
+    let version =
+        HashVersion::for_schema(super::schema::get_schema_version(ReadConn::physical(conn))?);
     let has_client_hint_column = version.includes_client_hint();
     let has_link_columns = version.includes_receipt_links();
     let (undo_of, related_posting) = links.columns();
@@ -748,7 +786,7 @@ fn record_policy_change(
     actor: &Actor,
     enforce: bool,
 ) -> Result<super::policy::LedgerPolicy, CliError> {
-    let before = super::policy::get(ReadConn::new(conn))?;
+    let before = super::policy::get(ReadConn::physical(conn))?;
     if before.enforce == enforce {
         return Ok(before);
     }
@@ -1219,7 +1257,7 @@ pub fn verify_creations(conn: ReadConn<'_>) -> Result<(), CliError> {
 }
 
 pub(super) fn verify_creations_at(conn: ReadConn<'_>, version: i64) -> Result<(), CliError> {
-    let audit = conn.bookkeeping_audit()?;
+    let audit = conn.bookkeeping_audit();
     let has_identity = version >= super::schema::IDENTITY_SCHEMA_VERSION;
     let attributed = if has_identity {
         "posted_by IS NOT NULL OR agent_uri IS NOT NULL OR token_jti IS NOT NULL"
@@ -2085,7 +2123,7 @@ fn is_reversal(
     company: &super::companies::CompanySlug,
     id: TransactionId,
 ) -> Result<bool, CliError> {
-    let audit = reader.bookkeeping_audit()?;
+    let audit = reader.bookkeeping_audit();
     Ok(reader.query_row(
         &format!(
             "SELECT EXISTS(SELECT 1 FROM {audit}
@@ -2103,7 +2141,7 @@ fn existing_reversal(
 ) -> Result<Option<super::transactions::PostResult>, CliError> {
     use super::transactions::PostResult;
     let reader = company.read();
-    let audit = reader.bookkeeping_audit()?;
+    let audit = reader.bookkeeping_audit();
     let reversal: Option<TransactionId> = reader
         .query_row(
             &format!(
@@ -3442,16 +3480,19 @@ mod tests {
             Ok(())
         })?;
         assert!(!crate::db::company_exists(
-            ReadConn::new(connection),
+            ReadConn::physical(connection),
             &"new".parse()?
         )?);
         assert!(!crate::db::account_exists(
-            &crate::db::companies::Company::bind(ReadConn::new(connection), "acme".parse()?)?,
+            &crate::db::companies::Company::bind(ReadConn::physical(connection), "acme".parse()?)?,
             "1100"
         )?);
         assert!(
             crate::db::list_attachments(
-                &crate::db::companies::Company::bind(ReadConn::new(connection), "acme".parse()?)?,
+                &crate::db::companies::Company::bind(
+                    ReadConn::physical(connection),
+                    "acme".parse()?
+                )?,
                 transaction_id
             )?
             .is_empty()

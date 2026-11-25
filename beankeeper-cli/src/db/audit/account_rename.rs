@@ -151,13 +151,16 @@ fn active_rename(
     let event = scope
         .read()
         .query_row(
-            "SELECT id, action, before, after FROM bookkeeping_audit event
+            &format!(
+                "SELECT id, action, before, after FROM {audit} event
          WHERE company_slug = ?1 AND entity = 'account' AND entity_id = ?2 AND (
              action IN ('create', 'account_delete', 'account_archive')
              OR (action = 'account_rename' AND undo_of IS NULL AND NOT EXISTS (
-                 SELECT 1 FROM bookkeeping_audit restored WHERE restored.undo_of = event.id
+                 SELECT 1 FROM {audit} restored WHERE restored.undo_of = event.id
              ))
          ) ORDER BY id DESC LIMIT 1",
+                audit = scope.read().bookkeeping_audit()
+            ),
             params![scope.slug(), code.as_str()],
             |row| {
                 Ok((
@@ -187,9 +190,12 @@ impl CurrentAccount {
         let revision = scope
             .read()
             .query_row(
-                "SELECT id FROM bookkeeping_audit
+                &format!(
+                    "SELECT id FROM {audit}
              WHERE company_slug = ?1 AND entity = 'account' AND entity_id = ?2
              ORDER BY id DESC LIMIT 1",
+                    audit = scope.read().bookkeeping_audit()
+                ),
                 params![scope.slug(), code.as_str()],
                 |row| row.get(0),
             )
@@ -354,7 +360,7 @@ pub(in crate::db) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
                AND newer.id > event.id
          ) AND (account.code IS NULL OR account.name IS NOT json_extract(event.after, '$.name'))
          LIMIT 1",
-                audit = reader.bookkeeping_audit()?
+                audit = reader.bookkeeping_audit()
             ),
             [],
             |row| row.get(0),

@@ -2,7 +2,7 @@
 -- whose bookkeeping state is now current. Traverse one range per restore.
 CREATE INDEX idx_audit_restore ON audit_log(id) WHERE action = 'ledger_restored';
 
-CREATE VIEW bookkeeping_audit AS
+CREATE VIEW {audit} AS
 WITH RECURSIVE ranges(head, cutover) AS (
     SELECT COALESCE(MAX(id), 0),
            COALESCE((SELECT MAX(id) FROM audit_log WHERE action = 'ledger_restored'), 0)
@@ -27,9 +27,9 @@ CREATE INDEX idx_direct_setup_reference ON audit_log(company_slug, entity_id)
 
 CREATE TRIGGER protect_bookkeeping_receipt_uniqueness BEFORE INSERT ON audit_log
 WHEN (NEW.undo_of IS NOT NULL AND EXISTS(
-    SELECT 1 FROM bookkeeping_audit WHERE undo_of = NEW.undo_of))
+    SELECT 1 FROM {audit} WHERE undo_of = NEW.undo_of))
   OR (NEW.action = 'setup_apply' AND EXISTS(
-    SELECT 1 FROM bookkeeping_audit
+    SELECT 1 FROM {audit}
     WHERE action = NEW.action AND company_slug = NEW.company_slug AND entity_id = NEW.entity_id))
 BEGIN SELECT RAISE(ABORT, 'a current bookkeeping receipt already records this operation'); END;
 
