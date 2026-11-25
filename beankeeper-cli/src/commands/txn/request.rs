@@ -24,7 +24,7 @@ use crate::db::{
     ids::TransactionId,
     metadata_filter::{self, MetadataFilter},
     proposals::{self, ProposalId},
-    transactions::{self, ListTransactionParams, TransactionValueFilter},
+    transactions::{self, ListTransactionParams, ReversalVisibility, TransactionValueFilter},
 };
 use crate::error::CliError;
 use crate::identity::{Approve, Granted, ResolveProposal};
@@ -375,6 +375,7 @@ pub struct ListRequest {
     pub(super) meta: Vec<MetadataFilter>,
     pub(super) tax_category: Option<String>,
     pub(super) direction: Option<DebitOrCredit>,
+    pub(super) include_reversed: ReversalVisibility,
     pub(super) count: bool,
 }
 
@@ -401,6 +402,7 @@ impl TryFrom<&TxnListArgs> for ListRequest {
             meta: metadata_filter::parse_filters(&args.meta)?,
             tax_category: args.tax_category.clone(),
             direction: args.direction,
+            include_reversed: args.include_reversed.into(),
             count: args.count,
         })
     }
@@ -423,6 +425,7 @@ impl ListRequest {
                 meta_eq: &self.meta,
                 tax_category_filter: self.tax_category.as_deref(),
                 direction_filter: self.direction,
+                include_reversed: self.include_reversed,
             };
             if self.count {
                 return transactions::count_transactions(&scope, &params).map(TxnData::Count);

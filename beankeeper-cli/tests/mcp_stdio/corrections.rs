@@ -322,9 +322,13 @@ fn propose_only_corrections_are_pending_until_a_signed_approver_applies_them() -
         assert_eq!(approved["status"], "approved");
         assert_eq!(approved, owner.success("txn_approve", &approval)?);
     }
+    assert_eq!(owner.success("txn_list", &company)?, json!([]));
     assert_eq!(
         owner
-            .success("txn_list", &company)?
+            .success(
+                "txn_list",
+                &json!({"company":"acme", "include_reversed":true})
+            )?
             .as_array()
             .map(Vec::len),
         Some(4)
@@ -508,6 +512,31 @@ fn assert_recategorization_entries(agent: &mut Client, id: &Value) -> TestResult
     Ok(())
 }
 
+fn assert_recategorization_pages(agent: &mut Client, expected_ids: &[&Value]) -> TestResult {
+    let total = expected_ids.len();
+    for (offset, id) in expected_ids
+        .iter()
+        .copied()
+        .map(Some)
+        .chain(std::iter::once(None))
+        .enumerate()
+    {
+        let response = agent.call(
+            "txn_list",
+            &json!({"company":"acme", "limit":1, "offset":offset}),
+        )?;
+        let page = payload(&response)?;
+        let rows = page.as_array().ok_or("missing transaction rows")?;
+        assert!(rows.iter().map(|row| &row["id"]).eq(id));
+        assert_eq!(response["result"]["_meta"]["pagination"]["total"], total);
+    }
+    assert_eq!(
+        agent.success("txn_list", &json!({"company":"acme", "count":true}))?,
+        json!({"count":total})
+    );
+    Ok(())
+}
+
 fn post_partially_cleared_sale(
     agent: &mut Client,
     owner: &mut Client,
@@ -563,6 +592,7 @@ fn recategorization_posts_directly_and_undoes_with_one_receipt_across_cli_and_mc
 
     assert_recategorization_entries(&mut agent, &result["id"])?;
     assert_eq!(agent.success("txn_show", &original_selector)?, before);
+    assert_recategorization_pages(&mut agent, &[&original["id"], &result["id"]])?;
 
     let mut retry = json!({
         "company":"acme","reference":"original-category","to_account":"4100",
@@ -610,6 +640,14 @@ fn recategorization_posts_directly_and_undoes_with_one_receipt_across_cli_and_mc
     );
     assert_eq!(agent.success("txn_show", &original_selector)?, before);
     let reversed = agent.success("txn_show", &json!({"company":"acme","id":undo["reversal"]}))?;
+    assert_recategorization_pages(&mut agent, &[&original["id"]])?;
+    assert_eq!(
+        agent.success(
+            "txn_list",
+            &json!({"company":"acme", "count":true, "include_reversed":true}),
+        )?,
+        json!({"count":3})
+    );
     let blocked = payload(&agent.call("txn_recategorize", &repeated)?)?;
     assert!(
         blocked["message"]

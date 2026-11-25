@@ -1980,6 +1980,10 @@ pub struct TxnListArgs {
     #[arg(long, value_parser = direction_parser())]
     pub direction: Option<DebitOrCredit>,
 
+    /// Include both the original and reversal in results and counts.
+    #[arg(long)]
+    pub include_reversed: bool,
+
     /// Return only the count of matching transactions.
     #[arg(long)]
     pub count: bool,

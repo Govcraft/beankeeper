@@ -5,6 +5,7 @@ use crate::cli::{Cli, ExportFormat};
 use crate::db;
 use crate::db::companies::Company;
 use crate::db::connection::ReadConn;
+use crate::db::transactions::ReversalVisibility;
 use crate::error::CliError;
 use crate::output;
 
@@ -63,6 +64,7 @@ fn export_json(reader: ReadConn<'_>) -> Result<String, CliError> {
         )?;
         let txn_params = db::ListTransactionParams {
             limit: i64::MAX,
+            include_reversed: ReversalVisibility::Include,
             ..Default::default()
         };
         let transactions = db::list_transactions(&scope, &txn_params)?;
@@ -193,6 +195,7 @@ fn export_csv(reader: ReadConn<'_>) -> Result<String, CliError> {
         let scope = Company::bind(reader, company.slug.clone())?;
         let txn_params = db::ListTransactionParams {
             limit: i64::MAX,
+            include_reversed: ReversalVisibility::Include,
             ..Default::default()
         };
         let transactions = db::list_transactions(&scope, &txn_params)?;

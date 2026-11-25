@@ -354,6 +354,10 @@ The atomic audit action is `reverse`, associated with the original ID;
 
 ### `txn list`
 
+Results and pagination totals hide both sides of reversed pairs by default.
+Pass `--include-reversed` on the CLI or `"include_reversed": true` in MCP to
+include them. The same filter applies when requesting only the count.
+
 ```json
 {
   "data": [
