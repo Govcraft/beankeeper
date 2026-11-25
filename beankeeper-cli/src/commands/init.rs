@@ -1,4 +1,5 @@
 use crate::identity::{Admin, Granted};
+use std::ffi::OsStr;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -8,11 +9,44 @@ use tempfile::NamedTempFile;
 use crate::cli::Cli;
 use crate::db::connection::Db;
 use crate::db::{Actor, CreateAccountParams, verification::VerifiedLedger};
+pub use crate::demo::DemoProfile;
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::passphrase;
 
 mod demo_features;
+mod tailored;
+
+pub(super) enum DemoSelection {
+    Off { force: bool },
+    Walkthrough { force: bool },
+    Profile(DemoProfile),
+}
+
+impl TryFrom<(bool, bool, Option<&OsStr>)> for DemoSelection {
+    type Error = CliError;
+
+    fn try_from((demo, force, profile): (bool, bool, Option<&OsStr>)) -> Result<Self, Self::Error> {
+        match (demo, force, profile) {
+            (true, false, Some(input)) => DemoProfile::try_from(input).map(Self::Profile),
+            (true, true, Some(_)) => Err(CliError::Usage(
+                "tailored demo books require a fresh path; omit --force".into(),
+            )),
+            (true, force, None) => Ok(Self::Walkthrough { force }),
+            (false, force, None) => Ok(Self::Off { force }),
+            (false, _, Some(_)) => Err(CliError::Usage("--profile requires --demo".into())),
+        }
+    }
+}
+
+impl DemoSelection {
+    const fn overwrites(&self) -> bool {
+        match self {
+            Self::Off { force } | Self::Walkthrough { force } => *force,
+            Self::Profile(_) => false,
+        }
+    }
+}
 
 /// Run the `bk init` command.
 ///
@@ -32,6 +66,16 @@ pub fn run(
     force: bool,
     demo: bool,
 ) -> Result<(), CliError> {
+    run_selected(cli, encrypt, path, (demo, force, None).try_into()?)
+}
+
+pub(super) fn run_selected(
+    cli: &Cli,
+    encrypt: bool,
+    path: Option<&Path>,
+    demo: DemoSelection,
+) -> Result<(), CliError> {
+    let force = demo.overwrites();
     let db_path = path.map_or_else(|| cli.db_path(), Ok)?;
 
     if db_path.exists() && !force {
@@ -73,13 +117,27 @@ pub fn run(
         std::fs::remove_file(db_path)?;
     }
 
-    if demo {
-        create_demo_ledger(db_path, passphrase.as_ref(), &cli.principal())?;
-        if !cli.verbosity.quiet {
-            eprintln!("[ok] Populated demo data (3 companies, Q1 2025 walkthrough data)");
+    match demo {
+        DemoSelection::Off { .. } => {
+            Db::open(db_path, passphrase.as_ref())?;
         }
-    } else {
-        Db::open(db_path, passphrase.as_ref())?;
+        DemoSelection::Walkthrough { .. } => {
+            create_demo_ledger(db_path, passphrase.as_ref(), &cli.principal())?;
+            if !cli.verbosity.quiet {
+                eprintln!("[ok] Populated demo data (3 companies, Q1 2025 walkthrough data)");
+            }
+        }
+        DemoSelection::Profile(profile) => {
+            create_demo_ledger_from_profile(
+                db_path,
+                passphrase.as_ref(),
+                &cli.principal(),
+                &profile,
+            )?;
+            if !cli.verbosity.quiet {
+                eprintln!("[ok] Populated tailored synthetic demo books");
+            }
+        }
     }
 
     if cli.is_json() {
@@ -125,6 +183,36 @@ pub fn create_demo_ledger(
     passphrase: Option<&SecretString>,
     actor: &Actor,
 ) -> Result<DemoLedger, CliError> {
+    stage_demo_ledger(path, passphrase, actor, |db| {
+        seed_companies(db, actor)?;
+        populate_demo_data(db)
+    })
+}
+
+/// Create a verified ledger containing synthetic books shaped by an interview.
+///
+/// The profile is used in memory. The ledger contains generated sample data
+/// and the normal demo provenance marker. A supplied passphrase encrypts it.
+/// # Errors
+/// Returns an error if the destination is occupied, a sidecar is present, the
+/// passphrase is empty, or the ledger cannot be created, verified or published.
+pub fn create_demo_ledger_from_profile(
+    path: &Path,
+    passphrase: Option<&SecretString>,
+    actor: &Actor,
+    profile: &DemoProfile,
+) -> Result<DemoLedger, CliError> {
+    stage_demo_ledger(path, passphrase, actor, |db| {
+        tailored::seed(db, actor, profile)
+    })
+}
+
+fn stage_demo_ledger(
+    path: &Path,
+    passphrase: Option<&SecretString>,
+    actor: &Actor,
+    seed: impl FnOnce(&Db) -> Result<(), CliError>,
+) -> Result<DemoLedger, CliError> {
     let exists =
         || CliError::Validation(format!("database already exists at '{}'", path.display()));
     match std::fs::symlink_metadata(path) {
@@ -140,8 +228,7 @@ pub fn create_demo_ledger(
     let staged = NamedTempFile::new_in(directory.path())?;
     let db = Db::open(staged.path(), passphrase)?;
     db.in_write_batch(|| {
-        seed_companies(&db, actor)?;
-        populate_demo_data(&db)?;
+        seed(&db)?;
         Granted::<Admin>::with_db(&db, actor, crate::db::audit::record_demo_seed)
     })?;
     VerifiedLedger::read(&db)?;
@@ -223,20 +310,28 @@ fn demo_amount(amount: i64) -> PositiveMinorUnits {
 }
 
 fn dr(code: &str, amount: i64) -> PostEntryParams {
+    dr_amount(code, demo_amount(amount))
+}
+
+fn dr_amount(code: &str, amount: PositiveMinorUnits) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
         direction: beankeeper::types::DebitOrCredit::Debit,
-        amount: demo_amount(amount),
+        amount,
         memo: None,
         tax_category: None,
     }
 }
 
 fn cr(code: &str, amount: i64) -> PostEntryParams {
+    cr_amount(code, demo_amount(amount))
+}
+
+fn cr_amount(code: &str, amount: PositiveMinorUnits) -> PostEntryParams {
     PostEntryParams {
         account_code: code.into(),
         direction: beankeeper::types::DebitOrCredit::Credit,
-        amount: demo_amount(amount),
+        amount,
         memo: None,
         tax_category: None,
     }

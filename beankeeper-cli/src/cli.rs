@@ -491,6 +491,11 @@ EXAMPLES:\n  \
         /// Populate the database with multi-company sample data and feature examples.
         #[arg(long)]
         demo: bool,
+
+        /// Tailor the synthetic books with JSON, a JSON file, or '-' for stdin.
+        /// Requires --demo and a fresh path.
+        #[arg(long, value_name = "JSON_OR_PATH")]
+        profile: Option<OsString>,
     },
 
     /// Manage the ledger's local trust root.

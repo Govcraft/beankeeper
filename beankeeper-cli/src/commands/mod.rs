@@ -395,7 +395,13 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             path,
             force,
             demo,
-        } => init::run(cli, *encrypt, path.as_deref(), *force, *demo),
+            profile,
+        } => init::run_selected(
+            cli,
+            *encrypt,
+            path.as_deref(),
+            (*demo, *force, profile.as_deref()).try_into()?,
+        ),
 
         Command::Export { format, output, .. } => export::run(cli, *format, output.as_deref()),
 
