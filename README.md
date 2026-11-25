@@ -1773,7 +1773,9 @@ shared CLI and MCP error code, message, and structured details when present.
 
 Use `backup` for a consistent snapshot of the entire ledger, including committed
 writes from active connections. Encryption stays enabled with the original
-passphrase. Both commands verify the staged file before publishing it.
+passphrase. Backup opens the source read-only and copies its existing schema
+version. Verification runs the checks available in that schema before publication.
+SQLite can create WAL sidecar files while reading a live ledger.
 
 ```sh
 bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup
@@ -1809,6 +1811,26 @@ separately and preserve the paths referenced by attachment records when moving
 machines. External attachment storage changes are outside these commands.
 `bk export` remains an accounting JSON/CSV export, not a recovery backup.
 Backup and restore are CLI commands and are not exposed over MCP.
+
+Rust hosts can require a verified local backup before an upgrade. Pass the same
+resolved secret to both calls.
+
+```rust
+use beankeeper_cli::db::{Db, SnapshotOverwrite, VerifiedSnapshot};
+
+let backup = VerifiedSnapshot::create(
+    ledger_path,
+    passphrase.as_ref(),
+    backup_path,
+    SnapshotOverwrite::Refuse,
+)?;
+let ledger = Db::open_after_snapshot(backup, passphrase.as_ref())?;
+```
+
+The proof exposes the backup path, captured schema version, and verification
+evidence. The migrating open consumes the proof and uses its bound source path.
+If another SQLite connection commits after the snapshot starts, take a fresh
+snapshot before retrying. Coordinate file moves and replacements with the upgrade.
 
 ### Encryption
 

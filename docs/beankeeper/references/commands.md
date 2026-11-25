@@ -38,7 +38,8 @@ a funded loan with its first payment, and a short-pay settlement. Use explicit
 
 Use `backup` for a consistent snapshot of the entire ledger, including committed
 writes from active connections. Encryption stays enabled with the original
-passphrase. Both commands verify the staged file before publishing it.
+passphrase. Backup opens the source read-only and copies its existing schema
+version. Verification runs the checks available in that schema before publication.
 
 ```sh
 bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup

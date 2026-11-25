@@ -614,7 +614,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk audit undo RECEIPT` | Apply or propose undo of an eligible receipt with a signed credential |
 | `bk verify` | Check ledger integrity |
 | `bk export` | Export accounting data as JSON or CSV |
-| `bk backup --output PATH` | Save and verify a full database snapshot, preserving encryption |
+| `bk backup --output PATH` | Save and verify a full database snapshot at its existing schema version and encryption |
 | `bk restore --input PATH --db DEST` | Restore a snapshot and verify it before publishing |
 
 For the full command reference with all flags and examples, see [`references/commands.md`](references/commands.md).
@@ -631,7 +631,10 @@ bk --db restored.db --passphrase-file /secure/books.key verify
 
 Omit passphrase flags for plaintext databases. Backups preserve the original key,
 root, token registry, audit chain, schedules, investments, and all other tables.
-Both commands verify the staged snapshot before publishing it. `--output`,
+Backup opens the source read-only and verifies the checks available in its schema
+before publishing. Rust hosts can pass the proof from `VerifiedSnapshot::create`
+to `Db::open_after_snapshot` to require a verified backup before upgrading.
+Restore verifies its staged copy before publishing. `--output`,
 `--input`, and restore's explicit `--db` are required; the environment/default DB
 is not a restore destination. `--company` is ignored. Add `--force` to replace an
 offline destination. Close its connections first: SQLite sidecars cause rejection.
