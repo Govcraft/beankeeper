@@ -276,6 +276,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `account_rename` | `company`, existing account `code`, and the new display `name` |
+| `txn_link` | `company`, `source_id`, `target_id`, `kind` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `status`, `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
 | `txn_settle_hold` | `company`, `hold` as `{"id":42}` or `{"reference":"hold-1"}`, positive decimal `amount`, posting `date`, posted `reference` |
 | `txn_propose` | Same posting arguments as `txn_post`; requires a verified proposer, reserves the reference and waits for approval without posting |
@@ -528,7 +529,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 ### Read-only tools
 
 Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `txn_post`, `txn_propose`, `txn_approve`,
-`txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
+`txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`, `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,

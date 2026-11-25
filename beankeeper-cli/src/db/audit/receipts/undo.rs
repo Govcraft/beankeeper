@@ -14,7 +14,9 @@ use crate::db::audit::setup::{
 use crate::db::audit::{
     AuditAction, AuditChange, AuditEntity, AuditLinks, ReversalBlock, ReversalSource,
     ReverseTransactionParams, audit_columns, read_audit_row, record_with_links, reverse_in_scope,
-    savepoint::AuditedTx, snapshot,
+    savepoint::AuditedTx,
+    snapshot,
+    txn_links::{self, TxnLinkId},
 };
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::connection::ReadConn;
@@ -181,6 +183,11 @@ pub enum UndoOutcome {
         transaction: TransactionId,
         undo_receipt: ReceiptId,
     },
+    /// A same-book relationship was removed from active use.
+    TransactionLinkUndone {
+        link: TxnLinkId,
+        undo_receipt: ReceiptId,
+    },
     /// The account remains in the ledger and rejects ordinary new postings.
     Archived {
         account: AccountCode,
@@ -201,6 +208,7 @@ impl UndoOutcome {
         match *self {
             Self::Reversed { undo_receipt, .. }
             | Self::AnnotationsRestored { undo_receipt, .. }
+            | Self::TransactionLinkUndone { undo_receipt, .. }
             | Self::Archived { undo_receipt, .. }
             | Self::AccountNameRestored { undo_receipt, .. } => undo_receipt,
         }
@@ -282,6 +290,7 @@ enum AgentUndoTarget {
         after: AccountLabel,
     },
     Annotations(AnnotationUndo),
+    Link(TxnLinkId),
 }
 
 pub(in crate::db::audit) struct AgentReceiptUndo {
@@ -484,6 +493,9 @@ fn undo_single(
         UndoTarget::Agent(AgentUndoTarget::Posting(id)) => {
             reverse_posting(tx, actor, company, receipt, *id, authority)?;
         }
+        UndoTarget::Agent(AgentUndoTarget::Link(id)) => {
+            txn_links::undo(tx, actor, company, receipt, id)?;
+        }
         UndoTarget::Account(code) => archive_account(tx, actor, scope, receipt, code)?,
         UndoTarget::Agent(AgentUndoTarget::Annotations(edit)) => {
             edit.restore(tx, actor, company, receipt)?;
@@ -669,6 +681,9 @@ fn resolve_event(
         return Err(ineligible(receipt, UndoIneligibility::AlreadyAnUndo));
     }
     match (event.target(), event.action()) {
+        (ReceiptTarget::TransactionLink(id), AuditAction::LinkCreate) => {
+            Ok(UndoTarget::Agent(AgentUndoTarget::Link(id.clone())))
+        }
         (ReceiptTarget::Account(code), AuditAction::Create) => {
             Ok(UndoTarget::Account(code.clone()))
         }
@@ -775,6 +790,14 @@ fn recorded_outcome(
                 undo_receipt,
             }))
         }
+        (
+            UndoTarget::Agent(AgentUndoTarget::Link(link)),
+            ReceiptTarget::TransactionLink(recorded),
+            AuditAction::LinkUndo,
+        ) if recorded == link => Ok(Some(UndoOutcome::TransactionLinkUndone {
+            link: link.clone(),
+            undo_receipt,
+        })),
         (
             UndoTarget::Account(account),
             ReceiptTarget::Account(recorded),

@@ -675,7 +675,7 @@ impl TransactionValueFilter {
     }
 }
 
-/// Whether transaction queries include both sides of an audited reversal.
+/// Whether transaction listings include both sides of an audited reversal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReversalVisibility {
     /// Hide the original and its reversal.
@@ -691,6 +691,23 @@ impl From<bool> for ReversalVisibility {
             Self::Include
         } else {
             Self::default()
+        }
+    }
+}
+
+impl ReversalVisibility {
+    // The caller binds the company slug as ?1 and supplies a fixed SQL column name.
+    pub(super) fn exclude_reversed(self, sql: &mut String, id_column: &str) {
+        if self == Self::Hide {
+            let _ = write!(
+                sql,
+                " AND CAST({id_column} AS TEXT) NOT IN (
+                    SELECT original_id FROM posting_reversals WHERE company_slug = ?1
+                  ) AND {id_column} NOT IN (
+                    SELECT reversal_id FROM posting_reversals
+                    WHERE company_slug = ?1 AND reversal_id IS NOT NULL
+                  )",
+            );
         }
     }
 }
@@ -776,16 +793,7 @@ fn build_list_query(
 
     sql.push_str(" WHERE t.company_slug = ?1");
 
-    if params.include_reversed == ReversalVisibility::Hide {
-        sql.push_str(
-            " AND CAST(t.id AS TEXT) NOT IN (
-                SELECT original_id FROM posting_reversals WHERE company_slug = ?1
-              ) AND t.id NOT IN (
-                SELECT reversal_id FROM posting_reversals
-                WHERE company_slug = ?1 AND reversal_id IS NOT NULL
-              )",
-        );
-    }
+    params.include_reversed.exclude_reversed(&mut sql, "t.id");
 
     let mut param_idx = 2u32;
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();

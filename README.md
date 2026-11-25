@@ -539,6 +539,7 @@ mutation tools are absent and cannot be called.
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `account_list`, `account_show`, `account_create`, `account_rename` | Inspect, create, and rename accounts |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |
+| `txn_link` | Record an undoable relationship between two transactions in the same book |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
@@ -569,9 +570,8 @@ For `trial-balance`, `balance`, `balance-sheet`, and `reconciliation`, use
 `txn_clear` and `bk txn clear` accept signed major-unit statement amounts such
 as `-95.40` for a withdrawal (credit) or `+95.40` for a deposit (debit) on
 the selected account. An unsigned amount clears an entry on either side.
-For same-company corrections, use `txn_reverse` / `bk txn reverse`. For a
-reference to a related posting, use `txn_meta_set` / `bk txn meta set` with a
-custom metadata key such as `related_transaction`.
+Use `txn_reverse` or `bk txn reverse` to correct a mistaken posting. Use
+`txn_link` or `bk txn link` to record a relationship within the same book.
 
 Tool schemas describe the accepted arguments. For example, `txn_post` takes:
 
@@ -992,6 +992,31 @@ the transaction `id`, stored JSON text (or `null`) in `metadata`, and a
 `changed` flag. Changes also return a `receipt` ID and a `desktop_path` to its
 detail view. For a no-op, both fields are `null`. Table mode prints the
 transaction ID, resulting metadata, and any new receipt ID.
+
+### Link related transactions in one book
+
+```sh
+bk --company personal --json txn link 43 42 --kind refund
+bk --company personal txn show 42
+bk audit undo --company personal RECEIPT
+```
+
+Link the source transaction to its target, such as a refund to its original
+charge or a payment to its invoice. The kinds are `transfer`, `refund`,
+`payment`, `adjustment`, `recategorization`, and `related`. Both transactions
+must be in the selected book. Duplicate active links of the same kind,
+self-links, and directed cycles are rejected. Links leave balances and entries
+unchanged. Either transaction shows the active link, and JSON transaction lists
+include a `links` array per transaction. Lists hide links to either side of an
+audited reversal by default. Use `--include-reversed` on the CLI or
+`include_reversed: true` in MCP to include them. Inspect a transaction by ID to
+see its active links regardless of reversal status.
+
+MCP exposes the same operation as `txn_link` with `company`, `source_id`,
+`target_id`, and `kind`. The result includes a `receipt` and an optional
+Desktop detail path. Pass the receipt to `audit_undo` or `bk audit undo` with
+your signed direct bookkeeper or owner grant. Undo removes the link from active
+views and keeps its history. Use `txn post --correlate` for intercompany links.
 
 ### Reverse a mistaken transaction
 

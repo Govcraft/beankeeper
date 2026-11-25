@@ -58,6 +58,7 @@ pub(super) mod investment;
 pub mod receipts;
 pub(super) mod savepoint;
 pub mod setup;
+pub mod txn_links;
 
 pub(super) use attachment::store_attachment;
 
@@ -153,6 +154,7 @@ audit_labels! {
         InformPreference => "inform_preference" | "inform-preference",
         Entry => "entry",
         Transaction => "transaction",
+        TransactionLink => "transaction_link",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -189,6 +191,8 @@ audit_labels! {
         SetupRevert => "setup_revert" | "setup-revert",
         StatusChange => "status_change" | "status-change",
         Correlate => "correlate",
+        LinkCreate => "link_create",
+        LinkUndo => "link_undo",
         Reverse => "reverse",
         BudgetSet => "budget_set" | "budget-set",
         BudgetDelete => "budget_delete" | "budget-delete",
@@ -596,6 +600,15 @@ fn record_with_links(
     change: AuditChange<'_>,
     links: AuditLinks,
 ) -> Result<(), CliError> {
+    append_with_links(conn, actor, change, links).map(|_| ())
+}
+
+fn append_with_links(
+    conn: &Connection,
+    actor: &Actor,
+    change: AuditChange<'_>,
+    links: AuditLinks,
+) -> Result<receipts::ReceiptId, CliError> {
     let AuditChange {
         company_slug,
         entity,
@@ -679,7 +692,7 @@ fn record_with_links(
                 .chain(links.into_iter().take(if has_link_columns { 2 } else { 0 })),
         ),
     )?;
-    Ok(())
+    id.try_into()
 }
 
 /// Records the initializer's completion as a single ledger-wide event.
@@ -1730,7 +1743,7 @@ fn correlate_partner(
 
     if &partner_company == new_company {
         return Err(CliError::Validation(format!(
-            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'. Use an audited reversal to correct a posting, or an annotation to record a related same-company transaction"
+            "cannot correlate with transaction #{partner_id}: it belongs to the same company '{new_company}'. Use bk txn link (MCP: txn_link) to record a same-book relationship"
         )));
     }
 

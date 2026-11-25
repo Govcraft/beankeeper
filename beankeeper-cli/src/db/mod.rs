@@ -23,6 +23,8 @@ pub mod schema;
 pub mod spend_limits;
 pub mod standing;
 pub mod transactions;
+mod txn_link_id;
+mod txn_link_kind;
 pub mod verification;
 
 #[cfg(test)]

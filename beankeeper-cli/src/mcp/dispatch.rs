@@ -100,6 +100,7 @@ convert! {
 }
 
 try_convert! {
+    txn_link(TxnLink) => Transaction(input => input.try_into()?),
     txn_recategorize(TxnRecategorize) => Transaction(input => input.try_into()?),
     period_reopen(PeriodReopen) => Period(input => input.try_into()?),
     financial_summary(FinancialSummary) => Summary(input => input.try_into()?),

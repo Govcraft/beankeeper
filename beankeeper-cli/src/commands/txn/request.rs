@@ -15,6 +15,7 @@ use crate::cli::{
 use crate::db::audit::{
     corrections::{self, RecategorizeSubmission, Reversal, ReverseSubmission},
     recategorize::{self, Recategorization},
+    txn_links::{self, LinkSpec},
 };
 use crate::db::{
     Actor, Db, attachments,
@@ -27,7 +28,7 @@ use crate::db::{
     transactions::{self, ListTransactionParams, ReversalVisibility, TransactionValueFilter},
 };
 use crate::error::CliError;
-use crate::identity::{Approve, Granted, ResolveProposal};
+use crate::identity::{Approve, Granted, Post, ResolveProposal};
 use crate::operation::Operation;
 use crate::output::json::Pagination;
 
@@ -53,6 +54,8 @@ pub enum TxnRequest {
     List(CompanySlug, ListRequest),
     /// Read one transaction with entries, clearings and attachments.
     Show(CompanySlug, TransactionId),
+    /// Relate two transactions in the same book.
+    Link(CompanySlug, LinkSpec),
     /// Set or remove transaction annotations.
     Meta(CompanySlug, MetadataRequest),
     /// Clear an entry or batch of statement lines.
@@ -76,6 +79,7 @@ impl TxnRequest {
             Self::SettleHold(..) => Operation::TxnSettleHold,
             Self::List(..) => Operation::TxnList,
             Self::Show(..) => Operation::TxnShow,
+            Self::Link(..) => Operation::TxnLink,
             Self::Meta(_, request) => request.operation(),
             Self::Clear(..) => Operation::TxnClear,
             Self::Reconcile => Operation::TxnReconcile,
@@ -94,6 +98,7 @@ impl TxnRequest {
             | Self::SettleHold(company, _)
             | Self::List(company, _)
             | Self::Show(company, _)
+            | Self::Link(company, _)
             | Self::Meta(company, _)
             | Self::Clear(company, _) => Some(company),
             Self::Reconcile => None,
@@ -173,24 +178,12 @@ impl TxnRequest {
                 })?)
             }
             Self::List(company, request) => request.execute(db, &company)?,
-            Self::Show(company, id) => db.read_snapshot(|reader| {
-                let scope = Company::bind(reader, company)?;
-                let (row, entries) = transactions::get_transaction(&scope, id)?;
-                let attachments = attachments::list_attachments(&scope, id)?;
-                let clearings = entries
-                    .iter()
-                    .map(|entry| {
-                        crate::db::clearings::list_clearings(&scope, entry.id)
-                            .map(|clearings| (entry.id, clearings))
-                    })
-                    .collect::<Result<_, _>>()?;
-                Ok(TxnData::Details(Box::new(TransactionDetails {
-                    row,
-                    entries,
-                    attachments,
-                    clearings,
-                })))
-            })?,
+            Self::Show(company, id) => show_transaction(db, company, id)?,
+            Self::Link(company, spec) => {
+                TxnData::Linked(Granted::<Post>::with_db(db, actor, |grant| {
+                    txn_links::create(grant, company, spec)
+                })?)
+            }
             Self::Meta(company, request) => {
                 TxnData::Metadata(request.execute(db, &company, actor)?)
             }
@@ -218,6 +211,29 @@ impl TxnRequest {
     ) -> Result<Self, CliError> {
         Self::try_from((company, command))
     }
+}
+
+fn show_transaction(db: &Db, company: CompanySlug, id: TransactionId) -> Result<TxnData, CliError> {
+    db.read_snapshot(|reader| {
+        let scope = Company::bind(reader, company)?;
+        let (row, entries) = transactions::get_transaction(&scope, id)?;
+        let attachments = attachments::list_attachments(&scope, id)?;
+        let links = txn_links::for_transaction(&scope, id, ReversalVisibility::Include)?;
+        let clearings = entries
+            .iter()
+            .map(|entry| {
+                crate::db::clearings::list_clearings(&scope, entry.id)
+                    .map(|clearings| (entry.id, clearings))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(TxnData::Details(Box::new(TransactionDetails {
+            row,
+            entries,
+            attachments,
+            clearings,
+            links,
+        })))
+    })
 }
 
 impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
@@ -249,6 +265,14 @@ impl TryFrom<(Option<&CompanySlug>, &TxnCommand)> for TxnRequest {
             TxnCommand::SettleHold(args) => Ok(Self::SettleHold(company, args.try_into()?)),
             TxnCommand::List(args) => Ok(Self::List(company, args.try_into()?)),
             TxnCommand::Show { id } => Ok(Self::Show(company, *id)),
+            TxnCommand::Link {
+                source_id,
+                target_id,
+                kind,
+            } => Ok(Self::Link(
+                company,
+                (*source_id, *target_id, *kind).try_into()?,
+            )),
             TxnCommand::Meta(command) => Ok(Self::Meta(company, command.try_into()?)),
             TxnCommand::Clear(args) => Ok(Self::Clear(company, args.try_into()?)),
             TxnCommand::Reconcile => Ok(Self::Reconcile),
@@ -439,10 +463,18 @@ impl ListRequest {
                         .map(|entries| (row.id, entries))
                 })
                 .collect::<Result<_, _>>()?;
+            let links = rows
+                .iter()
+                .map(|row| {
+                    txn_links::for_transaction(&scope, row.id, params.include_reversed)
+                        .map(|links| (row.id, links))
+                })
+                .collect::<Result<_, _>>()?;
             let pagination = Pagination::new(params.limit, params.offset, rows.len(), total);
             Ok(TxnData::List(ListPage {
                 rows,
                 entries,
+                links,
                 pagination,
             }))
         })

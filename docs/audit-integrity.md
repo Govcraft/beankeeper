@@ -119,6 +119,15 @@ not append history. The four built-in relationship keys (`correlate`, `reverses`
 `reversed_by`, `applies_to`) cannot be edited by these commands. Financial data
 and creation snapshots are unchanged; the new rows extend the existing chain.
 
+## Same-book transaction links
+
+Each link records a directed pair of transactions and a typed relationship under
+the `transaction_link` audit entity. Its `link_create` receipt commits to the
+company, endpoints, and kind. A `link_undo` receipt references that exact
+creation and removes the link from active reads. Both records remain available
+to verify the history. Same-book links are separate from intercompany
+correlations and do not modify posting metadata or entries.
+
 ## Scheduled obligations
 
 Schema v16 adds company-scoped schedules and template entries, plus audit entity

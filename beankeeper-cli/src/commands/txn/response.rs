@@ -18,6 +18,7 @@ use crate::db::{
         corrections::{AppliedReversal, CorrectionProposal, PendingCorrection},
         recategorize,
         receipts::{ReceiptId, desktop_receipt_path},
+        txn_links::TxnLink,
     },
     clearings::Clearing,
     companies::CompanySlug,
@@ -37,6 +38,7 @@ use crate::output::{
 pub(super) struct ListPage {
     pub rows: Vec<TransactionRow>,
     pub entries: HashMap<TransactionId, Vec<EntryRow>>,
+    pub links: HashMap<TransactionId, Vec<TxnLink>>,
     pub pagination: Pagination,
 }
 
@@ -45,6 +47,7 @@ pub(super) struct TransactionDetails {
     pub entries: Vec<EntryRow>,
     pub attachments: Vec<AttachmentRow>,
     pub clearings: HashMap<EntryId, Vec<Clearing>>,
+    pub links: Vec<TxnLink>,
 }
 
 pub(super) enum ReviewProposal {
@@ -99,6 +102,7 @@ pub(super) enum TxnData {
     List(ListPage),
     Count(i64),
     Details(Box<TransactionDetails>),
+    Linked(TxnLink),
     Metadata(MetadataResult),
     Clear(ClearanceResponse),
     Reconciled(Vec<OrphanedCorrelation>),
@@ -116,6 +120,52 @@ struct RecategorizationJson<'a> {
     #[serde(flatten)]
     result: &'a recategorize::Applied,
     desktop_path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TransactionWithLinks<'a, T> {
+    #[serde(flatten)]
+    transaction: T,
+    links: &'a [TxnLink],
+}
+
+#[derive(Serialize)]
+struct LinkJson<'a> {
+    #[serde(flatten)]
+    link: &'a TxnLink,
+    summary: String,
+    desktop_path: Option<String>,
+}
+
+impl Serialize for ListPage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        json::transaction_list_data(&self.rows, &self.entries)
+            .into_iter()
+            .zip(&self.rows)
+            .map(|(transaction, row)| TransactionWithLinks {
+                transaction,
+                links: self.links.get(&row.id).map_or(&[], Vec::as_slice),
+            })
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+}
+
+impl Serialize for TransactionDetails {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let transaction = json::transaction_detail_data(
+            &self.row,
+            &self.entries,
+            &self.attachments,
+            &self.clearings,
+        )
+        .map_err(S::Error::custom)?;
+        TransactionWithLinks {
+            transaction,
+            links: &self.links,
+        }
+        .serialize(serializer)
+    }
 }
 
 impl Serialize for TxnResponse {
@@ -194,20 +244,18 @@ impl Serialize for TxnResponse {
                     .map(|company| result.desktop_path(company)),
             }
             .serialize(serializer),
-            TxnData::List(list) => {
-                json::transaction_list_data(&list.rows, &list.entries).serialize(serializer)
-            }
+            TxnData::List(list) => list.serialize(serializer),
             TxnData::Count(count) => json::count_data(*count).serialize(serializer),
-            TxnData::Details(details) => {
-                let data = json::transaction_detail_data(
-                    &details.row,
-                    &details.entries,
-                    &details.attachments,
-                    &details.clearings,
-                )
-                .map_err(S::Error::custom)?;
-                [data].serialize(serializer)
+            TxnData::Details(details) => [details.as_ref()].serialize(serializer),
+            TxnData::Linked(link) => LinkJson {
+                link,
+                summary: format!("Recorded a {}.", link.spec()),
+                desktop_path: self
+                    .company
+                    .as_ref()
+                    .map(|company| desktop_receipt_path(company, link.receipt())),
             }
+            .serialize(serializer),
             TxnData::Metadata(result) => result.serialize(serializer),
             TxnData::Clear(result) => result.serialize(serializer),
             TxnData::Reconciled(orphans) => {
@@ -322,6 +370,9 @@ impl TxnResponse {
                     use_color,
                 )?;
                 writeln!(out, "{rendered}")?;
+                for link in &details.links {
+                    writeln!(out, "{}", link.spec())?;
+                }
                 if !details.attachments.is_empty() {
                     writeln!(
                         out,
@@ -329,6 +380,14 @@ impl TxnResponse {
                         table::render_attachments(&details.attachments, use_color)
                     )?;
                 }
+            }
+            TxnData::Linked(link) => {
+                writeln!(
+                    out,
+                    "Recorded a {}. Use receipt #{} to undo it.",
+                    link.spec(),
+                    link.receipt()
+                )?;
             }
             TxnData::Reconciled(orphans) if format == OutputFormat::Csv => {
                 if orphans.is_empty() {

@@ -16,6 +16,9 @@ mod onboarding;
 #[path = "mcp_stdio/schema_compat.rs"]
 mod schema_compat;
 
+#[path = "mcp_stdio/txn_links.rs"]
+mod txn_links;
+
 use beankeeper_cli::db::CreateAccountParams;
 use beankeeper_cli::identity::{Admin, Granted};
 use std::collections::BTreeSet;
@@ -779,6 +782,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_reject",
     "txn_reverse",
     "txn_recategorize",
+    "txn_link",
     "txn_settle_hold",
     "txn_meta_set",
     "txn_meta_unset",
@@ -5298,7 +5302,7 @@ fn report_discovery_and_as_of_match_the_cli() -> TestResult {
 }
 
 #[test]
-fn same_company_correlation_suggests_audited_alternatives_without_posting() -> TestResult {
+fn same_company_correlation_suggests_txn_link_without_posting() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
     seed(&path)?;
@@ -5318,7 +5322,7 @@ fn same_company_correlation_suggests_audited_alternatives_without_posting() -> T
     let error = payload(&response)?;
     assert_eq!(error["code"], "VALIDATION");
     let message = error["message"].as_str().ok_or("missing validation text")?;
-    for guidance in ["same company", "audited reversal", "annotation"] {
+    for guidance in ["same company", "bk txn link", "txn_link"] {
         assert!(message.contains(guidance), "{error}");
     }
     let transactions = client.success("txn_list", &json!({"company":"acme"}))?;

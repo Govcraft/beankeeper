@@ -7,7 +7,7 @@ use super::metadata;
 use crate::error::CliError;
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = RECATEGORIZATION_SCHEMA_VERSION;
+pub(crate) const CURRENT_VERSION: i64 = TXN_LINK_SCHEMA_VERSION;
 pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
 pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
 pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
@@ -20,6 +20,7 @@ pub(super) const HOLDS_SCHEMA_VERSION: i64 = 31;
 pub(crate) const ACCOUNT_RENAME_SCHEMA_VERSION: i64 = 32;
 const CORRECTION_SCHEMA_VERSION: i64 = 33;
 const RECATEGORIZATION_SCHEMA_VERSION: i64 = 34;
+pub(super) const TXN_LINK_SCHEMA_VERSION: i64 = 35;
 
 /// A ledger schema version supported by this Beankeeper build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +185,13 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     }
     apply_receipt_migrations(conn, version)?;
     apply_hold_migrations(conn, version)?;
+    if version < TXN_LINK_SCHEMA_VERSION {
+        super::audit::atomically(conn, || {
+            migrate_hold_audit(conn, AuditTable::TransactionLinks, TXN_LINK_SCHEMA_VERSION)?;
+            conn.execute_batch(include_str!("schema/transaction_links.sql"))?;
+            Ok(())
+        })?;
+    }
 
     debug_assert_eq!(
         get_schema_version(ReadConn::new(conn)).unwrap_or(0),
@@ -1792,6 +1800,7 @@ enum AuditTable {
     AccountRename,
     Correction,
     Recategorization,
+    TransactionLinks,
 }
 
 fn audit_extensions(table: AuditTable) -> (String, String) {
@@ -1864,6 +1873,15 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
         );
     }
     action.push_str(recategorization_action(table));
+    if table >= AuditTable::TransactionLinks {
+        let _ = write!(entity, ",'{}'", AuditEntity::TransactionLink);
+        let _ = write!(
+            action,
+            ",'{}','{}'",
+            AuditAction::LinkCreate,
+            AuditAction::LinkUndo
+        );
+    }
     (entity, action)
 }
 
@@ -1932,22 +1950,36 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     } else {
         ""
     };
+    let (link_undo, link_check) = if table >= AuditTable::TransactionLinks {
+        (
+            ",'link_undo'",
+            ", CHECK((action IN ('link_create', 'link_undo')) = (entity = 'transaction_link')),
+         CHECK(entity <> 'transaction_link' OR (
+            company_slug IS NOT NULL AND hash_version = 7
+            AND ((action = 'link_create' AND undo_of IS NULL AND before IS NULL
+                    AND after IS NOT NULL AND json_valid(after))
+                OR (action = 'link_undo' AND undo_of IS NOT NULL AND before IS NOT NULL
+                    AND json_valid(before) AND after IS NULL))))",
+        )
+    } else {
+        ("", "")
+    };
     format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
-                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo})
+                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo}{link_undo})
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
                    CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
                        AND related_posting > 0 AND company_slug IS NOT NULL
                        AND action IN ('reverse', 'proposal_approve', 'correlate'{recategorize}))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate'{recategorize})) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}")
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}{link_check}")
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -2676,6 +2708,7 @@ mod tests {
                 ACCOUNT_RENAME_SCHEMA_VERSION,
                 CORRECTION_SCHEMA_VERSION,
                 RECATEGORIZATION_SCHEMA_VERSION,
+                TXN_LINK_SCHEMA_VERSION,
             ]
         );
         assert_eq!(audit_head()?, before);
@@ -2793,10 +2826,7 @@ mod tests {
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
         let migrated = super::super::Db::open_existing(&path, None)?;
         let migrated_reader = migrated.read();
-        assert_eq!(
-            get_schema_version(migrated_reader)?,
-            RECATEGORIZATION_SCHEMA_VERSION
-        );
+        assert_eq!(get_schema_version(migrated_reader)?, CURRENT_VERSION);
         assert_eq!(hashes(migrated_reader)?, history);
         assert_eq!(
             audit::verify_hash_chain(migrated_reader)?.length(),
@@ -2825,6 +2855,8 @@ mod tests {
             "audit_receipt_postings",
             "idx_correction_proposal",
             "idx_correction_company",
+            "active_transaction_links",
+            "protect_transaction_link_undo",
         ] {
             let present: bool = migrated_reader.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",

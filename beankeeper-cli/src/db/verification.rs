@@ -161,7 +161,15 @@ impl VerifiedLedger {
         if schema_version >= schema::ACCOUNT_RENAME_SCHEMA_VERSION {
             Check::AccountLabels.record(audit::account_rename::verify(reader), &mut checks)?;
         }
-        Check::TransactionLinks.record(verify_links(reader), &mut checks)?;
+        Check::TransactionLinks.record(
+            verify_links(reader).and_then(|()| {
+                if schema_version >= schema::TXN_LINK_SCHEMA_VERSION {
+                    audit::txn_links::verify(reader)?;
+                }
+                Ok(())
+            }),
+            &mut checks,
+        )?;
         if schema_version >= schema::STATEMENT_BATCH_SCHEMA_VERSION {
             Check::StatementBatches
                 .record(audit::setup::statement_batches::verify(reader), &mut checks)?;

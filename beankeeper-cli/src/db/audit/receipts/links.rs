@@ -154,6 +154,11 @@ pub(in crate::db::audit) fn verify_links(reader: ReadConn<'_>) -> Result<(), Cli
                          WHERE rule.company_slug = event.company_slug
                            AND rule.id = event.entity_id)
                  ))
+                 OR (original.action = 'link_create' AND event.action <> 'link_undo')
+                 OR (event.action = 'link_undo' AND NOT (
+                     original.action = 'link_create' AND original.entity_id = event.entity_id
+                     AND original.after IS event.before
+                 ))
                  OR (event.action = 'metadata_restore' AND NOT (
                      event.entity = 'transaction' AND original.entity = 'transaction'
                      AND original.action IN ('metadata_set', 'metadata_unset')
