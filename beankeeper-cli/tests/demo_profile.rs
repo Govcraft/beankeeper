@@ -286,7 +286,7 @@ fn cli_accepts_inline_file_and_stdin_profiles_at_fresh_paths() -> TestResult {
         .args(["init", "--demo", "--profile", r#"{"books":[]}"#])
         .output()?;
     assert!(!output.status.success());
-    let result = serde_json::from_slice::<Value>(&output.stdout)?;
+    let result = serde_json::from_slice::<Value>(&output.stderr)?;
     assert_eq!(result["error"]["code"], "VALIDATION");
     assert!(!invalid.exists());
     Ok(())
