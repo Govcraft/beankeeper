@@ -993,6 +993,28 @@ the transaction `id`, stored JSON text (or `null`) in `metadata`, and a
 detail view. For a no-op, both fields are `null`. Table mode prints the
 transaction ID, resulting metadata, and any new receipt ID.
 
+### Link related transactions in one book
+
+```sh
+bk --company personal --json txn link 43 42 --kind refund
+bk --company personal txn show 42
+bk audit undo --company personal RECEIPT
+```
+
+Link the source transaction to its target, such as a refund to its original
+charge or a payment to its invoice. The kinds are `transfer`, `refund`,
+`payment`, `adjustment`, `recategorization`, and `related`. Both transactions
+must be in the selected book. Duplicate active links of the same kind,
+self-links, and directed cycles are rejected. Links leave balances and entries
+unchanged. Either transaction shows the active link, and JSON transaction lists
+include a `links` array per transaction.
+
+MCP exposes the same operation as `txn_link` with `company`, `source_id`,
+`target_id`, and `kind`. The result includes a `receipt` and an optional
+Desktop detail path. Pass the receipt to `audit_undo` or `bk audit undo` with
+your signed direct bookkeeper or owner grant. Undo removes the link from active
+views and keeps its history. Use `txn post --correlate` for intercompany links.
+
 ### Reverse a mistaken transaction
 
 ```sh

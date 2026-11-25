@@ -140,6 +140,21 @@ No-op retries have a null receipt. Removing the last key leaves `{}`. Dates and
 financial fields stay unchanged, so tagging an original AR charge preserves
 its age under `report aging --filter-metadata status=disputed`.
 
+## Linking related transactions
+
+Use `bk --company acme --json txn link 43 42 --kind refund` or call `txn_link`
+with `{"company":"acme","source_id":43,"target_id":42,"kind":"refund"}`.
+Point a refund at its original charge or a payment at its invoice. Other
+kinds are `transfer`, `adjustment`, `recategorization`, and `related`.
+Use the `links` array from either transaction in `txn_show` or `txn_list`.
+For transactions in different books, use `txn_post` with `correlate`.
+
+Tell the owner which transactions you linked and why. Offer the result's
+`desktop_path` for optional detail and use its `receipt` with `audit_undo`
+or `bk audit undo --company acme RECEIPT` if asked to remove the link.
+Undo uses a signed direct bookkeeper or owner grant and preserves the audit
+history. Links do not change balances or postings.
+
 ## Record first and inform the owner
 
 Use `bk txn post` or MCP `txn_post` for ordinary bookkeeping. The bookkeeper
