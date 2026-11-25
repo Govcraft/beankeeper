@@ -16,6 +16,9 @@ use secrecy::SecretString;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
+#[path = "support/legacy_schema.rs"]
+mod legacy_schema;
+
 #[path = "support/mcp_host_owned.rs"]
 mod host_owned;
 
@@ -135,6 +138,44 @@ impl Ledger {
     }
 }
 
+#[test]
+fn http_startup_publishes_an_encrypted_backup_before_upgrading() -> TestResult {
+    let ledger = Ledger::new()?;
+    let raw = rusqlite::Connection::open(&ledger.path)?;
+    raw.pragma_update(None, "key", PASSPHRASE)?;
+    legacy_schema::before_restore(&raw)?;
+    drop(raw);
+
+    let mut server = Server::start(&ledger, true, None)?;
+    server.initialize(Some(token(&ledger.reader)?), "schema upgrade")?;
+    assert_eq!(
+        db::get_schema_version(ledger.db()?.read())?,
+        i64::from(db::current_schema_version())
+    );
+
+    let backup_dir = ledger
+        .dir
+        .path()
+        .read_dir()?
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".bk-pre-migration-")
+        })
+        .ok_or("missing pre-migration backup")?;
+    let backup_path = backup_dir.path().join("books.bk-backup");
+    let key = SecretString::from(PASSPHRASE);
+    assert!(Db::open_snapshot(&backup_path, None).is_err());
+    assert!(matches!(
+        Db::open_snapshot(&backup_path, Some(&key)),
+        Err(beankeeper_cli::error::CliError::SchemaMismatch { stored, .. })
+        if i64::from(stored) == 37
+    ));
+    Ok(())
+}
+
 struct Server {
     child: Child,
     endpoint: String,
@@ -197,11 +238,18 @@ impl Server {
             }
         });
         server.diagnostics = receiver;
-        let startup = server.diagnostics.recv_timeout(Duration::from_secs(20))?;
-        server.endpoint = startup
-            .strip_prefix("MCP Streamable HTTP listening on ")
-            .ok_or("missing bound address")?
-            .to_string();
+        let mut startup_log = Vec::new();
+        while server.endpoint.is_empty() {
+            let line = server
+                .diagnostics
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|error| format!("HTTP startup failed ({error}): {startup_log:?}"))?;
+            if let Some(endpoint) = line.strip_prefix("MCP Streamable HTTP listening on ") {
+                server.endpoint = endpoint.to_string();
+            } else {
+                startup_log.push(line);
+            }
+        }
         assert!(!server.endpoint.ends_with(":0/mcp"));
         // Reach a wildcard listener through the local IPv4 interface.
         server.endpoint = server.endpoint.replace("0.0.0.0:", "127.0.0.1:");

@@ -180,6 +180,7 @@ fn report_operation(command: &ReportCommand) -> Operation {
 /// Returns [`CliError`] for any command-level failure.
 pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     dispatch_command(cli, meta)?;
+    cli.report_command_migration();
     if !cli.verbosity.quiet
         && can_append_audit(&cli.command)
         && let Some(notice) = cli.principal().unverified_hint_notice()
@@ -187,6 +188,30 @@ pub fn dispatch(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         audit::show_hint_notice(&notice);
     }
     Ok(())
+}
+
+/// Dispatch a parsed ledger command against a connection opened by the host.
+///
+/// The supplied ledger determines the command's target. Authorization and
+/// output still follow the CLI options. File creation, recovery, and MCP
+/// startup have their own entry points.
+///
+/// # Errors
+/// Returns [`CliError`] for an unsupported command or command-level failure.
+pub fn dispatch_with_db(
+    cli: &mut Cli,
+    db: crate::db::Db,
+    meta: Option<Meta>,
+) -> Result<(), CliError> {
+    if matches!(
+        cli.command,
+        Command::Init { .. } | Command::Recover { .. } | Command::Mcp(_)
+    ) {
+        return Err(CliError::Usage(
+            "this command has a separate file or transport entry point".into(),
+        ));
+    }
+    cli.with_prepared_ledger(db, |cli| dispatch(cli, meta))
 }
 
 fn can_append_audit(command: &Command) -> bool {
@@ -305,7 +330,7 @@ fn dispatch_ledger(
         _ => None,
     };
     if let Some(request) = request {
-        let db = cli.open_db()?;
+        let db = cli.command_db()?;
         let meta = meta.map(|meta| cli.meta(meta.command, meta.company.as_deref()));
         request.execute(&db, &cli.principal())?.render(cli, meta)?;
         Ok(true)
@@ -323,15 +348,21 @@ fn dispatch_setup(
 
     let request = setup::SetupRequest::try_from(command)?;
     let response = if request.reads_compatible_snapshot() {
-        let db = setup::open_setup_snapshot(cli)?;
+        let snapshot;
+        let db = if let Some(db) = cli.prepared_ledger() {
+            db
+        } else {
+            snapshot = setup::open_setup_snapshot(cli)?;
+            &snapshot
+        };
         LedgerRequest::Setup(request)
-            .execute_with_actor(&db, |_| {
-                cli.verify_agent(&db)?;
+            .execute_with_actor(db, |_| {
+                cli.verify_agent(db)?;
                 Ok(cli.principal())
             })?
             .0
     } else {
-        let db = cli.open_db()?;
+        let db = cli.command_db()?;
         LedgerRequest::Setup(request).execute(&db, &cli.principal())?
     };
     response.render(cli, meta)
@@ -344,7 +375,7 @@ fn execute_confirmable(
     prepare: impl FnOnce() -> Result<Option<crate::request::LedgerRequest>, CliError>,
 ) -> Result<bool, CliError> {
     // Establish the ledger and caller before asking for confirmation.
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     if let Some(request) = prepare()? {
         request.execute(&db, &cli.principal())?.render(cli, meta)?;
     } else {
@@ -366,10 +397,11 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     ) {
         // Preserve standalone loan calculation without an existing ledger.
         let standalone = matches!(&cli.command, Command::Loan(args) if matches!(args.command, crate::cli::LoanCommand::Schedule(_)))
+            && cli.prepared_ledger().is_none()
             && !cli.db_path()?.try_exists()?
             && cli.agent_token.is_none();
         if !standalone {
-            cli.open_db()?;
+            cli.command_db()?;
         }
     } else if cli.agent_token.is_some() && matches!(cli.command, Command::Init { .. }) {
         return Err(CliError::Unauthorized("initialization creates a new trust boundary; omit --agent-token and initialize its key afterward".into()));

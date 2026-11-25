@@ -8,6 +8,19 @@ The factory accepts an already-resolved secret, like
 Merge the result into the host's axum router and cancel the transport's
 `cancellation_token` during shutdown. Sibling routes keep their own middleware.
 
+## Open or upgrade before dispatch
+
+Path-based router factories require the running ledger schema. For an older
+supported schema, match `CliError::SchemaMismatch { stored, expected }` and use
+`VerifiedSnapshot::create` followed by `Db::open_after_snapshot`. Pass the opened
+connection to `mcp::serve_with_db` for stdio or put it in `LedgerTargets` for
+HTTP. Use `serve_http_with_targets` when core should own the HTTP listener or
+`http_router_with_ledger_targets` when your application owns it.
+
+For a parsed CLI ledger command, use `commands::dispatch_with_db(&mut cli, db, meta)`.
+The supplied connection selects the ledger and the parsed CLI still supplies the
+actor, token, and output options.
+
 ## Navigation authority
 
 Issue a UI-scoped token through the existing CLI and encrypted ledger root:

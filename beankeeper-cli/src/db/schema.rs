@@ -1,9 +1,10 @@
 use std::fmt;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::connection::ReadConn;
 use super::metadata;
+use super::snapshot::VerifiedSnapshot;
 use crate::error::CliError;
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: i64 = 8;
@@ -37,6 +38,18 @@ pub(super) const RESTORE_SCHEMA_VERSION: i64 = 38;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(transparent)]
 pub struct SchemaVersion(i64);
+
+impl SchemaVersion {
+    pub(super) fn require_at_least(self, expected: Self) -> Result<Self, CliError> {
+        if self.0 < expected.0 {
+            return Err(CliError::SchemaMismatch {
+                stored: self,
+                expected,
+            });
+        }
+        Ok(self)
+    }
+}
 
 impl TryFrom<i64> for SchemaVersion {
     type Error = CliError;
@@ -136,7 +149,8 @@ pub fn get_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
 /// # Errors
 ///
 /// Returns `CliError::Sqlite` on database errors.
-pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
+#[cfg(test)]
+fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     let version = get_schema_version(ReadConn::physical(conn))?;
 
     if version > CURRENT_VERSION {
@@ -148,9 +162,40 @@ pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
     ensure_schema_at(conn, version)
 }
 
-/// Apply migrations from a version read under the caller's writer reservation.
-pub(super) fn migrate_verified(conn: &Connection, version: SchemaVersion) -> Result<(), CliError> {
-    ensure_schema_at(conn, version.into())
+/// Initialize an empty database while holding SQLite's writer reservation.
+pub(super) fn initialize(conn: &Connection) -> Result<(), CliError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let reader = ReadConn::physical(&tx);
+    let version = get_schema_version(reader)?;
+    if version == 0 {
+        let empty: bool = reader.query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM sqlite_schema)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !empty {
+            return Err(CliError::Database(
+                "file is not an initialized beankeeper ledger".into(),
+            ));
+        }
+        ensure_schema_at(&tx, 0)?;
+    } else {
+        SchemaVersion::try_from(version)?.require_at_least(current_schema_version())?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Apply migrations only with proof validated under the caller's writer reservation.
+pub(super) fn migrate_verified(
+    tx: Transaction<'_>,
+    snapshot: VerifiedSnapshot,
+) -> Result<(), CliError> {
+    let version = snapshot.verify_migration_source(&tx)?;
+    ensure_schema_at(&tx, version.into())?;
+    tx.commit()?;
+    drop(snapshot);
+    Ok(())
 }
 
 fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
@@ -293,8 +338,6 @@ fn migrate_with_writer(
     version: i64,
     apply: impl FnOnce(&Connection) -> Result<(), CliError>,
 ) -> Result<(), CliError> {
-    use rusqlite::{Transaction, TransactionBehavior};
-
     if !conn.is_autocommit() {
         return apply(conn);
     }
@@ -2356,6 +2399,17 @@ mod tests {
         Ok(())
     }
 
+    fn upgrade_plaintext_fixture(path: &std::path::Path) -> Result<super::super::Db, CliError> {
+        use super::super::{Db, SnapshotOverwrite};
+        let proof = VerifiedSnapshot::create(
+            path,
+            None,
+            &path.with_extension("bk-backup"),
+            SnapshotOverwrite::Refuse,
+        )?;
+        Db::open_after_snapshot(proof, None)
+    }
+
     #[test]
     fn v20_preserves_v19_policy_proposals_and_mixed_hashes() -> Result<(), CliError> {
         use super::super::{Actor, audit, periods, proposals, verification};
@@ -2396,11 +2450,11 @@ mod tests {
             before.iter().map(|row| row.0).collect::<Vec<_>>(),
             [1, 2, 3, 3]
         );
-        // Exercise the normal file-open migration and complete verify path too.
+        // Exercise the verified file-upgrade path as well as the migration chain.
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("v19.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
-        let migrated = super::super::Db::open_existing(&path, None)?;
+        let migrated = upgrade_plaintext_fixture(&path)?;
         assert_eq!(get_schema_version(migrated.read())?, CURRENT_VERSION);
         assert_eq!(history(migrated.conn())?, before);
         crate::db::verification::VerifiedLedger::read(&migrated)?;
@@ -3121,7 +3175,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("before-fx.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
-        let migrated = super::super::Db::open_existing(&path, None)?;
+        let migrated = upgrade_plaintext_fixture(&path)?;
         let migrated_reader = migrated.read();
         assert_eq!(get_schema_version(migrated_reader)?, CURRENT_VERSION);
         assert_eq!(hashes(migrated_reader)?, history);

@@ -316,18 +316,57 @@ fn fx_schema_upgrade_preserves_historical_postings() -> TestResult {
         ],
     )?;
     let conn = rusqlite::Connection::open(&path)?;
+    legacy_schema::before_restore(&conn)?;
     conn.execute_batch(
-        "DROP TRIGGER protect_bookkeeping_receipt_uniqueness;
-         DROP TRIGGER protect_audit_related_posting;
-         DROP VIEW bookkeeping_audit;
-         DROP TABLE fx_postings;
+        "DROP TABLE fx_postings;
          DROP TABLE fx_accounts;
          DELETE FROM schema_version WHERE version > 36;",
     )?;
     drop(conn);
 
+    let mcp_path = temp.path().join("mcp-legacy.db");
+    std::fs::copy(&path, &mcp_path)?;
     let actual = data(bk(&path)?, &["txn", "show", &expected["id"].to_string()])?;
     assert_eq!(actual[0]["currency"], "MXN");
     bk(&path)?.args(["verify"]).assert().success();
+
+    let mut command = bk(&mcp_path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let show = client.success(
+        "txn_show",
+        &json!({"company": "acme", "id": expected["id"]}),
+    )?;
+    assert_eq!(show[0]["currency"], "MXN");
+
+    let backups = temp
+        .path()
+        .read_dir()?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".bk-pre-migration-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(backups.len(), 2);
+    for backup in backups {
+        let raw = rusqlite::Connection::open_with_flags(
+            backup.path().join("books.bk-backup"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let version: i64 = raw.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(version, 36);
+        let count: i64 = raw.query_row(
+            "SELECT COUNT(*) FROM transactions WHERE description = 'Legacy'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+    }
     Ok(())
 }

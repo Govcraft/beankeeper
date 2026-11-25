@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::ffi::OsString;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use beankeeper::types::{AccountCode, AccountName, AccountType, Currency, DebitOrCredit};
@@ -84,6 +86,10 @@ pub struct Cli {
     #[arg(skip)]
     resolved_passphrase: OnceCell<Option<SecretString>>,
     #[arg(skip)]
+    prepared_ledger: Option<crate::db::Db>,
+    #[arg(skip)]
+    migration_backup: OnceCell<PathBuf>,
+    #[arg(skip)]
     verified_agent: OnceCell<crate::identity::VerifiedAgent>,
 
     /// Output format options.
@@ -100,6 +106,22 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+pub(crate) enum CommandDb<'a> {
+    Opened(crate::db::Db),
+    Prepared(&'a crate::db::Db),
+}
+
+impl Deref for CommandDb<'_> {
+    type Target = crate::db::Db;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Opened(db) => db,
+            Self::Prepared(db) => db,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -232,9 +254,75 @@ impl Cli {
     /// # Errors
     /// Returns passphrase, database or unauthorized errors.
     pub fn open_db(&self) -> Result<crate::db::Db, CliError> {
-        let db = crate::db::Db::open_existing(self.db_path()?, self.resolve_passphrase()?)?;
+        let db = crate::db::Db::open_standalone(
+            self.db_path()?,
+            self.resolve_passphrase()?,
+            |backup| {
+                let _ = self.migration_backup.set(backup.to_owned());
+            },
+        )?;
         self.verify_agent(&db)?;
         Ok(db)
+    }
+
+    pub(crate) fn command_db(&self) -> Result<CommandDb<'_>, CliError> {
+        if let Some(db) = self.prepared_ledger() {
+            self.verify_agent(db)?;
+            Ok(CommandDb::Prepared(db))
+        } else {
+            self.open_db().map(CommandDb::Opened)
+        }
+    }
+
+    pub(crate) const fn prepared_ledger(&self) -> Option<&crate::db::Db> {
+        self.prepared_ledger.as_ref()
+    }
+
+    pub(crate) fn command_db_path(&self) -> Result<Cow<'_, Path>, CliError> {
+        if let Some(db) = self.prepared_ledger() {
+            db.file_path().map(Cow::Owned).ok_or_else(|| {
+                CliError::Validation("the selected ledger must be backed by a file".into())
+            })
+        } else {
+            self.db_path().map(Cow::Borrowed)
+        }
+    }
+
+    pub(crate) fn with_prepared_ledger<T>(
+        &mut self,
+        db: crate::db::Db,
+        run: impl FnOnce(&Self) -> T,
+    ) -> T {
+        self.verified_agent.take();
+        self.prepared_ledger = Some(db);
+        let result = run(self);
+        self.prepared_ledger.take();
+        result
+    }
+
+    pub(crate) fn report_migration_backup(&self, backup: &Path) {
+        if !self.verbosity.quiet {
+            eprintln!(
+                "[ok] Upgraded ledger schema. Verified backup: {}",
+                backup.display()
+            );
+        }
+    }
+
+    pub(crate) fn report_command_migration(&self) {
+        if let Some(backup) = self.migration_backup.get() {
+            self.report_migration_backup(backup);
+        }
+    }
+
+    pub(crate) fn open_standalone_ledger(
+        &self,
+        path: &Path,
+        passphrase: Option<&SecretString>,
+    ) -> Result<crate::db::Db, CliError> {
+        crate::db::Db::open_standalone(path, passphrase, |backup| {
+            self.report_migration_backup(backup);
+        })
     }
 
     /// Resolve and cache the passphrase, including one-shot descriptors.

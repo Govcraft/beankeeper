@@ -23,6 +23,12 @@ pub struct Db {
     audit_history: AuditHistory,
 }
 
+impl std::fmt::Debug for Db {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Db").finish_non_exhaustive()
+    }
+}
+
 /// Process-local identity of one open connection, including in-memory ledgers.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ConnectionId(Arc<()>);
@@ -48,11 +54,11 @@ impl Db {
         }
     }
 
-    pub(super) const fn schema_version(&self) -> SchemaVersion {
+    pub(crate) const fn schema_version(&self) -> SchemaVersion {
         self.schema_version
     }
 
-    pub(super) fn snapshot_key(&self) -> Option<&SecretString> {
+    pub(crate) fn snapshot_key(&self) -> Option<&SecretString> {
         self.passphrase.as_ref()
     }
 
@@ -74,11 +80,11 @@ impl Db {
     /// Open a current-version ledger read-only, without migrations or PRAGMA writes.
     ///
     /// Use [`super::current_schema_version`] to obtain the expected version.
-    ///
     /// # Errors
-    /// Returns a database error for an invalid, unsupported, or unreadable snapshot.
+    /// Returns [`CliError::SchemaMismatch`] for a supported older schema, or a
+    /// database error for an invalid, unsupported, or unreadable snapshot.
     pub fn open_snapshot(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
-        Self::open_compatible_snapshot(path, passphrase, super::schema::CURRENT_VERSION)
+        Self::open_snapshot_at_least(path, passphrase, current_schema_version())
     }
 
     pub(crate) fn open_compatible_snapshot(
@@ -86,87 +92,77 @@ impl Db {
         passphrase: Option<&SecretString>,
         minimum: i64,
     ) -> Result<Self, CliError> {
+        Self::open_snapshot_at_least(path, passphrase, minimum.try_into()?)
+    }
+
+    fn open_snapshot_at_least(
+        path: &Path,
+        passphrase: Option<&SecretString>,
+        minimum: SchemaVersion,
+    ) -> Result<Self, CliError> {
         let conn = open_snapshot_file(path, passphrase)?;
-        let stored_version = schema::get_schema_version(ReadConn::physical(&conn))?;
-        let version = SchemaVersion::try_from(stored_version)
-            .ok()
-            .filter(|version| i64::from(*version) >= minimum);
-        let Some(version) = version else {
-            let current = schema::CURRENT_VERSION;
-            let expected = if minimum == current {
-                current.to_string()
-            } else {
-                format!("{minimum} through {current}")
-            };
-            return Err(CliError::Database(format!(
-                "not a supported beankeeper snapshot: schema version {stored_version}; expected {expected}"
-            )));
-        };
+        let version = stored_schema(&conn)?.require_at_least(minimum)?;
         Ok(Self::from_keyed_connection(conn, None, version))
     }
 
-    pub(super) fn open_supported_snapshot(
+    pub(crate) fn open_supported_snapshot(
         path: &Path,
         passphrase: Option<&SecretString>,
     ) -> Result<Self, CliError> {
         let conn = open_snapshot_file(path, passphrase)?;
-        let version =
-            SchemaVersion::try_from(schema::get_schema_version(ReadConn::physical(&conn))?)?;
+        let version = stored_schema(&conn)?;
         Ok(Self::from_keyed_connection(conn, None, version))
     }
 
-    /// Opens (or creates) a database at `path`, optionally encrypting with `passphrase`.
+    /// Open a current ledger or initialize an empty database, optionally encrypted.
     ///
-    /// Enables foreign keys, WAL journal mode, and ensures the schema is up to date.
-    /// On Unix, sets file permissions to 0600 (owner-only read/write).
-    ///
+    /// Enables foreign keys and WAL mode. On Unix, sets file permissions to 0600.
     /// # Errors
-    ///
-    /// Returns `CliError::Sqlite` on connection or pragma errors.
+    /// Returns [`CliError::SchemaMismatch`] for a supported older ledger. Use
+    /// [`Self::open_after_snapshot`] to migrate it. Other failures include
+    /// unsupported schemas, non-ledger databases and connection errors.
     pub fn open(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
-        Self::open_with_flags(path, passphrase, OpenFlags::default())
-    }
-
-    /// Opens an existing database without creating a new file.
-    ///
-    /// Applies the same encryption, connection settings, and schema migrations
-    /// as [`Self::open`]. Commands other than `init` must use this method.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliError::NotFound`] with initialization instructions when the
-    /// path does not exist, or a database error if it cannot be opened.
-    pub fn open_existing(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
-        require_existing_file(path)?;
-        // Omit SQLITE_OPEN_CREATE so a file removed after the existence check
-        // cannot be silently recreated.
-        Self::open_with_flags(
+        Self::open_or_initialize(
+            open_keyed(path, passphrase, OpenFlags::default())?,
             path,
             passphrase,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
     }
 
-    // Restore targets must already be at the running schema. In particular, an
-    // unauthorized or failed restore must never migrate the live ledger.
+    /// Open a current ledger or initialize an existing empty database.
+    ///
+    /// This never creates a missing file or migrates a ledger.
+    ///
+    /// # Errors
+    /// Returns [`CliError::SchemaMismatch`] for a supported older ledger,
+    /// [`CliError::NotFound`] for a missing file, or a database error.
+    pub fn open_existing(path: &Path, passphrase: Option<&SecretString>) -> Result<Self, CliError> {
+        require_existing_file(path)?;
+        Self::open_or_initialize(open_existing_keyed(path, passphrase)?, path, passphrase)
+    }
+
+    fn open_or_initialize(
+        conn: Connection,
+        path: &Path,
+        passphrase: Option<&SecretString>,
+    ) -> Result<Self, CliError> {
+        let version = schema::get_schema_version(ReadConn::physical(&conn))?;
+        if version == 0 {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            schema::initialize(&conn)?;
+        } else {
+            SchemaVersion::try_from(version)?.require_at_least(current_schema_version())?;
+        }
+        Self::finish_file_open(conn, path, passphrase)
+    }
+
+    // Restore targets must already be at the running schema.
     pub(crate) fn open_for_restore(
         target: &ExistingRestoreTarget<'_>,
         passphrase: Option<&SecretString>,
     ) -> Result<Self, CliError> {
-        // Omit SQLITE_OPEN_CREATE in case the file disappeared after the check.
-        let conn = open_keyed(
-            target.as_ref(),
-            passphrase,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        let reader = ReadConn::physical(&conn);
-        let version = super::schema::get_schema_version(reader)?;
-        if version != super::schema::CURRENT_VERSION {
-            return Err(CliError::Database(format!(
-                "restore target schema version {version}; expected {}",
-                super::schema::CURRENT_VERSION
-            )));
-        }
+        let conn = open_existing_keyed(target.as_ref(), passphrase)?;
+        stored_schema(&conn)?.require_at_least(current_schema_version())?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Self::from_keyed_connection(
             conn,
@@ -175,15 +171,13 @@ impl Db {
         ))
     }
 
-    fn open_with_flags(
+    pub(super) fn finish_file_open(
+        conn: Connection,
         path: &Path,
         passphrase: Option<&SecretString>,
-        flags: OpenFlags,
     ) -> Result<Self, CliError> {
-        let conn = open_keyed(path, passphrase, flags)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        super::schema::ensure_schema(&conn)?;
         tighten_permissions(path);
         Ok(Self::from_keyed_connection(
             conn,
@@ -203,7 +197,7 @@ impl Db {
         let conn = Connection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
-        super::schema::ensure_schema(&conn)?;
+        schema::initialize(&conn)?;
 
         Ok(Self::from_keyed_connection(
             conn,
@@ -323,6 +317,22 @@ pub(super) fn open_keyed(
     Ok(conn)
 }
 
+fn stored_schema(conn: &Connection) -> Result<SchemaVersion, CliError> {
+    SchemaVersion::try_from(schema::get_schema_version(ReadConn::physical(conn))?)
+}
+
+pub(super) fn open_existing_keyed(
+    path: &Path,
+    passphrase: Option<&SecretString>,
+) -> Result<Connection, CliError> {
+    // A file removed after an existence check must never be silently recreated.
+    open_keyed(
+        path,
+        passphrase,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+}
+
 fn open_snapshot_file(
     path: &Path,
     passphrase: Option<&SecretString>,
@@ -335,14 +345,14 @@ fn open_snapshot_file(
 }
 
 #[cfg(unix)]
-pub(super) fn tighten_permissions(path: &Path) {
+fn tighten_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms).ok();
 }
 
 #[cfg(not(unix))]
-pub(super) fn tighten_permissions(_: &Path) {}
+fn tighten_permissions(_: &Path) {}
 
 #[cfg(test)]
 mod tests {

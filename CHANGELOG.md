@@ -25,6 +25,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Changed
 
+- Return typed ledger schema mismatches to Rust hosts, require a verified snapshot for migrations, and automatically keep a pre-upgrade backup for standalone CLI and MCP. ([#309](https://github.com/Govcraft/beankeeper/issues/309))
 - CLI and MCP transaction lists and counts hide both sides of audited reversals by default, with an option to include them. ([#294](https://github.com/Govcraft/beankeeper/issues/294))
 - CLI and MCP reject invalid calendar dates and blank audit actor filters at input parsing with `VALIDATION`, and share typed local-day report defaults. ([#255](https://github.com/Govcraft/beankeeper/issues/255))
 - Regular PRs can record a change under Unreleased without a version bump. Release PRs still require a matching dated section for the proposed CLI tag. ([#268](https://github.com/Govcraft/beankeeper/issues/268))

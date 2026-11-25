@@ -46,7 +46,7 @@ pub(super) fn run_for_company(
     sub: &TxnCommand,
     meta: Option<output::json::Meta>,
 ) -> Result<(), CliError> {
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     match sub {
         TxnCommand::Import(args) => {
             db::get_company(db.read(), company)?;
@@ -611,7 +611,8 @@ fn run_attach(
         }
 
         // 4. Hash and store the file in content-addressed storage
-        let (hash, stored_path) = attachments::hash_and_store_file(source, cli.db_path()?)?;
+        let (hash, stored_path) =
+            attachments::hash_and_store_file(source, &cli.command_db_path()?)?;
 
         // 5. Derive the URI (relative to db parent) and original filename
         let uri = stored_path.file_name().map_or_else(
@@ -652,7 +653,7 @@ fn run_attach(
     Ok(())
 }
 pub(super) fn run_reconcile_all(cli: &Cli, _scope: AllCompanies) -> Result<(), CliError> {
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     LedgerRequest::Transaction(TxnRequest::Reconcile)
         .execute(&db, &cli.principal())?
         .render(cli, None)

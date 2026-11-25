@@ -176,6 +176,9 @@ impl From<&CliError> for EnvelopeError {
     fn from(error: &CliError) -> Self {
         let details = match error {
             CliError::StatementDiscrepancy(discrepancy) => Some(discrepancy.details()),
+            CliError::SchemaMismatch { stored, expected } => {
+                Some(serde_json::json!({"stored": stored, "expected": expected}))
+            }
             _ => None,
         };
         Self {

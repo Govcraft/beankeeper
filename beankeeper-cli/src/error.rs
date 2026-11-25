@@ -5,7 +5,7 @@ use crate::db::audit::{
     DuplicateAccountName, ReversalBlock, recategorize::RecategorizeBlock,
     receipts::ReceiptUndoError,
 };
-use crate::db::{periods::ClosedPostingPeriod, statement::StatementDiscrepancy};
+use crate::db::{SchemaVersion, periods::ClosedPostingPeriod, statement::StatementDiscrepancy};
 use crate::output::json::EnvelopeError;
 
 /// A foreign-currency posting or account configuration could not be applied.
@@ -138,6 +138,13 @@ pub enum CliError {
     StatementDiscrepancy(StatementDiscrepancy),
     /// Database error (I/O, corruption). Exit code 4.
     Database(String),
+    /// The ledger's supported schema is older than the one required by this open.
+    SchemaMismatch {
+        /// Schema recorded in the ledger.
+        stored: SchemaVersion,
+        /// Minimum schema accepted by the operation.
+        expected: SchemaVersion,
+    },
     /// Not found (account, transaction, company does not exist). Exit code 5.
     NotFound(String),
     /// General error. Exit code 1.
@@ -181,6 +188,8 @@ pub enum ErrorCode {
     UndoIneligible,
     /// The ledger could not be read or written.
     Database,
+    /// The ledger needs a schema upgrade.
+    SchemaMismatch,
     /// A requested record does not exist.
     NotFound,
     /// The requested capability is still unimplemented.
@@ -209,6 +218,7 @@ impl ErrorCode {
             Self::UndoOwnerOnly => "UNDO_OWNER_ONLY",
             Self::UndoIneligible => "UNDO_INELIGIBLE",
             Self::Database => "DATABASE",
+            Self::SchemaMismatch => "SCHEMA_MISMATCH",
             Self::NotFound => "NOT_FOUND",
             Self::Unimplemented => "UNIMPLEMENTED",
             Self::Io => "IO",
@@ -228,7 +238,7 @@ impl ErrorCode {
             | Self::UndoOwnerOnly
             | Self::UndoUnsupported
             | Self::UndoIneligible => 3,
-            Self::Database => 4,
+            Self::Database | Self::SchemaMismatch => 4,
             Self::NotFound => 5,
             Self::Unauthorized => 6,
             Self::Forbidden => 7,
@@ -277,6 +287,7 @@ impl CliError {
             Self::ReceiptUndo(ReceiptUndoError::Unsupported(_)) => ErrorCode::UndoUnsupported,
             Self::ReceiptUndo(ReceiptUndoError::Ineligible { .. }) => ErrorCode::UndoIneligible,
             Self::Database(_) | Self::Sqlite(_) => ErrorCode::Database,
+            Self::SchemaMismatch { .. } => ErrorCode::SchemaMismatch,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::Forbidden(_) => ErrorCode::Forbidden,
             Self::Io(_) => ErrorCode::Io,
@@ -341,6 +352,10 @@ impl fmt::Display for CliError {
             Self::ReversalBlocked(e) => write!(f, "{e}"),
             Self::RecategorizeBlocked(e) => write!(f, "{e}"),
             Self::StatementDiscrepancy(e) => write!(f, "{e}"),
+            Self::SchemaMismatch { stored, expected } => write!(
+                f,
+                "ledger schema version {stored} must be upgraded to at least {expected} using a verified backup"
+            ),
             Self::Sqlite(e) => write!(f, "database error: {e}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
         }
@@ -365,6 +380,7 @@ impl std::error::Error for CliError {
             | Self::Forbidden(_)
             | Self::Validation(_)
             | Self::Database(_)
+            | Self::SchemaMismatch { .. }
             | Self::NotFound(_)
             | Self::General(_)
             | Self::Unimplemented(_) => None,

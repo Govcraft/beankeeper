@@ -693,7 +693,7 @@ pub fn run(cli: &Cli, company: &str, args: &SummaryArgs) -> Result<(), CliError>
     chart.validate_cli(cli)?;
     let company = company.parse()?;
     let request = SummaryRequest::try_from((&company, args, chart))?;
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     crate::request::LedgerRequest::Summary(request)
         .execute(&db, &cli.principal())?
         .render(cli, None)

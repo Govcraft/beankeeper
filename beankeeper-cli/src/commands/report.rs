@@ -113,9 +113,9 @@ pub fn run(cli: &Cli, company: &str, sub: &ReportCommand) -> Result<(), CliError
     let chart = ChartRequest::try_from((cli.output.chart, cli.output.chart_all))?;
     chart.validate_cli(cli)?;
     let company = company.parse()?;
-    ReportRequest::try_from((&company, sub, chart))?
-        .execute(&cli.open_db()?)?
-        .render(cli)
+    let request = ReportRequest::try_from((&company, sub, chart))?;
+    let db = cli.command_db()?;
+    request.execute(&db)?.render(cli)
 }
 
 /// Output destination and presentation options for a report.

@@ -1,4 +1,6 @@
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
@@ -123,7 +125,13 @@ pub(crate) fn publish(
         SnapshotOverwrite::Replace => staged.persist(destination),
     }
     .map_err(|error| CliError::Io(error.error))?;
+    sync_directory(parent(destination))
+}
+
+pub(super) fn sync_directory(path: &Path) -> Result<(), CliError> {
     #[cfg(unix)]
-    File::open(parent(destination))?.sync_all()?;
+    File::open(path)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }

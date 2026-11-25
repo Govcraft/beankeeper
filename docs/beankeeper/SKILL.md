@@ -450,9 +450,10 @@ ignores CLI passphrase sources and `BEANKEEPER_PASSPHRASE_CMD`; it needs no file
 descriptor bridge or plaintext secret file on any platform. MCP authentication
 and capability checks remain the same.
 
-Use `beankeeper_cli::db::current_schema_version()` to get the linked build's
-expected snapshot schema version without opening a ledger. Convert it with
-`i64::from` to compare it with the stored version from `get_schema_version`.
+Path-based Rust ledger opens return `CliError::SchemaMismatch { stored, expected }`
+for a supported older ledger. Both fields are typed schema versions. Publish
+a `VerifiedSnapshot`, give it to `Db::open_after_snapshot`, and pass the
+resulting connection directly to the host dispatch API.
 
 Embedded hosts can compose their own tools with `http_router_with_host_tools`
 and `HostToolHandler`. Each host tool declares a required grant and read-only
@@ -630,6 +631,10 @@ For the full command reference with all flags and examples, see [`references/com
 ## Essential Workflows
 
 ### Back up and restore a ledger
+
+Standalone `bk` and MCP startup save a verified pre-upgrade copy of an older
+ledger at `.bk-pre-migration-*/books.bk-backup` beside that ledger. Tell the
+owner where it was saved when reporting a successful upgrade.
 
 Use `bk backup --output PATH` to save a verified full snapshot. For an existing
 ledger, use `bk --db PATH restore --input BACKUP` or MCP `restore` with a server

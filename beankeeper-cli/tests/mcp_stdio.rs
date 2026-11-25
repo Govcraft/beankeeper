@@ -7,6 +7,9 @@ mod audit_receipts;
 #[path = "mcp_stdio/corrections.rs"]
 mod corrections;
 
+#[path = "support/legacy_schema.rs"]
+mod legacy_schema;
+
 #[path = "mcp_stdio/fx.rs"]
 mod fx;
 

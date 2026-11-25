@@ -57,6 +57,7 @@ The `companies` array contains the exported companies with their accounts and tr
 | `USAGE` | Invalid arguments or CLI usage |
 | `VALIDATION` | Business rule violation (unbalanced entry, invalid account type) |
 | `DATABASE` | SQLite or I/O error |
+| `SCHEMA_MISMATCH` | Supported older schema (exit 4). Numeric versions appear in `error.details.stored` and `error.details.expected`. |
 | `NOT_FOUND` | Entity does not exist |
 | `UNDO_UNSUPPORTED` | The receipt's action has no undo operation (exit 3) |
 | `UNDO_INELIGIBLE` | Current ledger state blocks the receipt's undo (exit 3) |
@@ -1625,7 +1626,7 @@ envelope to stderr. MCP uses `isError: true` and structured `{code, message}`.
 2. **Use `meta.command`** to confirm the response matches the expected command
 3. **Present amounts**: Use `<field>_display` for decimal major units; retain integer fields for exact arithmetic. Check pagination before treating a list as complete.
 4. **Handle null fields**: `metadata`, `reference`, `memo`, `notes`, `description` can be null
-5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Databases created before schema v9 are migrated to this form automatically on open.
+5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Standalone upgrades from before schema v9 migrate metadata to this form after publishing a verified backup.
 6. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout
 
 ## Optional identity fields (0.14.0)

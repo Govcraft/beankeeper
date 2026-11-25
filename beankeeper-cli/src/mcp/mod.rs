@@ -19,6 +19,7 @@ pub use host::{HostTool, HostToolEffect, HostToolHandler};
 pub use http::{
     HttpLedgerTargets, LEDGER_TARGET_HEADER, http_router, http_router_with_host_tools,
     http_router_with_ledger_targets, http_router_with_passphrase, serve_http,
+    serve_http_with_targets,
 };
 /// Transport options for the HTTP router factories, including host rules and cancellation.
 pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
@@ -352,8 +353,19 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open_existing(cli.db_path()?, passphrase.as_ref())?;
+    let db = cli.open_standalone_ledger(cli.db_path()?, passphrase.as_ref())?;
     drop(passphrase);
+    serve_with_db(cli, db, read_only)
+}
+
+/// Serve MCP over stdio with a ledger opened by the host.
+///
+/// The connection determines the ledger. CLI actor and token configuration
+/// still apply, and a configured ledger target is retained in response metadata.
+///
+/// # Errors
+/// Returns an error for failed authentication or transport startup.
+pub fn serve_with_db(cli: &Cli, db: Db, read_only: bool) -> Result<(), CliError> {
     let identity = if let Some(token) = &cli.agent_token {
         Some(crate::identity::verify(db.read(), token.expose_secret())?)
     } else {
