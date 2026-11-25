@@ -381,8 +381,8 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
-        Command::Backup { output, force } => backup::backup(cli, output, *force),
-        Command::Restore { input, force } => backup::restore(cli, input, *force),
+        Command::Backup { output, overwrite } => backup::backup(cli, output, *overwrite),
+        Command::Restore { input, overwrite } => backup::restore(cli, input, *overwrite),
         Command::Schedule(args) => {
             let company = require_company(cli)?.as_str();
             schedule::run(cli, company, &args.command)

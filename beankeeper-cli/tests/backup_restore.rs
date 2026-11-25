@@ -203,6 +203,10 @@ fn round_trip(encrypted: bool) -> TestResult {
     let result = success(&output)?;
     assert_eq!(result["meta"]["command"], "restore");
     assert_eq!(result["data"]["encrypted"], encrypted);
+    assert_eq!(
+        result["data"]["schema_version"],
+        snapshot["data"]["schema_version"]
+    );
     for output in [&snapshot_output, &output] {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -452,12 +456,24 @@ fn force_rejects_sqlite_sidecars_and_source_aliases() -> TestResult {
         .arg(&backup)
         .assert()
         .code(3);
-    let wal = dir.path().join("source.db-wal");
-    bk(&source, None)?
-        .args(["backup", "--force", "--output"])
-        .arg(&wal)
-        .assert()
-        .code(3);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let source_sidecar = dir.path().join(format!("source.db{suffix}"));
+        bk(&source, None)?
+            .args(["backup", "--force", "--output"])
+            .arg(source_sidecar)
+            .assert()
+            .code(3);
+
+        let destination_sidecar = dir.path().join(format!("backup{suffix}"));
+        std::fs::write(&destination_sidecar, b"keep this")?;
+        bk(&source, None)?
+            .args(["backup", "--force", "--output"])
+            .arg(&backup)
+            .assert()
+            .code(3);
+        assert_eq!(std::fs::read(&destination_sidecar)?, b"keep this");
+        std::fs::remove_file(destination_sidecar)?;
+    }
     data(&source, None, &["verify"])?;
     drop(live);
     #[cfg(unix)]

@@ -11,14 +11,16 @@ use crate::cli::Cli;
 use crate::db::snapshot::files::{
     publish, reject_sidecars, staging_directory, validate_destination,
 };
-use crate::db::{Db, VerifiedSnapshot, verification::VerifiedLedger};
+use crate::db::{
+    Db, SchemaVersion, SnapshotOverwrite, VerifiedSnapshot, verification::VerifiedLedger,
+};
 use crate::error::CliError;
 
 #[derive(Serialize)]
 struct SnapshotInfo<'a> {
     path: &'a Path,
     bytes: u64,
-    schema_version: i64,
+    schema_version: SchemaVersion,
     encrypted: bool,
 }
 
@@ -26,12 +28,12 @@ struct SnapshotInfo<'a> {
 ///
 /// # Errors
 /// Returns an error for an unsafe destination, failed snapshot or invalid ledger.
-pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
+pub fn backup(cli: &Cli, output: &Path, overwrite: SnapshotOverwrite) -> Result<(), CliError> {
     let snapshot = VerifiedSnapshot::create_authorized(
         cli.db_path()?,
         cli.resolve_passphrase()?,
         output,
-        force.into(),
+        overwrite,
         |reader, version, policy| cli.authorize_backup(reader, version, policy),
     )?;
     report(
@@ -40,7 +42,7 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
         SnapshotInfo {
             path: output,
             bytes: snapshot.bytes(),
-            schema_version: snapshot.schema_version().into(),
+            schema_version: snapshot.schema_version(),
             encrypted: snapshot.encrypted(),
         },
     )
@@ -50,13 +52,13 @@ pub fn backup(cli: &Cli, output: &Path, force: bool) -> Result<(), CliError> {
 ///
 /// # Errors
 /// Returns an error without replacing the destination if validation fails.
-pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
+pub fn restore(cli: &Cli, input: &Path, overwrite: SnapshotOverwrite) -> Result<(), CliError> {
     let destination = cli.explicit_db()?.ok_or_else(|| {
         CliError::Usage(
             "restore requires an explicit --db destination or named ledger target".into(),
         )
     })?;
-    validate_destination(input, destination, force)?;
+    validate_destination(input, destination, overwrite)?;
     if !input.try_exists()? {
         return Err(CliError::NotFound(format!(
             "snapshot '{}' not found",
@@ -88,7 +90,7 @@ pub fn restore(cli: &Cli, input: &Path, force: bool) -> Result<(), CliError> {
             return Err(CliError::Unauthorized("cannot overwrite an enforced ledger; disable enforcement with ledger/admin before restore".into()));
         }
     }
-    publish(staged, input, destination, force)?;
+    publish(staged, input, destination, overwrite)?;
     report(
         cli,
         Operation::Restore,

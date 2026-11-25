@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 
+use super::SnapshotOverwrite;
 use crate::error::CliError;
 
 pub(crate) fn staging_directory(destination: &Path) -> Result<tempfile::TempDir, CliError> {
@@ -17,11 +18,18 @@ fn parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-pub(crate) fn reject_sidecars(path: &Path) -> Result<(), CliError> {
-    for suffix in ["-wal", "-shm", "-journal"] {
+fn sidecar_paths(path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    const SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
+    SUFFIXES.into_iter().map(|suffix| {
         let mut name = path.as_os_str().to_os_string();
         name.push(suffix);
-        if PathBuf::from(name).try_exists()? {
+        PathBuf::from(name)
+    })
+}
+
+pub(crate) fn reject_sidecars(path: &Path) -> Result<(), CliError> {
+    for sidecar in sidecar_paths(path) {
+        if sidecar.try_exists()? {
             return Err(CliError::Validation(format!(
                 "'{}' has SQLite sidecar files; close all connections and checkpoint it first",
                 path.display()
@@ -34,7 +42,7 @@ pub(crate) fn reject_sidecars(path: &Path) -> Result<(), CliError> {
 pub(crate) fn validate_destination(
     source: &Path,
     destination: &Path,
-    force: bool,
+    overwrite: SnapshotOverwrite,
 ) -> Result<(), CliError> {
     reject_source_sidecar(source, destination)?;
     match fs::symlink_metadata(destination) {
@@ -65,11 +73,14 @@ pub(crate) fn validate_destination(
                     ));
                 }
             }
-            if !force {
-                return Err(CliError::Validation(format!(
-                    "destination '{}' already exists; use --force to replace it",
-                    destination.display()
-                )));
+            match overwrite {
+                SnapshotOverwrite::Refuse => {
+                    return Err(CliError::Validation(format!(
+                        "destination '{}' already exists; use --force to replace it",
+                        destination.display()
+                    )));
+                }
+                SnapshotOverwrite::Replace => {}
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -83,14 +94,10 @@ fn reject_source_sidecar(source: &Path, destination: &Path) -> Result<(), CliErr
         return Ok(());
     };
     let destination = absolute_destination(destination)?;
-    for suffix in ["-wal", "-shm", "-journal"] {
-        let mut name = source.as_os_str().to_os_string();
-        name.push(suffix);
-        if destination.as_os_str() == name {
-            return Err(CliError::Validation(
-                "destination must not be a SQLite sidecar of the source".into(),
-            ));
-        }
+    if sidecar_paths(&source).any(|sidecar| destination == sidecar) {
+        return Err(CliError::Validation(
+            "destination must not be a SQLite sidecar of the source".into(),
+        ));
     }
     Ok(())
 }
@@ -106,20 +113,16 @@ pub(crate) fn publish(
     staged: NamedTempFile,
     source: &Path,
     destination: &Path,
-    force: bool,
+    overwrite: SnapshotOverwrite,
 ) -> Result<(), CliError> {
     // Recheck after the potentially long snapshot/verification operation.
-    validate_destination(source, destination, force)?;
+    validate_destination(source, destination, overwrite)?;
     staged.as_file().sync_all()?;
-    if force {
-        staged
-            .persist(destination)
-            .map_err(|error| CliError::Io(error.error))?;
-    } else {
-        staged
-            .persist_noclobber(destination)
-            .map_err(|error| CliError::Io(error.error))?;
+    match overwrite {
+        SnapshotOverwrite::Refuse => staged.persist_noclobber(destination),
+        SnapshotOverwrite::Replace => staged.persist(destination),
     }
+    .map_err(|error| CliError::Io(error.error))?;
     #[cfg(unix)]
     File::open(parent(destination))?.sync_all()?;
     Ok(())

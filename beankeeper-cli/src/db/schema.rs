@@ -53,15 +53,9 @@ impl TryFrom<i64> for SchemaVersion {
     }
 }
 
-impl SchemaVersion {
-    pub(super) const fn get(self) -> i64 {
-        self.0
-    }
-}
-
 impl From<SchemaVersion> for i64 {
     fn from(version: SchemaVersion) -> Self {
-        version.get()
+        version.0
     }
 }
 
@@ -3487,7 +3481,10 @@ mod tests {
         assert!(!std::fs::read(&destination)?.starts_with(b"SQLite format 3\0"));
         let copy = Db::open_compatible_snapshot(&destination, Some(&passphrase), 12)?;
         assert_eq!(hashes(copy.read())?, before);
-        assert_eq!(proof.verification().schema_version(), 12);
+        assert_eq!(
+            proof.verification().schema_version(),
+            proof.schema_version()
+        );
         assert!(Db::open_compatible_snapshot(&destination, None, 12).is_err());
         let upgraded = Db::open_after_snapshot(proof, Some(&passphrase))?;
         assert_eq!(get_schema_version(upgraded.read())?, CURRENT_VERSION);

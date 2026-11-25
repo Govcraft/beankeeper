@@ -111,8 +111,7 @@ impl VerifiedSnapshot {
         ) -> Result<(), CliError>,
     ) -> Result<Self, CliError> {
         let source = SnapshotSource::open(source, passphrase)?;
-        let force = overwrite == SnapshotOverwrite::Replace;
-        files::validate_destination(&source.path, destination, force)?;
+        files::validate_destination(&source.path, destination, overwrite)?;
         let path = files::absolute_destination(destination)?;
         let directory = files::staging_directory(&path)?;
         let staged = tempfile::NamedTempFile::new_in(directory.path())?;
@@ -131,7 +130,7 @@ impl VerifiedSnapshot {
         })?;
         snapshot.close()?;
         let metadata = staged.as_file().metadata()?;
-        files::publish(staged, &source.path, &path, force)?;
+        files::publish(staged, &source.path, &path, overwrite)?;
         Ok(Self {
             source,
             path,
@@ -150,7 +149,7 @@ impl VerifiedSnapshot {
     /// Schema version captured in the copy.
     #[must_use]
     pub const fn schema_version(&self) -> SchemaVersion {
-        self.verification.typed_schema_version()
+        self.verification.schema_version()
     }
 
     /// Size of the published copy in bytes.

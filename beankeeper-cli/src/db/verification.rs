@@ -259,11 +259,7 @@ impl VerifiedLedger {
 
     /// Schema version of the verified snapshot.
     #[must_use]
-    pub const fn schema_version(&self) -> i64 {
-        self.schema_version.get()
-    }
-
-    pub(super) const fn typed_schema_version(&self) -> schema::SchemaVersion {
+    pub const fn schema_version(&self) -> schema::SchemaVersion {
         self.schema_version
     }
 

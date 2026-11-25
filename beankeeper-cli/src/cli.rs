@@ -3,7 +3,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use beankeeper::types::{AccountCode, AccountName, AccountType, Currency, DebitOrCredit};
-use clap::{ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
+use clap::{
+    ArgAction, ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum,
+    builder::{BoolValueParser, TypedValueParser},
+    parser::ValueSource,
+};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::db::audit::receipts::{AuditCursor, ReceiptContinuation, ReceiptId, ReceiptPageLimit};
@@ -12,7 +16,7 @@ use crate::db::companies::{CompanyName, CompanySlug};
 use crate::db::ids::{EntryId, PartnerTransactionId, TransactionId};
 use crate::db::rules::{DescriptionPattern, RuleId, RulePriority, RuleTerms};
 use crate::db::standing::{BookkeepingPolicy, InformPreference};
-use crate::db::{ActorLabel, BlankActorLabel};
+use crate::db::{ActorLabel, BlankActorLabel, SnapshotOverwrite};
 use crate::error::CliError;
 use crate::identity::WriteMode;
 use crate::ledger_target::{LedgerPath, LedgerPaths, LedgerTarget};
@@ -462,8 +466,12 @@ pub enum Command {
         #[arg(long)]
         output: PathBuf,
         /// Replace an existing, offline destination.
-        #[arg(long)]
-        force: bool,
+        #[arg(
+            long = "force",
+            action = ArgAction::SetTrue,
+            value_parser = BoolValueParser::new().map(SnapshotOverwrite::from)
+        )]
+        overwrite: SnapshotOverwrite,
     },
 
     /// Restore and verify a snapshot (requires an explicit --db destination).
@@ -472,8 +480,12 @@ pub enum Command {
         #[arg(long)]
         input: PathBuf,
         /// Replace an existing, offline destination.
-        #[arg(long)]
-        force: bool,
+        #[arg(
+            long = "force",
+            action = ArgAction::SetTrue,
+            value_parser = BoolValueParser::new().map(SnapshotOverwrite::from)
+        )]
+        overwrite: SnapshotOverwrite,
     },
 
     /// Create a new accounting database.
