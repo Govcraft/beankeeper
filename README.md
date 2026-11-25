@@ -1785,20 +1785,13 @@ assert_eq!(txn.entries()[0].memo(), Some("Gross salary"));
 
 ### Multi-Currency Support
 
-Ten ISO 4217 currencies with correct minor-unit precision:
-
-| Currency | Code | Minor Units |
-|----------|------|-------------|
-| US Dollar | `USD` | 2 (cents) |
-| Euro | `EUR` | 2 (cents) |
-| British Pound | `GBP` | 2 (pence) |
-| Japanese Yen | `JPY` | 0 |
-| Swiss Franc | `CHF` | 2 |
-| Canadian Dollar | `CAD` | 2 |
-| Australian Dollar | `AUD` | 2 |
-| Mexican Peso | `MXN` | 2 (centavos) |
-| Bahraini Dinar | `BHD` | 3 |
-| Kuwaiti Dinar | `KWD` | 3 |
+The CLI and MCP accept active currencies with a defined decimal minor unit
+from the [ISO 4217 currency list](https://www.six-group.com/en/products-services/financial-information/market-reference-data/data-standards.html),
+including KRW (0 decimal places), INR (2), and TND (3). Pass the three-letter
+code as `--currency` in the CLI or `currency` in MCP. Fund codes, codes
+without a defined minor unit, and test codes return a validation error.
+The Rust `Currency` type exposes the alphabetic code, numeric code, and
+minor-unit precision.
 
 Each journal chooses its currency at construction. Debit and credit amounts are minor units in that currency. Adding a prebuilt entry with a different currency returns `EntryError::CurrencyMismatch`. Posting validates the count and balance, then retains the currency and balanced total in the resulting `Transaction`.
 

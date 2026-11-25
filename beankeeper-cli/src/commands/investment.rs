@@ -36,14 +36,8 @@ mod wire;
 use wire::Wire;
 
 /// Quotation currency for a new security.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct QuotationCurrency(Currency);
-
-impl Default for QuotationCurrency {
-    fn default() -> Self {
-        Self(Currency::USD)
-    }
-}
 
 impl From<Option<Currency>> for QuotationCurrency {
     fn from(currency: Option<Currency>) -> Self {

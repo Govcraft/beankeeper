@@ -981,6 +981,74 @@ fn amount_filters_require_and_match_one_currency_across_cli_and_mcp() -> TestRes
 }
 
 #[test]
+fn expanded_iso_currencies_post_and_report_across_cli_and_mcp() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    seed(&path)?;
+    bk(&path)?
+        .args([
+            "--company",
+            "acme",
+            "txn",
+            "post",
+            "--description",
+            "Won sale",
+            "--debit",
+            "1000:45",
+            "--credit",
+            "4000:45",
+            "--currency",
+            "krw",
+        ])
+        .assert()
+        .success();
+
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let post_tool = listed["result"]["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "txn_post"))
+        .ok_or("txn_post tool")?;
+    let currency_schema = &post_tool["inputSchema"]["properties"]["currency"];
+    assert!(currency_schema.is_object());
+    assert!(!currency_schema.to_string().contains("\"enum\""));
+
+    let mut dinar = posting("dinar-sale");
+    dinar["currency"] = json!(" tnd ");
+    dinar["debits"][0]["amount"] = json!("1.234");
+    dinar["credits"][0]["amount"] = json!("1.234");
+    assert_eq!(client.success("txn_post", &dinar)?["created"], true);
+
+    for (currency, minor, display) in [("KRW", 45, "45"), ("TND", 1234, "1.234")] {
+        let report = client.success(
+            "report",
+            &json!({"company":"acme", "kind":"trial-balance", "currency":currency}),
+        )?;
+        assert_eq!(report["total_debits"], minor);
+        assert_eq!(report["total_debits_display"], display);
+        let cli = bk(&path)?
+            .args([
+                "--json",
+                "--company",
+                "acme",
+                "report",
+                "trial-balance",
+                "--currency",
+                currency,
+            ])
+            .assert()
+            .success();
+        let envelope: Value = serde_json::from_slice(&cli.get_output().stdout)?;
+        assert_eq!(envelope["data"], report);
+    }
+    assert_eq!(client.success("verify", &json!({}))?["status"], "healthy");
+    Ok(())
+}
+
+#[test]
 fn tools_preserve_data_arrays_and_expose_pagination_and_currency_displays() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("books.db");
@@ -2144,7 +2212,7 @@ fn invalid_currency_fails_at_both_parse_boundaries_with_validation_code() -> Tes
         .expect_err("invalid currency must fail in clap");
     assert!(matches!(
         parse_error.source().and_then(|cause| cause.downcast_ref::<CurrencyError>()),
-        Some(CurrencyError::UnknownCode { code }) if code == "XXX"
+        Some(CurrencyError::UnsupportedCode { code }) if code == "XXX"
     ));
     let cli = bk(&path)?.args(args).assert().code(3);
     let cli: Value = serde_json::from_slice(&cli.get_output().stderr)?;
@@ -2154,7 +2222,10 @@ fn invalid_currency_fails_at_both_parse_boundaries_with_validation_code() -> Tes
     let detail = cli["error"]["message"]
         .as_str()
         .ok_or("CLI error message")?;
-    assert_eq!(detail, "unknown currency code: XXX");
+    assert_eq!(
+        detail,
+        "unsupported currency code: XXX (fund or no defined minor unit)"
+    );
     assert!(!path.exists());
 
     seed(&path)?;
@@ -2260,7 +2331,7 @@ fn malformed_ledger_inputs_fail_at_the_mcp_parameter_boundary() -> TestResult {
     bad_currency["currency"] = json!("XXX");
     for (input, detail) in [
         (empty_debits, "non-empty array"),
-        (bad_currency, "unknown currency code: XXX"),
+        (bad_currency, "unsupported currency code: XXX"),
     ] {
         let response = client.call("txn_post", &input)?;
         assert_parameter_rejection(&response, detail);

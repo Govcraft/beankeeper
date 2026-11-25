@@ -147,8 +147,11 @@ grant posts directly by default. After a successful post, tell the owner what
 you recorded in plain words. Include the amount and currency, the company and
 transaction ID, and offer to undo the posting in one step. Offer a Desktop
 detail link when one is available.
-If you omit currency, the posting uses `BEANKEEPER_CURRENCY` when set
-and USD otherwise.
+Use `--currency` in the CLI or `currency` in MCP with an active, three-letter
+ISO 4217 currency code. Use the currency's decimal precision for major-unit
+amounts, such as `45` for KRW or `1.234` for TND. Fund codes, test codes,
+and codes without a defined minor unit are rejected. If you omit currency,
+the posting uses `BEANKEEPER_CURRENCY` when set and USD otherwise.
 
 Use `bk txn reverse ID` or `txn_reverse` in the selected company to reverse a
 posting. Use `bk audit undo RECEIPT` or `audit_undo` when an eligible receipt

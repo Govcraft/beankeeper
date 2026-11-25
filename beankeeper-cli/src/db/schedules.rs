@@ -318,7 +318,7 @@ pub(crate) fn get_schedule(
         id: id.clone(),
         company_slug: company.clone(),
         description: row.0,
-        currency: Currency::from_code(&row.1).map_err(|error| {
+        currency: Currency::try_from(row.1.as_str()).map_err(|error| {
             CliError::Database(format!("invalid stored schedule currency: {error}"))
         })?,
         start_date: parse_stored_date(&row.2)?,

@@ -148,7 +148,10 @@ fn csv_import_uses_the_configured_currency_default() -> TestResult {
         Ok(command)
     };
     let invalid = import()?.env("BEANKEEPER_CURRENCY", "XXX").output()?;
-    validation_error(&invalid, "BEANKEEPER_CURRENCY: unknown currency code: XXX")?;
+    validation_error(
+        &invalid,
+        "BEANKEEPER_CURRENCY: unsupported currency code: XXX",
+    )?;
     assert_eq!(ledger.count("transactions")?, 0);
 
     let configured = import()?.env("BEANKEEPER_CURRENCY", " bhd ").output()?;

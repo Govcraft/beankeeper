@@ -8,12 +8,6 @@ use beankeeper::types::Currency;
 
 use crate::error::CliError;
 
-/// Currency used when a company has no transactions and none was requested.
-///
-/// Companies have no configured currency of their own, so this is the
-/// fallback (it matches the `transactions.currency` column default).
-const FALLBACK_CURRENCY: Currency = Currency::USD;
-
 /// Resolve the currency a report should be computed and displayed in.
 ///
 /// - If `requested` is `Some`, it is used as-is.
@@ -47,7 +41,7 @@ pub(super) fn infer_company_currency(
 ) -> Result<Currency, CliError> {
     let currencies = company_currencies(conn, company)?;
     match currencies.as_slice() {
-        [] => Ok(FALLBACK_CURRENCY),
+        [] => Ok(Currency::default()),
         [only] => only.parse().map_err(|error| {
             CliError::Database(format!(
                 "invalid persisted transaction currency '{only}': {error}"

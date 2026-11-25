@@ -104,8 +104,7 @@ impl TextValue for Currency {
     fn schema() -> Schema {
         json_schema!({
             "type": "string",
-            "enum": ["AUD", "BHD", "CAD", "CHF", "EUR", "GBP", "JPY", "KWD", "MXN", "USD"],
-            "description": "A supported ISO 4217 currency code."
+            "description": "A three-letter ISO 4217 currency code with a defined decimal minor unit, such as USD, KRW, or TND. Fund and special-purpose codes are excluded."
         })
     }
 }
