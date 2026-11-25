@@ -148,13 +148,42 @@ impl<T: Serialize> Serialize for Envelope<T> {
     }
 }
 
-/// Error payload within the envelope.
+/// Error payload shared by the CLI, MCP, and embedded hosts.
+///
+/// Use `EnvelopeError::from(&error)` to preserve the error code, message,
+/// and any structured details when supplying your own envelope metadata.
+///
+/// ```
+/// use beankeeper_cli::error::{CliError, ErrorCode};
+/// use beankeeper_cli::output::json::EnvelopeError;
+///
+/// let error = CliError::NotFound("account '9999' not found".into());
+/// let payload = EnvelopeError::from(&error);
+///
+/// assert_eq!(payload.code, ErrorCode::NotFound);
+/// assert_eq!(payload.message, "account '9999' not found");
+/// assert!(payload.details.is_none());
+/// ```
 #[derive(Serialize)]
 pub struct EnvelopeError {
     pub code: ErrorCode,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+}
+
+impl From<&CliError> for EnvelopeError {
+    fn from(error: &CliError) -> Self {
+        let details = match error {
+            CliError::StatementDiscrepancy(discrepancy) => Some(discrepancy.details()),
+            _ => None,
+        };
+        Self {
+            code: error.code(),
+            message: error.to_string(),
+            details,
+        }
+    }
 }
 
 /// Construct a `Meta` with the current UTC timestamp.
@@ -1129,6 +1158,19 @@ pub fn render_budget_deleted(count: usize, meta: Meta) -> Result<String, CliErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelope_error_omits_absent_details() -> Result<(), serde_json::Error> {
+        let error = CliError::Usage("missing account".into());
+        let payload = EnvelopeError::from(&error);
+
+        assert_eq!(payload.code, ErrorCode::Usage);
+        assert_eq!(
+            serde_json::to_value(payload)?,
+            serde_json::json!({"code": "USAGE", "message": "missing account"}),
+        );
+        Ok(())
+    }
 
     fn test_meta(command: Operation, company: Option<&str>) -> Meta {
         meta_with_timestamp(command, company, "2025-01-01T00:00:00Z".to_string())

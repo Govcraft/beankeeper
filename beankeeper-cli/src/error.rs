@@ -6,6 +6,7 @@ use crate::db::audit::{
     receipts::ReceiptUndoError,
 };
 use crate::db::{periods::ClosedPostingPeriod, statement::StatementDiscrepancy};
+use crate::output::json::EnvelopeError;
 
 /// A foreign-currency posting or account configuration could not be applied.
 #[derive(Debug)]
@@ -289,18 +290,6 @@ impl CliError {
         self.code().as_str()
     }
 
-    pub(crate) fn payload(&self) -> crate::output::json::EnvelopeError {
-        let details = match self {
-            Self::StatementDiscrepancy(error) => Some(error.details()),
-            _ => None,
-        };
-        crate::output::json::EnvelopeError {
-            code: self.code(),
-            message: self.to_string(),
-            details,
-        }
-    }
-
     /// Report the error to stderr.
     ///
     /// In JSON mode with a `Meta`, outputs an enveloped JSON error object.
@@ -313,7 +302,7 @@ impl CliError {
                     ok: false,
                     meta: m,
                     data: None::<()>,
-                    error: Some(self.payload()),
+                    error: Some(EnvelopeError::from(self)),
                 };
                 if let Ok(json) = serde_json::to_string_pretty(&env) {
                     eprintln!("{json}");
@@ -324,7 +313,7 @@ impl CliError {
             // Fallback: minimal JSON without envelope
             let json = serde_json::json!({
                 "ok": false,
-                "error": self.payload()
+                "error": EnvelopeError::from(self)
             });
             eprintln!("{json}");
         } else {

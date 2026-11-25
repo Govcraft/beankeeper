@@ -438,6 +438,10 @@ same authentication and capability rules. The host supplies
 `StreamableHttpServerConfig`, controls its cancellation token, and owns the
 listener, runtime, shutdown, and Host/Origin rules. See the API Rustdoc example.
 
+Rust hosts that supply their own response metadata can convert a `CliError`
+with `beankeeper_cli::output::json::EnvelopeError::from(&error)` to carry the
+shared CLI and MCP error code, message, and any structured details.
+
 For a host that also opens `Db::open_snapshot`, resolve the passphrase once and
 use `beankeeper_cli::mcp::http_router_with_passphrase(&cli, passphrase.as_ref(),
 read_only, config)?`. Pass the same borrowed secret to the snapshot, then drop it
