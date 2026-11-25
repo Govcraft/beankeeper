@@ -316,9 +316,14 @@ fn fx_schema_upgrade_preserves_historical_postings() -> TestResult {
         ],
     )?;
     let conn = rusqlite::Connection::open(&path)?;
-    conn.execute_batch("DROP TABLE fx_postings; DROP TABLE fx_accounts;")?;
-    let preceding = i64::from(beankeeper_cli::db::current_schema_version()) - 1;
-    conn.execute("DELETE FROM schema_version WHERE version > ?1", [preceding])?;
+    conn.execute_batch(
+        "DROP TRIGGER protect_bookkeeping_receipt_uniqueness;
+         DROP TRIGGER protect_audit_related_posting;
+         DROP VIEW bookkeeping_audit;
+         DROP TABLE fx_postings;
+         DROP TABLE fx_accounts;
+         DELETE FROM schema_version WHERE version > 36;",
+    )?;
     drop(conn);
 
     let actual = data(bk(&path)?, &["txn", "show", &expected["id"].to_string()])?;

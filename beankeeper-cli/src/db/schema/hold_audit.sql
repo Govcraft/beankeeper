@@ -4,7 +4,7 @@ CREATE INDEX idx_hold_reversals ON audit_log(company_slug, entity_id)
 -- The existing reversal audit event is the typed link from an original to its mirror.
 CREATE VIEW posting_reversals AS
     SELECT company_slug, entity_id AS original_id, related_posting AS reversal_id
-    FROM audit_log WHERE entity = 'transaction' AND action = 'reverse';
+    FROM {audit} WHERE entity = 'transaction' AND action = 'reverse';
 
 CREATE TRIGGER protect_hold_settlement BEFORE INSERT ON transactions
 WHEN NEW.settles_hold IS NOT NULL AND (

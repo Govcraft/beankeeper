@@ -4,7 +4,11 @@ use std::sync::Arc;
 use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 
-use super::audit::savepoint::{AuditedTx, with_rolled_back_audited_tx};
+use super::audit::{
+    restore::ExistingRestoreTarget,
+    savepoint::{AuditedTx, with_rolled_back_audited_tx},
+};
+use super::schema::{self, AuditHistory, SchemaVersion, current_schema_version};
 use crate::error::CliError;
 
 mod read;
@@ -14,6 +18,9 @@ pub use read::{ReadConn, ReadStatement};
 pub struct Db {
     conn: Connection,
     id: ConnectionId,
+    passphrase: Option<SecretString>,
+    schema_version: SchemaVersion,
+    audit_history: AuditHistory,
 }
 
 /// Process-local identity of one open connection, including in-memory ledgers.
@@ -27,11 +34,26 @@ impl ConnectionId {
 }
 
 impl Db {
-    pub(super) fn from_connection(conn: Connection) -> Self {
+    pub(super) fn from_keyed_connection(
+        conn: Connection,
+        passphrase: Option<&SecretString>,
+        schema_version: SchemaVersion,
+    ) -> Self {
         Self {
             conn,
             id: ConnectionId::default(),
+            passphrase: passphrase.cloned(),
+            schema_version,
+            audit_history: AuditHistory::from(schema_version),
         }
+    }
+
+    pub(super) const fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
+    }
+
+    pub(super) fn snapshot_key(&self) -> Option<&SecretString> {
+        self.passphrase.as_ref()
     }
 
     pub(crate) fn id(&self) -> &ConnectionId {
@@ -64,24 +86,33 @@ impl Db {
         passphrase: Option<&SecretString>,
         minimum: i64,
     ) -> Result<Self, CliError> {
-        let conn = open_keyed(
-            path,
-            passphrase,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        let version = super::schema::get_schema_version(ReadConn::new(&conn))?;
-        let current = super::schema::CURRENT_VERSION;
-        if !(minimum..=current).contains(&version) {
+        let conn = open_snapshot_file(path, passphrase)?;
+        let stored_version = schema::get_schema_version(ReadConn::physical(&conn))?;
+        let version = SchemaVersion::try_from(stored_version)
+            .ok()
+            .filter(|version| i64::from(*version) >= minimum);
+        let Some(version) = version else {
+            let current = schema::CURRENT_VERSION;
             let expected = if minimum == current {
                 current.to_string()
             } else {
                 format!("{minimum} through {current}")
             };
             return Err(CliError::Database(format!(
-                "not a supported beankeeper snapshot: schema version {version}; expected {expected}"
+                "not a supported beankeeper snapshot: schema version {stored_version}; expected {expected}"
             )));
-        }
-        Ok(Self::from_connection(conn))
+        };
+        Ok(Self::from_keyed_connection(conn, None, version))
+    }
+
+    pub(super) fn open_supported_snapshot(
+        path: &Path,
+        passphrase: Option<&SecretString>,
+    ) -> Result<Self, CliError> {
+        let conn = open_snapshot_file(path, passphrase)?;
+        let version =
+            SchemaVersion::try_from(schema::get_schema_version(ReadConn::physical(&conn))?)?;
+        Ok(Self::from_keyed_connection(conn, None, version))
     }
 
     /// Opens (or creates) a database at `path`, optionally encrypting with `passphrase`.
@@ -116,6 +147,34 @@ impl Db {
         )
     }
 
+    // Restore targets must already be at the running schema. In particular, an
+    // unauthorized or failed restore must never migrate the live ledger.
+    pub(crate) fn open_for_restore(
+        target: &ExistingRestoreTarget<'_>,
+        passphrase: Option<&SecretString>,
+    ) -> Result<Self, CliError> {
+        // Omit SQLITE_OPEN_CREATE in case the file disappeared after the check.
+        let conn = open_keyed(
+            target.as_ref(),
+            passphrase,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let reader = ReadConn::physical(&conn);
+        let version = super::schema::get_schema_version(reader)?;
+        if version != super::schema::CURRENT_VERSION {
+            return Err(CliError::Database(format!(
+                "restore target schema version {version}; expected {}",
+                super::schema::CURRENT_VERSION
+            )));
+        }
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        Ok(Self::from_keyed_connection(
+            conn,
+            passphrase,
+            current_schema_version(),
+        ))
+    }
+
     fn open_with_flags(
         path: &Path,
         passphrase: Option<&SecretString>,
@@ -126,7 +185,11 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         super::schema::ensure_schema(&conn)?;
         tighten_permissions(path);
-        Ok(Self::from_connection(conn))
+        Ok(Self::from_keyed_connection(
+            conn,
+            passphrase,
+            current_schema_version(),
+        ))
     }
 
     /// Opens an in-memory database (useful for tests).
@@ -142,7 +205,11 @@ impl Db {
 
         super::schema::ensure_schema(&conn)?;
 
-        Ok(Self::from_connection(conn))
+        Ok(Self::from_keyed_connection(
+            conn,
+            None,
+            current_schema_version(),
+        ))
     }
 
     /// Connection for internal storage and corruption fixtures.
@@ -254,6 +321,17 @@ pub(super) fn open_keyed(
         conn.pragma_update(None, "key", pp.expose_secret())?;
     }
     Ok(conn)
+}
+
+fn open_snapshot_file(
+    path: &Path,
+    passphrase: Option<&SecretString>,
+) -> Result<Connection, CliError> {
+    open_keyed(
+        path,
+        passphrase,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
 }
 
 #[cfg(unix)]

@@ -524,12 +524,15 @@ pub(in crate::db) fn find_profile(
 ) -> Result<Option<BookProfile>, CliError> {
     let row = conn
         .query_row(
-            "SELECT revision, supersedes, purpose, base_currency, fiscal_year_start
+            &format!(
+                "SELECT revision, supersedes, purpose, base_currency, fiscal_year_start
          FROM setup_book_profiles p WHERE company_slug = ?1 AND NOT EXISTS (
-             SELECT 1 FROM audit_log event WHERE event.company_slug = p.company_slug
+             SELECT 1 FROM {audit} event WHERE event.company_slug = p.company_slug
                AND event.action = 'setup_revert'
                AND json_extract(event.after, '$.profile_revision') = p.revision
          ) ORDER BY revision DESC LIMIT 1",
+                audit = conn.bookkeeping_audit()
+            ),
             [company.as_str()],
             |row| {
                 Ok((

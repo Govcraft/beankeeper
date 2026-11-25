@@ -474,18 +474,24 @@ pub enum Command {
         overwrite: SnapshotOverwrite,
     },
 
-    /// Restore and verify a snapshot (requires an explicit --db destination).
+    /// Restore bookkeeping rows in an existing ledger and save its undo snapshot.
     Restore {
+        /// Full database snapshot produced by backup.
+        #[arg(long, value_parser = clap::builder::PathBufValueParser::new().try_map(crate::db::audit::restore::BackupPath::try_from))]
+        input: crate::db::audit::restore::BackupPath,
+    },
+
+    /// Undo a ledger restore by its receipt ID.
+    RestoreUndo {
+        /// Undo ID returned by the restore.
+        undo_id: crate::db::ids::ReceiptId,
+    },
+
+    /// Recover a verified full snapshot to a new database path.
+    Recover {
         /// Full database snapshot produced by backup.
         #[arg(long)]
         input: PathBuf,
-        /// Replace an existing, offline destination.
-        #[arg(
-            long = "force",
-            action = ArgAction::SetTrue,
-            value_parser = BoolValueParser::new().map(SnapshotOverwrite::from)
-        )]
-        overwrite: SnapshotOverwrite,
     },
 
     /// Create a new accounting database.

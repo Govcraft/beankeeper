@@ -833,6 +833,8 @@ const LEDGER_TOOLS: &[&str] = &[
     "audit_log",
     "audit_receipts",
     "audit_undo",
+    "restore",
+    "restore_undo",
 ];
 
 #[test]
@@ -1735,6 +1737,46 @@ fn read_only_rejects_reversal_without_changing_the_original() -> TestResult {
     assert_eq!(transactions.as_array().map(Vec::len), Some(1));
     assert_eq!(
         client.success("audit_log", &json!({"action":"reverse"}))?,
+        json!([])
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_tool_points_new_file_recovery_to_the_local_command() -> TestResult {
+    let dir = tempdir()?;
+    let ledger = dir.path().join("live.db");
+    let backup = dir.path().join("live.bk-backup");
+    let destination = dir.path().join("new.db");
+    bk(&ledger)?.arg("init").assert().success();
+    bk(&ledger)?
+        .args(["backup", "--output"])
+        .arg(&backup)
+        .assert()
+        .success();
+
+    let mut command = bk(&ledger)?;
+    command.args(["mcp", "serve"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .ok_or("missing tools")?
+        .iter()
+        .find(|tool| tool["name"] == "restore")
+        .ok_or("missing restore tool")?;
+    let description = tool["description"].as_str().ok_or("missing description")?;
+    assert!(description.contains("bk --db <path> recover --input <backup>"));
+
+    let response = client.call(
+        "restore",
+        &json!({"input": backup, "destination": destination}),
+    )?;
+    assert_parameter_rejection(&response, "unknown field `destination`");
+    assert!(!destination.try_exists()?);
+    assert_eq!(
+        client.success("audit_log", &json!({"action":"ledger_restored"}))?,
         json!([])
     );
     Ok(())

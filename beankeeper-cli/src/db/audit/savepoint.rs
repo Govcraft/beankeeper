@@ -93,7 +93,7 @@ pub(in crate::db) fn with_audited_tx<T>(
     name: &'static str,
     run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    AuditedTx::run(ReadConn::new(connection), name, run)
+    AuditedTx::run(ReadConn::physical(connection), name, run)
 }
 
 pub(in crate::db) fn with_rolled_back_audited_tx<T>(

@@ -216,12 +216,13 @@ pub fn create_company(
 ///
 /// Returns `CliError::Sqlite` on database errors.
 pub fn list_companies(conn: ReadConn<'_>) -> Result<Vec<CompanyRow>, CliError> {
+    let audit = conn.bookkeeping_audit();
     let mut stmt =
         conn.prepare(
-            "SELECT slug, name, description, created_at FROM companies
-             WHERE NOT EXISTS (SELECT 1 FROM audit_log event WHERE event.company_slug = companies.slug
+            &format!("SELECT slug, name, description, created_at FROM companies
+             WHERE NOT EXISTS (SELECT 1 FROM {audit} event WHERE event.company_slug = companies.slug
                AND event.action = 'setup_revert' AND json_extract(event.after, '$.book_archived') = 1)
-             ORDER BY slug",
+             ORDER BY slug"),
         )?;
 
     let rows = stmt.query_map([], |row| {
@@ -281,9 +282,12 @@ pub fn company_exists(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<bool, Cl
 // The signed undo is the archive marker. The company row and all receipts stay
 // available to history and undo retries.
 fn company_archived(conn: ReadConn<'_>, slug: &CompanySlug) -> Result<bool, CliError> {
+    let audit = conn.bookkeeping_audit();
     Ok(conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM audit_log WHERE company_slug = ?1
-             AND action = 'setup_revert' AND json_extract(after, '$.book_archived') = 1)",
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM {audit} WHERE company_slug = ?1
+             AND action = 'setup_revert' AND json_extract(after, '$.book_archived') = 1)"
+        ),
         [slug],
         |row| row.get(0),
     )?)

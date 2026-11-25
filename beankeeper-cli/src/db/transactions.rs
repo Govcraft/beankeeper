@@ -1729,7 +1729,7 @@ mod tests {
             [],
         )?;
         let result = get_transaction(
-            &crate::db::companies::Company::bind(ReadConn::new(conn), "acme".parse()?)?,
+            &crate::db::companies::Company::bind(ReadConn::physical(conn), "acme".parse()?)?,
             crate::db::ids::fixture_id(conn.last_insert_rowid()),
         );
         assert!(matches!(

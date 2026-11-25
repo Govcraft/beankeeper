@@ -36,49 +36,44 @@ a funded loan with its first payment, and a short-pay settlement. Use explicit
 
 ### Backup and restore
 
-Use `backup` for a consistent snapshot of the entire ledger, including committed
-writes from active connections. Encryption stays enabled with the original
-passphrase. Backup opens the source read-only and copies its existing schema
-version. Verification runs the checks available in that schema before publication.
+`bk backup` writes a verified full snapshot, including committed WAL changes,
+at the source schema version and encryption. `--force` replaces an existing
+backup output. On an enforced ledger, backup requires `ledger/admin`.
 
 ```sh
-bk --db books.db --passphrase-file /secure/books.key backup --output ledger.bk-backup
-bk restore --input ledger.bk-backup --db /data/restored.db --passphrase-file /secure/books.key
-bk --db /data/restored.db --passphrase-file /secure/books.key verify
+bk --db books.db backup --output ledger.bk-backup
+bk --db books.db restore --input ledger.bk-backup
+bk --db books.db restore-undo UNDO_ID
+bk --db recovered.db recover --input ledger.bk-backup
 ```
 
-Omit the passphrase option for unencrypted ledgers. `backup --output` and
-`restore --input` are required. Restore also requires an explicit `--db` flag,
-even when `BEANKEEPER_DB` is configured. Global `--company` is ignored.
-JSON success envelopes report `path`, `bytes`, `schema_version`, and `encrypted`.
+For encrypted books, supply the usual passphrase source. On an enforced ledger,
+restore and undo require a live signed `ledger/admin` credential. A caller who
+supplies a token must have that scope on any ledger. Use `--db` or a named ledger
+target. In MCP, call `restore` with `input` or
+`restore_undo` with `undo_id`. The input path is on the server. Both tools use
+the selected live ledger and are omitted in read-only mode.
 
-When enforcement is on, backup and restore require `ledger/admin` on the source
-ledger or snapshot. Existing destinations require `--force` and must be readable
-with the supplied passphrase (or unencrypted), at the current schema, and have
-enforcement off. Disable destination enforcement with its own admin token before
-restoring. Close all connections to a destination before replacing it; SQLite
-`-wal`, `-shm`, or `-journal` files cause rejection.
-Source and destination must differ, including symlink and hard-link aliases.
-Destinations must be regular files or new paths. Failed verification leaves an
-existing destination untouched and removes temporary files. On Unix, published
-files have owner-only permissions (0600).
+Restore verifies the standalone backup and its audit lineage, upgrades an
+older backup in a private copy, and rejects newer schemas or backup files with
+SQLite sidecars. The live ledger must already use the running schema. Restore
+replaces bookkeeping rows in one transaction and appends a `ledger_restored`
+event. The identity registry, current revocations, enforcement policy, and
+existing audit rows stay in place. The audit log continues to show the full
+history. Bookkeeping reads use the history selected by the restore.
 
-Snapshots are standalone SQLCipher/SQLite databases, with no archive wrapper.
-Restore accepts only a valid current-schema ledger and runs the same accounting,
-audit-chain, foreign-key, and integrity checks as `bk verify`, without migrating
-it. The file carries no proof that `backup` created it; any complete ledger
-passing those checks is accepted. To restore an older snapshot, use its matching
-CLI version first. A lost
-passphrase cannot be recovered. Keep the backup and passphrase separately.
+Tell the owner what was restored and offer the returned `undo_id`. Undo puts
+back the books from the verified snapshot saved beside the ledger and appends a
+new receipt. Use the latest restore receipt before subsequent audited bookkeeping
+changes. Keep the adjacent undo snapshot files with the ledger. Results include
+the restore receipt, snapshot identifiers, and verification data with row counts
+and a Desktop review link.
 
-The snapshot includes all database tables: accounting, identity root, token
-registry, audit history, budgets, rules, schedules, investments, and attachment
-records. Receipt and document **files** are stored outside SQLite in the
-`attachments/` directory beside the source database. Back up that directory
-separately and preserve the paths referenced by attachment records when moving
-machines. External attachment storage changes are outside these commands.
-`bk export` remains an accounting JSON/CSV export, not a recovery backup.
-Backup and restore are CLI commands and are not exposed over MCP.
+Use `bk recover` to open a full current-schema snapshot at a new file path.
+It carries the snapshot's identity and audit data into the new ledger. Backup
+and recovery use the CLI. Keep the passphrase and the external `attachments/`
+directory separately. Snapshots include attachment records. Receipt and
+document files live in that directory. Use `bk export` for accounting interchange.
 
 ### `bk verify`
 
@@ -316,6 +311,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `audit_log` | Optional `company`, `entity`, `action` (including `create`), `limit`, `offset`; rows include `prev_hash` and `row_hash` |
 | `audit_receipts` | `company`, optional `cursor` or `continuation`, and optional `limit` |
 | `audit_undo` | `company` and numeric `receipt`. Direct signed bookkeepers undo eligible receipts immediately. Propose-only grants create a pending correction |
+| `restore` | `input`, a standalone backup path on the server. Requires `ledger/admin` |
+| `restore_undo` | Numeric `undo_id` from a restore receipt. Requires `ledger/admin` |
 
 `txn_post.debits` and `.credits` contain `{account, amount, memo?}` objects.
 `amount` is a decimal string in major units. `meta` is a string-to-string map;
@@ -544,7 +541,7 @@ Read-only mode removes `company_create`, `company_delete`, `account_create`, `ac
 `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
 `ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
 `rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
-`inform_preference_set`, `reconcile_statement` and `audit_undo` from the router.
+`inform_preference_set`, `reconcile_statement`, `audit_undo`, `restore`, and `restore_undo` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
@@ -563,7 +560,7 @@ When `txn post` or `txn_post` omits currency, the posting uses
 | CLI command | Reason |
 |---|---|
 | `bk init` | Ledger initialization chooses a local path, encryption and a new trust boundary. A trusted Desktop host can use `create_demo_ledger` to seed a separate file. |
-| `bk backup`, `bk restore` | Deal with local full-ledger snapshot paths. The owner chooses the files and confirms replacement. |
+| `bk backup`, `bk recover` | Create full local snapshots or recover them into a new file with their original trust root. |
 | `bk key init`, `bk agent issue`, `bk agent revoke` | Owner-managed trust root and credential lifecycle. Setup sessions have their own scoped owner tools. |
 | `bk agent limit set`, `bk agent limit clear`, `bk policy set` | Owner-managed authorization policy and limits. |
 | `bk account delete` | Permanent catalog deletion uses local confirmation. |

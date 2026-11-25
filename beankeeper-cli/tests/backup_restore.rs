@@ -199,9 +199,9 @@ fn round_trip(encrypted: bool) -> TestResult {
     if let Some(token) = &token {
         cmd.args(["--agent-token", token]);
     }
-    let output = cmd.arg("restore").arg("--input").arg(&backup).output()?;
+    let output = cmd.arg("recover").arg("--input").arg(&backup).output()?;
     let result = success(&output)?;
-    assert_eq!(result["meta"]["command"], "restore");
+    assert_eq!(result["meta"]["command"], "recover");
     assert_eq!(result["data"]["encrypted"], encrypted);
     assert_eq!(
         result["data"]["schema_version"],
@@ -261,7 +261,7 @@ fn plaintext_round_trip_preserves_accounting_and_schedules() -> TestResult {
 }
 
 #[test]
-fn overwrite_requires_force_and_force_publishes_a_complete_snapshot() -> TestResult {
+fn backup_overwrite_requires_force_and_recovery_requires_a_new_path() -> TestResult {
     let dir = tempdir()?;
     let source = dir.path().join("source.db");
     let backup = dir.path().join("backup");
@@ -283,24 +283,11 @@ fn overwrite_requires_force_and_force_publishes_a_complete_snapshot() -> TestRes
     data(&destination, None, &["init"])?;
     let original = std::fs::read(&destination)?;
     bk(&destination, None)?
-        .args(["restore", "--input"])
+        .args(["recover", "--input"])
         .arg(&backup)
         .assert()
         .code(3);
     assert_eq!(std::fs::read(&destination)?, original);
-    bk(&destination, None)?
-        .args(["restore", "--force", "--input"])
-        .arg(&backup)
-        .assert()
-        .success();
-    assert_eq!(
-        data(&source, None, &["verify"])?,
-        data(&destination, None, &["verify"])?
-    );
-    assert_eq!(
-        data(&source, None, &["company", "list"])?,
-        data(&destination, None, &["company", "list"])?
-    );
     Ok(())
 }
 
@@ -332,22 +319,12 @@ fn invalid_inputs_never_publish_or_replace_a_destination() -> TestResult {
         std::fs::read(&forged)?,
     ] {
         std::fs::write(&input, bytes)?;
-        for existing in [false, true] {
-            if existing {
-                std::fs::write(&destination, b"preserve destination")?;
-            }
-            bk(&destination, None)?
-                .args(["restore", "--force", "--input"])
-                .arg(&input)
-                .assert()
-                .code(4);
-            if existing {
-                assert_eq!(std::fs::read(&destination)?, b"preserve destination");
-                std::fs::remove_file(&destination)?;
-            } else {
-                assert!(!destination.exists());
-            }
-        }
+        bk(&destination, None)?
+            .args(["recover", "--input"])
+            .arg(&input)
+            .assert()
+            .code(4);
+        assert!(!destination.exists());
         assert!(
             !std::fs::read_dir(dir.path())?.any(|entry| entry.is_ok_and(|entry| entry
                 .file_name()
@@ -364,13 +341,13 @@ fn required_paths_missing_sources_and_self_overwrites_are_rejected() -> TestResu
     let source = dir.path().join("source.db");
     let backup = dir.path().join("backup");
     bk(&source, None)?.arg("backup").assert().code(2);
-    bk(&source, None)?.arg("restore").assert().code(2);
+    bk(&source, None)?.arg("recover").assert().code(2);
     let mut command = Command::cargo_bin("bk")?;
     command
         .current_dir(dir.path())
         .env_remove("BEANKEEPER_DB")
         .env_remove("BK_AGENT_TOKEN")
-        .arg("restore")
+        .arg("recover")
         .arg("--input")
         .arg(&backup)
         .assert()
@@ -380,7 +357,7 @@ fn required_paths_missing_sources_and_self_overwrites_are_rejected() -> TestResu
         .current_dir(dir.path())
         .env("BEANKEEPER_DB", &source)
         .env_remove("BK_AGENT_TOKEN")
-        .args(["restore", "--input"])
+        .args(["recover", "--input"])
         .arg(&backup)
         .assert()
         .code(2);
@@ -391,7 +368,7 @@ fn required_paths_missing_sources_and_self_overwrites_are_rejected() -> TestResu
         .assert()
         .code(5);
     bk(&source, None)?
-        .arg("restore")
+        .arg("recover")
         .arg("--input")
         .arg(&backup)
         .assert()
@@ -399,24 +376,28 @@ fn required_paths_missing_sources_and_self_overwrites_are_rejected() -> TestResu
     assert!(!source.exists());
     assert!(!backup.exists());
     data(&source, None, &["init"])?;
-    for args in [
-        ["backup", "--force", "--output"],
-        ["restore", "--force", "--input"],
-    ] {
-        bk(&source, None)?.args(args).arg(&source).assert().code(3);
-    }
+    bk(&source, None)?
+        .args(["backup", "--force", "--output"])
+        .arg(&source)
+        .assert()
+        .code(3);
+    bk(&source, None)?
+        .args(["recover", "--input"])
+        .arg(&source)
+        .assert()
+        .code(3);
     data(&source, None, &["verify"])?;
     Ok(())
 }
 
 #[test]
-fn embedded_restore_requires_a_command_line_destination() -> TestResult {
+fn embedded_recovery_requires_a_command_line_destination() -> TestResult {
     let dir = tempdir()?;
     let snapshot = dir.path().join("missing.db");
     let destination = dir.path().join("restore.db");
     let restore = [
         "bk".as_ref(),
-        "restore".as_ref(),
+        "recover".as_ref(),
         "--input".as_ref(),
         snapshot.as_os_str(),
     ];
@@ -452,7 +433,7 @@ fn force_rejects_sqlite_sidecars_and_source_aliases() -> TestResult {
         .success();
     let live = Db::open_existing(&source, None)?;
     bk(&source, None)?
-        .args(["restore", "--force", "--input"])
+        .args(["recover", "--input"])
         .arg(&backup)
         .assert()
         .code(3);
@@ -512,27 +493,20 @@ fn wrong_passphrases_and_invalid_tokens_preserve_destination() -> TestResult {
         .arg(&backup)
         .assert()
         .success();
-    std::fs::write(&destination, b"keep destination")?;
     for key in [None, Some(wrong.as_path())] {
         bk(&destination, key)?
-            .args(["restore", "--force", "--input"])
+            .args(["recover", "--input"])
             .arg(&backup)
             .assert()
             .code(4);
-        assert_eq!(std::fs::read(&destination)?, b"keep destination");
+        assert!(!destination.exists());
     }
     bk(&destination, Some(&key))?
-        .args([
-            "--agent-token",
-            "invalid-token",
-            "restore",
-            "--force",
-            "--input",
-        ])
+        .args(["--agent-token", "invalid-token", "recover", "--input"])
         .arg(&backup)
         .assert()
         .code(6);
-    assert_eq!(std::fs::read(&destination)?, b"keep destination");
+    assert!(!destination.exists());
     let original = std::fs::read(&backup)?;
     bk(&source, Some(&wrong))?
         .args(["backup", "--force", "--output"])
@@ -571,18 +545,17 @@ fn verification_rejects_audit_tampering_on_both_backup_and_restore() -> TestResu
         .assert()
         .code(4);
     assert_eq!(std::fs::read(&backup)?, good_backup);
-    std::fs::write(&destination, b"keep destination")?;
     bk(&destination, None)?
-        .args(["restore", "--force", "--input"])
+        .args(["recover", "--input"])
         .arg(&restore_input)
         .assert()
         .code(4);
-    assert_eq!(std::fs::read(&destination)?, b"keep destination");
+    assert!(!destination.exists());
     Ok(())
 }
 
 #[test]
-fn restore_rejects_unsupported_schema_without_migration_or_modifying_input() -> TestResult {
+fn recovery_rejects_unsupported_schema_without_migration_or_modifying_input() -> TestResult {
     let dir = tempdir()?;
     let source = dir.path().join("source.db");
     let destination = dir.path().join("destination.db");
@@ -596,7 +569,7 @@ fn restore_rejects_unsupported_schema_without_migration_or_modifying_input() -> 
         drop(conn);
         let original = std::fs::read(&source)?;
         bk(&destination, None)?
-            .args(["restore", "--input"])
+            .args(["recover", "--input"])
             .arg(&source)
             .assert()
             .code(4)
@@ -609,7 +582,7 @@ fn restore_rejects_unsupported_schema_without_migration_or_modifying_input() -> 
 
 #[cfg(unix)]
 #[test]
-fn restore_accepts_db_after_subcommand_and_one_shot_passphrase_source() -> TestResult {
+fn recovery_accepts_db_after_subcommand_and_one_shot_passphrase_source() -> TestResult {
     let dir = tempdir()?;
     let source = dir.path().join("source.db");
     let backup = dir.path().join("backup");
@@ -627,7 +600,7 @@ fn restore_accepts_db_after_subcommand_and_one_shot_passphrase_source() -> TestR
     cmd.env_remove("BK_AGENT_TOKEN")
         .env_remove("BEANKEEPER_PASSPHRASE_CMD")
         .stdin(std::fs::File::open(&key)?)
-        .args(["restore", "--input"])
+        .args(["recover", "--input"])
         .arg(&backup)
         .arg("--db")
         .arg(&destination)
@@ -635,38 +608,6 @@ fn restore_accepts_db_after_subcommand_and_one_shot_passphrase_source() -> TestR
         .assert()
         .success();
     data(&destination, Some(&key), &["verify"])?;
-    Ok(())
-}
-
-#[test]
-fn restore_cannot_replace_an_enforced_destination_with_an_unenforced_snapshot() -> TestResult {
-    let dir = tempdir()?;
-    let source = dir.path().join("source.db");
-    let destination = dir.path().join("destination.db");
-    let snapshot = dir.path().join("snapshot.db");
-    data(&source, None, &["init"])?;
-    bk(&source, None)?
-        .args(["backup", "--output"])
-        .arg(&snapshot)
-        .assert()
-        .success();
-    let db = Db::open(&destination, None)?;
-    beankeeper_cli::identity::Granted::<beankeeper_cli::identity::Admin>::with_db(
-        &db,
-        &beankeeper_cli::db::Actor::new("owner".parse()?),
-        |grant| beankeeper_cli::db::audit::set_policy(grant, true),
-    )?;
-    drop(db);
-    let original = std::fs::read(&destination)?;
-    bk(&destination, None)?
-        .args(["restore", "--force", "--input"])
-        .arg(&snapshot)
-        .assert()
-        .code(6)
-        .stderr(predicates::str::contains(
-            "cannot overwrite an enforced ledger",
-        ));
-    assert_eq!(std::fs::read(&destination)?, original);
     Ok(())
 }
 
@@ -681,7 +622,7 @@ fn backup_keeps_the_source_and_copy_at_the_older_schema() -> TestResult {
     connection.execute_batch(
         "DROP TABLE fx_postings;
          DROP TABLE fx_accounts;
-         DELETE FROM schema_version WHERE version = 37;",
+         DELETE FROM schema_version WHERE version > 36;",
     )?;
     let result = success(
         &bk(&source, None)?
@@ -703,5 +644,106 @@ fn backup_keeps_the_source_and_copy_at_the_older_schema() -> TestResult {
         )?;
         assert!(!fx_exists);
     }
+    Ok(())
+}
+
+#[test]
+fn issued_restore_command_points_to_full_recovery_for_a_missing_ledger() -> TestResult {
+    let dir = tempdir()?;
+    let source = dir.path().join("source.db");
+    let backup = dir.path().join("owner's backup.bk-backup");
+    let passphrase = dir.path().join("kit passphrase.txt");
+    std::fs::write(&passphrase, "recovery kit passphrase\n")?;
+    let recovery_dir = tempdir()?;
+    let destination = recovery_dir.path().join("new ledger.db");
+    data(&source, Some(&passphrase), &["init", "--encrypt", "--demo"])?;
+    bk(&source, Some(&passphrase))?
+        .args(["backup", "--output"])
+        .arg(&backup)
+        .assert()
+        .success();
+
+    let command = format!(
+        "bk --db '{}' recover --input '{}/owner'\\''s backup.bk-backup'",
+        destination.display(),
+        dir.path().display()
+    );
+    let encrypted_command = format!("{command} --passphrase-file '{}'", passphrase.display());
+    for (key, command) in [
+        (None, command),
+        (Some(passphrase.as_path()), encrypted_command),
+    ] {
+        let refusal = bk(&destination, key)?
+            .args(["restore", "--input"])
+            .arg(&backup)
+            .assert()
+            .code(2)
+            .stdout("");
+        let error: Value = serde_json::from_slice(&refusal.get_output().stderr)?;
+        assert_eq!(error["error"]["code"], "USAGE");
+        assert_eq!(
+            error["error"]["message"],
+            format!(
+                "restore destination '{}' does not exist. Recover to a new ledger with `{command}`.",
+                destination.display(),
+            )
+        );
+        assert!(!destination.try_exists()?);
+        assert_eq!(std::fs::read_dir(recovery_dir.path())?.count(), 0);
+    }
+
+    bk(&destination, Some(&passphrase))?
+        .args(["recover", "--input"])
+        .arg(&backup)
+        .assert()
+        .success();
+    assert_eq!(
+        data(&destination, Some(&passphrase), &["verify"])?,
+        data(&source, Some(&passphrase), &["verify"])?
+    );
+    Ok(())
+}
+
+#[test]
+fn plaintext_restore_and_undo_use_the_local_admin_grant() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("plain.db");
+    let backup = dir.path().join("plain.bk-backup");
+    data(&path, None, &["init"])?;
+    let input = backup.to_str().ok_or("backup path")?;
+    data(&path, None, &["backup", "--output", input])?;
+    data(&path, None, &["company", "create", "acme", "Acme"])?;
+    let restored = data(&path, None, &["restore", "--input", input])?;
+    assert_eq!(restored["verification"]["row_counts"]["companies"], 0);
+    assert!(restored["undo_of"].is_null());
+    assert_eq!(
+        restored["summary"],
+        "Restored the books from the chosen backup."
+    );
+    let snapshot_id = restored["undo"]["snapshot_id"]
+        .as_str()
+        .ok_or("missing undo snapshot ID")?;
+    let snapshot = dir.path().join(format!(".{snapshot_id}.bk-backup"));
+    let original = std::fs::read(&snapshot)?;
+    let mut altered = original.clone();
+    altered.push(0);
+    std::fs::write(&snapshot, altered)?;
+    let receipt = restored["undo_id"].to_string();
+    let undo = ["restore-undo", &receipt];
+    let refused = bk(&path, None)?.args(undo).assert().code(3);
+    let error: Value = serde_json::from_slice(&refused.get_output().stderr)?;
+    assert_eq!(error["error"]["code"], "VALIDATION");
+    assert_eq!(
+        error["error"]["message"],
+        "undo snapshot does not match its recorded SHA-256"
+    );
+    std::fs::write(&snapshot, original)?;
+    let undone = data(&path, None, &undo)?;
+    assert_eq!(undone["verification"]["row_counts"]["companies"], 1);
+    assert_eq!(undone["undo_of"], restored["undo_id"]);
+    assert_eq!(
+        undone["summary"],
+        "Restored the books from before the previous restore."
+    );
     Ok(())
 }

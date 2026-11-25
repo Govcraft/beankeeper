@@ -106,6 +106,8 @@ convert! {
     period_close(PeriodClose) => Period(input => input.into()),
     reconcile_list(ReconcileList) => Reconcile(input => input.into()),
     period_list(CompanyScope) => Period(input => PeriodRequest::List(input.company.into_inner())),
+    restore(Restore) => Restore(input => input.into()),
+    restore_undo(RestoreUndo) => Restore(input => input.into()),
     audit_log(AuditLog) => AuditLog(input => input.into()),
     audit_undo(AuditUndo) => AuditReceipts(input => ReceiptRequest::Undo(input.company.into_inner(), input.receipt)),
 }
@@ -208,6 +210,7 @@ pub(super) fn response(
         LedgerResponse::Period(_, _, response) => (encode(response)?, None),
         LedgerResponse::Reconcile(_, _, response) => (encode(response)?, None),
         LedgerResponse::Report(response) => (response.data()?, None),
+        LedgerResponse::Restore(_, response) => (encode(response)?, None),
         LedgerResponse::Rule(_, _, response) => (encode(response)?, None),
         LedgerResponse::Standing(_, _, response) => (encode(response)?, None),
         LedgerResponse::Setup(_, _, response) => (encode(response)?, None),

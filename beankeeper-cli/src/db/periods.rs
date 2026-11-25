@@ -248,8 +248,11 @@ pub fn get(scope: &super::companies::Company<'_>) -> Result<Option<PeriodLock>, 
         .map_err(|_| inconsistent_history(company))?;
     let latest: Option<Option<String>> = conn
         .query_row(
-            "SELECT after FROM audit_log WHERE entity = 'period' AND company_slug = ?1
+            &format!(
+                "SELECT after FROM {audit} WHERE entity = 'period' AND company_slug = ?1
          AND entity_id = ?1 ORDER BY id DESC LIMIT 1",
+                audit = conn.bookkeeping_audit()
+            ),
             [company],
             |row| row.get(0),
         )
@@ -363,10 +366,11 @@ pub(super) fn check_open_date(
 /// # Errors
 /// Returns database errors for inconsistent state or missing company tenancy.
 pub fn verify(conn: ReadConn<'_>) -> Result<(), CliError> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT company_slug FROM period_locks
-         UNION SELECT company_slug FROM audit_log WHERE entity = 'period'",
-    )?;
+         UNION SELECT company_slug FROM {audit} WHERE entity = 'period'",
+        audit = conn.bookkeeping_audit()
+    ))?;
     for slug in stmt.query_map([], |row| row.get(0))? {
         let scope = super::companies::Company::bind(conn, slug?)?;
         get(&scope)?;

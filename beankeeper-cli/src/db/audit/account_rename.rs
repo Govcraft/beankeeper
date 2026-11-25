@@ -151,13 +151,16 @@ fn active_rename(
     let event = scope
         .read()
         .query_row(
-            "SELECT id, action, before, after FROM audit_log event
+            &format!(
+                "SELECT id, action, before, after FROM {audit} event
          WHERE company_slug = ?1 AND entity = 'account' AND entity_id = ?2 AND (
              action IN ('create', 'account_delete', 'account_archive')
              OR (action = 'account_rename' AND undo_of IS NULL AND NOT EXISTS (
-                 SELECT 1 FROM audit_log restored WHERE restored.undo_of = event.id
+                 SELECT 1 FROM {audit} restored WHERE restored.undo_of = event.id
              ))
          ) ORDER BY id DESC LIMIT 1",
+                audit = scope.read().bookkeeping_audit()
+            ),
             params![scope.slug(), code.as_str()],
             |row| {
                 Ok((
@@ -187,9 +190,12 @@ impl CurrentAccount {
         let revision = scope
             .read()
             .query_row(
-                "SELECT id FROM audit_log
+                &format!(
+                    "SELECT id FROM {audit}
              WHERE company_slug = ?1 AND entity = 'account' AND entity_id = ?2
              ORDER BY id DESC LIMIT 1",
+                    audit = scope.read().bookkeeping_audit()
+                ),
                 params![scope.slug(), code.as_str()],
                 |row| row.get(0),
             )
@@ -343,16 +349,19 @@ pub(super) fn restore(
 pub(in crate::db) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
     let mismatch: Option<ReceiptId> = reader
         .query_row(
-            "SELECT event.id FROM audit_log event
+            &format!(
+                "SELECT event.id FROM {audit} event
          LEFT JOIN accounts account ON account.company_slug = event.company_slug
                                   AND account.code = event.entity_id
          WHERE event.action = 'account_rename' AND NOT EXISTS (
-             SELECT 1 FROM audit_log newer WHERE newer.company_slug = event.company_slug
+             SELECT 1 FROM {audit} newer WHERE newer.company_slug = event.company_slug
                AND newer.entity = 'account' AND newer.entity_id = event.entity_id
                AND newer.action IN ('create', 'account_delete', 'account_rename')
                AND newer.id > event.id
          ) AND (account.code IS NULL OR account.name IS NOT json_extract(event.after, '$.name'))
          LIMIT 1",
+                audit = reader.bookkeeping_audit()
+            ),
             [],
             |row| row.get(0),
         )
