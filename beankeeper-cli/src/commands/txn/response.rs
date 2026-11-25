@@ -111,6 +111,13 @@ pub struct TxnResponse {
     pub(super) data: TxnData,
 }
 
+#[derive(Serialize)]
+struct RecategorizationJson<'a> {
+    #[serde(flatten)]
+    result: &'a recategorize::Applied,
+    desktop_path: Option<String>,
+}
+
 impl Serialize for TxnResponse {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match &self.data {
@@ -179,22 +186,14 @@ impl Serialize for TxnResponse {
             TxnData::CorrectionProposed(proposal) => proposal.serialize(serializer),
             TxnData::Proposals(proposals) => proposals.serialize(serializer),
             TxnData::Resolved(proposal) => proposal.serialize(serializer),
-            TxnData::Recategorized(result) => {
-                #[derive(Serialize)]
-                struct RecategorizationJson<'a> {
-                    #[serde(flatten)]
-                    result: &'a recategorize::Applied,
-                    desktop_path: Option<String>,
-                }
-                RecategorizationJson {
-                    result,
-                    desktop_path: self
-                        .company
-                        .as_ref()
-                        .map(|company| result.desktop_path(company)),
-                }
-                .serialize(serializer)
+            TxnData::Recategorized(result) => RecategorizationJson {
+                result,
+                desktop_path: self
+                    .company
+                    .as_ref()
+                    .map(|company| result.desktop_path(company)),
             }
+            .serialize(serializer),
             TxnData::List(list) => {
                 json::transaction_list_data(&list.rows, &list.entries).serialize(serializer)
             }
