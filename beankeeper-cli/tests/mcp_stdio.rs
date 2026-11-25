@@ -1599,7 +1599,23 @@ fn reversal_mirrors_entries_and_retries_with_the_mcp_actor() -> TestResult {
         assert_eq!(new["cleared_amount"], 0);
     }
     let transactions = client.success("txn_list", &json!({"company":"acme"}))?;
-    assert_eq!(transactions.as_array().map(Vec::len), Some(2));
+    assert_eq!(transactions, json!([]));
+    let history = client.success(
+        "txn_list",
+        &json!({"company":"acme", "include_reversed":true}),
+    )?;
+    assert_eq!(history.as_array().map(Vec::len), Some(2));
+    assert_eq!(history[0]["id"], posted["id"]);
+    assert_eq!(history[1]["id"], created["id"]);
+    for (include_reversed, count) in [(false, 0), (true, 2)] {
+        assert_eq!(
+            client.success(
+                "txn_list",
+                &json!({"company":"acme", "count":true, "include_reversed":include_reversed}),
+            )?,
+            json!({"count":count})
+        );
+    }
     let audit = client.success("audit_log", &json!({"company":"acme", "action":"reverse"}))?;
     assert_eq!(audit.as_array().map(Vec::len), Some(1));
     assert_eq!(audit[0]["actor"], "mcp:codex-test-client");

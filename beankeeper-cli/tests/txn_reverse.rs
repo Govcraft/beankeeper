@@ -169,13 +169,13 @@ fn split_reversal_preserves_details_links_both_ways_and_cancels_balances() -> Te
          GROUP BY account_code HAVING SUM(CASE direction WHEN 'debit' THEN amount ELSE -amount END) != 0)",
         [], |row| row.get(0))?;
     assert_eq!(nonzero, 0);
-    let list = books.run(&["txn", "list"])?;
+    let list = books.run(&["txn", "list", "--include-reversed"])?;
     let table = String::from_utf8(list.stdout)?;
     assert!(table.contains(&format!("Reversed by #{id}")));
     assert!(table.contains(&format!("Reverses #{}", books.original)));
     let detail = books.run(&["txn", "show", &id])?;
     assert!(String::from_utf8(detail.stdout)?.contains(&format!("Reverses #{}", books.original)));
-    let listed = books.json(&["txn", "list"])?;
+    let listed = books.json(&["txn", "list", "--include-reversed"])?;
     let numeric_id: i64 = id.parse()?;
     assert!(
         listed["data"]
@@ -194,6 +194,75 @@ fn split_reversal_preserves_details_links_both_ways_and_cancels_balances() -> Te
         serde_json::from_str::<Value>(rows[0]["before"].as_str().ok_or("missing before")?)?["metadata"],
         before["metadata"]
     );
+    Ok(())
+}
+
+#[test]
+fn list_hides_reversal_pairs_from_rows_counts_and_pagination() -> TestResult {
+    let books = Books::new()?;
+    books.reverse()?;
+    let active = books.json(&[
+        "txn",
+        "post",
+        "-d",
+        "Active expense",
+        "--date",
+        "2026-03-01",
+        "--debit",
+        "5000:1",
+        "--credit",
+        "1000:1",
+    ])?;
+    let page = books.json(&["txn", "list", "--limit", "1"])?;
+    assert_eq!(page["data"][0]["id"], active["data"]["id"]);
+    assert_eq!(page["meta"]["pagination"]["total"], 1);
+    assert_eq!(page["meta"]["pagination"]["has_more"], false);
+    assert_eq!(books.count()?, 1);
+
+    let history = books.json(&["txn", "list", "--include-reversed", "--limit", "1"])?;
+    assert_eq!(history["data"][0]["id"].to_string(), books.original);
+    assert_eq!(history["meta"]["pagination"]["total"], 3);
+    assert_eq!(history["meta"]["pagination"]["has_more"], true);
+    assert_eq!(
+        books.json(&["txn", "list", "--count", "--include-reversed"])?["data"]["count"],
+        3
+    );
+    assert_eq!(
+        books.json(&["txn", "list", "--count", "--reference", "ORIGINAL"])?["data"]["count"],
+        0
+    );
+    assert_eq!(
+        books.json(&[
+            "txn",
+            "list",
+            "--count",
+            "--reference",
+            "ORIGINAL",
+            "--include-reversed",
+        ])?["data"]["count"],
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn accounting_exports_keep_both_sides_of_a_reversal() -> TestResult {
+    let books = Books::new()?;
+    let reversal_id = books.reverse()?;
+    let export = books.json(&["export"])?;
+    let transactions = &export["beankeeper_export"]["companies"][0]["transactions"];
+    assert_eq!(transactions.as_array().map(Vec::len), Some(2));
+    assert_eq!(transactions[0]["id"].to_string(), books.original);
+    assert_eq!(transactions[1]["id"].to_string(), reversal_id);
+
+    let csv = books.run(&["export", "--output-format", "csv"])?;
+    assert!(csv.status.success());
+    let csv = String::from_utf8(csv.stdout)?;
+    assert!(csv.contains(",2026-01-01,Split expense,"));
+    assert!(csv.contains(&format!(
+        ",2026-02-01,Reversal of #{}: Split expense,",
+        books.original
+    )));
     Ok(())
 }
 
@@ -224,7 +293,7 @@ fn explicit_reference_retries_skip_and_other_repeats_fail() -> TestResult {
         3,
         "already reversed",
     )?;
-    assert_eq!(books.count()?, 2);
+    assert_eq!(books.count()?, 0);
     assert_eq!(
         books.json(&["audit", "log", "--action", "reverse"])?["data"]
             .as_array()
@@ -374,6 +443,6 @@ fn failed_audit_write_rolls_back_posting_and_original_link() -> TestResult {
     );
     conn.execute_batch("DROP TRIGGER fail_reverse_audit;")?;
     books.reverse()?;
-    assert_eq!(books.count()?, 2);
+    assert_eq!(books.count()?, 0);
     Ok(())
 }

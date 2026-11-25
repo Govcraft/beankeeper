@@ -964,10 +964,10 @@ override `Reversal of #ID: ORIGINAL DESCRIPTION`. The default reference is
 with a different reference, rejects an already reversed transaction.
 
 The original gains `reversed_by` metadata and the new posting carries
-`reverses`, both numeric transaction IDs. `txn show` and `txn list` display
-these links. The original's entries and metadata remain intact apart from
-that added link; transaction metadata and attachments are not copied to the
-reversal. An atomic `reverse` audit record captures the actor, original
+`reverses`, both numeric transaction IDs. `txn show` and
+`txn list --include-reversed` display these links. Apart from the added link,
+the original's entries and metadata remain intact. The reversal copies neither
+transaction metadata nor attachments. An atomic `reverse` audit record captures the actor, original
 metadata, new link and reversal reference (`bk audit log --action reverse`).
 
 A transaction with any reconciled clearing cannot be reversed. Other
@@ -1229,6 +1229,11 @@ Resolution order: explicit `--tax` flag > account `--default-tax-category` > non
 ### Querying the Ledger
 
 `bk txn list` (aliased as `bk txn search`) supports rich filtering so agents and scripts get back precisely the data they need without dumping the entire ledger:
+
+`bk txn list` and MCP `txn_list` hide both sides of reversed pairs by default,
+including in counts and pagination totals. Use `--include-reversed` or
+`"include_reversed": true` to include them alongside other matching transactions.
+Use `txn show` to inspect either posting directly by ID.
 
 ```sh
 # Search transactions by description

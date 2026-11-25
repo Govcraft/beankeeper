@@ -219,6 +219,9 @@ pub(crate) struct TxnList {
     pub tax_category: Option<String>,
     #[schemars(schema_with = "optional_direction_schema")]
     pub direction: Option<DebitOrCredit>,
+    /// Include both the original and reversal in results and counts.
+    #[serde(default)]
+    pub include_reversed: bool,
     #[serde(default)]
     pub count: bool,
 }

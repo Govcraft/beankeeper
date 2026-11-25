@@ -445,7 +445,7 @@ See [the host API contract and example](../mcp-host-tools.md).
 - Call `txn_post` with `debits` and `credits` arrays of `{account, amount, memo?}`. Amounts are decimal strings in major units. Direct grants post immediately. Propose-only grants return a pending proposal. Supply a stable `reference` and `on_conflict: "skip"` for retries of posted references. Find a pending reference with `txn_proposals`. `meta` is a map of string keys to string values; `tax` is an array of `account=category` strings.
 - Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and `values: {"status":"pending"}`. Legacy arrays such as `["status=pending"]` still work. `txn_meta_unset` takes the same selector and `keys: ["status"]`. Report the returned `receipt` to the owner. Pass it with `company` to `audit_undo` using your signed bookkeeper grant when they ask for a correction. Read-only mode omits both write tools.
 - Call `txn_reverse` with `company` and the original `id` to create a linked mirror posting; optional fields are `date`, `description`, and `reference`. Supply the same explicit `reference` on retries to get `skipped: true` and `existing_id`. Reconciled transactions cannot be reversed. Existing clearings stay on the original; reversal entries start uncleared. This write tool is absent in read-only mode.
-- Call `txn_list` or `txn_show` to inspect posted entries. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
+- Call `txn_list` or `txn_show` to inspect posted entries. Lists, counts, and pagination totals hide both sides of reversed pairs by default. Include them with MCP `"include_reversed": true` or CLI `bk txn list --include-reversed`. Use `report` with `kind` (for example `trial-balance`, `ledger`, or `cash-flow`) and the corresponding CLI options in snake_case.
 - For `report` with `kind: "reconciliation"`, `mode` accepts `bank` (default) or `settlement`. Settlement mode requires `statement` and accepts `link_key` (default `applies_to`) for payment-to-charge metadata links.
 - Use `security_create`, `security_list`, and `security_price` to register symbols, inspect them and record price observations. Trade with `investment_buy` / `investment_sell`, inspect basis with `investment_lots`, and value positions with `investment_holdings`. Quantities and input money are decimal strings; `company` is required. Read-only mode retains the three inspection tools and hides the four writes. See [securities and investment lots](#securities-and-investment-lots) for account setup and trade rules.
 - Use `budget_list`, `budget_set`, `budget_delete`, and `txn_clear` for their CLI equivalents. Budget deletion is confirmed by calling the tool. `txn_clear.batch` accepts an in-memory array of `{reference, amount?}` rows with an `account`; it never reads a file or stdin.
@@ -651,7 +651,8 @@ explicit `--reference` matches its linked reversal, in which case it is a
 successful skip. JSON uses `txn.reverse` and the `txn post` result shape.
 
 Both links are numeric metadata IDs: `reversed_by` on the original and
-`reverses` on the reversal. They appear in `txn show` and `txn list`. Original
+`reverses` on the reversal. They appear in `txn show` and
+`txn list --include-reversed`. Original
 metadata is preserved; the new transaction carries only the reversal link,
 without copying transaction metadata or attachments. The posting, links and
 `reverse` audit record are atomic. Reconciled clearings block the operation;

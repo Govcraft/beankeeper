@@ -284,7 +284,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_meta_set`, `txn_meta_unset` | `company`, exactly one of `id` or `reference`; set takes `values: {"status":"pending"}` and accepts legacy `["status=pending"]`; unset takes `keys: ["status"]`. Both return `receipt` and `desktop_path` on changes. |
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_recategorize` | `company`, exactly one of the original transaction's `id` or `reference`, and `to_account`; optional `from_account`, `entry_id`, `date`, `tax_category`, `description`, `posting_reference`, `on_conflict` |
-| `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, and repeated `meta` filters; show accepts `id` |
+| `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, `include_reversed`, and repeated `meta` filters; show accepts `id` |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
 | `ledger_setup_book_show` | `company`; returns the current profile and chart of accounts |
@@ -841,6 +841,7 @@ bk --company acme txn list --count   # Count only, no rows
 - `--tax-category CAT`: Filter by tax category
 - `--direction {debit|credit}`: Filter entry direction
 - `--limit N` (default: 50), `--offset N` (default: 0): Pagination. JSON includes `meta.pagination` with filtered totals and `has_more`; table output signals truncation on stderr unless quiet.
+- `--include-reversed`: Include both sides of reversed pairs in matching rows, counts, and pagination totals. MCP uses `"include_reversed": true`. Both sides are hidden by default.
 - `--count`: Return count only
 
 ### `bk txn meta set/unset`
@@ -925,6 +926,10 @@ line again after an undo, choose an open date on or after that undo.
 The command refuses reconciled originals, reversals, pending holds,
 settlements, and investment trades. Use the returned receipt with
 `bk audit undo RECEIPT` to reverse the new posting in one step.
+Transaction lists show the original and the active adjustment. After undo,
+they hide the adjustment and its mirror by default and continue to show the
+original. Use `--include-reversed` or MCP `"include_reversed": true` to see the
+undone pair.
 
 ### `bk txn reverse ID`
 
@@ -955,7 +960,7 @@ cleared or reconciled.
 Metadata links both ways (`reversed_by` on the original, `reverses` on the
 reversal, numeric IDs). The original's other metadata is preserved. The new
 transaction carries only `reverses`; transaction metadata and attachments
-are not copied. Table views of `txn show` and `txn list` display the links;
+are not copied. Table views of `txn show` and `txn list --include-reversed` display the links;
 JSON exposes them in `metadata`. The posting, original link and `reverse`
 audit record commit atomically, recording `--actor` / `BK_ACTOR` as usual.
 

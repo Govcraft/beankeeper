@@ -675,6 +675,26 @@ impl TransactionValueFilter {
     }
 }
 
+/// Whether transaction queries include both sides of an audited reversal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReversalVisibility {
+    /// Hide the original and its reversal.
+    #[default]
+    Hide,
+    /// Include the original and its reversal.
+    Include,
+}
+
+impl From<bool> for ReversalVisibility {
+    fn from(include_reversed: bool) -> Self {
+        if include_reversed {
+            Self::Include
+        } else {
+            Self::default()
+        }
+    }
+}
+
 /// Parameters for listing/searching transactions.
 pub struct ListTransactionParams<'a> {
     /// Optional account code filter (matches entries).
@@ -702,6 +722,8 @@ pub struct ListTransactionParams<'a> {
     pub tax_category_filter: Option<&'a str>,
     /// Filter entries by direction ("debit" or "credit").
     pub direction_filter: Option<DebitOrCredit>,
+    /// Whether to include both sides of a reversal in matching transactions.
+    pub include_reversed: ReversalVisibility,
 }
 
 impl Default for ListTransactionParams<'_> {
@@ -719,6 +741,7 @@ impl Default for ListTransactionParams<'_> {
             meta_eq: &[],
             tax_category_filter: None,
             direction_filter: None,
+            include_reversed: ReversalVisibility::default(),
         }
     }
 }
@@ -752,6 +775,17 @@ fn build_list_query(
     }
 
     sql.push_str(" WHERE t.company_slug = ?1");
+
+    if params.include_reversed == ReversalVisibility::Hide {
+        sql.push_str(
+            " AND CAST(t.id AS TEXT) NOT IN (
+                SELECT original_id FROM posting_reversals WHERE company_slug = ?1
+              ) AND t.id NOT IN (
+                SELECT reversal_id FROM posting_reversals
+                WHERE company_slug = ?1 AND reversal_id IS NOT NULL
+              )",
+        );
+    }
 
     let mut param_idx = 2u32;
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1377,6 +1411,56 @@ mod tests {
         )
         .unwrap_or_default();
         assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn list_and_count_filter_audited_reversal_pairs_before_paging() -> Result<(), CliError> {
+        use crate::db::audit::{ReverseTransactionParams, grant::Reverse};
+
+        let db = setup();
+        let entries = sample_entries();
+        let original = make_params(&entries, "Original", None, "2026-01-01");
+        let active = make_params(&entries, "Active", None, "2026-01-02");
+        let PostResult::Created(original_id) = post_fixture(&db, &original)? else {
+            panic!("expected original posting");
+        };
+        let PostResult::Created(active_id) = post_fixture(&db, &active)? else {
+            panic!("expected active posting");
+        };
+        let reversed = Granted::<Reverse>::with_db(&db, test_actor(), |grant| {
+            audit::reverse_transaction(
+                grant,
+                &ReverseTransactionParams {
+                    company_slug: original.company_slug,
+                    id: original_id,
+                    date: active.date,
+                    description: None,
+                    reference: None,
+                },
+            )
+        })?;
+        let PostResult::Created(reversal_id) = reversed else {
+            panic!("expected reversal posting");
+        };
+
+        let company = Company::bind(db.read(), original.company_slug.clone())?;
+        let mut filters = ListTransactionParams {
+            account_filter: Some("1000"),
+            limit: 1,
+            ..Default::default()
+        };
+        assert_eq!(list_transactions(&company, &filters)?[0].id, active_id);
+        assert_eq!(count_transactions(&company, &filters)?, 1);
+        filters.include_reversed = ReversalVisibility::Include;
+        assert_eq!(count_transactions(&company, &filters)?, 3);
+        assert_eq!(list_transactions(&company, &filters)?[0].id, original_id);
+        filters.offset = 2;
+        assert_eq!(list_transactions(&company, &filters)?[0].id, reversal_id);
+        assert_eq!(count_transactions(&company, &filters)?, 3);
+        filters.include_reversed = ReversalVisibility::Hide;
+        assert!(list_transactions(&company, &filters)?.is_empty());
+        assert_eq!(count_transactions(&company, &filters)?, 1);
+        Ok(())
     }
 
     #[test]

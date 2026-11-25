@@ -191,6 +191,7 @@ impl TryFrom<inputs::TxnList> for TxnRequest {
                 meta: metadata_filter::parse_filters(&input.meta)?,
                 tax_category: input.tax_category,
                 direction: input.direction,
+                include_reversed: input.include_reversed.into(),
                 count: input.count,
             },
         ))

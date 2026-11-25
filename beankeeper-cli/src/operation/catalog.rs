@@ -28,7 +28,7 @@ macro_rules! ledger_operations {
             CompanyShow => ("company.show", Read, tool(company_show, CompanyShow, "Show one company by slug.")),
             AccountList => ("account.list", Read, tool(account_list, AccountList, "List accounts, optionally filtered by account_type or name. Set with_balances=true for posted debits, posted credits, and posted and available balances. Available includes pending card holds. Use from/to to restrict activity and supply currency when the company uses multiple currencies.")),
             AccountShow => ("account.show", Read, tool(account_show, AccountShow, "Show one account in a company.")),
-            TxnList => ("txn.list", Read, tool(txn_list, TxnList, "List or count transactions using the CLI filters and pagination.")),
+            TxnList => ("txn.list", Read, tool(txn_list, TxnList, "List or count transactions using filters and pagination. Both sides of reversed pairs are hidden by default. Pass include_reversed: true to include them.")),
             TxnShow => ("txn.show", Read, tool(txn_show, TxnShow, "Show transaction entries, attachments, and clearing details.")),
             SecurityList => ("security.list", Read, tool(security_list, CompanyScope, "List company securities.")),
             InvestmentLots => ("investment.lots", Read, tool(investment_lots, InvestmentLots, "List acquisition lots with remaining share quantities and cost basis.")),
