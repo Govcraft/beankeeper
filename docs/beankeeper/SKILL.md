@@ -477,9 +477,19 @@ postings carry the reserved `beankeeper_source` metadata key with value `demo`.
 Use `bk audit log --action demo_seed` or MCP `audit_log` with action `demo_seed`
 to see who initialized the sample books. [Demo report and audit notes](../reports.md)
 
+To tailor the books, ask about the owner's country, broad work situation, book
+types, account types, and currencies. Send only those choices as a JSON profile.
+Use `bk init --demo --path tailored.db --profile -` with the profile on stdin,
+or pass the same fields to `demo_ledger_create` when the MCP host exposes it.
+Write to a fresh local database. Confirm creation in plain words, then use the
+same reports on the demo target if the owner asks to explore it. The generator
+uses fictional names and amounts and keeps the interview in memory.
+[Profile example and defaults](../../README.md#tailor-the-demo-to-your-situation)
+
 Desktop hosts can provision a separate demo ledger with
-`beankeeper_cli::commands::init::create_demo_ledger`, then configure its
-access and policy before serving it.
+`beankeeper_cli::commands::init::create_demo_ledger_from_profile` or serve
+`beankeeper_cli::mcp::DemoLedgerTool`. Configure the generated ledger's access and
+policy before serving it. [Host configuration](../mcp-host-tools.md#tailored-demo-books)
 
 ## Period close and locking
 

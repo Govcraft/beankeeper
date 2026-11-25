@@ -9,6 +9,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 ### Added
 
 - Move a posted line between accounts through the CLI or MCP and undo the move with one audit receipt. ([#289](https://github.com/Govcraft/beankeeper/issues/289))
+- Generate verified synthetic demo books tailored to a typed profile from the CLI or an authenticated MCP host. ([#293](https://github.com/Govcraft/beankeeper/issues/293))
 - Settle unique pending card holds during bank imports and flag stale authorizations in financial summaries through the CLI and MCP. ([#281](https://github.com/Govcraft/beankeeper/issues/281))
 - Record and settle pending card holds through CLI or MCP, see posted and available balances, and undo settlements in one audited step. ([#280](https://github.com/Govcraft/beankeeper/issues/280))
 - Rename account labels from the CLI or MCP with one-step owner undo and sign-off for propose-only bookkeepers. ([#283](https://github.com/Govcraft/beankeeper/issues/283))

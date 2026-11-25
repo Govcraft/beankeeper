@@ -839,6 +839,51 @@ bk --company acme-consulting report reconciliation --mode settlement --account 1
 bk verify
 ```
 
+### Tailor the demo to your situation
+
+Tell your agent which types of books, accounts, and currencies you want to try.
+It can pass those choices to `bk init --demo --path tailored.db --profile -` as JSON
+on stdin. `--profile` also accepts inline JSON or an existing JSON file. Choose a
+fresh path for tailored books. The generator keeps the profile in memory and
+writes a separate, verified database with fictional names, merchants, and amounts.
+
+```json
+{
+  "work_shape": "self_employed",
+  "country": "MX",
+  "currencies": {"secondary": ["USD"]},
+  "books": [
+    {"kind": "personal", "accounts": [{"kind": "checking"}, {"kind": "savings"}]},
+    {"kind": "llc", "industry": "professional_services",
+     "accounts": [{"kind": "checking"}, {"kind": "credit_card", "currency": "USD"}]}
+  ],
+  "features": {"include_investments": true, "include_owner_draws": true}
+}
+```
+
+Use these choices in a profile:
+
+| Field | Accepted choices |
+|---|---|
+| `work_shape` | `employee`, `self_employed`, `business_owner`, `retired`, `other` |
+| `country` | An assigned uppercase two-letter country code |
+| `currencies` | An optional `primary` and distinct `secondary` currencies supported by the ledger |
+| `books[].kind` | `personal`, `sole_proprietorship`, `llc`, `corporation` |
+| `books[].industry` | `general`, `professional_services`, `retail`, `trades` |
+| `books[].accounts[].kind` | `checking`, `savings`, `credit_card`, `payment_app`, `loan`, `investment`, `cash` |
+
+An empty profile generates one personal book with checking. The primary currency
+defaults to a supported currency associated with the country, or USD. An account
+without a currency uses the primary currency. Each selected currency gets Q1
+2025 activity and a synthetic checking account if it needs a cash source.
+Investments are opt-in. When both personal and business books exist, linked draws
+use the primary currency and the first personal book. Set `include_owner_draws`
+to `false` to omit those examples.
+
+Embedded hosts can call `create_demo_ledger_from_profile` or expose the same
+profile through the authenticated `demo_ledger_create` MCP host tool.
+[Host configuration](docs/mcp-host-tools.md#tailored-demo-books)
+
 Beyond the core guarantees above, `bk` provides the following capabilities for multi-entity accounting, automation, and reporting.
 
 ### Intercompany Transactions
