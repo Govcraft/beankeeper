@@ -4,6 +4,7 @@
 //! as the CLI. Only the transport writes to stdout.
 
 pub(crate) mod catalog;
+mod demo;
 mod dispatch;
 mod host;
 mod http;
@@ -13,6 +14,7 @@ mod report_input;
 mod setup_investment_input;
 mod targets;
 
+pub use demo::DemoLedgerTool;
 pub use host::{HostTool, HostToolEffect, HostToolHandler};
 pub use http::{
     LEDGER_TARGET_HEADER, http_router, http_router_with_host_tools,

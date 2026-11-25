@@ -39,6 +39,18 @@ impl<T> Text<T> {
     }
 }
 
+impl<T> From<T> for Text<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> AsRef<T> for Text<T> {
+    fn as_ref(&self) -> &T {
+        &self.0
+    }
+}
+
 impl<T: TextValue> fmt::Display for Text<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)

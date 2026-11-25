@@ -121,6 +121,22 @@ SSE replay with `Last-Event-ID` because the transport cache is session-scoped.
 For a lost response to a write, use the tool's existing idempotency mechanism
 or check the selected ledger before retrying.
 
+## Tailored demo books
+
+Register `beankeeper_cli::mcp::DemoLedgerTool::new(destination, passphrase)` with
+`http_router_with_host_tools` or compose it into your own `HostToolHandler`.
+The destination is a fresh path chosen by the host. The optional passphrase
+comes from the host's secret storage. The tool is available to callers with
+`ledger/admin` on the startup target of a read-write router.
+
+Call `demo_ledger_create` with the profile fields as the tool arguments.
+Discovery publishes an inline JSON Schema for
+`beankeeper_cli::demo::DemoProfile`. Success returns a plain-language summary,
+`is_demo`, and the number of books. Invalid choices and destination collisions
+return structured errors. The host can open and register the new database as a
+separate ledger target and offer its own Desktop view link.
+[Profile example](../README.md#tailor-the-demo-to-your-situation)
+
 ## Example host
 
 This example queues a typed navigation request for an application's UI loop.
