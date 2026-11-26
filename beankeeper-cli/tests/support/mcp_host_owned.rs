@@ -102,18 +102,18 @@ fn host_write_authorization_follows_the_ledger_on_each_request() -> TestResult {
             assert_eq!(payload(&post()?)?["created"], true);
             read_only.store(true, Ordering::Relaxed);
 
-            let receipts = session.call("audit_receipts", &json!({"company":"acme"}), admin)?;
+            let receipts = session.call("audit_receipts", &json!({"company":"acme"}), writer)?;
             let receipts = payload(&receipts)?;
             let original = receipts["receipts"]
                 .as_array()
-                .ok_or("missing audit receipts")?
+                .ok_or_else(|| format!("missing audit receipts: {receipts}"))?
                 .iter()
                 .find(|receipt| receipt["change"]["source_reference"] == "per-ledger-policy")
                 .ok_or("missing posting receipt")?;
             let undone = session.call(
                 "audit_undo",
                 &json!({"company":"acme", "receipt":original["id"]}),
-                admin,
+                writer,
             )?;
             let undo = payload(&undone)?;
             assert_eq!(undo["kind"], "reversed", "{undo}");
