@@ -3511,6 +3511,7 @@ mod tests {
             code: code.to_string(),
             name: format!("Account {code}"),
             account_type: ty.parse().unwrap_or_else(|error| panic!("{error}")),
+            cash_class: beankeeper::types::CashClass::default(),
             created_at: String::new(),
             default_tax_category: None,
         }

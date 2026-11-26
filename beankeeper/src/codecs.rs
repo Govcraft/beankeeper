@@ -5,7 +5,8 @@ use std::str::FromStr;
 
 use crate::core::{Frequency, LotMethod, Quantity};
 use crate::types::{
-    AccountCode, AccountType, ClearanceStatus, Currency, DebitOrCredit, DocumentType, Sha256Hex,
+    AccountCode, AccountType, CashClass, ClearanceStatus, Currency, DebitOrCredit, DocumentType,
+    Sha256Hex,
 };
 
 type CodecError = Box<dyn Error + Send + Sync>;
@@ -66,6 +67,7 @@ macro_rules! text_codec {
 
 text_codec!(AccountCode, as_str);
 text_codec!(AccountType, code);
+text_codec!(CashClass, code);
 text_codec!(ClearanceStatus, as_str);
 text_codec!(Currency, code, |text: &str| Currency::try_from(text)
     .map_err(CodecError::from));

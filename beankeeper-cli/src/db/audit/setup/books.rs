@@ -309,23 +309,31 @@ impl ChartTemplate {
         }
     }
 
-    const fn accounts(self) -> &'static [(&'static str, &'static str, AccountType)] {
+    const fn accounts(
+        self,
+    ) -> &'static [(
+        &'static str,
+        &'static str,
+        AccountType,
+        beankeeper::types::CashClass,
+    )] {
         use AccountType::{Asset, Equity, Expense, Liability, Revenue};
+        use beankeeper::types::CashClass::{Cash, NonCash};
         match self {
             Self::PersonalV1 => &[
-                ("1000", "Cash", Asset),
-                ("2000", "Credit Cards", Liability),
-                ("3000", "Opening Balance Equity", Equity),
-                ("4000", "Other Income", Revenue),
-                ("5000", "Other Expenses", Expense),
+                ("1000", "Cash", Asset, Cash),
+                ("2000", "Credit Cards", Liability, NonCash),
+                ("3000", "Opening Balance Equity", Equity, NonCash),
+                ("4000", "Other Income", Revenue, NonCash),
+                ("5000", "Other Expenses", Expense, NonCash),
             ],
             Self::BusinessV1 => &[
-                ("1000", "Operating Cash", Asset),
-                ("1100", "Accounts Receivable", Asset),
-                ("2000", "Accounts Payable", Liability),
-                ("3000", "Opening Balance Equity", Equity),
-                ("4000", "Sales Revenue", Revenue),
-                ("5000", "Operating Expenses", Expense),
+                ("1000", "Operating Cash", Asset, Cash),
+                ("1100", "Accounts Receivable", Asset, NonCash),
+                ("2000", "Accounts Payable", Liability, NonCash),
+                ("3000", "Opening Balance Equity", Equity, NonCash),
+                ("4000", "Sales Revenue", Revenue, NonCash),
+                ("5000", "Operating Expenses", Expense, NonCash),
             ],
         }
     }
@@ -627,7 +635,7 @@ fn apply_chart(
     let accounts = template
         .accounts()
         .iter()
-        .map(|&(code, name, account_type)| {
+        .map(|&(code, name, account_type, cash_class)| {
             create_setup_account(
                 writer,
                 company,
@@ -639,6 +647,18 @@ fn apply_chart(
                 &name.parse()?,
                 account_type,
             )
+            .and_then(|account| {
+                if cash_class.is_cash() {
+                    super::super::cash_classification::store_initial_classification(
+                        writer.tx,
+                        writer.actor,
+                        company,
+                        &account.code,
+                        cash_class,
+                    )?;
+                }
+                Ok(account)
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ChartApplied {

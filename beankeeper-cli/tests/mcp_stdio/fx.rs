@@ -293,11 +293,42 @@ fn fx_uses_each_pair_scale_and_honors_closed_periods() -> TestResult {
     Ok(())
 }
 
+fn seed_before_cash_classification(path: &Path) -> TestResult {
+    // Seed only vocabulary available before cash classification existed.
+    for args in [
+        vec!["init"],
+        vec!["company", "create", "acme", "Acme"],
+        vec![
+            "--company",
+            "acme",
+            "account",
+            "create",
+            "1000",
+            "Cash",
+            "--type",
+            "asset",
+        ],
+        vec![
+            "--company",
+            "acme",
+            "account",
+            "create",
+            "4000",
+            "Sales",
+            "--type",
+            "revenue",
+        ],
+    ] {
+        bk(path)?.args(args).assert().success();
+    }
+    Ok(())
+}
+
 #[test]
 fn fx_schema_upgrade_preserves_historical_postings() -> TestResult {
     let temp = tempdir()?;
     let path = temp.path().join("legacy.db");
-    seed(&path)?;
+    seed_before_cash_classification(&path)?;
     let expected = data(
         bk(&path)?,
         &[

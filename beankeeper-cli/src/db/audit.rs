@@ -49,6 +49,7 @@ pub use hash_version::{HashVersion, UnsupportedHashVersion};
 mod posting;
 pub(super) use posting::persist_posting;
 pub(crate) mod account_rename;
+pub(crate) mod cash_classification;
 pub(crate) mod corrections;
 pub mod recategorize;
 pub use account_rename::DuplicateAccountName;
@@ -244,6 +245,7 @@ audit_labels! {
         BudgetDelete => "budget_delete" | "budget-delete",
         AccountDelete => "account_delete" | "account-delete",
         AccountRename => "account_rename" | "account-rename",
+        AccountClassify => "account_classify",
         AccountRenamePropose => "account_rename_propose",
         AccountRenameResolve => "account_rename_resolve",
         CorrectionPropose => "correction_propose",

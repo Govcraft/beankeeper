@@ -3,6 +3,7 @@ use core::fmt;
 use super::account_code::AccountCode;
 use super::account_type::AccountType;
 use super::debit_credit::DebitOrCredit;
+use super::{AccountClassification, CashClass};
 
 /// A named account in the chart of accounts.
 ///
@@ -26,7 +27,7 @@ use super::debit_credit::DebitOrCredit;
 pub struct Account {
     code: AccountCode,
     name: String,
-    kind: AccountType,
+    classification: AccountClassification,
 }
 
 impl Account {
@@ -36,8 +37,28 @@ impl Account {
         Self {
             code,
             name: name.into(),
-            kind: account_type,
+            classification: account_type.into(),
         }
+    }
+
+    /// Creates an account carrying a validated classification.
+    #[must_use]
+    pub fn classified(
+        code: AccountCode,
+        name: impl Into<String>,
+        classification: AccountClassification,
+    ) -> Self {
+        Self {
+            code,
+            name: name.into(),
+            classification,
+        }
+    }
+
+    /// Returns its validated cash membership.
+    #[must_use]
+    pub const fn cash_class(&self) -> CashClass {
+        self.classification.cash_class()
     }
 
     /// Returns the account code.
@@ -55,19 +76,19 @@ impl Account {
     /// Returns the account type.
     #[must_use]
     pub fn account_type(&self) -> AccountType {
-        self.kind
+        self.classification.account_type()
     }
 
     /// Returns the normal balance direction for this account's type.
     #[must_use]
     pub fn normal_balance(&self) -> DebitOrCredit {
-        self.kind.normal_balance()
+        self.account_type().normal_balance()
     }
 }
 
 impl fmt::Display for Account {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} - {} ({})", self.code, self.name, self.kind)
+        write!(f, "{} - {} ({})", self.code, self.name, self.account_type())
     }
 }
 

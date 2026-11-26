@@ -95,6 +95,17 @@ impl DemoAccountKind {
         }
     }
 
+    const fn cash_class(self) -> beankeeper::types::CashClass {
+        match self {
+            Self::Checking | Self::Savings | Self::PaymentApp | Self::Cash => {
+                beankeeper::types::CashClass::Cash
+            }
+            Self::CreditCard | Self::Loan | Self::Investment => {
+                beankeeper::types::CashClass::NonCash
+            }
+        }
+    }
+
     const fn is_cash_source(self) -> bool {
         matches!(self, Self::Checking | Self::Cash)
     }
@@ -226,6 +237,14 @@ impl Book<'_> {
             None => format!("{} ({})", kind.name(), self.currency),
         };
         let row = self.account(&code, &name, kind.account_type())?;
+        db::audit::cash_classification::submit(
+            self.generator.db,
+            &self.generator.actor,
+            self.slug,
+            code.parse()
+                .map_err(|error| CliError::Validation(format!("{error}")))?,
+            kind.cash_class(),
+        )?;
         Ok(FinancialAccount {
             kind,
             code: row.code,

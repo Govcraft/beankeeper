@@ -60,6 +60,7 @@ pub enum AccountRequest {
     },
     Show(CompanySlug, AccountCode),
     Rename(CompanySlug, AccountCode, AccountName),
+    Classify(CompanySlug, AccountCode, beankeeper::types::CashClass),
     Delete(CompanySlug, AccountCode, Confirmed),
 }
 
@@ -72,6 +73,7 @@ impl AccountRequest {
             Self::List { .. } => Operation::AccountList,
             Self::Show(..) => Operation::AccountShow,
             Self::Rename(..) => Operation::AccountRename,
+            Self::Classify(..) => Operation::AccountClassify,
             Self::Delete(..) => Operation::AccountDelete,
         }
     }
@@ -140,6 +142,11 @@ impl AccountRequest {
                 let row = accounts::get_account(&scope, code.as_str())?;
                 (company, AccountData::Rows(vec![row]))
             }
+            Self::Classify(company, code, class) => {
+                let result =
+                    db::audit::cash_classification::submit(db, actor, &company, code, class)?;
+                (company, AccountData::Classify(result))
+            }
             Self::Rename(company, code, name) => {
                 let result = account_rename::submit(db, actor, &company, code, name)?;
                 (company, AccountData::Rename(result))
@@ -176,6 +183,7 @@ enum AccountData {
     Balances(Vec<db::AccountWithBalanceRow>, AccountBalanceWindow),
     Deleted(AccountCode),
     Rename(RenameSubmission),
+    Classify(db::audit::cash_classification::ClassificationSubmission),
 }
 
 /// Result of an account operation, with the existing JSON data shape.
@@ -200,6 +208,7 @@ impl Serialize for AccountResponse {
             )
             .serialize(serializer),
             AccountData::Rename(result) => result.serialize(serializer),
+            AccountData::Classify(result) => result.serialize(serializer),
             AccountData::Deleted(code) => {
                 output::json::deleted_data(code.as_str()).serialize(serializer)
             }
@@ -244,6 +253,7 @@ impl AccountResponse {
                 print!("{}", output::csv::render_accounts_with_balances(rows)?);
             }
             (_, AccountData::Rename(result)) => println!("{result}"),
+            (_, AccountData::Classify(result)) => println!("{result}"),
             (_, AccountData::Deleted(_)) => {}
         }
         if !cli.verbosity.quiet {
@@ -258,7 +268,7 @@ impl AccountResponse {
                 }
                 AccountData::Balances(rows, _) => print_count(rows.len()),
                 AccountData::Deleted(code) => eprintln!("[ok] Deleted account: {code}"),
-                AccountData::Rows(_) | AccountData::Rename(_) => {}
+                AccountData::Rows(_) | AccountData::Rename(_) | AccountData::Classify(_) => {}
             }
         }
         Ok(())
@@ -317,6 +327,9 @@ impl TryFrom<AccountCliInput<'_>> for Option<AccountRequest> {
                 name: name.clone(),
                 totals: (*with_balances, *from, *to, *currency).try_into()?,
             },
+            AccountCommand::Classify { code, cash_class } => {
+                AccountRequest::Classify(company, code.clone(), *cash_class)
+            }
             AccountCommand::Rename { code, name } => {
                 AccountRequest::Rename(company, code.clone(), name.clone())
             }

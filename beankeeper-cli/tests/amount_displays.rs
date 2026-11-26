@@ -356,6 +356,10 @@ fn seed(db: &Path, currency: &str) -> Result<(), Box<dyn Error>> {
     }
     run(
         db,
+        &["--company", "co", "account", "classify", "1000", "cash"],
+    )?;
+    run(
+        db,
         &[
             "--company",
             "co",

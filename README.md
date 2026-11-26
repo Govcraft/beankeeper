@@ -539,7 +539,7 @@ mutation tools are absent and cannot be called.
 | `company_list`, `company_show` | Inspect companies |
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
-| `account_list`, `account_show`, `account_create`, `account_rename` | Inspect, create, and rename accounts |
+| `account_list`, `account_show`, `account_create`, `account_rename`, `account_classify` | Inspect, create, rename, and classify accounts |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |
 | `txn_link` | Record an undoable relationship between two transactions in the same book |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
@@ -1730,7 +1730,13 @@ bk --company personal report cash-flow --from 2026-01-01 --to 2026-03-31 --cash-
 bk --company personal report cash-flow --from 2026-01-01 --to 2026-12-31 --currency EUR
 ```
 
-Without `--cash-account`, every **asset** account whose name contains `cash`, `bank`, `checking` or `savings` (case-insensitive) is treated as cash -- this matches the bundled templates (`Operating Cash`, `Checking Account`, `Savings Account`). A code range is deliberately not used: `1100` is `Savings Account` in the personal template but `Accounts Receivable` in the business ones. If no account qualifies, the command exits with a validation error (exit code 3) asking for `--cash-account`. Transfers between two cash accounts net to zero and are excluded.
+Without `--cash-account`, reports include accounts explicitly classified as `cash` or `cash_equivalent`, independent of their names. Bundled templates classify their cash accounts. New custom accounts default to `non_cash`.
+
+Classify a wallet with `bk --company acme account classify 1050 cash`, or a money-market cash equivalent with `bk --company acme account classify 1060 cash_equivalent`. MCP offers the same operation as `account_classify` with `company`, `code`, and `cash_class`.
+
+The result includes an audit receipt; undo it with `bk --company acme audit undo RECEIPT` or `audit_undo`. Reclassifying to `non_cash` also records a new audited change.
+
+Existing books retain their former cash selection through a one-time migration; classify any omitted assets explicitly. Summary and cash-flow use the same stored classification, and renaming an account never changes its cash membership. `--cash-account` remains an explicit replacement selection. Cash equivalents use ledger book values, never invented market prices. A cash-flow report with no classified accounts returns a validation error with classification guidance. Transfers between cash accounts net to zero and are excluded.
 
 ### JSON Envelope
 

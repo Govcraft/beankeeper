@@ -3,14 +3,8 @@
 //! # Method
 //!
 //! 1. **Cash accounts.** Either the accounts passed with `--cash-account`
-//!    (each must exist and be an asset account), or by default every asset
-//!    account whose name contains `cash`, `bank`, `checking` or `savings`
-//!    (case-insensitive). The bundled chart-of-accounts templates follow this
-//!    naming (`Operating Cash`, `Checking Account`, `Savings Account`), whereas
-//!    a code range would misclassify e.g. the personal template's
-//!    `1100 Savings Account` versus the business template's
-//!    `1100 Accounts Receivable`. If no account qualifies, the command fails
-//!    with a validation error asking for `--cash-account`.
+//!    (each must exist and be an asset account), or persisted cash and
+//!    cash-equivalent classifications. Names never determine membership.
 //! 2. **Attribution.** For every transaction dated within `--from..=--to` (in
 //!    the report currency) whose cash entries have a non-zero net movement,
 //!    each non-cash entry is attributed directly to its account: a credit to
@@ -42,9 +36,6 @@ use crate::error::CliError;
 use crate::output::amounts::{MoneyField, format_money_grouped};
 use crate::output::chart;
 
-/// Substrings (lowercase) that mark an asset account as cash by default.
-pub const DEFAULT_CASH_NAME_KEYWORDS: &[&str] = &["cash", "bank", "checking", "savings"];
-
 /// Arguments for `bk report cash-flow`.
 #[derive(clap::Args, Debug, Clone)]
 pub struct CashFlowArgs {
@@ -56,8 +47,8 @@ pub struct CashFlowArgs {
     #[arg(long)]
     pub to: Option<crate::cli::CalendarDateArg>,
 
-    /// Account code to treat as cash (repeatable). Defaults to asset accounts
-    /// whose name contains "cash", "bank", "checking" or "savings".
+    /// Account code to treat as cash (repeatable). Defaults to persisted cash
+    /// and cash-equivalent asset classifications.
     #[arg(long = "cash-account", num_args = 1)]
     pub cash_account: Vec<String>,
 
@@ -453,13 +444,6 @@ pub(super) fn compute_scoped<'a>(
     compute_for_accounts(conn, company, dates, currency, cash_accounts)
 }
 
-fn is_default_cash_name(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    DEFAULT_CASH_NAME_KEYWORDS
-        .iter()
-        .any(|kw| lower.contains(kw))
-}
-
 fn read_account_type(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<AccountType> {
     let value: String = row.get(column)?;
     value.parse().map_err(|error| {
@@ -487,16 +471,13 @@ fn resolve_cash_accounts<'a>(
 
     let wanted: BTreeSet<_> = explicit.into_iter().collect();
     if wanted.is_empty() {
-        let found: Vec<CashAccount> = accounts
+        let found: Vec<CashAccount> = crate::db::accounts::cash_accounts(conn, company)?
             .into_iter()
-            .filter(|(_, name, ty)| *ty == AccountType::Asset && is_default_cash_name(name))
-            .map(|(code, name, _)| CashAccount { code, name })
+            .map(|(code, name)| CashAccount { code, name })
             .collect();
         if found.is_empty() {
             return Err(CliError::Validation(
-                "no cash accounts found: no asset account name contains \"cash\", \"bank\", \
-                 \"checking\" or \"savings\"; pass --cash-account <code>"
-                    .to_string(),
+                "no cash accounts classified; use account classify <code> cash or cash_equivalent, or pass --cash-account <code>".to_owned(),
             ));
         }
         return Ok(found);
@@ -927,16 +908,6 @@ mod tests {
             fact(2, "4000", AccountType::Revenue, -1),
         ];
         assert!(attribute_cash(&facts, &BTreeSet::from(["1000"])).is_err());
-    }
-
-    #[test]
-    fn default_cash_name_rule() {
-        assert!(is_default_cash_name("Operating Cash"));
-        assert!(is_default_cash_name("Checking Account"));
-        assert!(is_default_cash_name("Savings Account"));
-        assert!(is_default_cash_name("First National BANK"));
-        assert!(!is_default_cash_name("Accounts Receivable"));
-        assert!(!is_default_cash_name("Inventory"));
     }
 
     #[test]

@@ -36,6 +36,7 @@ impl Ledger {
                 "expense",
             ])?;
         }
+        ledger.ok(&["account", "classify", "1000", "cash"])?;
         Ok(ledger)
     }
 

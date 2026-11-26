@@ -77,8 +77,18 @@ Net worth is total assets minus total liabilities at ledger book values, not
 market valuation of investments. Loans, transfers and owner funding do not
 become income merely because cash arrives.
 
-Cash defaults to asset names containing `cash`, `bank`, `checking` or `savings`,
-matching the cash-flow report's convention. Receivables default to asset names
+Cash uses persisted `cash` and `cash_equivalent` asset classifications, shared
+with the cash-flow report. Use `bk account classify CODE cash` or MCP
+`account_classify` with `company`, `code`, and `cash_class` to classify a wallet
+without renaming it. New custom accounts default to `non_cash`; bundled
+templates classify their cash accounts explicitly. Existing books preserve
+their previous cash selection once during migration. Changes return an audit
+receipt for `audit undo RECEIPT` / `audit_undo`. Opening an existing book with the standalone CLI upgrades it after taking
+the normal pre-migration backup. Embedded hosts
+reading an older schema must upgrade it through their verified migration path
+before requesting default cash selection, or supply explicit cash accounts.
+
+Receivables default to asset names
 containing `receivable`, and payables to liability names containing `payable`.
 Matching is case-insensitive and never guesses from account codes. Repeat
 `--cash-account`, `--receivable-account` or `--payable-account` to replace the

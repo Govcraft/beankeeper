@@ -104,6 +104,13 @@ impl TextValue for Sha256Hex {
     }
 }
 
+impl TextValue for beankeeper::types::CashClass {
+    const NAME: &'static str = "cash class";
+    fn schema() -> Schema {
+        json_schema!({"type": "string", "enum": [Self::NonCash.code(), Self::Cash.code(), Self::CashEquivalent.code()]})
+    }
+}
+
 impl TextValue for AccountType {
     const NAME: &'static str = "account type";
 

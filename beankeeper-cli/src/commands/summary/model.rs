@@ -270,7 +270,7 @@ pub(super) fn highlights(
             amount_with_currency(standing.cash_on_hand.money()),
         )
     } else {
-        "No cash accounts were identified; select your cash accounts to get a cash total.".into()
+        "No cash accounts are classified; classify cash assets to include them, or provide explicit cash accounts.".into()
     };
     let owed_fact = if standing.receivable_accounts_identified {
         format!(

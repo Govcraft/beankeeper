@@ -563,7 +563,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk setup book-update` | Record a new profile revision in an active setup session |
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
-| `bk account create/list/show/rename/delete` | Manage chart of accounts |
+| `bk account create/list/show/rename/classify/delete` | Manage chart of accounts |
 | `bk fx post/revalue` | Record native movements and audited carrying-value adjustments |
 | `bk txn post` | Record a balanced journal entry |
 | `bk txn meta set/unset` | Annotate posted transactions by ID or reference without changing financial fields |
@@ -1060,7 +1060,7 @@ reset with `--status uncleared`. Outstanding items carry `reference`,
 `clearings`; `bk txn show` lists every entry's clearings. See the statement-reconciliation recipe
 in [`references/workflows.md`](references/workflows.md).
 
-`report cash-flow` treats asset accounts named like `cash`/`bank`/`checking`/`savings` as cash unless you pass `--cash-account CODE` (repeatable); see [`references/commands.md`](references/commands.md#bk-report-cash-flow).
+`summary` and `report cash-flow` use persisted `cash` / `cash_equivalent` classifications, independent of names. Classify an asset with `account classify CODE cash` or `account_classify` (`company`, `code`, `cash_class`); new custom accounts default to `non_cash`. Inform the owner of the completed change and offer its audit receipt for one-step undo with `audit undo RECEIPT` / `audit_undo`. Existing books preserve their previous cash selection once during migration. `--cash-account CODE` (repeatable) replaces the default selection; see [`references/commands.md`](references/commands.md#bk-report-cash-flow).
 
 ### Close a carrier commission statement with a short pay
 

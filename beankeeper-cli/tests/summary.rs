@@ -49,6 +49,7 @@ impl Ledger {
         ] {
             ledger.ok(&["account", "create", code, name, "--type", kind])?;
         }
+        ledger.ok(&["account", "classify", "1000", "cash"])?;
         Ok(ledger)
     }
     fn run(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
@@ -250,7 +251,7 @@ fn single_currency_selectors_and_company_isolation_are_enforced() -> TestResult 
     assert!(
         isolated["data"]["highlights"][0]
             .as_str()
-            .is_some_and(|fact| fact.contains("No cash accounts were identified"))
+            .is_some_and(|fact| fact.contains("No cash accounts are classified"))
     );
     assert_eq!(isolated["data"]["standing"]["cash_accounts"], json!([]));
     Ok(())

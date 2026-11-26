@@ -54,6 +54,7 @@ impl Books {
         for (code, name, kind) in [("1000", "Cash", "asset"), ("4000", "Sales", "revenue")] {
             books.run(&["account", "create", code, name, "--type", kind]);
         }
+        books.run(&["account", "classify", "1000", "cash"]);
         let today = Local::now().date_naive();
         for (date, amount) in [
             (format!("{}-12-31", today.year() - 1), "10"),

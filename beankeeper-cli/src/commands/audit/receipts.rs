@@ -193,45 +193,7 @@ impl ReceiptResponse {
                 );
             }
             ReceiptResult::Undo { outcome, .. } => {
-                let message = match outcome {
-                    ReceiptUndoOutcome::Single(UndoOutcome::Reversed {
-                        transaction,
-                        reversal,
-                        ..
-                    }) => {
-                        format!("Reversed transaction {transaction} with transaction {reversal}.")
-                    }
-                    ReceiptUndoOutcome::Single(UndoOutcome::AnnotationsRestored {
-                        transaction,
-                        ..
-                    }) => {
-                        format!("Restored the annotations on transaction {transaction}.")
-                    }
-                    ReceiptUndoOutcome::Single(UndoOutcome::TransactionLinkUndone {
-                        link, ..
-                    }) => {
-                        format!(
-                            "Removed transaction link {link}. Its history is still in your books."
-                        )
-                    }
-                    ReceiptUndoOutcome::Single(UndoOutcome::StatementUnreconciled {
-                        statement,
-                        ..
-                    }) => {
-                        format!("Undid statement reconciliation for {statement}.")
-                    }
-                    ReceiptUndoOutcome::Onboarding(_) => "Reverted the onboarding change.".into(),
-                    ReceiptUndoOutcome::Single(UndoOutcome::AccountNameRestored {
-                        account,
-                        name,
-                        ..
-                    }) => {
-                        format!("Restored the name of account {account} to {name:?}.")
-                    }
-                    ReceiptUndoOutcome::Single(UndoOutcome::Archived { account, .. }) => {
-                        format!("Archived account {account}. Its history is still in your books.")
-                    }
-                };
+                let message = undo_message(outcome);
                 if format == OutputFormat::Csv {
                     crate::commands::rule::render_rows(
                         format,
@@ -244,5 +206,40 @@ impl ReceiptResponse {
             }
         }
         Ok(())
+    }
+}
+
+fn undo_message(outcome: &ReceiptUndoOutcome) -> String {
+    match outcome {
+        ReceiptUndoOutcome::Single(UndoOutcome::Reversed {
+            transaction,
+            reversal,
+            ..
+        }) => {
+            format!("Reversed transaction {transaction} with transaction {reversal}.")
+        }
+        ReceiptUndoOutcome::Single(UndoOutcome::AnnotationsRestored { transaction, .. }) => {
+            format!("Restored the annotations on transaction {transaction}.")
+        }
+        ReceiptUndoOutcome::Single(UndoOutcome::TransactionLinkUndone { link, .. }) => {
+            format!("Removed transaction link {link}. Its history is still in your books.")
+        }
+        ReceiptUndoOutcome::Single(UndoOutcome::StatementUnreconciled { statement, .. }) => {
+            format!("Undid statement reconciliation for {statement}.")
+        }
+        ReceiptUndoOutcome::Onboarding(_) => "Reverted the onboarding change.".into(),
+        ReceiptUndoOutcome::Single(UndoOutcome::AccountClassificationRestored {
+            account,
+            cash_class,
+            ..
+        }) => {
+            format!("Restored the cash classification of account {account} to {cash_class}.")
+        }
+        ReceiptUndoOutcome::Single(UndoOutcome::AccountNameRestored { account, name, .. }) => {
+            format!("Restored the name of account {account} to {name:?}.")
+        }
+        ReceiptUndoOutcome::Single(UndoOutcome::Archived { account, .. }) => {
+            format!("Archived account {account}. Its history is still in your books.")
+        }
     }
 }

@@ -50,7 +50,7 @@ pub struct SummaryArgs {
     /// Currency code; required when the company's currencies are ambiguous.
     #[arg(long)]
     pub currency: Option<Currency>,
-    /// Cash asset account (repeatable). Defaults to cash/bank/checking/savings names.
+    /// Cash asset account (repeatable). Defaults to persisted cash and cash-equivalent classifications.
     #[arg(long = "cash-account")]
     pub cash_account: Vec<String>,
     /// Receivable asset account (repeatable). Defaults to names containing receivable.
@@ -586,7 +586,7 @@ impl SummaryReport {
             basis: json!({
                 "activity":"Posted revenue and net expenses, including refunds; leftover is income minus spending, not cash flow.",
                 "valuation":"Net worth uses ledger book values, not investment market prices.",
-                "accounts":"Cash: asset names containing cash/bank/checking/savings; receivables: asset names containing receivable; payables: liability names containing payable. Explicit selectors replace inferred lists; an empty selection totals zero. You owe includes every liability.",
+                "accounts":"Cash: accounts classified cash or cash_equivalent; receivables: asset names containing receivable; payables: liability names containing payable. Explicit selectors replace inferred lists; an empty selection totals zero. You owe includes every liability.",
                 "comparison":"Without --from: month to date versus the full prior calendar month. With --from: the immediately preceding equal-length interval. Explicit comparison dates override either default."
             }),
         }
@@ -606,12 +606,19 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
     let company = company.as_str();
     let currency = super::report_currency::resolve_report_currency(reader, company, currency)?;
     let rows = db::compute_trial_balance(&scope, None, None, Some(periods.current.to), currency)?;
-    let cash = select_accounts(
-        &rows,
-        &accounts.cash,
-        beankeeper::types::AccountType::Asset,
-        super::report_cash_flow::DEFAULT_CASH_NAME_KEYWORDS,
-    )?;
+    let cash = if accounts.cash.is_empty() {
+        db::accounts::cash_accounts(reader, company)?
+            .into_iter()
+            .map(|(code, _)| code)
+            .collect()
+    } else {
+        select_accounts(
+            &rows,
+            &accounts.cash,
+            beankeeper::types::AccountType::Asset,
+            &[],
+        )?
+    };
     let receivables = select_accounts(
         &rows,
         &accounts.receivables,
@@ -759,7 +766,7 @@ mod tests {
         assert!(
             highlights
                 .first()
-                .is_some_and(|line| line.starts_with("No cash accounts were identified"))
+                .is_some_and(|line| line.starts_with("No cash accounts are classified"))
         );
         let envelope = serde_json::to_value(response.envelope(&actor))?;
         assert_eq!(json!(highlights), envelope["data"]["highlights"]);

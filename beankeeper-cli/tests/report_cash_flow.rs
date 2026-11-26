@@ -70,6 +70,9 @@ fn empty_ledger() -> (TempDir, String) {
     ] {
         ok(&db_path, &["account", "create", code, name, "--type", ty]);
     }
+    for code in ["1000", "1010"] {
+        ok(&db_path, &["account", "classify", code, "cash"]);
+    }
     (dir, db_path)
 }
 
@@ -425,4 +428,76 @@ fn rejects_inverted_range() {
         ],
     );
     assert_eq!(code, 3);
+}
+
+#[test]
+fn typed_cash_classes_include_wallets_and_equivalents_independently_of_names() {
+    let (_dir, db) = empty_ledger();
+    for (code, name, class, amount) in [
+        ("1020", "Travel wallet", "cash", "125"),
+        ("1030", "Money-market fund", "cash_equivalent", "75"),
+    ] {
+        ok(&db, &["account", "create", code, name, "--type", "asset"]);
+        ok(&db, &["account", "classify", code, class]);
+        post(
+            &db,
+            "2025-02-12",
+            &[&format!("{code}:{amount}")],
+            &[&format!("3000:{amount}")],
+        );
+    }
+    // An English cash keyword is insufficient to classify a new asset.
+    ok(
+        &db,
+        &[
+            "account",
+            "create",
+            "1040",
+            "Bank shares",
+            "--type",
+            "asset",
+        ],
+    );
+    post(&db, "2025-02-12", &["1040:90"], &["3000:90"]);
+    let before = cash_flow_json(&db, &[]);
+    assert_eq!(before["data"]["closing_cash"], 20_000);
+    let codes: Vec<_> = before["data"]["cash_accounts"]
+        .as_array()
+        .expect("cash accounts")
+        .iter()
+        .filter_map(|account| account["code"].as_str())
+        .collect();
+    assert_eq!(codes, ["1000", "1010", "1020", "1030"]);
+    let summary: Value =
+        serde_json::from_str(&ok(&db, &["summary", "--json", "--to", "2025-03-31"]))
+            .expect("summary JSON");
+    assert_eq!(summary["data"]["standing"]["cash_on_hand"], 20_000);
+    // Explicit selection still replaces the typed default set.
+    assert_eq!(
+        cash_flow_json(&db, &["--cash-account", "1040"])["data"]["closing_cash"],
+        9_000
+    );
+}
+
+#[test]
+fn classification_rejects_non_assets_and_unknown_classes() {
+    let (_dir, db) = empty_ledger();
+    for (code, class) in [
+        ("2000", "cash"),
+        ("4000", "cash_equivalent"),
+        ("1000", "liquid"),
+    ] {
+        let (status, _, stderr) = run_bk(
+            &db,
+            &["--company", COMPANY, "account", "classify", code, class],
+        );
+        assert_ne!(status, 0, "invalid class accepted: {code} {class}");
+        assert!(stderr.contains("cash"), "{stderr}");
+    }
+    assert_eq!(
+        cash_flow_json(&db, &[])["data"]["cash_accounts"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
 }

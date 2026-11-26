@@ -1,6 +1,8 @@
 use std::fmt::Write;
 
-use beankeeper::types::{Account, AccountCode, AccountName, AccountType};
+use beankeeper::types::{
+    Account, AccountClassification, AccountCode, AccountName, AccountType, CashClass,
+};
 use rusqlite::params;
 
 use super::AccountRow;
@@ -18,7 +20,9 @@ use crate::identity::{Admin, Granted};
 pub fn row_to_account(row: &AccountRow) -> Result<Account, CliError> {
     let code = AccountCode::new(&row.code)
         .map_err(|e| CliError::Validation(format!("invalid account code '{}': {e}", row.code)))?;
-    Ok(Account::new(code, &row.name, row.account_type))
+    let classification = AccountClassification::try_from((row.account_type, row.cash_class))
+        .map_err(|error| CliError::Database(error.to_string()))?;
+    Ok(Account::classified(code, &row.name, classification))
 }
 
 /// Fields used to create an account.
@@ -99,10 +103,9 @@ pub fn list_accounts(
     company: &Company<'_>,
     params: &ListAccountParams<'_>,
 ) -> Result<Vec<AccountRow>, CliError> {
-    let mut sql = String::from(
-        "SELECT company_slug, code, name, type, created_at, default_tax_category \
-         FROM accounts \
-         WHERE company_slug = ?1",
+    let class = classification_column(company.read())?;
+    let mut sql = format!(
+        "SELECT company_slug, code, name, type, created_at, default_tax_category, {class} FROM accounts WHERE company_slug = ?1"
     );
 
     let mut param_idx = 2u32;
@@ -143,11 +146,10 @@ pub fn list_accounts(
 /// Returns [`CliError::NotFound`] if the account does not exist.
 pub fn get_account(company: &Company<'_>, code: &str) -> Result<AccountRow, CliError> {
     let company_slug = company.slug();
-    let mut stmt = company.read().prepare(
-        "SELECT company_slug, code, name, type, created_at, default_tax_category \
-         FROM accounts \
-         WHERE company_slug = ?1 AND code = ?2",
-    )?;
+    let class = classification_column(company.read())?;
+    let mut stmt = company.read().prepare(&format!(
+        "SELECT company_slug, code, name, type, created_at, default_tax_category, {class} FROM accounts WHERE company_slug = ?1 AND code = ?2"
+    ))?;
 
     let mut rows = stmt.query_map(params![company_slug, code], decode_account)?;
 
@@ -159,6 +161,18 @@ pub fn get_account(company: &Company<'_>, code: &str) -> Result<AccountRow, CliE
     }
 }
 
+fn classification_column(
+    reader: super::connection::ReadConn<'_>,
+) -> Result<&'static str, CliError> {
+    Ok(
+        if reader.schema_version()? >= super::schema::CASH_CLASS_SCHEMA_VERSION {
+            "cash_class"
+        } else {
+            "'non_cash'"
+        },
+    )
+}
+
 fn decode_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
     Ok(AccountRow {
         company_slug: row.get(0)?,
@@ -167,7 +181,50 @@ fn decode_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
         account_type: row.get(3)?,
         created_at: row.get(4)?,
         default_tax_category: row.get(5)?,
+        cash_class: row.get(6)?,
     })
+}
+
+/// Cash and cash-equivalent accounts selected from their persisted classification.
+/// Old read-only snapshots have no classification and require an upgrade first.
+///
+/// # Errors
+/// Returns a schema mismatch for snapshots predating cash classification, or a
+/// storage error if an account contains an invalid persisted classification.
+pub fn cash_accounts(
+    reader: super::connection::ReadConn<'_>,
+    company: &str,
+) -> Result<Vec<(String, String)>, CliError> {
+    reader
+        .schema_version()?
+        .require_at_least(super::schema::CASH_CLASS_SCHEMA_VERSION)?;
+    let mut statement = reader.prepare(
+        "SELECT code, name, cash_class, type FROM accounts WHERE company_slug = ?1 ORDER BY code",
+    )?;
+    let accounts = statement
+        .query_map([company], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                AccountClassification::try_from((
+                    row.get::<_, AccountType>(3)?,
+                    row.get::<_, CashClass>(2)?,
+                ))
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(accounts
+        .into_iter()
+        .filter(|(_, _, class)| class.cash_class().is_cash())
+        .map(|(code, name, _)| (code, name))
+        .collect())
 }
 
 /// Whether this account can receive ordinary new postings.
@@ -618,6 +675,7 @@ mod tests {
             company_slug: "acme".parse().expect("fixture company"),
             code: "1000".to_string(),
             name: "Cash".to_string(),
+            cash_class: CashClass::NonCash,
             account_type: AccountType::Asset,
             created_at: "2024-01-01 00:00:00".to_string(),
             default_tax_category: None,

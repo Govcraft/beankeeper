@@ -205,6 +205,14 @@ pub(crate) struct FxRevalueInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct AccountClassify {
+    pub company: Company,
+    pub code: Account,
+    pub cash_class: Text<beankeeper::types::CashClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AccountRename {
     pub company: Company,
     /// Existing account code, for example 1000.
@@ -1307,7 +1315,7 @@ pub(crate) struct SummaryOptions {
     #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
-    /// Cash asset accounts. Defaults to named cash/bank/checking/savings accounts.
+    /// Cash asset accounts. Defaults to persisted cash and cash-equivalent classifications.
     #[serde(default, deserialize_with = "deserialize_structured")]
     pub cash_account: Vec<Account>,
     /// Receivable asset accounts. Defaults to accounts named receivable.
