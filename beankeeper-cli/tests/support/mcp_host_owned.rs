@@ -7,6 +7,7 @@ use std::{
     task::Poll,
 };
 
+use beankeeper_cli::db::LedgerWriteKind;
 use beankeeper_cli::identity::{IssuedCredential, WriteMode};
 use beankeeper_cli::mcp::{
     LEDGER_TARGET_HEADER, LEDGER_TARGET_META_KEY, LedgerTarget, LedgerTargets, NamedLedgerTarget,
@@ -21,11 +22,21 @@ fn host_write_authorization_follows_the_ledger_on_each_request() -> TestResult {
     const REASON: &str = "This ledger needs an active Desktop license.";
     let startup = Ledger::new()?;
     let demo = Ledger::new()?;
+    let backup = demo.dir.path().join("demo.bk-backup");
+    db::VerifiedSnapshot::create(
+        &demo.path,
+        Some(&SecretString::from(PASSPHRASE)),
+        &backup,
+        db::SnapshotOverwrite::Refuse,
+    )?;
     let read_only = Arc::new(AtomicBool::new(true));
     let authorizer = {
         let read_only = read_only.clone();
-        move |target: &LedgerTarget| {
-            if target.as_ref() == "demo" && read_only.load(Ordering::Relaxed) {
+        move |target: &LedgerTarget, kind| {
+            if target.as_ref() == "demo"
+                && kind != LedgerWriteKind::Restore
+                && read_only.load(Ordering::Relaxed)
+            {
                 Err(REASON.into())
             } else {
                 Ok(())
@@ -78,6 +89,14 @@ fn host_write_authorization_follows_the_ledger_on_each_request() -> TestResult {
 
             let rows = session.call("txn_list", &json!({"company":"acme"}), writer)?;
             assert_eq!(payload(&rows)?, json!([]));
+
+            let admin = Some(token(&startup.admin)?);
+            let restore = session.call("restore", &json!({"input": backup}), admin)?;
+            assert_ne!(restore["result"]["isError"], true, "{restore}");
+            let undo = payload(&restore)?["undo_id"].clone();
+            let undone = session.call("restore_undo", &json!({"undo_id": undo}), admin)?;
+            assert_eq!(payload(&undone)?["undo_of"], undo);
+            assert_eq!(payload(&post()?)?["code"], "LEDGER_WRITE_DENIED");
 
             read_only.store(false, Ordering::Relaxed);
             assert_eq!(payload(&post()?)?["created"], true);

@@ -31,12 +31,16 @@ A synchronous closure works as an authorizer. For example, to serve a named
 ledger in read-only mode, configure its connection before registration.
 
 ```rust
-use beankeeper_cli::{db::Db, mcp::{LedgerTarget, LedgerTargets}};
+use beankeeper_cli::{db::{Db, LedgerWriteKind}, mcp::{LedgerTarget, LedgerTargets}};
 
 fn register_archive(targets: &LedgerTargets, archive: Db) -> Result<(), beankeeper_cli::error::CliError> {
     let target: LedgerTarget = "archive".parse()?;
-    let archive = archive.with_write_authorizer(target.clone(), |_: &LedgerTarget| {
-        Err("This archive is read-only in Desktop.".into())
+    let archive = archive.with_write_authorizer(target.clone(), |_: &LedgerTarget, kind| {
+        if kind == LedgerWriteKind::Restore {
+            Ok(())
+        } else {
+            Err("This archive is read-only in Desktop.".into())
+        }
     });
     targets.register(target, archive)
 }
@@ -48,6 +52,10 @@ the policy is attached. The host can consult current local state on each write
 admission. An admitted audited batch keeps its grant until it finishes, and the
 next write checks the current policy again. Dry runs that exercise SQLite writes
 inside a rolled-back transaction also require write admission.
+
+The write kind lets a host admit audited restore and restore undo while refusing
+ordinary writes. Restore still requires its usual ledger authorization. A host
+that needs to deny every write can return `WriteDenied` for every kind.
 
 Denials use the shared `LEDGER_WRITE_DENIED` error with `details.ledger_target`
 and `details.reason`. MCP keeps normal discovery and bearer capability checks.

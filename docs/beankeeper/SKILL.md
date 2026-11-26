@@ -433,7 +433,7 @@ in CLI JSON when telling the owner which books were read or changed. A detached
 target returns `NOT_FOUND`. Check the intended books before retrying.
 
 If an embedded host returns `LEDGER_WRITE_DENIED`, tell the owner which ledger
-is read-only and why, using `details.ledger_target` and `details.reason`. Keep
+refused the write and why, using `details.ledger_target` and `details.reason`. Keep
 read requests on the same ledger. A write to another ledger needs the owner's
 intent to use those books.
 

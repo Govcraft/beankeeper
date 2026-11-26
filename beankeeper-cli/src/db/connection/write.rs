@@ -3,7 +3,27 @@
 use std::{cell::Cell, fmt};
 
 use super::{Db, ReadConn};
-use crate::{error::CliError, ledger_target::LedgerTarget};
+use crate::{error::CliError, ledger_target::LedgerTarget, operation::Operation};
+
+/// The kind of audited write presented to host policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LedgerWriteKind {
+    /// A bookkeeping or ledger administration write.
+    #[default]
+    Ordinary,
+    /// Restore an existing ledger from a backup or undo a restore.
+    Restore,
+}
+
+impl From<Operation> for LedgerWriteKind {
+    fn from(operation: Operation) -> Self {
+        match operation {
+            Operation::Restore | Operation::RestoreUndo => Self::Restore,
+            _ => Self::default(),
+        }
+    }
+}
 
 /// Host policy for admitting writes to an opened ledger.
 ///
@@ -14,16 +34,24 @@ pub trait LedgerWriteAuthorizer: Send + Sync + 'static {
     /// Decide whether the selected ledger currently accepts writes.
     ///
     /// # Errors
-    /// Returns [`WriteDenied`] when the host has made the ledger read-only.
-    fn authorize_write(&self, target: &LedgerTarget) -> Result<(), WriteDenied>;
+    /// Returns [`WriteDenied`] when the host denies this kind of write.
+    fn authorize_write(
+        &self,
+        target: &LedgerTarget,
+        kind: LedgerWriteKind,
+    ) -> Result<(), WriteDenied>;
 }
 
 impl<F> LedgerWriteAuthorizer for F
 where
-    F: Fn(&LedgerTarget) -> Result<(), WriteDenied> + Send + Sync + 'static,
+    F: Fn(&LedgerTarget, LedgerWriteKind) -> Result<(), WriteDenied> + Send + Sync + 'static,
 {
-    fn authorize_write(&self, target: &LedgerTarget) -> Result<(), WriteDenied> {
-        self(target)
+    fn authorize_write(
+        &self,
+        target: &LedgerTarget,
+        kind: LedgerWriteKind,
+    ) -> Result<(), WriteDenied> {
+        self(target, kind)
     }
 }
 
@@ -61,9 +89,8 @@ impl std::error::Error for WriteDenied {}
 pub(super) struct WriteAuthorization {
     target: LedgerTarget,
     authorizer: Option<Box<dyn LedgerWriteAuthorizer>>,
-    // Db is not Sync. Nested writes on this connection share the admission
-    // of their outer scope. The guard clears it on success, error or unwind.
-    admitted: Cell<bool>,
+    // Db is not Sync. Nested writes of the same kind share admission.
+    admitted: Cell<Option<LedgerWriteKind>>,
 }
 
 impl WriteAuthorization {
@@ -83,31 +110,37 @@ impl WriteAuthorization {
 impl Db {
     pub(super) fn admit_write<T>(
         &self,
+        kind: LedgerWriteKind,
         run: impl for<'grant> FnOnce(WriteGrant<'grant>) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
         let policy = &self.writes;
-        if policy.admitted.get() {
+        if policy.admitted.get() == Some(kind) {
             return run(WriteGrant(self.read()));
         }
         if let Some(authorizer) = &policy.authorizer {
             authorizer
-                .authorize_write(&policy.target)
+                .authorize_write(&policy.target, kind)
                 .map_err(|reason| CliError::WriteDenied {
                     ledger: policy.target.clone(),
                     reason,
                 })?;
         }
-        policy.admitted.set(true);
-        let _admission = Admission(&policy.admitted);
+        let _admission = Admission {
+            current: &policy.admitted,
+            previous: policy.admitted.replace(Some(kind)),
+        };
         run(WriteGrant(self.read()))
     }
 }
 
-struct Admission<'a>(&'a Cell<bool>);
+struct Admission<'a> {
+    current: &'a Cell<Option<LedgerWriteKind>>,
+    previous: Option<LedgerWriteKind>,
+}
 
 impl Drop for Admission<'_> {
     fn drop(&mut self) {
-        self.0.set(false);
+        self.current.set(self.previous);
     }
 }
 

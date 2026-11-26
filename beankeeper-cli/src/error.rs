@@ -122,7 +122,7 @@ pub enum CliError {
     Unauthorized(String),
     /// Verified token lacks the required capability. Exit code 7.
     Forbidden(String),
-    /// The host has made the selected ledger read-only. Exit code 7.
+    /// The host denied a write to the selected ledger. Exit code 7.
     WriteDenied {
         /// The selected ledger's canonical target.
         ledger: LedgerTarget,
@@ -177,7 +177,7 @@ pub enum ErrorCode {
     Unauthorized,
     /// An authenticated token is missing a required capability.
     Forbidden,
-    /// The host has made the selected ledger read-only.
+    /// The host denied a write to the selected ledger.
     LedgerWriteDenied,
     /// Inputs violate a domain rule.
     Validation,
@@ -358,7 +358,7 @@ impl fmt::Display for CliError {
             | Self::General(msg)
             | Self::Unimplemented(msg) => write!(f, "{msg}"),
             Self::WriteDenied { ledger, reason } => {
-                write!(f, "Ledger '{ledger}' is read-only. {reason}")
+                write!(f, "Could not write to ledger '{ledger}'. {reason}")
             }
             Self::Bean(e) => write!(f, "{e}"),
             Self::Fx(e) => write!(f, "{e}"),

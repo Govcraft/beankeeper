@@ -11,6 +11,7 @@ use crate::identity::{VerifiedAgent, WriteMode};
 pub(crate) mod sealed {
     pub trait GrantKind {
         const REQUIRED: crate::capability::Capability;
+        const WRITE_KIND: crate::db::LedgerWriteKind = crate::db::LedgerWriteKind::Ordinary;
         const EXPLICIT: bool = false;
         const SIGNED: bool = false;
         const ALTERNATE: Option<crate::capability::Capability> = None;
@@ -54,6 +55,7 @@ pub(super) enum RestoreAdmin {}
 
 impl sealed::GrantKind for RestoreAdmin {
     const REQUIRED: Capability = Capability::Admin;
+    const WRITE_KIND: crate::db::LedgerWriteKind = crate::db::LedgerWriteKind::Restore;
     const SIGNED: bool = true;
 }
 
@@ -242,7 +244,7 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
         actor: &Actor,
         run: impl for<'grant> FnOnce(Granted<'grant, C>) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        db.with_audited_tx("sp_authorized_mutation", |tx| {
+        db.with_audited_tx_for(C::WRITE_KIND, "sp_authorized_mutation", |tx| {
             super::reserve_ledger_writer(tx)?;
             run(Granted::check(tx, actor)?)
         })

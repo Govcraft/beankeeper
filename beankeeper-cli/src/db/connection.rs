@@ -14,7 +14,7 @@ mod write;
 pub use read::{ReadConn, ReadStatement};
 use write::WriteAuthorization;
 pub(super) use write::WriteGrant;
-pub use write::{LedgerWriteAuthorizer, WriteDenied};
+pub use write::{LedgerWriteAuthorizer, LedgerWriteKind, WriteDenied};
 
 /// Database connection wrapper with `SQLCipher` support.
 pub struct Db {
@@ -229,7 +229,16 @@ impl Db {
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        self.admit_write(|grant| AuditedTx::run(grant, name, run))
+        self.with_audited_tx_for(LedgerWriteKind::default(), name, run)
+    }
+
+    pub(super) fn with_audited_tx_for<T>(
+        &self,
+        kind: LedgerWriteKind,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        self.admit_write(kind, |grant| AuditedTx::run(grant, name, run))
     }
 
     /// Give a sequence of authorized mutations one reserved SQLite writer.
@@ -237,7 +246,15 @@ impl Db {
         &self,
         run: impl FnOnce() -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        self.with_audited_tx("sp_write_batch", |tx| {
+        self.in_write_batch_for(LedgerWriteKind::default(), run)
+    }
+
+    pub(crate) fn in_write_batch_for<T>(
+        &self,
+        kind: LedgerWriteKind,
+        run: impl FnOnce() -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        self.with_audited_tx_for(kind, "sp_write_batch", |tx| {
             super::audit::reserve_ledger_writer(tx)?;
             run()
         })
@@ -248,7 +265,7 @@ impl Db {
         &self,
         run: impl FnOnce() -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        self.admit_write(|grant| {
+        self.admit_write(LedgerWriteKind::default(), |grant| {
             AuditedTx::preview(grant, "sp_write_preview", |tx| {
                 super::audit::reserve_ledger_writer(tx)?;
                 run()
@@ -377,7 +394,7 @@ mod tests {
         let count = checks.clone();
         let db = Db::open_in_memory()?.with_write_authorizer(
             LedgerTarget::default(),
-            move |_: &LedgerTarget| {
+            move |_: &LedgerTarget, _| {
                 if count.fetch_add(1, Ordering::Relaxed) == 0 {
                     Ok(())
                 } else {
@@ -402,6 +419,28 @@ mod tests {
         ));
         assert_eq!(checks.load(Ordering::Relaxed), 2);
         Ok(())
+    }
+
+    #[test]
+    fn restore_admission_cannot_authorize_an_ordinary_write() -> Result<(), CliError> {
+        let db = Db::open_in_memory()?.with_write_authorizer(
+            LedgerTarget::default(),
+            |_: &LedgerTarget, kind| {
+                if kind == LedgerWriteKind::Restore {
+                    Ok(())
+                } else {
+                    Err("Ordinary writes are disabled.".into())
+                }
+            },
+        );
+        let actor = super::super::Actor::new("owner".parse()?);
+        db.in_write_batch_for(LedgerWriteKind::Restore, || {
+            let write = Granted::<Admin>::with_db(&db, &actor, |_| {
+                panic!("restore admission must not reach an ordinary mutation callback")
+            });
+            assert!(matches!(write, Err::<(), _>(CliError::WriteDenied { .. })));
+            Ok(())
+        })
     }
 
     #[test]

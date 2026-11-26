@@ -16,7 +16,10 @@ fn embedded_cli_and_library_writes_use_the_host_policy() -> Result<(), CliError>
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("personal.db");
     let bind = |db: Db| -> Result<Db, CliError> {
-        Ok(db.with_write_authorizer("personal".parse()?, |_: &LedgerTarget| Err(REASON.into())))
+        Ok(db.with_write_authorizer(
+            "personal".parse()?,
+            |_: &LedgerTarget, _| Err(REASON.into()),
+        ))
     };
 
     let mut cli = Cli::parse_from(["bk", "company", "create", "personal", "Personal"]);

@@ -126,8 +126,11 @@ impl LedgerRequest {
         db: &Db,
         resolve_actor: impl for<'snapshot> FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
     ) -> Result<(LedgerResponse, Actor), CliError> {
-        if self.operation().writes_ledger() {
-            db.in_write_batch(|| self.execute_in_snapshot(db, db.read(), resolve_actor))
+        let operation = self.operation();
+        if operation.writes_ledger() {
+            db.in_write_batch_for(operation.into(), || {
+                self.execute_in_snapshot(db, db.read(), resolve_actor)
+            })
         } else {
             db.read_snapshot(|reader| self.execute_in_snapshot(db, reader, resolve_actor))
         }
