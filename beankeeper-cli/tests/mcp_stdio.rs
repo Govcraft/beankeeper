@@ -4,6 +4,8 @@
 mod account_rename;
 #[path = "mcp_stdio/audit_receipts.rs"]
 mod audit_receipts;
+#[path = "mcp_stdio/cash_classification.rs"]
+mod cash_classification;
 #[path = "mcp_stdio/corrections.rs"]
 mod corrections;
 
@@ -103,6 +105,7 @@ fn seed(path: &Path) -> TestResult {
             "--type",
             "asset",
         ],
+        vec!["--company", "acme", "account", "classify", "1000", "cash"],
         vec![
             "--company",
             "acme",
@@ -783,6 +786,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "account_show",
     "account_create",
     "account_rename",
+    "account_classify",
     "txn_post",
     "txn_propose",
     "txn_proposals",
@@ -1396,10 +1400,10 @@ fn mcp_writes_have_chained_audit_records_and_pass_cli_verification() -> TestResu
     let reversed = client.success("txn_reverse", &reversal_args)?;
     let audit = client.success("audit_log", &json!({}))?;
     let rows = audit.as_array().ok_or("missing audit rows")?;
-    assert_eq!(rows.len(), 10, "{audit}");
+    assert_eq!(rows.len(), 11, "{audit}");
     let mut previous = "0".repeat(64);
     for row in rows.iter().rev() {
-        if row["id"].as_i64().is_some_and(|id| id > 3) {
+        if row["id"].as_i64().is_some_and(|id| id > 4) {
             assert_eq!(row["actor"], "mcp:codex-test-client");
         }
         assert_eq!(row["prev_hash"], previous);

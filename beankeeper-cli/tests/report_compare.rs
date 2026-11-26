@@ -31,6 +31,7 @@ impl Ledger {
         ] {
             ledger.ok(&["account", "create", code, name, "--type", kind])?;
         }
+        ledger.ok(&["account", "classify", "1000", "cash"])?;
         Ok(ledger)
     }
 

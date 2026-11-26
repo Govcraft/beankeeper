@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwn
 
 use super::AccountLabel;
 use crate::db::amounts::PositiveMinorUnits;
+use crate::db::audit::cash_classification::ClassificationSnapshot;
 use crate::db::audit::recategorize::{Movement, RecordedMove};
 use crate::db::audit::txn_links::{LinkSpec, TxnLinkId};
 use crate::db::audit::{ActorLabel, AuditAction, AuditEntity, AuditLogRow, ClientHint};
@@ -171,6 +172,11 @@ pub enum ReceiptChange {
     AccountDeleted {
         /// Last recorded state.
         before: AccountSnapshot,
+    },
+    /// An account's liquidity classification changed.
+    AccountClassified {
+        before: ClassificationSnapshot,
+        after: ClassificationSnapshot,
     },
     /// The account label changed without changing its code.
     AccountRenamed {
@@ -430,39 +436,7 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
         (Entity::StatementReconciliation, Action::StatementUnreconcile) => {
             Ok((ReceiptChange::StatementUnreconciled, None))
         }
-        (Entity::Account, Action::Create) => {
-            decode.absent("before", row.before.as_deref())?;
-            Ok((
-                ReceiptChange::AccountCreated {
-                    after: decode.after()?,
-                },
-                None,
-            ))
-        }
-        (Entity::Account, Action::AccountDelete) => {
-            decode.absent("after", row.after.as_deref())?;
-            Ok((
-                ReceiptChange::AccountDeleted {
-                    before: decode.before()?,
-                },
-                None,
-            ))
-        }
-        (Entity::Account, Action::AccountRename) => Ok((
-            ReceiptChange::AccountRenamed {
-                before: decode.before()?,
-                after: decode.after()?,
-            },
-            None,
-        )),
-        (Entity::Account, Action::AccountArchive) => {
-            let before: ArchiveSnapshot = decode.before()?;
-            let after: ArchiveSnapshot = decode.after()?;
-            if before.archived || !after.archived {
-                return Err(decode.invalid("archive", "expected active to archived"));
-            }
-            Ok((ReceiptChange::AccountArchived, None))
-        }
+        (Entity::Account, action) => decode.account_change(action),
         (Entity::Rule, Action::Create) => {
             decode.absent("before", row.before.as_deref())?;
             decode.validate_other("after", row.after.as_deref())?;
@@ -523,6 +497,61 @@ fn change_and_reference(row: &AuditLogRow) -> Result<(ReceiptChange, Option<Stri
 struct Snapshots<'a>(&'a AuditLogRow);
 
 impl Snapshots<'_> {
+    fn account_change(
+        &self,
+        action: AuditAction,
+    ) -> Result<(ReceiptChange, Option<String>), CliError> {
+        use AuditAction as Action;
+        let row = self.0;
+        match action {
+            Action::Create => {
+                self.absent("before", row.before.as_deref())?;
+                Ok((
+                    ReceiptChange::AccountCreated {
+                        after: self.after()?,
+                    },
+                    None,
+                ))
+            }
+            Action::AccountDelete => {
+                self.absent("after", row.after.as_deref())?;
+                Ok((
+                    ReceiptChange::AccountDeleted {
+                        before: self.before()?,
+                    },
+                    None,
+                ))
+            }
+            Action::AccountClassify => Ok((
+                ReceiptChange::AccountClassified {
+                    before: self.before()?,
+                    after: self.after()?,
+                },
+                None,
+            )),
+            Action::AccountRename => Ok((
+                ReceiptChange::AccountRenamed {
+                    before: self.before()?,
+                    after: self.after()?,
+                },
+                None,
+            )),
+            Action::AccountArchive => {
+                let before: ArchiveSnapshot = self.before()?;
+                let after: ArchiveSnapshot = self.after()?;
+                if before.archived || !after.archived {
+                    return Err(self.invalid("archive", "expected active to archived"));
+                }
+                Ok((ReceiptChange::AccountArchived, None))
+            }
+            _ => {
+                self.validate_other("before", row.before.as_deref())?;
+                self.validate_other("after", row.after.as_deref())?;
+                Ok((ReceiptChange::Other, None))
+            }
+        }
+    }
+
     fn invalid(&self, which: &str, error: impl std::fmt::Display) -> CliError {
         CliError::Database(format!(
             "invalid {which} snapshot in audit row #{}: {error}",

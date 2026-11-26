@@ -7,6 +7,7 @@ use serde_json::json;
 
 use super::{ReceiptChange, ReceiptEvent, ReceiptId, ReceiptTarget, posting_creation};
 use crate::db::audit::account_rename::{self, AccountLabel};
+use crate::db::audit::cash_classification::{self, ClassificationSnapshot};
 use crate::db::audit::setup::{
     books::{ProfileRevision, current_profile},
     direct::{self, OnboardingEffect},
@@ -199,6 +200,12 @@ pub enum UndoOutcome {
         account: AccountCode,
         undo_receipt: ReceiptId,
     },
+    /// A new audited change restores the previous liquidity classification.
+    AccountClassificationRestored {
+        account: AccountCode,
+        cash_class: beankeeper::types::CashClass,
+        undo_receipt: ReceiptId,
+    },
     /// A new label change restores the exact label that preceded the rename.
     AccountNameRestored {
         account: AccountCode,
@@ -217,6 +224,7 @@ impl UndoOutcome {
             | Self::TransactionLinkUndone { undo_receipt, .. }
             | Self::Archived { undo_receipt, .. }
             | Self::AccountNameRestored { undo_receipt, .. }
+            | Self::AccountClassificationRestored { undo_receipt, .. }
             | Self::StatementUnreconciled { undo_receipt, .. } => undo_receipt,
         }
     }
@@ -292,6 +300,11 @@ enum UndoTarget {
 enum AgentUndoTarget {
     Statement(StatementKey),
     Posting(TransactionId),
+    Classify {
+        code: AccountCode,
+        before: ClassificationSnapshot,
+        after: ClassificationSnapshot,
+    },
     Rename {
         code: AccountCode,
         before: AccountLabel,
@@ -511,6 +524,13 @@ fn undo_single(
         UndoTarget::Agent(AgentUndoTarget::Annotations(edit)) => {
             edit.restore(tx, actor, company, receipt)?;
         }
+        UndoTarget::Agent(AgentUndoTarget::Classify {
+            code,
+            before,
+            after,
+        }) => {
+            cash_classification::restore(tx, actor, scope, code, receipt, (before, after))?;
+        }
         UndoTarget::Agent(AgentUndoTarget::Rename {
             code,
             before,
@@ -720,6 +740,16 @@ fn resolve_event(
         (ReceiptTarget::Account(code), AuditAction::Create) => {
             Ok(UndoTarget::Account(code.clone()))
         }
+        (ReceiptTarget::Account(code), AuditAction::AccountClassify) => {
+            let ReceiptChange::AccountClassified { before, after } = event.summary() else {
+                return Err(invalid_stored_target("expected account classification"));
+            };
+            Ok(UndoTarget::Agent(AgentUndoTarget::Classify {
+                code: code.clone(),
+                before: before.clone(),
+                after: after.clone(),
+            }))
+        }
         (ReceiptTarget::Account(code), AuditAction::AccountRename) if event.undo_of().is_none() => {
             let ReceiptChange::AccountRenamed { before, after } = event.summary() else {
                 return Err(invalid_stored_target("expected account rename"));
@@ -860,6 +890,22 @@ fn recorded_outcome(
             transaction: edit.transaction,
             undo_receipt,
         })),
+        (
+            UndoTarget::Agent(AgentUndoTarget::Classify { code, .. }),
+            ReceiptTarget::Account(recorded),
+            AuditAction::AccountClassify,
+        ) if recorded == code => {
+            let ReceiptChange::AccountClassified { after, .. } = event.summary() else {
+                return Err(invalid_stored_target(
+                    "expected account classification restoration",
+                ));
+            };
+            Ok(Some(UndoOutcome::AccountClassificationRestored {
+                account: code.clone(),
+                cash_class: after.cash_class,
+                undo_receipt,
+            }))
+        }
         (
             UndoTarget::Agent(AgentUndoTarget::Rename { code, .. }),
             ReceiptTarget::Account(recorded),

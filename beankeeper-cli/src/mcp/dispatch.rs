@@ -76,6 +76,9 @@ convert! {
         account: input.account.map(Text::into_inner), offset: input.fx_gain_loss_account.into_inner(),
         rate: input.rate, date: input.as_of.into(),
     }).into()),
+    account_classify(AccountClassify) => Account(input => AccountRequest::Classify(
+        input.company.into_inner(), input.code.into_inner(), input.cash_class.into_inner(),
+    )),
     account_rename(AccountRename) => Account(input => AccountRequest::Rename(
         input.company.into_inner(), input.code.into_inner(), input.name.into_inner(),
     )),

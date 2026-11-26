@@ -1681,6 +1681,14 @@ EXAMPLES:\n  \
     $ bk --company acme account list --with-balances\
 ")]
 pub enum AccountCommand {
+    /// Set cash membership independently of the account name. To undo, use the returned receipt.
+    Classify {
+        /// Existing account code.
+        code: AccountCode,
+        /// `non_cash`, `cash`, or `cash_equivalent`. Cash membership requires an asset.
+        cash_class: beankeeper::types::CashClass,
+    },
+
     /// Create a new account.
     #[command(after_help = "\
 EXAMPLES:\n  \
@@ -2740,8 +2748,8 @@ EXAMPLES:\n  \
     /// Generate a cash flow statement (direct method).
     #[command(after_help = "\
 CASH ACCOUNTS:\n  \
-    Without --cash-account, every asset account whose name contains \"cash\",\n  \
-    \"bank\", \"checking\" or \"savings\" (case-insensitive) is treated as cash.\n\
+    Without --cash-account, persisted cash and cash_equivalent asset classifications\n  \
+    determine cash membership. Use account classify CODE cash to include a wallet.\n\
 \n\
 EXAMPLES:\n  \
     Cash flow for the year:\n    \

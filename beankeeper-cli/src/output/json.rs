@@ -247,6 +247,7 @@ pub struct AccountJson<'a> {
     name: String,
     r#type: String,
     normal_balance: String,
+    cash_class: beankeeper::types::CashClass,
     #[serde(skip_serializing_if = "Option::is_none")]
     fx: Option<&'a crate::db::fx::Balance>,
 }
@@ -456,6 +457,7 @@ pub(crate) fn account_rows_with_fx<'a>(
         .map(|a| AccountJson {
             code: a.code.clone(),
             name: a.name.clone(),
+            cash_class: a.cash_class,
             r#type: a.account_type.code().to_owned(),
             normal_balance: a.account_type.normal_balance().code().to_string(),
             fx: balances
@@ -1235,6 +1237,7 @@ mod tests {
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
+            cash_class: beankeeper::types::CashClass::default(),
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];
@@ -1253,6 +1256,7 @@ mod tests {
             code: "4000".into(),
             name: "Revenue".into(),
             account_type: beankeeper::types::AccountType::Revenue,
+            cash_class: beankeeper::types::CashClass::default(),
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];

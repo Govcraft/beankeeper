@@ -918,6 +918,7 @@ mod tests {
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
+            cash_class: beankeeper::types::CashClass::default(),
             created_at: "2025-01-01".into(),
             default_tax_category: None,
         }];

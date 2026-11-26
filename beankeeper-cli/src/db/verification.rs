@@ -70,6 +70,7 @@ enum Check {
     CreationSnapshots,
     AccountArchives,
     AccountLabels,
+    AccountClassifications,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -91,6 +92,7 @@ impl Check {
             Self::CreationSnapshots => "creation_snapshots",
             Self::AccountArchives => "account_archives",
             Self::AccountLabels => "account_labels",
+            Self::AccountClassifications => "account_classifications",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::StatementReconciliations => "statement_reconciliations",
@@ -215,6 +217,10 @@ impl VerifiedLedger {
         }
         if version >= schema::ACCOUNT_RENAME_SCHEMA_VERSION {
             Check::AccountLabels.record(audit::account_rename::verify(reader), &mut checks)?;
+        }
+        if version >= schema::CASH_CLASS_SCHEMA_VERSION {
+            Check::AccountClassifications
+                .record(audit::cash_classification::verify(reader), &mut checks)?;
         }
         Check::TransactionLinks.when(
             version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,

@@ -91,6 +91,7 @@ pub struct AccountRow {
     pub code: String,
     pub name: String,
     pub account_type: beankeeper::types::AccountType,
+    pub cash_class: beankeeper::types::CashClass,
     pub created_at: String,
     pub default_tax_category: Option<String>,
 }

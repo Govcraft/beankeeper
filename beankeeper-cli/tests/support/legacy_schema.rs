@@ -3,6 +3,10 @@
 use rusqlite::Connection;
 
 pub fn before_restore(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "DROP TRIGGER protect_cash_class_update;
+         ALTER TABLE accounts DROP COLUMN cash_class;",
+    )?;
     let dependents = conn
         .prepare(
             "SELECT type, name, sql FROM sqlite_schema

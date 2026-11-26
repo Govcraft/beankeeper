@@ -93,14 +93,15 @@ pub(in crate::db) fn store_validated_account(
     }
 
     conn.execute(
-        "INSERT INTO accounts (company_slug, code, name, type, default_tax_category) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO accounts (company_slug, code, name, type, default_tax_category, cash_class) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             company_slug,
             code_text,
             name.as_ref(),
             account_type.code(),
-            default_tax_category
+            default_tax_category,
+            beankeeper::types::CashClass::default()
         ],
     )?;
 

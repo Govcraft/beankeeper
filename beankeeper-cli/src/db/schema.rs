@@ -9,7 +9,7 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = RESTORE_VERSION_NUMBER;
+const LATEST_VERSION: i64 = 39;
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
 pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
@@ -38,6 +38,7 @@ pub(crate) const STATEMENT_RECONCILIATION_SCHEMA_VERSION: SchemaVersion = Schema
 pub(super) const FX_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(37);
 pub(super) const RESTORE_SCHEMA_VERSION: SchemaVersion =
     SchemaVersion::known(RESTORE_VERSION_NUMBER);
+pub(crate) const CASH_CLASS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(39);
 /// Earliest ledger that supports the read-only setup operations.
 pub(crate) const OLDEST_SETUP_READ_SCHEMA: SchemaVersion = SchemaVersion::known(20);
 
@@ -327,6 +328,10 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
         apply_restore_migration(conn)?;
     }
 
+    if version < CASH_CLASS_SCHEMA_VERSION {
+        migrate_with_writer(conn, CASH_CLASS_SCHEMA_VERSION, apply_cash_class_schema)?;
+    }
+
     debug_assert_eq!(
         stored_schema(ReadConn::physical(conn)).ok(),
         Some(CURRENT_VERSION),
@@ -334,6 +339,40 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
     );
 
     Ok(())
+}
+
+fn apply_cash_class_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        // This is the only name inference: preserve old reports once at upgrade.
+        // Thereafter the stored classification is authoritative, even after rename.
+        conn.execute_batch(
+            "ALTER TABLE accounts ADD COLUMN cash_class TEXT NOT NULL DEFAULT 'non_cash'
+            CHECK(cash_class IN ('non_cash', 'cash', 'cash_equivalent'))
+            CHECK(cash_class = 'non_cash' OR type = 'asset');
+            UPDATE accounts SET cash_class = 'cash' WHERE type = 'asset' AND (
+                lower(name) LIKE '%cash%' OR lower(name) LIKE '%bank%'
+                OR lower(name) LIKE '%checking%' OR lower(name) LIKE '%savings%');",
+        )?;
+        // Rebuild dependent views around the audit vocabulary extension.
+        conn.execute_batch("DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(
+            conn,
+            AuditTable::CashClassification,
+            CASH_CLASS_SCHEMA_VERSION,
+        )?;
+        conn.execute_batch("CREATE TRIGGER protect_cash_class_update BEFORE UPDATE OF cash_class ON accounts
+            WHEN NEW.cash_class <> OLD.cash_class AND NOT EXISTS (
+                SELECT 1 FROM bookkeeping_audit event WHERE event.id = (SELECT MAX(id) FROM audit_log)
+                AND event.company_slug = NEW.company_slug AND event.entity = 'account'
+                AND event.entity_id = NEW.code AND event.action = 'account_classify'
+                AND json_extract(event.before, '$.cash_class') IS OLD.cash_class
+                AND json_extract(event.after, '$.cash_class') IS NEW.cash_class)
+            BEGIN SELECT RAISE(ABORT, 'cash classification requires an audit receipt'); END;")?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_restore_migration(conn: &Connection) -> Result<(), CliError> {
@@ -1988,7 +2027,7 @@ fn migrate_audit(
                     ON audit_log(company_slug, entity_id) WHERE action = 'recategorize';",
             )?;
         }
-        if table == AuditTable::LedgerRestore {
+        if table >= AuditTable::LedgerRestore {
             conn.execute_batch(&format!(include_str!("schema/restore.sql"), audit = audit))?;
         }
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [schema])?;
@@ -2069,12 +2108,13 @@ enum AuditTable {
     TransactionLinks,
     StatementReconciliation,
     LedgerRestore,
+    CashClassification,
 }
 
 impl From<AuditTable> for AuditHistory {
     fn from(table: AuditTable) -> Self {
         match table {
-            AuditTable::LedgerRestore => Self::Bookkeeping,
+            AuditTable::LedgerRestore | AuditTable::CashClassification => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2184,6 +2224,9 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
         let _ = write!(entity, ",'{}'", AuditEntity::Ledger);
         let _ = write!(action, ",'{}'", AuditAction::LedgerRestored);
     }
+    if table >= AuditTable::CashClassification {
+        let _ = write!(action, ",'{}'", AuditAction::AccountClassify);
+    }
     (entity, action)
 }
 
@@ -2204,6 +2247,30 @@ fn setup_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
     } else {
         ("", "")
     }
+}
+
+fn classification_audit_checks(table: AuditTable) -> (&'static str, &'static str) {
+    let classify_undo = if table >= AuditTable::CashClassification {
+        ",'account_classify'"
+    } else {
+        ""
+    };
+    let classify_check = if table >= AuditTable::CashClassification {
+        ", CHECK(action <> 'account_classify' OR (
+            entity = 'account' AND company_slug IS NOT NULL AND length(entity_id) > 0
+            AND hash_version = 7 AND before IS NOT NULL AND after IS NOT NULL
+            AND CASE WHEN json_valid(before) THEN
+                json_type(before) IS 'object' AND json_type(before, '$.cash_class') IS 'text'
+                AND COALESCE(json_extract(before, '$.cash_class') IN ('non_cash', 'cash', 'cash_equivalent'), 0)
+                ELSE 0 END
+            AND CASE WHEN json_valid(after) THEN
+                json_type(after) IS 'object' AND json_type(after, '$.cash_class') IS 'text'
+                AND COALESCE(json_extract(after, '$.cash_class') IN ('non_cash', 'cash', 'cash_equivalent'), 0)
+                ELSE 0 END))"
+    } else {
+        ""
+    };
+    (classify_undo, classify_check)
 }
 
 fn receipt_audit_checks(table: AuditTable) -> String {
@@ -2275,6 +2342,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     } else {
         ("", "")
     };
+    let (classify_undo, classify_check) = classification_audit_checks(table);
     let restore_check = if table >= AuditTable::LedgerRestore {
         ", CHECK((action = 'ledger_restored') = (entity = 'ledger')),
            CHECK(entity <> 'ledger' OR (
@@ -2288,20 +2356,20 @@ fn receipt_audit_checks(table: AuditTable) -> String {
     };
     format!(", CHECK(client_hint IS NULL OR (hash_version >= 5 AND agent_uri IS NULL AND json_valid(client_hint))),
                    CHECK(undo_of IS NULL OR (typeof(undo_of) = 'integer' AND undo_of > 0
-                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo}{link_undo}{statement_undo})
+                       AND undo_of < id AND action IN ('reverse', 'account_archive'{undo_action}{setup_undo}{annotation_undo}{rename_undo}{link_undo}{statement_undo}{classify_undo})
                        AND company_slug IS NOT NULL AND agent_uri IS NOT NULL)),
                    CHECK(related_posting IS NULL OR (typeof(related_posting) = 'integer'
                        AND related_posting > 0 AND company_slug IS NOT NULL
                        AND action IN ('reverse', 'proposal_approve', 'correlate'{recategorize}))),
                    CHECK(hash_version < 6 OR (
                        (action IN ('reverse', 'proposal_approve', 'correlate'{recategorize})) = (related_posting IS NOT NULL)
-                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}{link_check}{statement_check}{restore_check}")
+                       AND (action <> 'account_archive' OR undo_of IS NOT NULL))){rule_check}{setup_check}{annotation_check}{rename_check}{correction_check}{recategorize_check}{link_check}{statement_check}{classify_check}{restore_check}")
 }
 
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -2666,6 +2734,35 @@ mod tests {
         Ok(conn)
     }
 
+    // Historical writers cannot call the current account API, whose insert
+    // includes later schema fields. Keep this v25 fixture and its audit append
+    // together under the same savepoint as the original writer.
+    fn seed_v25_account(conn: &Connection, actor: &super::super::Actor) -> Result<(), CliError> {
+        super::super::audit::atomically(conn, || {
+            conn.execute(
+                "INSERT INTO accounts(company_slug, code, name, type)
+                VALUES ('legacy', '1200', 'New cash account', 'asset')",
+                [],
+            )?;
+            let created_at: String = conn.query_row(
+                "SELECT created_at FROM accounts WHERE company_slug = 'legacy' AND code = '1200'",
+                [],
+                |row| row.get(0),
+            )?;
+            super::super::audit::record_insert(
+                conn,
+                actor,
+                &"legacy".parse()?,
+                super::super::audit::Creation::Account,
+                "1200",
+                &serde_json::json!({
+                    "company_slug": "legacy", "code": "1200", "name": "New cash account",
+                    "type": "asset", "default_tax_category": null, "created_at": created_at,
+                }),
+            )
+        })
+    }
+
     #[test]
     fn v25_preserves_all_earlier_hash_versions_and_requires_v5_appends() -> Result<(), CliError> {
         use super::super::{Actor, audit};
@@ -2721,18 +2818,7 @@ mod tests {
             audit::verify_hash_chain(ReadConn::physical(&conn))?.length(),
             5
         );
-        with_admin_fixture(&conn, &owner, |grant| {
-            crate::db::create_account(
-                grant,
-                &crate::db::CreateAccountParams {
-                    company_slug: &"legacy".parse()?,
-                    code: "1200",
-                    name: "New cash account",
-                    account_type: beankeeper::types::AccountType::Asset,
-                    default_tax_category: None,
-                },
-            )
-        })?;
+        seed_v25_account(&conn, &owner)?;
         let v25 = history()?;
         apply_v26(&conn)?;
         assert_eq!(history()?, v25);
@@ -3052,6 +3138,7 @@ mod tests {
                 STATEMENT_RECONCILIATION_SCHEMA_VERSION,
                 FX_SCHEMA_VERSION,
                 RESTORE_SCHEMA_VERSION,
+                CASH_CLASS_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
@@ -3786,6 +3873,58 @@ mod tests {
             &"extra".parse()?
         )?);
         VerifiedLedger::read(&live)?;
+        Ok(())
+    }
+
+    #[test]
+    fn v39_classifies_legacy_cash_once_without_changing_audit_history() -> Result<(), CliError> {
+        let conn = Connection::open_in_memory()?;
+        apply_through_v12(&conn)?;
+        ensure_schema_at_before_restore(&conn)?;
+        apply_restore_migration(&conn)?;
+        assert_eq!(
+            stored_schema(ReadConn::physical(&conn))?,
+            RESTORE_SCHEMA_VERSION
+        );
+        conn.execute_batch(
+            "INSERT INTO companies(slug, name) VALUES ('legacy', 'Legacy');
+            INSERT INTO accounts(company_slug, code, name, type) VALUES
+            ('legacy', '1000', 'Checking', 'asset'),
+            ('legacy', '1100', 'Travel Wallet', 'asset'),
+            ('legacy', '2000', 'Bank Loan', 'liability');",
+        )?;
+        super::super::audit::record_identity(
+            &conn,
+            &super::super::Actor::new("migration fixture".parse()?),
+            super::super::audit::IdentityEvent::TokenRevoked,
+            "legacy-token",
+            &serde_json::json!({}),
+        )?;
+        let history = |conn: &Connection| -> Result<Vec<String>, CliError> {
+            Ok(conn
+                .prepare("SELECT row_hash FROM audit_log ORDER BY id")?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        };
+        let before = history(&conn)?;
+        assert_eq!(before.len(), 1);
+        ensure_schema(&conn)?;
+        assert_eq!(history(&conn)?, before);
+        let classes = |conn: &Connection| -> Result<Vec<String>, CliError> {
+            Ok(conn
+                .prepare("SELECT cash_class FROM accounts ORDER BY code")?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        };
+        assert_eq!(classes(&conn)?, ["cash", "non_cash", "non_cash"]);
+        conn.execute(
+            "UPDATE accounts SET name = 'Cash Wallet' WHERE code = '1100'",
+            [],
+        )?;
+        ensure_schema(&conn)?;
+        assert_eq!(classes(&conn)?, ["cash", "non_cash", "non_cash"]);
+        assert_restore_sql_uses_bookkeeping_history(ReadConn::physical(&conn))?;
+        super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
         Ok(())
     }
 

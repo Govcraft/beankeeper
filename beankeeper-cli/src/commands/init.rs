@@ -543,6 +543,15 @@ fn seed_consulting_accounts(db: &Db, actor: &crate::db::Actor) -> Result<(), Cli
         ),
     ];
     seed_company_accounts(db, actor, "acme-consulting", accounts)?;
+    crate::db::audit::cash_classification::submit(
+        db,
+        actor,
+        &"acme-consulting".parse()?,
+        "1000"
+            .parse()
+            .map_err(|error| CliError::Validation(format!("{error}")))?,
+        beankeeper::types::CashClass::Cash,
+    )?;
 
     Ok(())
 }
@@ -613,6 +622,15 @@ fn seed_products_accounts(db: &Db, actor: &crate::db::Actor) -> Result<(), CliEr
         ),
     ];
     seed_company_accounts(db, actor, "acme-products", accounts)?;
+    crate::db::audit::cash_classification::submit(
+        db,
+        actor,
+        &"acme-products".parse()?,
+        "1000"
+            .parse()
+            .map_err(|error| CliError::Validation(format!("{error}")))?,
+        beankeeper::types::CashClass::Cash,
+    )?;
 
     Ok(())
 }
@@ -701,6 +719,24 @@ fn seed_personal_accounts(db: &Db, actor: &crate::db::Actor) -> Result<(), CliEr
         ),
     ];
     seed_company_accounts(db, actor, "personal", accounts)?;
+    crate::db::audit::cash_classification::submit(
+        db,
+        actor,
+        &"personal".parse()?,
+        "1000"
+            .parse()
+            .map_err(|error| CliError::Validation(format!("{error}")))?,
+        beankeeper::types::CashClass::Cash,
+    )?;
+    crate::db::audit::cash_classification::submit(
+        db,
+        actor,
+        &"personal".parse()?,
+        "1100"
+            .parse()
+            .map_err(|error| CliError::Validation(format!("{error}")))?,
+        beankeeper::types::CashClass::Cash,
+    )?;
 
     Ok(())
 }
