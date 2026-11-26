@@ -34,7 +34,7 @@ fn host_write_authorization_follows_the_ledger_on_each_request() -> TestResult {
         let read_only = read_only.clone();
         move |target: &LedgerTarget, kind| {
             if target.as_ref() == "demo"
-                && kind != LedgerWriteKind::Restore
+                && !matches!(kind, LedgerWriteKind::Restore | LedgerWriteKind::Reversal)
                 && read_only.load(Ordering::Relaxed)
             {
                 Err(REASON.into())
@@ -101,6 +101,23 @@ fn host_write_authorization_follows_the_ledger_on_each_request() -> TestResult {
             read_only.store(false, Ordering::Relaxed);
             assert_eq!(payload(&post()?)?["created"], true);
             read_only.store(true, Ordering::Relaxed);
+
+            let receipts = session.call("audit_receipts", &json!({"company":"acme"}), writer)?;
+            let receipts = payload(&receipts)?;
+            let original = receipts["receipts"]
+                .as_array()
+                .ok_or_else(|| format!("missing audit receipts: {receipts}"))?
+                .iter()
+                .find(|receipt| receipt["change"]["source_reference"] == "per-ledger-policy")
+                .ok_or("missing posting receipt")?;
+            let undone = session.call(
+                "audit_undo",
+                &json!({"company":"acme", "receipt":original["id"]}),
+                writer,
+            )?;
+            let undo = payload(&undone)?;
+            assert_eq!(undo["kind"], "reversed", "{undo}");
+            assert_eq!(undo["undo_of"], original["id"]);
             let rejected = session.call("txn_post", &posting("second-denied-write"), writer)?;
             assert_eq!(payload(&rejected)?["code"], "LEDGER_WRITE_DENIED");
             Ok(())

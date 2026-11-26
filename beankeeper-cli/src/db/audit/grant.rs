@@ -106,6 +106,7 @@ pub(crate) enum AgentUndo {}
 
 impl sealed::GrantKind for AgentUndo {
     const REQUIRED: Capability = Capability::Reverse;
+    const WRITE_KIND: crate::db::LedgerWriteKind = crate::db::LedgerWriteKind::Reversal;
     const EXPLICIT: bool = true;
     const MODE: Option<WriteMode> = Some(WriteMode::Direct);
 }
@@ -124,6 +125,7 @@ pub enum OwnerUndo {}
 
 impl sealed::GrantKind for OwnerUndo {
     const REQUIRED: Capability = Capability::Admin;
+    const WRITE_KIND: crate::db::LedgerWriteKind = crate::db::LedgerWriteKind::Reversal;
     const EXPLICIT: bool = true;
 }
 
