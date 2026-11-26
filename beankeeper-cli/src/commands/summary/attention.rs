@@ -72,6 +72,13 @@ impl AttentionItem {
         }
     }
 
+    pub(super) fn statement_months(&self) -> Option<&[UnreconciledMonth]> {
+        match &self.details {
+            Some(Details::StatementMonths { months }) => Some(months),
+            _ => None,
+        }
+    }
+
     pub(super) fn total(&self) -> Option<Money> {
         self.total.1
     }
@@ -142,7 +149,7 @@ fn statement_months(context: &AttentionContext<'_>) -> Result<AttentionItem, Cli
         count: Some(months.len()),
         total: OptionalMoneyField("total", None),
         basis: Some("finished-calendar-months-with-asset-or-liability-postings"),
-        reason: "These account months had postings and still need a completed statement reconciliation.",
+        reason: "Check the listed monthly statements against the books.",
         details: Some(Details::StatementMonths { months }),
     })
 }

@@ -6,6 +6,8 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+- Summary and statement lists name the accounts and monthly statements needing checks, newest first, across CLI and MCP. (#318)
+
 ### Added
 
 - Embedded hosts can authorize writes per ledger across CLI and MCP, with structured denials that identify the ledger and explain why it is read-only. ([#313](https://github.com/Govcraft/beankeeper/issues/313))

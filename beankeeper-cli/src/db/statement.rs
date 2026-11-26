@@ -328,12 +328,41 @@ impl fmt::Display for StatementDiscrepancy {
 impl std::error::Error for StatementDiscrepancy {}
 
 /// An account and calendar month with posted activity and no completed statement.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct UnreconciledMonth {
     account: AccountCode,
+    account_name: String,
     currency: Currency,
     period_start: NaiveDate,
     period_end: NaiveDate,
+}
+
+impl fmt::Display for UnreconciledMonth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} ({}, {}) needs its {} statement checked.",
+            self.account_name,
+            self.account,
+            self.currency,
+            self.period_start.format("%B %Y"),
+        )
+    }
+}
+
+impl Serialize for UnreconciledMonth {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let mut fields = serializer.serialize_struct("UnreconciledMonth", 6)?;
+        fields.serialize_field("account", &self.account)?;
+        fields.serialize_field("account_name", &self.account_name)?;
+        fields.serialize_field("currency", &self.currency)?;
+        fields.serialize_field("period_start", &self.period_start)?;
+        fields.serialize_field("period_end", &self.period_end)?;
+        fields.serialize_field("message", &self.to_string())?;
+        fields.end()
+    }
 }
 
 impl UnreconciledMonth {
@@ -373,7 +402,7 @@ pub(crate) fn unreconciled_months(
         };
     let mut statement = reader.prepare(
         &format!("WITH active_months AS (
-             SELECT DISTINCT e.account_code AS account, t.currency AS currency,
+             SELECT DISTINCT e.account_code AS account, a.name AS account_name, t.currency AS currency,
                     date(substr(t.date, 1, 10), 'start of month') AS period_start,
                     date(substr(t.date, 1, 10), 'start of month', '+1 month', '-1 day') AS period_end
              FROM posted_transactions t JOIN entries e
@@ -383,7 +412,7 @@ pub(crate) fn unreconciled_months(
                AND (?2 IS NULL OR e.account_code = ?2) AND (?3 IS NULL OR t.currency = ?3)
                AND substr(t.date, 1, 10) <= ?4
          )
-         SELECT m.account, m.currency, m.period_start, m.period_end
+         SELECT m.account, m.currency, m.period_start, m.period_end, m.account_name
          FROM active_months m
          WHERE m.period_end < ?4 {completion_filter}
          ORDER BY m.period_end DESC, m.account, m.currency"),
@@ -392,6 +421,7 @@ pub(crate) fn unreconciled_months(
         .query_map(params![company, account, currency, as_of], |row| {
             Ok(UnreconciledMonth {
                 account: row.get(0)?,
+                account_name: row.get(4)?,
                 currency: row.get(1)?,
                 period_start: row.get(2)?,
                 period_end: row.get(3)?,

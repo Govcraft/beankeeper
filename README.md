@@ -1549,7 +1549,8 @@ the account's activity in Desktop.
 Ask the agent "How am I doing?" It can call `financial_summary` with a `company`,
 or run `bk --company personal summary --json`, to get plain-language highlights,
 standing balances, income/spending comparisons, spending movers and attention
-counts with chartable amounts and an optional Desktop target. No app is required.
+details with chartable amounts and an optional Desktop target. Statement checks
+name each account and month, newest first, in both CLI and MCP output. No app is required.
 The default is this month to date versus the full previous calendar month.
 `--from`, `--to`, `--compare-from`, `--compare-to` and `--currency` select the scope.
 Use real calendar dates in `YYYY-MM-DD` format for CLI and MCP report and

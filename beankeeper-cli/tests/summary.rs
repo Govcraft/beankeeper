@@ -505,3 +505,50 @@ fn a_valid_book_with_an_unrepresentable_summary_total_fails_instead_of_wrapping(
     );
     Ok(())
 }
+
+#[test]
+fn statement_attention_names_accounts_and_months_newest_first() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.post("2023-12-12", "1000:10", "4000:10", "USD")?;
+    ledger.post("2024-02-12", "1000:10", "4000:10", "USD")?;
+    ledger.post("2024-02-12", "1200:10", "4000:10", "USD")?;
+    ledger.post("2024-03-12", "1000:10", "4000:10", "USD")?;
+    ledger.post("2024-01-12", "1000:10", "4000:10", "EUR")?;
+    let report = ledger.summary(&["--to", "2024-03-31", "--currency", "USD"])?;
+    let item = &report["data"]["needs_attention"]["items"]["unreconciled_months"];
+    assert_eq!(item["count"], 3);
+    let months = item["months"].as_array().ok_or("missing months")?;
+    let messages = [
+        "Cash (1000, USD) needs its February 2024 statement checked.",
+        "Equipment (1200, USD) needs its February 2024 statement checked.",
+        "Cash (1000, USD) needs its December 2023 statement checked.",
+    ];
+    let plain = ledger.ok(&["summary", "--to", "2024-03-31", "--currency", "USD"])?;
+    let mut previous = 0;
+    for (month, message) in months.iter().zip(messages) {
+        assert_eq!(month["message"], message);
+        assert!(month["account_name"].is_string());
+        let position = plain.find(message).ok_or("missing actionable statement")?;
+        assert!(position >= previous);
+        previous = position;
+    }
+    assert_eq!(months[0]["period_end"], "2024-02-29");
+    assert!(!plain.contains("3 unreconciled months"));
+    let csv = ledger.ok(&[
+        "summary",
+        "--to",
+        "2024-03-31",
+        "--currency",
+        "USD",
+        "--format",
+        "csv",
+    ])?;
+    assert!(csv.contains("statement_check,1000,"));
+    assert!(csv.contains("December 2023 statement checked."));
+    let empty = ledger.summary(&["--to", "2023-01-01", "--currency", "USD"])?;
+    assert_eq!(
+        empty["data"]["needs_attention"]["items"]["unreconciled_months"]["months"],
+        json!([])
+    );
+    Ok(())
+}

@@ -229,7 +229,7 @@ impl StatementList {
         months: Vec<UnreconciledMonth>,
     ) -> Self {
         let message = format!(
-            "{} completed statement(s). {} account month(s) still need a statement.",
+            "{} completed statement(s). {} monthly statement(s) still need checking.",
             statements
                 .iter()
                 .filter(|row| row.receipt.undo_receipt().is_none())
@@ -313,13 +313,7 @@ impl ReconcileResponse {
                         println!("{}", statement.message);
                     }
                     for pending in &list.unreconciled_months {
-                        let month = &pending.month;
-                        println!(
-                            "Account {} ({}) through {} needs a statement.",
-                            month.account(),
-                            month.currency(),
-                            month.period_end()
-                        );
+                        println!("{}", pending.month);
                     }
                 }
             },

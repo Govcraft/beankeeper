@@ -929,6 +929,29 @@ fn check_statement_cutoff_undo(
         history["unreconciled_months"][0]["period_end"],
         "2026-03-31"
     );
+    let pending = &history["unreconciled_months"][0];
+    assert!(
+        pending["account_name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty())
+    );
+    assert!(
+        pending["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("March 2026 statement checked"))
+    );
+    let summary = owner.success(
+        "financial_summary",
+        &json!({"company":"acme", "to":"2026-04-01", "currency":"USD"}),
+    )?;
+    let months = summary["data"]["needs_attention"]["items"]["unreconciled_months"]["months"]
+        .as_array()
+        .ok_or("missing summary statements")?;
+    assert!(
+        months
+            .iter()
+            .any(|month| month["message"] == pending["message"])
+    );
     let replaced = owner.success("reconcile_statement", &input)?;
     owner.success(
         "period_reopen",
