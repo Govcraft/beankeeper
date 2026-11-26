@@ -15,7 +15,7 @@ use crate::cli::OutputFormat;
 use crate::db::{self, BalanceRow, companies::Company, connection::Db};
 use crate::error::CliError;
 use crate::output::amounts::{MoneySequence, format_money};
-use crate::output::chart;
+use crate::output::chart::{self, Role};
 
 /// Financial quantity tracked over calendar periods.
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
@@ -89,12 +89,17 @@ pub struct TrendColumn {
 /// An account or summary series ordered by report column.
 #[derive(Debug)]
 pub struct TrendSeries {
+    role: Role,
     code: Option<String>,
     name: String,
     amounts: Vec<Money>,
 }
 
 impl TrendSeries {
+    pub(crate) const fn role(&self) -> Role {
+        self.role
+    }
+
     /// Account code when this series represents a ledger account.
     #[must_use]
     pub fn code(&self) -> Option<&str> {
@@ -208,6 +213,7 @@ impl Serialize for TrendReport {
 }
 
 struct Series {
+    role: Role,
     code: Option<String>,
     name: String,
     amounts: Vec<i64>,
@@ -270,6 +276,7 @@ pub(super) fn compute_trend_on(
     let series = raw
         .into_iter()
         .map(|series| TrendSeries {
+            role: series.role,
             code: series.code,
             name: series.name,
             amounts: series
@@ -340,8 +347,9 @@ struct AccountTrend {
 }
 
 impl Series {
-    fn summary(name: &str, amounts: Vec<i64>) -> Self {
+    fn summary(role: Role, name: &str, amounts: Vec<i64>) -> Self {
         Self {
+            role,
             code: None,
             name: name.into(),
             amounts,
@@ -381,13 +389,14 @@ fn spending_series(
         .map(|(code, mut account)| {
             account.amounts.resize(totals.len(), 0);
             Series {
+                role: AccountType::Expense.into(),
                 code: Some(code),
                 name: account.name,
                 amounts: account.amounts,
             }
         })
         .collect();
-    series.push(Series::summary("Total Spending", totals));
+    series.push(Series::summary(Role::Expense, "Total Spending", totals));
     Ok(series)
 }
 
@@ -404,9 +413,9 @@ fn net_worth_series(
         net_worth_series.push(assets.checked_sub(liabilities).ok_or_else(overflow)?);
     }
     Ok(vec![
-        Series::summary("Total Assets", asset_series),
-        Series::summary("Total Liabilities", liability_series),
-        Series::summary("Net Worth", net_worth_series),
+        Series::summary(Role::Asset, "Total Assets", asset_series),
+        Series::summary(Role::Liability, "Total Liabilities", liability_series),
+        Series::summary(Role::NetWorth, "Net Worth", net_worth_series),
     ])
 }
 
@@ -572,6 +581,7 @@ mod tests {
                 to: date,
             }],
             series: vec![TrendSeries {
+                role: Role::NetWorth,
                 code: None,
                 name: "Net worth".into(),
                 amounts: vec![],

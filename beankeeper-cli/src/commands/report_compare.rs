@@ -353,11 +353,14 @@ impl ComparisonReport {
         ]
     }
 
-    pub(crate) fn account_amounts(&self) -> impl Iterator<Item = (&str, &str, [Money; 2])> {
+    pub(crate) fn account_amounts(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, AccountType, [Money; 2])> {
         self.accounts.iter().map(|line| {
             (
                 line.name.as_str(),
                 line.code.as_str(),
+                line.kind,
                 [line.values.current.0, line.values.prior.0],
             )
         })
@@ -365,14 +368,26 @@ impl ComparisonReport {
 
     pub(crate) fn net_worth_amounts(
         &self,
-    ) -> impl Iterator<Item = (&'static str, [Money; 2])> + '_ {
+    ) -> impl Iterator<Item = (&'static str, crate::output::chart::Role, [Money; 2])> + '_ {
         [
-            (TotalKey::TotalAssets, "Total Assets"),
-            (TotalKey::TotalLiabilities, "Total Liabilities"),
-            (TotalKey::NetWorth, "Net Worth"),
+            (
+                TotalKey::TotalAssets,
+                "Total Assets",
+                crate::output::chart::Role::Asset,
+            ),
+            (
+                TotalKey::TotalLiabilities,
+                "Total Liabilities",
+                crate::output::chart::Role::Liability,
+            ),
+            (
+                TotalKey::NetWorth,
+                "Net Worth",
+                crate::output::chart::Role::NetWorth,
+            ),
         ]
         .into_iter()
-        .map(|(key, label)| {
+        .map(|(key, label, role)| {
             // An empty asset or liability category has a zero balance.
             let amounts = self
                 .totals
@@ -381,7 +396,7 @@ impl ComparisonReport {
                 .map_or([Money::from_minor(0, self.currency); 2], |values| {
                     [values.current.0, values.prior.0]
                 });
-            (label, amounts)
+            (label, role, amounts)
         })
     }
 }

@@ -2,7 +2,7 @@ use beankeeper::types::Currency;
 use chrono::NaiveDate;
 use serde::Serialize;
 
-use super::{Chart, Context, Kind, Row};
+use super::{Chart, Context, Kind, Role, Row};
 use crate::commands::report_cash_flow::CashFlowStatement;
 use crate::commands::report_compare::ComparisonReport;
 use crate::commands::report_dates::DateRange;
@@ -106,8 +106,8 @@ pub(crate) fn summary(
     let rows = comparison
         .iter()
         .map(|row| {
-            let (label, values) = row.chart_series();
-            Row::from_money(label, None, values)
+            let (label, role, values) = row.chart_series();
+            Row::from_money(role, label, None, values)
         })
         .collect();
     Chart::new(
@@ -143,9 +143,17 @@ pub(crate) fn cash_flow(
         .iter()
         .chain(&cash.investing.lines)
         .chain(&cash.financing.lines)
-        .map(|line| Row::from_money(line.name(), Some(line.code()), [line.amount()]))
+        .map(|line| {
+            Row::from_money(
+                Role::CashFlow,
+                line.name(),
+                Some(line.code()),
+                [line.amount()],
+            )
+        })
         .collect();
     Chart::categories(
+        Role::CashFlow,
         "Cash movement by counter-account",
         rows,
         currency,
@@ -165,9 +173,16 @@ pub(crate) fn income_statement(
         .expenses()
         .accounts()
         .iter()
-        .map(|line| Row::from_money(line.name(), line.code(), [line.amount()]))
+        .map(|line| Row::from_money(Role::Expense, line.name(), line.code(), [line.amount()]))
         .collect();
-    Chart::categories("Spending by category", rows, currency, target, all)
+    Chart::categories(
+        Role::Expense,
+        "Spending by category",
+        rows,
+        currency,
+        target,
+        all,
+    )
 }
 
 pub(crate) fn trend(company: &str, trend: &TrendReport, all: bool) -> Result<Chart, CliError> {
@@ -185,6 +200,7 @@ pub(crate) fn trend(company: &str, trend: &TrendReport, all: bool) -> Result<Cha
         .filter(|series| !spending || series.code().is_some())
         .map(|series| {
             Row::from_money(
+                series.role(),
                 series.name(),
                 series.code(),
                 series.amounts().iter().copied(),
@@ -237,6 +253,7 @@ pub(crate) fn periods(
         .iter()
         .map(|row| {
             Row::new(
+                row.account_type.into(),
                 &row.name,
                 Some(&row.code),
                 row.amounts.iter().copied(),
@@ -307,12 +324,18 @@ pub(crate) fn comparison(
     let rows = if matches!(view, ComparisonView::Trend(_, TrendMetric::NetWorth)) {
         report
             .net_worth_amounts()
-            .map(|(label, values)| Row::comparison(label, None, values))
+            .map(|(label, role, values)| Row::comparison(role, label, None, values))
             .collect()
     } else {
         report
             .account_amounts()
-            .map(|(name, code, values)| Row::comparison(name, Some(code), values))
+            .map(|(name, code, kind, values)| {
+                let role = match view {
+                    ComparisonView::CashFlow(_) => Role::CashFlow,
+                    _ => kind.into(),
+                };
+                Row::comparison(role, name, Some(code), values)
+            })
             .collect()
     };
     Chart::new(

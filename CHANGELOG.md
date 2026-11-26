@@ -6,6 +6,8 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+- CLI and MCP chart series expose typed semantic roles for assets, liabilities, net worth, and other report quantities without changing exact amounts. (#319)
+
 - Summary and statement lists name the accounts and monthly statements needing checks, newest first, across CLI and MCP. (#318)
 - Classify cash and cash-equivalent assets through CLI/MCP with audited undo so summary and cash-flow include wallets independently of account names. ([#317](https://github.com/Govcraft/beankeeper/issues/317))
 

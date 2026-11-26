@@ -1604,7 +1604,9 @@ Use `--json --chart` with `summary`, `report trend`, `report income-statement`,
 Charts carry exact major-unit decimal strings, currency, labels, account codes
 and optional Desktop detail targets. They default to eight categories/series
 plus Other; `--chart-all` / `chart_all: true` returns all. Existing report fields
-are retained. See the [schema and worked example](docs/chart-data.md).
+are retained. Each series includes a typed semantic `role` so agents can distinguish
+assets, debt and net worth without guessing from labels or signs. Colors remain
+the consumer’s choice. See the [schema and worked example](docs/chart-data.md).
 
 ### Period-over-Period Reports
 

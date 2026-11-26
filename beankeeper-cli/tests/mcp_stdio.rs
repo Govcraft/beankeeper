@@ -3684,28 +3684,55 @@ fn comparisons_and_explanations_match_cli_on_read_only_stdio() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn requested_charts_over_read_only_stdio_match_cli_and_are_discoverable() -> TestResult {
-    let dir = tempdir()?;
-    let path = dir.path().join("chart.db");
-    seed(&path)?;
-    let mut command = bk(&path)?;
-    command.args(["mcp", "serve", "--read-only"]);
-    let mut client = Client::spawn(command)?;
-    client.initialize()?;
-    let listed = client.request("tools/list", &json!({}))?;
-    for name in ["report", "financial_summary"] {
-        let tool = listed["result"]["tools"]
-            .as_array()
-            .ok_or("tools")?
-            .iter()
-            .find(|tool| tool["name"] == name)
-            .ok_or("tool")?;
-        let schema = tool["inputSchema"].to_string();
-        assert!(schema.contains("chart_all"), "{schema}");
-        assert!(schema.contains("\"chart\""), "{schema}");
-    }
-    for (input, flags) in [
+fn seed_chart_roles(path: &Path) -> TestResult {
+    bk(path)?
+        .args([
+            "--company",
+            "acme",
+            "account",
+            "create",
+            "2000",
+            "Cash",
+            "--type",
+            "liability",
+        ])
+        .assert()
+        .success();
+    bk(path)?
+        .args([
+            "--company",
+            "acme",
+            "account",
+            "create",
+            "5000",
+            "Assets",
+            "--type",
+            "expense",
+        ])
+        .assert()
+        .success();
+    bk(path)?
+        .args([
+            "--company",
+            "acme",
+            "txn",
+            "post",
+            "-d",
+            "fictional debt",
+            "--date",
+            "2024-01-15",
+            "--debit",
+            "5000:40",
+            "--credit",
+            "2000:40",
+        ])
+        .assert()
+        .success();
+    Ok(())
+}
+
+fn chart_report_cases() -> [(Value, Vec<&'static str>); 9] {
+    [
         (
             json!({"kind":"trend", "metric":"spending"}),
             vec!["trend", "--metric", "spending"],
@@ -3736,7 +3763,32 @@ fn requested_charts_over_read_only_stdio_match_cli_and_are_discoverable() -> Tes
             json!({"kind":"trial-balance", "period":"quarter"}),
             vec!["trial-balance", "--period", "quarter"],
         ),
-    ] {
+    ]
+}
+
+#[test]
+fn requested_charts_over_read_only_stdio_match_cli_and_are_discoverable() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("chart.db");
+    seed(&path)?;
+    seed_chart_roles(&path)?;
+    let mut command = bk(&path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let listed = client.request("tools/list", &json!({}))?;
+    for name in ["report", "financial_summary"] {
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .ok_or("tools")?
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .ok_or("tool")?;
+        let schema = tool["inputSchema"].to_string();
+        assert!(schema.contains("chart_all"), "{schema}");
+        assert!(schema.contains("\"chart\""), "{schema}");
+    }
+    for (input, flags) in chart_report_cases() {
         for all in [false, true] {
             let mut input = input.clone();
             input["company"] = json!("acme");
@@ -3761,6 +3813,16 @@ fn requested_charts_over_read_only_stdio_match_cli_and_are_discoverable() -> Tes
             let expected: Value = serde_json::from_slice(&output.stdout)?;
             assert_eq!(actual, expected["data"]);
             assert_eq!(actual["chart"]["schema_version"], 1);
+            if input["metric"] == "net-worth" {
+                let series = &actual["chart"]["series"];
+                assert_eq!(series[0]["role"], "asset");
+                assert_eq!(series[1]["role"], "liability");
+                assert_eq!(series[2]["role"], "net_worth");
+                assert_eq!(series[2]["values"][0], "-40.00");
+            }
+            for series in actual["chart"]["series"].as_array().ok_or("series")? {
+                assert!(series["role"].is_string());
+            }
         }
     }
     let actual = client.success(
