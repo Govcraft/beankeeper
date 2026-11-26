@@ -1108,15 +1108,23 @@ categories/series; the default is eight plus a signed Other aggregate.
 
 Version 1 contains `schema_version: 1`, `kind` (`line` or `bar`), `title`, ordered
 `x` labels, `x_accounts`, and named `series` with `values`, `unit: "major"`,
-`currency`, and optional `account`. Every values array aligns with x. Values
+`currency`, a semantic `role`, and optional `account`. Every values array aligns with x. Values
 are exact signed decimal strings at the currency's scale, including zeros and
 refunds. Preserve account codes when display labels repeat. `truncated` and
 `omitted_count` describe Other; the full source report remains available.
 
+Use `role` rather than labels or signs to distinguish `asset`, `liability`,
+`net_worth`, `equity`, `income`, `expense`, `leftover`, `cash_flow`, and `mixed`.
+Assets can include non-cash holdings; cash flow is signed movement, not a balance.
+Negative net worth remains net worth and must never be shown as positive cash.
+Other retains a shared role or uses `mixed` when its contributors differ. Choose
+your own palette and render unknown future roles neutrally. This is an additive
+version 1 field; older consumers can ignore it.
+
 Worked example: request
 `{"company":"acme","kind":"trend","metric":"spending","from":"2026-01-01","to":"2026-02-28","chart":true}`.
 For a chart with `x: ["2026-01","2026-02"]` and
-`series: [{"name":"Dining","account":"5000","values":["120.50","-15.00"],"unit":"major","currency":"USD"}]`,
+`series: [{"name":"Dining","role":"expense","account":"5000","values":["120.50","-15.00"],"unit":"major","currency":"USD"}]`,
 draw a line labeled Dining with those two USD values. Explain that February's
 refunds exceeded expenses by USD 15.00. Do not sum Total Spending together with
 its categories or sum net-worth snapshots across dates. Do not replace an
