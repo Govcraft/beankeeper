@@ -303,6 +303,10 @@ pub(super) fn plain(report: &SummaryReport) -> String {
     )];
     lines.extend(report.highlights.iter().cloned());
     for (name, item) in &report.attention {
+        if let Some(months) = item.statement_months() {
+            lines.extend(months.iter().map(ToString::to_string));
+            continue;
+        }
         if let (Some(count), Some(total)) = (item.count, item.total())
             && count > 0
         {
@@ -394,6 +398,7 @@ pub(super) fn csv(report: &SummaryReport) -> Result<String, CliError> {
         }
     }
     for (&id, item) in &report.attention {
+        write_statement_checks(&mut writer, item)?;
         let total = item
             .total()
             .map(|value| value.amount().minor_units().to_string())
@@ -422,6 +427,32 @@ pub(super) fn csv(report: &SummaryReport) -> Result<String, CliError> {
         .into_inner()
         .map_err(|e| CliError::General(format!("CSV flush failed: {e}")))?;
     String::from_utf8(bytes).map_err(|e| CliError::General(format!("invalid CSV UTF-8: {e}")))
+}
+
+fn write_statement_checks(
+    writer: &mut csv::Writer<Vec<u8>>,
+    item: &super::attention::AttentionItem,
+) -> Result<(), CliError> {
+    if let Some(months) = item.statement_months() {
+        for month in months {
+            writer
+                .write_record([
+                    "statement_check",
+                    month.account(),
+                    &month.to_string(),
+                    month.currency().code(),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "true",
+                ])
+                .map_err(|error| csv_error(&error))?;
+        }
+    }
+    Ok(())
 }
 
 fn csv_error(error: &csv::Error) -> CliError {

@@ -3482,23 +3482,25 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
     let dir = tempdir()?;
     let path = dir.path().join("summary.db");
     seed(&path)?;
-    bk(&path)?
-        .args([
-            "--company",
-            "acme",
-            "txn",
-            "post",
-            "-d",
-            "Sale",
-            "--date",
-            "2024-03-01",
-            "--debit",
-            "1000:12.34",
-            "--credit",
-            "4000:12.34",
-        ])
-        .assert()
-        .success();
+    for (date, amount) in [("2024-03-01", "12.34"), ("2024-02-01", "1")] {
+        bk(&path)?
+            .args([
+                "--company",
+                "acme",
+                "txn",
+                "post",
+                "-d",
+                "Sale",
+                "--date",
+                date,
+                "--debit",
+                &format!("1000:{amount}"),
+                "--credit",
+                &format!("4000:{amount}"),
+            ])
+            .assert()
+            .success();
+    }
     let mut command = bk(&path)?;
     command.args(["mcp", "serve", "--read-only"]);
     let mut client = Client::spawn(command)?;
@@ -3534,6 +3536,15 @@ fn financial_summary_matches_cli_envelopes_in_read_only_mode() -> TestResult {
         .ok_or("meta")?
         .remove("timestamp");
     assert_eq!(actual, expected);
+    let pending = &actual["data"]["needs_attention"]["items"]["unreconciled_months"]["months"][0];
+    assert_eq!(pending["period_end"], "2024-02-29");
+    assert!(pending["account_name"].is_string());
+    assert!(
+        pending["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("February 2024 statement checked"))
+    );
+
     assert_eq!(actual["data"]["comparison"]["series"][0]["current"], 1234);
 
     let today = chrono::Local::now().date_naive().to_string();

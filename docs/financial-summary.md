@@ -103,9 +103,12 @@ of the payable selection.
   and later reconciliation dates. It does not assert bank-statement agreement.
 - `unreconciled_months` lists completed calendar months before the as-of date
   with posted asset or liability activity in the report currency and no active
-  statement reconciliation. Each `months` item identifies the account,
-  currency and month dates. The count measures account months and has no
-  monetary total.
+  statement reconciliation. Each `months` item includes `account` (code),
+  `account_name`, currency, month dates and a repeatable `message`, such as
+  "Checking (1000, USD) needs its October 2026 statement checked." Items are
+  ordered most recent first, including the year to distinguish older statements.
+  Plain CLI output lists these messages; CLI JSON and MCP return the same records.
+  The count remains a total of statements needing checks, with no monetary total.
 - `recurring_due` counts every still-unposted occurrence in the next 14 days,
   starting tomorrow and including day 14. Cancelled/completed schedules are
   excluded. The total adds one side of each balanced scheduled template,
