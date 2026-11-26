@@ -274,6 +274,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `account_rename` | `company`, existing account `code`, and the new display `name` |
+| `account_classify` | `company`, existing account `code`, and `cash_class` (`non_cash`, `cash`, or `cash_equivalent`) |
 | `txn_link` | `company`, `source_id`, `target_id`, `kind` |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `status`, `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
 | `txn_settle_hold` | `company`, `hold` as `{"id":42}` or `{"reference":"hold-1"}`, positive decimal `amount`, posting `date`, posted `reference` |
@@ -530,7 +531,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 
-Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `txn_post`, `txn_propose`, `txn_approve`,
+Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
 `fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
 `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
@@ -929,7 +930,7 @@ line again after an undo, choose an open date on or after that undo.
 
 The command refuses reconciled originals, reversals, pending holds,
 settlements, and investment trades. Use the returned receipt with
-`bk audit undo RECEIPT` to reverse the new posting in one step.
+`bk --company acme audit undo RECEIPT` to reverse the new posting in one step.
 Transaction lists show the original and the active adjustment. After undo,
 they hide the adjustment and its mirror by default and continue to show the
 original. Use `--include-reversed` or MCP `"include_reversed": true` to see the
@@ -1703,7 +1704,13 @@ bk --company acme report cash-flow --from 2026-01-01 --to 2026-12-31 --currency 
 - `--cash-account CODE` (repeatable): accounts to treat as cash; each must exist and be an asset
 - `--currency CODE`: report currency. Defaults to the company's only transaction currency; if the company has several, `--currency` is required (validation error); with no transactions, USD
 
-**Default cash accounts:** Without `--cash-account`, every **asset** account whose name contains `cash`, `bank`, `checking` or `savings` (case-insensitive) is treated as cash -- this matches the bundled templates (`Operating Cash`, `Checking Account`, `Savings Account`). A code range is deliberately not used: `1100` is `Savings Account` in the personal template but `Accounts Receivable` in the business ones. If no account qualifies, the command exits with a validation error (exit code 3) asking for `--cash-account`.
+**Default cash accounts:** Without `--cash-account`, reports include accounts explicitly classified as `cash` or `cash_equivalent`, independent of their names. Bundled templates classify their cash accounts. New custom accounts default to `non_cash`.
+
+Classify a wallet with `bk --company acme account classify 1050 cash`, or a money-market cash equivalent with `bk --company acme account classify 1060 cash_equivalent`. MCP offers the same operation as `account_classify` with `company`, `code`, and `cash_class`.
+
+The result includes an audit receipt; undo it with `bk --company acme audit undo RECEIPT` or `audit_undo`. Reclassifying to `non_cash` also records a new audited change.
+
+Existing books retain their former cash selection through a one-time migration; classify any omitted assets explicitly. Summary and cash-flow use the same stored classification, and renaming an account never changes its cash membership. `--cash-account` remains an explicit replacement selection. Cash equivalents use ledger book values, never invented market prices. A cash-flow report with no classified accounts returns a validation error with classification guidance. Transfers between cash accounts net to zero and are excluded.
 
 **Method:**
 - Only transactions dated in the range, in the report currency, whose cash entries have a non-zero net movement are included. Transfers between two cash accounts net to zero and are excluded.
