@@ -14,12 +14,15 @@ pub enum LedgerWriteKind {
     Ordinary,
     /// Restore an existing ledger from a backup or undo a restore.
     Restore,
+    /// Apply an audited undo of an existing receipt or rule creation.
+    Reversal,
 }
 
 impl From<Operation> for LedgerWriteKind {
     fn from(operation: Operation) -> Self {
         match operation {
             Operation::Restore | Operation::RestoreUndo => Self::Restore,
+            Operation::AuditUndo | Operation::RuleUndo => Self::Reversal,
             _ => Self::default(),
         }
     }
